@@ -721,26 +721,31 @@ export type EnvironmentDeployVariableMaterial = {
   valueEnvelope: string
 }
 
+export type EnvironmentDeployStorageMount = {
+  serviceId?: string
+  composeServiceName?: string
+  destinationPath: string
+  subpath?: string
+  readOnly?: boolean
+}
+
 export type EnvironmentDeployStorageMaterial = {
   storageId: string
-  kind: 'docker_volume' | 'bind_mount' | 'file' | 'directory'
+  locationId: string
+  kind: 'volume' | 'directory' | 'file'
   name: string
+  provider: 'docker' | 'path'
   sourcePath?: string
   /**
-   * Mount target inside the container. Required for bind/file/directory;
-   * optional for `docker_volume` when the volume is only declared in compose
-   * (compose-declared named volumes have no destinationPath).
-   */
-  destinationPath?: string
-  /**
-   * On-host Docker volume name. Required for `docker_volume` rows.
+   * On-host Docker volume name. Required when `provider` is `docker`.
    */
   volumeName?: string
   principalId?: string
-  serviceId?: string
-  composeServiceName?: string
   serverId: string
   contentEnvelope?: string
+  managed?: boolean
+  externalName?: string
+  mounts: EnvironmentDeployStorageMount[]
 }
 
 export type EnvironmentDeployPrincipalMaterial = {
@@ -1244,44 +1249,66 @@ function parseDeployEnvFile(value: unknown): string | undefined {
   return value
 }
 
+function parseDeployStorageMount(entry: unknown): EnvironmentDeployStorageMount {
+  if (!isRecord(entry) || !isString(entry.destinationPath)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  const mount: EnvironmentDeployStorageMount = {
+    destinationPath: entry.destinationPath,
+  }
+  if (isString(entry.serviceId)) mount.serviceId = entry.serviceId
+  if (isString(entry.composeServiceName)) {
+    mount.composeServiceName = entry.composeServiceName
+  }
+  if (isString(entry.subpath)) mount.subpath = entry.subpath
+  if (entry.readOnly === true) mount.readOnly = true
+  return mount
+}
+
 function parseDeployStorageMaterialEntry(entry: unknown): EnvironmentDeployStorageMaterial {
   if (!isRecord(entry)) throw new Error('Invalid environment.deploy payload')
   if (
     !isString(entry.storageId) ||
+    !isString(entry.locationId) ||
     !isString(entry.kind) ||
     !isString(entry.name) ||
+    !isString(entry.provider) ||
     !isString(entry.serverId)
   ) {
     throw new Error('Invalid environment.deploy payload')
   }
   const kind = entry.kind as EnvironmentDeployStorageMaterial['kind']
-  if (kind !== 'docker_volume' && !isString(entry.destinationPath)) {
+  const provider = entry.provider as EnvironmentDeployStorageMaterial['provider']
+  if (
+    (kind !== 'volume' && kind !== 'directory' && kind !== 'file') ||
+    (provider !== 'docker' && provider !== 'path')
+  ) {
     throw new Error('Invalid environment.deploy payload')
   }
   const material: EnvironmentDeployStorageMaterial = {
     storageId: entry.storageId,
+    locationId: entry.locationId,
     kind,
     name: entry.name,
+    provider,
     serverId: entry.serverId,
+    mounts: Array.isArray(entry.mounts) ? entry.mounts.map(parseDeployStorageMount) : [],
   }
-  if (kind === 'docker_volume') {
+  if (provider === 'docker') {
     if (!isString(entry.volumeName)) {
       throw new Error('Invalid environment.deploy payload')
     }
     material.volumeName = entry.volumeName
   }
-  if (isString(entry.destinationPath)) {
-    material.destinationPath = entry.destinationPath
-  }
   if (isString(entry.sourcePath)) material.sourcePath = entry.sourcePath
   if (isString(entry.principalId)) material.principalId = entry.principalId
-  if (isString(entry.serviceId)) material.serviceId = entry.serviceId
-  if (isString(entry.composeServiceName)) {
-    material.composeServiceName = entry.composeServiceName
-  }
   if (isString(entry.contentEnvelope)) {
     material.contentEnvelope = entry.contentEnvelope
   }
+  if (entry.managed === true || entry.managed === false) {
+    material.managed = entry.managed
+  }
+  if (isString(entry.externalName)) material.externalName = entry.externalName
   return material
 }
 

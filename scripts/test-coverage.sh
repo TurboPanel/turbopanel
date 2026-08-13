@@ -147,6 +147,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/environments/deploy-routes.test.ts \
   src/client/environments/register-compose-volumes.test.ts \
   src/client/environments/register-compose-volumes.hostfree.test.ts \
+  src/client/environments/register-compose-mounts.hostfree.test.ts \
   src/client/environments/reconcile-services.test.ts \
   src/client/environments/reconcile-services.hostfree.test.ts \
   src/client/environments/allocate-containers.test.ts \

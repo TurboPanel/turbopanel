@@ -447,6 +447,15 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         SELECT 'organization'::text, st.organization_id, 1
         FROM storage st WHERE st.id = ${entityId}::uuid
         UNION ALL
+        SELECT 'workspace'::text, st.workspace_id, 1
+        FROM storage st
+        WHERE st.id = ${entityId}::uuid AND st.workspace_id IS NOT NULL
+        UNION ALL
+        SELECT 'organization'::text, w.organization_id, 2
+        FROM storage st
+        JOIN workspace w ON w.id = st.workspace_id
+        WHERE st.id = ${entityId}::uuid AND st.workspace_id IS NOT NULL
+        UNION ALL
         SELECT 'project'::text, st.project_id, 1
         FROM storage st
         WHERE st.id = ${entityId}::uuid AND st.project_id IS NOT NULL
@@ -656,6 +665,10 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
     case 'storage':
       return sql`SELECT st.id FROM storage st
         WHERE st.organization_id = ${organizationId}::uuid
+        UNION ALL
+        SELECT st.id FROM storage st
+        JOIN workspace w ON w.id = st.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid
         UNION ALL
         SELECT st.id FROM storage st
         JOIN project p ON p.id = st.project_id

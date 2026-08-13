@@ -7,8 +7,8 @@ import {
   dockerVolumeMetadataWithId,
   isStorageContentTooLarge,
   isStorageKind,
+  mapStorageUniqueViolation,
   MAX_STORAGE_CONTENT_BYTES,
-  mountKindRequiresDestination,
   optionalStringField,
   parseCreateStorageFields,
   parseOptionalStorageContent,
@@ -16,11 +16,12 @@ import {
   principalProjectMismatch,
   resolvePatchKind,
   resolvePatchPrincipalId,
-  resolvePatchStorageRefs,
   resolveStorageParentContext,
   resolveStorageProjectId,
+  scratchLocationNotMountable,
   STORAGE_KINDS,
   storageContentByteLength,
+  SCRATCH_LOCATION_NOT_MOUNTABLE_ERROR,
 } from './routes-helpers.ts'
 
 /**
@@ -57,14 +58,15 @@ function baseRow(overrides?: Partial<StorageRow>): StorageRow {
   return {
     id: '00000000-0000-4000-8000-000000000010',
     organizationId: '00000000-0000-4000-8000-000000000001',
+    workspaceId: null,
     projectId: '00000000-0000-4000-8000-000000000002',
     environmentId: null,
     serviceId: null,
-    serverId: '00000000-0000-4000-8000-000000000005',
     kind: 'volume',
     name: 'data',
-    sourcePath: null,
-    destinationPath: '/data',
+    accessMode: 'single_writer',
+    retention: 'retain',
+    generation: 0,
     principalId: null,
     metadata: {},
     options: null,
@@ -72,13 +74,15 @@ function baseRow(overrides?: Partial<StorageRow>): StorageRow {
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
     ...overrides,
-  } as StorageRow
+  }
 }
 
 test('isStorageKind accepts known kinds only', () => {
-  assertEquals(isStorageKind('bind_mount'), true)
-  assertEquals(isStorageKind('docker_volume'), true)
-  assertEquals(isStorageKind('volume'), false)
+  assertEquals(isStorageKind('volume'), true)
+  assertEquals(isStorageKind('directory'), true)
+  assertEquals(isStorageKind('file'), true)
+  assertEquals(isStorageKind('docker_volume'), false)
+  assertEquals(isStorageKind('bind_mount'), false)
   assertEquals(isStorageKind(null), false)
 })
 
@@ -91,38 +95,24 @@ test('optionalStringField returns strings or null', () => {
 
 test('resolveStorageProjectId returns id only for project parent', () => {
   assertEquals(
-    resolveStorageProjectId({ column: 'projectId', id: 'proj-1' }),
+    resolveStorageProjectId({ column: 'projectId', id: 'proj-1', entityKind: 'project' }),
     'proj-1',
   )
   assertEquals(
-    resolveStorageProjectId({ column: 'environmentId', id: 'env-1' }),
+    resolveStorageProjectId({
+      column: 'environmentId',
+      id: 'env-1',
+      entityKind: 'environment',
+    }),
+    null,
+  )
+  assertEquals(
+    resolveStorageProjectId({ column: null, id: null, entityKind: 'organization' }),
     null,
   )
 })
 
-test('resolvePatchStorageRefs merges body over existing row', () => {
-  const existing = baseRow({
-    serverId: 'srv-old',
-    kind: 'docker_volume',
-    destinationPath: '/old',
-    principalId: '00000000-0000-4000-8000-000000000020',
-  })
-  const next = resolvePatchStorageRefs(
-    {
-      serverId: 'srv-new',
-      kind: 'bind_mount',
-      destinationPath: '/new',
-      principalId: null,
-    },
-    existing,
-  )
-  assertEquals(next.serverId, 'srv-new')
-  assertEquals(next.kind, 'bind_mount')
-  assertEquals(next.destinationPath, '/new')
-  assertEquals(next.principalId, null)
-})
-
-test('resolveStorageParentContext prefers deepest parent', () => {
+test('resolveStorageParentContext prefers deepest parent then org', () => {
   assertEquals(resolveStorageParentContext(undefined), null)
   assertEquals(
     resolveStorageParentContext(baseRow({ projectId: 'p1' })),
@@ -130,46 +120,61 @@ test('resolveStorageParentContext prefers deepest parent', () => {
   )
   assertEquals(
     resolveStorageParentContext(baseRow({
-      projectId: 'p1',
+      projectId: null,
       environmentId: 'e1',
     })),
     { parentId: 'e1', entityKind: 'environment' },
   )
   assertEquals(
     resolveStorageParentContext(baseRow({
-      projectId: 'p1',
-      environmentId: 'e1',
+      projectId: null,
       serviceId: 's1',
     })),
     { parentId: 's1', entityKind: 'service' },
   )
+  assertEquals(
+    resolveStorageParentContext(baseRow({
+      projectId: null,
+      workspaceId: 'w1',
+    })),
+    { parentId: 'w1', entityKind: 'workspace' },
+  )
+  assertEquals(
+    resolveStorageParentContext(baseRow({
+      projectId: null,
+      workspaceId: null,
+      environmentId: null,
+      serviceId: null,
+    })),
+    {
+      parentId: '00000000-0000-4000-8000-000000000001',
+      entityKind: 'organization',
+    },
+  )
 })
 
-test('parseStorageParent requires exactly one parent id', async () => {
+test('parseStorageParent allows zero parents (org-wide) and at most one', async () => {
   const c = mockContext()
-  await expectErrorResponse(
-    parseStorageParent(c, {}),
-    400,
-    { error: 'Exactly one parent resource must be specified' },
-  )
+  assertEquals(parseStorageParent(c, {}), {
+    column: null,
+    id: null,
+    entityKind: 'organization',
+  })
   await expectErrorResponse(
     parseStorageParent(c, { projectId: 'p1', environmentId: 'e1' }),
     400,
-    { error: 'Exactly one parent resource must be specified' },
+    { error: 'At most one parent resource may be specified' },
   )
   assertEquals(parseStorageParent(c, { serviceId: 'svc-1' }), {
     column: 'serviceId',
     id: 'svc-1',
     entityKind: 'service',
   })
-})
-
-test('mountKindRequiresDestination is true when mount kind lacks path', () => {
-  assertEquals(mountKindRequiresDestination('bind_mount', '  '), true)
-  assertEquals(mountKindRequiresDestination('bind_mount', '/host'), false)
-  assertEquals(mountKindRequiresDestination('docker_volume', null), false)
-  assertEquals(mountKindRequiresDestination('file', null), true)
-  assertEquals(mountKindRequiresDestination('directory', '/mnt/data'), false)
+  assertEquals(parseStorageParent(c, { workspaceId: 'ws-1' }), {
+    column: 'workspaceId',
+    id: 'ws-1',
+    entityKind: 'workspace',
+  })
 })
 
 test('isStorageKind accepts all canonical kinds', () => {
@@ -179,9 +184,9 @@ test('isStorageKind accepts all canonical kinds', () => {
 })
 
 test('resolvePatchKind keeps existing kind when body kind invalid', () => {
-  const existing = baseRow({ kind: 'docker_volume' })
-  assertEquals(resolvePatchKind({}, existing), 'docker_volume')
-  assertEquals(resolvePatchKind({ kind: 'bind_mount' }, existing), 'bind_mount')
+  const existing = baseRow({ kind: 'volume' })
+  assertEquals(resolvePatchKind({}, existing), 'volume')
+  assertEquals(resolvePatchKind({ kind: 'directory' }, existing), 'directory')
 })
 
 test('resolvePatchPrincipalId honors null, string, or existing', () => {
@@ -193,38 +198,13 @@ test('resolvePatchPrincipalId honors null, string, or existing', () => {
   assertEquals(resolvePatchPrincipalId({}, 'keep'), 'keep')
 })
 
-test('resolvePatchStorageRefs preserves omitted fields from existing row', () => {
-  const existing = baseRow({
-    serverId: 'srv-keep',
-    kind: 'docker_volume',
-    destinationPath: '/keep',
-    principalId: '00000000-0000-4000-8000-000000000020',
-  })
-  const next = resolvePatchStorageRefs({}, existing)
-  assertEquals(next.serverId, 'srv-keep')
-  assertEquals(next.kind, 'docker_volume')
-  assertEquals(next.destinationPath, '/keep')
-  assertEquals(next.principalId, '00000000-0000-4000-8000-000000000020')
-})
-
-test('resolveStorageParentContext returns null when row has no parent ids', () => {
-  assertEquals(
-    resolveStorageParentContext(baseRow({
-      projectId: null,
-      environmentId: null,
-      serviceId: null,
-    })),
-    null,
-  )
-})
-
 test('parseStorageParent rejects invalid parent id values', async () => {
   const c = mockContext()
-  await expectErrorResponse(
-    parseStorageParent(c, { projectId: '' }),
-    400,
-    { error: 'Exactly one parent resource must be specified' },
-  )
+  assertEquals(parseStorageParent(c, { projectId: '' }), {
+    column: null,
+    id: null,
+    entityKind: 'organization',
+  })
   await expectErrorResponse(
     parseStorageParent(c, { environmentId: 42 }),
     400,
@@ -235,30 +215,45 @@ test('parseStorageParent rejects invalid parent id values', async () => {
 test('parseCreateStorageFields validates required create body fields', async () => {
   const c = mockContext()
   await expectErrorResponse(
-    parseCreateStorageFields(c, { kind: 'volume', name: 'x', serverId: 's' }),
+    parseCreateStorageFields(c, { kind: 'docker_volume', name: 'x' }),
     400,
     { error: 'Invalid request' },
   )
   await expectErrorResponse(
-    parseCreateStorageFields(c, { kind: 'bind_mount', serverId: 's' }),
+    parseCreateStorageFields(c, { kind: 'volume' }),
     400,
     { error: 'Invalid request' },
   )
   const ok = parseCreateStorageFields(c, {
-    kind: 'bind_mount',
+    kind: 'directory',
     name: 'data',
-    serverId: 'srv-1',
-    destinationPath: '/data',
-    metadata: { tier: 'fast' },
+    location: { provider: 'path', serverId: 'srv-1', path: '/srv/data' },
+    mount: { serviceId: 'svc-1', destinationPath: '/data' },
   })
   if (ok instanceof Response) {
     throw new TypeError('expected parsed create fields')
   }
-  assertEquals(ok.kind, 'bind_mount')
+  assertEquals(ok.kind, 'directory')
   assertEquals(ok.name, 'data')
-  assertEquals(ok.serverId, 'srv-1')
-  assertEquals(ok.destinationPath, '/data')
-  assertEquals(ok.metadata, { tier: 'fast' })
+  assertEquals(ok.accessMode, 'single_writer')
+  assertEquals(ok.retention, 'retain')
+  assertEquals(ok.location?.provider, 'path')
+  assertEquals(ok.location?.serverId, 'srv-1')
+  assertEquals(ok.mount?.destinationPath, '/data')
+})
+
+test('parseCreateStorageFields rejects mounting a scratch location', async () => {
+  const c = mockContext()
+  await expectErrorResponse(
+    parseCreateStorageFields(c, {
+      kind: 'volume',
+      name: 'tmp',
+      location: { provider: 'docker', serverId: 'srv-1', role: 'scratch' },
+      mount: { serviceId: 'svc-1', destinationPath: '/tmp' },
+    }),
+    400,
+    { error: SCRATCH_LOCATION_NOT_MOUNTABLE_ERROR },
+  )
 })
 
 test('buildStorageUpdateFields rejects invalid metadata and options', async () => {
@@ -316,4 +311,37 @@ test('principalProjectMismatch only compares when a project is expected', () => 
   assertEquals(principalProjectMismatch('p1', 'p1'), false)
   assertEquals(principalProjectMismatch('p1', 'p2'), true)
   assertEquals(principalProjectMismatch(null, 'p1'), true)
+})
+
+test('scratchLocationNotMountable is true only for scratch', () => {
+  assertEquals(scratchLocationNotMountable('scratch'), true)
+  assertEquals(scratchLocationNotMountable('primary'), false)
+  assertEquals(scratchLocationNotMountable(null), false)
+})
+
+test('mapStorageUniqueViolation classifies known indexes', () => {
+  assertEquals(mapStorageUniqueViolation({ message: 'x' }), null)
+  assertEquals(
+    mapStorageUniqueViolation({
+      code: '23505',
+      message: 'uniq_location_storage_primary',
+    }),
+    { error: 'location_primary_exists', status: 409 },
+  )
+  assertEquals(
+    mapStorageUniqueViolation(
+      Object.assign(new Error('uniq_location_storage_server_provider'), { code: '23505' }),
+    ),
+    { error: 'location_server_provider_exists', status: 409 },
+  )
+  assertEquals(
+    mapStorageUniqueViolation(
+      Object.assign(new Error('uniq_mount_service_destination'), { code: '23505' }),
+    ),
+    { error: 'mount_destination_in_use', status: 409 },
+  )
+  assertEquals(
+    mapStorageUniqueViolation(Object.assign(new Error('other'), { code: '23505' })),
+    { error: 'conflict', status: 409 },
+  )
 })

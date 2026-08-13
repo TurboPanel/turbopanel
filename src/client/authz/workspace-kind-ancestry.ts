@@ -181,11 +181,13 @@ export async function resolveWorkspaceKindForEntity(
     case 'storage': {
       const rows = await db.execute<{ kind: string }>(sql`
         SELECT CASE
+          WHEN st.workspace_id IS NOT NULL THEN ww.kind
           WHEN st.project_id IS NOT NULL THEN pw.kind
           WHEN st.environment_id IS NOT NULL THEN ew.kind
           WHEN st.service_id IS NOT NULL THEN sw.kind
         END AS kind
         FROM storage st
+        LEFT JOIN workspace ww ON ww.id = st.workspace_id
         LEFT JOIN project p ON p.id = st.project_id
         LEFT JOIN workspace pw ON pw.id = p.workspace_id
         LEFT JOIN environment e ON e.id = st.environment_id

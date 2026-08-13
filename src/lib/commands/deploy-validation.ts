@@ -5,12 +5,8 @@ import type {
   EnvironmentDeployStorageMaterial,
 } from './schemas.ts'
 
-const STORAGE_KINDS = new Set([
-  'docker_volume',
-  'bind_mount',
-  'file',
-  'directory',
-])
+const STORAGE_KINDS = new Set(['volume', 'directory', 'file'])
+const STORAGE_PROVIDERS = new Set(['docker', 'path'])
 
 export function validateDeployPathPrefix(pathPrefix: string | undefined): boolean {
   if (pathPrefix === undefined) return true
@@ -183,10 +179,16 @@ export function validateDeployStorageMaterial(
   if (!STORAGE_KINDS.has(entry.kind)) {
     return `invalid storage kind: ${entry.kind}`
   }
-  if (entry.kind !== 'docker_volume' && !entry.destinationPath) {
-    return `storage ${entry.storageId} missing destinationPath`
+  if (!STORAGE_PROVIDERS.has(entry.provider)) {
+    return `invalid storage provider: ${entry.provider}`
   }
-  if (entry.kind === 'docker_volume') {
+  if (entry.kind === 'volume' && entry.provider !== 'docker') {
+    return `storage ${entry.storageId} volume kind requires docker provider`
+  }
+  if (entry.kind !== 'volume' && entry.provider !== 'path') {
+    return `storage ${entry.storageId} ${entry.kind} kind requires path provider`
+  }
+  if (entry.provider === 'docker') {
     if (
       typeof entry.volumeName !== 'string' ||
       entry.volumeName.length === 0
@@ -197,11 +199,13 @@ export function validateDeployStorageMaterial(
       return `storage ${entry.storageId} has invalid volumeName`
     }
   }
-  if (
-    entry.kind !== 'docker_volume' &&
-    !entry.composeServiceName
-  ) {
-    return `storage ${entry.storageId} missing composeServiceName for mount`
+  for (const mount of entry.mounts) {
+    if (!mount.destinationPath) {
+      return `storage ${entry.storageId} mount missing destinationPath`
+    }
+    if (!mount.composeServiceName) {
+      return `storage ${entry.storageId} missing composeServiceName for mount`
+    }
   }
   return null
 }

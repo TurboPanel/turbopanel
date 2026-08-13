@@ -17,6 +17,8 @@ import {
 import {
   environment,
   grant,
+  location,
+  mount,
   organization,
   project,
   server,
@@ -222,9 +224,9 @@ test('storage CRUD covers list, parent filter, create, patch, and delete', async
       headers,
       body: JSON.stringify({
         projectId,
-        kind: 'docker_volume',
+        kind: 'volume',
         name: 'app-data',
-        serverId,
+        location: { provider: 'docker', serverId },
       }),
     })
     assertEquals(createVolume.status, 200)
@@ -238,20 +240,26 @@ test('storage CRUD covers list, parent filter, create, patch, and delete', async
     const metadata = volumeRow?.metadata as { dockerVolumeName?: string } | null
     assertEquals(metadata?.dockerVolumeName, volumeId)
 
-    const createMount = await app.request('/storage', {
+    const createDir = await app.request('/storage', {
       method: 'POST',
       headers,
       body: JSON.stringify({
         serviceId,
-        kind: 'bind_mount',
+        kind: 'directory',
         name: 'config',
-        serverId,
-        destinationPath: '/etc/app/config',
-        sourcePath: '/var/lib/app/config',
+        location: {
+          provider: 'path',
+          serverId,
+          path: '/var/lib/app/config',
+        },
+        mount: {
+          serviceId,
+          destinationPath: '/etc/app/config',
+        },
       }),
     })
-    assertEquals(createMount.status, 200)
-    const { id: mountId } = await createMount.json() as { ok: true; id: string }
+    assertEquals(createDir.status, 200)
+    const { id: dirId } = await createDir.json() as { ok: true; id: string }
 
     const listAll = await app.request('/storage', {
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
@@ -274,31 +282,35 @@ test('storage CRUD covers list, parent filter, create, patch, and delete', async
     assertEquals(listByService.status, 200)
     const serviceBody = await listByService.json() as { storage: Array<{ id: string }> }
     assertEquals(serviceBody.storage.length, 1)
-    assertEquals(serviceBody.storage[0]?.id, mountId)
+    assertEquals(serviceBody.storage[0]?.id, dirId)
 
-    const detail = await app.request(`/storage/${mountId}`, {
+    const detail = await app.request(`/storage/${dirId}`, {
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
     })
     assertEquals(detail.status, 200)
     const detailBody = await detail.json() as {
-      storage: { id: string; destinationPath: string | null; resolvedSourcePath: string | null }
+      storage: {
+        id: string
+        locations: Array<{ resolvedSourcePath: string | null }>
+        mounts: Array<{ destinationPath: string }>
+      }
     }
-    assertEquals(detailBody.storage.id, mountId)
-    assertEquals(detailBody.storage.destinationPath, '/etc/app/config')
-    assertEquals(detailBody.storage.resolvedSourcePath, '/var/lib/app/config')
+    assertEquals(detailBody.storage.id, dirId)
+    assertEquals(detailBody.storage.mounts[0]?.destinationPath, '/etc/app/config')
+    assertEquals(detailBody.storage.locations[0]?.resolvedSourcePath, '/var/lib/app/config')
 
-    const patch = await app.request(`/storage/${mountId}`, {
+    const patch = await app.request(`/storage/${dirId}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ name: 'config-updated' }),
     })
     assertEquals(patch.status, 200)
 
-    const delMount = await app.request(`/storage/${mountId}`, {
+    const delDir = await app.request(`/storage/${dirId}`, {
       method: 'DELETE',
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
     })
-    assertEquals(delMount.status, 200)
+    assertEquals(delDir.status, 200)
 
     const delVolume = await app.request(`/storage/${volumeId}`, {
       method: 'DELETE',
@@ -308,7 +320,7 @@ test('storage CRUD covers list, parent filter, create, patch, and delete', async
   })
 })
 
-test('POST /storage rejects mount kinds without destinationPath', async () => {
+test('POST /storage rejects invalid kinds', async () => {
   await withStorageFixtures(async ({
     db,
     app,
@@ -330,12 +342,12 @@ test('POST /storage rejects mount kinds without destinationPath', async () => {
         projectId,
         kind: 'bind_mount',
         name: 'missing-dest',
-        serverId,
+        location: { provider: 'path', serverId },
       }),
     })
     assertEquals(res.status, 400)
     const body = await res.json()
-    assertEquals(body.error, 'destinationPath is required for mount kinds')
+    assertEquals(body.error, 'Invalid request')
   })
 })
 
@@ -361,18 +373,18 @@ test('POST /storage rejects ambiguous parent selection', async () => {
       body: JSON.stringify({
         projectId,
         environmentId,
-        kind: 'docker_volume',
+        kind: 'volume',
         name: 'bad-parent',
-        serverId,
+        location: { provider: 'docker', serverId },
       }),
     })
     assertEquals(res.status, 400)
     const body = await res.json()
-    assertEquals(body.error, 'Exactly one parent resource must be specified')
+    assertEquals(body.error, 'At most one parent resource may be specified')
   })
 })
 
-test('POST /storage returns 404 when server belongs to another org', async () => {
+test('POST /storage returns 404 when location server belongs to another org', async () => {
   await withStorageFixtures(async ({
     db,
     app,
@@ -407,9 +419,9 @@ test('POST /storage returns 404 when server belongs to another org', async () =>
         },
         body: JSON.stringify({
           projectId,
-          kind: 'docker_volume',
+          kind: 'volume',
           name: 'foreign-server',
-          serverId: foreignServer!.id,
+          location: { provider: 'docker', serverId: foreignServer!.id },
         }),
       })
       assertEquals(res.status, 404)
@@ -427,7 +439,6 @@ test('GET /storage/:id returns 404 for storage in another org', async () => {
     secrets,
     userId,
     organizationId,
-    serverId,
   }) => {
     const now = new Date().toISOString()
     const [foreignOrg] = await db
@@ -459,8 +470,7 @@ test('GET /storage/:id returns 404 for storage in another org', async () => {
         projectId: foreignProject!.id,
         environmentId: null,
         serviceId: null,
-        serverId,
-        kind: 'docker_volume',
+        kind: 'volume',
         name: 'foreign',
         createdAt: now,
         updatedAt: now,
@@ -489,7 +499,6 @@ test('PATCH /storage returns 403 for a member without manage grants', async () =
     secrets,
     organizationId,
     projectId,
-    serverId,
   }) => {
     const [viewer] = await db
       .insert(user)
@@ -509,8 +518,7 @@ test('PATCH /storage returns 403 for a member without manage grants', async () =
         projectId,
         environmentId: null,
         serviceId: null,
-        serverId,
-        kind: 'docker_volume',
+        kind: 'volume',
         name: 'locked',
         createdAt: now,
         updatedAt: now,
@@ -559,9 +567,8 @@ test('POST /storage seals file content when encryption is configured', async () 
         projectId,
         kind: 'file',
         name: 'secrets.txt',
-        serverId,
-        destinationPath: '/app/secrets.txt',
         content: 'hello-storage',
+        location: { provider: 'path', serverId, path: '/app/secrets.txt' },
       }),
     })
     assertEquals(res.status, 200)
@@ -576,5 +583,102 @@ test('POST /storage seals file content when encryption is configured', async () 
       throw new TypeError('expected sealed content envelope')
     }
     assertEquals(row.contentEnvelope.startsWith('tpsecret.'), true)
+  })
+})
+
+test('nested location and mount routes create, list, patch, and delete', async () => {
+  await withStorageFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    serviceId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request('/storage', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        projectId,
+        kind: 'volume',
+        name: 'nested',
+      }),
+    })
+    assertEquals(create.status, 200)
+    const { id: storageId } = await create.json() as { ok: true; id: string }
+
+    const addLoc = await app.request(`/storage/${storageId}/locations`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ provider: 'docker', serverId }),
+    })
+    assertEquals(addLoc.status, 200)
+    const { id: locationId } = await addLoc.json() as { ok: true; id: string }
+
+    const listLoc = await app.request(`/storage/${storageId}/locations`, {
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    assertEquals(listLoc.status, 200)
+    const locBody = await listLoc.json() as { locations: Array<{ id: string; provider: string }> }
+    assertEquals(locBody.locations.length, 1)
+    assertEquals(locBody.locations[0]?.id, locationId)
+    assertEquals(locBody.locations[0]?.provider, 'docker')
+
+    const patchLoc = await app.request(`/storage/${storageId}/locations/${locationId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ state: 'ready' }),
+    })
+    assertEquals(patchLoc.status, 200)
+
+    const addMount = await app.request(`/storage/${storageId}/mounts`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ serviceId, destinationPath: '/data' }),
+    })
+    assertEquals(addMount.status, 200)
+    const { id: mountId } = await addMount.json() as { ok: true; id: string }
+
+    const [mountRow] = await db
+      .select({ destinationPath: mount.destinationPath, readOnly: mount.readOnly })
+      .from(mount)
+      .where(eq(mount.id, mountId))
+      .limit(1)
+    assertEquals(mountRow?.destinationPath, '/data')
+    assertEquals(mountRow?.readOnly, false)
+
+    const patchMount = await app.request(`/storage/${storageId}/mounts/${mountId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ readOnly: true }),
+    })
+    assertEquals(patchMount.status, 200)
+
+    const delMount = await app.request(`/storage/${storageId}/mounts/${mountId}`, {
+      method: 'DELETE',
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    assertEquals(delMount.status, 200)
+
+    const delLoc = await app.request(`/storage/${storageId}/locations/${locationId}`, {
+      method: 'DELETE',
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    assertEquals(delLoc.status, 200)
+
+    const leftover = await db
+      .select({ id: location.id })
+      .from(location)
+      .where(eq(location.storageId, storageId))
+    assertEquals(leftover.length, 0)
   })
 })

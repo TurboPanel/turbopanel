@@ -181,7 +181,7 @@ export function getAdminOpenApiSpec(
           properties: {
             stage: {
               type: 'string',
-              enum: ['variables', 'tls', 'principals', 'email'],
+              enum: ['variables', 'tls', 'principals', 'storage', 'credentials', 'email'],
             },
             afterId: {
               type: 'string',

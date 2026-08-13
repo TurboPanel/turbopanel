@@ -7,6 +7,7 @@ import {
   project,
   service,
 } from './schema.ts'
+import { applyStorageRetentionOnParentDelete } from './storage-records.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -74,6 +75,11 @@ export async function deleteProjectCascade(
       const hostingIds = hostingRows.map((row) => row.id)
 
       await db.transaction(async (tx) => {
+        await applyStorageRetentionOnParentDelete(tx, {
+          projectIds: [projectId],
+          environmentIds,
+          serviceIds,
+        })
         if (containerRows.length > 0) {
           await tx
             .delete(container)
@@ -92,6 +98,10 @@ export async function deleteProjectCascade(
     }
 
     await db.transaction(async (tx) => {
+      await applyStorageRetentionOnParentDelete(tx, {
+        projectIds: [projectId],
+        environmentIds,
+      })
       await tx
         .delete(environment)
         .where(inArray(environment.id, environmentIds))
@@ -100,6 +110,9 @@ export async function deleteProjectCascade(
     return { ok: true }
   }
 
-  await db.delete(project).where(eq(project.id, projectId))
+  await db.transaction(async (tx) => {
+    await applyStorageRetentionOnParentDelete(tx, { projectIds: [projectId] })
+    await tx.delete(project).where(eq(project.id, projectId))
+  })
   return { ok: true }
 }

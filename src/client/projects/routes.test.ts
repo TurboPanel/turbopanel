@@ -1413,9 +1413,9 @@ test('TurboPanel self-host descendant mutations return system_resource_immutable
       headers,
       body: JSON.stringify({
         environmentId: selfHostEnvironmentId,
-        kind: 'docker_volume',
+        kind: 'volume',
         name: 'self-host-blocked',
-        serverId,
+        location: { provider: 'docker', serverId },
       }),
     })
     assertEquals(createStorage.status, 403)

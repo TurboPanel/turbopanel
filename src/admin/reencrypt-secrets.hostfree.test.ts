@@ -13,7 +13,7 @@ import {
   parseSecretsEnv,
   type DerivedSecretsConfig,
 } from '../client/authn/secrets.ts'
-import { principal, setting, tls, variable } from '../lib/db/schema.ts'
+import { credential, principal, setting, storage, tls, variable } from '../lib/db/schema.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import {
   endReencryptSweep,
@@ -36,12 +36,14 @@ const TEST_ONLY_TURBOPANEL_SECRET_V2 =
  */
 const test = Deno.test.bind(Deno)
 
-type StageKey = 'variables' | 'tls' | 'principals' | 'email'
+type StageKey = 'variables' | 'tls' | 'principals' | 'storage' | 'credentials' | 'email'
 
 function stageForTable(table: unknown): StageKey | null {
   if (table === variable) return 'variables'
   if (table === tls) return 'tls'
   if (table === principal) return 'principals'
+  if (table === storage) return 'storage'
+  if (table === credential) return 'credentials'
   if (table === setting) return 'email'
   return null
 }
@@ -74,6 +76,8 @@ function stagedSweepDb(opts: {
     variables: 0,
     tls: 0,
     principals: 0,
+    storage: 0,
+    credentials: 0,
     email: 0,
   }
   const updateApplied = opts.updateApplied ?? true

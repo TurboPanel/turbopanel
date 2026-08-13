@@ -49,7 +49,7 @@ test('getAdminOpenApiSpec documents public URL and reencrypt paths', () => {
   assertEquals(reencryptCursor?.required, ['stage'])
   assertEquals(
     (reencryptCursor?.properties?.stage as SchemaObject).enum,
-    ['variables', 'tls', 'principals', 'email'],
+    ['variables', 'tls', 'principals', 'storage', 'credentials', 'email'],
   )
 
   const publicUrls = spec.components.schemas.PublicUrlsPutResponse

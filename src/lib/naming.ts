@@ -79,7 +79,7 @@ export function managedIngressContainerNameFromService(serviceId: string): strin
   return name
 }
 
-/** Docker volume name for a `docker_volume` storage row is the row UUID. */
+/** Docker volume name for a `storage.kind = volume` row is the storage UUID. */
 export function dockerVolumeNameFromStorageId(storageId: string): string {
   if (!isValidDockerResourceName(storageId)) {
     throw new TypeError(`Invalid Docker volume storage id: ${storageId}`)
@@ -88,7 +88,7 @@ export function dockerVolumeNameFromStorageId(storageId: string): string {
 }
 
 /**
- * Resolve the on-host Docker volume name for a `docker_volume` storage row.
+ * Resolve the on-host Docker volume name for a `storage.kind = volume` row.
  *
  * Uses `pinnedName` when present (typically `metadata.dockerVolumeName`);
  * otherwise the storage UUID.

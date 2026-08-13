@@ -109,59 +109,72 @@ describe('deploy-validation', () => {
     assertEquals(error, null)
   })
 
-  it('requires composeServiceName for bind mounts in storage material', () => {
+  it('requires composeServiceName for path mounts in storage material', () => {
     const error = validateDeployStorageMaterialList([{
       storageId: 'st1',
-      kind: 'bind_mount',
+      locationId: 'loc1',
+      kind: 'directory',
       name: 'data',
-      destinationPath: '/data',
+      provider: 'path',
       serverId: 'srv1',
+      mounts: [{ destinationPath: '/data' }],
     }])
     assertEquals(error, 'storage st1 missing composeServiceName for mount')
   })
 
-  it('requires docker_volume volumeName and validates shape', () => {
+  it('requires volume volumeName and validates shape', () => {
     assertEquals(
       validateDeployStorageMaterialList([{
         storageId: 'st-vol',
-        kind: 'docker_volume',
+        locationId: 'loc-vol',
+        kind: 'volume',
         name: 'data',
+        provider: 'docker',
         serverId: 'srv1',
         volumeName: '01936b3e-8c7a-7b2d-a1f0-123456789abc',
+        mounts: [],
       }]),
       null,
     )
     assertEquals(
       validateDeployStorageMaterialList([{
         storageId: 'st-vol',
-        kind: 'docker_volume',
+        locationId: 'loc-vol',
+        kind: 'volume',
         name: 'data',
+        provider: 'docker',
         serverId: 'srv1',
+        mounts: [],
       }]),
       'storage st-vol missing volumeName',
     )
     assertEquals(
       validateDeployStorageMaterialList([{
         storageId: 'st-vol',
-        kind: 'docker_volume',
+        locationId: 'loc-vol',
+        kind: 'volume',
         name: 'data',
+        provider: 'docker',
         serverId: 'srv1',
         volumeName: '-bad',
+        mounts: [],
       }]),
       'storage st-vol has invalid volumeName',
     )
   })
 
-  it('still requires destinationPath for non-docker_volume kinds', () => {
+  it('requires destinationPath on each mount', () => {
     assertEquals(
       validateDeployStorageMaterialList([{
         storageId: 'st1',
+        locationId: 'loc1',
         kind: 'directory',
         name: 'data',
-        composeServiceName: 'web',
+        provider: 'path',
         serverId: 'srv1',
+        mounts: [{ composeServiceName: 'web', destinationPath: '' }],
       }]),
-      'storage st1 missing destinationPath',
+      'storage st1 mount missing destinationPath',
     )
   })
 
@@ -223,10 +236,11 @@ describe('deploy-validation', () => {
       validateDeployStorageMaterialList([{
         storageId: 'st1',
         kind: 'unknown_kind' as EnvironmentDeployStorageMaterial['kind'],
+        locationId: 'loc1',
         name: 'data',
-        composeServiceName: 'web',
-        destinationPath: '/data',
+        provider: 'path',
         serverId: 'srv1',
+        mounts: [{ composeServiceName: 'web', destinationPath: '/data' }],
       }]),
       'invalid storage kind: unknown_kind',
     )

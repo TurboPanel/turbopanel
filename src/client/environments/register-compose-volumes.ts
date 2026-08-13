@@ -1,22 +1,25 @@
 /**
- * Auto-register compose top-level named volumes as `storage` rows.
+ * Auto-register compose top-level named volumes as `storage` + primary
+ * `location` rows.
  *
- * Idempotency key: `(environment_id, metadata.composeVolumeKey)`. New rows
- * stamp `metadata.dockerVolumeName` to the storage UUID. Concurrent inserts are race-safe via
- * `ON CONFLICT DO NOTHING` + reselect on
- * `uniq_storage_environment_compose_volume_key`.
+ * Idempotency key: `(environment_id, metadata.composeVolumeKey)` where
+ * `kind = 'volume'`. New managed rows stamp `metadata.dockerVolumeName` to
+ * the storage UUID. External volumes upsert a location with
+ * `options.managed = false` and `options.externalName`.
  */
 
 import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
 import { resolveDockerVolumeName } from '../../lib/naming.ts'
-import { storage } from '../../lib/db/schema.ts'
+import { location, storage } from '../../lib/db/schema.ts'
 
 export type RegisteredComposeVolume = {
   storageId: string
+  locationId: string
   composeKey: string
   volumeName: string
+  managed: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -27,6 +30,15 @@ function isExternalVolume(entry: unknown): boolean {
   if (!isRecord(entry)) return false
   if (entry.external === true) return true
   return isRecord(entry.external)
+}
+
+function readExternalName(entry: unknown): string | null {
+  if (!isRecord(entry)) return null
+  if (typeof entry.name === 'string' && entry.name.length > 0) return entry.name
+  if (isRecord(entry.external) && typeof entry.external.name === 'string') {
+    return entry.external.name.length > 0 ? entry.external.name : null
+  }
+  return null
 }
 
 function hasExplicitVolumeName(entry: unknown): boolean {
@@ -46,15 +58,28 @@ function readPinnedDockerVolumeName(metadata: unknown): string | null {
   return metadata.dockerVolumeName.length > 0 ? metadata.dockerVolumeName : null
 }
 
-function listComposableVolumeKeys(document: ComposeDocument): string[] {
+type VolumeSpec = {
+  composeKey: string
+  managed: boolean
+  externalName: string | null
+}
+
+function listVolumeSpecs(document: ComposeDocument): VolumeSpec[] {
   if (!isRecord(document.data.volumes)) return []
-  const keys: string[] = []
+  const specs: VolumeSpec[] = []
   for (const [key, entry] of Object.entries(document.data.volumes)) {
-    if (isExternalVolume(entry)) continue
+    if (isExternalVolume(entry)) {
+      specs.push({
+        composeKey: key,
+        managed: false,
+        externalName: readExternalName(entry) ?? key,
+      })
+      continue
+    }
     if (hasExplicitVolumeName(entry)) continue
-    keys.push(key)
+    specs.push({ composeKey: key, managed: true, externalName: null })
   }
-  return keys.sort((a, b) => a.localeCompare(b))
+  return specs.sort((a, b) => a.composeKey.localeCompare(b.composeKey))
 }
 
 type StorageRow = {
@@ -78,7 +103,7 @@ async function selectByComposeVolumeKey(
     .where(
       and(
         eq(storage.environmentId, environmentId),
-        eq(storage.kind, 'docker_volume'),
+        eq(storage.kind, 'volume'),
         sql`${storage.metadata}->>'composeVolumeKey' = ${composeKey}`,
       ),
     )
@@ -86,9 +111,79 @@ async function selectByComposeVolumeKey(
   return row
 }
 
+async function ensurePrimaryDockerLocation(
+  tx: Db,
+  params: {
+    storageId: string
+    serverId: string
+    managed: boolean
+    externalName: string | null
+  },
+): Promise<string> {
+  const [existing] = await tx
+    .select({ id: location.id })
+    .from(location)
+    .where(
+      and(
+        eq(location.storageId, params.storageId),
+        eq(location.role, 'primary'),
+      ),
+    )
+    .limit(1)
+  if (existing) return existing.id
+
+  const options: Record<string, unknown> = { managed: params.managed }
+  if (!params.managed && params.externalName) {
+    options.externalName = params.externalName
+  }
+  const [inserted] = await tx
+    .insert(location)
+    .values({
+      storageId: params.storageId,
+      serverId: params.serverId,
+      provider: 'docker',
+      role: 'primary',
+      state: 'pending',
+      options,
+    })
+    .onConflictDoNothing()
+    .returning({ id: location.id })
+  if (inserted) return inserted.id
+
+  const [winner] = await tx
+    .select({ id: location.id })
+    .from(location)
+    .where(
+      and(
+        eq(location.storageId, params.storageId),
+        eq(location.role, 'primary'),
+      ),
+    )
+    .limit(1)
+  if (!winner) {
+    throw new Error(
+      `compose volume location missing after conflict (storage=${params.storageId})`,
+    )
+  }
+  return winner.id
+}
+
+function resolvedVolumeName(
+  row: StorageRow,
+  spec: VolumeSpec,
+): string {
+  if (!spec.managed) {
+    return spec.externalName ?? spec.composeKey
+  }
+  return resolveDockerVolumeName({
+    storageId: row.id,
+    pinnedName: readPinnedDockerVolumeName(row.metadata),
+  })
+}
+
 /**
- * Ensure each non-external, unnamed compose volume has a `docker_volume`
- * storage row for this environment. Returns resolved Docker volume names.
+ * Ensure each compose named volume has a `volume` storage row and a primary
+ * docker location on `serverId`.
  */
 export async function registerComposeVolumes(
   db: Db,
@@ -99,8 +194,8 @@ export async function registerComposeVolumes(
     serverId: string
   },
 ): Promise<RegisteredComposeVolume[]> {
-  const composeKeys = listComposableVolumeKeys(params.document)
-  if (composeKeys.length === 0) return []
+  const specs = listVolumeSpecs(params.document)
+  if (specs.length === 0) return []
 
   const existingRows = await db
     .select({
@@ -112,100 +207,83 @@ export async function registerComposeVolumes(
     .where(
       and(
         eq(storage.environmentId, params.environmentId),
-        eq(storage.kind, 'docker_volume'),
+        eq(storage.kind, 'volume'),
       ),
     )
 
-  const byComposeKey = new Map<string, (typeof existingRows)[number]>()
+  const byComposeKey = new Map<string, StorageRow>()
   for (const row of existingRows) {
     const key = readComposeVolumeKey(row.metadata)
-    if (key) {
-      byComposeKey.set(key, row)
-    }
+    if (key) byComposeKey.set(key, row)
   }
 
   const registered: RegisteredComposeVolume[] = []
 
   await db.transaction(async (tx) => {
-    for (const composeKey of composeKeys) {
-      let existing = byComposeKey.get(composeKey)
+    for (const spec of specs) {
+      let existing = byComposeKey.get(spec.composeKey)
 
-      if (existing) {
-        const volumeName = resolveDockerVolumeName({
-          storageId: existing.id,
-          pinnedName: readPinnedDockerVolumeName(existing.metadata),
-        })
-        registered.push({
-          storageId: existing.id,
-          composeKey,
-          volumeName,
-        })
-        continue
-      }
+      if (!existing) {
+        const [inserted] = await tx
+          .insert(storage)
+          .values({
+            organizationId: params.organizationId,
+            environmentId: params.environmentId,
+            kind: 'volume',
+            name: spec.composeKey,
+            metadata: { composeVolumeKey: spec.composeKey },
+          })
+          .onConflictDoNothing()
+          .returning({
+            id: storage.id,
+            name: storage.name,
+            metadata: storage.metadata,
+          })
 
-      // Conflict-safe insert: concurrent preview/deploy callers may race on
-      // `uniq_storage_environment_compose_volume_key`. DO NOTHING + reselect
-      // keeps the path idempotent without aborting the transaction.
-      const [inserted] = await tx
-        .insert(storage)
-        .values({
-          organizationId: params.organizationId,
-          environmentId: params.environmentId,
-          serverId: params.serverId,
-          kind: 'docker_volume',
-          name: composeKey,
-          metadata: { composeVolumeKey: composeKey },
-        })
-        .onConflictDoNothing()
-        .returning({
-          id: storage.id,
-          name: storage.name,
-          metadata: storage.metadata,
-        })
-
-      if (!inserted) {
-        const winner = await selectByComposeVolumeKey(
-          tx,
-          params.environmentId,
-          composeKey,
-        )
-        if (!winner) {
-          throw new Error(
-            `compose volume registration missing after conflict (key=${composeKey})`,
+        if (!inserted) {
+          const winner = await selectByComposeVolumeKey(
+            tx,
+            params.environmentId,
+            spec.composeKey,
           )
+          if (!winner) {
+            throw new Error(
+              `compose volume registration missing after conflict (key=${spec.composeKey})`,
+            )
+          }
+          existing = winner
+        } else {
+          const storageId = inserted.id
+          const metadata = spec.managed
+            ? {
+                composeVolumeKey: spec.composeKey,
+                dockerVolumeName: storageId,
+              }
+            : {
+                composeVolumeKey: spec.composeKey,
+              }
+          await tx
+            .update(storage)
+            .set({ metadata })
+            .where(eq(storage.id, storageId))
+          existing = { ...inserted, metadata }
         }
-        byComposeKey.set(composeKey, winner)
-        registered.push({
-          storageId: winner.id,
-          composeKey,
-          volumeName: resolveDockerVolumeName({
-            storageId: winner.id,
-            pinnedName: readPinnedDockerVolumeName(winner.metadata),
-          }),
-        })
-        continue
+        byComposeKey.set(spec.composeKey, existing)
       }
 
-      const storageId = inserted.id
-      const metadata = {
-        composeVolumeKey: composeKey,
-        dockerVolumeName: storageId,
-      }
-      await tx
-        .update(storage)
-        .set({ metadata })
-        .where(eq(storage.id, storageId))
-
-      const stamped = { ...inserted, metadata }
-      byComposeKey.set(composeKey, stamped)
+      const locationId = await ensurePrimaryDockerLocation(tx, {
+        storageId: existing.id,
+        serverId: params.serverId,
+        managed: spec.managed,
+        externalName: spec.externalName,
+      })
 
       registered.push({
-        storageId,
-        composeKey,
-        volumeName: resolveDockerVolumeName({
-          storageId,
-          pinnedName: storageId,
-        }),
+        storageId: existing.id,
+        locationId,
+        composeKey: spec.composeKey,
+        volumeName: resolvedVolumeName(existing, spec),
+        managed: spec.managed,
       })
     }
   })

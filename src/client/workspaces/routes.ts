@@ -6,6 +6,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { getDb } from '../../db.ts'
 import { workspace } from '../../lib/db/schema.ts'
+import { applyStorageRetentionOnParentDelete } from '../../lib/db/storage-records.ts'
 import { WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
 import {
   assertCanCreateOr403,
@@ -236,6 +237,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     if (immutable) return immutable
 
     const result = await runHierarchyDelete(db, async (tx) => {
+      await applyStorageRetentionOnParentDelete(tx, { workspaceIds: [id] })
       await tx.delete(workspace).where(eq(workspace.id, id))
     })
     if (result === 'has_children') {

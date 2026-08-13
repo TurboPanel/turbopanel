@@ -245,18 +245,30 @@ describe('resolveHostingBindAddress', () => {
   })
 })
 
-type StorageFixtureRow = {
-  id: string
+type LocationFixtureRow = {
+  storageId: string
+  locationId: string
   kind: string
   name: string
-  sourcePath: string | null
-  destinationPath: string | null
+  accessMode: string
   principalId: string | null
   principalUsername: string | null
   contentEnvelope: string | null
-  serviceId: string | null
-  serverId: string | null
+  locationServerId: string | null
+  provider: string
+  role: string
+  path: string | null
+  locationOptions: unknown
   metadata: unknown
+}
+
+type MountFixtureRow = {
+  storageId: string
+  serviceId: string
+  composeServiceName: string
+  destinationPath: string
+  subpath: string | null
+  readOnly: boolean
 }
 
 function createSelectWhereDb<T>(rows: T[]): Db {
@@ -280,10 +292,76 @@ function createSelectWhereDb<T>(rows: T[]): Db {
   } as unknown as Db
 }
 
-describe('loadStorageMaterial principal bind mounts', () => {
+function createStorageMaterialDb(opts: {
+  locations: LocationFixtureRow[]
+  mounts?: MountFixtureRow[]
+}): Db {
+  let calls = 0
+  return {
+    select() {
+      return {
+        from() {
+          const chain = {
+            innerJoin() {
+              return chain
+            },
+            leftJoin() {
+              return chain
+            },
+            where() {
+              calls += 1
+              if (calls === 1) return Promise.resolve(opts.locations)
+              return Promise.resolve(opts.mounts ?? [])
+            },
+          }
+          return chain
+        },
+      }
+    },
+  } as unknown as Db
+}
+
+function pathLocation(overrides: Partial<LocationFixtureRow> & Pick<LocationFixtureRow, 'storageId' | 'locationId'>): LocationFixtureRow {
+  return {
+    kind: 'directory',
+    name: 'data',
+    accessMode: 'single_writer',
+    principalId: null,
+    principalUsername: null,
+    contentEnvelope: null,
+    locationServerId: 'srv-1',
+    provider: 'path',
+    role: 'primary',
+    path: null,
+    locationOptions: null,
+    metadata: null,
+    ...overrides,
+  }
+}
+
+function volumeLocation(overrides: Partial<LocationFixtureRow> & Pick<LocationFixtureRow, 'storageId' | 'locationId'>): LocationFixtureRow {
+  return {
+    kind: 'volume',
+    name: 'pgdata',
+    accessMode: 'single_writer',
+    principalId: null,
+    principalUsername: null,
+    contentEnvelope: null,
+    locationServerId: 'srv-1',
+    provider: 'docker',
+    role: 'primary',
+    path: null,
+    locationOptions: null,
+    metadata: null,
+    ...overrides,
+  }
+}
+
+describe('loadStorageMaterial principal path locations', () => {
   const principalId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
   const username = 'appuser'
   const storageId = '01936b3e-dddd-eeee-ffff-123456789abc'
+  const locationId = '01936b3e-dddd-eeee-ffff-0000000000aa'
 
   const baseParams = {
     environmentId: 'env-1',
@@ -295,75 +373,53 @@ describe('loadStorageMaterial principal bind mounts', () => {
     registeredVolumes: [] as const,
   }
 
-  it('derives principal volume path when sourcePath is empty', async () => {
-    const db = createSelectWhereDb<StorageFixtureRow>([{
-      id: storageId,
-      kind: 'bind_mount',
-      name: 'data',
-      sourcePath: null,
-      destinationPath: '/app/data',
-      principalId,
-      principalUsername: username,
-      contentEnvelope: null,
-      serviceId: null,
-      serverId: 'srv-1',
-      metadata: null,
-    }])
+  it('derives principal volume path when location path is empty', async () => {
+    const db = createStorageMaterialDb({
+      locations: [pathLocation({
+        storageId,
+        locationId,
+        principalId,
+        principalUsername: username,
+      })],
+    })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material.length, 1)
     assertEquals(material[0]?.sourcePath, principalVolumePath(username, storageId))
+    assertEquals(material[0]?.locationId, locationId)
+    assertEquals(material[0]?.provider, 'path')
   })
 
-  it('keeps an explicit sourcePath override', async () => {
-    const db = createSelectWhereDb<StorageFixtureRow>([{
-      id: storageId,
-      kind: 'bind_mount',
-      name: 'data',
-      sourcePath: '/custom/mount',
-      destinationPath: '/app/data',
-      principalId,
-      principalUsername: username,
-      contentEnvelope: null,
-      serviceId: null,
-      serverId: 'srv-1',
-      metadata: null,
-    }])
+  it('keeps an explicit location path override', async () => {
+    const db = createStorageMaterialDb({
+      locations: [pathLocation({
+        storageId,
+        locationId,
+        principalId,
+        principalUsername: username,
+        path: '/custom/mount',
+      })],
+    })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, '/custom/mount')
   })
 
-  it('leaves non-principal bind mounts untouched', async () => {
-    const db = createSelectWhereDb<StorageFixtureRow>([{
-      id: storageId,
-      kind: 'bind_mount',
-      name: 'data',
-      sourcePath: null,
-      destinationPath: '/app/data',
-      principalId: null,
-      principalUsername: null,
-      contentEnvelope: null,
-      serviceId: null,
-      serverId: 'srv-1',
-      metadata: null,
-    }])
+  it('leaves non-principal path locations untouched', async () => {
+    const db = createStorageMaterialDb({
+      locations: [pathLocation({ storageId, locationId })],
+    })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, undefined)
   })
 
-  it('leaves principal-owned bind mounts without username unresolved', async () => {
-    const db = createSelectWhereDb<StorageFixtureRow>([{
-      id: storageId,
-      kind: 'bind_mount',
-      name: 'data',
-      sourcePath: null,
-      destinationPath: '/app/data',
-      principalId,
-      principalUsername: null,
-      contentEnvelope: null,
-      serviceId: null,
-      serverId: 'srv-1',
-      metadata: null,
-    }])
+  it('leaves principal-owned path locations without username unresolved', async () => {
+    const db = createStorageMaterialDb({
+      locations: [pathLocation({
+        storageId,
+        locationId,
+        principalId,
+        principalUsername: null,
+      })],
+    })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, undefined)
   })
@@ -632,7 +688,9 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
   const principalId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
   const username = 'appuser'
   const storageId = '01936b3e-dddd-eeee-ffff-123456789abc'
+  const locationId = '01936b3e-dddd-eeee-ffff-0000000000aa'
   const volumeStorageId = '01936b3e-1111-2222-3333-123456789abc'
+  const volumeLocationId = '01936b3e-1111-2222-3333-0000000000bb'
   const serviceId = '01936b3e-4444-5555-6666-123456789abc'
 
   const baseParams = {
@@ -645,56 +703,42 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
     registeredVolumes: [] as const,
   }
 
-  it('drops rows for other servers and bind mounts without destination', async () => {
-    const db = createSelectWhereDb<StorageFixtureRow>([
-      {
-        id: storageId,
-        kind: 'bind_mount',
-        name: 'other-server',
-        sourcePath: '/x',
-        destinationPath: '/app',
-        principalId: null,
-        principalUsername: null,
-        contentEnvelope: null,
-        serviceId: null,
-        serverId: 'srv-other',
-        metadata: null,
-      },
-      {
-        id: '01936b3e-dddd-eeee-ffff-000000000001',
-        kind: 'bind_mount',
-        name: 'no-dest',
-        sourcePath: '/x',
-        destinationPath: null,
-        principalId: null,
-        principalUsername: null,
-        contentEnvelope: null,
-        serviceId: null,
-        serverId: 'srv-1',
-        metadata: null,
-      },
-    ])
+  it('drops rows for other servers and scratch locations', async () => {
+    const db = createStorageMaterialDb({
+      locations: [
+        pathLocation({
+          storageId,
+          locationId,
+          name: 'other-server',
+          path: '/x',
+          locationServerId: 'srv-other',
+        }),
+        pathLocation({
+          storageId: '01936b3e-dddd-eeee-ffff-000000000001',
+          locationId: '01936b3e-dddd-eeee-ffff-000000000002',
+          name: 'scratch',
+          role: 'scratch',
+          path: '/x',
+        }),
+      ],
+    })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material.length, 0)
   })
 
-  it('keeps docker volumes without destination and resolves pinned names', async () => {
-    const db = createSelectWhereDb<StorageFixtureRow>([{
-      id: volumeStorageId,
-      kind: 'docker_volume',
-      name: 'pgdata',
-      sourcePath: null,
-      destinationPath: null,
-      principalId: null,
-      principalUsername: null,
-      contentEnvelope: null,
-      serviceId: null,
-      serverId: 'srv-1',
-      metadata: { dockerVolumeName: 'custom_vol' },
-    }])
+  it('keeps docker volumes without mounts and resolves pinned names', async () => {
+    const db = createStorageMaterialDb({
+      locations: [volumeLocation({
+        storageId: volumeStorageId,
+        locationId: volumeLocationId,
+        metadata: { dockerVolumeName: 'custom_vol' },
+      })],
+    })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material.length, 1)
-    assertEquals(material[0]?.kind, 'docker_volume')
+    assertEquals(material[0]?.kind, 'volume')
+    assertEquals(material[0]?.provider, 'docker')
+    assertEquals(material[0]?.mounts, [])
     assertEquals(
       material[0]?.volumeName,
       resolveDockerVolumeName({
@@ -705,89 +749,95 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
   })
 
   it('falls back to storage id when docker volume metadata has no pin', async () => {
-    const db = createSelectWhereDb<StorageFixtureRow>([{
-      id: volumeStorageId,
-      kind: 'docker_volume',
-      name: 'pgdata',
-      sourcePath: null,
-      destinationPath: null,
-      principalId: null,
-      principalUsername: null,
-      contentEnvelope: null,
-      serviceId: null,
-      serverId: 'srv-1',
-      metadata: { dockerVolumeName: '' },
-    }])
+    const db = createStorageMaterialDb({
+      locations: [volumeLocation({
+        storageId: volumeStorageId,
+        locationId: volumeLocationId,
+        metadata: { dockerVolumeName: '' },
+      })],
+    })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material[0]?.volumeName, dockerVolumeNameFromStorageId(volumeStorageId))
   })
 
-  it('fans service-scoped rows out to clone compose names', async () => {
-    const db = createSelectWhereDb<StorageFixtureRow>([{
-      id: storageId,
-      kind: 'bind_mount',
-      name: 'data',
-      sourcePath: '/srv/data',
-      destinationPath: '/app/data',
-      principalId: null,
-      principalUsername: null,
-      contentEnvelope: null,
-      serviceId,
-      serverId: 'srv-1',
-      metadata: null,
-    }])
+  it('fans mounts out to clone compose names', async () => {
+    const db = createStorageMaterialDb({
+      locations: [pathLocation({
+        storageId,
+        locationId,
+        path: '/srv/data',
+      })],
+      mounts: [{
+        storageId,
+        serviceId,
+        composeServiceName: 'web',
+        destinationPath: '/app/data',
+        subpath: null,
+        readOnly: false,
+      }],
+    })
     const material = await loadStorageMaterial(db, {
       ...baseParams,
       serviceIds: [serviceId],
       cloneNamesByServiceId: new Map([[serviceId, ['web-1', 'web-2']]]),
     })
-    assertEquals(material.length, 2)
-    assertEquals(material.map((row) => row.composeServiceName), ['web-1', 'web-2'])
+    assertEquals(material.length, 1)
+    assertEquals(
+      material[0]?.mounts.map((row) => row.composeServiceName),
+      ['web-1', 'web-2'],
+    )
+    assertEquals(material[0]?.mounts[0]?.destinationPath, '/app/data')
   })
 
   it('appends registered volumes that were not already loaded', async () => {
     const seenId = volumeStorageId
     const unseenId = '01936b3e-7777-8888-9999-123456789abc'
-    const db = createSelectWhereDb<StorageFixtureRow>([{
-      id: seenId,
-      kind: 'docker_volume',
-      name: 'already',
-      sourcePath: null,
-      destinationPath: null,
-      principalId: null,
-      principalUsername: null,
-      contentEnvelope: null,
-      serviceId: null,
-      serverId: 'srv-1',
-      metadata: null,
-    }])
+    const unseenLocationId = '01936b3e-7777-8888-9999-0000000000cc'
+    const db = createStorageMaterialDb({
+      locations: [volumeLocation({
+        storageId: seenId,
+        locationId: volumeLocationId,
+        name: 'already',
+      })],
+    })
     const material = await loadStorageMaterial(db, {
       ...baseParams,
       registeredVolumes: [
-        { storageId: seenId, composeKey: 'already', volumeName: seenId },
-        { storageId: unseenId, composeKey: 'extra', volumeName: unseenId },
+        {
+          storageId: seenId,
+          locationId: volumeLocationId,
+          composeKey: 'already',
+          volumeName: seenId,
+          managed: true,
+        },
+        {
+          storageId: unseenId,
+          locationId: unseenLocationId,
+          composeKey: 'extra',
+          volumeName: unseenId,
+          managed: true,
+        },
       ],
     })
     assertEquals(material.length, 2)
     assertEquals(material[1]?.storageId, unseenId)
+    assertEquals(material[1]?.locationId, unseenLocationId)
     assertEquals(material[1]?.name, 'extra')
     assertEquals(material[1]?.volumeName, unseenId)
+    assertEquals(material[1]?.kind, 'volume')
   })
 
-  it('carries contentEnvelope and treats empty sourcePath as unset for principals', async () => {
-    const db = createSelectWhereDb<StorageFixtureRow>([{
-      id: storageId,
-      kind: 'bind_mount',
-      name: 'data',
-      sourcePath: '',
-      destinationPath: '/app/data',
-      principalId,
-      principalUsername: username,
-      contentEnvelope: 'tp1.sealed.example',
-      serviceId: null,
-      serverId: 'srv-1',
-      metadata: null,
-    }])
+  it('carries contentEnvelope and treats empty path as unset for principals', async () => {
+    const db = createStorageMaterialDb({
+      locations: [pathLocation({
+        storageId,
+        locationId,
+        principalId,
+        principalUsername: username,
+        path: '',
+        contentEnvelope: 'tp1.sealed.example',
+      })],
+    })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, principalVolumePath(username, storageId))
     assertEquals(material[0]?.contentEnvelope, 'tp1.sealed.example')
@@ -1359,10 +1409,13 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
       }],
       storageMaterial: [{
         storageId: 'st-1',
-        kind: 'docker_volume',
+        locationId: 'loc-1',
+        kind: 'volume',
         name: 'data',
+        provider: 'docker',
         serverId: 'srv-1',
         volumeName: 'st-1',
+        mounts: [],
       }],
       principalMaterial: [],
       traditionalWebSites: [],
@@ -1400,10 +1453,13 @@ describe('resolveTraditionalWebSitesForMode and toPreparedDeployResult', () => {
       }],
       storageMaterial: [{
         storageId: 'st-1',
-        kind: 'docker_volume',
+        locationId: 'loc-1',
+        kind: 'volume',
         name: 'data',
+        provider: 'docker',
         serverId: 'srv-1',
         volumeName: 'st-1',
+        mounts: [],
       }],
       principalMaterial: [],
       traditionalWebSites: [],

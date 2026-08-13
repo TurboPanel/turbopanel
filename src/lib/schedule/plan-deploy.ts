@@ -4,7 +4,7 @@
 
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { environment, fabric, project, server, service, storage } from '../db/schema.ts'
+import { environment, fabric, location, mount, project, server, service, storage } from '../db/schema.ts'
 import { listServerLabelsForServers } from '../db/label-records.ts'
 import { listEnvironmentTasks } from '../db/task-records.ts'
 import {
@@ -21,6 +21,8 @@ import {
 } from '../../client/environments/deploy-layers.ts'
 import { interpretServiceSchedule } from './interpret.ts'
 import { reconcileServicesFromCompose } from '../../client/environments/reconcile-services.ts'
+import { registerComposeVolumes } from '../../client/environments/register-compose-volumes.ts'
+import { registerComposeMounts } from '../../client/environments/register-compose-mounts.ts'
 import {
   planEnvironmentSchedule,
   type FleetServer,
@@ -119,16 +121,31 @@ async function loadStoragePins(
 ): Promise<Map<string, string>> {
   const rows = await db
     .select({
-      serviceId: storage.serviceId,
-      serverId: storage.serverId,
+      serviceId: mount.serviceId,
+      storageId: storage.id,
+      locationServerId: location.serverId,
+      locationRole: location.role,
     })
-    .from(storage)
+    .from(mount)
+    .innerJoin(storage, eq(mount.storageId, storage.id))
+    .innerJoin(location, eq(location.storageId, storage.id))
     .where(eq(storage.environmentId, environmentId))
+
+  const hasShared = new Set<string>()
+  const primaryServer = new Map<string, string>()
+  for (const row of rows) {
+    if (row.locationServerId === null) hasShared.add(row.storageId)
+    if (row.locationRole === 'primary' && row.locationServerId) {
+      primaryServer.set(row.storageId, row.locationServerId)
+    }
+  }
 
   const pins = new Map<string, string>()
   for (const row of rows) {
-    if (!row.serviceId || !row.serverId) continue
-    if (!pins.has(row.serviceId)) pins.set(row.serviceId, row.serverId)
+    if (pins.has(row.serviceId) || hasShared.has(row.storageId)) continue
+    const serverId = primaryServer.get(row.storageId)
+    if (!serverId) continue
+    pins.set(row.serviceId, serverId)
   }
   return pins
 }
@@ -205,10 +222,23 @@ export async function planEnvironmentDeploy(
 
   const existingTasks = await listEnvironmentTasks(db, params.environmentId)
   const fleet = await loadFleet(db, params.organizationId)
-  const storagePins = await loadStoragePins(db, params.environmentId)
   const projectOptions = parseProjectOptions(projectRow.options)
   const pinServerId = envRow.serverId
   const defaultServerId = projectOptions.defaultServerId ?? null
+  const registerServerId = pinServerId ?? defaultServerId
+  if (registerServerId) {
+    await registerComposeVolumes(db, {
+      document: merged,
+      organizationId: params.organizationId,
+      environmentId: params.environmentId,
+      serverId: registerServerId,
+    })
+    await registerComposeMounts(db, {
+      document: merged,
+      environmentId: params.environmentId,
+    })
+  }
+  const storagePins = await loadStoragePins(db, params.environmentId)
 
   const plan = planEnvironmentSchedule({
     pinServerId,

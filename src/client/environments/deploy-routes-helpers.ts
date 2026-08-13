@@ -161,6 +161,25 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
       },
     }
   }
+  if (prepared.kind === 'storage_location_unavailable') {
+    return {
+      status: 422,
+      body: {
+        error: 'storage_location_unavailable',
+        storageId: prepared.storageId,
+        storageName: prepared.storageName,
+        accessMode: prepared.accessMode,
+        primaryServerId: prepared.primaryServerId,
+        scheduledServerId: prepared.scheduledServerId,
+        serviceId: prepared.serviceId,
+        message:
+          `Storage "${prepared.storageName}" (${prepared.accessMode}) has no usable location on this server` +
+          (prepared.primaryServerId
+            ? `; primary copy is on ${prepared.primaryServerId}`
+            : ''),
+      },
+    }
+  }
   return {
     status: 409,
     body: {

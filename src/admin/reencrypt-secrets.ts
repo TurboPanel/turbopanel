@@ -2,10 +2,11 @@
  * Superadmin at-rest secret re-encryption sweep.
  *
  * Re-seals `variable.value` (is_secret), `tls.privateKeyPem`,
- * `principal.password`, and email secret keys in the `SYSTEM_EMAIL` setting
- * row onto the current data-encryption key version.
+ * `principal.password`, `storage.content_envelope`, `credential.secret_envelope`,
+ * and email secret keys in the `SYSTEM_EMAIL` setting row onto the current
+ * data-encryption key version.
  *
- * Per-blob rules (variable / TLS / principal / email secrets):
+ * Per-blob rules (variable / TLS / principal / storage / credential / email secrets):
  * - Valid daemon-bound `tpdaemon` → skipped (delivery envelopes are not at-rest
  *   material for this sweep; variables/TLS/principals only).
  * - Malformed `tpdaemon` or malformed `tpsecret` → failed.
@@ -37,7 +38,7 @@ import {
 } from '../client/authn/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import type { Db } from '../db.ts'
-import { principal, setting, tls, variable } from '../lib/db/schema.ts'
+import { credential, principal, setting, storage, tls, variable } from '../lib/db/schema.ts'
 import {
   EMAIL_SECRET_KEYS,
   SYSTEM_EMAIL_DB_KEY,
@@ -49,6 +50,8 @@ export const REENCRYPT_STAGES = [
   'variables',
   'tls',
   'principals',
+  'storage',
+  'credentials',
   'email',
 ] as const
 
@@ -356,6 +359,95 @@ async function sweepPrincipalPasswordsBatch(
   }
 }
 
+async function sweepStorageContentBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number,
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({ id: storage.id, contentEnvelope: storage.contentEnvelope })
+    .from(storage)
+    .where(
+      afterId === undefined
+        ? isNotNull(storage.contentEnvelope)
+        : and(isNotNull(storage.contentEnvelope), gt(storage.id, afterId)),
+    )
+    .orderBy(asc(storage.id))
+    .limit(limit)
+
+  for (const row of rows) {
+    if (row.contentEnvelope === null) {
+      continue
+    }
+    const original = row.contentEnvelope
+    await processBlob(
+      summary,
+      secrets,
+      original,
+      async (resealed) => {
+        const updated = await db
+          .update(storage)
+          .set({ contentEnvelope: resealed, updatedAt: nowIso() })
+          .where(and(eq(storage.id, row.id), eq(storage.contentEnvelope, original)))
+          .returning({ id: storage.id })
+        return updated.length > 0
+      },
+      { allowDaemonBound: true },
+    )
+  }
+
+  return {
+    pageSize: rows.length,
+    lastId: rows.at(-1)?.id,
+  }
+}
+
+async function sweepCredentialSecretsBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number,
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({ id: credential.id, secretEnvelope: credential.secretEnvelope })
+    .from(credential)
+    .where(
+      afterId === undefined
+        ? isNotNull(credential.secretEnvelope)
+        : and(isNotNull(credential.secretEnvelope), gt(credential.id, afterId)),
+    )
+    .orderBy(asc(credential.id))
+    .limit(limit)
+
+  for (const row of rows) {
+    const original = row.secretEnvelope
+    await processBlob(
+      summary,
+      secrets,
+      original,
+      async (resealed) => {
+        const updated = await db
+          .update(credential)
+          .set({ secretEnvelope: resealed, updatedAt: nowIso() })
+          .where(
+            and(eq(credential.id, row.id), eq(credential.secretEnvelope, original)),
+          )
+          .returning({ id: credential.id })
+        return updated.length > 0
+      },
+      { allowDaemonBound: true },
+    )
+  }
+
+  return {
+    pageSize: rows.length,
+    lastId: rows.at(-1)?.id,
+  }
+}
+
 /**
  * Re-seal `MAILGUN_API_KEY` / `SMTP_PASS` in the single `SYSTEM_EMAIL` settings
  * row. All email secrets live in one JSON `setting.value`, so a single
@@ -483,13 +575,31 @@ export async function reencryptAtRestSecrets(
           remaining,
         )
         break
+      case 'storage':
+        batch = await sweepStorageContentBatch(
+          db,
+          dataEncryptionSecrets,
+          summary,
+          cursor.afterId,
+          remaining,
+        )
+        break
+      case 'credentials':
+        batch = await sweepCredentialSecretsBatch(
+          db,
+          dataEncryptionSecrets,
+          summary,
+          cursor.afterId,
+          remaining,
+        )
+        break
     }
 
     const requested = remaining
     remaining -= batch.pageSize
 
     if (batch.pageSize === 0 || batch.pageSize < requested) {
-      // No more rows in this stage — advance to the next (email when principals end).
+      // No more rows in this stage — advance to the next (email when table stages end).
       const following = nextStage(cursor.stage)
       if (following === null) {
         return { ...summary, completed: true, cursor: null }

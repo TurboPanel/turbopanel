@@ -54,6 +54,15 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
     { kind: 'variable_unresolved', message: 'missing {$project.x}', ref: '{$project.x}' },
     { kind: 'variable_ref_invalid', message: 'bad ref' },
     { kind: 'variable_secret_interpolation', message: 'use {$SECRET}' },
+    {
+      kind: 'storage_location_unavailable',
+      storageId: 'st-1',
+      storageName: 'data',
+      accessMode: 'single_writer',
+      primaryServerId: 'srv-primary',
+      scheduledServerId: 'srv-other',
+      serviceId: 'svc-1',
+    },
   ]
 
   assertEquals(mapPrepareErrorResponse(cases[0]).status, 409)
@@ -67,6 +76,8 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(mapPrepareErrorResponse(cases[7]).body.error, 'variable_unresolved')
   assertEquals(mapPrepareErrorResponse(cases[8]).body.error, 'variable_ref_invalid')
   assertEquals(mapPrepareErrorResponse(cases[9]).body.error, 'variable_secret_interpolation')
+  assertEquals(mapPrepareErrorResponse(cases[10]).body.error, 'storage_location_unavailable')
+  assertEquals(mapPrepareErrorResponse(cases[10]).status, 422)
 })
 
 test('parseDeployRequestFlags defaults flags to false', () => {

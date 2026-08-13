@@ -119,8 +119,7 @@ test('registerComposeVolumes creates a new row when no composeVolumeKey match ex
       .values({
         organizationId,
         environmentId,
-        serverId,
-        kind: 'docker_volume',
+        kind: 'volume',
         name: 'data',
         metadata: { dockerVolumeName: 'legacy-pinned-volume' },
       })
@@ -147,7 +146,7 @@ test('registerComposeVolumes creates a new row when no composeVolumeKey match ex
       .where(
         and(
           eq(storage.environmentId, environmentId),
-          eq(storage.kind, 'docker_volume'),
+          eq(storage.kind, 'volume'),
         ),
       )
 
@@ -213,7 +212,7 @@ test('registerComposeVolumes returns empty when compose has no volumes', async (
   })
 })
 
-test('registerComposeVolumes skips external and explicit-name volumes', async () => {
+test('registerComposeVolumes registers unmanaged locations for external volumes', async () => {
   await withVolumeFixtures(async ({
     db,
     organizationId,
@@ -239,14 +238,20 @@ test('registerComposeVolumes skips external and explicit-name volumes', async ()
       serverId,
     })
 
-    assertEquals(registered.length, 1)
-    assertEquals(registered[0]!.composeKey, 'internal')
+    const byKey = new Map(registered.map((row) => [row.composeKey, row]))
+    assertEquals(byKey.size, 2)
+    assertEquals(byKey.get('internal')?.managed, true)
+    assertEquals(byKey.get('external')?.managed, false)
+    assertEquals(byKey.has('named'), false)
 
     const rows = await db
       .select({ name: storage.name })
       .from(storage)
       .where(eq(storage.environmentId, environmentId))
-    assertEquals(rows.map((row) => row.name), ['internal'])
+    assertEquals(
+      rows.map((row) => row.name).sort((a, b) => a.localeCompare(b)),
+      ['external', 'internal'],
+    )
   })
 })
 
@@ -262,8 +267,7 @@ test('registerComposeVolumes reuses an existing composeVolumeKey row', async () 
       .values({
         organizationId,
         environmentId,
-        serverId,
-        kind: 'docker_volume',
+        kind: 'volume',
         name: 'data',
         metadata: {
           composeVolumeKey: 'data',

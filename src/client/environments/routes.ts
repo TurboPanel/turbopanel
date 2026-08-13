@@ -8,6 +8,7 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { environment } from '../../lib/db/schema.ts'
+import { applyStorageRetentionOnParentDelete } from '../../lib/db/storage-records.ts'
 import { verifyServerInOrg } from './deploy-prepare.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
 import {
@@ -368,6 +369,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (immutable) return immutable
 
     const result = await runHierarchyDelete(db, async (tx) => {
+      await applyStorageRetentionOnParentDelete(tx, { environmentIds: [id] })
       await tx.delete(environment).where(eq(environment.id, id))
     })
     if (result === 'has_children') {

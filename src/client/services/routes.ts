@@ -6,6 +6,7 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
 import { service } from '../../lib/db/schema.ts'
+import { applyStorageRetentionOnParentDelete } from '../../lib/db/storage-records.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -230,6 +231,7 @@ export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
     if (immutable) return immutable
 
     const result = await runHierarchyDelete(db, async (tx) => {
+      await applyStorageRetentionOnParentDelete(tx, { serviceIds: [id] })
       await tx.delete(service).where(eq(service.id, id))
     })
     if (result === 'has_children') {

@@ -92,12 +92,14 @@ import {
   registerComposeVolumes,
   type RegisteredComposeVolume,
 } from './register-compose-volumes.ts'
+import { registerComposeMounts } from './register-compose-mounts.ts'
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
   EnvironmentDeployIngressService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployStorageMaterial,
+  EnvironmentDeployStorageMount,
   EnvironmentDeployTraditionalWebPrincipal,
   EnvironmentDeployTraditionalWebSite,
   EnvironmentDeployVariableMaterial,
@@ -106,6 +108,8 @@ import {
   binding,
   environment,
   ip,
+  location,
+  mount,
   organization,
   principal,
   project,
@@ -253,6 +257,15 @@ export type DeployPrepareError =
     composeServiceName?: string
     envKey?: string
   }
+  | {
+    kind: 'storage_location_unavailable'
+    storageId: string
+    storageName: string
+    accessMode: string
+    primaryServerId: string | null
+    scheduledServerId: string
+    serviceId: string
+  }
 
 export type DeployPrepareMode = 'deploy' | 'preview'
 
@@ -308,6 +321,15 @@ type HardDeployPrepareError =
     message: string
     composeServiceName?: string
     envKey?: string
+  }
+  | {
+    kind: 'storage_location_unavailable'
+    storageId: string
+    storageName: string
+    accessMode: string
+    primaryServerId: string | null
+    scheduledServerId: string
+    serviceId: string
   }
 
 function warningFromPrepareError(
@@ -416,89 +438,137 @@ function readPinnedDockerVolumeName(metadata: unknown): string | null {
   return metadata.dockerVolumeName.length > 0 ? metadata.dockerVolumeName : null
 }
 
-function storageRowSurvivesFilter(
-  row: { kind: string; destinationPath: string | null; serverId: string | null },
-  serverId: string,
-): boolean {
-  if (row.serverId !== serverId) return false
-  if (row.kind === 'docker_volume') return true
-  return Boolean(row.destinationPath)
+function readLocationFlags(options: unknown): {
+  managed?: boolean
+  externalName?: string
+} {
+  if (!isPlainObject(options)) return {}
+  const flags: { managed?: boolean; externalName?: string } = {}
+  if (options.managed === true || options.managed === false) {
+    flags.managed = options.managed
+  }
+  if (typeof options.externalName === 'string' && options.externalName.length > 0) {
+    flags.externalName = options.externalName
+  }
+  return flags
 }
 
-type StorageQueryRow = {
-  id: string
+function locationUsableOnServer(
+  locationServerId: string | null,
+  serverId: string,
+): boolean {
+  return locationServerId === null || locationServerId === serverId
+}
+
+type LocationJoinRow = {
+  storageId: string
+  locationId: string
   kind: string
   name: string
-  sourcePath: string | null
-  destinationPath: string | null
+  accessMode: string
   principalId: string | null
   principalUsername: string | null
   contentEnvelope: string | null
-  serviceId: string | null
-  serverId: string | null
+  locationServerId: string | null
+  provider: string
+  role: string
+  path: string | null
+  locationOptions: unknown
   metadata: unknown
 }
 
-/** Principal-owned bind mounts without an explicit source_path use the canonical path. */
-function resolveBindMountSourcePath(row: StorageQueryRow): string | undefined {
-  const sourcePath = row.sourcePath ?? undefined
-  if (sourcePath !== undefined && sourcePath.length > 0) return sourcePath
+type MountJoinRow = {
+  storageId: string
+  serviceId: string
+  composeServiceName: string
+  destinationPath: string
+  subpath: string | null
+  readOnly: boolean
+}
+
+function isDeployStorageKind(
+  kind: string,
+): kind is EnvironmentDeployStorageMaterial['kind'] {
+  return kind === 'volume' || kind === 'directory' || kind === 'file'
+}
+
+function isDeployStorageProvider(
+  provider: string,
+): provider is EnvironmentDeployStorageMaterial['provider'] {
+  return provider === 'docker' || provider === 'path'
+}
+
+function resolvePathLocationSource(
+  row: LocationJoinRow,
+): string | undefined {
+  if (row.provider !== 'path') return undefined
+  if (typeof row.path === 'string' && row.path.length > 0) return row.path
   if (
-    row.kind !== 'bind_mount' ||
     typeof row.principalId !== 'string' ||
-    row.principalId.length === 0
-  ) {
-    return sourcePath
-  }
-  if (
+    row.principalId.length === 0 ||
     typeof row.principalUsername !== 'string' ||
     row.principalUsername.length === 0
   ) {
     return undefined
   }
-  return principalVolumePath(row.principalUsername, row.id)
+  return principalVolumePath(row.principalUsername, row.storageId)
+}
+
+function expandMountsForClones(
+  mounts: MountJoinRow[],
+  cloneNamesByServiceId: Map<string, string[]>,
+): EnvironmentDeployStorageMount[] {
+  const expanded: EnvironmentDeployStorageMount[] = []
+  for (const row of mounts) {
+    const clones = cloneNamesByServiceId.get(row.serviceId)
+    const names = clones && clones.length > 0 ? clones : [row.composeServiceName]
+    for (const composeServiceName of names) {
+      const mountEntry: EnvironmentDeployStorageMount = {
+        serviceId: row.serviceId,
+        composeServiceName,
+        destinationPath: row.destinationPath,
+      }
+      if (typeof row.subpath === 'string' && row.subpath.length > 0) {
+        mountEntry.subpath = row.subpath
+      }
+      if (row.readOnly) mountEntry.readOnly = true
+      expanded.push(mountEntry)
+    }
+  }
+  return expanded
 }
 
 function toStorageMaterialEntry(
-  row: StorageQueryRow,
-  organizationId: string,
+  row: LocationJoinRow,
   serverId: string,
-): EnvironmentDeployStorageMaterial {
-  const base: EnvironmentDeployStorageMaterial = {
-    storageId: row.id,
-    kind: row.kind as EnvironmentDeployStorageMaterial['kind'],
-    name: row.name,
-    sourcePath: resolveBindMountSourcePath(row),
-    ...(row.destinationPath ? { destinationPath: row.destinationPath } : {}),
-    principalId: row.principalId ?? undefined,
-    serviceId: row.serviceId ?? undefined,
-    serverId,
-    ...(row.contentEnvelope ? { contentEnvelope: row.contentEnvelope } : {}),
+  mounts: EnvironmentDeployStorageMount[],
+): EnvironmentDeployStorageMaterial | null {
+  if (!isDeployStorageKind(row.kind) || !isDeployStorageProvider(row.provider)) {
+    return null
   }
-  if (row.kind === 'docker_volume') {
-    base.volumeName = resolveDockerVolumeName({
-      storageId: row.id,
+  const flags = readLocationFlags(row.locationOptions)
+  const entry: EnvironmentDeployStorageMaterial = {
+    storageId: row.storageId,
+    locationId: row.locationId,
+    kind: row.kind,
+    name: row.name,
+    provider: row.provider,
+    serverId,
+    mounts,
+  }
+  const sourcePath = resolvePathLocationSource(row)
+  if (sourcePath) entry.sourcePath = sourcePath
+  if (row.principalId) entry.principalId = row.principalId
+  if (row.contentEnvelope) entry.contentEnvelope = row.contentEnvelope
+  if (row.provider === 'docker') {
+    entry.volumeName = resolveDockerVolumeName({
+      storageId: row.storageId,
       pinnedName: readPinnedDockerVolumeName(row.metadata),
     })
   }
-  return base
-}
-
-function pushStorageMaterialEntries(
-  material: EnvironmentDeployStorageMaterial[],
-  base: EnvironmentDeployStorageMaterial,
-  cloneNames: string[] | undefined,
-): void {
-  if (!base.serviceId || !cloneNames || cloneNames.length === 0) {
-    material.push(base)
-    return
-  }
-  for (const cloneName of cloneNames) {
-    material.push({
-      ...base,
-      composeServiceName: cloneName,
-    })
-  }
+  if (flags.managed !== undefined) entry.managed = flags.managed
+  if (flags.externalName) entry.externalName = flags.externalName
+  return entry
 }
 
 function appendUnseenRegisteredVolumes(
@@ -511,10 +581,14 @@ function appendUnseenRegisteredVolumes(
     if (seenStorageIds.has(registered.storageId)) continue
     material.push({
       storageId: registered.storageId,
-      kind: 'docker_volume',
+      locationId: registered.locationId,
+      kind: 'volume',
       name: registered.composeKey,
+      provider: 'docker',
       serverId,
       volumeName: registered.volumeName,
+      managed: registered.managed,
+      mounts: [],
     })
   }
 }
@@ -540,35 +614,66 @@ export async function loadStorageMaterial(
     scopeConditions.push(inArray(storage.serviceId, params.serviceIds))
   }
 
-  const rows = await db
+  const locationRows = await db
     .select({
-      id: storage.id,
+      storageId: storage.id,
+      locationId: location.id,
       kind: storage.kind,
       name: storage.name,
-      sourcePath: storage.sourcePath,
-      destinationPath: storage.destinationPath,
+      accessMode: storage.accessMode,
       principalId: storage.principalId,
       principalUsername: principal.username,
       contentEnvelope: storage.contentEnvelope,
-      serviceId: storage.serviceId,
-      serverId: storage.serverId,
+      locationServerId: location.serverId,
+      provider: location.provider,
+      role: location.role,
+      path: location.path,
+      locationOptions: location.options,
       metadata: storage.metadata,
     })
     .from(storage)
+    .innerJoin(location, eq(location.storageId, storage.id))
     .leftJoin(principal, eq(storage.principalId, principal.id))
     .where(or(...scopeConditions))
+
+  const usable = locationRows.filter((row) =>
+    row.role !== 'scratch' && locationUsableOnServer(row.locationServerId, params.serverId)
+  )
+  const usableStorageIds = [...new Set(usable.map((row) => row.storageId))]
+
+  const mountRows: MountJoinRow[] = usableStorageIds.length === 0
+    ? []
+    : await db
+      .select({
+        storageId: mount.storageId,
+        serviceId: mount.serviceId,
+        composeServiceName: service.composeServiceName,
+        destinationPath: mount.destinationPath,
+        subpath: mount.subpath,
+        readOnly: mount.readOnly,
+      })
+      .from(mount)
+      .innerJoin(service, eq(mount.serviceId, service.id))
+      .where(inArray(mount.storageId, usableStorageIds))
+
+  const mountsByStorage = new Map<string, MountJoinRow[]>()
+  for (const row of mountRows) {
+    const list = mountsByStorage.get(row.storageId) ?? []
+    list.push(row)
+    mountsByStorage.set(row.storageId, list)
+  }
 
   const material: EnvironmentDeployStorageMaterial[] = []
   const seenStorageIds = new Set<string>()
 
-  for (const row of rows) {
-    if (!storageRowSurvivesFilter(row, params.serverId)) continue
-    seenStorageIds.add(row.id)
-    const base = toStorageMaterialEntry(row, params.organizationId, params.serverId)
-    const cloneNames = row.serviceId
-      ? params.cloneNamesByServiceId.get(row.serviceId)
-      : undefined
-    pushStorageMaterialEntries(material, base, cloneNames)
+  for (const row of usable) {
+    seenStorageIds.add(row.storageId)
+    const mounts = expandMountsForClones(
+      mountsByStorage.get(row.storageId) ?? [],
+      params.cloneNamesByServiceId,
+    )
+    const entry = toStorageMaterialEntry(row, params.serverId, mounts)
+    if (entry) material.push(entry)
   }
 
   appendUnseenRegisteredVolumes(
@@ -578,6 +683,94 @@ export async function loadStorageMaterial(
     params.serverId,
   )
   return material
+}
+
+export async function findUnavailableStorageLocation(
+  db: Db,
+  params: {
+    environmentId: string
+    scheduledServerId: string
+    serviceIds: string[]
+  },
+): Promise<Extract<DeployPrepareError, { kind: 'storage_location_unavailable' }> | null> {
+  if (params.serviceIds.length === 0) return null
+
+  const rows = await db
+    .select({
+      storageId: storage.id,
+      storageName: storage.name,
+      accessMode: storage.accessMode,
+      serviceId: mount.serviceId,
+      locationServerId: location.serverId,
+      locationRole: location.role,
+    })
+    .from(mount)
+    .innerJoin(storage, eq(mount.storageId, storage.id))
+    .leftJoin(location, eq(location.storageId, storage.id))
+    .where(
+      and(
+        eq(storage.environmentId, params.environmentId),
+        inArray(mount.serviceId, params.serviceIds),
+      ),
+    )
+
+  type Acc = {
+    storageName: string
+    accessMode: string
+    serviceId: string
+    primaryServerId: string | null
+    usable: boolean
+  }
+  const byStorage = new Map<string, Acc>()
+  for (const row of rows) {
+    let acc = byStorage.get(row.storageId)
+    if (!acc) {
+      acc = {
+        storageName: row.storageName,
+        accessMode: row.accessMode,
+        serviceId: row.serviceId,
+        primaryServerId: null,
+        usable: false,
+      }
+      byStorage.set(row.storageId, acc)
+    }
+    if (row.locationRole === 'primary' && row.locationServerId) {
+      acc.primaryServerId = row.locationServerId
+    }
+    if (
+      row.locationRole !== 'scratch' &&
+      locationUsableOnServer(row.locationServerId, params.scheduledServerId)
+    ) {
+      acc.usable = true
+    }
+  }
+
+  for (const [storageId, acc] of byStorage) {
+    if (acc.usable) continue
+    return {
+      kind: 'storage_location_unavailable',
+      storageId,
+      storageName: acc.storageName,
+      accessMode: acc.accessMode,
+      primaryServerId: acc.primaryServerId,
+      scheduledServerId: params.scheduledServerId,
+      serviceId: acc.serviceId,
+    }
+  }
+  return null
+}
+
+function serviceIdsOnScheduledServer(
+  schedule: DeployScheduleSlice | undefined,
+  serverId: string,
+  allServiceIds: string[],
+): string[] {
+  if (!schedule) return allServiceIds
+  const ids: string[] = []
+  for (const task of schedule.tasks) {
+    if (task.serverId === serverId) ids.push(task.serviceId)
+  }
+  return ids
 }
 
 async function sealStorageMaterialForDaemon(
@@ -1188,6 +1381,10 @@ async function allocateExpandDeployPipeline(
     environmentId: params.environmentId,
     serverId: params.serverId,
   })
+  await registerComposeMounts(db, {
+    document: params.merged,
+    environmentId: params.environmentId,
+  })
   const volumeRenames = new Map(
     registeredVolumes.map((row) => [row.composeKey, row.volumeName]),
   )
@@ -1534,6 +1731,17 @@ export async function prepareDeployCompose(
     serviceRows,
     schedule: params.schedule,
   })
+
+  const locationErr = await findUnavailableStorageLocation(db, {
+    environmentId: params.environmentId,
+    scheduledServerId: params.serverId,
+    serviceIds: serviceIdsOnScheduledServer(
+      params.schedule,
+      params.serverId,
+      serviceRows.map((row) => row.id),
+    ),
+  })
+  if (locationErr) return locationErr
 
   const limitErr = absorbSoftPrepareError(
     mode,

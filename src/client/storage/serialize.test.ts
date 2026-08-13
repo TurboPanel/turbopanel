@@ -1,6 +1,11 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { principalVolumePath } from '../../lib/naming.ts'
-import { serializeStorage, type StorageSelectRow } from './serialize.ts'
+import {
+  serializeLocation,
+  serializeStorage,
+  type LocationSelectRow,
+  type StorageSelectRow,
+} from './serialize.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -14,14 +19,15 @@ function baseRow(overrides?: Partial<StorageSelectRow>): StorageSelectRow {
   return {
     id: '00000000-0000-4000-8000-000000000010',
     organizationId: '00000000-0000-4000-8000-000000000001',
+    workspaceId: null,
     projectId: '00000000-0000-4000-8000-000000000002',
     environmentId: '00000000-0000-4000-8000-000000000003',
     serviceId: '00000000-0000-4000-8000-000000000004',
-    serverId: '00000000-0000-4000-8000-000000000005',
     kind: 'volume',
     name: 'data',
-    sourcePath: null,
-    destinationPath: '/data',
+    accessMode: 'single_writer',
+    retention: 'retain',
+    generation: 0,
     principalId: null,
     metadata: {},
     options: null,
@@ -32,50 +38,59 @@ function baseRow(overrides?: Partial<StorageSelectRow>): StorageSelectRow {
   }
 }
 
-test('serializeStorage prefers an explicit non-empty sourcePath', () => {
-  const row = baseRow({
-    sourcePath: '/explicit/path',
-    kind: 'bind_mount',
-    principalId: '00000000-0000-4000-8000-000000000020',
-    principalUsername: 'app',
-  })
-  const serialized = serializeStorage(row)
-  assertEquals(serialized.resolvedSourcePath, '/explicit/path')
-  assertEquals(serialized.sourcePath, '/explicit/path')
+function pathLocation(overrides?: Partial<LocationSelectRow>): LocationSelectRow {
+  return {
+    id: '00000000-0000-4000-8000-0000000000aa',
+    storageId: '00000000-0000-4000-8000-000000000010',
+    serverId: '00000000-0000-4000-8000-000000000005',
+    credentialId: null,
+    provider: 'path',
+    role: 'primary',
+    state: 'pending',
+    path: null,
+    endpoint: null,
+    generation: 0,
+    metadata: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
+test('serializeStorage omits principalUsername and nests locations/mounts', () => {
+  const serialized = serializeStorage(baseRow({ principalUsername: 'app' }), [], [])
   assertEquals('principalUsername' in serialized, false)
+  assertEquals(serialized.locations, [])
+  assertEquals(serialized.mounts, [])
+  assertEquals(serialized.kind, 'volume')
 })
 
-test('serializeStorage derives principal volume path for bind mounts', () => {
+test('serializeLocation prefers an explicit non-empty path', () => {
+  const loc = pathLocation({ path: '/explicit/path' })
+  const serialized = serializeLocation(loc, loc.storageId, 'app')
+  assertEquals(serialized.resolvedSourcePath, '/explicit/path')
+  assertEquals(serialized.path, '/explicit/path')
+})
+
+test('serializeLocation derives principal volume path for path locations', () => {
   const storageId = '00000000-0000-4000-8000-000000000010'
-  const row = baseRow({
-    id: storageId,
-    kind: 'bind_mount',
-    sourcePath: null,
-    principalId: '00000000-0000-4000-8000-000000000020',
-    principalUsername: 'app',
-  })
+  const loc = pathLocation({ storageId, path: null })
   assertEquals(
-    serializeStorage(row).resolvedSourcePath,
+    serializeLocation(loc, storageId, 'app').resolvedSourcePath,
     principalVolumePath('app', storageId),
   )
 })
 
-test('serializeStorage returns null when bind mount lacks principal username', () => {
-  const row = baseRow({
-    kind: 'bind_mount',
-    sourcePath: '',
-    principalId: '00000000-0000-4000-8000-000000000020',
-    principalUsername: null,
-  })
-  assertEquals(serializeStorage(row).resolvedSourcePath, null)
+test('serializeLocation returns null when path location lacks principal username', () => {
+  const loc = pathLocation({ path: '' })
+  assertEquals(serializeLocation(loc, loc.storageId, null).resolvedSourcePath, null)
 })
 
-test('serializeStorage returns null for non-bind kinds without sourcePath', () => {
-  const row = baseRow({
-    kind: 'volume',
-    sourcePath: null,
-    principalId: '00000000-0000-4000-8000-000000000020',
-    principalUsername: 'app',
-  })
-  assertEquals(serializeStorage(row).resolvedSourcePath, null)
+test('serializeLocation returns null for docker locations without path', () => {
+  const loc = pathLocation({ provider: 'docker', path: null })
+  assertEquals(
+    serializeLocation(loc, loc.storageId, 'app').resolvedSourcePath,
+    null,
+  )
 })

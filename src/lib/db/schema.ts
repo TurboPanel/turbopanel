@@ -825,11 +825,12 @@ export const relay = pgTable(
   ],
 )
 /**
- * Server-local Docker bridge for a `kind='compose'` spanning network, with a
- * subnet carved from that relay's prefix.
+ * Server-local realization of a `kind='compose'` spanning network (today a
+ * Docker bridge subnet carved from that relay's prefix). Implementation may
+ * change; the row is the logical network's per-server segment.
  */
-export const bridge = pgTable(
-  'bridge',
+export const segment = pgTable(
+  'segment',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -845,29 +846,29 @@ export const bridge = pgTable(
     options: jsonb(),
     networkId: uuid('network_id').notNull(),
     serverId: uuid('server_id').notNull(),
-    /** Server-local bridge subnet. */
+    /** Server-local subnet for this network segment. */
     cidr: cidr().notNull(),
   },
   (table) => [
-    index('idx_bridge_network_id').using(
+    index('idx_segment_network_id').using(
       'btree',
       table.networkId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_bridge_server_id').using(
+    index('idx_segment_server_id').using(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.networkId],
       foreignColumns: [network.id],
-      name: 'bridge_network_id_network_id_fk',
+      name: 'segment_network_id_network_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'bridge_server_id_server_id_fk',
+      name: 'segment_server_id_server_id_fk',
     }).onDelete('restrict'),
-    unique('bridge_network_server_unique').on(table.networkId, table.serverId),
+    unique('segment_network_server_unique').on(table.networkId, table.serverId),
   ],
 )
 export const workspace = pgTable(
@@ -1823,6 +1824,67 @@ export const binding = pgTable(
     ),
   ],
 )
+/**
+ * Org-owned sealed credential for storage (and later other) providers.
+ * `secret_envelope` is one `tpsecret` payload of provider-specific JSON.
+ * Transfer / NFS / S3 public CRUD is not in this slice.
+ */
+export const credential = pgTable(
+  'credential',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    principalId: uuid('principal_id'),
+    provider: text().notNull(),
+    name: varchar({ length: 255 }).notNull(),
+    secretEnvelope: text('secret_envelope').notNull(),
+    expiresAt: timestamp('expires_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+  },
+  (table) => [
+    index('idx_credential_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_credential_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'credential_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'credential_principal_id_principal_id_fk',
+    }).onDelete('restrict'),
+    check(
+      'credential_provider_check',
+      sql`provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav')`,
+    ),
+  ],
+)
+/**
+ * Logical identity of persistent data. Physical copies live on `location`;
+ * service attachments live on `mount`. Scope is at most one of workspace /
+ * project / environment / service (zero = organization-wide).
+ */
 export const storage = pgTable(
   'storage',
   {
@@ -1839,14 +1901,15 @@ export const storage = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
+    workspaceId: uuid('workspace_id'),
     projectId: uuid('project_id'),
     environmentId: uuid('environment_id'),
     serviceId: uuid('service_id'),
-    serverId: uuid('server_id'),
     kind: text().notNull(),
     name: varchar({ length: 255 }).notNull(),
-    sourcePath: text('source_path'),
-    destinationPath: text('destination_path'),
+    accessMode: text('access_mode').default('single_writer').notNull(),
+    retention: text().default('retain').notNull(),
+    generation: integer().default(0).notNull(),
     principalId: uuid('principal_id'),
     /** Sealed file content (`tpsecret` or `tpdaemon`) for `kind=file` entries. */
     contentEnvelope: text('content_envelope'),
@@ -1855,6 +1918,10 @@ export const storage = pgTable(
     index('idx_storage_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_storage_workspace_id').using(
+      'btree',
+      table.workspaceId.asc().nullsLast().op('uuid_ops'),
     ),
     index('idx_storage_project_id').using(
       'btree',
@@ -1868,52 +1935,57 @@ export const storage = pgTable(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_storage_server_id').using(
-      'btree',
-      table.serverId.asc().nullsLast().op('uuid_ops'),
-    ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
       name: 'storage_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     foreignKey({
+      columns: [table.workspaceId],
+      foreignColumns: [workspace.id],
+      name: 'storage_workspace_id_workspace_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
       columns: [table.projectId],
       foreignColumns: [project.id],
       name: 'storage_project_id_project_id_fk',
-    }).onDelete('cascade'),
+    }).onDelete('set null'),
     foreignKey({
       columns: [table.environmentId],
       foreignColumns: [environment.id],
       name: 'storage_environment_id_environment_id_fk',
-    }).onDelete('cascade'),
+    }).onDelete('set null'),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
       name: 'storage_service_id_service_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.serverId],
-      foreignColumns: [server.id],
-      name: 'storage_server_id_server_id_fk',
-    }).onDelete('restrict'),
+    }).onDelete('set null'),
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
       name: 'storage_principal_id_principal_id_fk',
-    }).onDelete('set null'),
+    }).onDelete('restrict'),
     check(
       'storage_kind_check',
-      sql`kind IN ('docker_volume', 'bind_mount', 'file', 'directory')`,
+      sql`kind IN ('volume', 'directory', 'file', 'object')`,
     ),
     check(
-      'storage_exactly_one_parent_check',
-      sql`((project_id IS NOT NULL)::int +
+      'storage_access_mode_check',
+      sql`access_mode IN ('single_writer', 'multi_reader', 'multi_writer')`,
+    ),
+    check(
+      'storage_retention_check',
+      sql`retention IN ('retain', 'delete')`,
+    ),
+    check(
+      'storage_at_most_one_parent_check',
+      sql`((workspace_id IS NOT NULL)::int +
+        (project_id IS NOT NULL)::int +
         (environment_id IS NOT NULL)::int +
-        (service_id IS NOT NULL)::int) = 1`,
+        (service_id IS NOT NULL)::int) <= 1`,
     ),
     /**
-     * Compose auto-register idempotency: one `docker_volume` row per
+     * Compose auto-register idempotency: one `volume` row per
      * `(environment_id, metadata.composeVolumeKey)` when the key is stamped.
      */
     uniqueIndex('uniq_storage_environment_compose_volume_key')
@@ -1923,10 +1995,133 @@ export const storage = pgTable(
         sql`(${table.metadata} ->> 'composeVolumeKey')`,
       )
       .where(
-        sql`kind = 'docker_volume'
+        sql`kind = 'volume'
           AND environment_id IS NOT NULL
           AND COALESCE(metadata->>'composeVolumeKey', '') <> ''`,
       ),
+  ],
+)
+/**
+ * One physical copy / materialization of a storage identity. Local docker/path
+ * copies pin `server_id`; remote/shared copies leave it null.
+ */
+export const location = pgTable(
+  'location',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    storageId: uuid('storage_id').notNull(),
+    serverId: uuid('server_id'),
+    credentialId: uuid('credential_id'),
+    provider: text().notNull(),
+    role: text().default('primary').notNull(),
+    state: text().default('pending').notNull(),
+    path: text(),
+    endpoint: text(),
+    generation: integer().default(0).notNull(),
+  },
+  (table) => [
+    index('idx_location_storage_id').using(
+      'btree',
+      table.storageId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_location_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_location_credential_id').using(
+      'btree',
+      table.credentialId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.storageId],
+      foreignColumns: [storage.id],
+      name: 'location_storage_id_storage_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'location_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.credentialId],
+      foreignColumns: [credential.id],
+      name: 'location_credential_id_credential_id_fk',
+    }).onDelete('restrict'),
+    uniqueIndex('uniq_location_storage_primary')
+      .on(table.storageId)
+      .where(sql`${table.role} = 'primary'`),
+    uniqueIndex('uniq_location_storage_server_provider')
+      .on(table.storageId, table.serverId, table.provider)
+      .where(sql`${table.serverId} IS NOT NULL`),
+    check(
+      'location_provider_check',
+      sql`provider IN ('docker', 'path', 'block', 'nfs', 'cifs', 's3', 's3_compatible', 'sftp', 'ftp', 'webdav')`,
+    ),
+    check(
+      'location_role_check',
+      sql`role IN ('primary', 'replica', 'scratch', 'archive')`,
+    ),
+    check(
+      'location_state_check',
+      sql`state IN ('pending', 'materializing', 'ready', 'syncing', 'stale', 'failed', 'retiring')`,
+    ),
+  ],
+)
+/**
+ * Service attachment of a storage identity at a container destination path.
+ */
+export const mount = pgTable(
+  'mount',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    storageId: uuid('storage_id').notNull(),
+    serviceId: uuid('service_id').notNull(),
+    destinationPath: text('destination_path').notNull(),
+    subpath: text(),
+    readOnly: boolean('read_only').default(false).notNull(),
+  },
+  (table) => [
+    index('idx_mount_storage_id').using(
+      'btree',
+      table.storageId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_mount_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.storageId],
+      foreignColumns: [storage.id],
+      name: 'mount_storage_id_storage_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'mount_service_id_service_id_fk',
+    }).onDelete('restrict'),
+    unique('uniq_mount_service_destination').on(table.serviceId, table.destinationPath),
   ],
 )
 export const grant = pgTable(

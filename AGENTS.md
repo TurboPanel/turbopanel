@@ -698,11 +698,11 @@ deliberately-unversioned probe.
   manage-gated opt-in. Default off (capable single-engine Docker standalone; no
   `tp0`). Enabling creates the org `fabric` row plus per-server `relay` rows
   (`tp0` identity + container prefix) and reconciles host interface `tp0` on
-  enrolled servers. Spanning compose networks persist per-host `bridge` rows
+  enrolled servers. Spanning compose networks persist per-host `segment` rows
   (local bridge subnet). A deploy plan that would use two or more servers
   without TurboFabric returns **422** `turbofabric_required`. Whole-environment
   `environment.server_id` pins never require it. User-facing copy is
-  **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` / `bridge`.
+  **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` / `segment`.
   Additive to org site-to-site VPN (`server.wireguard.apply`) — never ask which
   WireGuard network a container should join.
 - **Compiled runtime compose:** users author project + optional environment
@@ -766,7 +766,7 @@ orientation; the detail moved to:
 | **Bindings**                      | `src/client/bindings/`                             | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                  |
 | **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                     |
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                    |
-| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` display label (API `displayName`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `task` / `label`; TurboFabric `fabric` / `relay` / `bridge` |
+| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` display label (API `displayName`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `task` / `label`; TurboFabric `fabric` / `relay` / `segment`; storage identity `storage` / `location` / `mount` (+ schema-only `credential`) |
 | **Query cache**                   | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                      |
 
 ## Self-host system inventory

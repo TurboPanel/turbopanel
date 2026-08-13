@@ -38,7 +38,7 @@ function volumeDoc(
   }
 }
 
-test('registerComposeVolumes returns empty for blank or external-only volumes', async () => {
+test('registerComposeVolumes returns empty for blank volumes', async () => {
   const db = {
     select: () => {
       throw new TypeError('should not query when no composable volumes')
@@ -54,20 +54,51 @@ test('registerComposeVolumes returns empty for blank or external-only volumes', 
     }),
     [],
   )
+})
 
-  assertEquals(
-    await registerComposeVolumes(db, {
-      document: volumeDoc({
-        data: { external: true },
-        named: { name: 'fixed-name' },
-        externalObj: { external: { name: 'ext' } },
+test('registerComposeVolumes registers unmanaged external volumes', async () => {
+  const storageId = '00000000-0000-4000-8000-0000000000ee'
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => thenableRows([]),
       }),
-      organizationId: 'org',
-      environmentId: 'env',
-      serverId: 'srv',
     }),
-    [],
-  )
+    transaction: async (fn: (tx: Db) => Promise<void>) => {
+      await fn(db as unknown as Db)
+    },
+    insert: () => ({
+      values: () => ({
+        onConflictDoNothing: () => ({
+          returning: () =>
+            Promise.resolve([
+              {
+                id: storageId,
+                name: 'data',
+                metadata: { composeVolumeKey: 'data' },
+              },
+            ]),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: () => ({
+        where: () => thenableRows([]),
+      }),
+    }),
+  } as unknown as Db
+
+  const result = await registerComposeVolumes(db, {
+    document: volumeDoc({
+      data: { external: true },
+    }),
+    organizationId: 'org',
+    environmentId: 'env',
+    serverId: 'srv',
+  })
+  assertEquals(result[0]?.storageId, storageId)
+  assertEquals(result[0]?.managed, false)
+  assertEquals(result[0]?.composeKey, 'data')
 })
 
 test('registerComposeVolumes reuses existing composeVolumeKey rows', async () => {
@@ -105,8 +136,10 @@ test('registerComposeVolumes reuses existing composeVolumeKey rows', async () =>
   assertEquals(result, [
     {
       storageId,
+      locationId: storageId,
       composeKey: 'appdata',
       volumeName: storageId,
+      managed: true,
     },
   ])
 })

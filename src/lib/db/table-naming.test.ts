@@ -72,8 +72,14 @@ test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', 
   if (!unique.includes('node')) {
     throw new TypeError('expected managed-cluster participation table "node"')
   }
-  if (!unique.includes('fabric') || !unique.includes('relay') || !unique.includes('bridge')) {
-    throw new TypeError('expected TurboFabric tables fabric / relay / bridge')
+  if (!unique.includes('fabric') || !unique.includes('relay') || !unique.includes('segment')) {
+    throw new TypeError('expected TurboFabric tables fabric / relay / segment')
+  }
+  if (!unique.includes('storage') || !unique.includes('location') || !unique.includes('mount')) {
+    throw new TypeError('expected storage tables storage / location / mount')
+  }
+  if (!unique.includes('credential')) {
+    throw new TypeError('expected credential table')
   }
   if (!unique.includes('steward')) {
     throw new TypeError('expected principal-service table "steward"')
@@ -85,10 +91,11 @@ test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', 
     unique.includes('router') ||
     unique.includes('attachment') ||
     unique.includes('span') ||
-    unique.includes('assignment')
+    unique.includes('assignment') ||
+    unique.includes('bridge')
   ) {
     throw new TypeError(
-      'retired table names member / membership / managed_member / router / attachment / span / assignment must not reappear',
+      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge must not reappear',
     )
   }
 
