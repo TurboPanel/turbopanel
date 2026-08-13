@@ -95,12 +95,12 @@ test('parseOrganizationCreateDisplayName defaults when displayName is absent', (
   }
   assertEquals(defaultName.displayName, 'New Organization')
 
-  // parseDisplayName reads `name`, not `displayName` — invalid displayName is ignored.
-  const ignoredInvalid = parseOrganizationCreateDisplayName({ displayName: 'bad@name' })
-  if (!ignoredInvalid.ok) {
-    throw new TypeError('expected default despite invalid displayName key')
+  // Invalid displayName is rejected (wire field is validated, not ignored).
+  const rejected = parseOrganizationCreateDisplayName({ displayName: 'bad@name' })
+  if (rejected.ok) {
+    throw new TypeError('expected invalid displayName to be rejected')
   }
-  assertEquals(ignoredInvalid.displayName, 'New Organization')
+  assertEquals(rejected.status, 400)
 })
 
 test('default timezone and environment response shapers', () => {

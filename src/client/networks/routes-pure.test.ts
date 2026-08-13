@@ -183,8 +183,7 @@ test('parseNetworkKind and CIDR helpers validate create/patch input', async () =
 test('parseOptionalDisplayNameField and CIDR helpers reject invalid values', async () => {
   const c = mockContext()
   const badName = parseOptionalDisplayNameField(c, {
-    displayName: 'set',
-    name: 'bad/name',
+    displayName: 'bad/name',
   })
   if (!(badName instanceof Response)) throw new TypeError('expected response')
   assertEquals(badName.status, 400)
@@ -207,8 +206,7 @@ test('parseNetworkPatchFields rejects invalid name metadata and options', async 
   assertEquals(badName.status, 400)
 
   const badDisplayName = parseNetworkPatchFields(c, {
-    displayName: 'set',
-    name: 'bad/name',
+    displayName: 'bad/name',
   }, 'datacenter')
   if (!(badDisplayName instanceof Response)) throw new TypeError('expected response')
   assertEquals(badDisplayName.status, 400)
