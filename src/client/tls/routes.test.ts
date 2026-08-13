@@ -14,7 +14,7 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from '../authn/secrets.ts'
-import { grant, membership, organization, tls, user } from '../../lib/db/schema.ts'
+import { grant, organization, tls, user } from '../../lib/db/schema.ts'
 import { mintSelfSignedCertificate } from '../../lib/tls/index.ts'
 import type { TlsMetadata } from '../../lib/tls/types.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -92,7 +92,6 @@ async function withTlsFixtures(
     .returning({ id: user.id })
   const userId = userRow!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -106,7 +105,6 @@ async function withTlsFixtures(
   } finally {
     await db.delete(tls).where(eq(tls.organizationId, organizationId))
     await db.delete(grant).where(eq(grant.actorId, userId))
-    await db.delete(membership).where(eq(membership.userId, userId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }

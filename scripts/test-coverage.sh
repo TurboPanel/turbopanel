@@ -183,7 +183,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/org-context-parse.test.ts \
   src/client/org-context.test.ts \
   src/client/org-context.hostfree.test.ts \
-  src/client/principals/assignments.test.ts \
+  src/client/principals/stewards.test.ts \
   src/client/principals/routes.test.ts \
   src/client/principals/serialize.test.ts \
   src/client/principals/store.test.ts \

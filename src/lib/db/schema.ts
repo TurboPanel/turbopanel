@@ -199,43 +199,6 @@ export const passkey = pgTable(
   ]
 )
 /**
- * Organization membership (user ↔ organization). Physical table is
- * `membership` (not Better Auth’s default `member`) — map the auth org model
- * onto this table when wiring Better Auth.
- */
-export const membership = pgTable(
-  'membership',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    organizationId: uuid('organization_id').notNull(),
-    userId: uuid('user_id').notNull(),
-  },
-  (table) => [
-    index('idx_membership_organization_id').using(
-      'btree',
-      table.organizationId.asc().nullsLast().op('uuid_ops')
-    ),
-    index('idx_membership_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
-    foreignKey({
-      columns: [table.organizationId],
-      foreignColumns: [organization.id],
-      name: 'membership_organization_id_organization_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.userId],
-      foreignColumns: [user.id],
-      name: 'membership_user_id_user_id_fk',
-    }).onDelete('cascade'),
-    unique('membership_org_user_unique').on(table.organizationId, table.userId),
-  ]
-)
-/**
  * Physical site grouping servers that share a private L2/L3 network; optional —
  * servers may have no datacenter. `options` mirrors `organization.options` for
  * `defaultServerTimezone` / `enforceServerTimezone` (consumed by the next phase's
@@ -862,11 +825,11 @@ export const relay = pgTable(
   ],
 )
 /**
- * A logical `kind='compose'` network present on this server, with a local
- * bridge subnet carved from that relay's prefix.
+ * Server-local Docker bridge for a `kind='compose'` spanning network, with a
+ * subnet carved from that relay's prefix.
  */
-export const span = pgTable(
-  'span',
+export const bridge = pgTable(
+  'bridge',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -886,25 +849,25 @@ export const span = pgTable(
     cidr: cidr().notNull(),
   },
   (table) => [
-    index('idx_span_network_id').using(
+    index('idx_bridge_network_id').using(
       'btree',
       table.networkId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_span_server_id').using(
+    index('idx_bridge_server_id').using(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.networkId],
       foreignColumns: [network.id],
-      name: 'span_network_id_network_id_fk',
+      name: 'bridge_network_id_network_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'span_server_id_server_id_fk',
+      name: 'bridge_server_id_server_id_fk',
     }).onDelete('restrict'),
-    unique('span_network_server_unique').on(table.networkId, table.serverId),
+    unique('bridge_network_server_unique').on(table.networkId, table.serverId),
   ],
 )
 export const workspace = pgTable(
@@ -1673,7 +1636,7 @@ export const container = pgTable(
 /**
  * A principal is an account identity that can be attached to services — a
  * Linux (server) host account or a database engine user. Org is derived through
- * `assignment` → `service` (or `project` → `workspace` for project principals);
+ * `steward` → `service` (or `project` → `workspace` for project principals);
  * there is deliberately no `organization_id` column here. Host-account username
  * uniqueness is app-enforced per organization (trim + case-insensitive).
  */
@@ -1753,12 +1716,14 @@ export const principal = pgTable(
   ]
 )
 /**
- * Join edge: principal ↔ service (many-to-many). Deleting a principal removes
- * its edges (cascade); a service still referenced by principals cannot be
- * deleted (restrict), mirroring `container`'s restrict on `service`.
+ * Join edge: the Linux/system principal that stewards a service (runs as /
+ * owns the site tree). Deleting a principal removes its edges (cascade); a
+ * service still referenced by principals cannot be deleted (restrict),
+ * mirroring `container`'s restrict on `service`. Distinct from `binding`,
+ * which injects managed-database credentials into a consumer service.
  */
-export const assignment = pgTable(
-  'assignment',
+export const steward = pgTable(
+  'steward',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -1774,25 +1739,25 @@ export const assignment = pgTable(
     serviceId: uuid('service_id').notNull(),
   },
   (table) => [
-    index('idx_assignment_principal_id').using(
+    index('idx_steward_principal_id').using(
       'btree',
       table.principalId.asc().nullsLast().op('uuid_ops')
     ),
-    index('idx_assignment_service_id').using(
+    index('idx_steward_service_id').using(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops')
     ),
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
-      name: 'assignment_principal_id_principal_id_fk',
+      name: 'steward_principal_id_principal_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
-      name: 'assignment_service_id_service_id_fk',
+      name: 'steward_service_id_service_id_fk',
     }).onDelete('restrict'),
-    unique('assignment_principal_service_unique').on(table.principalId, table.serviceId),
+    unique('steward_principal_service_unique').on(table.principalId, table.serviceId),
   ]
 )
 /**

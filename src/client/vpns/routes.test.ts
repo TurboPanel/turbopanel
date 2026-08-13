@@ -14,7 +14,6 @@ import {
   datacenter,
   grant,
   ip,
-  membership,
   network,
   organization,
   peer,
@@ -88,7 +87,6 @@ test('POST /vpns stores cidr directly on the vpn row', async () => {
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -135,7 +133,6 @@ test('POST /vpns stores cidr directly on the vpn row', async () => {
 
   await db.delete(vpn).where(eq(vpn.id, body.id))
   await db.delete(grant).where(eq(grant.entityId, organizationId))
-  await db.delete(membership).where(eq(membership.organizationId, organizationId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -178,7 +175,6 @@ test('GET /vpns/:id/peers never returns presharedKey', async () => {
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -236,7 +232,6 @@ test('GET /vpns/:id/peers never returns presharedKey', async () => {
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -269,7 +264,6 @@ test('GET /vpns returns 403 for org member without organization:manage', async (
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(membership).values({ organizationId, userId })
 
   const cookie = await sessionCookie(db, secrets, userId)
   const res = await app.request('/vpns', {
@@ -281,7 +275,6 @@ test('GET /vpns returns 403 for org member without organization:manage', async (
 
   assertEquals(res.status, 403)
 
-  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -300,7 +293,6 @@ test('POST /vpns/:id/apply returns 403 for org member without organization:manag
 
   const [orgA] = await db.insert(organization).values({ name: 'Apply Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-apply-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
-  await db.insert(membership).values({ organizationId: orgA!.id, userId: u!.id })
   const [vpnRow] = await db.insert(vpn).values({ organizationId: orgA!.id, cidr: '203.0.113.0/24', name: 'Mesh' }).returning({ id: vpn.id })
 
   const cookie = await sessionCookie(db, secrets, u!.id)
@@ -311,7 +303,6 @@ test('POST /vpns/:id/apply returns 403 for org member without organization:manag
   assertEquals(res.status, 403)
 
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
-  await db.delete(membership).where(eq(membership.userId, u!.id))
   await db.delete(user).where(eq(user.id, u!.id))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
 })
@@ -330,7 +321,6 @@ test('POST /vpns/:id/peers returns 400 for invalid publicKey', async () => {
 
   const [orgA] = await db.insert(organization).values({ name: 'PeerKey Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-peer-key-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
-  await db.insert(membership).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: orgA!.id,
@@ -361,7 +351,6 @@ test('POST /vpns/:id/peers returns 400 for invalid publicKey', async () => {
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   await db.delete(grant).where(eq(grant.actorId, u!.id))
-  await db.delete(membership).where(eq(membership.userId, u!.id))
   await db.delete(user).where(eq(user.id, u!.id))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
 })
@@ -423,7 +412,6 @@ test('POST /vpns/:id/peers accepts serverId only and defaults port + endpoint IP
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })
@@ -502,7 +490,6 @@ test('POST /vpns/:id/apply bootstraps peers that lack publicKey', async () => {
   await db.delete(server).where(eq(server.organizationId, seeded.organizationId))
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })
@@ -521,7 +508,6 @@ test('PATCH /vpns/:id/peers/:peerId returns 400 for invalid publicKey', async ()
 
   const [orgA] = await db.insert(organization).values({ name: 'PeerPatchKey Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-peer-patch-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
-  await db.insert(membership).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: orgA!.id,
@@ -555,7 +541,6 @@ test('PATCH /vpns/:id/peers/:peerId returns 400 for invalid publicKey', async ()
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   await db.delete(grant).where(eq(grant.actorId, u!.id))
-  await db.delete(membership).where(eq(membership.userId, u!.id))
   await db.delete(user).where(eq(user.id, u!.id))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
 })
@@ -576,7 +561,6 @@ test('POST /vpns/:id/apply returns 422 when a peer lacks tunnel_address', async 
 
   const [orgA] = await db.insert(organization).values({ name: 'Apply422 Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-apply422-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
-  await db.insert(membership).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: orgA!.id,
@@ -605,7 +589,6 @@ test('POST /vpns/:id/apply returns 422 when a peer lacks tunnel_address', async 
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   await db.delete(grant).where(eq(grant.actorId, u!.id))
-  await db.delete(membership).where(eq(membership.userId, u!.id))
   await db.delete(user).where(eq(user.id, u!.id))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
 })
@@ -627,7 +610,6 @@ test('POST /vpns/:id/apply enqueues one command per peer without presharedKey in
 
   const [orgA] = await db.insert(organization).values({ name: 'ApplyHappy Org' }).returning({ id: organization.id })
   const [u] = await db.insert(user).values({ email: `vpn-apply-ok-${crypto.randomUUID()}@example.com`, isEmailVerified: true }).returning({ id: user.id })
-  await db.insert(membership).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: orgA!.id,
@@ -688,7 +670,6 @@ test('POST /vpns/:id/apply enqueues one command per peer without presharedKey in
   await db.delete(server).where(eq(server.id, srvB!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   await db.delete(grant).where(eq(grant.actorId, u!.id))
-  await db.delete(membership).where(eq(membership.userId, u!.id))
   await db.delete(user).where(eq(user.id, u!.id))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
 })
@@ -712,7 +693,6 @@ async function seedVpnManageSession(
     email: `vpn-${label}-${crypto.randomUUID()}@example.com`,
     isEmailVerified: true,
   }).returning({ id: user.id })
-  await db.insert(membership).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: orgA!.id,
@@ -803,7 +783,6 @@ test('POST /vpns/:id/peers auto-allocates tunnel IP and accepts gateway role', a
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })
@@ -827,7 +806,6 @@ test('POST /vpns/:id/peers tunnelAddress in/out of CIDR and pool exhaustion', as
     email: `vpn-tiny-${crypto.randomUUID()}@example.com`,
     isEmailVerified: true,
   }).returning({ id: user.id })
-  await db.insert(membership).values({ organizationId: orgA!.id, userId: u!.id })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: orgA!.id,
@@ -919,7 +897,6 @@ test('POST /vpns/:id/peers tunnelAddress in/out of CIDR and pool exhaustion', as
   await db.delete(server).where(eq(server.organizationId, orgA!.id))
   await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
   await db.delete(grant).where(eq(grant.actorId, u!.id))
-  await db.delete(membership).where(eq(membership.userId, u!.id))
   await db.delete(user).where(eq(user.id, u!.id))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
 })
@@ -1042,7 +1019,6 @@ test('POST /vpns/:id/peers preserves peer unique conflicts for auto and explicit
   await db.delete(server).where(eq(server.organizationId, seeded.organizationId))
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })
@@ -1093,7 +1069,6 @@ test('DELETE /vpns/:id/peers/:peerId releases overlay tunnel IP', async () => {
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })
@@ -1263,7 +1238,6 @@ test('POST /vpns/:id/apply emits site CIDR only for primary remote gateway', asy
   await db.delete(datacenter).where(eq(datacenter.organizationId, seeded.organizationId))
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })
@@ -1329,7 +1303,6 @@ test('POST /vpns/:id/apply returns 422 for gateway without datacenter or CIDR', 
   await db.delete(datacenter).where(eq(datacenter.id, dc!.id))
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })
@@ -1415,7 +1388,6 @@ test('POST/PATCH peers reject tunnelIpId null; PATCH replaces and releases old t
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })
@@ -1484,7 +1456,6 @@ test('PATCH /vpns/:id cidr widening and no-op ok; excluding tunnel addresses rej
   await db.delete(server).where(eq(server.id, srv!.id))
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })
@@ -1523,7 +1494,6 @@ test('POST /vpns rejects a duplicate CIDR in the same org with 409 vpn_cidr_in_u
 
   await db.delete(vpn).where(eq(vpn.id, seeded.vpnId))
   await db.delete(grant).where(eq(grant.actorId, seeded.userId))
-  await db.delete(membership).where(eq(membership.userId, seeded.userId))
   await db.delete(user).where(eq(user.id, seeded.userId))
   await db.delete(organization).where(eq(organization.id, seeded.organizationId))
 })

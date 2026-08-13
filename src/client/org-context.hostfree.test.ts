@@ -108,7 +108,7 @@ test('resolveOrgId returns organization id for platform admins', async () => {
   assertEquals(result, orgId)
 })
 
-test('canAccessOrganization allows platform admins without membership', async () => {
+test('canAccessOrganization allows platform admins without team membership', async () => {
   const db = {
     select: () => ({
       from: () => ({
@@ -119,23 +119,21 @@ test('canAccessOrganization allows platform admins without membership', async ()
   assertEquals(await canAccessOrganization(db, 'u', 'org'), true)
 })
 
-test('canAccessOrganization allows membership hits', async () => {
-  let n = 0
+test('canAccessOrganization allows team membership hits', async () => {
   const db = {
     select: () => ({
       from: () => ({
-        where: () => {
-          n += 1
-          if (n === 1) return thenableLimit([{ role: 'user' }])
-          return thenableLimit([{ id: 'm1' }])
-        },
+        where: () => thenableLimit([{ role: 'user' }]),
+        innerJoin: () => ({
+          where: () => thenableLimit([{ id: 'tm1' }]),
+        }),
       }),
     }),
   } as unknown as Db
   assertEquals(await canAccessOrganization(db, 'u', 'org'), true)
 })
 
-test('listAccessibleOrganizations returns membership-scoped orgs for regular users', async () => {
+test('listAccessibleOrganizations returns team-scoped orgs for regular users', async () => {
   const db = {
     select: () => ({
       from: () => ({

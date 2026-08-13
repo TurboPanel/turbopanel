@@ -12,7 +12,6 @@ import { createSession } from './authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from './authn/secrets.ts'
 import {
   grant,
-  membership,
   organization,
   team,
   teammate,
@@ -108,10 +107,6 @@ async function withTeamSubjectGrantFixtures(
 
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({
-    organizationId: homeOrganizationId,
-    userId,
-  })
 
   const [insertedTeam] = await db
     .insert(team)
@@ -144,9 +139,6 @@ async function withTeamSubjectGrantFixtures(
     await db.delete(grant).where(eq(grant.entityId, targetOrganizationId))
     await db.delete(teammate).where(and(eq(teammate.teamId, teamId), eq(teammate.userId, userId)))
     await db.delete(team).where(eq(team.id, teamId))
-    await db.delete(membership).where(
-      and(eq(membership.userId, userId), eq(membership.organizationId, homeOrganizationId)),
-    )
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, homeOrganizationId))
     await db.delete(organization).where(eq(organization.id, targetOrganizationId))
@@ -164,7 +156,7 @@ it('team-scoped subject grant exposes target org via listAccessibleOrganizations
     const ids = organizations.map((org) => org.id)
 
     if (!ids.includes(homeOrganizationId)) {
-      throw new Error('home organization should remain accessible via membership')
+      throw new Error('home organization should remain accessible via team membership')
     }
     if (!ids.includes(targetOrganizationId)) {
       throw new Error('team-scoped subject grant should expose target organization')

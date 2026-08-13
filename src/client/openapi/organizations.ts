@@ -163,7 +163,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'List organizations visible to the signed-in user',
       description:
-        'Returns organizations the user can access via membership, grants, or platform admin role. The client selects the active organization and sends it on org-scoped requests via the X-Turbopanel-Organization-Id header.',
+        'Returns organizations the user can access via team membership, grants, or platform admin role. The client selects the active organization and sends it on org-scoped requests via the X-Turbopanel-Organization-Id header.',
       security: [{ cookieAuth: [] }],
       responses: {
         '200': {

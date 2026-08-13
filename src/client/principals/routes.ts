@@ -21,10 +21,10 @@ import {
   loadServiceIdsByPrincipalIds,
   parseServiceIdsField,
   servicesBelongToProject,
-} from './assignments.ts'
+} from './stewards.ts'
 import {
   isServerPrincipalUsernameTaken,
-  replaceAssignments,
+  replaceStewards,
   SERVER_PRINCIPAL_PROVIDER,
   USERNAME_IN_USE_ERROR,
 } from './store.ts'
@@ -134,7 +134,7 @@ async function insertProjectPrincipal(
     }).returning({ id: principal.id })
 
     if (input.serviceIds.length > 0) {
-      await replaceAssignments(tx, row.id, input.serviceIds)
+      await replaceStewards(tx, row.id, input.serviceIds)
     }
     return {
       id: row.id,
@@ -279,7 +279,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     }
 
     await db.transaction(async (tx) => {
-      await replaceAssignments(tx, id, serviceIds)
+      await replaceStewards(tx, id, serviceIds)
       await tx.update(principal).set({
         updatedAt: new Date().toISOString(),
       }).where(eq(principal.id, id))

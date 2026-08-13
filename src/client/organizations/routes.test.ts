@@ -15,7 +15,6 @@ import {
 } from '../authn/secrets.ts'
 import {
   grant,
-  membership,
   organization,
   user,
 } from '../../lib/db/schema.ts'
@@ -91,7 +90,6 @@ async function withOrgFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   if (withManageGrant) {
     await db.insert(grant).values({
       entityType: 'organization',
@@ -114,10 +112,6 @@ async function withOrgFixtures(
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
-    ))
-    await db.delete(membership).where(and(
-      eq(membership.userId, userId),
-      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))

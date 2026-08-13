@@ -15,7 +15,6 @@ import {
   grant,
   hosting,
   ip,
-  membership,
   organization,
   project,
   server,
@@ -75,7 +74,6 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -165,7 +163,6 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
   await db.delete(project).where(eq(project.id, proj!.id))
   await db.delete(workspace).where(eq(workspace.id, ws!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 })
@@ -198,7 +195,6 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
     .returning({ id: user.id })
   const userId = u!.id
 
-  await db.insert(membership).values({ organizationId: orgA!.id, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: orgA!.id,
@@ -273,7 +269,6 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
   await db.delete(project).where(eq(project.id, proj!.id))
   await db.delete(workspace).where(eq(workspace.id, ws!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
-  await db.delete(membership).where(eq(membership.userId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
   await db.delete(organization).where(eq(organization.id, orgB!.id))
@@ -322,7 +317,6 @@ async function withHostingFixtures(
     .returning({ id: user.id })
   const userId = userRow!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -378,7 +372,6 @@ async function withHostingFixtures(
     await db.delete(workspace).where(eq(workspace.id, ws!.id))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(eq(grant.actorId, userId))
-    await db.delete(membership).where(eq(membership.userId, userId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -719,7 +712,6 @@ test('PATCH /hostings returns 403 for a member without manage grants', async () 
       })
       .returning({ id: user.id })
     const viewerId = viewer!.id
-    await db.insert(membership).values({ organizationId, userId: viewerId })
 
     const now = new Date().toISOString()
     const [host] = await db
@@ -746,7 +738,6 @@ test('PATCH /hostings returns 403 for a member without manage grants', async () 
       assertEquals(res.status, 403)
     } finally {
       await db.delete(hosting).where(eq(hosting.id, host!.id))
-      await db.delete(membership).where(eq(membership.userId, viewerId))
       await db.delete(user).where(eq(user.id, viewerId))
     }
   })

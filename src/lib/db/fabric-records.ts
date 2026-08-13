@@ -1,5 +1,5 @@
 /**
- * TurboFabric desired-state helpers (`fabric` / `relay` / `span`).
+ * TurboFabric desired-state helpers (`fabric` / `relay` / `bridge`).
  */
 
 import { and, eq, isNotNull } from 'drizzle-orm'
@@ -7,12 +7,12 @@ import type { Db } from '../../db.ts'
 import { nowIso } from '../commands/ids.ts'
 import { inetAddressToString } from '../ip-address.ts'
 import {
+  bridge,
   fabric,
   ip,
   network,
   relay,
   server,
-  span,
   vpn,
 } from './schema.ts'
 import {
@@ -326,17 +326,17 @@ export async function loadRelayFabricAddress(
   return row ? inetAddressToString(row.address) ?? null : null
 }
 
-export async function listServerSpans(
+export async function listServerBridges(
   db: Db,
   serverId: string,
 ): Promise<Array<{ name: string; subnet: string }>> {
   const rows = await db
     .select({
-      networkId: span.networkId,
-      cidr: span.cidr,
+      networkId: bridge.networkId,
+      cidr: bridge.cidr,
     })
-    .from(span)
-    .where(eq(span.serverId, serverId))
+    .from(bridge)
+    .where(eq(bridge.serverId, serverId))
 
   return rows.map((row) => ({
     name: composeNetworkHostName(row.networkId),
@@ -379,7 +379,7 @@ export async function buildFabricReconcilePayload(
     peers.push(peer)
   }
 
-  const networks = await listServerSpans(db, params.serverId)
+  const networks = await listServerBridges(db, params.serverId)
   return {
     enabled: true,
     fabricId: params.fabric.id,
@@ -447,7 +447,7 @@ function isOptionsRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-export async function ensureNetworkSpan(
+export async function ensureNetworkBridge(
   db: Db,
   params: {
     networkId: string
@@ -456,14 +456,14 @@ export async function ensureNetworkSpan(
   },
 ): Promise<void> {
   await db
-    .insert(span)
+    .insert(bridge)
     .values({
       networkId: params.networkId,
       serverId: params.serverId,
       cidr: params.cidr,
     })
     .onConflictDoNothing({
-      target: [span.networkId, span.serverId],
+      target: [bridge.networkId, bridge.serverId],
     })
 }
 
@@ -511,23 +511,23 @@ export async function materializeSpanningNetworks(
       const relayRow = relayByServer.get(serverId)
       if (!relayRow) continue
       const [have] = await db
-        .select({ id: span.id })
-        .from(span)
+        .select({ id: bridge.id })
+        .from(bridge)
         .where(
           and(
-            eq(span.networkId, networkRow.id),
-            eq(span.serverId, serverId),
+            eq(bridge.networkId, networkRow.id),
+            eq(bridge.serverId, serverId),
           ),
         )
         .limit(1)
       if (have) continue
       const existing = await db
-        .select({ id: span.id })
-        .from(span)
-        .where(eq(span.serverId, serverId))
-      const cidr = nthSpanSubnet(relayRow.prefix, existing.length)
+        .select({ id: bridge.id })
+        .from(bridge)
+        .where(eq(bridge.serverId, serverId))
+      const cidr = nthBridgeSubnet(relayRow.prefix, existing.length)
       if (!cidr) continue
-      await ensureNetworkSpan(db, {
+      await ensureNetworkBridge(db, {
         networkId: networkRow.id,
         serverId,
         cidr,
@@ -537,6 +537,6 @@ export async function materializeSpanningNetworks(
   return spanning
 }
 
-export function nthSpanSubnet(relayPrefix: string, index: number): string | null {
+export function nthBridgeSubnet(relayPrefix: string, index: number): string | null {
   return nthSubnet(relayPrefix, 24, index)
 }

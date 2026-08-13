@@ -6,12 +6,12 @@ import {
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import type { Db } from '../../db.ts'
 import {
-  assignment,
   node,
   organization,
   principal,
   project,
   server,
+  steward,
   workspace,
 } from '../../lib/db/schema.ts'
 
@@ -67,15 +67,15 @@ export async function isServerPrincipalUsernameTaken(
   return rows.length > 0
 }
 
-export async function replaceAssignments(
+export async function replaceStewards(
   tx: Db,
   principalId: string,
   nextServiceIds: string[],
 ): Promise<void> {
   const existing = await tx
-    .select({ serviceId: assignment.serviceId })
-    .from(assignment)
-    .where(eq(assignment.principalId, principalId))
+    .select({ serviceId: steward.serviceId })
+    .from(steward)
+    .where(eq(steward.principalId, principalId))
 
   const current = new Set(existing.map((row) => row.serviceId))
   const next = new Set(nextServiceIds)
@@ -85,17 +85,17 @@ export async function replaceAssignments(
 
   if (toDelete.length > 0) {
     await tx
-      .delete(assignment)
+      .delete(steward)
       .where(
         and(
-          eq(assignment.principalId, principalId),
-          inArray(assignment.serviceId, toDelete),
+          eq(steward.principalId, principalId),
+          inArray(steward.serviceId, toDelete),
         ),
       )
   }
 
   if (toInsert.length > 0) {
-    await tx.insert(assignment).values(
+    await tx.insert(steward).values(
       toInsert.map((serviceId) => ({
         principalId,
         serviceId,
@@ -113,7 +113,7 @@ export type CreatePrincipalFields = {
 }
 
 /**
- * Insert a principal row and its initial assignment edges in one transaction.
+ * Insert a principal row and its initial steward edges in one transaction.
  * Callers are responsible for authz and field validation.
  */
 export async function createPrincipal(
@@ -133,12 +133,14 @@ export async function createPrincipal(
       })
       .returning({ id: principal.id })
 
-    await tx.insert(assignment).values(
-      serviceIds.map((serviceId) => ({
-        principalId: inserted.id,
-        serviceId,
-      })),
-    )
+    if (serviceIds.length > 0) {
+      await tx.insert(steward).values(
+        serviceIds.map((serviceId) => ({
+          principalId: inserted.id,
+          serviceId,
+        })),
+      )
+    }
 
     return inserted.id
   })

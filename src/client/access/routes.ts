@@ -26,7 +26,7 @@ import {
 import { getPermissionCatalog } from '../authz/catalog.ts'
 import type { Db } from '../../db.ts'
 import { getDb } from '../../db.ts'
-import { grant, invitation, membership, team, teammate } from '../../lib/db/schema.ts'
+import { grant, invitation, team, teammate } from '../../lib/db/schema.ts'
 import { getOrgId } from '../shared.ts'
 import {
   invitationAcceptErrorPayload,
@@ -156,16 +156,6 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
       if (!organizationId) {
         return { error: 'gone' as const }
       }
-
-      await tx
-        .insert(membership)
-        .values({
-          organizationId,
-          userId: session.userId,
-        })
-        .onConflictDoNothing({
-          target: [membership.organizationId, membership.userId],
-        })
 
       await tx
         .insert(teammate)

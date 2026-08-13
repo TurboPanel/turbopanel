@@ -13,7 +13,6 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
   environment,
   grant,
-  membership,
   organization,
   project,
   service,
@@ -90,7 +89,6 @@ async function withServiceFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -139,10 +137,6 @@ async function withServiceFixtures(
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
-    ))
-    await db.delete(membership).where(and(
-      eq(membership.userId, userId),
-      eq(membership.organizationId, organizationId),
     ))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))

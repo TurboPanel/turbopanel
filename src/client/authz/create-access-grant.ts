@@ -453,18 +453,18 @@ export async function resolveEntityOrganizationId(
       `)
       if (rows[0]?.organization_id) return rows[0].organization_id
 
-      const assignmentRows = await db.execute<{ organization_id: string }>(sql`
+      const stewardRows = await db.execute<{ organization_id: string }>(sql`
         SELECT w.organization_id AS organization_id
         FROM principal p
-        JOIN assignment a ON a.principal_id = p.id
-        JOIN service s ON s.id = a.service_id
+        JOIN steward st ON st.principal_id = p.id
+        JOIN service s ON s.id = st.service_id
         JOIN environment e ON e.id = s.environment_id
         JOIN project pr ON pr.id = e.project_id
         JOIN workspace w ON w.id = pr.workspace_id
         WHERE p.id = ${entityId}::uuid
         LIMIT 1
       `)
-      return assignmentRows[0]?.organization_id ?? null
+      return stewardRows[0]?.organization_id ?? null
     }
     case 'storage': {
       const rows = await db

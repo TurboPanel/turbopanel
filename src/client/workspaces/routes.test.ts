@@ -17,7 +17,6 @@ import {
   container,
   environment,
   grant,
-  membership,
   organization,
   project,
   server,
@@ -155,7 +154,6 @@ async function withWorkspaceFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -194,10 +192,6 @@ async function withWorkspaceFixtures(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(membership).where(and(
-      eq(membership.userId, userId),
-      eq(membership.organizationId, organizationId),
-    ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -228,7 +222,6 @@ test('GET /workspaces returns System before Default for same-transaction install
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -269,10 +262,6 @@ test('GET /workspaces returns System before Default for same-transaction install
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
-    ))
-    await db.delete(membership).where(and(
-      eq(membership.userId, userId),
-      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))

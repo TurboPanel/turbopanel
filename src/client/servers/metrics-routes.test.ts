@@ -13,7 +13,6 @@ import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
   grant,
-  membership,
   organization,
   server,
   user,
@@ -151,7 +150,6 @@ async function withMetricsFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -187,10 +185,6 @@ async function withMetricsFixtures(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(membership).where(and(
-      eq(membership.organizationId, organizationId),
-      eq(membership.userId, userId),
-    ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -225,7 +219,6 @@ it('GET /servers/:id/metrics/series returns 403 without read access', async () =
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
 
   const [insertedServer] = await db
     .insert(server)
@@ -243,10 +236,6 @@ it('GET /servers/:id/metrics/series returns 403 without read access', async () =
     assertEquals(res.status, 403)
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
-    await db.delete(membership).where(and(
-      eq(membership.organizationId, organizationId),
-      eq(membership.userId, userId),
-    ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -444,7 +433,6 @@ it('GET /servers/:id/metrics/series maps Analytics Engine failures to 503', asyn
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -476,10 +464,6 @@ it('GET /servers/:id/metrics/series maps Analytics Engine failures to 503', asyn
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
-    ))
-    await db.delete(membership).where(and(
-      eq(membership.organizationId, organizationId),
-      eq(membership.userId, userId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -551,7 +535,6 @@ it('GET /servers/:id/metrics/summary returns 403 without read access', async () 
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
 
   const [insertedServer] = await db
     .insert(server)
@@ -569,10 +552,6 @@ it('GET /servers/:id/metrics/summary returns 403 without read access', async () 
     assertEquals(res.status, 403)
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
-    await db.delete(membership).where(and(
-      eq(membership.organizationId, organizationId),
-      eq(membership.userId, userId),
-    ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -607,7 +586,6 @@ it('GET /servers/:id/metrics/connection returns 403 without read access', async 
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
 
   const [insertedServer] = await db
     .insert(server)
@@ -625,10 +603,6 @@ it('GET /servers/:id/metrics/connection returns 403 without read access', async 
     assertEquals(res.status, 403)
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
-    await db.delete(membership).where(and(
-      eq(membership.organizationId, organizationId),
-      eq(membership.userId, userId),
-    ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }

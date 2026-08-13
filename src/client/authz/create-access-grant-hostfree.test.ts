@@ -468,7 +468,7 @@ test('resolveEntityOrganizationId resolves org ids for select-backed entity type
   }
 })
 
-test('resolveEntityOrganizationId falls back to assignment lookup for principals', async () => {
+test('resolveEntityOrganizationId falls back to steward lookup for principals', async () => {
   let executeCalls = 0
   const db = {
     execute: () => {

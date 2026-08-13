@@ -132,10 +132,10 @@ import {
   type ResolvedVariableScopes,
 } from '../variables/resolve-inherited.ts'
 import {
-  loadPrincipalIdsAssignedToEnvironment,
+  loadStewardPrincipalIdsForEnvironment,
   loadPrincipalIdsByServiceIdForEnvironment,
   pickSolePrincipalId,
-} from '../principals/assignments.ts'
+} from '../principals/stewards.ts'
 import {
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
@@ -1629,7 +1629,7 @@ export async function prepareDeployCompose(
   if (sealed instanceof Response) return sealed
   const { variableMaterial, storageMaterial } = sealed
 
-  const assignmentPrincipalIds = await loadPrincipalIdsAssignedToEnvironment(
+  const stewardPrincipalIds = await loadStewardPrincipalIdsForEnvironment(
     db,
     params.environmentId,
   )
@@ -1637,7 +1637,7 @@ export async function prepareDeployCompose(
     .map((entry) => entry.principalId)
     .filter((id): id is string => typeof id === 'string')
   const principalMaterial = await loadPrincipalMaterial(db, [
-    ...assignmentPrincipalIds,
+    ...stewardPrincipalIds,
     ...storagePrincipalIds,
   ])
 

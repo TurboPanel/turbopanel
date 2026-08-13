@@ -19,7 +19,7 @@ import {
   listManagedPrincipals,
   lockOrganizationsForUpdate,
   PRINCIPAL_PROVIDERS,
-  replaceAssignments,
+  replaceStewards,
   resolveAvailableManagedRootUsername,
   resolveManagedOwningOrganizationIds,
   rotatePrincipalPassword,
@@ -139,7 +139,7 @@ test('isServerPrincipalUsernameTaken short-circuits blank and hits/misses', asyn
   )
 })
 
-test('replaceAssignments deletes inserts and no-ops when unchanged', async () => {
+test('replaceStewards deletes inserts and no-ops when unchanged', async () => {
   let deleted: string[] | null = null
   let inserted: unknown = null
   const tx = {
@@ -162,7 +162,7 @@ test('replaceAssignments deletes inserts and no-ops when unchanged', async () =>
     }),
   } as unknown as Db
 
-  await replaceAssignments(tx, 'principal', ['s1', 's3'])
+  await replaceStewards(tx, 'principal', ['s1', 's3'])
   assertEquals(deleted, ['s2'])
   assertEquals(inserted, [
     { principalId: 'principal', serviceId: 's3' },
@@ -181,12 +181,12 @@ test('replaceAssignments deletes inserts and no-ops when unchanged', async () =>
       throw new TypeError('should not insert')
     },
   } as unknown as Db
-  await replaceAssignments(noopTx, 'principal', ['only'])
+  await replaceStewards(noopTx, 'principal', ['only'])
 })
 
-test('createPrincipal inserts principal and assignments in a transaction', async () => {
+test('createPrincipal inserts principal and stewards in a transaction', async () => {
   let principalValues: unknown
-  let assignmentValues: unknown
+  let stewardValues: unknown
   const db = {
     transaction: async (fn: (tx: Db) => Promise<string>) => {
       const tx = {
@@ -198,7 +198,7 @@ test('createPrincipal inserts principal and assignments in a transaction', async
                 returning: () => Promise.resolve([{ id: 'new-principal' }]),
               }
             }
-            assignmentValues = values
+            stewardValues = values
             return thenableRows([])
           },
         }),
@@ -221,7 +221,7 @@ test('createPrincipal inserts principal and assignments in a transaction', async
   assertEquals(id, 'new-principal')
   assertEquals((principalValues as { username: string }).username, 'deploy')
   assertEquals(
-    (assignmentValues as Array<{ serviceId: string }>).map((r) => r.serviceId),
+    (stewardValues as Array<{ serviceId: string }>).map((r) => r.serviceId),
     ['svc-1', 'svc-2'],
   )
 })
@@ -441,7 +441,7 @@ test('PRINCIPAL_PROVIDERS and USERNAME_RE gate managed usernames', () => {
   assertEquals(USERNAME_RE.test('1bad'), false)
 })
 
-test('replaceAssignments removes all edges when next list is empty', async () => {
+test('replaceStewards removes all edges when next list is empty', async () => {
   let deleted = false
   const tx = {
     select: () => ({
@@ -459,7 +459,7 @@ test('replaceAssignments removes all edges when next list is empty', async () =>
       throw new TypeError('should not insert')
     },
   } as unknown as Db
-  await replaceAssignments(tx, 'principal', [])
+  await replaceStewards(tx, 'principal', [])
   assertEquals(deleted, true)
 })
 

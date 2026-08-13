@@ -17,7 +17,6 @@ import {
 import {
   environment,
   grant,
-  membership,
   organization,
   project,
   server,
@@ -105,7 +104,6 @@ async function withStorageFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -187,10 +185,6 @@ async function withStorageFixtures(
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
-    ))
-    await db.delete(membership).where(and(
-      eq(membership.userId, userId),
-      eq(membership.organizationId, organizationId),
     ))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))
@@ -506,7 +500,6 @@ test('PATCH /storage returns 403 for a member without manage grants', async () =
       })
       .returning({ id: user.id })
     const viewerId = viewer!.id
-    await db.insert(membership).values({ organizationId, userId: viewerId })
 
     const now = new Date().toISOString()
     const [row] = await db
@@ -539,10 +532,6 @@ test('PATCH /storage returns 403 for a member without manage grants', async () =
       assertEquals(res.status, 403)
     } finally {
       await db.delete(storage).where(eq(storage.id, storageId))
-      await db.delete(membership).where(and(
-        eq(membership.userId, viewerId),
-        eq(membership.organizationId, organizationId),
-      ))
       await db.delete(user).where(eq(user.id, viewerId))
     }
   })

@@ -13,7 +13,6 @@ import {
   environment,
   grant,
   managed,
-  membership,
   organization,
   project,
   team,
@@ -104,8 +103,6 @@ async function withTestFixtures(
 
   const targetId = insertedTarget[0]!.id
 
-  await db.insert(membership).values({ organizationId, userId: actorId })
-  await db.insert(membership).values({ organizationId, userId: targetId })
 
   const [insertedWorkspace] = await db
     .insert(workspace)
@@ -136,7 +133,6 @@ async function withTestFixtures(
     await db.delete(grant).where(eq(grant.entityId, organizationId))
     await db.delete(grant).where(eq(grant.entityId, teamId))
     await db.delete(grant).where(eq(grant.entityId, workspaceId))
-    await db.delete(membership).where(eq(membership.organizationId, organizationId))
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
     await db.delete(team).where(eq(team.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, actorId))
@@ -632,7 +628,6 @@ test('GET /access/resource-id allows admin session for team kind', async () => {
     const adminId = insertedAdmin[0]!.id
 
     try {
-      await db.insert(membership).values({ organizationId, userId: adminId })
 
       const cookie = await sessionCookie(db, secrets, adminId)
       const res = await app.request(
@@ -649,10 +644,6 @@ test('GET /access/resource-id allows admin session for team kind', async () => {
         throw new Error('admin team resource-id response did not echo team identifiers')
       }
     } finally {
-      await db.delete(membership).where(and(
-        eq(membership.userId, adminId),
-        eq(membership.organizationId, organizationId),
-      ))
       await db.delete(user).where(eq(user.id, adminId))
     }
   })

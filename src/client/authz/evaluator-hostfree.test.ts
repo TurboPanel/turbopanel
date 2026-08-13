@@ -28,19 +28,14 @@ function createListVisibleDb(itemIds: string[]): Db {
 }
 
 function createGetSubjectsDb(teamIds: string[], organizationIds: string[]): Db {
-  let selectCalls = 0
+  const organizationId = organizationIds[0]
+  const rows = teamIds.map((teamId) => ({ teamId, organizationId }))
   return {
     select: () => ({
       from: () => ({
-        where: () => {
-          selectCalls++
-          if (selectCalls === 1) {
-            return Promise.resolve(teamIds.map((teamId) => ({ teamId })))
-          }
-          return Promise.resolve(
-            organizationIds.map((organizationId) => ({ organizationId })),
-          )
-        },
+        innerJoin: () => ({
+          where: () => Promise.resolve(rows),
+        }),
       }),
     }),
   } as unknown as Db
@@ -105,7 +100,7 @@ test('assertCan throws ForbiddenError when access is denied', async () => {
   )
 })
 
-test('can honors pre-fetched subjects without querying membership tables', async () => {
+test('can honors pre-fetched subjects without querying teammate tables', async () => {
   const allowed = await can(
     createCanDb(true),
     userId,
@@ -147,7 +142,7 @@ test('can evaluates system permission keys with exact grant filters', async () =
   assertEquals(allowed, true)
 })
 
-test('getSubjects merges user, team, and organization memberships', async () => {
+test('getSubjects merges user, team, and organization via teammate', async () => {
   const subjects = await getSubjects(
     createGetSubjectsDb([teamId], [organizationId]),
     userId,

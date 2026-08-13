@@ -26,7 +26,6 @@ import {
   environment,
   grant,
   managed,
-  membership,
   node,
   organization,
   principal,
@@ -137,10 +136,6 @@ async function cleanupBindingRoutesOrg(
     eq(grant.actorId, userId),
     eq(grant.entityId, organizationId),
   ))
-  await db.delete(membership).where(and(
-    eq(membership.userId, userId),
-    eq(membership.organizationId, organizationId),
-  ))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, organizationId))
 }
@@ -201,7 +196,6 @@ async function withBindingFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,

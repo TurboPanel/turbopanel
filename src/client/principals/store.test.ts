@@ -8,12 +8,11 @@ import {
 } from '../authn/secrets.ts'
 import { decryptSecret } from '../authn/data-encryption.ts'
 import {
-  assignment,
+  steward,
   environment,
   grant,
   managed,
   node,
-  membership,
   organization,
   principal,
   project,
@@ -27,7 +26,7 @@ import {
   isManagedUsernameTaken,
   isServerPrincipalUsernameTaken,
   PRINCIPAL_PROVIDERS,
-  replaceAssignments,
+  replaceStewards,
   resolveAvailableManagedRootUsername,
   SERVER_PRINCIPAL_PROVIDER,
   setPrincipalPassword,
@@ -76,7 +75,6 @@ async function withPrincipalFixtures(
     .returning({ id: user.id })
   const userId = insertedUser[0]!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -129,7 +127,7 @@ async function withPrincipalFixtures(
     .returning({ id: principal.id })
   const principalId = insertedPrincipal!.id
 
-  await db.insert(assignment).values({
+  await db.insert(steward).values({
     principalId,
     serviceId,
   })
@@ -144,7 +142,7 @@ async function withPrincipalFixtures(
       projectId,
     })
   } finally {
-    await db.delete(assignment).where(eq(assignment.principalId, principalId))
+    await db.delete(steward).where(eq(steward.principalId, principalId))
     await db.delete(principal).where(eq(principal.id, principalId))
     await db.delete(service).where(eq(service.id, serviceId))
     await db.delete(environment).where(eq(environment.id, environmentId))
@@ -152,10 +150,6 @@ async function withPrincipalFixtures(
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
-    ))
-    await db.delete(membership).where(and(
-      eq(membership.userId, userId),
-      eq(membership.organizationId, organizationId),
     ))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))
@@ -490,7 +484,7 @@ test('resolveAvailableManagedRootUsername suffixes when preferred taken', async 
   }
 })
 
-test('createPrincipal and replaceAssignments write expected assignment edges', async () => {
+test('createPrincipal and replaceStewards write expected steward edges', async () => {
   await withPrincipalFixtures(async ({ db, serviceId }) => {
     const [secondService] = await db
       .insert(service)
@@ -521,34 +515,34 @@ test('createPrincipal and replaceAssignments write expected assignment edges', a
       )
 
       let edges = await db
-        .select({ serviceId: assignment.serviceId })
-        .from(assignment)
-        .where(eq(assignment.principalId, createdId))
+        .select({ serviceId: steward.serviceId })
+        .from(steward)
+        .where(eq(steward.principalId, createdId))
       assertEquals(edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)), [
         serviceId,
       ])
 
-      await replaceAssignments(db, createdId, [secondServiceId])
+      await replaceStewards(db, createdId, [secondServiceId])
       edges = await db
-        .select({ serviceId: assignment.serviceId })
-        .from(assignment)
-        .where(eq(assignment.principalId, createdId))
+        .select({ serviceId: steward.serviceId })
+        .from(steward)
+        .where(eq(steward.principalId, createdId))
       assertEquals(edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)), [
         secondServiceId,
       ])
 
-      await replaceAssignments(db, createdId, [serviceId, secondServiceId])
+      await replaceStewards(db, createdId, [serviceId, secondServiceId])
       edges = await db
-        .select({ serviceId: assignment.serviceId })
-        .from(assignment)
-        .where(eq(assignment.principalId, createdId))
+        .select({ serviceId: steward.serviceId })
+        .from(steward)
+        .where(eq(steward.principalId, createdId))
       assertEquals(
         edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)),
         [serviceId, secondServiceId].toSorted((a, b) => a.localeCompare(b)),
       )
     } finally {
       if (createdId) {
-        await db.delete(assignment).where(eq(assignment.principalId, createdId))
+        await db.delete(steward).where(eq(steward.principalId, createdId))
         await db.delete(principal).where(eq(principal.id, createdId))
       }
       await db.delete(service).where(eq(service.id, secondServiceId))

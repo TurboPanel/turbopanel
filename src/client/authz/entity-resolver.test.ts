@@ -3,7 +3,6 @@ import { assertEquals } from 'jsr:@std/assert'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import {
-  membership,
   network,
   organization,
   server,
@@ -42,7 +41,6 @@ test('resolveEntityById resolves network entities', async () => {
     .returning({ id: user.id })
 
   const userId = insertedUser!.id
-  await db.insert(membership).values({ organizationId, userId })
 
   const [insertedServer] = await db
     .insert(server)
@@ -74,7 +72,6 @@ test('resolveEntityById resolves network entities', async () => {
   } finally {
     await db.delete(network).where(eq(network.id, networkId))
     await db.delete(server).where(eq(server.id, serverId))
-    await db.delete(membership).where(eq(membership.userId, userId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }

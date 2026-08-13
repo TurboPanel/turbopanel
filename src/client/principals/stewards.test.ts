@@ -2,13 +2,13 @@ import { assertEquals } from 'jsr:@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import type { Db } from '../../db.ts'
 import {
-  loadPrincipalIdsAssignedToEnvironment,
+  loadStewardPrincipalIdsForEnvironment,
   loadPrincipalIdsByServiceIdForEnvironment,
   loadServiceIdsByPrincipalIds,
   parseServiceIdsField,
   pickSolePrincipalId,
   servicesBelongToProject,
-} from './assignments.ts'
+} from './stewards.ts'
 
 const PID_A = '00000000-0000-4000-8000-00000000000a'
 const PID_B = '00000000-0000-4000-8000-00000000000b'
@@ -110,7 +110,7 @@ describe('loadServiceIdsByPrincipalIds', () => {
     assertEquals([...map.entries()], [])
   })
 
-  it('seeds empty lists for principals with no assignments', async () => {
+  it('seeds empty lists for principals with no stewards', async () => {
     const map = await loadServiceIdsByPrincipalIds(
       createAssignmentSelectDb([]),
       [PID_A, PID_B],
@@ -171,9 +171,9 @@ describe('servicesBelongToProject', () => {
   })
 })
 
-describe('loadPrincipalIdsAssignedToEnvironment', () => {
+describe('loadStewardPrincipalIdsForEnvironment', () => {
   it('returns sorted distinct principal ids', async () => {
-    const ids = await loadPrincipalIdsAssignedToEnvironment(
+    const ids = await loadStewardPrincipalIdsForEnvironment(
       createAssignmentSelectDb([
         { principalId: PID_B },
         { principalId: PID_A },
@@ -183,9 +183,9 @@ describe('loadPrincipalIdsAssignedToEnvironment', () => {
     assertEquals(ids, [PID_A, PID_B])
   })
 
-  it('returns empty when no assignments exist', async () => {
+  it('returns empty when no stewards exist', async () => {
     assertEquals(
-      await loadPrincipalIdsAssignedToEnvironment(
+      await loadStewardPrincipalIdsForEnvironment(
         createAssignmentSelectDb([]),
         'env-1',
       ),

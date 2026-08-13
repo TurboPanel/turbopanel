@@ -5,7 +5,6 @@ import {
   grant,
   environment,
   managed,
-  membership,
   organization,
   project,
   variable,
@@ -51,7 +50,6 @@ async function withTestFixtures(
 
   const userId = insertedUser[0]!.id
 
-  await db.insert(membership).values({ organizationId, userId })
 
   const [insertedWorkspace] = await db
     .insert(workspace)
@@ -78,10 +76,6 @@ async function withTestFixtures(
   } finally {
     await db.delete(grant).where(eq(grant.actorId, userId))
     await db.delete(teammate).where(eq(teammate.userId, userId))
-    await db.delete(membership).where(and(
-      eq(membership.userId, userId),
-      eq(membership.organizationId, organizationId),
-    ))
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
     await db.delete(team).where(eq(team.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, userId))
@@ -621,7 +615,7 @@ test('getSubjects includes team and organization memberships', async () => {
   })
 })
 
-test('can honors pre-fetched subjects without re-querying membership', async () => {
+test('can honors pre-fetched subjects without re-querying teammate', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     await db.insert(grant).values({
       entityType: 'organization',

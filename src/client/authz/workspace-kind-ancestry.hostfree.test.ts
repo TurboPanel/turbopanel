@@ -103,7 +103,7 @@ test('resolveWorkspaceKindForEntity walks execute() ancestries for tree entities
   }
 })
 
-test('resolveWorkspaceKindForEntity tries principal project managed and assignment paths', async () => {
+test('resolveWorkspaceKindForEntity tries principal project managed and steward paths', async () => {
   // First execute empty, second managed hits.
   assertEquals(
     await resolveWorkspaceKindForEntity(
@@ -114,7 +114,7 @@ test('resolveWorkspaceKindForEntity tries principal project managed and assignme
     WORKSPACE_KIND_SYSTEM,
   )
 
-  // Project + managed empty, assignment hits.
+  // Project + managed empty, steward hits.
   assertEquals(
     await resolveWorkspaceKindForEntity(
       kindDb({ executeKinds: [null, null, WORKSPACE_KIND_USER] }),

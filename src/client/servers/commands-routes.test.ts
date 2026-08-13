@@ -23,7 +23,6 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
   command,
   grant,
-  membership,
   organization,
   server,
   user,
@@ -229,7 +228,6 @@ async function withCommandRouteFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
 
   if (options.withGrant !== false) {
     await db.insert(grant).values({
@@ -269,10 +267,6 @@ async function withCommandRouteFixtures(
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
-    ))
-    await db.delete(membership).where(and(
-      eq(membership.userId, userId),
-      eq(membership.organizationId, organizationId),
     ))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))

@@ -2,7 +2,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import { getDb } from '../db.ts'
 import type { Db } from '../db.ts'
-import { grant, membership, organization, user } from '../lib/db/schema.ts'
+import { grant, organization, team, teammate, user } from '../lib/db/schema.ts'
 import { isAdminRole } from './authn/session-store.ts'
 import { can } from './authz/index.ts'
 
@@ -47,18 +47,19 @@ export async function canAccessOrganization(
     return true
   }
 
-  const membershipRows = await db
-    .select({ id: membership.id })
-    .from(membership)
+  const teamRows = await db
+    .select({ id: teammate.id })
+    .from(teammate)
+    .innerJoin(team, eq(teammate.teamId, team.id))
     .where(
       and(
-        eq(membership.userId, userId),
-        eq(membership.organizationId, organizationId),
+        eq(teammate.userId, userId),
+        eq(team.organizationId, organizationId),
       ),
     )
     .limit(1)
 
-  if (membershipRows.length > 0) {
+  if (teamRows.length > 0) {
     return true
   }
 
@@ -119,7 +120,10 @@ export async function listAccessibleOrganizations(
       UNION
       SELECT 'team'::text, team_id FROM teammate WHERE user_id = ${userId}::uuid
       UNION
-      SELECT 'organization'::text, organization_id FROM membership WHERE user_id = ${userId}::uuid
+      SELECT 'organization'::text, t.organization_id
+      FROM teammate tm
+      JOIN team t ON t.id = tm.team_id
+      WHERE tm.user_id = ${userId}::uuid
     ),
     grant_orgs AS (
       SELECT DISTINCT ag.entity_id AS organization_id
@@ -130,7 +134,10 @@ export async function listAccessibleOrganizations(
         AND ag.permission IN ('organization:own', 'organization:manage')
     ),
     member_orgs AS (
-      SELECT organization_id FROM membership WHERE user_id = ${userId}::uuid
+      SELECT t.organization_id
+      FROM teammate tm
+      JOIN team t ON t.id = tm.team_id
+      WHERE tm.user_id = ${userId}::uuid
     ),
     accessible_org_ids AS (
       SELECT organization_id FROM grant_orgs

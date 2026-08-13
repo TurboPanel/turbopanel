@@ -11,10 +11,9 @@ import {
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
-  assignment,
+  steward,
   environment,
   grant,
-  membership,
   organization,
   principal,
   project,
@@ -105,7 +104,6 @@ async function withPrincipalFixtures(
     .returning({ id: user.id })
   const userId = insertedUser!.id
 
-  await db.insert(membership).values({ organizationId, userId })
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -178,7 +176,7 @@ async function withPrincipalFixtures(
       serverId,
     })
   } finally {
-    await db.delete(assignment).where(eq(assignment.serviceId, serviceId))
+    await db.delete(steward).where(eq(steward.serviceId, serviceId))
     await db.delete(principal).where(eq(principal.projectId, projectId))
     await db.delete(service).where(eq(service.id, serviceId))
     await db.delete(environment).where(eq(environment.id, environmentId))
@@ -187,10 +185,6 @@ async function withPrincipalFixtures(
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
-    ))
-    await db.delete(membership).where(and(
-      eq(membership.userId, userId),
-      eq(membership.organizationId, organizationId),
     ))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))

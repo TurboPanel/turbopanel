@@ -1,6 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { assignment, environment, service } from '../../lib/db/schema.ts'
+import { environment, service, steward } from '../../lib/db/schema.ts'
 import { isUuid } from './store.ts'
 
 /** Service ids linked to each principal (empty array when none). */
@@ -16,11 +16,11 @@ export async function loadServiceIdsByPrincipalIds(
 
   const rows = await db
     .select({
-      principalId: assignment.principalId,
-      serviceId: assignment.serviceId,
+      principalId: steward.principalId,
+      serviceId: steward.serviceId,
     })
-    .from(assignment)
-    .where(inArray(assignment.principalId, [...principalIds]))
+    .from(steward)
+    .where(inArray(steward.principalId, [...principalIds]))
 
   for (const row of rows) {
     const list = map.get(row.principalId) ?? []
@@ -61,15 +61,15 @@ export async function servicesBelongToProject(
   return rows.length === unique.length
 }
 
-/** Distinct principal ids assigned to any service in the environment. */
-export async function loadPrincipalIdsAssignedToEnvironment(
+/** Distinct principal ids that steward any service in the environment. */
+export async function loadStewardPrincipalIdsForEnvironment(
   db: Db,
   environmentId: string,
 ): Promise<string[]> {
   const rows = await db
-    .selectDistinct({ principalId: assignment.principalId })
-    .from(assignment)
-    .innerJoin(service, eq(assignment.serviceId, service.id))
+    .selectDistinct({ principalId: steward.principalId })
+    .from(steward)
+    .innerJoin(service, eq(steward.serviceId, service.id))
     .where(eq(service.environmentId, environmentId))
 
   return rows
@@ -78,7 +78,7 @@ export async function loadPrincipalIdsAssignedToEnvironment(
 }
 
 /**
- * Principal ids assigned to each service in the environment
+ * Principal ids that steward each service in the environment
  * (empty array when none). Keys are service ids.
  */
 export async function loadPrincipalIdsByServiceIdForEnvironment(
@@ -87,11 +87,11 @@ export async function loadPrincipalIdsByServiceIdForEnvironment(
 ): Promise<Map<string, string[]>> {
   const rows = await db
     .select({
-      principalId: assignment.principalId,
-      serviceId: assignment.serviceId,
+      principalId: steward.principalId,
+      serviceId: steward.serviceId,
     })
-    .from(assignment)
-    .innerJoin(service, eq(assignment.serviceId, service.id))
+    .from(steward)
+    .innerJoin(service, eq(steward.serviceId, service.id))
     .where(eq(service.environmentId, environmentId))
 
   const map = new Map<string, string[]>()

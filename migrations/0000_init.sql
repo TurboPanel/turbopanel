@@ -14,15 +14,6 @@ CREATE TABLE "account" (
 	"password" text
 );
 --> statement-breakpoint
-CREATE TABLE "assignment" (
-	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
-	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"principal_id" uuid NOT NULL,
-	"service_id" uuid NOT NULL,
-	CONSTRAINT "assignment_principal_service_unique" UNIQUE("principal_id","service_id")
-);
---> statement-breakpoint
 CREATE TABLE "binding" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -37,6 +28,18 @@ CREATE TABLE "binding" (
 	CONSTRAINT "uniq_binding_service_prefix" UNIQUE("service_id","key_prefix"),
 	CONSTRAINT "binding_key_prefix_format_check" CHECK ((char_length((key_prefix)::text) >= 1) AND (char_length((key_prefix)::text) <= 64) AND ((key_prefix)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)),
 	CONSTRAINT "binding_database_name_format_check" CHECK ((char_length((database_name)::text) >= 1) AND (char_length((database_name)::text) <= 63) AND ((database_name)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text))
+);
+--> statement-breakpoint
+CREATE TABLE "bridge" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
+	"network_id" uuid NOT NULL,
+	"server_id" uuid NOT NULL,
+	"cidr" "cidr" NOT NULL,
+	CONSTRAINT "bridge_network_server_unique" UNIQUE("network_id","server_id")
 );
 --> statement-breakpoint
 CREATE TABLE "command" (
@@ -227,14 +230,6 @@ CREATE TABLE "managed" (
 	CONSTRAINT "managed_status_check" CHECK (status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed'))
 );
 --> statement-breakpoint
-CREATE TABLE "membership" (
-	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
-	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"organization_id" uuid NOT NULL,
-	"user_id" uuid NOT NULL,
-	CONSTRAINT "membership_org_user_unique" UNIQUE("organization_id","user_id")
-);
---> statement-breakpoint
 CREATE TABLE "network" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -418,16 +413,13 @@ CREATE TABLE "setting" (
 	CONSTRAINT "setting_key_unique" UNIQUE("key")
 );
 --> statement-breakpoint
-CREATE TABLE "span" (
+CREATE TABLE "steward" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"metadata" jsonb,
-	"options" jsonb,
-	"network_id" uuid NOT NULL,
-	"server_id" uuid NOT NULL,
-	"cidr" "cidr" NOT NULL,
-	CONSTRAINT "span_network_server_unique" UNIQUE("network_id","server_id")
+	"principal_id" uuid NOT NULL,
+	"service_id" uuid NOT NULL,
+	CONSTRAINT "steward_principal_service_unique" UNIQUE("principal_id","service_id")
 );
 --> statement-breakpoint
 CREATE TABLE "storage" (
@@ -596,10 +588,10 @@ CREATE TABLE "workspace" (
 );
 --> statement-breakpoint
 ALTER TABLE "account" ADD CONSTRAINT "account_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "assignment" ADD CONSTRAINT "assignment_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "assignment" ADD CONSTRAINT "assignment_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "binding" ADD CONSTRAINT "binding_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "binding" ADD CONSTRAINT "binding_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bridge" ADD CONSTRAINT "bridge_network_id_network_id_fk" FOREIGN KEY ("network_id") REFERENCES "public"."network"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bridge" ADD CONSTRAINT "bridge_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "command" ADD CONSTRAINT "command_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "container" ADD CONSTRAINT "container_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "container" ADD CONSTRAINT "container_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -625,8 +617,6 @@ ALTER TABLE "license" ADD CONSTRAINT "license_organization_id_organization_id_fk
 ALTER TABLE "license" ADD CONSTRAINT "license_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "managed" ADD CONSTRAINT "managed_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "managed" ADD CONSTRAINT "managed_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "membership" ADD CONSTRAINT "membership_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "membership" ADD CONSTRAINT "membership_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "network" ADD CONSTRAINT "network_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "network" ADD CONSTRAINT "network_datacenter_id_datacenter_id_fk" FOREIGN KEY ("datacenter_id") REFERENCES "public"."datacenter"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "network" ADD CONSTRAINT "network_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -647,8 +637,8 @@ ALTER TABLE "server" ADD CONSTRAINT "server_organization_id_organization_id_fk" 
 ALTER TABLE "server" ADD CONSTRAINT "server_datacenter_id_datacenter_id_fk" FOREIGN KEY ("datacenter_id") REFERENCES "public"."datacenter"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "service" ADD CONSTRAINT "service_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session" ADD CONSTRAINT "session_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "span" ADD CONSTRAINT "span_network_id_network_id_fk" FOREIGN KEY ("network_id") REFERENCES "public"."network"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "span" ADD CONSTRAINT "span_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "steward" ADD CONSTRAINT "steward_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "steward" ADD CONSTRAINT "steward_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "storage" ADD CONSTRAINT "storage_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "storage" ADD CONSTRAINT "storage_project_id_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."project"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "storage" ADD CONSTRAINT "storage_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -674,11 +664,11 @@ ALTER TABLE "variable" ADD CONSTRAINT "variable_binding_id_binding_id_fk" FOREIG
 ALTER TABLE "vpn" ADD CONSTRAINT "vpn_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace" ADD CONSTRAINT "workspace_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_account_user_id" ON "account" USING btree ("user_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_assignment_principal_id" ON "assignment" USING btree ("principal_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_assignment_service_id" ON "assignment" USING btree ("service_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_binding_principal_id" ON "binding" USING btree ("principal_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_binding_service_id" ON "binding" USING btree ("service_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_binding_service_engine_defaults" ON "binding" USING btree ("service_id") WHERE "binding"."emit_engine_defaults";--> statement-breakpoint
+CREATE INDEX "idx_bridge_network_id" ON "bridge" USING btree ("network_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_bridge_server_id" ON "bridge" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_command_server_id_created_at" ON "command" USING btree ("server_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "idx_command_status" ON "command" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "idx_container_service_id" ON "container" USING btree ("service_id" uuid_ops);--> statement-breakpoint
@@ -717,8 +707,6 @@ CREATE INDEX "idx_managed_environment_id" ON "managed" USING btree ("environment
 CREATE INDEX "idx_managed_server_id" ON "managed" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_managed_engine" ON "managed" USING btree ("engine" text_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "managed_environment_id_unique" ON "managed" USING btree ("environment_id");--> statement-breakpoint
-CREATE INDEX "idx_membership_organization_id" ON "membership" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_membership_user_id" ON "membership" USING btree ("user_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_network_server_id" ON "network" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_network_organization_id" ON "network" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_network_datacenter_id" ON "network" USING btree ("datacenter_id" uuid_ops);--> statement-breakpoint
@@ -749,8 +737,8 @@ CREATE INDEX "idx_server_connected" ON "server" USING btree ("id") WHERE "server
 CREATE INDEX "idx_service_environment_id" ON "service" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_service_environment_compose_name" ON "service" USING btree ("environment_id","compose_service_name");--> statement-breakpoint
 CREATE INDEX "idx_session_user_id" ON "session" USING btree ("user_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_span_network_id" ON "span" USING btree ("network_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_span_server_id" ON "span" USING btree ("server_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_steward_principal_id" ON "steward" USING btree ("principal_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_steward_service_id" ON "steward" USING btree ("service_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_storage_organization_id" ON "storage" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_storage_project_id" ON "storage" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_storage_environment_id" ON "storage" USING btree ("environment_id" uuid_ops);--> statement-breakpoint

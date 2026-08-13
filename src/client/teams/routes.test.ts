@@ -10,7 +10,7 @@ import {
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
-import { grant, membership, organization, team, user } from '../../lib/db/schema.ts'
+import { grant, organization, team, teammate, user } from '../../lib/db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerTeamRoutes } from './routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
@@ -91,10 +91,6 @@ async function withTeamFixtures(
     .returning({ id: user.id })
   const memberId = member!.id
 
-  await db.insert(membership).values([
-    { organizationId, userId: managerId },
-    { organizationId, userId: memberId },
-  ])
   await db.insert(grant).values({
     entityType: 'organization',
     entityId: organizationId,
@@ -118,7 +114,6 @@ async function withTeamFixtures(
       eq(grant.actorId, managerId),
       eq(grant.entityId, organizationId),
     ))
-    await db.delete(membership).where(eq(membership.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, managerId))
     await db.delete(user).where(eq(user.id, memberId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -135,7 +130,7 @@ test('GET /teams lists org teams for managers and hides them from regular member
     organizationId,
   }) => {
     const now = new Date().toISOString()
-    await db.insert(team).values([
+    const insertedTeams = await db.insert(team).values([
       {
         organizationId,
         name: 'Platform',
@@ -148,7 +143,12 @@ test('GET /teams lists org teams for managers and hides them from regular member
         createdAt: now,
         updatedAt: now,
       },
-    ])
+    ]).returning({ id: team.id, name: team.name })
+    const platform = insertedTeams.find((row) => row.name === 'Platform')
+    if (!platform) {
+      throw new TypeError('expected Platform team')
+    }
+    await db.insert(teammate).values({ teamId: platform.id, userId: memberId })
 
     const managerCookie = await sessionCookie(db, secrets, managerId)
     const managerRes = await app.request('/teams', {

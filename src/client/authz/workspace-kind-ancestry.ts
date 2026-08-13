@@ -165,18 +165,18 @@ export async function resolveWorkspaceKindForEntity(
       `)
       if (managedRows[0]?.kind) return kindFromRow(managedRows[0].kind)
 
-      const assignmentRows = await db.execute<{ kind: string }>(sql`
+      const stewardRows = await db.execute<{ kind: string }>(sql`
         SELECT w.kind AS kind
         FROM principal p
-        JOIN assignment a ON a.principal_id = p.id
-        JOIN service s ON s.id = a.service_id
+        JOIN steward st ON st.principal_id = p.id
+        JOIN service s ON s.id = st.service_id
         JOIN environment e ON e.id = s.environment_id
         JOIN project pr ON pr.id = e.project_id
         JOIN workspace w ON w.id = pr.workspace_id
         WHERE p.id = ${entityId}::uuid
         LIMIT 1
       `)
-      return kindFromRow(assignmentRows[0]?.kind)
+      return kindFromRow(stewardRows[0]?.kind)
     }
     case 'storage': {
       const rows = await db.execute<{ kind: string }>(sql`

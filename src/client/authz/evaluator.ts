@@ -1,6 +1,6 @@
 import { eq, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { grant, membership, teammate } from '../../lib/db/schema.ts'
+import { grant, team, teammate } from '../../lib/db/schema.ts'
 import { type PermissionKey, isSystemPermissionKey } from './catalog.ts'
 
 export type { PermissionKey }
@@ -26,32 +26,38 @@ export class ForbiddenError extends Error {
 export type CanOptions = {
   /**
    * Pre-fetched subject set (request-scope memoization). When omitted, the
-   * subject set is resolved inline in SQL from `membership` / `teammate`.
+   * subject set is resolved inline in SQL from `teammate` (org via `team`).
    */
   subjects?: Subject[]
 }
 
 /**
  * Resolve the full subject set for a user: the user itself, every team they
- * belong to, and every organization they are a member of.
+ * belong to, and every organization those teams belong to.
  */
 export async function getSubjects(db: Db, userId: string): Promise<Subject[]> {
   const subjects: Subject[] = [{ subjectKind: 'user', subjectId: userId }]
 
-  const teamRows = await db
-    .select({ teamId: teammate.teamId })
+  const rows = await db
+    .select({
+      teamId: teammate.teamId,
+      organizationId: team.organizationId,
+    })
     .from(teammate)
+    .innerJoin(team, eq(teammate.teamId, team.id))
     .where(eq(teammate.userId, userId))
-  for (const row of teamRows) {
-    subjects.push({ subjectKind: 'team', subjectId: row.teamId })
-  }
 
-  const orgRows = await db
-    .select({ organizationId: membership.organizationId })
-    .from(membership)
-    .where(eq(membership.userId, userId))
-  for (const row of orgRows) {
-    subjects.push({ subjectKind: 'organization', subjectId: row.organizationId })
+  const seenOrgs = new Set<string>()
+  const orgIds: string[] = []
+  for (const row of rows) {
+    subjects.push({ subjectKind: 'team', subjectId: row.teamId })
+    if (!seenOrgs.has(row.organizationId)) {
+      seenOrgs.add(row.organizationId)
+      orgIds.push(row.organizationId)
+    }
+  }
+  for (const organizationId of orgIds) {
+    subjects.push({ subjectKind: 'organization', subjectId: organizationId })
   }
 
   return subjects
@@ -73,7 +79,10 @@ function buildActorsetBody(userId: string, subjects?: Subject[]): SQL {
     UNION
     SELECT 'team'::text, team_id FROM teammate WHERE user_id = ${userId}::uuid
     UNION
-    SELECT 'organization'::text, organization_id FROM membership WHERE user_id = ${userId}::uuid
+    SELECT 'organization'::text, t.organization_id
+    FROM teammate tm
+    JOIN team t ON t.id = tm.team_id
+    WHERE tm.user_id = ${userId}::uuid
   `
 }
 
@@ -248,8 +257,8 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         UNION ALL
         SELECT 'organization'::text, w.organization_id, 1
         FROM principal p
-        JOIN assignment a ON a.principal_id = p.id
-        JOIN service s ON s.id = a.service_id
+        JOIN steward st ON st.principal_id = p.id
+        JOIN service s ON s.id = st.service_id
         JOIN environment e ON e.id = s.environment_id
         JOIN project pr ON pr.id = e.project_id
         JOIN workspace w ON w.id = pr.workspace_id
@@ -597,8 +606,8 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         WHERE w.organization_id = ${organizationId}::uuid
         UNION
         SELECT DISTINCT p.id FROM principal p
-        JOIN assignment a ON a.principal_id = p.id
-        JOIN service s ON s.id = a.service_id
+        JOIN steward st ON st.principal_id = p.id
+        JOIN service s ON s.id = st.service_id
         JOIN environment e ON e.id = s.environment_id
         JOIN project pr ON pr.id = e.project_id
         JOIN workspace w ON w.id = pr.workspace_id

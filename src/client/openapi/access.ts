@@ -168,7 +168,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Accept an organization invitation',
       description:
-        'Atomically claims a pending invitation, creates org membership (and optional team membership), materializes the invitation\'s `grants` JSON into user-scoped grant rows, and returns the accepted organization id. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.',
+        'Atomically claims a pending invitation, creates team membership, materializes the invitation\'s `grants` JSON into user-scoped grant rows, and returns the accepted organization id. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {

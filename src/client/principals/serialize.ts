@@ -11,7 +11,7 @@ export type SerializedProjectPrincipal = {
   managedId: string | null
   metadata: unknown
   options: unknown
-  /** Services this principal runs as / owns storage for (via `assignment`). */
+  /** Services this principal runs as / owns storage for (via `steward`). */
   serviceIds: string[]
   createdAt: string
   updatedAt: string

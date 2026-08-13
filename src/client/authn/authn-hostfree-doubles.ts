@@ -3,7 +3,6 @@ import {
   account,
   grant,
   license,
-  membership,
   organization,
   session,
   setting,
@@ -410,7 +409,6 @@ function handleInsertValues(
   }
   if (
     table === team ||
-    table === membership ||
     table === teammate ||
     table === grant ||
     table === workspace ||

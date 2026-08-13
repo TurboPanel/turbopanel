@@ -66,23 +66,29 @@ test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', 
   }
 
   // Sanity: renames from this policy change stay in the baseline
-  if (!unique.includes('membership')) {
-    throw new TypeError('expected organization-membership table "membership"')
+  if (!unique.includes('teammate')) {
+    throw new TypeError('expected team-membership table "teammate"')
   }
   if (!unique.includes('node')) {
     throw new TypeError('expected managed-cluster participation table "node"')
   }
-  if (!unique.includes('fabric') || !unique.includes('relay') || !unique.includes('span')) {
-    throw new TypeError('expected TurboFabric tables fabric / relay / span')
+  if (!unique.includes('fabric') || !unique.includes('relay') || !unique.includes('bridge')) {
+    throw new TypeError('expected TurboFabric tables fabric / relay / bridge')
+  }
+  if (!unique.includes('steward')) {
+    throw new TypeError('expected principal-service table "steward"')
   }
   if (
     unique.includes('member') ||
+    unique.includes('membership') ||
     unique.includes('managed_member') ||
     unique.includes('router') ||
-    unique.includes('attachment')
+    unique.includes('attachment') ||
+    unique.includes('span') ||
+    unique.includes('assignment')
   ) {
     throw new TypeError(
-      'retired table names member / managed_member / router / attachment must not reappear',
+      'retired table names member / membership / managed_member / router / attachment / span / assignment must not reappear',
     )
   }
 
