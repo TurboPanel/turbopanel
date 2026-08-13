@@ -20,7 +20,9 @@ import {
   type ReencryptStage,
 } from './reencrypt-secrets.ts'
 
-const PUBLIC_URLS_APPLY_TIMEOUT_MS = 60_000
+// Cert apply runs ansible + often a full Caddy restart (admin is off, so
+// reload fails). Observed ~60s wall time; keep headroom above that.
+const PUBLIC_URLS_APPLY_TIMEOUT_MS = 180_000
 
 function nowTs(): string {
   return new Date().toISOString()

@@ -16,7 +16,11 @@
 #   CADDY_TLS_KEY            Server leaf key (default: ./certs/self-signed.key)
 {
 	auto_https off
-	admin off
+	# Localhost-only admin so `systemctl reload` / `caddy reload` can swap leaf
+	# certs without killing the process. Public-urls apply runs through this
+	# reverse proxy (incl. Cloudflare → origin); a full restart mid-request
+	# surfaces as HTTP 502 at the edge.
+	admin localhost:2019
 }
 
 # Bind all interfaces so the proxy is reachable via LAN IP, not just localhost.
