@@ -1,6 +1,6 @@
 /**
  * Guard: physical CREATE TABLE names must stay single lower-case words
- * (no underscores). Squashed baseline lives at migrations/0000_unify_fabric_mesh.sql.
+ * (no underscores). Squashed baseline lives at migrations/0000_init.sql.
  */
 
 import { assertEquals } from 'jsr:@std/assert'
@@ -51,13 +51,13 @@ function assertPhysicalTableName(name: string): void {
   }
 }
 
-test('migrations/0000_unify_fabric_mesh.sql CREATE TABLE names are single lower-case words', async () => {
+test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', async () => {
   const here = dirname(fromFileUrl(import.meta.url))
-  const sqlPath = join(here, '../../../migrations/0000_unify_fabric_mesh.sql')
+  const sqlPath = join(here, '../../../migrations/0000_init.sql')
   const sql = await Deno.readTextFile(sqlPath)
   const names = extractCreateTableNames(sql)
   if (names.length === 0) {
-    throw new TypeError('expected at least one CREATE TABLE in 0000_unify_fabric_mesh.sql')
+    throw new TypeError('expected at least one CREATE TABLE in 0000_init.sql')
   }
 
   const unique = [...new Set(names)].sort((a, b) => a.localeCompare(b))
@@ -107,7 +107,7 @@ test('migrations/0000_unify_fabric_mesh.sql CREATE TABLE names are single lower-
   )) {
     if (!unique.includes(exception)) {
       throw new TypeError(
-        `exception "${exception}" is not present in 0000_unify_fabric_mesh.sql — remove it from the test allowlist`,
+        `exception "${exception}" is not present in 0000_init.sql — remove it from the test allowlist`,
       )
     }
   }
