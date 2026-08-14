@@ -75,6 +75,7 @@ Sessions are **opaque DB-backed tokens** with a signed cookie:
 - On every request the signature is verified first (constant-time); only then is the DB queried for the session row. A cookie value that does not parse as this envelope is rejected outright (no fallback formats).
 - Cookie name: `turbopanel.session_token` on HTTP, `__Host-turbopanel.session_token` on HTTPS (resolved from the request URL in `src/client/authn/crypto.ts`). `__Host-` requires `Secure`, `Path=/`, and no `Domain` (stronger against subdomain cookie shadowing).
 - Cookie attributes: `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7 days). `Secure` is added automatically when the request URL is HTTPS.
+- Native / Expo app clients use this **same cookie session** against an absolute control-plane origin (`credentials: include`). Do **not** add a user-session Bearer; Bearer remains daemon JWT / API-key territory.
 
 ### Host PAM install gate (Deno only, install wizard)
 
