@@ -49,7 +49,7 @@ test('isEntityType and isGrantEntityType enforce their respective catalogs', () 
     assertEquals(isEntityType(kind), true)
   }
   assertEquals(isGrantEntityType('principal'), false)
-  assertEquals(isGrantEntityType('peer'), false)
+  assertEquals(isGrantEntityType('fabric'), false)
 })
 
 test('isSubjectType accepts user, team, and member only', () => {
@@ -76,5 +76,8 @@ test('getPermissionCatalog returns sorted keys with display names', () => {
 test('RESOURCE_KINDS and ENTITY_TYPES include workspace-tree leaves used by authz', () => {
   assertEquals(RESOURCE_KINDS.includes('managed'), true)
   assertEquals(ENTITY_TYPES.includes('storage'), true)
-  assertEquals(ENTITY_TYPES.includes('peer'), true)
+  const entityTypes: readonly string[] = ENTITY_TYPES
+  assertEquals(entityTypes.includes('peer'), false)
+  assertEquals(entityTypes.includes('vpn'), false)
+  assertEquals(entityTypes.includes('fabric'), false)
 })

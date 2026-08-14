@@ -27,7 +27,7 @@ TurboPanel gives operators one console for multi-server fleets, application depl
 - **Compose projects** — base compose documents, per-environment overlays, visual and YAML editors, deploy preview, and one-click deploy/stop
 - **Managed engines** — provisioned Postgres (and growing engine catalog) with backups, users, databases, and lifecycle controls
 - **Hostnames, TLS, and variables** — HTTP/TCP/UDP hostings, certificate library, scoped secrets, and environment injection
-- **WireGuard meshes** — org-scoped VPNs with gateway/member roles and apply-to-fleet workflows
+- **TurboFabric** — one encrypted org mesh with gateway/member relays, cross-host container networking, and apply-to-fleet
 - **Same experience everywhere** — identical product surface on TurboPanel High Availability and self-hosted; only operational responsibility differs
 
 ## Choose how to run it

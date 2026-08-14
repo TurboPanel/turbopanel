@@ -1,5 +1,5 @@
 {
-  "id": "f686686e-7996-4201-941f-b7f82f709e96",
+  "id": "0d948f10-655f-4d8c-9e03-5d2eab60b53c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1833,18 +1833,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "vpn_id": {
-          "name": "vpn_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "fabric_id": {
-          "name": "fabric_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "address": {
           "name": "address",
           "type": "inet",
@@ -1935,38 +1923,6 @@
           "method": "btree",
           "with": {}
         },
-        "idx_ip_vpn_id": {
-          "name": "idx_ip_vpn_id",
-          "columns": [
-            {
-              "expression": "vpn_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_ip_fabric_id": {
-          "name": "idx_ip_fabric_id",
-          "columns": [
-            {
-              "expression": "fabric_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "uniq_ip_org_address": {
           "name": "uniq_ip_org_address",
           "columns": [
@@ -1984,51 +1940,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"ip\".\"vpn_id\" IS NULL AND \"ip\".\"fabric_id\" IS NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_ip_vpn_address": {
-          "name": "uniq_ip_vpn_address",
-          "columns": [
-            {
-              "expression": "vpn_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "address",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"ip\".\"vpn_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_ip_fabric_address": {
-          "name": "uniq_ip_fabric_address",
-          "columns": [
-            {
-              "expression": "fabric_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "address",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"ip\".\"fabric_id\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2086,32 +1997,6 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
-        },
-        "ip_vpn_id_vpn_id_fk": {
-          "name": "ip_vpn_id_vpn_id_fk",
-          "tableFrom": "ip",
-          "tableTo": "vpn",
-          "columnsFrom": [
-            "vpn_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ip_fabric_id_fabric_id_fk": {
-          "name": "ip_fabric_id_fabric_id_fk",
-          "tableFrom": "ip",
-          "tableTo": "fabric",
-          "columnsFrom": [
-            "fabric_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2124,15 +2009,7 @@
         },
         "ip_scope_check": {
           "name": "ip_scope_check",
-          "value": "scope IN ('public', 'datacenter', 'vpn', 'fabric')"
-        },
-        "ip_vpn_scope_check": {
-          "name": "ip_vpn_scope_check",
-          "value": "(\"ip\".\"scope\" = 'vpn' AND \"ip\".\"vpn_id\" IS NOT NULL) OR (\"ip\".\"scope\" <> 'vpn' AND \"ip\".\"vpn_id\" IS NULL)"
-        },
-        "ip_fabric_scope_check": {
-          "name": "ip_fabric_scope_check",
-          "value": "(\"ip\".\"scope\" = 'fabric' AND \"ip\".\"fabric_id\" IS NOT NULL) OR (\"ip\".\"scope\" <> 'fabric' AND \"ip\".\"fabric_id\" IS NULL)"
+          "value": "scope IN ('public', 'datacenter')"
         },
         "ip_datacenter_scope_check": {
           "name": "ip_datacenter_scope_check",
@@ -2140,7 +2017,7 @@
         },
         "ip_datacenter_free_pool_check": {
           "name": "ip_datacenter_free_pool_check",
-          "value": "(\"ip\".\"datacenter_id\" IS NULL) OR (\"ip\".\"server_id\" IS NULL AND \"ip\".\"vpn_id\" IS NULL AND \"ip\".\"network_id\" IS NULL AND \"ip\".\"fabric_id\" IS NULL)"
+          "value": "(\"ip\".\"datacenter_id\" IS NULL) OR (\"ip\".\"server_id\" IS NULL AND \"ip\".\"network_id\" IS NULL)"
         },
         "ip_name_format_check": {
           "name": "ip_name_format_check",
@@ -3368,7 +3245,7 @@
         },
         "node_transport_check": {
           "name": "node_transport_check",
-          "value": "\"node\".\"replication_transport\" IS NULL OR \"node\".\"replication_transport\" IN ('local','datacenter','vpn')"
+          "value": "\"node\".\"replication_transport\" IS NULL OR \"node\".\"replication_transport\" IN ('local','fabric','datacenter')"
         },
         "node_status_check": {
           "name": "node_status_check",
@@ -3575,269 +3452,6 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.peer": {
-      "name": "peer",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "metadata": {
-          "name": "metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "options": {
-          "name": "options",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "vpn_id": {
-          "name": "vpn_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "server_id": {
-          "name": "server_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "endpoint_ip_id": {
-          "name": "endpoint_ip_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tunnel_ip_id": {
-          "name": "tunnel_ip_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "role": {
-          "name": "role",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'member'"
-        },
-        "public_key": {
-          "name": "public_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "listen_port": {
-          "name": "listen_port",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "endpoint": {
-          "name": "endpoint",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "preshared_key": {
-          "name": "preshared_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "idx_peer_vpn_id": {
-          "name": "idx_peer_vpn_id",
-          "columns": [
-            {
-              "expression": "vpn_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_peer_server_id": {
-          "name": "idx_peer_server_id",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_peer_endpoint_ip_id": {
-          "name": "idx_peer_endpoint_ip_id",
-          "columns": [
-            {
-              "expression": "endpoint_ip_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_peer_tunnel_ip_id": {
-          "name": "idx_peer_tunnel_ip_id",
-          "columns": [
-            {
-              "expression": "tunnel_ip_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_peer_vpn_tunnel_ip": {
-          "name": "uniq_peer_vpn_tunnel_ip",
-          "columns": [
-            {
-              "expression": "vpn_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "tunnel_ip_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"peer\".\"tunnel_ip_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "peer_vpn_id_vpn_id_fk": {
-          "name": "peer_vpn_id_vpn_id_fk",
-          "tableFrom": "peer",
-          "tableTo": "vpn",
-          "columnsFrom": [
-            "vpn_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "peer_server_id_server_id_fk": {
-          "name": "peer_server_id_server_id_fk",
-          "tableFrom": "peer",
-          "tableTo": "server",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "peer_endpoint_ip_id_ip_id_fk": {
-          "name": "peer_endpoint_ip_id_ip_id_fk",
-          "tableFrom": "peer",
-          "tableTo": "ip",
-          "columnsFrom": [
-            "endpoint_ip_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "peer_tunnel_ip_id_ip_id_fk": {
-          "name": "peer_tunnel_ip_id_ip_id_fk",
-          "tableFrom": "peer",
-          "tableTo": "ip",
-          "columnsFrom": [
-            "tunnel_ip_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "peer_vpn_server_unique": {
-          "name": "peer_vpn_server_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "vpn_id",
-            "server_id"
-          ]
-        },
-        "peer_vpn_public_key_unique": {
-          "name": "peer_vpn_public_key_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "vpn_id",
-            "public_key"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "peer_role_check": {
-          "name": "peer_role_check",
-          "value": "role IN ('gateway', 'member')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.principal": {
@@ -4166,9 +3780,28 @@
           "primaryKey": false,
           "notNull": true
         },
-        "fabric_ip_id": {
-          "name": "fabric_ip_id",
-          "type": "uuid",
+        "address": {
+          "name": "address",
+          "type": "inet",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'member'"
+        },
+        "keepalive": {
+          "name": "keepalive",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "endpoint_address": {
+          "name": "endpoint_address",
+          "type": "inet",
           "primaryKey": false,
           "notNull": false
         },
@@ -4183,6 +3816,19 @@
           "type": "cidr",
           "primaryKey": false,
           "notNull": true
+        },
+        "advertised_cidrs": {
+          "name": "advertised_cidrs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "preshared_key": {
+          "name": "preshared_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -4207,22 +3853,6 @@
           "columns": [
             {
               "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_relay_fabric_ip_id": {
-          "name": "idx_relay_fabric_ip_id",
-          "columns": [
-            {
-              "expression": "fabric_ip_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -4261,19 +3891,6 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
-        },
-        "relay_fabric_ip_id_ip_id_fk": {
-          "name": "relay_fabric_ip_id_ip_id_fk",
-          "tableFrom": "relay",
-          "tableTo": "ip",
-          "columnsFrom": [
-            "fabric_ip_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4285,10 +3902,39 @@
             "fabric_id",
             "server_id"
           ]
+        },
+        "uniq_relay_fabric_address": {
+          "name": "uniq_relay_fabric_address",
+          "nullsNotDistinct": false,
+          "columns": [
+            "fabric_id",
+            "address"
+          ]
+        },
+        "uniq_relay_fabric_public_key": {
+          "name": "uniq_relay_fabric_public_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "fabric_id",
+            "public_key"
+          ]
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "relay_role_check": {
+          "name": "relay_role_check",
+          "value": "role IN ('gateway', 'member')"
+        },
+        "relay_keepalive_check": {
+          "name": "relay_keepalive_check",
+          "value": "\"relay\".\"keepalive\" IS NULL OR (\"relay\".\"keepalive\" BETWEEN 1 AND 65535)"
+        },
+        "relay_member_advertised_cidrs_empty_check": {
+          "name": "relay_member_advertised_cidrs_empty_check",
+          "value": "\"relay\".\"role\" <> 'member' OR \"relay\".\"advertised_cidrs\" = '[]'::jsonb"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.segment": {
@@ -5401,6 +5047,12 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "address": {
+          "name": "address",
+          "type": "inet",
+          "primaryKey": false,
+          "notNull": false
         },
         "slot": {
           "name": "slot",
@@ -6684,127 +6336,6 @@
       },
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.vpn": {
-      "name": "vpn",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "metadata": {
-          "name": "metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "options": {
-          "name": "options",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "cidr": {
-          "name": "cidr",
-          "type": "cidr",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "idx_vpn_organization_id": {
-          "name": "idx_vpn_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_vpn_organization_id_cidr": {
-          "name": "uniq_vpn_organization_id_cidr",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "cidr",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "vpn_organization_id_organization_id_fk": {
-          "name": "vpn_organization_id_organization_id_fk",
-          "tableFrom": "vpn",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "vpn_name_format_check": {
-          "name": "vpn_name_format_check",
-          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.workspace": {

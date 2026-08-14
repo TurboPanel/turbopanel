@@ -412,8 +412,6 @@ test('verifyEntityExists checks every supported entity table via select', async 
     'network',
     'datacenter',
     'ip',
-    'vpn',
-    'peer',
   ] as const
 
   for (const entityType of selectEntityTypes) {
@@ -435,7 +433,6 @@ test('resolveEntityOrganizationId resolves org ids for sql-backed entity types',
     'container',
     'managed',
     'variable',
-    'peer',
   ] as const) {
     const resolved = await resolveEntityOrganizationId(executeDb, entityType, otherUuid)
     assertEquals(resolved, validUuid)
@@ -461,7 +458,6 @@ test('resolveEntityOrganizationId resolves org ids for select-backed entity type
     'network',
     'datacenter',
     'ip',
-    'vpn',
   ] as const) {
     const resolved = await resolveEntityOrganizationId(selectDb, entityType, otherUuid)
     assertEquals(resolved, validUuid)

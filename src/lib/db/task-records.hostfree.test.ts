@@ -5,11 +5,7 @@
 import { assertEquals } from 'jsr:@std/assert'
 import type { Db } from '../../db.ts'
 import { task } from './schema.ts'
-import {
-  listEnvironmentTasks,
-  replaceEnvironmentTasks,
-  serializeTask,
-} from './task-records.ts'
+import { listEnvironmentTasks, replaceEnvironmentTasks, serializeTask } from './task-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -102,7 +98,12 @@ test('sticky re-plan leaves server_id untouched and only bumps generation', asyn
   await replaceEnvironmentTasks(db, {
     environmentId: envId,
     generation: 7,
-    tasks: [{ serviceId: serviceA, serverId: serverA, slot: 0, desiredState: 'running' }],
+    tasks: [{
+      serviceId: serviceA,
+      serverId: serverA,
+      slot: 0,
+      desiredState: 'running',
+    }],
   })
 
   assertEquals(db.conflictSets.length, 1)
@@ -152,47 +153,48 @@ test('listEnvironmentTasks orders by serviceId then slot', async () => {
   const db = {
     select: () => ({
       from: () => ({
-        where: () => thenableRows([
-          {
-            id: '2',
-            createdAt: '2020-01-01T00:00:00.000Z',
-            updatedAt: '2020-01-01T00:00:00.000Z',
-            metadata: null,
-            options: null,
-            environmentId: envId,
-            serviceId: serviceB,
-            serverId: serverA,
-            slot: 0,
-            generation: 1,
-            desiredState: 'running',
-          },
-          {
-            id: '1',
-            createdAt: '2020-01-01T00:00:00.000Z',
-            updatedAt: '2020-01-01T00:00:00.000Z',
-            metadata: null,
-            options: null,
-            environmentId: envId,
-            serviceId: serviceA,
-            serverId: serverA,
-            slot: 1,
-            generation: 1,
-            desiredState: 'running',
-          },
-          {
-            id: '0',
-            createdAt: '2020-01-01T00:00:00.000Z',
-            updatedAt: '2020-01-01T00:00:00.000Z',
-            metadata: null,
-            options: null,
-            environmentId: envId,
-            serviceId: serviceA,
-            serverId: serverA,
-            slot: 0,
-            generation: 1,
-            desiredState: 'running',
-          },
-        ]),
+        where: () =>
+          thenableRows([
+            {
+              id: '2',
+              createdAt: '2020-01-01T00:00:00.000Z',
+              updatedAt: '2020-01-01T00:00:00.000Z',
+              metadata: null,
+              options: null,
+              environmentId: envId,
+              serviceId: serviceB,
+              serverId: serverA,
+              slot: 0,
+              generation: 1,
+              desiredState: 'running',
+            },
+            {
+              id: '1',
+              createdAt: '2020-01-01T00:00:00.000Z',
+              updatedAt: '2020-01-01T00:00:00.000Z',
+              metadata: null,
+              options: null,
+              environmentId: envId,
+              serviceId: serviceA,
+              serverId: serverA,
+              slot: 1,
+              generation: 1,
+              desiredState: 'running',
+            },
+            {
+              id: '0',
+              createdAt: '2020-01-01T00:00:00.000Z',
+              updatedAt: '2020-01-01T00:00:00.000Z',
+              metadata: null,
+              options: null,
+              environmentId: envId,
+              serviceId: serviceA,
+              serverId: serverA,
+              slot: 0,
+              generation: 1,
+              desiredState: 'running',
+            },
+          ]),
       }),
     }),
   } as unknown as Db
@@ -217,7 +219,86 @@ test('serializeTask defaults unknown desiredState to running', () => {
     slot: 0,
     generation: 0,
     desiredState: 'nope',
+    address: null,
   })
   assertEquals(record.desiredState, 'running')
   assertEquals(record.slot, 0)
+  assertEquals(record.address, null)
+})
+
+test('replaceEnvironmentTasks writes and patches task.address including explicit null', async () => {
+  const db = createTaskDb({
+    existing: [{ id: 'task-1', serviceId: serviceA, slot: 0 }],
+  })
+
+  await replaceEnvironmentTasks(db, {
+    environmentId: envId,
+    generation: 4,
+    tasks: [{
+      serviceId: serviceA,
+      serverId: serverA,
+      slot: 0,
+      address: '203.0.113.10',
+    }],
+  })
+
+  assertEquals(db.inserts[0]?.address, '203.0.113.10')
+  assertEquals(db.conflictSets[0]?.address, '203.0.113.10')
+
+  await replaceEnvironmentTasks(db, {
+    environmentId: envId,
+    generation: 5,
+    tasks: [{
+      serviceId: serviceA,
+      serverId: serverA,
+      slot: 0,
+      address: null,
+    }],
+  })
+
+  assertEquals(db.inserts[1]?.address, null)
+  assertEquals(db.conflictSets[1]?.address, null)
+})
+
+test('serializeTask and listEnvironmentTasks surface a persisted address', async () => {
+  const record = serializeTask({
+    id: 't',
+    createdAt: '2020-01-01T00:00:00.000Z',
+    updatedAt: '2020-01-01T00:00:00.000Z',
+    metadata: null,
+    options: null,
+    environmentId: envId,
+    serviceId: serviceA,
+    serverId: serverA,
+    slot: 0,
+    generation: 1,
+    desiredState: 'running',
+    address: '203.0.113.10',
+  })
+  assertEquals(record.address, '203.0.113.10')
+
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () =>
+          thenableRows([{
+            id: '0',
+            createdAt: '2020-01-01T00:00:00.000Z',
+            updatedAt: '2020-01-01T00:00:00.000Z',
+            metadata: null,
+            options: null,
+            environmentId: envId,
+            serviceId: serviceA,
+            serverId: serverA,
+            slot: 0,
+            generation: 1,
+            desiredState: 'running',
+            address: '203.0.113.10',
+          }]),
+      }),
+    }),
+  } as unknown as Db
+
+  const listed = await listEnvironmentTasks(db, envId)
+  assertEquals(listed[0]?.address, '203.0.113.10')
 })

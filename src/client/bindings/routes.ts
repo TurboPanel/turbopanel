@@ -20,6 +20,7 @@ import {
   managed,
   principal,
   service,
+  task,
 } from '../../lib/db/schema.ts'
 import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
 import { getCommandQueue } from '../../lib/commands/queue.ts'
@@ -103,6 +104,13 @@ async function enqueueIngressForBindingChange(
     params.managedId,
   )) {
     serverIds.add(memberServerId)
+  }
+  const consumerTasks = await db
+    .select({ serverId: task.serverId })
+    .from(task)
+    .where(eq(task.serviceId, params.serviceId))
+  for (const row of consumerTasks) {
+    serverIds.add(row.serverId)
   }
 
   for (const serverId of serverIds) {

@@ -88,7 +88,7 @@ export const managedSchemas = {
       replicationTransport: {
         type: 'string',
         nullable: true,
-        enum: ['local', 'datacenter', 'vpn'],
+        enum: ['local', 'datacenter', 'fabric'],
       },
     },
   },
@@ -423,7 +423,7 @@ export const managedSchemas = {
             replicationTransport: {
               type: 'string',
               nullable: true,
-              enum: ['local', 'datacenter', 'vpn'],
+              enum: ['local', 'datacenter', 'fabric'],
             },
           },
         },

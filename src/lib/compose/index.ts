@@ -41,8 +41,10 @@ export { stripComposeTurbopanelExtensions } from './extensions.ts'
 export { renameComposeVolumes } from './rename-volumes.ts'
 export { expandComposeServiceInstances } from './expand-instances.ts'
 export {
+  compileRuntimeCompose,
   compileRuntimeComposeDocument,
   type CompileRuntimeOptions,
+  type CompileRuntimeResult,
 } from './compile-runtime.ts'
 export { sha256HexUtf8, SHA256_HEX_RE } from './desired-hash.ts'
 export {

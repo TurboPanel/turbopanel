@@ -9,13 +9,12 @@ export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export const IP_ALLOCATIONS = new Set(['dedicated', 'shared'])
-export const IP_SCOPES = new Set(['public', 'datacenter', 'vpn'])
+export const IP_SCOPES = new Set(['public', 'datacenter'])
 
 export type IpScopeFks = {
   datacenterId?: string | null
   networkId?: string | null
   serverId?: string | null
-  vpnId?: string | null
 }
 
 export type IpPatchFields = {
@@ -25,13 +24,11 @@ export type IpPatchFields = {
   datacenterId?: string | null
   networkId?: string | null
   serverId?: string | null
-  vpnId?: string | null
   updatedAt: string
 }
 
 export type ExistingIpScope = {
   scope: string
-  vpnId: string | null
   serverId: string | null
   datacenterId: string | null
   networkId: string | null
@@ -44,7 +41,6 @@ export type IpRow = {
   datacenterId: string | null
   networkId: string | null
   serverId: string | null
-  vpnId: string | null
   address: string
   allocation: string
   scope: string
@@ -63,8 +59,7 @@ function isPostgresUniqueViolation(err: unknown): boolean {
 export function isIpAddressUniqueViolation(err: unknown): boolean {
   if (!isPostgresUniqueViolation(err)) return false
   const message = err instanceof Error ? err.message : String(err)
-  return message.includes('uniq_ip_org_address') ||
-    message.includes('uniq_ip_vpn_address')
+  return message.includes('uniq_ip_org_address')
 }
 
 export function parseCreateIpAddress(
@@ -92,25 +87,16 @@ export function assertIpScopeFkRules(
   scope: string,
   scopeFks: IpScopeFks,
 ): Response | null {
-  const hasVpn = scopeFks.vpnId !== undefined && scopeFks.vpnId !== null
   const hasServer = scopeFks.serverId !== undefined && scopeFks.serverId !== null
   const hasNetwork = scopeFks.networkId !== undefined && scopeFks.networkId !== null
   const hasDatacenter =
     scopeFks.datacenterId !== undefined && scopeFks.datacenterId !== null
 
-  if (scope === 'vpn') {
-    if (!hasVpn) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-  } else if (hasVpn) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
   if (scope === 'datacenter' && !hasServer && !hasDatacenter) {
     return c.json({ error: 'Invalid request' }, 400)
   }
 
-  if (hasDatacenter && (hasNetwork || hasServer || hasVpn)) {
+  if (hasDatacenter && (hasNetwork || hasServer)) {
     return c.json({ error: 'Invalid request' }, 400)
   }
 
@@ -158,7 +144,6 @@ export function mergeIpScopeFks(
   scopeFks: IpScopeFks,
 ): IpScopeFks {
   return {
-    vpnId: scopeFks.vpnId !== undefined ? scopeFks.vpnId : existing.vpnId,
     serverId: scopeFks.serverId !== undefined ? scopeFks.serverId : existing.serverId,
     datacenterId: scopeFks.datacenterId !== undefined
       ? scopeFks.datacenterId
@@ -202,18 +187,6 @@ export function applyJsonbPatchFields(
     const result = parseJsonbObject(c, body, key)
     if (result instanceof Response) return result
     if (result !== null) patchFields[key] = result
-  }
-  return null
-}
-
-export function assertVpnIpPatchVpnId(
-  c: Context,
-  existingScope: string,
-  finalVpnId: string | null | undefined,
-): Response | null {
-  if (existingScope !== 'vpn') return null
-  if (finalVpnId === null) {
-    return c.json({ error: 'Invalid request' }, 400)
   }
   return null
 }

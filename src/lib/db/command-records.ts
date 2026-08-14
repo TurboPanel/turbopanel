@@ -1,4 +1,4 @@
-import { desc, eq, sql } from 'drizzle-orm'
+import { desc, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { nowIso } from '../commands/ids.ts'
 import type { CommandStatus } from '../commands/types.ts'
@@ -179,6 +179,18 @@ export async function getCommandRecord(
     .limit(1)
   const row = rows[0]
   return row ? serializeCommandRecord(row) : null
+}
+
+export async function listCommandRecordsByIds(
+  db: Db,
+  ids: readonly string[],
+): Promise<CommandRecord[]> {
+  if (ids.length === 0) return []
+  const rows = await db
+    .select()
+    .from(command)
+    .where(inArray(command.id, [...ids]))
+  return rows.map(serializeCommandRecord)
 }
 
 export async function listServerCommands(

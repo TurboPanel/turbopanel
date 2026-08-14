@@ -1,23 +1,22 @@
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
-import { ip, peer, server, vpn } from '../db/schema.ts'
+import { fabric, ip, relay, server } from '../db/schema.ts'
 import { inetAddressToString } from '../ip-address.ts'
 
-export type PrivateEndpointTransport = 'local' | 'datacenter' | 'vpn'
+export type PrivateEndpointTransport = 'local' | 'datacenter' | 'fabric'
 
 export type ResolvedPrivateEndpoint = {
   address: string
   transport: PrivateEndpointTransport
   /** Present when transport is `datacenter`. */
   datacenterId?: string
-  /** Present when transport is `vpn`. */
-  vpnId?: string
+  /** Present when transport is `fabric`. */
+  fabricId?: string
 }
 
 export type PrivateEndpointError =
   | { kind: 'datacenter_ip_required'; serverId: string }
-  | { kind: 'peer_tunnel_address_required'; peerId: string }
   | {
     kind: 'private_path_unavailable'
     fromServerId: string
@@ -60,13 +59,12 @@ type ServerDcRow = {
   datacenterId: string | null
 }
 
-type PeerJoinRow = {
-  peerId: string
+type RelayJoinRow = {
+  relayId: string
   serverId: string
-  vpnId: string
-  vpnCreatedAt: string
-  tunnelIpId: string | null
-  tunnelAddress: string | null
+  fabricId: string
+  fabricCreatedAt: string
+  address: string
 }
 
 async function loadServerDatacenterIds(
@@ -121,57 +119,87 @@ async function loadDatacenterAddresses(
 }
 
 /**
- * Shared-VPN peers for the given server ids. Returns all peer rows on VPNs
- * that include at least one of the listed servers (caller filters to shared).
+ * Relays on fabrics that include at least one of the listed servers.
+ * The peer address is `relay.address` (no `ip` join).
  */
-async function loadVpnPeerRows(
+async function loadFabricRelayRows(
   db: Db,
   serverIds: string[],
-): Promise<PeerJoinRow[]> {
+): Promise<RelayJoinRow[]> {
   if (serverIds.length === 0) return []
 
   const membership = await db
-    .select({ vpnId: peer.vpnId })
-    .from(peer)
-    .where(inArray(peer.serverId, serverIds))
+    .select({ fabricId: relay.fabricId })
+    .from(relay)
+    .where(inArray(relay.serverId, serverIds))
 
-  const vpnIds = [...new Set(membership.map((row) => row.vpnId))]
-  if (vpnIds.length === 0) return []
+  const fabricIds = [...new Set(membership.map((row) => row.fabricId))]
+  if (fabricIds.length === 0) return []
 
   const rows = await db
     .select({
-      peerId: peer.id,
-      serverId: peer.serverId,
-      vpnId: peer.vpnId,
-      vpnCreatedAt: vpn.createdAt,
-      tunnelIpId: peer.tunnelIpId,
-      tunnelAddress: ip.address,
+      relayId: relay.id,
+      serverId: relay.serverId,
+      fabricId: relay.fabricId,
+      fabricCreatedAt: fabric.createdAt,
+      address: relay.address,
     })
-    .from(peer)
-    .innerJoin(vpn, eq(peer.vpnId, vpn.id))
-    .leftJoin(ip, eq(peer.tunnelIpId, ip.id))
-    .where(inArray(peer.vpnId, vpnIds))
-    .orderBy(asc(vpn.createdAt))
+    .from(relay)
+    .innerJoin(fabric, eq(relay.fabricId, fabric.id))
+    .where(inArray(relay.fabricId, fabricIds))
+    .orderBy(asc(fabric.createdAt))
 
-  return rows.map((row) => ({
-    peerId: row.peerId,
-    serverId: row.serverId,
-    vpnId: row.vpnId,
-    vpnCreatedAt: row.vpnCreatedAt,
-    tunnelIpId: row.tunnelIpId,
-    tunnelAddress: inetAddressToString(row.tunnelAddress) ?? null,
-  }))
+  const out: RelayJoinRow[] = []
+  for (const row of rows) {
+    const address = inetAddressToString(row.address) ??
+      (typeof row.address === 'string' ? row.address : String(row.address))
+    if (!address) continue
+    out.push({
+      relayId: row.relayId,
+      serverId: row.serverId,
+      fabricId: row.fabricId,
+      fabricCreatedAt: row.fabricCreatedAt,
+      address,
+    })
+  }
+  return out
 }
 
+/**
+ * Ordered ladder: local → fabric → datacenter.
+ * Same-host loopback first; a shared relay mesh takes the cross-host private
+ * path; same-site datacenter IPs are the fallback when no fabric path exists.
+ */
 function resolveOneFromCaches(params: {
   fromServerId: string
   toServerId: string
   datacenterByServer: Map<string, string | null>
   addressByServer: Map<string, string>
-  peers: PeerJoinRow[]
+  relays: RelayJoinRow[]
 }): ResolvedPrivateEndpoint | PrivateEndpointError {
   if (params.fromServerId === params.toServerId) {
     return { address: '127.0.0.1', transport: 'local' }
+  }
+
+  const fromFabricIds = new Set(
+    params.relays
+      .filter((row) => row.serverId === params.fromServerId)
+      .map((row) => row.fabricId),
+  )
+  const sharedOnTo = params.relays
+    .filter(
+      (row) =>
+        row.serverId === params.toServerId && fromFabricIds.has(row.fabricId),
+    )
+    .sort((a, b) => a.fabricCreatedAt.localeCompare(b.fabricCreatedAt))
+
+  const chosen = sharedOnTo[0]
+  if (chosen) {
+    return {
+      address: chosen.address,
+      transport: 'fabric',
+      fabricId: chosen.fabricId,
+    }
   }
 
   const fromDc = params.datacenterByServer.get(params.fromServerId) ?? null
@@ -188,39 +216,16 @@ function resolveOneFromCaches(params: {
     }
   }
 
-  const fromVpnIds = new Set(
-    params.peers
-      .filter((row) => row.serverId === params.fromServerId)
-      .map((row) => row.vpnId),
-  )
-  const sharedOnTo = params.peers
-    .filter(
-      (row) =>
-        row.serverId === params.toServerId && fromVpnIds.has(row.vpnId),
-    )
-    .sort((a, b) => a.vpnCreatedAt.localeCompare(b.vpnCreatedAt))
-
-  const chosen = sharedOnTo[0]
-  if (!chosen) {
-    return {
-      kind: 'private_path_unavailable',
-      fromServerId: params.fromServerId,
-      toServerId: params.toServerId,
-    }
-  }
-  if (!chosen.tunnelAddress) {
-    return { kind: 'peer_tunnel_address_required', peerId: chosen.peerId }
-  }
   return {
-    address: chosen.tunnelAddress,
-    transport: 'vpn',
-    vpnId: chosen.vpnId,
+    kind: 'private_path_unavailable',
+    fromServerId: params.fromServerId,
+    toServerId: params.toServerId,
   }
 }
 
 /**
  * Answer "what address does `fromServerId` use to reach `toServerId`?" using
- * transport order local → datacenter → vpn.
+ * transport order local → fabric → datacenter.
  */
 export async function resolvePrivateEndpoint(
   db: Db,
@@ -243,7 +248,7 @@ export async function resolvePrivateEndpoint(
 
 /**
  * Batched resolver for one source server → many targets (one server query, one
- * ip query, one peer join — no N+1).
+ * ip query, one relay join — no N+1).
  */
 export async function resolvePrivateEndpoints(
   db: Db,
@@ -255,10 +260,10 @@ export async function resolvePrivateEndpoints(
   const uniqueTargets = [...new Set(params.toServerIds)]
   const allServerIds = [...new Set([params.fromServerId, ...uniqueTargets])]
 
-  const [datacenterByServer, addressByServer, peers] = await Promise.all([
+  const [datacenterByServer, addressByServer, relays] = await Promise.all([
     loadServerDatacenterIds(db, allServerIds),
     loadDatacenterAddresses(db, allServerIds),
-    loadVpnPeerRows(db, allServerIds),
+    loadFabricRelayRows(db, allServerIds),
   ])
 
   for (const toServerId of uniqueTargets) {
@@ -269,7 +274,7 @@ export async function resolvePrivateEndpoints(
         toServerId,
         datacenterByServer,
         addressByServer,
-        peers,
+        relays,
       }),
     )
   }

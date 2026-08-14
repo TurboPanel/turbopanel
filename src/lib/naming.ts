@@ -40,7 +40,9 @@ export function managedContainerName(serviceId: string, ordinal = 1): string {
   }
   const name = `${serviceId}-${ordinal}`
   if (!isValidDockerResourceName(name)) {
-    throw new TypeError(`Invalid managed container name for service id: ${serviceId}`)
+    throw new TypeError(
+      `Invalid managed container name for service id: ${serviceId}`,
+    )
   }
   return name
 }
@@ -56,7 +58,9 @@ export const INGRESS_CONTAINER_NAME_SUFFIX = '-in'
 export function ingressContainerNameFromService(serviceId: string): string {
   const name = `${serviceId}${INGRESS_CONTAINER_NAME_SUFFIX}`
   if (!isValidDockerResourceName(name)) {
-    throw new TypeError(`Invalid ingress container name for service id: ${serviceId}`)
+    throw new TypeError(
+      `Invalid ingress container name for service id: ${serviceId}`,
+    )
   }
   return name
 }
@@ -69,7 +73,9 @@ export const MANAGED_INGRESS_CONTAINER_NAME_SUFFIX = '-sql'
  * row (`role='turbopanel'`, always ordinal 1). Distinct from the bare-uuid
  * self-host `database`/`queue`/`analytics` system rows.
  */
-export function managedIngressContainerNameFromService(serviceId: string): string {
+export function managedIngressContainerNameFromService(
+  serviceId: string,
+): string {
   const name = `${serviceId}${MANAGED_INGRESS_CONTAINER_NAME_SUFFIX}`
   if (!isValidDockerResourceName(name)) {
     throw new TypeError(
@@ -99,7 +105,9 @@ export function resolveDockerVolumeName(input: {
 }): string {
   if (typeof input.pinnedName === 'string' && input.pinnedName.length > 0) {
     if (!isValidDockerResourceName(input.pinnedName)) {
-      throw new TypeError(`Invalid pinned Docker volume name: ${input.pinnedName}`)
+      throw new TypeError(
+        `Invalid pinned Docker volume name: ${input.pinnedName}`,
+      )
     }
     return input.pinnedName
   }
@@ -186,7 +194,9 @@ export function assertSafePrincipalUsername(username: string): string {
     username.length > MAX_PRINCIPAL_USERNAME_LENGTH ||
     !PRINCIPAL_USERNAME_RE.test(username)
   ) {
-    throw new TypeError(`Invalid principal username for home path: ${username}`)
+    throw new TypeError(
+      `Invalid principal username for home path: ${username}`,
+    )
   }
   return username
 }
@@ -203,7 +213,10 @@ export function principalVolumesDir(username: string): string {
   return `${principalHomeDir(username)}/volumes`
 }
 
-export function principalVolumePath(username: string, storageId: string): string {
+export function principalVolumePath(
+  username: string,
+  storageId: string,
+): string {
   if (
     typeof storageId !== 'string' ||
     storageId.length === 0 ||
@@ -213,18 +226,37 @@ export function principalVolumePath(username: string, storageId: string): string
     storageId === '.' ||
     storageId === '..'
   ) {
-    throw new TypeError(`Invalid storage id for principal volume path: ${storageId}`)
+    throw new TypeError(
+      `Invalid storage id for principal volume path: ${storageId}`,
+    )
   }
   return `${principalVolumesDir(username)}/${storageId}`
 }
 
 /**
- * DNS name shape only — most-specific-first so the container label precedes
- * the project label. No resolver, zone, or hosts-file writer exists yet, and
- * nothing may depend on this resolving.
+ * Load-bearing DNS name shape for spanning-network `extra_hosts`.
+ * Most-specific-first: per-replica `<service>-<ordinal>.<environmentId>` then
+ * service-level `<service>.<environmentId>` (the latter points at the primary
+ * task). These static hosts-file entries are superseded later by an embedded
+ * resolver behind the same name shape.
  */
-export function serviceDnsName(projectId: string, containerId: string): string {
-  return `${containerId}.${projectId}`
+export function serviceDnsName(
+  composeServiceName: string,
+  replicaOrdinal: number | null,
+  environmentId: string,
+): string[] {
+  const serviceLevel = `${composeServiceName}.${environmentId}`
+  if (
+    replicaOrdinal !== null &&
+    Number.isInteger(replicaOrdinal) &&
+    replicaOrdinal >= 1
+  ) {
+    return [
+      `${composeServiceName}-${replicaOrdinal}.${environmentId}`,
+      serviceLevel,
+    ]
+  }
+  return [serviceLevel]
 }
 
 /** Reserved for the tenant-deploy phase; user variables must never shadow them. */
@@ -294,13 +326,17 @@ export function assertSafeBindingKeyPrefix(prefix: string): string {
   const keys = bindingPrefixedKeys(trimmed)
   for (const key of Object.values(keys)) {
     if (isReservedDeployVariableKey(key)) {
-      throw new TypeError('binding key prefix collides with reserved deploy keys')
+      throw new TypeError(
+        'binding key prefix collides with reserved deploy keys',
+      )
     }
   }
   // Catch the short prefix that would mint reserved keys when extended with
   // suffixes we control (e.g. `TURBOPANEL` → `TURBOPANEL_SERVICE_ID`).
   if (trimmed === 'TURBOPANEL' || trimmed.startsWith('TURBOPANEL_')) {
-    throw new TypeError('binding key prefix collides with reserved deploy keys')
+    throw new TypeError(
+      'binding key prefix collides with reserved deploy keys',
+    )
   }
   return trimmed
 }

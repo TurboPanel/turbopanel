@@ -47,6 +47,36 @@ test('collectSpanningComposeNetworkKeys is empty for a single-server plan', () =
   assertEquals(keys, [])
 })
 
+test('collectSpanningComposeNetworkKeys spans when a platform attachment is on another host', () => {
+  const document = doc({
+    services: {
+      web: { image: 'nginx', networks: ['frontend'] },
+    },
+  })
+  const tasks = [{ serviceId: 'svc-web', serverId: 'srv-b' }]
+  const serviceRows = [{ id: 'svc-web', composeServiceName: 'web' }]
+  assertEquals(
+    collectSpanningComposeNetworkKeys(document, tasks, serviceRows),
+    [],
+  )
+  assertEquals(
+    collectSpanningComposeNetworkKeys(document, tasks, serviceRows, [
+      { serverId: 'srv-a', networkKeys: ['frontend'] },
+    ]),
+    ['frontend'],
+  )
+  assertEquals(
+    participatingServerIdsForNetwork(
+      document,
+      tasks,
+      serviceRows,
+      'frontend',
+      [{ serverId: 'srv-a', networkKeys: ['frontend'] }],
+    ),
+    ['srv-a', 'srv-b'],
+  )
+})
+
 test('collectSpanningComposeNetworkKeys returns networks used on two servers', () => {
   const keys = collectSpanningComposeNetworkKeys(
     doc({

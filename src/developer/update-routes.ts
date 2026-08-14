@@ -7,11 +7,15 @@ import {
   generateRequestId,
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
-import { getDaemonCellRegistry } from '../db.ts'
+import { getDaemonCellRegistry, getDb } from '../db.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
+import { resolveColocatedServerIdSet } from '../client/servers/colocated.ts'
 
-const UPDATE_TIMEOUT_MS = 120_000
+const UPDATE_TIMEOUT_MS = 180_000
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/i
+
+export const COLOCATED_DAEMON_UPDATE_SKIPPED_REASON =
+  'The co-located development daemon runs from source — rebuild upgrades remote servers only'
 
 function parseUpdateOverride(body: {
   updateUrl?: unknown
@@ -115,6 +119,20 @@ export function registerUpdateRoutes(
     }
 
     const serverId = c.req.param('id')
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, [serverId])
+    if (colocatedIds.has(serverId)) {
+      return c.json({
+        ok: true,
+        results: [{
+          daemonId: serverId,
+          ok: true,
+          skipped: true,
+          error: COLOCATED_DAEMON_UPDATE_SKIPPED_REASON,
+        }],
+      })
+    }
     try {
       await updateDaemon(registry, serverId, { channel, ...override })
       return c.json({ ok: true, results: [{ daemonId: serverId, ok: true }] })
@@ -143,21 +161,35 @@ export function registerUpdateRoutes(
     }
 
     const ids = await registry.listOnlineServerIds()
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, ids)
+    const skippedResults = ids
+      .filter((serverId) => colocatedIds.has(serverId))
+      .map((daemonId) => ({
+        daemonId,
+        ok: true as const,
+        skipped: true as const,
+        error: COLOCATED_DAEMON_UPDATE_SKIPPED_REASON,
+      }))
     const results = await Promise.all(
-      ids.map(async (serverId) => {
-        try {
-          await updateDaemon(registry, serverId, { channel, ...override })
-          return { daemonId: serverId, ok: true }
-        } catch (err) {
-          return {
-            daemonId: serverId,
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
+      ids
+        .filter((serverId) => !colocatedIds.has(serverId))
+        .map(async (serverId) => {
+          try {
+            await updateDaemon(registry, serverId, { channel, ...override })
+            return { daemonId: serverId, ok: true as const }
+          } catch (err) {
+            return {
+              daemonId: serverId,
+              ok: false as const,
+              error: err instanceof Error ? err.message : String(err),
+            }
           }
-        }
-      }),
+        }),
     )
-    return c.json({ ok: results.every((r) => r.ok), results })
+    const combined = [...skippedResults, ...results]
+    return c.json({ ok: combined.every((r) => r.ok), results: combined })
   })
 
   return app

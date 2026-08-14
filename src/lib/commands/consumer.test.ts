@@ -1,5 +1,5 @@
 import { assertEquals } from 'jsr:@std/assert'
-import { and, eq } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb, endDbConnection } from '../../db.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../daemon/cell/contracts.ts'
@@ -8,16 +8,14 @@ import {
   command,
   container,
   environment,
-  ip,
+  fabric,
   managed,
   node,
   organization,
-  peer,
   principal,
   project,
   server,
   service,
-  vpn,
   workspace,
 } from '../db/schema.ts'
 import {
@@ -25,6 +23,10 @@ import {
   getCommandRecord,
   transitionCommand,
 } from '../db/command-records.ts'
+import {
+  enableOrganizationFabric,
+  listFabricRelays,
+} from '../db/fabric-records.ts'
 import { processCommandEnvelope, isTransientError } from './consumer.ts'
 import type { CommandEnvelope } from './envelope.ts'
 
@@ -581,85 +583,58 @@ test('processCommandEnvelope leaves metadata.timeSync unchanged on malformed ntp
   })
 })
 
-test('processCommandEnvelope wireguard reconcile preserves tunnel_ip_id', async () => {
+const FABRIC_WG_PUBKEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+const SKIPPED_FABRIC_DESIRED_HASH = 'skipped-stamp-desired-hash'
+
+test('processCommandEnvelope stamps appliedPayloadHash when fabric reconcile is skipped with a publicKey', async () => {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
-
-    const [vpnRow] = await db.insert(vpn).values({
-      organizationId,
-      cidr: '203.0.113.0/24',
-      name: 'Consumer Mesh',
-    }).returning({ id: vpn.id })
-    const [tunnel] = await db.insert(ip).values({
-      organizationId,
-      vpnId: vpnRow!.id,
-      serverId,
-      address: '203.0.113.10',
-      allocation: 'dedicated',
-      scope: 'vpn',
-    }).returning({ id: ip.id })
-    const priorPublicKey = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
-    const [peerRow] = await db.insert(peer).values({
-      vpnId: vpnRow!.id,
-      serverId,
-      publicKey: priorPublicKey,
-      tunnelIpId: tunnel!.id,
-      role: 'member',
-    }).returning({ id: peer.id, tunnelIpId: peer.tunnelIpId })
-
-    const newPublicKey = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB='
-    const record = await createCommandRecord(db, {
-      serverId,
-      ...TEST_COMMAND_ACTOR,
-      type: 'server.wireguard.apply',
-      payload: {
-        vpnId: vpnRow!.id,
-        peerId: peerRow!.id,
-        interfaceName: 'tpwg550e8400',
-        address: '203.0.113.10/24',
-        peers: [],
-      },
-    })
-
-    const registry = createDispatchMockRegistry(serverId, {
-      waitForRequestResult: {
+    const fabricRow = await enableOrganizationFabric(db, organizationId)
+    try {
+      const record = await createCommandRecord(db, {
         serverId,
-        requestId: record.id,
-        requestKind: 'command-dispatch',
-        status: 'done',
-        createdAt: record.createdAt,
-        expiresAt: record.createdAt,
-        finishedAt: new Date().toISOString(),
-        result: {
-          interfaceName: 'tpwg550e8400',
-          publicKey: newPublicKey,
-          applied: true,
-          listenPort: 51820,
+        ...TEST_COMMAND_ACTOR,
+        type: 'server.fabric.reconcile',
+        payload: {
+          enabled: true,
+          fabricId: fabricRow.id,
+          address: '10.250.0.11/32',
+          prefix: '10.192.0.0/16',
+          peers: [],
         },
-      },
-    })
-
-    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
-
-    const updated = await getCommandRecord(db, record.id)
-    assertEquals(updated?.status, 'succeeded')
-
-    const [reconciled] = await db
-      .select({
-        publicKey: peer.publicKey,
-        tunnelIpId: peer.tunnelIpId,
-        listenPort: peer.listenPort,
+        metadata: { desiredHash: SKIPPED_FABRIC_DESIRED_HASH },
       })
-      .from(peer)
-      .where(eq(peer.id, peerRow!.id))
-      .limit(1)
-    assertEquals(reconciled?.publicKey, newPublicKey)
-    assertEquals(reconciled?.tunnelIpId, peerRow!.tunnelIpId)
-    assertEquals(reconciled?.listenPort, 51820)
 
-    await db.delete(peer).where(eq(peer.id, peerRow!.id))
-    await db.delete(ip).where(eq(ip.id, tunnel!.id))
-    await db.delete(vpn).where(eq(vpn.id, vpnRow!.id))
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            summary: 'TurboFabric reconciled',
+            skipped: true,
+            publicKey: FABRIC_WG_PUBKEY,
+            peers: [{ publicKey: FABRIC_WG_PUBKEY }],
+          },
+        },
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+      const updated = await getCommandRecord(db, record.id)
+      assertEquals(updated?.status, 'succeeded')
+
+      const relays = await listFabricRelays(db, fabricRow.id)
+      const stamped = relays.find((row) => row.serverId === serverId)
+      assertEquals(stamped?.publicKey, FABRIC_WG_PUBKEY)
+      assertEquals(stamped?.metadata.appliedPayloadHash, SKIPPED_FABRIC_DESIRED_HASH)
+    } finally {
+      await db.delete(fabric).where(eq(fabric.organizationId, organizationId))
+    }
   })
 })
 

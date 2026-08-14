@@ -9,31 +9,31 @@
  * uses for cross-host streaming.
  */
 
-import { and, eq, inArray } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import type { Db } from "../../db.ts";
 import {
   decryptSecret,
   ENVELOPE_PREFIX_SECRET,
   resealSecretForDaemon,
-} from '../authn/data-encryption.ts'
-import type { DerivedSecretsConfig, SecretsConfig } from '../authn/secrets.ts'
+} from "../authn/data-encryption.ts";
+import type { DerivedSecretsConfig, SecretsConfig } from "../authn/secrets.ts";
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-} from '../../daemon/authn/server-identity-db.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
+} from "../../daemon/authn/server-identity-db.ts";
+import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
+import type { CommandQueue } from "../../lib/commands/queue.ts";
 import type {
   ManagedApplyOrgTlsMaterial,
   ManagedIngressReconcileBackend,
   ManagedIngressReconcileCluster,
   ManagedIngressReconcileCommandPayload,
   ManagedIngressReconcileUser,
-} from '../../lib/commands/schemas.ts'
+} from "../../lib/commands/schemas.ts";
 import {
   createCommandRecord,
   transitionCommand,
-} from '../../lib/db/command-records.ts'
+} from "../../lib/db/command-records.ts";
 import {
   binding,
   container,
@@ -44,26 +44,30 @@ import {
   project,
   server,
   service,
-} from '../../lib/db/schema.ts'
-import { getManagedEngineSpec } from '../../lib/managed/index.ts'
-import type { ManagedSettings } from '../../lib/managed/settings.ts'
-import type { ManagedEngineCode } from '../../lib/managed/types.ts'
+  task,
+  workspace,
+} from "../../lib/db/schema.ts";
+import { getManagedEngineSpec } from "../../lib/managed/index.ts";
+import type { ManagedSettings } from "../../lib/managed/settings.ts";
+import type { ManagedEngineCode } from "../../lib/managed/types.ts";
 import {
   isPrivateEndpointError,
-  resolvePrivateEndpoint,
   type PrivateEndpointError,
-} from '../../lib/net/private-endpoint.ts'
-import type { HostingBindScope } from '../../lib/hosting-options.ts'
+  resolvePrivateEndpoints,
+} from "../../lib/net/private-endpoint.ts";
+import type { HostingBindScope } from "../../lib/hosting-options.ts";
 import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
-} from '../../lib/project-options.ts'
-import { resolveHostingBindAddress } from '../environments/deploy-prepare.ts'
-import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
+} from "../../lib/project-options.ts";
+import { listServerSegments } from "../../lib/db/fabric-records.ts";
+import { loadListenerAttachedSegmentNames } from "./ingress-attachments.ts";
+import { resolveHostingBindAddress } from "../environments/deploy-prepare.ts";
+import { ensureManagedIngressHierarchy } from "../system/hierarchy.ts";
 import {
   buildManagedOrgTlsMaterial,
   ensureActiveOrganizationCa,
-} from './apply-prepare.ts'
+} from "./apply-prepare.ts";
 import {
   buildIngressUserRole,
   buildLocalOrMissingPortBackend,
@@ -77,273 +81,193 @@ import {
   protocolPortForEngine,
   shouldSkipIngressFrontendUser,
   sortManagedIds,
-} from './ingress-desired-pure.ts'
-import { parseManagedRowOptions } from './options.ts'
-import { resolveManagedConnectionListener } from './routes-helpers.ts'
+} from "./ingress-desired-pure.ts";
+import { parseManagedRowOptions } from "./options.ts";
+import { resolveManagedConnectionListener } from "./routes-helpers.ts";
 
-
-export const MANAGED_INGRESS_RECONCILE_TTL_MS = 300_000
+export const MANAGED_INGRESS_RECONCILE_TTL_MS = 300_000;
 
 export type ManagedIngressReconcilePrepareError =
-  | { kind: 'daemon_key_unavailable'; serverId: string }
-  | { kind: 'managed_credential_not_sealed' }
-  | { kind: 'datacenter_ip_required'; serverId: string }
-  | PrivateEndpointError
+  | { kind: "daemon_key_unavailable"; serverId: string }
+  | { kind: "managed_credential_not_sealed" }
+  | { kind: "datacenter_ip_required"; serverId: string }
+  | PrivateEndpointError;
 
 export {
   collectProxySqlListenerSans,
   hostgroupsForClusterIndex,
   unionExposureBind,
-} from './ingress-desired-pure.ts'
+} from "./ingress-desired-pure.ts";
 
 type MemberClusterRow = {
-  memberId: string
-  managedId: string
-  serverId: string
-  role: string
-  readEligible: boolean
-  ordinal: number
-  privatePort: number | null
-  engine: string | null
-  options: unknown
-  organizationId: string | null
-  environmentId: string
-  containerName: string | null
+  memberId: string;
+  managedId: string;
+  serverId: string;
+  role: string;
+  readEligible: boolean;
+  ordinal: number;
+  privatePort: number | null;
+  engine: string | null;
+  options: unknown;
+  organizationId: string | null;
+  environmentId: string;
+  containerName: string | null;
+};
+
+type MemberSelectRow = Omit<MemberClusterRow, "containerName">;
+
+async function attachContainerNames(
+  db: Db,
+  rows: readonly MemberSelectRow[],
+): Promise<MemberClusterRow[]> {
+  if (rows.length === 0) return [];
+
+  const environmentIds = [...new Set(rows.map((row) => row.environmentId))];
+  const containerRows = await db
+    .select({
+      environmentId: service.environmentId,
+      serverId: container.serverId,
+      ordinal: container.ordinal,
+      containerName: container.containerName,
+    })
+    .from(container)
+    .innerJoin(service, eq(container.serviceId, service.id))
+    .where(
+      and(
+        inArray(service.environmentId, environmentIds),
+        eq(container.role, "service"),
+      ),
+    );
+
+  const containerByKey = new Map<string, string>();
+  for (const row of containerRows) {
+    if (!row.containerName) continue;
+    containerByKey.set(
+      `${row.environmentId}:${row.serverId}:${row.ordinal}`,
+      row.containerName,
+    );
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    containerName: containerByKey.get(
+      `${row.environmentId}:${row.serverId}:${row.ordinal}`,
+    ) ?? null,
+  }));
 }
+
+const MEMBER_SELECT = {
+  memberId: node.id,
+  managedId: node.managedId,
+  serverId: node.serverId,
+  role: node.role,
+  readEligible: node.readEligible,
+  ordinal: node.ordinal,
+  privatePort: node.privatePort,
+  engine: managed.engine,
+  options: managed.options,
+  organizationId: server.organizationId,
+  environmentId: managed.environmentId,
+};
 
 async function loadMembersOnServer(
   db: Db,
   serverId: string,
 ): Promise<MemberClusterRow[]> {
   const rows = await db
-    .select({
-      memberId: node.id,
-      managedId: node.managedId,
-      serverId: node.serverId,
-      role: node.role,
-      readEligible: node.readEligible,
-      ordinal: node.ordinal,
-      privatePort: node.privatePort,
-      engine: managed.engine,
-      options: managed.options,
-      organizationId: server.organizationId,
-      environmentId: managed.environmentId,
-    })
+    .select(MEMBER_SELECT)
     .from(node)
     .innerJoin(managed, eq(node.managedId, managed.id))
     .innerJoin(server, eq(node.serverId, server.id))
-    .where(eq(node.serverId, serverId))
-
-  if (rows.length === 0) return []
-
-  const environmentIds = [...new Set(rows.map((row) => row.environmentId))]
-  const containerRows = await db
-    .select({
-      environmentId: service.environmentId,
-      serverId: container.serverId,
-      ordinal: container.ordinal,
-      containerName: container.containerName,
-    })
-    .from(container)
-    .innerJoin(service, eq(container.serviceId, service.id))
-    .where(
-      and(
-        inArray(service.environmentId, environmentIds),
-        eq(container.role, 'service'),
-      ),
-    )
-
-  const containerByKey = new Map<string, string>()
-  for (const row of containerRows) {
-    if (!row.containerName) continue
-    containerByKey.set(
-      `${row.environmentId}:${row.serverId}:${row.ordinal}`,
-      row.containerName,
-    )
-  }
-
-  return rows.map((row) => ({
-    memberId: row.memberId,
-    managedId: row.managedId,
-    serverId: row.serverId,
-    role: row.role,
-    readEligible: row.readEligible,
-    ordinal: row.ordinal,
-    privatePort: row.privatePort,
-    engine: row.engine,
-    options: row.options,
-    organizationId: row.organizationId,
-    environmentId: row.environmentId,
-    containerName:
-      containerByKey.get(
-        `${row.environmentId}:${row.serverId}:${row.ordinal}`,
-      ) ?? null,
-  }))
+    .where(eq(node.serverId, serverId));
+  return attachContainerNames(db, rows);
 }
 
-async function loadClusterMembers(
+async function loadClusterMembersForManagedIds(
   db: Db,
-  managedId: string,
-): Promise<MemberClusterRow[]> {
+  managedIds: readonly string[],
+): Promise<Map<string, MemberClusterRow[]>> {
+  const byManaged = new Map<string, MemberClusterRow[]>();
+  for (const managedId of managedIds) byManaged.set(managedId, []);
+  if (managedIds.length === 0) return byManaged;
+
   const rows = await db
-    .select({
-      memberId: node.id,
-      managedId: node.managedId,
-      serverId: node.serverId,
-      role: node.role,
-      readEligible: node.readEligible,
-      ordinal: node.ordinal,
-      privatePort: node.privatePort,
-      engine: managed.engine,
-      options: managed.options,
-      organizationId: server.organizationId,
-      environmentId: managed.environmentId,
-    })
+    .select(MEMBER_SELECT)
     .from(node)
     .innerJoin(managed, eq(node.managedId, managed.id))
     .innerJoin(server, eq(node.serverId, server.id))
-    .where(eq(node.managedId, managedId))
+    .where(inArray(node.managedId, [...managedIds]));
 
-  if (rows.length === 0) return []
-
-  const environmentIds = [...new Set(rows.map((row) => row.environmentId))]
-  const containerRows = await db
-    .select({
-      environmentId: service.environmentId,
-      serverId: container.serverId,
-      ordinal: container.ordinal,
-      containerName: container.containerName,
-    })
-    .from(container)
-    .innerJoin(service, eq(container.serviceId, service.id))
-    .where(
-      and(
-        inArray(service.environmentId, environmentIds),
-        eq(container.role, 'service'),
-      ),
-    )
-
-  const containerByKey = new Map<string, string>()
-  for (const row of containerRows) {
-    if (!row.containerName) continue
-    containerByKey.set(
-      `${row.environmentId}:${row.serverId}:${row.ordinal}`,
-      row.containerName,
-    )
+  const attached = await attachContainerNames(db, rows);
+  for (const row of attached) {
+    const list = byManaged.get(row.managedId) ?? [];
+    list.push(row);
+    byManaged.set(row.managedId, list);
   }
-
-  return rows.map((row) => ({
-    memberId: row.memberId,
-    managedId: row.managedId,
-    serverId: row.serverId,
-    role: row.role,
-    readEligible: row.readEligible,
-    ordinal: row.ordinal,
-    privatePort: row.privatePort,
-    engine: row.engine,
-    options: row.options,
-    organizationId: row.organizationId,
-    environmentId: row.environmentId,
-    containerName:
-      containerByKey.get(
-        `${row.environmentId}:${row.serverId}:${row.ordinal}`,
-      ) ?? null,
-  }))
+  return byManaged;
 }
 
-async function loadClusterUsers(
+async function loadClusterUsersForManagedIds(
   db: Db,
-  managedId: string,
+  managedIds: readonly string[],
   params: {
-    serverId: string
-    secretsConfig: SecretsConfig
-    dataEncryptionSecrets: DerivedSecretsConfig
+    serverId: string;
+    secretsConfig: SecretsConfig;
+    dataEncryptionSecrets: DerivedSecretsConfig;
   },
-): Promise<ManagedIngressReconcileUser[] | ManagedIngressReconcilePrepareError> {
-  const daemonState = await getServerDaemonStateByServerId(db, params.serverId)
+): Promise<
+  | Map<string, ManagedIngressReconcileUser[]>
+  | ManagedIngressReconcilePrepareError
+> {
+  const byManaged = new Map<string, ManagedIngressReconcileUser[]>();
+  for (const managedId of managedIds) byManaged.set(managedId, []);
+  if (managedIds.length === 0) return byManaged;
+
+  const daemonState = await getServerDaemonStateByServerId(db, params.serverId);
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
-    return { kind: 'daemon_key_unavailable', serverId: params.serverId }
+    return { kind: "daemon_key_unavailable", serverId: params.serverId };
   }
 
   const rows = await db
     .select({
+      managedId: principal.managedId,
       id: principal.id,
       username: principal.username,
       metadata: principal.metadata,
       password: principal.password,
     })
     .from(principal)
-    .where(eq(principal.managedId, managedId))
+    .where(inArray(principal.managedId, [...managedIds]));
 
-  const users: ManagedIngressReconcileUser[] = []
   for (const row of rows) {
-    if (shouldSkipIngressFrontendUser(row.username, row.metadata)) continue
-    const sealed = row.password
+    if (!row.managedId) continue;
+    if (shouldSkipIngressFrontendUser(row.username, row.metadata)) continue;
+    const sealed = row.password;
     if (!isAtRestSealedPassword(sealed, ENVELOPE_PREFIX_SECRET)) {
-      return { kind: 'managed_credential_not_sealed' }
+      return { kind: "managed_credential_not_sealed" };
     }
     const resealed = await resealSecretForDaemon(
       params.secretsConfig,
       params.dataEncryptionSecrets,
       { serverId: params.serverId, keyId: daemonState.key.id },
       sealed,
-    )
+    );
     const user: ManagedIngressReconcileUser = {
       username: row.username,
       role: buildIngressUserRole(row.metadata),
       password: resealed,
-    }
-    const defaultDatabase = principalDefaultDatabase(row.metadata)
-    if (defaultDatabase !== undefined) user.defaultDatabase = defaultDatabase
-    users.push(user)
+    };
+    const defaultDatabase = principalDefaultDatabase(row.metadata);
+    if (defaultDatabase !== undefined) user.defaultDatabase = defaultDatabase;
+    const list = byManaged.get(row.managedId) ?? [];
+    list.push(user);
+    byManaged.set(row.managedId, list);
   }
-  users.sort((a, b) => a.username.localeCompare(b.username))
-  return users
-}
-
-async function resolveBackendAddress(
-  db: Db,
-  fromServerId: string,
-  member: MemberClusterRow,
-  enginePort: number,
-): Promise<ManagedIngressReconcileBackend | ManagedIngressReconcilePrepareError> {
-  const localOrMissing = buildLocalOrMissingPortBackend(
-    fromServerId,
-    member,
-    enginePort,
-  )
-  if (localOrMissing.kind === 'ok') return localOrMissing.backend
-  if (localOrMissing.kind === 'private_path_unavailable') {
-    return {
-      kind: 'private_path_unavailable',
-      fromServerId: localOrMissing.fromServerId,
-      toServerId: localOrMissing.toServerId,
-    }
+  for (const [managedId, users] of byManaged) {
+    users.sort((a, b) => a.username.localeCompare(b.username));
+    byManaged.set(managedId, users);
   }
-
-  const resolved = await resolvePrivateEndpoint(db, {
-    fromServerId,
-    toServerId: member.serverId,
-  })
-  if (isPrivateEndpointError(resolved)) return resolved
-
-  const privatePort = member.privatePort
-  if (privatePort === null) {
-    return {
-      kind: 'private_path_unavailable',
-      fromServerId,
-      toServerId: member.serverId,
-    }
-  }
-
-  return buildRemoteIngressBackend({
-    memberId: member.memberId,
-    role: localOrMissing.role,
-    readEligible: member.readEligible,
-    address: resolved.address,
-    privatePort,
-    transport: resolved.transport,
-  })
+  return byManaged;
 }
 
 async function buildOrgTlsForServer(
@@ -353,29 +277,29 @@ async function buildOrgTlsForServer(
   organizationId: string,
   serverId: string,
   listenerSans: {
-    dnsNames: string[]
-    ipAddresses: string[]
+    dnsNames: string[];
+    ipAddresses: string[];
   },
 ): Promise<ManagedApplyOrgTlsMaterial | ManagedIngressReconcilePrepareError> {
-  const daemonState = await getServerDaemonStateByServerId(db, serverId)
+  const daemonState = await getServerDaemonStateByServerId(db, serverId);
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
-    return { kind: 'daemon_key_unavailable', serverId }
+    return { kind: "daemon_key_unavailable", serverId };
   }
 
   const ca = await ensureActiveOrganizationCa(
     db,
     dataEncryptionSecrets,
     organizationId,
-  )
-  if ('kind' in ca) {
+  );
+  if ("kind" in ca) {
     // ensureActiveOrganizationCa prepare errors are a subset of ingress prepare errors
-    return ca as ManagedIngressReconcilePrepareError
+    return ca as ManagedIngressReconcilePrepareError;
   }
 
   const caPrivateKeyPem = await decryptSecret(
     dataEncryptionSecrets,
     ca.privateKeyPemSealed,
-  )
+  );
   return buildManagedOrgTlsMaterial(
     secretsConfig,
     dataEncryptionSecrets,
@@ -384,23 +308,63 @@ async function buildOrgTlsForServer(
     `ingress-${serverId}`,
     listenerSans.dnsNames,
     listenerSans.ipAddresses,
-  )
+  );
 }
 
-async function resolveClusterBackends(
-  db: Db,
+function resolveClusterBackends(
   serverId: string,
   members: MemberClusterRow[],
   port: number,
-): Promise<ManagedIngressReconcileBackend[] | ManagedIngressReconcilePrepareError> {
-  const backends: ManagedIngressReconcileBackend[] = []
+  endpoints: Awaited<ReturnType<typeof resolvePrivateEndpoints>>,
+): ManagedIngressReconcileBackend[] | ManagedIngressReconcilePrepareError {
+  const backends: ManagedIngressReconcileBackend[] = [];
   for (const member of members) {
-    const backend = await resolveBackendAddress(db, serverId, member, port)
-    if ('kind' in backend) return backend
-    backends.push(backend)
+    const localOrMissing = buildLocalOrMissingPortBackend(
+      serverId,
+      member,
+      port,
+    );
+    if (localOrMissing.kind === "ok") {
+      backends.push(localOrMissing.backend);
+      continue;
+    }
+    if (localOrMissing.kind === "private_path_unavailable") {
+      return {
+        kind: "private_path_unavailable",
+        fromServerId: localOrMissing.fromServerId,
+        toServerId: localOrMissing.toServerId,
+      };
+    }
+
+    const resolved = endpoints.get(member.serverId);
+    if (!resolved || isPrivateEndpointError(resolved)) {
+      return resolved && isPrivateEndpointError(resolved) ? resolved : {
+        kind: "private_path_unavailable",
+        fromServerId: serverId,
+        toServerId: member.serverId,
+      };
+    }
+
+    const privatePort = member.privatePort;
+    if (privatePort === null) {
+      return {
+        kind: "private_path_unavailable",
+        fromServerId: serverId,
+        toServerId: member.serverId,
+      };
+    }
+
+    backends.push(buildRemoteIngressBackend({
+      memberId: member.memberId,
+      role: localOrMissing.role,
+      readEligible: member.readEligible,
+      address: resolved.address,
+      privatePort,
+      transport: resolved.transport,
+    }));
   }
-  backends.sort((a, b) => a.memberId.localeCompare(b.memberId))
-  return backends
+  backends.sort((a, b) => a.memberId.localeCompare(b.memberId));
+  return backends;
 }
 
 /**
@@ -408,55 +372,39 @@ async function resolveClusterBackends(
  * enabled) onto `enabledBinds`. Returns `null` when the cluster has no
  * members or an unrecognized engine (nothing to reconcile for it).
  */
-async function buildIngressCluster(
-  db: Db,
-  serverId: string,
+function buildIngressClusterFromLoaded(
   managedId: string,
+  members: MemberClusterRow[],
   index: number,
   enabledBinds: Array<HostingBindScope | undefined>,
-  reseal: {
-    secretsConfig: SecretsConfig
-    dataEncryptionSecrets: DerivedSecretsConfig
-  },
-): Promise<
-  ManagedIngressReconcileCluster | ManagedIngressReconcilePrepareError | null
-> {
-  const members = await loadClusterMembers(db, managedId)
-  if (members.length === 0) return null
+  backends: ManagedIngressReconcileBackend[],
+  users: ManagedIngressReconcileUser[],
+): ManagedIngressReconcileCluster | null {
+  if (members.length === 0) return null;
 
-  const sample = members[0]!
-  const engineCode = (sample.engine ?? 'postgres') as ManagedEngineCode
-  const spec = getManagedEngineSpec(engineCode)
-  if (!spec) return null
+  const sample = members[0]!;
+  const engineCode = (sample.engine ?? "postgres") as ManagedEngineCode;
+  const spec = getManagedEngineSpec(engineCode);
+  if (!spec) return null;
 
-  const parsed = parseManagedRowOptions(spec, sample.options)
-  const settings: ManagedSettings = parsed?.settings ?? { ...spec.defaultSettings }
+  const parsed = parseManagedRowOptions(spec, sample.options);
+  const settings: ManagedSettings = parsed?.settings ??
+    { ...spec.defaultSettings };
   if (settings.exposure.enabled) {
-    enabledBinds.push(settings.exposure.bind)
+    enabledBinds.push(settings.exposure.bind);
   }
 
-  const port = spec.defaultPort
-  const backends = await resolveClusterBackends(db, serverId, members, port)
-  if ('kind' in backends) return backends
-
-  const users = await loadClusterUsers(db, managedId, {
-    serverId,
-    secretsConfig: reseal.secretsConfig,
-    dataEncryptionSecrets: reseal.dataEncryptionSecrets,
-  })
-  if ('kind' in users) return users
-
-  const hostgroups = hostgroupsForClusterIndex(index)
+  const hostgroups = hostgroupsForClusterIndex(index);
 
   return {
     managedId,
     engine: engineCode,
-    protocolPort: protocolPortForEngine(engineCode, port),
+    protocolPort: protocolPortForEngine(engineCode, spec.defaultPort),
     writerHostgroup: hostgroups.writerHostgroup,
     readerHostgroup: hostgroups.readerHostgroup,
     backends,
     users,
-  }
+  };
 }
 
 /**
@@ -471,22 +419,22 @@ async function resolveIngressBindAddress(
   serverId: string,
   enabledBinds: Array<HostingBindScope | undefined>,
 ): Promise<string | undefined | ManagedIngressReconcilePrepareError> {
-  const decision = decideIngressBindScope(enabledBinds)
-  if (decision.kind === 'omit') return undefined
-  if (decision.kind === 'public_all_interfaces') return decision.address
+  const decision = decideIngressBindScope(enabledBinds);
+  if (decision.kind === "omit") return undefined;
+  if (decision.kind === "public_all_interfaces") return decision.address;
 
   const bindResolved = await resolveHostingBindAddress(db, {
     serverId,
     options: { bind: decision.bind },
     ipId: null,
-  })
+  });
   if (
-    typeof bindResolved === 'object' &&
-    bindResolved?.kind === 'datacenter_ip_required'
+    typeof bindResolved === "object" &&
+    bindResolved?.kind === "datacenter_ip_required"
   ) {
-    return bindResolved
+    return bindResolved;
   }
-  return typeof bindResolved === 'string' ? bindResolved : undefined
+  return typeof bindResolved === "string" ? bindResolved : undefined;
 }
 
 /** Build every cluster entry for `managedIds`, short-circuiting on the first error. */
@@ -496,25 +444,63 @@ async function buildIngressClusters(
   managedIds: readonly string[],
   enabledBinds: Array<HostingBindScope | undefined>,
   reseal: {
-    secretsConfig: SecretsConfig
-    dataEncryptionSecrets: DerivedSecretsConfig
+    secretsConfig: SecretsConfig;
+    dataEncryptionSecrets: DerivedSecretsConfig;
   },
-): Promise<ManagedIngressReconcileCluster[] | ManagedIngressReconcilePrepareError> {
-  const clusters: ManagedIngressReconcileCluster[] = []
+): Promise<
+  ManagedIngressReconcileCluster[] | ManagedIngressReconcilePrepareError
+> {
+  const membersByManaged = await loadClusterMembersForManagedIds(
+    db,
+    managedIds,
+  );
+  const allMembers = [...membersByManaged.values()].flat();
+  const remoteIds = [
+    ...new Set(
+      allMembers
+        .filter((member) => member.serverId !== serverId)
+        .map((member) => member.serverId),
+    ),
+  ];
+  const endpoints = await resolvePrivateEndpoints(db, {
+    fromServerId: serverId,
+    toServerIds: remoteIds,
+  });
+  const usersByManaged = await loadClusterUsersForManagedIds(db, managedIds, {
+    serverId,
+    secretsConfig: reseal.secretsConfig,
+    dataEncryptionSecrets: reseal.dataEncryptionSecrets,
+  });
+  if ("kind" in usersByManaged) return usersByManaged;
+
+  const clusters: ManagedIngressReconcileCluster[] = [];
   for (let index = 0; index < managedIds.length; index++) {
-    const cluster = await buildIngressCluster(
-      db,
+    const managedId = managedIds[index]!;
+    const members = membersByManaged.get(managedId) ?? [];
+    if (members.length === 0) continue;
+    const sample = members[0]!;
+    const engineCode = (sample.engine ?? "postgres") as ManagedEngineCode;
+    const spec = getManagedEngineSpec(engineCode);
+    if (!spec) continue;
+    const backends = resolveClusterBackends(
       serverId,
-      managedIds[index]!,
+      members,
+      spec.defaultPort,
+      endpoints,
+    );
+    if ("kind" in backends) return backends;
+    const cluster = buildIngressClusterFromLoaded(
+      managedId,
+      members,
       index,
       enabledBinds,
-      reseal,
-    )
-    if (cluster === null) continue
-    if ('kind' in cluster) return cluster
-    clusters.push(cluster)
+      backends,
+      usersByManaged.get(managedId) ?? [],
+    );
+    if (cluster === null) continue;
+    clusters.push(cluster);
   }
-  return clusters
+  return clusters;
 }
 
 /**
@@ -527,26 +513,32 @@ async function resolveAdvertisedHost(
   fallbackHost: string | null,
   clusters: readonly ManagedIngressReconcileCluster[],
 ): Promise<string | null> {
+  if (clusters.length === 0) return fallbackHost;
+  const rows = await db
+    .select({
+      id: managed.id,
+      options: managed.options,
+      engine: managed.engine,
+    })
+    .from(managed)
+    .where(inArray(managed.id, clusters.map((cluster) => cluster.managedId)));
+  const byId = new Map(rows.map((row) => [row.id, row]));
   for (const cluster of clusters) {
-    const [sample] = await db
-      .select({ options: managed.options, engine: managed.engine })
-      .from(managed)
-      .where(eq(managed.id, cluster.managedId))
-      .limit(1)
-    if (!sample) continue
-    const engineCode = (sample.engine ?? 'postgres') as ManagedEngineCode
-    const spec = getManagedEngineSpec(engineCode)
-    if (!spec) continue
-    const parsed = parseManagedRowOptions(spec, sample.options)
-    const settings = parsed?.settings ?? { ...spec.defaultSettings }
+    const sample = byId.get(cluster.managedId);
+    if (!sample) continue;
+    const engineCode = (sample.engine ?? "postgres") as ManagedEngineCode;
+    const spec = getManagedEngineSpec(engineCode);
+    if (!spec) continue;
+    const parsed = parseManagedRowOptions(spec, sample.options);
+    const settings = parsed?.settings ?? { ...spec.defaultSettings };
     const listener = await resolveManagedConnectionListener(db, {
       serverId,
       protocolPort: cluster.protocolPort,
       exposure: settings.exposure,
-    })
-    if (listener?.host) return listener.host
+    });
+    if (listener?.host) return listener.host;
   }
-  return fallbackHost
+  return fallbackHost;
 }
 
 /**
@@ -558,23 +550,16 @@ async function resolveAdvertisedHost(
 export async function buildManagedIngressReconcilePayload(
   db: Db,
   params: {
-    serverId: string
-    secretsConfig: SecretsConfig
-    dataEncryptionSecrets: DerivedSecretsConfig
+    serverId: string;
+    secretsConfig: SecretsConfig;
+    dataEncryptionSecrets: DerivedSecretsConfig;
   },
 ): Promise<
   | ManagedIngressReconcileCommandPayload
   | null
   | ManagedIngressReconcilePrepareError
 > {
-  const localMembers = await loadMembersOnServer(db, params.serverId)
-  const boundManagedIds = await loadBoundManagedIdsForServer(db, params.serverId)
-
-  const managedIdSet = new Set<string>([
-    ...localMembers.map((row) => row.managedId),
-    ...boundManagedIds,
-  ])
-  if (managedIdSet.size === 0) return null
+  const localMembers = await loadMembersOnServer(db, params.serverId);
 
   const [serverRow] = await db
     .select({
@@ -583,21 +568,33 @@ export async function buildManagedIngressReconcilePayload(
     })
     .from(server)
     .where(eq(server.id, params.serverId))
-    .limit(1)
-  if (!serverRow) return null
+    .limit(1);
+  if (!serverRow) return null;
 
-  const organizationId =
-    localMembers[0]?.organizationId ?? serverRow.organizationId
-  if (!organizationId) return null
+  const organizationId = localMembers[0]?.organizationId ??
+    serverRow.organizationId;
+  if (!organizationId) return null;
+
+  const boundManagedIds = await loadBoundManagedIdsForServer(
+    db,
+    params.serverId,
+    organizationId,
+  );
+
+  const managedIdSet = new Set<string>([
+    ...localMembers.map((row) => row.managedId),
+    ...boundManagedIds,
+  ]);
+  if (managedIdSet.size === 0) return null;
 
   const hierarchy = await ensureManagedIngressHierarchy(db, {
     organizationId,
     serverId: params.serverId,
-  })
+  });
 
-  const managedIds = sortManagedIds(managedIdSet)
+  const managedIds = sortManagedIds(managedIdSet);
 
-  const enabledBinds: Array<HostingBindScope | undefined> = []
+  const enabledBinds: Array<HostingBindScope | undefined> = [];
   const clusters = await buildIngressClusters(
     db,
     params.serverId,
@@ -607,17 +604,17 @@ export async function buildManagedIngressReconcilePayload(
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     },
-  )
-  if ('kind' in clusters) return clusters
-  if (clusters.length === 0) return null
+  );
+  if ("kind" in clusters) return clusters;
+  if (clusters.length === 0) return null;
 
   const bindAddress = await resolveIngressBindAddress(
     db,
     params.serverId,
     enabledBinds,
-  )
-  if (typeof bindAddress === 'object' && bindAddress !== undefined) {
-    return bindAddress
+  );
+  if (typeof bindAddress === "object" && bindAddress !== undefined) {
+    return bindAddress;
   }
 
   const advertisedHost = await resolveAdvertisedHost(
@@ -625,16 +622,16 @@ export async function buildManagedIngressReconcilePayload(
     params.serverId,
     serverRow.hostname,
     clusters,
-  )
+  );
 
   const backendAddresses = clusters.flatMap((c) =>
     c.backends.map((b) => b.address)
-  )
+  );
   const listenerSans = collectProxySqlListenerSans({
     hostname: advertisedHost,
-    bindAddress: typeof bindAddress === 'string' ? bindAddress : undefined,
+    bindAddress: typeof bindAddress === "string" ? bindAddress : undefined,
     backendAddresses,
-  })
+  });
   // Bindings (`resolveBindingEndpoint`) always dial ProxySQL by this
   // container's own Docker name over `turbopanel-managed`, regardless of the
   // public `bindAddress` — the leaf cert must carry it as a SAN or
@@ -643,7 +640,7 @@ export async function buildManagedIngressReconcilePayload(
   const listenerSansWithHierarchy = mergeHierarchyContainerSan(
     listenerSans,
     hierarchy.containerName,
-  )
+  );
 
   const orgTlsMaterial = await buildOrgTlsForServer(
     db,
@@ -652,57 +649,91 @@ export async function buildManagedIngressReconcilePayload(
     organizationId,
     params.serverId,
     listenerSansWithHierarchy,
-  )
-  if ('kind' in orgTlsMaterial) return orgTlsMaterial
+  );
+  if ("kind" in orgTlsMaterial) return orgTlsMaterial;
 
   const payload: ManagedIngressReconcileCommandPayload = {
     serverId: params.serverId,
     orgTlsMaterial,
     clusters,
+  };
+
+  if (typeof bindAddress === "string") {
+    payload.bindAddress = bindAddress;
   }
 
-  if (typeof bindAddress === 'string') {
-    payload.bindAddress = bindAddress
+  const attachedNames = new Set(
+    await loadListenerAttachedSegmentNames(db, params.serverId),
+  );
+  if (attachedNames.size > 0) {
+    const segments = (await listServerSegments(db, params.serverId))
+      .filter((row) => attachedNames.has(row.name))
+      .map((row) => ({ name: row.name, subnet: row.subnet }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    if (segments.length > 0) payload.segments = segments;
   }
 
-  return payload
+  return payload;
 }
 
 /**
  * Managed clusters whose consumers (compose services) place on `serverId`.
  * Those servers need ProxySQL routes even when they host no engine members.
+ * Scoped to the target organization and server (env pin, task pin, or
+ * unpinned env whose project default server is this server). The project
+ * default match is pushed into SQL so unpinned environments that default to
+ * other servers are never loaded.
  */
-async function loadBoundManagedIdsForServer(
+export async function loadBoundManagedIdsForServer(
   db: Db,
   serverId: string,
+  organizationId: string,
 ): Promise<string[]> {
   const rows = await db
     .select({
       managedId: principal.managedId,
       environmentServerId: environment.serverId,
       projectOptions: project.options,
+      taskServerId: task.serverId,
     })
     .from(binding)
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
+    .innerJoin(workspace, eq(project.workspaceId, workspace.id))
     .innerJoin(principal, eq(binding.principalId, principal.id))
+    .leftJoin(task, eq(task.serviceId, service.id))
+    .where(
+      and(
+        eq(workspace.organizationId, organizationId),
+        or(
+          eq(environment.serverId, serverId),
+          eq(task.serverId, serverId),
+          and(
+            isNull(environment.serverId),
+            sql`${project.options}->>'defaultServerId' = ${serverId}`,
+          ),
+        ),
+      ),
+    );
 
-  const ids = new Set<string>()
+  const ids = new Set<string>();
   for (const row of rows) {
-    if (!row.managedId) continue
+    if (!row.managedId) continue;
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
       parseProjectOptions(row.projectOptions),
-    )
-    if (placement === serverId) ids.add(row.managedId)
+    );
+    if (placement === serverId || row.taskServerId === serverId) {
+      ids.add(row.managedId);
+    }
   }
-  return [...ids]
+  return [...ids];
 }
 
 export type EnqueueManagedIngressReconcileResult =
   | { ok: true; commandId: string; serverId: string }
-  | { ok: false; reason: 'not_needed' | 'enqueue_failed' | 'prepare_failed' }
+  | { ok: false; reason: "not_needed" | "enqueue_failed" | "prepare_failed" };
 
 /**
  * Create + enqueue one `managed.ingress.reconcile` for the server.
@@ -713,51 +744,51 @@ export async function enqueueManagedIngressReconcile(
   db: Db,
   commandQueue: CommandQueue,
   params: Readonly<{
-    serverId: string
-    actorType: 'user' | 'system'
-    actorId: string
-    secretsConfig: SecretsConfig
-    dataEncryptionSecrets: DerivedSecretsConfig
+    serverId: string;
+    actorType: "user" | "system";
+    actorId: string;
+    secretsConfig: SecretsConfig;
+    dataEncryptionSecrets: DerivedSecretsConfig;
   }>,
 ): Promise<EnqueueManagedIngressReconcileResult> {
   const built = await buildManagedIngressReconcilePayload(db, {
     serverId: params.serverId,
     secretsConfig: params.secretsConfig,
     dataEncryptionSecrets: params.dataEncryptionSecrets,
-  })
-  if (built === null) return { ok: false, reason: 'not_needed' }
-  if ('kind' in built) return { ok: false, reason: 'prepare_failed' }
+  });
+  if (built === null) return { ok: false, reason: "not_needed" };
+  if ("kind" in built) return { ok: false, reason: "prepare_failed" };
 
   const expiresAt = new Date(
     Date.now() + MANAGED_INGRESS_RECONCILE_TTL_MS,
-  ).toISOString()
+  ).toISOString();
 
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
     actorType: params.actorType,
     actorId: params.actorId,
-    type: 'managed.ingress.reconcile',
+    type: "managed.ingress.reconcile",
     payload: built,
     expiresAt,
-  })
+  });
 
   const envelope: CommandEnvelope = {
     commandId: record.id,
     serverId: params.serverId,
-    type: 'managed.ingress.reconcile',
+    type: "managed.ingress.reconcile",
     attempt: 1,
     queuedAt: record.queuedAt ?? record.createdAt,
-  }
+  };
 
   try {
-    await commandQueue.enqueue(envelope)
+    await commandQueue.enqueue(envelope);
   } catch {
     await transitionCommand(db, record.id, {
-      status: 'failed',
-      error: 'Command queue unavailable',
-    })
-    return { ok: false, reason: 'enqueue_failed' }
+      status: "failed",
+      error: "Command queue unavailable",
+    });
+    return { ok: false, reason: "enqueue_failed" };
   }
 
-  return { ok: true, commandId: record.id, serverId: params.serverId }
+  return { ok: true, commandId: record.id, serverId: params.serverId };
 }

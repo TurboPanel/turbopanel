@@ -61,6 +61,8 @@ import * as systemHierarchy from '../system/hierarchy.ts'
 import { enqueueSystemReconcile } from '../system/reconcile.ts'
 import type { SystemReconcileAction } from '../../lib/commands/schemas.ts'
 import { assertDispatchInfrastructure } from './command-dispatch.ts'
+import { deleteServerFabricMembership } from '../../lib/db/fabric-records.ts'
+import { reconcileFabricMembership } from '../../lib/fabric/enqueue.ts'
 import {
   colocatedServerDeleteBlockedReason,
   listServerDeleteBlockers,
@@ -532,8 +534,37 @@ async function deleteServerWithSystemSubtree(
     if (systemEnvironmentId) {
       await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
     }
+    await deleteServerFabricMembership(tx, serverId)
     await tx.delete(server).where(eq(server.id, serverId))
   })
+}
+
+async function reconcileFabricAfterServerDelete(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  actorId: string,
+): Promise<void> {
+  const commandQueue = assertDispatchInfrastructure(c)
+  if (commandQueue instanceof Response) return
+  try {
+    const secretsConfig = c.get('secretsConfig')
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    await reconcileFabricMembership({
+      db,
+      commandQueue,
+      actorType: 'user',
+      actorId,
+      organizationId,
+      ...(secretsConfig ? { secretsConfig } : {}),
+      ...(dataEncryptionSecrets ? { dataEncryptionSecrets } : {}),
+    })
+  } catch (err) {
+    compatLogWarn(
+      'servers',
+      `reconcileFabricMembership after delete failed for org ${organizationId}: ${errorMessageFromUnknown(err)}`,
+    )
+  }
 }
 
 function serverDeletedResponse(
@@ -1230,6 +1261,8 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     if (result === 'has_children') {
       return hierarchyDeleteHasChildrenResponse(c)
     }
+
+    await reconcileFabricAfterServerDelete(c, db, organizationId, session.userId)
 
     await clearServerDaemonState(db, id)
 

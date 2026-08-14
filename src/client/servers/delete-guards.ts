@@ -1,10 +1,10 @@
 import { and, count, eq, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
-import { ip, network, peer, server } from '../../lib/db/schema.ts'
-import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
+import { ip, network, server } from '../../lib/db/schema.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
 
-export type ServerDeleteBlockerKind = 'network' | 'container' | 'peer' | 'ip'
+export type ServerDeleteBlockerKind = 'network' | 'container' | 'ip'
 
 export type ServerDeleteBlocker = {
   kind: ServerDeleteBlockerKind
@@ -45,7 +45,6 @@ export async function listServerDeleteBlockers(
   const [
     [networkCountRow],
     containerCountRows,
-    [peerCountRow],
     [ipCountRow],
   ] = await Promise.all([
     db
@@ -63,13 +62,9 @@ export async function listServerDeleteBlockers(
           JOIN project p ON p.id = e.project_id
           JOIN workspace w ON w.id = p.workspace_id
           WHERE s.id = c.service_id
-            AND w.kind = ${WORKSPACE_KIND_SYSTEM}
+            AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
         )
     `),
-    db
-      .select({ value: count() })
-      .from(peer)
-      .where(eq(peer.serverId, serverId)),
     db
       .select({ value: count() })
       .from(ip)
@@ -85,10 +80,6 @@ export async function listServerDeleteBlockers(
   const containerCount = Number(containerCountRow?.value ?? 0)
   if (containerCount > 0) {
     blockers.push({ kind: 'container', count: containerCount })
-  }
-  const peerCount = Number(peerCountRow?.value ?? 0)
-  if (peerCount > 0) {
-    blockers.push({ kind: 'peer', count: peerCount })
   }
   const ipCount = Number(ipCountRow?.value ?? 0)
   if (ipCount > 0) {

@@ -6,10 +6,9 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
-import { hosting, ip, peer } from '../../lib/db/schema.ts'
+import { hosting, ip } from '../../lib/db/schema.ts'
 import {
   assertIpScopeFkRules,
-  assertVpnIpPatchVpnId,
   applyJsonbPatchFields,
   IP_ALLOCATIONS,
   IP_SCOPES,
@@ -43,7 +42,6 @@ import {
   parseJsonBody,
   parseJsonbObject,
 } from '../shared.ts'
-import { isAddressInVpnCidr } from '../../lib/net/vpn-address-allocator.ts'
 
 const IP_SELECT = {
   id: ip.id,
@@ -51,7 +49,6 @@ const IP_SELECT = {
   datacenterId: ip.datacenterId,
   networkId: ip.networkId,
   serverId: ip.serverId,
-  vpnId: ip.vpnId,
   address: ip.address,
   allocation: ip.allocation,
   scope: ip.scope,
@@ -66,7 +63,6 @@ const IP_SCOPE_FK_FIELDS = [
   ['datacenterId', 'datacenter'],
   ['networkId', 'network'],
   ['serverId', 'server'],
-  ['vpnId', 'vpn'],
 ] as const
 
 type IpScopeFkField = (typeof IP_SCOPE_FK_FIELDS)[number][0]
@@ -143,8 +139,8 @@ async function appendOrgScopedIdFilter(
   db: Db,
   organizationId: string,
   conditions: SQL[],
-  queryKey: 'datacenterId' | 'serverId' | 'networkId' | 'vpnId',
-  kind: 'datacenter' | 'server' | 'network' | 'vpn',
+  queryKey: 'datacenterId' | 'serverId' | 'networkId',
+  kind: 'datacenter' | 'server' | 'network',
 ): Promise<Response | null> {
   const raw = c.req.query(queryKey)?.trim()
   if (!raw) return null
@@ -170,7 +166,6 @@ async function buildIpListConditions(
     ['datacenterId', 'datacenter'],
     ['serverId', 'server'],
     ['networkId', 'network'],
-    ['vpnId', 'vpn'],
   ] as const) {
     const denied = await appendOrgScopedIdFilter(
       c,
@@ -192,24 +187,6 @@ async function buildIpListConditions(
   if (allocationFilter) conditions.push(eq(ip.allocation, allocationFilter))
 
   return conditions
-}
-
-/**
- * Validate that a `scope='vpn'` address falls inside its VPN's overlay CIDR —
- * the same containment rule enforced for peer tunnel-IP assignment
- * (`isAddressInVpnCidr` in `vpn-address-allocator.ts`).
- */
-async function assertVpnScopedAddressInCidr(
-  c: Context,
-  db: Db,
-  vpnId: string,
-  address: string,
-): Promise<Response | null> {
-  const inCidr = await isAddressInVpnCidr(db, vpnId, address)
-  if (!inCidr) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  return null
 }
 
 async function parseCreateIpFields(
@@ -241,16 +218,6 @@ async function parseCreateIpFields(
 
   const scopeDenied = assertIpScopeFkRules(c, enums.scope, scopeFks)
   if (scopeDenied) return scopeDenied
-
-  if (enums.scope === 'vpn' && scopeFks.vpnId) {
-    const cidrDenied = await assertVpnScopedAddressInCidr(
-      c,
-      db,
-      scopeFks.vpnId,
-      addressFields.address,
-    )
-    if (cidrDenied) return cidrDenied
-  }
 
   return {
     ...addressFields,
@@ -290,18 +257,6 @@ async function buildIpPatchFields(
   // Reuse create-time scope/FK rules against the post-patch shape.
   const scopeDenied = assertIpScopeFkRules(c, existing.scope, finalScopeFks)
   if (scopeDenied) return scopeDenied
-
-  const vpnIdDenied = assertVpnIpPatchVpnId(c, existing.scope, finalScopeFks.vpnId)
-  if (vpnIdDenied) return vpnIdDenied
-  if (existing.scope === 'vpn' && finalScopeFks.vpnId) {
-    const cidrDenied = await assertVpnScopedAddressInCidr(
-      c,
-      db,
-      finalScopeFks.vpnId,
-      existing.address,
-    )
-    if (cidrDenied) return cidrDenied
-  }
 
   Object.assign(patchFields, scopeFks)
 
@@ -426,7 +381,6 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
               ? { networkId: fields.networkId }
               : {}),
             ...(fields.serverId !== undefined ? { serverId: fields.serverId } : {}),
-            ...(fields.vpnId !== undefined ? { vpnId: fields.vpnId } : {}),
             ...(fields.metadata !== null ? { metadata: fields.metadata } : {}),
             ...(fields.options !== null ? { options: fields.options } : {}),
           })
@@ -465,7 +419,6 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const [existingIp] = await db
       .select({
         scope: ip.scope,
-        vpnId: ip.vpnId,
         serverId: ip.serverId,
         datacenterId: ip.datacenterId,
         networkId: ip.networkId,
@@ -519,15 +472,6 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       .where(eq(hosting.ipId, id))
       .limit(1)
     if (hostingRow) {
-      return c.json({ error: 'ip_in_use' }, 409)
-    }
-
-    const [peerTunnelRow] = await db
-      .select({ id: peer.id })
-      .from(peer)
-      .where(eq(peer.tunnelIpId, id))
-      .limit(1)
-    if (peerTunnelRow) {
       return c.json({ error: 'ip_in_use' }, 409)
     }
 

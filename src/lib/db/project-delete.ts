@@ -8,6 +8,7 @@ import {
   service,
 } from './schema.ts'
 import { applyStorageRetentionOnParentDelete } from './storage-records.ts'
+import { purgeEnvironmentsComposeNetworks } from './fabric-records.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -80,6 +81,8 @@ export async function deleteProjectCascade(
           environmentIds,
           serviceIds,
         })
+        // `network.environment_id` has no FK, so compose rows are not covered by cascade.
+        await purgeEnvironmentsComposeNetworks(tx, environmentIds)
         if (containerRows.length > 0) {
           await tx
             .delete(container)
@@ -102,6 +105,8 @@ export async function deleteProjectCascade(
         projectIds: [projectId],
         environmentIds,
       })
+      // `network.environment_id` has no FK, so compose rows are not covered by cascade.
+      await purgeEnvironmentsComposeNetworks(tx, environmentIds)
       await tx
         .delete(environment)
         .where(inArray(environment.id, environmentIds))

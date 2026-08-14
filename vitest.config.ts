@@ -43,7 +43,6 @@ export default defineConfig({
       'src/daemon/durable-object.test.ts',
       'src/developer/routes-core.test.ts',
       'src/developer/dev-sync-archive.test.ts',
-      'src/lib/daemon-install-command.test.ts',
       'src/admin/public-urls.test.ts',
       'src/lib/settings/email-settings.test.ts',
       'src/client/authn/signup-validation.test.ts',

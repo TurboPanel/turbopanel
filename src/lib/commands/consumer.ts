@@ -16,10 +16,6 @@ import { getServerLicenseBinding, touchServerMetadata } from '../../server-regis
 import { commandConsumerTrace } from '../../logger.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 import {
-  maybeEnqueueVpnMeshComplete,
-  type VpnApplyResealDeps,
-} from '../../client/vpns/apply-prepare.ts'
-import {
   type CommandRecord,
   createCommandRecord,
   getCommandMetadata,
@@ -28,9 +24,9 @@ import {
 } from '../db/command-records.ts'
 import { reconcileEnvironmentContainers } from '../db/container-records.ts'
 import { markDeploymentApplied, markDeploymentFailed } from '../db/deployment-records.ts'
-import { stampRelayPublicKey } from '../db/fabric-records.ts'
-import { maybeEnqueueFabricMeshComplete } from '../fabric/enqueue.ts'
-import { managed, node, peer, server } from '../db/schema.ts'
+import { stampRelayPublicKey, stampRelayReconcileSuccess, clearRelayAppliedPayloadHash, getFabricById } from '../db/fabric-records.ts'
+import { reconcileFabricMembership } from '../fabric/enqueue.ts'
+import { managed, node, server } from '../db/schema.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
 import {
   type ManagedBackupRecord,
@@ -69,19 +65,23 @@ import {
   parseSystemReconcilePayload,
   parseSystemReconcileResult,
   parseTimezoneSetResult,
-  parseWireguardApplyPayload,
-  parseWireguardApplyResult,
 } from './schemas.ts'
 import { updateManagedMemberObservedReplication } from '../../client/managed/members.ts'
-import { isValidWireguardPublicKey } from './wireguard.ts'
+import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
 import type { DerivedSecretsConfig, SecretsConfig } from '../../client/authn/secrets.ts'
 
-/** Optional deps for follow-up WireGuard mesh-complete and managed-ingress applies. */
+/** Secrets used to reseal command payloads onto a target daemon key. */
+export type CommandResealDeps = {
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
+}
+
+/** Optional deps for follow-up mesh-complete and managed-ingress applies. */
 export type CommandConsumerDeps = {
   commandQueue?: CommandQueue
-  resealDeps?: VpnApplyResealDeps
+  resealDeps?: CommandResealDeps
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
 }
@@ -92,7 +92,6 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.ntp.set': 300_000,
   'server.reboot': 120_000,
   'server.timezone.set': 300_000,
-  'server.wireguard.apply': 300_000,
   'server.fabric.reconcile': 300_000,
   'environment.deploy': 600_000,
   'environment.lifecycle': 120_000,
@@ -117,7 +116,6 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.ntp.set' ||
     type === 'server.reboot' ||
     type === 'server.timezone.set' ||
-    type === 'server.wireguard.apply' ||
     type === 'server.fabric.reconcile' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
@@ -324,6 +322,7 @@ async function enqueueAndAwaitOutcome(
     })
     await applyManagedFailedSideEffect(db, record)
     await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
+    await applyFabricFailedSideEffect(db, record, envelope)
   }
   return pending
 }
@@ -419,6 +418,85 @@ export function isPostgresUniqueViolation(err: unknown): boolean {
   )
 }
 
+function consumerFabricSecretFields(deps?: CommandConsumerDeps): {
+  secretsConfig?: SecretsConfig
+  dataEncryptionSecrets?: DerivedSecretsConfig
+} {
+  const secretsConfig = deps?.secretsConfig ?? deps?.resealDeps?.secretsConfig
+  const dataEncryptionSecrets =
+    deps?.dataEncryptionSecrets ?? deps?.resealDeps?.dataEncryptionSecrets
+  return {
+    ...(secretsConfig ? { secretsConfig } : {}),
+    ...(dataEncryptionSecrets ? { dataEncryptionSecrets } : {}),
+  }
+}
+
+async function stampFabricSuccessFromResult(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  fabricId: string,
+  fabricResult: ReturnType<typeof parseFabricReconcileResult>,
+): Promise<void> {
+  const metadata = await getCommandMetadata(db, record.id)
+  const desiredHash =
+    typeof metadata?.desiredHash === 'string' ? metadata.desiredHash : null
+  if (!desiredHash) return
+  await stampRelayReconcileSuccess(db, {
+    fabricId,
+    serverId: envelope.serverId,
+    appliedPayloadHash: desiredHash,
+    ...(fabricResult.peers ? { observedPeers: fabricResult.peers } : {}),
+  })
+}
+
+async function reconcileFabricAfterFilledKey(
+  db: Db,
+  record: CommandRecord,
+  fabricId: string,
+  deps?: CommandConsumerDeps,
+): Promise<void> {
+  const commandQueue = deps?.commandQueue
+  if (!commandQueue || isNoopCommandQueue(commandQueue)) return
+  const fabric = await getFabricById(db, fabricId)
+  if (!fabric) return
+  await reconcileFabricMembership({
+    db,
+    commandQueue,
+    actorType: record.actorEntityType,
+    actorId: record.actorEntityId,
+    organizationId: fabric.organizationId,
+    ...consumerFabricSecretFields(deps),
+  })
+}
+
+async function applyEnabledFabricReconcileSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+  deps?: CommandConsumerDeps,
+): Promise<void> {
+  const payload = parseFabricReconcilePayload(record.payload)
+  if (!payload.enabled) return
+  const fabricResult = parseFabricReconcileResult(result)
+  // Stamp-match skips (`skipped: true`) still carry a valid publicKey — stamp
+  // the desired hash so membership convergence does not re-enqueue forever.
+  if (!fabricResult.publicKey) return
+  if (!isValidWireguardPublicKey(fabricResult.publicKey)) return
+  const fabricId = payload.fabricId
+  if (!fabricId) return
+
+  const filledNullKey = await stampRelayPublicKey(db, {
+    fabricId,
+    serverId: envelope.serverId,
+    publicKey: fabricResult.publicKey,
+  })
+  await stampFabricSuccessFromResult(db, record, envelope, fabricId, fabricResult)
+  if (!filledNullKey) return
+  await reconcileFabricAfterFilledKey(db, record, fabricId, deps)
+}
+
 async function applyFabricSideEffect(
   db: Db,
   record: CommandRecord,
@@ -428,112 +506,32 @@ async function applyFabricSideEffect(
 ): Promise<void> {
   if (record.type !== 'server.fabric.reconcile') return
   try {
-    const payload = parseFabricReconcilePayload(record.payload)
-    if (!payload.enabled) return
-    const fabricResult = parseFabricReconcileResult(result)
-    if (fabricResult.skipped || !fabricResult.publicKey) return
-    if (!isValidWireguardPublicKey(fabricResult.publicKey)) return
-    const fabricId = payload.fabricId
-    if (!fabricId) return
-
-    const filledNullKey = await stampRelayPublicKey(db, {
-      fabricId,
-      serverId: envelope.serverId,
-      publicKey: fabricResult.publicKey,
-    })
-    const commandQueue = deps?.commandQueue
-    if (filledNullKey && commandQueue && !isNoopCommandQueue(commandQueue)) {
-      await maybeEnqueueFabricMeshComplete({
-        db,
-        commandQueue,
-        actorType: record.actorEntityType,
-        actorId: record.actorEntityId,
-        fabricId,
-        filledNullKey: true,
-      })
-    }
+    await applyEnabledFabricReconcileSideEffect(db, record, envelope, result, deps)
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
     compatLogWarn(
       'command-consumer',
-      `fabric reconcile side effect failed for command ${record.id}: ${message}`,
+      `fabric reconcile side effect failed for command ${record.id}: ${errorMessage(err)}`,
     )
   }
 }
 
-async function applyWireguardSideEffect(
+async function applyFabricFailedSideEffect(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  result: unknown,
-  deps?: CommandConsumerDeps
 ): Promise<void> {
-  if (record.type !== 'server.wireguard.apply') return
+  if (record.type !== 'server.fabric.reconcile') return
   try {
-    const payload = parseWireguardApplyPayload(record.payload)
-    const wireguardResult = parseWireguardApplyResult(result)
-
-    const [existing] = await db
-      .select({
-        listenPort: peer.listenPort,
-        publicKey: peer.publicKey,
-      })
-      .from(peer)
-      .where(and(eq(peer.id, payload.peerId), eq(peer.vpnId, payload.vpnId)))
-      .limit(1)
-
-    const filledNullKey = !existing?.publicKey || !isValidWireguardPublicKey(existing.publicKey)
-
-    const updatedAt = nowIso()
-    const patch: {
-      publicKey: string
-      updatedAt: string
-      listenPort?: number
-    } = {
-      publicKey: wireguardResult.publicKey,
-      updatedAt,
-    }
-    if (wireguardResult.listenPort !== undefined && existing?.listenPort === null) {
-      patch.listenPort = wireguardResult.listenPort
-    }
-
-    await db
-      .update(peer)
-      .set(patch)
-      .where(and(eq(peer.id, payload.peerId), eq(peer.vpnId, payload.vpnId)))
-
-    const commandQueue = deps?.commandQueue
-    if (filledNullKey && commandQueue && !isNoopCommandQueue(commandQueue)) {
-      try {
-        await maybeEnqueueVpnMeshComplete({
-          db,
-          commandQueue,
-          resealDeps: deps?.resealDeps,
-          actorType: record.actorEntityType,
-          actorId: record.actorEntityId,
-          vpnId: payload.vpnId,
-          filledNullKey: true,
-        })
-      } catch (followUpErr) {
-        const message = followUpErr instanceof Error ? followUpErr.message : String(followUpErr)
-        compatLogWarn(
-          'command-consumer',
-          `wireguard mesh-complete follow-up failed for command ${record.id}: ${message}`
-        )
-      }
-    }
+    const payload = parseFabricReconcilePayload(record.payload)
+    await clearRelayAppliedPayloadHash(db, {
+      serverId: envelope.serverId,
+      ...(payload.enabled && payload.fabricId ? { fabricId: payload.fabricId } : {}),
+    })
   } catch (err) {
-    if (isPostgresUniqueViolation(err)) {
-      compatLogWarn(
-        'command-consumer',
-        `wireguard public key reconcile conflict for command ${record.id}`
-      )
-      return
-    }
     const message = err instanceof Error ? err.message : String(err)
     compatLogWarn(
       'command-consumer',
-      `wireguard side effect failed for command ${record.id}: ${message}`
+      `fabric reconcile failure side effect failed for command ${record.id}: ${message}`,
     )
   }
 }
@@ -1321,7 +1319,6 @@ async function applySucceededSideEffects(
 ): Promise<void> {
   await applyHostnameSideEffect(db, record, envelope, result)
   await applyTimeSyncSideEffect(db, record, envelope, result)
-  await applyWireguardSideEffect(db, record, envelope, result, deps)
   await applyFabricSideEffect(db, record, envelope, result, deps)
   await applyEnvironmentDeploySideEffect(db, record, envelope, result)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
@@ -1489,6 +1486,7 @@ async function handlePendingFailed(
   })
   await applyManagedFailedSideEffect(db, record)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
+  await applyFabricFailedSideEffect(db, record, envelope)
 }
 
 async function handlePendingExpired(
@@ -1507,6 +1505,7 @@ async function handlePendingExpired(
   })
   await applyManagedFailedSideEffect(db, record)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
+  await applyFabricFailedSideEffect(db, record, envelope)
 }
 
 async function handlePendingUnexpected(
@@ -1565,7 +1564,10 @@ export async function processCommandEnvelope(
   await markDispatching(db, record, envelope)
 
   const ready = await ensureServerAndDaemonOnline(db, registry, record, envelope)
-  if (!ready) return
+  if (!ready) {
+    await applyFabricFailedSideEffect(db, record, envelope)
+    return
+  }
 
   const pending = await enqueueAndAwaitOutcome(db, registry, record, envelope)
   if (!pending) return

@@ -203,12 +203,12 @@ test('serializeManagedMember maps role transport and replication health', () => 
       serverId: 's4',
       role: 'replica',
       ordinal: 2,
-      replicationTransport: 'vpn',
+      replicationTransport: 'fabric',
       metadata: null,
     }),
     'v',
   )
-  assertEquals(transportVpn.replicationTransport, 'vpn')
+  assertEquals(transportVpn.replicationTransport, 'fabric')
 })
 
 test('listManagedMembers and listManagedMembersForManagedIds wire orderBy / empty short-circuit', async () => {
@@ -389,7 +389,19 @@ test('ensureManagedPrimaryMember inserts primary and recovers race re-read', asy
 })
 
 /** Minimal double covering private-endpoint batch queries used by members.ts. */
-function privateEndpointDb(servers: Array<{ id: string; datacenterId: string | null }>): Db {
+function privateEndpointDb(
+  servers: Array<{ id: string; datacenterId: string | null }>,
+  opts?: {
+    fabricId?: string
+    relays?: Array<{
+      relayId: string
+      serverId: string
+      fabricId: string
+      fabricCreatedAt: string
+      address: string
+    }>
+  },
+): Db {
   return {
     select(fields: Record<string, unknown>) {
       const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
@@ -423,32 +435,30 @@ function privateEndpointDb(servers: Array<{ id: string; datacenterId: string | n
         }
       }
 
-      if (keys.length === 1 && keySet.has('vpnId')) {
+      if (keys.length === 1 && keySet.has('fabricId')) {
         return {
           from() {
             return {
               where() {
-                return thenableRows([])
+                return thenableRows(
+                  opts?.fabricId ? [{ fabricId: opts.fabricId }] : [],
+                )
               },
             }
           },
         }
       }
 
-      if (keySet.has('peerId') && keySet.has('vpnCreatedAt')) {
+      if (keySet.has('relayId') && keySet.has('fabricCreatedAt')) {
         return {
           from() {
             return {
               innerJoin() {
                 return {
-                  leftJoin() {
+                  where() {
                     return {
-                      where() {
-                        return {
-                          orderBy() {
-                            return thenableRows([])
-                          },
-                        }
+                      orderBy() {
+                        return thenableRows(opts?.relays ?? [])
                       },
                     }
                   },
@@ -590,17 +600,15 @@ test('resolveMemberTransports maps primary local and replica path results', asyn
           }),
         }
       }
-      if (keys.length === 1 && keySet.has('vpnId')) {
+      if (keys.length === 1 && keySet.has('fabricId')) {
         return { from: () => ({ where: () => thenableRows([]) }) }
       }
-      if (keySet.has('peerId')) {
+      if (keySet.has('relayId')) {
         return {
           from: () => ({
             innerJoin: () => ({
-              leftJoin: () => ({
-                where: () => ({
-                  orderBy: () => thenableRows([]),
-                }),
+              where: () => ({
+                orderBy: () => thenableRows([]),
               }),
             }),
           }),
@@ -615,6 +623,49 @@ test('resolveMemberTransports maps primary local and replica path results', asyn
     throw new TypeError(JSON.stringify(remoteTransports))
   }
   assertEquals(remoteTransports.get('r2'), 'datacenter')
+})
+
+test('resolveMemberTransports uses fabric when relays exist without datacenter IPs', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const replica = member({
+    id: 'r',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+  })
+  const transports = await resolveMemberTransports(
+    privateEndpointDb(
+      [
+        { id: 's1', datacenterId: null },
+        { id: 's2', datacenterId: null },
+      ],
+      {
+        fabricId: 'fab-1',
+        relays: [
+          {
+            relayId: 'rel-1',
+            serverId: 's1',
+            fabricId: 'fab-1',
+            fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+            address: '203.0.113.10',
+          },
+          {
+            relayId: 'rel-2',
+            serverId: 's2',
+            fabricId: 'fab-1',
+            fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+            address: '203.0.113.11',
+          },
+        ],
+      },
+    ),
+    [primary, replica],
+  )
+  if (!('size' in transports)) {
+    throw new TypeError(JSON.stringify(transports))
+  }
+  assertEquals(transports.get('p'), 'local')
+  assertEquals(transports.get('r'), 'fabric')
 })
 
 test('ensureMemberPrivatePorts clears leftover ports on single-member clusters', async () => {
@@ -913,8 +964,8 @@ test('resolveMemberTransports returns private path error from replica', async ()
   const result = await resolveMemberTransports(db, [primary, replica])
   assertEquals(result, {
     kind: 'private_path_unavailable',
-    fromServerId: 's2',
-    toServerId: 's1',
+    fromServerId: 's1',
+    toServerId: 's2',
   })
 })
 
@@ -1020,7 +1071,7 @@ test('crud helpers: insert update delete find mark and observed replication', as
     serverId: 's2',
     ordinal: 2,
     readEligible: true,
-    replicationTransport: 'vpn',
+    replicationTransport: 'fabric',
   })
   assertEquals(inserted.id, 'r-new')
   assertEquals((insertValues as { role: string }).role, 'replica')

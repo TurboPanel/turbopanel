@@ -21,6 +21,7 @@ import {
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
   evaluateReplicaPlacementPrechecks,
+  replicaPlacementNeedsDatacenter,
   findManagedBackupById,
   mergeManagedPatchSettings,
   nextDatabasesAfterCreate,
@@ -229,6 +230,12 @@ test('evaluateReplicaPlacementPrechecks blocks duplicate and over-limit', () => 
   )
 })
 
+test('replicaPlacementNeedsDatacenter is false only for fabric', () => {
+  assertEquals(replicaPlacementNeedsDatacenter('fabric'), false)
+  assertEquals(replicaPlacementNeedsDatacenter('datacenter'), true)
+  assertEquals(replicaPlacementNeedsDatacenter('local'), true)
+})
+
 test('evaluatePromoteMemberRole requires replica', () => {
   assertEquals(evaluatePromoteMemberRole('replica'), null)
   assertEquals(evaluatePromoteMemberRole('primary'), {
@@ -386,7 +393,7 @@ test('buildStatusMemberView and org list entry', () => {
       serverId: 's1',
       role: 'replica',
       status: 'ready',
-      replicationTransport: 'vpn',
+      replicationTransport: 'fabric',
       privatePort: 54000,
       replication: { state: 'streaming' },
     }),
@@ -395,7 +402,7 @@ test('buildStatusMemberView and org list entry', () => {
       serverId: 's1',
       role: 'replica',
       status: 'ready',
-      replicationTransport: 'vpn',
+      replicationTransport: 'fabric',
       privatePort: 54000,
       replication: { state: 'streaming' },
     },

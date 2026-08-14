@@ -181,18 +181,14 @@ CREATE TABLE "ip" (
 	"datacenter_id" uuid,
 	"network_id" uuid,
 	"server_id" uuid,
-	"vpn_id" uuid,
-	"fabric_id" uuid,
 	"address" "inet" NOT NULL,
 	"allocation" text NOT NULL,
 	"scope" text NOT NULL,
 	"name" varchar(255),
 	CONSTRAINT "ip_allocation_check" CHECK (allocation IN ('dedicated', 'shared')),
-	CONSTRAINT "ip_scope_check" CHECK (scope IN ('public', 'datacenter', 'vpn', 'fabric')),
-	CONSTRAINT "ip_vpn_scope_check" CHECK (("ip"."scope" = 'vpn' AND "ip"."vpn_id" IS NOT NULL) OR ("ip"."scope" <> 'vpn' AND "ip"."vpn_id" IS NULL)),
-	CONSTRAINT "ip_fabric_scope_check" CHECK (("ip"."scope" = 'fabric' AND "ip"."fabric_id" IS NOT NULL) OR ("ip"."scope" <> 'fabric' AND "ip"."fabric_id" IS NULL)),
+	CONSTRAINT "ip_scope_check" CHECK (scope IN ('public', 'datacenter')),
 	CONSTRAINT "ip_datacenter_scope_check" CHECK (("ip"."scope" <> 'datacenter') OR ("ip"."server_id" IS NOT NULL OR "ip"."datacenter_id" IS NOT NULL)),
-	CONSTRAINT "ip_datacenter_free_pool_check" CHECK (("ip"."datacenter_id" IS NULL) OR ("ip"."server_id" IS NULL AND "ip"."vpn_id" IS NULL AND "ip"."network_id" IS NULL AND "ip"."fabric_id" IS NULL)),
+	CONSTRAINT "ip_datacenter_free_pool_check" CHECK (("ip"."datacenter_id" IS NULL) OR ("ip"."server_id" IS NULL AND "ip"."network_id" IS NULL)),
 	CONSTRAINT "ip_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
@@ -307,7 +303,7 @@ CREATE TABLE "node" (
 	CONSTRAINT "uniq_node_managed_server" UNIQUE("managed_id","server_id"),
 	CONSTRAINT "node_role_check" CHECK ("node"."role" IN ('primary','replica')),
 	CONSTRAINT "node_ordinal_positive_check" CHECK ("node"."ordinal" >= 1),
-	CONSTRAINT "node_transport_check" CHECK ("node"."replication_transport" IS NULL OR "node"."replication_transport" IN ('local','datacenter','vpn')),
+	CONSTRAINT "node_transport_check" CHECK ("node"."replication_transport" IS NULL OR "node"."replication_transport" IN ('local','fabric','datacenter')),
 	CONSTRAINT "node_status_check" CHECK (status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed','needs_resync'))
 );
 --> statement-breakpoint
@@ -335,26 +331,6 @@ CREATE TABLE "passkey" (
 	"device_type" varchar(32) NOT NULL,
 	"is_backed_up" boolean NOT NULL,
 	"transports" text
-);
---> statement-breakpoint
-CREATE TABLE "peer" (
-	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
-	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"metadata" jsonb,
-	"options" jsonb,
-	"vpn_id" uuid NOT NULL,
-	"server_id" uuid NOT NULL,
-	"endpoint_ip_id" uuid,
-	"tunnel_ip_id" uuid,
-	"role" text DEFAULT 'member' NOT NULL,
-	"public_key" text,
-	"listen_port" integer,
-	"endpoint" varchar(255),
-	"preshared_key" text,
-	CONSTRAINT "peer_vpn_server_unique" UNIQUE("vpn_id","server_id"),
-	CONSTRAINT "peer_vpn_public_key_unique" UNIQUE("vpn_id","public_key"),
-	CONSTRAINT "peer_role_check" CHECK (role IN ('gateway', 'member'))
 );
 --> statement-breakpoint
 CREATE TABLE "principal" (
@@ -394,10 +370,20 @@ CREATE TABLE "relay" (
 	"options" jsonb,
 	"fabric_id" uuid NOT NULL,
 	"server_id" uuid NOT NULL,
-	"fabric_ip_id" uuid,
+	"address" "inet" NOT NULL,
+	"role" text DEFAULT 'member' NOT NULL,
+	"keepalive" integer,
+	"endpoint_address" "inet",
 	"public_key" text,
 	"prefix" "cidr" NOT NULL,
-	CONSTRAINT "relay_fabric_server_unique" UNIQUE("fabric_id","server_id")
+	"advertised_cidrs" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"preshared_key" text,
+	CONSTRAINT "relay_fabric_server_unique" UNIQUE("fabric_id","server_id"),
+	CONSTRAINT "uniq_relay_fabric_address" UNIQUE("fabric_id","address"),
+	CONSTRAINT "uniq_relay_fabric_public_key" UNIQUE("fabric_id","public_key"),
+	CONSTRAINT "relay_role_check" CHECK (role IN ('gateway', 'member')),
+	CONSTRAINT "relay_keepalive_check" CHECK ("relay"."keepalive" IS NULL OR ("relay"."keepalive" BETWEEN 1 AND 65535)),
+	CONSTRAINT "relay_member_advertised_cidrs_empty_check" CHECK ("relay"."role" <> 'member' OR "relay"."advertised_cidrs" = '[]'::jsonb)
 );
 --> statement-breakpoint
 CREATE TABLE "segment" (
@@ -507,6 +493,7 @@ CREATE TABLE "task" (
 	"environment_id" uuid NOT NULL,
 	"service_id" uuid NOT NULL,
 	"server_id" uuid NOT NULL,
+	"address" "inet",
 	"slot" integer NOT NULL,
 	"generation" integer DEFAULT 0 NOT NULL,
 	"desired_state" text DEFAULT 'running' NOT NULL,
@@ -616,18 +603,6 @@ CREATE TABLE "verification" (
 	CONSTRAINT "verification_identifier_unique" UNIQUE("identifier")
 );
 --> statement-breakpoint
-CREATE TABLE "vpn" (
-	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
-	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
-	"metadata" jsonb,
-	"options" jsonb,
-	"organization_id" uuid NOT NULL,
-	"cidr" "cidr" NOT NULL,
-	"name" varchar(255),
-	CONSTRAINT "vpn_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
-);
---> statement-breakpoint
 CREATE TABLE "workspace" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -663,8 +638,6 @@ ALTER TABLE "ip" ADD CONSTRAINT "ip_organization_id_organization_id_fk" FOREIGN 
 ALTER TABLE "ip" ADD CONSTRAINT "ip_datacenter_id_datacenter_id_fk" FOREIGN KEY ("datacenter_id") REFERENCES "public"."datacenter"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "ip" ADD CONSTRAINT "ip_network_id_network_id_fk" FOREIGN KEY ("network_id") REFERENCES "public"."network"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "ip" ADD CONSTRAINT "ip_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "ip" ADD CONSTRAINT "ip_vpn_id_vpn_id_fk" FOREIGN KEY ("vpn_id") REFERENCES "public"."vpn"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "ip" ADD CONSTRAINT "ip_fabric_id_fabric_id_fk" FOREIGN KEY ("fabric_id") REFERENCES "public"."fabric"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "label" ADD CONSTRAINT "label_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "license" ADD CONSTRAINT "license_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "license" ADD CONSTRAINT "license_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -681,16 +654,11 @@ ALTER TABLE "network" ADD CONSTRAINT "network_server_id_server_id_fk" FOREIGN KE
 ALTER TABLE "node" ADD CONSTRAINT "node_managed_id_managed_id_fk" FOREIGN KEY ("managed_id") REFERENCES "public"."managed"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "node" ADD CONSTRAINT "node_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "passkey" ADD CONSTRAINT "passkey_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "peer" ADD CONSTRAINT "peer_vpn_id_vpn_id_fk" FOREIGN KEY ("vpn_id") REFERENCES "public"."vpn"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "peer" ADD CONSTRAINT "peer_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "peer" ADD CONSTRAINT "peer_endpoint_ip_id_ip_id_fk" FOREIGN KEY ("endpoint_ip_id") REFERENCES "public"."ip"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "peer" ADD CONSTRAINT "peer_tunnel_ip_id_ip_id_fk" FOREIGN KEY ("tunnel_ip_id") REFERENCES "public"."ip"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "principal" ADD CONSTRAINT "principal_project_id_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."project"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "principal" ADD CONSTRAINT "principal_managed_id_managed_id_fk" FOREIGN KEY ("managed_id") REFERENCES "public"."managed"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project" ADD CONSTRAINT "project_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "relay" ADD CONSTRAINT "relay_fabric_id_fabric_id_fk" FOREIGN KEY ("fabric_id") REFERENCES "public"."fabric"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "relay" ADD CONSTRAINT "relay_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "relay" ADD CONSTRAINT "relay_fabric_ip_id_ip_id_fk" FOREIGN KEY ("fabric_ip_id") REFERENCES "public"."ip"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "segment" ADD CONSTRAINT "segment_network_id_network_id_fk" FOREIGN KEY ("network_id") REFERENCES "public"."network"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "segment" ADD CONSTRAINT "segment_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "server" ADD CONSTRAINT "server_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -721,7 +689,6 @@ ALTER TABLE "variable" ADD CONSTRAINT "variable_service_id_service_id_fk" FOREIG
 ALTER TABLE "variable" ADD CONSTRAINT "variable_hosting_id_hosting_id_fk" FOREIGN KEY ("hosting_id") REFERENCES "public"."hosting"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "variable" ADD CONSTRAINT "variable_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "variable" ADD CONSTRAINT "variable_binding_id_binding_id_fk" FOREIGN KEY ("binding_id") REFERENCES "public"."binding"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "vpn" ADD CONSTRAINT "vpn_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace" ADD CONSTRAINT "workspace_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_account_user_id" ON "account" USING btree ("user_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_binding_principal_id" ON "binding" USING btree ("principal_id" uuid_ops);--> statement-breakpoint
@@ -755,11 +722,7 @@ CREATE INDEX "idx_ip_organization_id" ON "ip" USING btree ("organization_id" uui
 CREATE INDEX "idx_ip_datacenter_id" ON "ip" USING btree ("datacenter_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_ip_network_id" ON "ip" USING btree ("network_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_ip_server_id" ON "ip" USING btree ("server_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_ip_vpn_id" ON "ip" USING btree ("vpn_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_ip_fabric_id" ON "ip" USING btree ("fabric_id" uuid_ops);--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_ip_org_address" ON "ip" USING btree ("organization_id","address") WHERE "ip"."vpn_id" IS NULL AND "ip"."fabric_id" IS NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_ip_vpn_address" ON "ip" USING btree ("vpn_id","address") WHERE "ip"."vpn_id" IS NOT NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_ip_fabric_address" ON "ip" USING btree ("fabric_id","address") WHERE "ip"."fabric_id" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_ip_org_address" ON "ip" USING btree ("organization_id","address");--> statement-breakpoint
 CREATE INDEX "idx_label_server_id" ON "label" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_license_organization_id" ON "license" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_license_server_id" ON "license" USING btree ("server_id") WHERE "license"."server_id" IS NOT NULL;--> statement-breakpoint
@@ -784,18 +747,12 @@ CREATE UNIQUE INDEX "uniq_node_primary" ON "node" USING btree ("managed_id") WHE
 CREATE UNIQUE INDEX "uniq_node_server_private_port" ON "node" USING btree ("server_id","private_port") WHERE "node"."private_port" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_passkey_credential_id" ON "passkey" USING btree ("credential_id" text_ops);--> statement-breakpoint
 CREATE INDEX "idx_passkey_user_id" ON "passkey" USING btree ("user_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_peer_vpn_id" ON "peer" USING btree ("vpn_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_peer_server_id" ON "peer" USING btree ("server_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_peer_endpoint_ip_id" ON "peer" USING btree ("endpoint_ip_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_peer_tunnel_ip_id" ON "peer" USING btree ("tunnel_ip_id" uuid_ops);--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_peer_vpn_tunnel_ip" ON "peer" USING btree ("vpn_id","tunnel_ip_id") WHERE "peer"."tunnel_ip_id" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_principal_project_id" ON "principal" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_principal_managed_id" ON "principal" USING btree ("managed_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_project_workspace_id" ON "project" USING btree ("workspace_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_project_workspace_system_component" ON "project" USING btree ("workspace_id",(metadata->>'component')) WHERE (metadata->>'component') IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_relay_fabric_id" ON "relay" USING btree ("fabric_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_relay_server_id" ON "relay" USING btree ("server_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_relay_fabric_ip_id" ON "relay" USING btree ("fabric_ip_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_segment_network_id" ON "segment" USING btree ("network_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_segment_server_id" ON "segment" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_server_organization_id" ON "server" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
@@ -841,7 +798,5 @@ CREATE UNIQUE INDEX "uniq_var_environment" ON "variable" USING btree ("key","env
 CREATE UNIQUE INDEX "uniq_var_service" ON "variable" USING btree ("key","service_id") WHERE "variable"."service_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_var_hosting" ON "variable" USING btree ("key","hosting_id") WHERE "variable"."hosting_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_var_server" ON "variable" USING btree ("key","server_id") WHERE "variable"."server_id" IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "idx_vpn_organization_id" ON "vpn" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_vpn_organization_id_cidr" ON "vpn" USING btree ("organization_id","cidr");--> statement-breakpoint
 CREATE INDEX "idx_workspace_organization_id" ON "workspace" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_workspace_organization_turbopanel" ON "workspace" USING btree ("organization_id") WHERE kind = 'turbopanel';

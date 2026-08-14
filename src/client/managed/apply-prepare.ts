@@ -35,6 +35,7 @@ import {
   privateEndpointErrorResponse,
   type PrivateEndpointError,
 } from '../../lib/net/private-endpoint.ts'
+import { loadRelayAddressesForServers } from '../../lib/db/fabric-records.ts'
 import { managed, principal, server as serverTable, tls } from '../../lib/db/schema.ts'
 import {
   issueLeafCertificate,
@@ -274,7 +275,6 @@ export function prepareErrorResponse(
       return c.json({ error: 'managed_primary_missing' }, 500)
     case 'managed_private_port_exhausted':
       return c.json({ error: 'managed_private_port_exhausted' }, 409)
-    case 'peer_tunnel_address_required':
     case 'private_path_unavailable':
       return privateEndpointErrorResponse(c, error)
   }
@@ -627,11 +627,33 @@ function resolveRootUsername(
   return residual.rootUsername ?? input.rootUsername ?? input.spec.rootUsername
 }
 
+async function resolveMemberPrivateBindAddress(
+  db: Db,
+  member: ManagedMemberRow,
+  peers: ManagedMemberPeer[],
+): Promise<string | undefined> {
+  if (peers.some((peer) => peer.transport === 'fabric')) {
+    const relays = await loadRelayAddressesForServers(db, [member.serverId])
+    return relays.get(member.serverId)
+  }
+  const privateBind = await resolveHostingBindAddress(db, {
+    serverId: member.serverId,
+    options: { bind: 'datacenter' },
+    ipId: null,
+  })
+  return typeof privateBind === 'string' && privateBind.length > 0
+    ? privateBind
+    : undefined
+}
+
 /**
  * Resolve this member's private-listener address (when it has a private
  * port) and its `BuildRuntimeSpecInput['member']` replication shape (primary
  * desired-slots / peer addresses, or standby slot + upstream primary).
  * Returns `undefined` for single-member clusters (no replication username).
+ *
+ * Bind follows the cluster's already-resolved peer transports: `fabric`
+ * publishes on the relay `tp0` address; otherwise the datacenter bind.
  */
 async function resolveMemberReplicationInput(
   db: Db,
@@ -650,16 +672,11 @@ async function resolveMemberReplicationInput(
 
   let privateListener: { address: string; port: number } | undefined
   if (member.privatePort !== null) {
-    const privateBind = await resolveHostingBindAddress(db, {
-      serverId: member.serverId,
-      options: { bind: 'datacenter' },
-      ipId: null,
-    })
+    const privateBind = await resolveMemberPrivateBindAddress(db, member, peers)
     if (typeof privateBind === 'string' && privateBind.length > 0) {
       privateListener = { address: privateBind, port: member.privatePort }
-    } else if (members.some((m) => m.serverId !== member.serverId)) {
-      // Multi-host cluster without a resolvable private address.
-      const remote = members.find((m) => m.serverId !== member.serverId)!
+    } else if (members.some((row) => row.serverId !== member.serverId)) {
+      const remote = members.find((row) => row.serverId !== member.serverId)!
       return {
         kind: 'private_path_unavailable',
         fromServerId: member.serverId,

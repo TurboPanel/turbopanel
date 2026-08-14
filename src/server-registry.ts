@@ -22,9 +22,47 @@ import { license, server } from './lib/db/schema.ts'
 import { normalizeMachineKey } from './lib/machine-key.ts'
 import { ensureSystemHierarchy } from './client/system/hierarchy.ts'
 import { compatLogWarn } from './log-compat.ts'
+import type { CommandQueue } from './lib/commands/queue.ts'
+import { isNoopCommandQueue } from './lib/commands/noop-command-queue.ts'
+import { reconcileFabricMembership } from './lib/fabric/enqueue.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from './client/authn/secrets.ts'
+
+export type FabricMembershipDeps = {
+  commandQueue: CommandQueue
+  secretsConfig?: SecretsConfig
+  dataEncryptionSecrets?: DerivedSecretsConfig
+}
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+async function reconcileFabricMembershipBestEffort(
+  db: Db,
+  organizationId: string,
+  serverId: string,
+  fabricDeps?: FabricMembershipDeps,
+): Promise<void> {
+  if (!fabricDeps || isNoopCommandQueue(fabricDeps.commandQueue)) return
+  try {
+    await reconcileFabricMembership({
+      db,
+      commandQueue: fabricDeps.commandQueue,
+      actorType: 'system',
+      actorId: serverId,
+      organizationId,
+      ...(fabricDeps.secretsConfig ? { secretsConfig: fabricDeps.secretsConfig } : {}),
+      ...(fabricDeps.dataEncryptionSecrets
+        ? { dataEncryptionSecrets: fabricDeps.dataEncryptionSecrets }
+        : {}),
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'server-registry',
+      `reconcileFabricMembership failed for server ${serverId}: ${message}`,
+    )
+  }
+}
 
 export type ServerHelloIdentity = {
   serverId?: string
@@ -450,6 +488,7 @@ async function insertLicensedServer(
 async function resolveLicensedServerId(
   db: Db,
   identity: ServerHelloIdentity,
+  fabricDeps?: FabricMembershipDeps,
 ): Promise<string | null> {
   const licenseId = identity.licenseId?.trim()
   const licenseToken = identity.licenseToken?.trim()
@@ -492,6 +531,12 @@ async function resolveLicensedServerId(
         `ensureSystemHierarchy failed for server ${serverId}: ${message}`,
       )
     }
+    await reconcileFabricMembershipBestEffort(
+      db,
+      verified.organizationId,
+      serverId,
+      fabricDeps,
+    )
     return serverId
   } catch (err) {
     if (!isUniqueViolation(err)) throw err
@@ -518,9 +563,10 @@ async function resolveLicensedServerId(
 export async function resolveServerId(
   db: Db,
   identity: ServerHelloIdentity,
+  fabricDeps?: FabricMembershipDeps,
 ): Promise<string | null> {
   if (identity.licenseId?.trim()) {
-    return resolveLicensedServerId(db, identity)
+    return resolveLicensedServerId(db, identity, fabricDeps)
   }
 
   const existing = await findExistingServerId(db, identity)

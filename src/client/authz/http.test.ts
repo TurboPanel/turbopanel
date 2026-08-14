@@ -1,7 +1,7 @@
 import { assertEquals } from 'jsr:@std/assert'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
-import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL, WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
 import {
   assertCanOr403,
   assertNotSystemOwnedOr403,
@@ -152,7 +152,7 @@ test('assertNotSystemOwnedOr403 returns 503 when database is unavailable', async
 
 test('assertNotSystemOwnedOr403 returns 403 for system workspace descendants', async () => {
   const denied = await assertNotSystemOwnedOr403(
-    createMockContext({ db: createWorkspaceKindDb(WORKSPACE_KIND_SYSTEM) }),
+    createMockContext({ db: createWorkspaceKindDb(WORKSPACE_KIND_TURBOPANEL) }),
     'workspace',
     entityId,
   )

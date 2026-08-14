@@ -1,3 +1,5 @@
+import { formatInstanceDlBase } from './install-tls.ts'
+
 export function encodeLicenseArg(
   licenseId: string,
   licenseToken: string,
@@ -46,11 +48,13 @@ function buildInstallPipeline(opts: {
   host?: string
   insecureTls?: boolean
   curlInsecure?: boolean
+  dlBase?: string
 }): string {
   const curl = opts.curlInsecure ? 'curl -fsSLk' : 'curl -fsSL'
   const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
   if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
   if (opts.insecureTls) envParts.push('TURBOPANEL_INSECURE_TLS=1')
+  if (opts.dlBase) envParts.push(`TURBOPANEL_DL_BASE=${opts.dlBase}`)
   return `${curl} ${opts.curlUrl} | ${envParts.join(' ')} sh`
 }
 
@@ -71,6 +75,11 @@ export function buildLicenseInstallCommand(opts: {
    * `TURBOPANEL_HOST`.
    */
   useInstanceRunScript?: boolean
+  /**
+   * Local artifact catalog origin (`…/downloads/daemon`). Set on the developer
+   * overlay so remote servers never hit the public CDN.
+   */
+  dlBase?: string
 }): string {
   const {
     runtime,
@@ -79,6 +88,7 @@ export function buildLicenseInstallCommand(opts: {
     licenseToken,
     insecureTls: insecureTlsOpt = false,
     useInstanceRunScript = false,
+    dlBase,
   } = opts
   const insecureTls =
     instanceUrl.startsWith('http://') ? false : insecureTlsOpt
@@ -86,6 +96,9 @@ export function buildLicenseInstallCommand(opts: {
   const includeHost = instanceUrl !== 'https://turbopanel.app'
   const scriptBase = instanceUrl.replace(/\/$/, '') // origin for curl URL + TURBOPANEL_HOST
   const host = includeHost ? instanceUrl : undefined
+  const overlayDlBase = useInstanceRunScript
+    ? (dlBase ?? formatInstanceDlBase(scriptBase))
+    : dlBase
 
   if (runtime === 'deno') {
     const curlUrl = useInstanceRunScript
@@ -97,6 +110,7 @@ export function buildLicenseInstallCommand(opts: {
       host,
       insecureTls,
       curlInsecure: insecureTls,
+      dlBase: overlayDlBase,
     })
   }
 

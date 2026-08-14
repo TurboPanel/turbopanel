@@ -1,7 +1,7 @@
 import { assertEquals } from 'jsr:@std/assert'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
-import { ip, network, peer, server } from '../../lib/db/schema.ts'
+import { ip, network, server } from '../../lib/db/schema.ts'
 import {
   COLOCATED_SERVER_DELETE_BLOCKED_REASON,
   SERVER_HAS_BLOCKERS_CODE,
@@ -42,7 +42,6 @@ function deleteBlockersDb(opts: {
   serverMissing?: boolean
   networkCount?: number
   containerCount?: number | string
-  peerCount?: number
   ipCount?: number
 }): Db {
   return {
@@ -59,9 +58,6 @@ function deleteBlockersDb(opts: {
           }
           if (table === network) {
             return thenableRows([{ value: opts.networkCount ?? 0 }])
-          }
-          if (table === peer) {
-            return thenableRows([{ value: opts.peerCount ?? 0 }])
           }
           if (table === ip) {
             return thenableRows([{ value: opts.ipCount ?? 0 }])
@@ -110,7 +106,6 @@ test('listServerDeleteBlockers omits zero-count dependency kinds', async () => {
     deleteBlockersDb({
       networkCount: 0,
       containerCount: 0,
-      peerCount: 0,
       ipCount: 0,
     }),
     'server-1',
@@ -124,7 +119,6 @@ test('listServerDeleteBlockers reports each positive dependency count', async ()
     deleteBlockersDb({
       networkCount: 2,
       containerCount: '3',
-      peerCount: 1,
       ipCount: 4,
     }),
     'server-1',
@@ -133,7 +127,6 @@ test('listServerDeleteBlockers reports each positive dependency count', async ()
   assertEquals(blockers, [
     { kind: 'network', count: 2 },
     { kind: 'container', count: 3 },
-    { kind: 'peer', count: 1 },
     { kind: 'ip', count: 4 },
   ])
 })

@@ -78,3 +78,34 @@ export async function assertServerDatacenterReady(
 
   return await assertDatacenterHasCidr(db, row.datacenterId)
 }
+
+export type GatewayRelayReadyError =
+  | { kind: 'gateway_datacenter_required'; serverId: string }
+  | { kind: 'gateway_datacenter_cidr_required'; datacenterId: string }
+
+/**
+ * Gateways must be pinned to a datacenter that has at least one CIDR-bearing
+ * site network. Delegates to {@link assertServerDatacenterReady} and maps the
+ * placement errors onto gateway wire codes (keyed on `serverId`).
+ */
+export async function assertGatewayRelaysReady(
+  db: Db,
+  rows: ReadonlyArray<{ serverId: string; role: string }>,
+): Promise<GatewayRelayReadyError | null> {
+  for (const row of rows) {
+    if (row.role !== 'gateway') continue
+    const ready = await assertServerDatacenterReady(db, row.serverId)
+    if (!ready) continue
+    if (ready.kind === 'datacenter_required') {
+      return {
+        kind: 'gateway_datacenter_required',
+        serverId: row.serverId,
+      }
+    }
+    return {
+      kind: 'gateway_datacenter_cidr_required',
+      datacenterId: ready.datacenterId,
+    }
+  }
+  return null
+}

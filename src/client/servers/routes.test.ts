@@ -16,11 +16,14 @@ import {
   command,
   datacenter,
   environment,
+  fabric,
   grant,
   license,
   network,
   organization,
   project,
+  relay,
+  segment,
   server,
   service,
   user,
@@ -533,6 +536,85 @@ async function withServerDeleteFixtures(
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
+
+test('DELETE /servers/:id deletes the server relay and its segments', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    const now = new Date().toISOString()
+    const [insertedFabric] = await db
+      .insert(fabric)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId,
+        cidr: '10.250.0.0/16',
+      })
+      .returning({ id: fabric.id })
+    const fabricId = insertedFabric!.id
+
+    await db.insert(relay).values({
+      createdAt: now,
+      updatedAt: now,
+      fabricId,
+      serverId,
+      address: '10.250.0.1',
+      prefix: '10.192.0.0/16',
+    })
+
+    const [insertedNetwork] = await db
+      .insert(network)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId,
+        kind: 'compose',
+      })
+      .returning({ id: network.id })
+    const networkId = insertedNetwork!.id
+
+    await db.insert(segment).values({
+      createdAt: now,
+      updatedAt: now,
+      networkId,
+      serverId,
+      cidr: '10.192.0.0/24',
+    })
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}`, {
+      method: 'DELETE',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+      },
+    })
+
+    assertEquals(res.status, 200)
+    const remainingRelays = await db
+      .select({ id: relay.id })
+      .from(relay)
+      .where(eq(relay.serverId, serverId))
+    const remainingSegments = await db
+      .select({ id: segment.id })
+      .from(segment)
+      .where(eq(segment.serverId, serverId))
+    const remainingServers = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(eq(server.id, serverId))
+    assertEquals(remainingRelays.length, 0)
+    assertEquals(remainingSegments.length, 0)
+    assertEquals(remainingServers.length, 0)
+    assertEquals(registry.purgedIds, [serverId])
+  })
+})
 
 test('DELETE /servers/:id deletes the row and purges the daemon cell', async () => {
   await withServerDeleteFixtures(async ({

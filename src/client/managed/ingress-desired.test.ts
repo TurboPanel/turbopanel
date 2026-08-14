@@ -18,6 +18,7 @@ import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db
 import {
   container,
   environment,
+  binding,
   ip,
   managed,
   node,
@@ -26,6 +27,7 @@ import {
   project,
   server,
   service,
+  task,
   tls,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -38,6 +40,7 @@ import {
   buildManagedIngressReconcilePayload,
   collectProxySqlListenerSans,
   hostgroupsForClusterIndex,
+  loadBoundManagedIdsForServer,
   unionExposureBind,
 } from './ingress-desired.ts'
 
@@ -400,4 +403,216 @@ test('exposure enabled + bind datacenter without a pinned IP is a typed prepare 
       )
     },
   )
+})
+
+async function insertBoundConsumer(
+  db: ReturnType<typeof createDenoDb>,
+  params: {
+    workspaceId: string
+    projectName: string
+    defaultServerId: string
+    environmentServerId: string | null
+    managedServerId: string
+    username: string
+    keyPrefix: string
+    taskServerId?: string
+  },
+): Promise<{
+  managedId: string
+  environmentId: string
+  projectId: string
+  serviceId: string
+}> {
+  const [projectRow] = await db
+    .insert(project)
+    .values({
+      name: params.projectName,
+      workspaceId: params.workspaceId,
+      options: { defaultServerId: params.defaultServerId },
+    })
+    .returning({ id: project.id })
+  const [environmentRow] = await db
+    .insert(environment)
+    .values({
+      name: 'Production',
+      projectId: projectRow!.id,
+      serverId: params.environmentServerId,
+    })
+    .returning({ id: environment.id })
+  const [serviceRow] = await db
+    .insert(service)
+    .values({
+      environmentId: environmentRow!.id,
+      composeServiceName: 'web',
+    })
+    .returning({ id: service.id })
+  const [managedRow] = await db
+    .insert(managed)
+    .values({
+      environmentId: environmentRow!.id,
+      serverId: params.managedServerId,
+      name: 'Postgres',
+      engine: 'postgres',
+      status: 'ready',
+    })
+    .returning({ id: managed.id })
+  const [principalRow] = await db
+    .insert(principal)
+    .values({
+      kind: 'database',
+      provider: 'postgres',
+      username: params.username,
+      managedId: managedRow!.id,
+    })
+    .returning({ id: principal.id })
+  await db.insert(binding).values({
+    principalId: principalRow!.id,
+    serviceId: serviceRow!.id,
+    databaseName: 'appdb',
+    keyPrefix: params.keyPrefix,
+    emitEngineDefaults: false,
+  })
+  if (params.taskServerId) {
+    await db.insert(task).values({
+      environmentId: environmentRow!.id,
+      serviceId: serviceRow!.id,
+      serverId: params.taskServerId,
+      slot: 0,
+    })
+  }
+  return {
+    managedId: managedRow!.id,
+    environmentId: environmentRow!.id,
+    projectId: projectRow!.id,
+    serviceId: serviceRow!.id,
+  }
+}
+
+test('loadBoundManagedIdsForServer does not scan unpinned environments that default to other servers', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping ingress-desired placement filter tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ name: 'Ingress Bound Placement Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+  const [insertedWorkspace] = await db
+    .insert(workspace)
+    .values({ name: 'Ingress Bound Placement Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = insertedWorkspace!.id
+  const now = new Date().toISOString()
+  const [currentServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      name: 'Ingress Bound Current Server',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const currentServerId = currentServer!.id
+  const [otherServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      name: 'Ingress Bound Other Server',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const otherServerId = otherServer!.id
+  const created: Array<{
+    managedId: string
+    environmentId: string
+    projectId: string
+    serviceId: string
+  }> = []
+
+  try {
+    for (let index = 0; index < 8; index += 1) {
+      created.push(
+        await insertBoundConsumer(db, {
+          workspaceId,
+          projectName: `Noise Project ${index}`,
+          defaultServerId: otherServerId,
+          environmentServerId: null,
+          managedServerId: otherServerId,
+          username: `noise_user_${index}`,
+          keyPrefix: `NOISE${index}`,
+        }),
+      )
+    }
+    const pinned = await insertBoundConsumer(db, {
+      workspaceId,
+      projectName: 'Pinned Env Project',
+      defaultServerId: otherServerId,
+      environmentServerId: currentServerId,
+      managedServerId: currentServerId,
+      username: 'pinned_user',
+      keyPrefix: 'PINNED',
+    })
+    const matchingDefault = await insertBoundConsumer(db, {
+      workspaceId,
+      projectName: 'Matching Default Project',
+      defaultServerId: currentServerId,
+      environmentServerId: null,
+      managedServerId: currentServerId,
+      username: 'default_user',
+      keyPrefix: 'DEFAULT',
+    })
+    const taskPinned = await insertBoundConsumer(db, {
+      workspaceId,
+      projectName: 'Task Pin Project',
+      defaultServerId: otherServerId,
+      environmentServerId: null,
+      managedServerId: otherServerId,
+      username: 'task_user',
+      keyPrefix: 'TASKPIN',
+      taskServerId: currentServerId,
+    })
+    created.push(pinned, matchingDefault, taskPinned)
+
+    const ids = await loadBoundManagedIdsForServer(
+      db,
+      currentServerId,
+      organizationId,
+    )
+    const included = new Set(ids)
+    assertEquals(included.has(pinned.managedId), true)
+    assertEquals(included.has(matchingDefault.managedId), true)
+    assertEquals(included.has(taskPinned.managedId), true)
+    for (const row of created.slice(0, 8)) {
+      assertEquals(included.has(row.managedId), false)
+    }
+    assertEquals(ids.length, 3)
+  } finally {
+    const serviceIds = created.map((row) => row.serviceId)
+    const managedIds = created.map((row) => row.managedId)
+    const environmentIds = created.map((row) => row.environmentId)
+    const projectIds = created.map((row) => row.projectId)
+    if (serviceIds.length > 0) {
+      await db.delete(binding).where(inArray(binding.serviceId, serviceIds))
+      await db.delete(task).where(inArray(task.serviceId, serviceIds))
+      await db.delete(service).where(inArray(service.id, serviceIds))
+    }
+    if (managedIds.length > 0) {
+      await db.delete(principal).where(inArray(principal.managedId, managedIds))
+      await db.delete(managed).where(inArray(managed.id, managedIds))
+    }
+    if (environmentIds.length > 0) {
+      await db.delete(environment).where(inArray(environment.id, environmentIds))
+    }
+    if (projectIds.length > 0) {
+      await db.delete(project).where(inArray(project.id, projectIds))
+    }
+    await db.delete(server).where(eq(server.id, currentServerId))
+    await db.delete(server).where(eq(server.id, otherServerId))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
 })

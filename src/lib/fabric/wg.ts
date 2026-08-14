@@ -1,36 +1,15 @@
-import { isValidHostname } from './hostname.ts'
+import { isValidHostname } from '../commands/hostname.ts'
 import { isValidCidr, isValidIpAddress, parseIpVersion } from '../ip-address.ts'
 
-export const WIREGUARD_INTERFACE_MAX_LENGTH = 15
-
-/** Default UDP listen port when peer create omits `listenPort`. */
+/** Default UDP listen port when a peer omits `listenPort`. */
 export const WIREGUARD_DEFAULT_LISTEN_PORT = 51820
 
 /** Seconds — set on peer entries that carry an endpoint (NAT keep-alive). */
 export const WIREGUARD_PERSISTENT_KEEPALIVE = 25
 
-const WIREGUARD_INTERFACE_RE = /^[a-z0-9_-]{1,15}$/
-
 const WIREGUARD_PUBLIC_KEY_RE = /^[A-Za-z0-9+/]{43}=$/
 
 const SHELL_METACHAR_RE = /[;|&$`()<>\\"'!*?{}]/
-
-export function deriveWireguardInterfaceName(vpnId: string): string {
-  const hex = vpnId.replaceAll('-', '').slice(0, 8).toLowerCase()
-  return `tpwg${hex}`
-}
-
-export function isValidWireguardInterfaceName(value: unknown): boolean {
-  if (typeof value !== 'string') return false
-  if (value.length === 0 || value.length > WIREGUARD_INTERFACE_MAX_LENGTH) return false
-  return WIREGUARD_INTERFACE_RE.test(value)
-}
-
-export function assertValidWireguardInterfaceName(value: unknown): asserts value is string {
-  if (!isValidWireguardInterfaceName(value)) {
-    throw new Error('Invalid WireGuard interface name')
-  }
-}
 
 export function isValidWireguardPublicKey(value: unknown): boolean {
   if (typeof value !== 'string') return false

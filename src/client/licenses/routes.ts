@@ -16,6 +16,7 @@ import { compatLogInfo } from '../../log-compat.ts'
 import { getDb, getDaemonCellRegistry } from '../../db.ts'
 import { isDeveloperSurfaceEnabled } from '../../dev-mode.ts'
 import { buildLicenseInstallCommand } from '../../lib/daemon-install-command.ts'
+import { installOriginNeedsInsecureTls } from '../../lib/install-tls.ts'
 import {
   parseInstallBaseUrl,
   resolvePublicBaseUrl,
@@ -158,18 +159,18 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     }
 
     // The instance does not build daemon release artifacts. In self-hosted dev
-    // the operator builds them via the console (daemon `deno task release:package`);
-    // Caddy serves whatever is present under the daemon checkout's `dist/`.
+    // the operator builds them via Developer → Rebuild daemon and upgrade
+    // (`deno task release:dev`); Caddy serves `dist/` at `/downloads/daemon`.
     const { licenseId, licenseToken } = await createLicense(db, {
       organizationId,
       name,
     })
 
     const instanceUrl = parsedInstallBaseUrl ?? await resolvePublicBaseUrl(c, opts)
-    // Only enable curl -k / TURBOPANEL_INSECURE_TLS for the explicit developer
-    // surface (self-signed platform CA). A production HTTPS installBaseUrl
-    // override must not force insecure TLS.
-    const insecureTls = Boolean(devSurface)
+    // Insecure TLS follows the selected origin, not "we are in development":
+    // LAN / :8443 platform-CA needs curl -k; a Cloudflare tunnel or other
+    // publicly-trusted HTTPS origin must not.
+    const insecureTls = installOriginNeedsInsecureTls(instanceUrl)
     // Instance-host `/run.sh` is served only by the dev overlay Caddyfile.
     // Production / self-hosted Deno installs curl the CDN and pass TURBOPANEL_HOST.
     const installCommand = buildLicenseInstallCommand({

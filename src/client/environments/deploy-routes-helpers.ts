@@ -11,6 +11,7 @@ import {
   validateDeployStorageMaterialList,
 } from '../../lib/commands/deploy-validation.ts'
 import type { DeployPrepareError } from './deploy-prepare.ts'
+import type { FabricGateOutcome } from '../../lib/fabric/gate.ts'
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -88,104 +89,147 @@ export type PrepareErrorResponse = {
   body: Record<string, unknown>
 }
 
-export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
-  if (prepared.kind === 'health_check') {
-    return {
-      status: 409,
-      body: {
-        error: 'health_check_missing',
-        required: prepared.required,
-        services: prepared.services,
-      },
-    }
-  }
-  if (prepared.kind === 'empty_compose') {
-    return { status: 400, body: { error: 'compose_empty' } }
-  }
-  if (prepared.kind === 'datacenter_ip_required') {
+export function fabricGateErrorResponse(
+  outcome: Exclude<FabricGateOutcome, { kind: 'ready' }>,
+): PrepareErrorResponse {
+  if (outcome.kind === 'failed') {
     return {
       status: 422,
       body: {
-        error: 'datacenter_ip_required',
-        serverId: prepared.serverId,
-      },
-    }
-  }
-  if (prepared.kind === 'docker_external_network_unregistered') {
-    return {
-      status: 422,
-      body: {
-        error: 'docker_external_network_unregistered',
-        names: prepared.names,
-        message:
-          'Compose references external Docker network(s) that are not registered for this server. Add a Docker network under Servers → Networks with matching options.dockerNetworkName.',
-      },
-    }
-  }
-  if (prepared.kind === 'traditional_web_principal_ambiguous') {
-    return {
-      status: 422,
-      body: {
-        error: 'traditional_web_principal_ambiguous',
-        composeServiceName: prepared.composeServiceName,
-        message:
-          `Traditional-web service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
-      },
-    }
-  }
-  if (prepared.kind === 'binding_endpoint_unavailable') {
-    return {
-      status: 422,
-      body: {
-        error: 'binding_endpoint_unavailable',
-        message:
-          'A service binding could not resolve a ProxySQL listener for its managed cluster.',
-      },
-    }
-  }
-  if (
-    prepared.kind === 'variable_unresolved' ||
-    prepared.kind === 'variable_ref_invalid' ||
-    prepared.kind === 'variable_secret_interpolation'
-  ) {
-    return {
-      status: 422,
-      body: {
-        error: prepared.kind,
-        message: prepared.message,
-        ...(prepared.composeServiceName
-          ? { composeServiceName: prepared.composeServiceName }
-          : {}),
-        ...('ref' in prepared && prepared.ref ? { ref: prepared.ref } : {}),
-        ...(prepared.envKey ? { envKey: prepared.envKey } : {}),
-      },
-    }
-  }
-  if (prepared.kind === 'storage_location_unavailable') {
-    return {
-      status: 422,
-      body: {
-        error: 'storage_location_unavailable',
-        storageId: prepared.storageId,
-        storageName: prepared.storageName,
-        accessMode: prepared.accessMode,
-        primaryServerId: prepared.primaryServerId,
-        scheduledServerId: prepared.scheduledServerId,
-        serviceId: prepared.serviceId,
-        message:
-          `Storage "${prepared.storageName}" (${prepared.accessMode}) has no usable location on this server` +
-          (prepared.primaryServerId
-            ? `; primary copy is on ${prepared.primaryServerId}`
-            : ''),
+        error: 'fabric_reconcile_failed',
+        serverId: outcome.serverId,
+        commandId: outcome.commandId,
+        ...(outcome.error ? { message: outcome.error } : {}),
       },
     }
   }
   return {
     status: 409,
     body: {
-      error: 'resource_limit_exceeded',
-      violations: prepared.violations,
+      error: 'fabric_reconcile_pending',
+      pending: outcome.pending,
     },
+  }
+}
+
+type VariablePrepareError = Extract<
+  DeployPrepareError,
+  { kind: 'variable_unresolved' | 'variable_ref_invalid' | 'variable_secret_interpolation' }
+>
+
+type StorageLocationUnavailableError = Extract<
+  DeployPrepareError,
+  { kind: 'storage_location_unavailable' }
+>
+
+function variablePrepareErrorResponse(prepared: VariablePrepareError): PrepareErrorResponse {
+  const body: Record<string, unknown> = {
+    error: prepared.kind,
+    message: prepared.message,
+  }
+  if (prepared.composeServiceName) {
+    body.composeServiceName = prepared.composeServiceName
+  }
+  if ('ref' in prepared && prepared.ref) {
+    body.ref = prepared.ref
+  }
+  if (prepared.envKey) {
+    body.envKey = prepared.envKey
+  }
+  return { status: 422, body }
+}
+
+function storageLocationUnavailableMessage(prepared: StorageLocationUnavailableError): string {
+  const prefix =
+    `Storage "${prepared.storageName}" (${prepared.accessMode}) has no usable location on this server`
+  if (!prepared.primaryServerId) {
+    return prefix
+  }
+  return `${prefix}; primary copy is on ${prepared.primaryServerId}`
+}
+
+function storageLocationUnavailableResponse(
+  prepared: StorageLocationUnavailableError,
+): PrepareErrorResponse {
+  return {
+    status: 422,
+    body: {
+      error: 'storage_location_unavailable',
+      storageId: prepared.storageId,
+      storageName: prepared.storageName,
+      accessMode: prepared.accessMode,
+      primaryServerId: prepared.primaryServerId,
+      scheduledServerId: prepared.scheduledServerId,
+      serviceId: prepared.serviceId,
+      message: storageLocationUnavailableMessage(prepared),
+    },
+  }
+}
+
+export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
+  switch (prepared.kind) {
+    case 'health_check':
+      return {
+        status: 409,
+        body: {
+          error: 'health_check_missing',
+          required: prepared.required,
+          services: prepared.services,
+        },
+      }
+    case 'empty_compose':
+      return { status: 400, body: { error: 'compose_empty' } }
+    case 'datacenter_ip_required':
+      return {
+        status: 422,
+        body: {
+          error: 'datacenter_ip_required',
+          serverId: prepared.serverId,
+        },
+      }
+    case 'docker_external_network_unregistered':
+      return {
+        status: 422,
+        body: {
+          error: 'docker_external_network_unregistered',
+          names: prepared.names,
+          message:
+            'Compose references external Docker network(s) that are not registered for this server. Add a Docker network under Servers → Networks with matching options.dockerNetworkName.',
+        },
+      }
+    case 'traditional_web_principal_ambiguous':
+      return {
+        status: 422,
+        body: {
+          error: 'traditional_web_principal_ambiguous',
+          composeServiceName: prepared.composeServiceName,
+          message:
+            `Traditional-web service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
+        },
+      }
+    case 'binding_endpoint_unavailable':
+      return {
+        status: 422,
+        body: {
+          error: 'binding_endpoint_unavailable',
+          message:
+            'A service binding could not resolve a ProxySQL listener for its managed cluster.',
+        },
+      }
+    case 'variable_unresolved':
+    case 'variable_ref_invalid':
+    case 'variable_secret_interpolation':
+      return variablePrepareErrorResponse(prepared)
+    case 'storage_location_unavailable':
+      return storageLocationUnavailableResponse(prepared)
+    case 'resource_limit':
+      return {
+        status: 409,
+        body: {
+          error: 'resource_limit_exceeded',
+          violations: prepared.violations,
+        },
+      }
   }
 }
 

@@ -130,6 +130,7 @@ import {
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
   evaluateReplicaPlacementPrechecks,
+  replicaPlacementNeedsDatacenter,
   findManagedBackupById,
   isManagedRootPrincipal,
   isManagedReplicationPrincipal,
@@ -749,16 +750,18 @@ async function resolveReplicaPlacement(
     return c.json({ error: precheck.error }, precheck.status)
   }
 
-  const dcReady = await assertServerDatacenterReady(db, params.serverId)
-  if (dcReady) {
-    return c.json({ error: dcReady.kind }, 422)
-  }
-
   const toPrimary = await resolvePrivateEndpoint(db, {
     fromServerId: params.serverId,
     toServerId: params.primaryServerId,
   })
   if ('kind' in toPrimary) return privateEndpointErrorResponse(c, toPrimary)
+  if (replicaPlacementNeedsDatacenter(toPrimary.transport)) {
+    const dcReady = await assertServerDatacenterReady(db, params.serverId)
+    if (dcReady) {
+      return c.json({ error: dcReady.kind }, 422)
+    }
+  }
+
   const fromPrimary = await resolvePrivateEndpoint(db, {
     fromServerId: params.primaryServerId,
     toServerId: params.serverId,

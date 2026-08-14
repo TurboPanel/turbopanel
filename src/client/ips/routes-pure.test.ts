@@ -3,7 +3,6 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
   assertIpScopeFkRules,
-  assertVpnIpPatchVpnId,
   applyJsonbPatchFields,
   isIpAddressUniqueViolation,
   mergeIpScopeFks,
@@ -44,17 +43,17 @@ async function expectInvalidRequest(response: Response | { address: string }): P
   assertEquals(await response.json(), { error: 'Invalid request' })
 }
 
-test('isIpAddressUniqueViolation matches org and VPN overlay indexes', () => {
+test('isIpAddressUniqueViolation matches the org address index', () => {
   const orgErr = Object.assign(
     new Error('duplicate key value violates unique constraint "uniq_ip_org_address"'),
     { code: '23505' },
   )
-  const vpnErr = Object.assign(
+  const otherErr = Object.assign(
     new Error('duplicate key value violates unique constraint "uniq_ip_vpn_address"'),
     { code: '23505' },
   )
   assertEquals(isIpAddressUniqueViolation(orgErr), true)
-  assertEquals(isIpAddressUniqueViolation(vpnErr), true)
+  assertEquals(isIpAddressUniqueViolation(otherErr), false)
   assertEquals(isIpAddressUniqueViolation({ code: '23505', message: 'other' }), false)
 })
 
@@ -71,19 +70,17 @@ test('parseCreateIpAddress rejects client-supplied version and invalid addresses
   assertEquals(parsed.address, '203.0.113.10')
 })
 
-test('assertIpScopeFkRules enforces VPN scope, free-pool, and datacenter-anchor rules', async () => {
+test('assertIpScopeFkRules enforces free-pool and datacenter-anchor rules', async () => {
   const c = mockContext()
 
-  await expectInvalidRequest(assertIpScopeFkRules(c, 'vpn', {}))
-  await expectInvalidRequest(assertIpScopeFkRules(c, 'public', { vpnId: 'vpn-1' }))
   await expectInvalidRequest(assertIpScopeFkRules(c, 'datacenter', {
     datacenterId: 'dc-1',
     serverId: 'srv-1',
   }))
   await expectInvalidRequest(assertIpScopeFkRules(c, 'datacenter', {}))
-  assertEquals(assertIpScopeFkRules(c, 'vpn', { vpnId: 'vpn-1' }), null)
   assertEquals(assertIpScopeFkRules(c, 'datacenter', { datacenterId: 'dc-1' }), null)
   assertEquals(assertIpScopeFkRules(c, 'datacenter', { serverId: 'srv-1' }), null)
+  assertEquals(assertIpScopeFkRules(c, 'public', {}), null)
 })
 
 test('serializeIpRow derives version from address', () => {
@@ -93,7 +90,6 @@ test('serializeIpRow derives version from address', () => {
     datacenterId: null,
     networkId: null,
     serverId: null,
-    vpnId: null,
     address: '203.0.113.10',
     allocation: 'dedicated',
     scope: 'public',
@@ -115,6 +111,9 @@ test('parseCreateIpEnums validates allocation and scope', async () => {
   const badAllocation = parseCreateIpEnums(c, { allocation: 'pool', scope: 'public' })
   if (!(badAllocation instanceof Response)) throw new TypeError('expected response')
   assertEquals(badAllocation.status, 400)
+  const badScope = parseCreateIpEnums(c, { allocation: 'dedicated', scope: 'vpn' })
+  if (!(badScope instanceof Response)) throw new TypeError('expected response')
+  assertEquals(badScope.status, 400)
 })
 
 test('rejectImmutableIpPatchFields blocks address and scope mutations', async () => {
@@ -127,8 +126,7 @@ test('rejectImmutableIpPatchFields blocks address and scope mutations', async ()
 
 test('mergeIpScopeFks preserves existing FKs when patch omits them', () => {
   const existing = {
-    scope: 'vpn',
-    vpnId: 'vpn-1',
+    scope: 'public',
     serverId: null,
     datacenterId: null,
     networkId: null,
@@ -136,13 +134,13 @@ test('mergeIpScopeFks preserves existing FKs when patch omits them', () => {
   }
   assertEquals(
     mergeIpScopeFks(existing, { serverId: 'srv-2' }),
-    { vpnId: 'vpn-1', serverId: 'srv-2', datacenterId: null, networkId: null },
+    { serverId: 'srv-2', datacenterId: null, networkId: null },
   )
 })
 
 test('parseEnumQueryFilter and parseScopeFkUuid validate query and body UUIDs', async () => {
   const c = mockContext({ scope: 'public', allocation: 'dedicated' })
-  assertEquals(parseEnumQueryFilter(c, 'scope', new Set(['public', 'vpn'])), 'public')
+  assertEquals(parseEnumQueryFilter(c, 'scope', new Set(['public', 'datacenter'])), 'public')
   const badScope = parseEnumQueryFilter(mockContext({ scope: 'loopback' }), 'scope', new Set(['public']))
   if (!(badScope instanceof Response)) throw new TypeError('expected response')
   assertEquals(badScope.status, 400)
@@ -152,14 +150,6 @@ test('parseEnumQueryFilter and parseScopeFkUuid validate query and body UUIDs', 
   assertEquals(parseScopeFkUuid(undefined), { ok: true, value: undefined })
   assertEquals(parseScopeFkUuid(null), { ok: true, value: null })
   assertEquals(parseScopeFkUuid('bad'), { ok: false })
-})
-
-test('assertVpnIpPatchVpnId rejects clearing vpnId on vpn-scoped rows', async () => {
-  const c = mockContext()
-  assertEquals(assertVpnIpPatchVpnId(c, 'public', null), null)
-  const denied = assertVpnIpPatchVpnId(c, 'vpn', null)
-  if (!(denied instanceof Response)) throw new TypeError('expected response')
-  assertEquals(denied.status, 400)
 })
 
 test('applyJsonbPatchFields merges metadata and options on IP patch', async () => {

@@ -249,8 +249,6 @@ test('can builds ancestry queries for workspace-tree entity types', async () => 
     'network',
     'datacenter',
     'ip',
-    'vpn',
-    'peer',
   ] as const
 
   for (const entityType of entityTypes) {

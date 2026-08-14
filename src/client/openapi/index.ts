@@ -10,7 +10,6 @@ import { installOpenApiPaths, installOpenApiSchemas } from './install.ts'
 import { networkPaths, networkSchemas } from './networks.ts'
 import { datacenterPaths, datacenterSchemas } from './datacenters.ts'
 import { ipPaths, ipSchemas } from './ips.ts'
-import { vpnPaths, vpnSchemas } from './vpns.ts'
 import { buildLicensePaths, buildLicenseSchemas } from './licenses.ts'
 import { organizationPaths, organizationSchemas } from './organizations.ts'
 import { projectPaths, projectSchemas } from './projects.ts'
@@ -77,7 +76,6 @@ export function getClientOpenApiSpec(
       { name: 'Networks', description: 'Organization network registry' },
       { name: 'Datacenters', description: 'Datacenter CRUD' },
       { name: 'IPs', description: 'Managed IP address registry' },
-      { name: 'VPNs', description: 'WireGuard VPN meshes and peers' },
       { name: 'Licenses', description: 'License lifecycle' },
       { name: 'System', description: 'Platform-managed system components' },
       ...(includeInstall
@@ -87,7 +85,7 @@ export function getClientOpenApiSpec(
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
       { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Bindings', 'Storage', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
-      { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Datacenters', 'IPs', 'VPNs', 'Licenses'] },
+      { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Datacenters', 'IPs', 'Licenses'] },
       { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
     components: {
@@ -105,7 +103,6 @@ export function getClientOpenApiSpec(
         ...networkSchemas,
         ...datacenterSchemas,
         ...ipSchemas,
-        ...vpnSchemas,
         ...buildLicenseSchemas(installCommandDescription),
         ...accessSchemas,
         ...organizationSchemas,
@@ -132,7 +129,6 @@ export function getClientOpenApiSpec(
       ...networkPaths,
       ...datacenterPaths,
       ...ipPaths,
-      ...vpnPaths,
       ...buildLicensePaths(installCommandDescription),
       ...accessPaths,
       ...organizationPaths,

@@ -2,7 +2,7 @@ import type { Context } from 'hono'
 import { getDb } from '../../db.ts'
 import { can, type PermissionKey } from './evaluator.ts'
 import { resolveWorkspaceKindForEntity } from './workspace-kind-ancestry.ts'
-import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
 
 /** Typed 403 body when a mutation targets a system-workspace descendant. */
 export const SYSTEM_RESOURCE_IMMUTABLE_ERROR = 'system_resource_immutable'
@@ -68,7 +68,7 @@ export async function assertOrgOwnerOr403(
  * Returns `null` when the entity has no workspace ancestor (`null` from
  * {@link resolveWorkspaceKindForEntity}) or when `kind === 'user'`. Org-owned
  * registries with no workspace ancestry — `tls`, `network`, `datacenter`,
- * `ip`, `vpn`, `peer`, `team`, `organization`, `license`, and server-scoped
+ * `ip`, `team`, `organization`, `license`, and server-scoped
  * variables — intentionally need no guard; do not "fix" that omission by
  * inventing joins.
  *
@@ -86,7 +86,7 @@ export async function assertNotSystemOwnedOr403(
   }
 
   const kind = await resolveWorkspaceKindForEntity(db, entityType, entityId)
-  if (kind === WORKSPACE_KIND_SYSTEM) {
+  if (kind === WORKSPACE_KIND_TURBOPANEL) {
     return c.json({ error: SYSTEM_RESOURCE_IMMUTABLE_ERROR }, 403)
   }
 

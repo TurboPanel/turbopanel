@@ -127,7 +127,7 @@ export const organizationSchemas = {
   },
   OrganizationFabric: {
     type: 'object',
-    required: ['enabled'],
+    required: ['enabled', 'relays'],
     properties: {
       enabled: {
         type: 'boolean',
@@ -136,11 +136,107 @@ export const organizationSchemas = {
       },
       fabric: {
         type: 'object',
-        required: ['id', 'cidr'],
+        required: ['id', 'cidr', 'mtu'],
         properties: {
           id: { type: 'string', format: 'uuid' },
           cidr: { type: 'string' },
+          mtu: { type: 'integer', minimum: 1280, maximum: 9000 },
           status: { type: 'string' },
+        },
+      },
+      relays: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/OrganizationFabricRelay' },
+      },
+    },
+  },
+  OrganizationFabricRelay: {
+    type: 'object',
+    required: [
+      'serverId',
+      'address',
+      'role',
+      'advertisedCidrs',
+      'keepalive',
+      'endpointAddress',
+      'resolvedEndpoint',
+      'publicKey',
+      'prefix',
+      'hasPresharedKey',
+      'segments',
+      'observed',
+    ],
+    properties: {
+      serverId: { type: 'string', format: 'uuid' },
+      address: { type: 'string' },
+      role: { type: 'string', enum: ['gateway', 'member'] },
+      advertisedCidrs: { type: 'array', items: { type: 'string' } },
+      keepalive: { type: ['integer', 'null'] },
+      endpointAddress: {
+        type: ['string', 'null'],
+        description: 'Operator pin only; null means auto-derive.',
+      },
+      resolvedEndpoint: { type: ['string', 'null'] },
+      publicKey: { type: ['string', 'null'] },
+      prefix: { type: 'string' },
+      hasPresharedKey: {
+        type: 'boolean',
+        description: 'Whether a sealed PSK is stored. The key itself is never returned.',
+      },
+      segments: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['name', 'subnet'],
+          properties: {
+            name: { type: 'string' },
+            subnet: { type: 'string' },
+            mtu: { type: 'integer' },
+            gateway: { type: 'string' },
+          },
+        },
+      },
+      observed: {
+        type: ['object', 'null'],
+        properties: {
+          lastHandshakeAt: { type: 'string', format: 'date-time' },
+          transferRx: { type: 'integer', minimum: 0 },
+          transferTx: { type: 'integer', minimum: 0 },
+        },
+      },
+    },
+  },
+  OrganizationFabricRelayUpdate: {
+    type: 'object',
+    properties: {
+      role: { type: 'string', enum: ['gateway', 'member'] },
+      advertisedCidrs: { type: 'array', items: { type: 'string' } },
+      keepalive: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
+      endpointAddress: { type: ['string', 'null'] },
+      presharedKey: {
+        type: ['string', 'null'],
+        description: 'Write-only WireGuard PSK. Never echoed on GET.',
+      },
+    },
+  },
+  OrganizationFabricApplyResult: {
+    type: 'object',
+    required: ['ok', 'fabricId', 'interfaceName', 'results'],
+    properties: {
+      ok: { type: 'boolean' },
+      fabricId: { type: 'string', format: 'uuid' },
+      interfaceName: { type: 'string', enum: ['tp0'] },
+      results: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['serverId', 'status'],
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            status: { type: 'string', enum: ['queued', 'failed', 'skipped'] },
+            commandId: { type: 'string', format: 'uuid' },
+            error: { type: 'string' },
+          },
         },
       },
     },
@@ -579,7 +675,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Enable or disable TurboFabric',
       description:
-        'Manage-gated. `{ enabled: true }` creates the org fabric (if missing) and enqueues `server.fabric.reconcile` on enrolled servers. `{ enabled: false }` enqueues disable then deletes the fabric row (CASCADE relays/spans). Does not auto-enable on install, enroll, or first deploy. Returns 409 `fabric_cidr_unavailable` / `fabric_address_pool_exhausted` when the default host CIDR cannot be allocated.',
+        'Manage-gated. `{ enabled: true }` creates the org fabric (if missing) and change-driven `server.fabric.reconcile` on enrolled servers. `{ enabled: false }` enqueues teardown (`tp0`, routed bridges, `TP-FORWARD`, keys, state) then deletes the fabric row and reclaims `network(kind=\'compose\')` / `segment` rows. Does not auto-enable on install, enroll, or first deploy. Returns 409 `fabric_cidr_unavailable` / `fabric_address_pool_exhausted` when the default host CIDR cannot be allocated.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -624,6 +720,129 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '409': {
           description: 'CIDR or address pool unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/fabric/relays/{serverId}': {
+    patch: {
+      tags: ['Organizations'],
+      summary: 'Update a TurboFabric relay',
+      description:
+        'Manage-gated. Patches role, advertised CIDRs, keepalive, endpoint pin, and write-only `presharedKey`. Promoting to gateway returns 422 `gateway_datacenter_required` / `gateway_datacenter_cidr_required` when the server is not ready. Then change-driven membership reconcile. PSK is never echoed.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+        {
+          name: 'serverId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/OrganizationFabricRelayUpdate' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Updated relay',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'relay'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  relay: { $ref: '#/components/schemas/OrganizationFabricRelay' },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description: 'TurboFabric is off',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '422': {
+          description: '`gateway_datacenter_required` / `gateway_datacenter_cidr_required`',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/fabric/apply': {
+    post: {
+      tags: ['Organizations'],
+      summary: 'Apply TurboFabric membership',
+      description:
+        'Manage-gated. Force-reconciles `server.fabric.reconcile` on every org relay. Returns per-server `results[]` (`queued` / `failed` / `skipped`). 409 when TurboFabric is off.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Apply enqueued',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrganizationFabricApplyResult' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description: 'TurboFabric is off',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

@@ -74,10 +74,39 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(mapPrepareErrorResponse(cases[6]).body.error, 'binding_endpoint_unavailable')
   assertEquals(mapPrepareErrorResponse(cases[7]).status, 422)
   assertEquals(mapPrepareErrorResponse(cases[7]).body.error, 'variable_unresolved')
+  assertEquals(mapPrepareErrorResponse(cases[7]).body.ref, '{$project.x}')
   assertEquals(mapPrepareErrorResponse(cases[8]).body.error, 'variable_ref_invalid')
   assertEquals(mapPrepareErrorResponse(cases[9]).body.error, 'variable_secret_interpolation')
   assertEquals(mapPrepareErrorResponse(cases[10]).body.error, 'storage_location_unavailable')
   assertEquals(mapPrepareErrorResponse(cases[10]).status, 422)
+  assertEquals(
+    mapPrepareErrorResponse(cases[10]).body.message,
+    'Storage "data" (single_writer) has no usable location on this server; primary copy is on srv-primary',
+  )
+
+  const variableWithContext = mapPrepareErrorResponse({
+    kind: 'variable_unresolved',
+    message: 'missing {$project.x}',
+    ref: '{$project.x}',
+    composeServiceName: 'web',
+    envKey: 'DATABASE_URL',
+  })
+  assertEquals(variableWithContext.body.composeServiceName, 'web')
+  assertEquals(variableWithContext.body.envKey, 'DATABASE_URL')
+
+  const storageWithoutPrimary = mapPrepareErrorResponse({
+    kind: 'storage_location_unavailable',
+    storageId: 'st-1',
+    storageName: 'data',
+    accessMode: 'single_writer',
+    primaryServerId: null,
+    scheduledServerId: 'srv-other',
+    serviceId: 'svc-1',
+  })
+  assertEquals(
+    storageWithoutPrimary.body.message,
+    'Storage "data" (single_writer) has no usable location on this server',
+  )
 })
 
 test('parseDeployRequestFlags defaults flags to false', () => {

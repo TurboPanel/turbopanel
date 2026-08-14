@@ -20,19 +20,18 @@ const test = Deno.test.bind(Deno)
 
 type ServerRow = { id: string; datacenterId: string | null }
 type IpRow = { serverId: string; address: string; createdAt: string }
-type PeerRow = {
-  peerId: string
+type RelayRow = {
+  relayId: string
   serverId: string
-  vpnId: string
-  vpnCreatedAt: string
-  tunnelIpId: string | null
-  tunnelAddress: string | null
+  fabricId: string
+  fabricCreatedAt: string
+  address: string
 }
 
 type Fixture = {
   servers?: ServerRow[]
   ips?: IpRow[]
-  peers?: PeerRow[]
+  relays?: RelayRow[]
   /** Single-row result for loadServerDatacenterAddress. */
   singleAddress?: string | null
 }
@@ -48,7 +47,7 @@ function thenable<T>(value: T) {
 function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndpoint>[0] {
   const servers = fixture.servers ?? []
   const ips = fixture.ips ?? []
-  const peers = fixture.peers ?? []
+  const relays = fixture.relays ?? []
 
   return {
     select(fields: Record<string, unknown>) {
@@ -111,34 +110,30 @@ function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndp
         }
       }
 
-      // membership: { vpnId } only
-      if (keys.length === 1 && keySet.has('vpnId')) {
+      // membership: { fabricId } only
+      if (keys.length === 1 && keySet.has('fabricId')) {
         return {
           from() {
             return {
               where() {
-                return thenable(peers.map((row) => ({ vpnId: row.vpnId })))
+                return thenable(relays.map((row) => ({ fabricId: row.fabricId })))
               },
             }
           },
         }
       }
 
-      // full peer join: peerId, serverId, vpnId, vpnCreatedAt, tunnelIpId, tunnelAddress
-      if (keySet.has('peerId') && keySet.has('vpnCreatedAt')) {
+      // full relay join: relayId, serverId, fabricId, fabricCreatedAt, address
+      if (keySet.has('relayId') && keySet.has('fabricCreatedAt')) {
         return {
           from() {
             return {
               innerJoin() {
                 return {
-                  leftJoin() {
+                  where() {
                     return {
-                      where() {
-                        return {
-                          orderBy() {
-                            return thenable(peers)
-                          },
-                        }
+                      orderBy() {
+                        return thenable(relays)
                       },
                     }
                   },
@@ -175,7 +170,6 @@ test('privateEndpointErrorResponse returns 422 with error-only body', async () =
   const c = mockContext()
   const errors: PrivateEndpointError[] = [
     { kind: 'datacenter_ip_required', serverId: 's1' },
-    { kind: 'peer_tunnel_address_required', peerId: 'p1' },
     {
       kind: 'private_path_unavailable',
       fromServerId: 'a',
@@ -212,7 +206,7 @@ test('resolvePrivateEndpoint local same-server is loopback', async () => {
   } satisfies ResolvedPrivateEndpoint)
 })
 
-test('resolvePrivateEndpoint prefers datacenter before vpn', async () => {
+test('resolvePrivateEndpoint prefers fabric when both paths exist', async () => {
   const db = createFixtureDb({
     servers: [
       { id: 's1', datacenterId: 'dc-a' },
@@ -222,23 +216,75 @@ test('resolvePrivateEndpoint prefers datacenter before vpn', async () => {
       { serverId: 's2', address: '10.0.0.2', createdAt: '2020-01-01T00:00:00.000Z' },
       { serverId: 's2', address: '10.0.0.9', createdAt: '2020-01-02T00:00:00.000Z' },
     ],
-    peers: [
+    relays: [
       {
-        peerId: 'p1',
+        relayId: 'r1',
         serverId: 's1',
-        vpnId: 'vpn-1',
-        vpnCreatedAt: '2020-01-01T00:00:00.000Z',
-        tunnelIpId: 't1',
-        tunnelAddress: '10.8.0.1',
+        fabricId: 'fabric-1',
+        fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+        address: '10.250.0.1',
       },
       {
-        peerId: 'p2',
+        relayId: 'r2',
         serverId: 's2',
-        vpnId: 'vpn-1',
-        vpnCreatedAt: '2020-01-01T00:00:00.000Z',
-        tunnelIpId: 't2',
-        tunnelAddress: '10.8.0.2',
+        fabricId: 'fabric-1',
+        fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+        address: '10.250.0.2',
       },
+    ],
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    toServerId: 's2',
+  }), {
+    address: '10.250.0.2',
+    transport: 'fabric',
+    fabricId: 'fabric-1',
+  })
+})
+
+test('resolvePrivateEndpoint prefers fabric over datacenter_ip_required', async () => {
+  const db = createFixtureDb({
+    servers: [
+      { id: 's1', datacenterId: 'dc-a' },
+      { id: 's2', datacenterId: 'dc-a' },
+    ],
+    ips: [],
+    relays: [
+      {
+        relayId: 'r1',
+        serverId: 's1',
+        fabricId: 'fabric-1',
+        fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+        address: '10.250.0.1',
+      },
+      {
+        relayId: 'r2',
+        serverId: 's2',
+        fabricId: 'fabric-1',
+        fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+        address: '10.250.0.2',
+      },
+    ],
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    toServerId: 's2',
+  }), {
+    address: '10.250.0.2',
+    transport: 'fabric',
+    fabricId: 'fabric-1',
+  })
+})
+
+test('resolvePrivateEndpoint falls back to datacenter when there is no shared fabric', async () => {
+  const db = createFixtureDb({
+    servers: [
+      { id: 's1', datacenterId: 'dc-a' },
+      { id: 's2', datacenterId: 'dc-a' },
+    ],
+    ips: [
+      { serverId: 's2', address: '10.0.0.2', createdAt: '2020-01-01T00:00:00.000Z' },
     ],
   })
   assertEquals(await resolvePrivateEndpoint(db, {
@@ -268,44 +314,40 @@ test('resolvePrivateEndpoint returns datacenter_ip_required when missing', async
   })
 })
 
-test('resolvePrivateEndpoint picks lowest vpn.createdAt when multiple meshes share', async () => {
+test('resolvePrivateEndpoint picks lowest fabric.createdAt when multiple meshes share', async () => {
   const db = createFixtureDb({
     servers: [
       { id: 's1', datacenterId: 'dc-a' },
       { id: 's2', datacenterId: 'dc-b' },
     ],
-    peers: [
+    relays: [
       {
-        peerId: 'p-new-from',
+        relayId: 'r-new-from',
         serverId: 's1',
-        vpnId: 'vpn-new',
-        vpnCreatedAt: '2021-01-01T00:00:00.000Z',
-        tunnelIpId: 't2',
-        tunnelAddress: '10.9.0.1',
+        fabricId: 'fabric-new',
+        fabricCreatedAt: '2021-01-01T00:00:00.000Z',
+        address: '10.251.0.1',
       },
       {
-        peerId: 'p-old-from',
+        relayId: 'r-old-from',
         serverId: 's1',
-        vpnId: 'vpn-old',
-        vpnCreatedAt: '2020-01-01T00:00:00.000Z',
-        tunnelIpId: 't1',
-        tunnelAddress: '10.8.0.1',
+        fabricId: 'fabric-old',
+        fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+        address: '10.250.0.1',
       },
       {
-        peerId: 'p-new-to',
+        relayId: 'r-new-to',
         serverId: 's2',
-        vpnId: 'vpn-new',
-        vpnCreatedAt: '2021-01-01T00:00:00.000Z',
-        tunnelIpId: 't4',
-        tunnelAddress: '10.9.0.2',
+        fabricId: 'fabric-new',
+        fabricCreatedAt: '2021-01-01T00:00:00.000Z',
+        address: '10.251.0.2',
       },
       {
-        peerId: 'p-old-to',
+        relayId: 'r-old-to',
         serverId: 's2',
-        vpnId: 'vpn-old',
-        vpnCreatedAt: '2020-01-01T00:00:00.000Z',
-        tunnelIpId: 't3',
-        tunnelAddress: '10.8.0.2',
+        fabricId: 'fabric-old',
+        fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+        address: '10.250.0.2',
       },
     ],
   })
@@ -313,34 +355,25 @@ test('resolvePrivateEndpoint picks lowest vpn.createdAt when multiple meshes sha
     fromServerId: 's1',
     toServerId: 's2',
   }), {
-    address: '10.8.0.2',
-    transport: 'vpn',
-    vpnId: 'vpn-old',
+    address: '10.250.0.2',
+    transport: 'fabric',
+    fabricId: 'fabric-old',
   })
 })
 
-test('resolvePrivateEndpoint returns peer_tunnel_address_required', async () => {
+test('resolvePrivateEndpoint returns private_path_unavailable when the target has no relay', async () => {
   const db = createFixtureDb({
     servers: [
       { id: 's1', datacenterId: 'dc-a' },
       { id: 's2', datacenterId: 'dc-b' },
     ],
-    peers: [
+    relays: [
       {
-        peerId: 'p-from',
+        relayId: 'r-from',
         serverId: 's1',
-        vpnId: 'vpn-1',
-        vpnCreatedAt: '2020-01-01T00:00:00.000Z',
-        tunnelIpId: null,
-        tunnelAddress: null,
-      },
-      {
-        peerId: 'p-to',
-        serverId: 's2',
-        vpnId: 'vpn-1',
-        vpnCreatedAt: '2020-01-01T00:00:00.000Z',
-        tunnelIpId: null,
-        tunnelAddress: null,
+        fabricId: 'fabric-1',
+        fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+        address: '10.250.0.1',
       },
     ],
   })
@@ -348,8 +381,9 @@ test('resolvePrivateEndpoint returns peer_tunnel_address_required', async () => 
     fromServerId: 's1',
     toServerId: 's2',
   }), {
-    kind: 'peer_tunnel_address_required',
-    peerId: 'p-to',
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
   })
 })
 

@@ -35,7 +35,10 @@ import {
   getServerLicenseBinding,
   resolveServerId,
   touchServerMetadata,
+  type FabricMembershipDeps,
 } from "../server-registry.ts";
+import { getCommandQueue } from "../lib/commands/queue.ts";
+import { isNoopCommandQueue } from "../lib/commands/noop-command-queue.ts";
 import { verifyDaemonLicense } from "./authn/license.ts";
 import { issueDaemonJwt, verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import type { ServerDaemonStateWithMetadata } from "./authn/server-identity-db.ts";
@@ -293,6 +296,7 @@ async function finalizeDaemonEnrollment(
     licenseToken: string;
     fingerprint: string;
     publicJwk: JsonWebKey;
+    fabricDeps?: FabricMembershipDeps;
   },
 ): Promise<
   | { ok: true; serverId: string; keyId: string }
@@ -306,6 +310,7 @@ async function finalizeDaemonEnrollment(
     licenseToken,
     fingerprint,
     publicJwk,
+    fabricDeps,
   } = params;
 
   const serverId = await resolveServerId(db, {
@@ -314,7 +319,7 @@ async function finalizeDaemonEnrollment(
     hostname,
     licenseId,
     licenseToken,
-  });
+  }, fabricDeps);
   if (!serverId) {
     return {
       ok: false,
@@ -340,6 +345,18 @@ async function finalizeDaemonEnrollment(
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, status: 500, error: message };
   }
+}
+
+function enrollFabricDepsFromContext(c: Context): FabricMembershipDeps | undefined {
+  const commandQueue = getCommandQueue(c);
+  if (!commandQueue || isNoopCommandQueue(commandQueue)) return undefined;
+  const secretsConfig = c.get("secretsConfig");
+  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+  return {
+    commandQueue,
+    ...(secretsConfig ? { secretsConfig } : {}),
+    ...(dataEncryptionSecrets ? { dataEncryptionSecrets } : {}),
+  };
 }
 
 type AuthSessionFields = {
@@ -753,6 +770,7 @@ export function registerDaemonApiRoutes(
       return c.json({ ok: false, error: "Invalid signature" }, 403);
     }
 
+    const fabricDeps = enrollFabricDepsFromContext(c);
     const enrolled = await finalizeDaemonEnrollment(db, {
       serverIdBody,
       machineKey,
@@ -761,6 +779,7 @@ export function registerDaemonApiRoutes(
       licenseToken,
       fingerprint,
       publicJwk,
+      ...(fabricDeps ? { fabricDeps } : {}),
     });
     if (!enrolled.ok) {
       return c.json({ ok: false, error: enrolled.error }, enrolled.status);

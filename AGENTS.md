@@ -5,13 +5,16 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and
 
 ## Project metadata / public naming
 
-| Public name | GitHub | Internal term (this repo) |
-| --- | --- | --- |
+| Public name              | GitHub                                                            | Internal term (this repo)              |
+| ------------------------ | ----------------------------------------------------------------- | -------------------------------------- |
 | TurboPanel Control Plane | [turbopanel/turbopanel](https://github.com/turbopanel/turbopanel) | `instance` (runtime/architecture only) |
 
-- **License:** AGPL-3.0-only ([`LICENSE`](./LICENSE), `package.json` / `deno.json`).
-- **Maturity label:** **Private alpha** (README, roadmap, site banner — keep identical).
-- **README** is product-facing; **AGENTS.md** is maintainer-facing. Do not use `turbopanel/instance` as a public repo slug.
+- **License:** AGPL-3.0-only ([`LICENSE`](./LICENSE), `package.json` /
+  `deno.json`).
+- **Maturity label:** **Private alpha** (README, roadmap, site banner — keep
+  identical).
+- **README** is product-facing; **AGENTS.md** is maintainer-facing. Do not use
+  `turbopanel/instance` as a public repo slug.
 
 ## Speed doctrine (turbo)
 
@@ -103,68 +106,69 @@ change. Future agents read `AGENTS.md` first.
 - Analysis runs in GitHub Actions (`.github/workflows/build.yml` **SonarQube**
   job — SonarCloud wizard layout) with `SONAR_TOKEN` and
   `sonar-project.properties` (`sonar.projectKey=turbopanel_turbopanel`,
-  `sonar.organization=turbopanel`). The job runs checks + **`pnpm test:coverage`**
-  (`scripts/test-coverage.sh`), which merges Vitest Istanbul + Deno V8 LCOV into
-  a single **`coverage/lcov.info`** (`sonar.javascript.lcov.reportPaths=coverage/lcov.info`
-  in `sonar-project.properties` — **not** comma-separated dual paths; SonarCloud
+  `sonar.organization=turbopanel`). The job runs checks +
+  **`pnpm test:coverage`** (`scripts/test-coverage.sh`), which merges Vitest
+  Istanbul + Deno V8 LCOV into a single **`coverage/lcov.info`**
+  (`sonar.javascript.lcov.reportPaths=coverage/lcov.info` in
+  `sonar-project.properties` — **not** comma-separated dual paths; SonarCloud
   effectively only imported Deno hits that way, so Workers/DO files showed 0%
   despite real Istanbul coverage). Merge pairs SF records **by covered-line
   count** (higher LH is primary). Secondary may only raise shared hits or add
-  **executed** lines — never zero-hit transitive rows. When Vitest only
-  imported a Deno-tested module (`LH:0`), Deno unit hits become primary so
-  Sonar no longer reports false 0% on `db-url` / `allocate-containers` / similar.
+  **executed** lines — never zero-hit transitive rows. When Vitest only imported
+  a Deno-tested module (`LH:0`), Deno unit hits become primary so Sonar no
+  longer reports false 0% on `db-url` / `allocate-containers` / similar.
   Dilution of healthy Workers/DO Istanbul reports (e.g. offline-sweep →
   `do-registry.ts`) is still avoided because Deno zero-hit extras never expand
-  LF when Vitest has more covered lines. Vitest `SF:` paths
-  are normalized repo-relative like Deno. The script asserts non-zero Vitest
-  hits for `src/daemon/cell/do.ts`, `do-registry.ts`, and `workers-ws.ts` before
-  merge, and re-checks those LH floors on the **merged** `coverage/lcov.info`.
+  LF when Vitest has more covered lines. Vitest `SF:` paths are normalized
+  repo-relative like Deno. The script asserts non-zero Vitest hits for
+  `src/daemon/cell/do.ts`, `do-registry.ts`, and `workers-ws.ts` before merge,
+  and re-checks those LH floors on the **merged** `coverage/lcov.info`.
   Intermediate reports remain at `coverage/vitest/lcov.info` and
   `coverage/deno.lcov` for debugging:
   - **Vitest** (`coverage/vitest/lcov.info`) — Workers-pool suites
     (`vitest.config.ts` `test.include`), provider **`istanbul`**. The default
     `v8` provider cannot run inside workerd (no `node:inspector`), but
     `@cloudflare/vitest-pool-workers` bridges Istanbul counters back to Node, so
-    `vitest run --coverage` is a real, non-zero report — **do not** assume Vitest
-    coverage is unavailable. This is the *only* LCOV source for Durable-Object /
-    admin / other Workers-only code that no Deno suite imports
-    (`src/daemon/cell/do.ts`, `src/daemon/workers-ws.ts`, `src/admin/public-urls.ts`, …).
+    `vitest run --coverage` is a real, non-zero report — **do not** assume
+    Vitest coverage is unavailable. This is the _only_ LCOV source for
+    Durable-Object / admin / other Workers-only code that no Deno suite imports
+    (`src/daemon/cell/do.ts`, `src/daemon/workers-ws.ts`,
+    `src/admin/public-urls.ts`, …).
   - **Deno** (`coverage/deno.lcov`) — host-free Deno suites listed in
-    `scripts/test-coverage.sh`, via `deno coverage --lcov` (native V8).
-  Then the scan runs with `sonar.qualitygate.wait=true`; if the quality gate
-  fails, the workflow stops.
-  **Coverage attribution (three independent traps — check all when Sonar shows
-  0% / low % while local Vitest is healthy):** (1) a new Deno `*.test.ts` file
-  must be added to the `deno test` file list in `scripts/test-coverage.sh` —
-  prefer host-free unit suites there; DB/Redis/integration suites stay out of
-  LCOV. (2) a new Workers/DO test file must be added to `vitest.config.ts`
-  `test.include` — that list is an explicit file enumeration, not a glob,
-  because most `*.test.ts` files use Deno-only APIs and cannot run under the
-  Workers pool; a file left off `test.include` never runs at all, coverage or
-  not. (3) LCOV smart merge must stay in place — do not reintroduce
-  full-record Vitest-wins (drops Deno hits for imported-but-untested modules)
-  or naive Deno+Vitest line-union (dilutes Workers/DO with zero-hit
-  transitive SF rows). Selective Workers/DO 0% with a
-  healthy overall project coverage % is almost always an LCOV merge/path bug,
-  not Automatic Analysis (AA being on fails the CI scanner entirely).
-- **`sonar.sources` / `sonar.tests` / `sonar.test.inclusions`** must stay set
-  in `sonar-project.properties` (and mirrored in vestigial
+    `scripts/test-coverage.sh`, via `deno coverage --lcov` (native V8). Then the
+    scan runs with `sonar.qualitygate.wait=true`; if the quality gate fails, the
+    workflow stops. **Coverage attribution (three independent traps — check all
+    when Sonar shows 0% / low % while local Vitest is healthy):** (1) a new Deno
+    `*.test.ts` file must be added to the `deno test` file list in
+    `scripts/test-coverage.sh` — prefer host-free unit suites there;
+    DB/Redis/integration suites stay out of LCOV. (2) a new Workers/DO test file
+    must be added to `vitest.config.ts` `test.include` — that list is an
+    explicit file enumeration, not a glob, because most `*.test.ts` files use
+    Deno-only APIs and cannot run under the Workers pool; a file left off
+    `test.include` never runs at all, coverage or not. (3) LCOV smart merge must
+    stay in place — do not reintroduce full-record Vitest-wins (drops Deno hits
+    for imported-but-untested modules) or naive Deno+Vitest line-union (dilutes
+    Workers/DO with zero-hit transitive SF rows). Selective Workers/DO 0% with a
+    healthy overall project coverage % is almost always an LCOV merge/path bug,
+    not Automatic Analysis (AA being on fails the CI scanner entirely).
+- **`sonar.sources` / `sonar.tests` / `sonar.test.inclusions`** must stay set in
+  `sonar-project.properties` (and mirrored in vestigial
   `.sonarcloud.properties`). Tests are co-located (`**/*.test.ts` under
   `src`/`mailer`); helpers that do not match the scanner's name heuristics
   (`src/test-fixtures/**`, `*-hostfree-doubles.ts`, `server-status-test-db.ts`,
-  `fake-redis-cell-client.ts`, `workers-vitest.ts`, `vitest-env.d.ts`) belong
-  in `test.inclusions` + `coverage.exclusions` so they are never main-code.
-  Leaving `sonar.tests` unset only yields an INFO and heuristic classification
-  that mis-labels those helpers.
-- **Automatic Analysis must stay off** for `turbopanel_turbopanel`
-  (SonarCloud → project **Administration → Analysis Method**). CI and Automatic
-  Analysis cannot run together — Automatic Analysis enabled makes the CI
-  scanner fail. There is no Sonar MCP `toggle_automatic_analysis` tool; change
-  this only in the SonarCloud UI.
+  `fake-redis-cell-client.ts`, `workers-vitest.ts`, `vitest-env.d.ts`) belong in
+  `test.inclusions` + `coverage.exclusions` so they are never main-code. Leaving
+  `sonar.tests` unset only yields an INFO and heuristic classification that
+  mis-labels those helpers.
+- **Automatic Analysis must stay off** for `turbopanel_turbopanel` (SonarCloud →
+  project **Administration → Analysis Method**). CI and Automatic Analysis
+  cannot run together — Automatic Analysis enabled makes the CI scanner fail.
+  There is no Sonar MCP `toggle_automatic_analysis` tool; change this only in
+  the SonarCloud UI.
 - Sonar-way **Coverage on New Code ≥ 80%** needs LCOV on CI. After switching
-  from Automatic Analysis, reset **New Code** (Administration → New Code) so
-  the baseline is not months of uncovered history, or the gate will fail even
-  with fresh coverage reports.
+  from Automatic Analysis, reset **New Code** (Administration → New Code) so the
+  baseline is not months of uncovered history, or the gate will fail even with
+  fresh coverage reports.
 - Drizzle-generated SQL under **`migrations/`** must stay excluded
   (`**/migrations/**`) — never “fix” smells in those files.
 - Hand-authored OpenAPI under `src/client/openapi/**` and
@@ -177,9 +181,9 @@ change. Future agents read `AGENTS.md` first.
   `sonarlint.analysisExcludesStandalone` or local `.sonarcloud.properties` /
   `sonar-project.properties`. It only applies exclusions synced from the
   SonarCloud project **Administration → General Settings → Analysis Scope →
-  Source File Exclusions**. Keep `**/migrations/**` there too (then
-  SonarLint → Update binding / reconnect) or IDE will still raise
-  `plsql:*` on drizzle-kit SQL.
+  Source File Exclusions**. Keep `**/migrations/**` there too (then SonarLint →
+  Update binding / reconnect) or IDE will still raise `plsql:*` on drizzle-kit
+  SQL.
 
 ### TypeScript style (SonarQube)
 
@@ -236,10 +240,11 @@ change. Future agents read `AGENTS.md` first.
 Modules imported (transitively) from `src/workers.ts` must bundle under
 Wrangler/esbuild. **Do not** use Deno import-map-only specifiers there —
 `@std/*`, bare `jsr:…`, or other Deno-only APIs — unless there is a matching
-`wrangler.jsonc` `alias` (see the SMTP shims). Prefer Web Crypto and small
-local helpers (e.g. hex in `src/lib/machine-key.ts` / `src/daemon/authn/server-key.ts`).
-Deno-only entrypoints (`src/deno.ts`, developer drizzle studio, Redis cell)
-may keep `@std/*`. Guard: `pnpm check:workers-bundle`.
+`wrangler.jsonc` `alias` (see the SMTP shims). Prefer Web Crypto and small local
+helpers (e.g. hex in `src/lib/machine-key.ts` /
+`src/daemon/authn/server-key.ts`). Deno-only entrypoints (`src/deno.ts`,
+developer drizzle studio, Redis cell) may keep `@std/*`. Guard:
+`pnpm check:workers-bundle`.
 
 ### Ansible style (SonarQube)
 
@@ -260,18 +265,19 @@ fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
 - **pnpm** — <https://pnpm.io/installation>
 - **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`);
   Node.js also used for Caddy download
-- Run `./console` from the [TurboPanel Development Environment](https://github.com/turbopanel/dev) checkout. The console installs Deno,
-  clones the daemon, and drives the full dev stack via
-  `scripts/bootstrap-orchestration.ts` + `scripts/install-daemon-systemd.sh`
-  (shared orchestration under `/opt/turbopanel/vendor/` — not
-  `orchestration/runtime/venv`).
+- Run `./console` from the
+  [TurboPanel Development Environment](https://github.com/turbopanel/dev)
+  checkout. The console installs Deno, clones the daemon, and drives the full
+  dev stack via `scripts/bootstrap-orchestration.ts` +
+  `scripts/install-daemon-systemd.sh` (shared orchestration under
+  `/opt/turbopanel/vendor/` — not `orchestration/runtime/venv`).
 - Managed/co-located installs: secret-bearing runtime env lives in the instance
   config dir (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout
-  root. Beside those env files, Ansible holds
-  `.instance_secret` (legacy singular) and `.instance_secrets` (versioned
-  keyring, `root:<turbopanel_group>` `0640`, ordered `<version>:<value>`, first
-  entry current); both are injected into `runtime.dev-vars`, and rotation is
-  gated by the `turbopanel_instance_secret_rotate` extra-var. Semantics:
+  root. Beside those env files, Ansible holds `.instance_secret` (legacy
+  singular) and `.instance_secrets` (versioned keyring,
+  `root:<turbopanel_group>` `0640`, ordered `<version>:<value>`, first entry
+  current); both are injected into `runtime.dev-vars`, and rotation is gated by
+  the `turbopanel_instance_secret_rotate` extra-var. Semantics:
   `src/client/authn/AGENTS.md`. Standalone scripts
   (`scripts/generate-self-signed-cert.mjs`, `scripts/workers-serve.sh`,
   `scripts/drizzle-studio-serve.sh`) default to the FHS location
@@ -299,11 +305,11 @@ fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
   no Deno prerequisite). Equivalent to
   `pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify`.
 - **`pnpm check:workers-bundle`** — `wrangler deploy --dry-run` of
-  `src/workers.ts` (no upload). Catches unresolved imports the Workers
-  bundler cannot resolve (e.g. `@std/*` / `jsr:`). Wired into
-  `.githooks/pre-commit`. **`pnpm test:do` is not enough** — vitest bundles
-  `src/workers-vitest.ts` with a narrow include list and can tree-shake away
-  modules only the full deploy graph pulls in.
+  `src/workers.ts` (no upload). Catches unresolved imports the Workers bundler
+  cannot resolve (e.g. `@std/*` / `jsr:`). Wired into `.githooks/pre-commit`.
+  **`pnpm test:do` is not enough** — vitest bundles `src/workers-vitest.ts` with
+  a narrow include list and can tree-shake away modules only the full deploy
+  graph pulls in.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`
 - The Ansible `instance-certs` / `caddy` / `node-runtime` roles supersede the
   standalone `pnpm cert:generate` / `pnpm caddy:install` scripts for managed
@@ -400,10 +406,10 @@ Route handlers read the per-request client via `getDb(c)` (set by
 `createDenoDb()` throws before `createApp()` when the variable is missing or
 blank, so the process exits instead of serving without a database.
 
-| Variable                  | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variable                  | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TURBOPANEL_DATABASE_URL` | Full postgres connection URL. **Deno mode:** required at boot — `createDenoDb()` throws immediately when missing or blank (self-hosted instance will not start). Passed directly to postgres.js (supports Unix socket URLs via libpq `?host=` / directory form, e.g. host `/var/run/turbopanel/postgres` or `/run/turbopanel/postgres`). **Workers runtime:** prefers the `HYPERDRIVE` binding; `src/workers.ts` falls back to this env var when Hyperdrive is unset (local `wrangler dev` without a binding). When the URL uses `?host=` for a Unix socket, ensure Deno has read access to that directory (`/run/turbopanel` covers the default Docker bind-mount path). |
-| `DATABASE_URL`            | **Tooling only** (drizzle-kit, `pnpm migrate`, `dev/scripts/introspect.sh` / `dev/scripts/sync.sh` overrides). Accepted as a fallback when `TURBOPANEL_DATABASE_URL` is unset — common in CI and Cloudflare dashboard deploy workflows. Not read by the Deno instance or Workers runtime at request time.                                                                                                                                                                                                                                                                                                                     |
+| `DATABASE_URL`            | **Tooling only** (drizzle-kit, `pnpm migrate`, `dev/scripts/introspect.sh` / `dev/scripts/sync.sh` overrides). Accepted as a fallback when `TURBOPANEL_DATABASE_URL` is unset — common in CI and Cloudflare dashboard deploy workflows. Not read by the Deno instance or Workers runtime at request time.                                                                                                                                                                                                                                                                                                                                                                 |
 
 ### Workers Hyperdrive
 
@@ -570,8 +576,8 @@ the proxy).
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
 set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
 (Expo proxy, plaintext `:8880`, optional wrangler upstream,
-`/downloads/daemon` + installer at `/run.sh`). See **`../dev/AGENTS.md`** (Ansible overlay /
-Caddyfile).
+`/downloads/daemon` + installer at `/run.sh`). See **`../dev/AGENTS.md`**
+(Ansible overlay / Caddyfile).
 
 ### Certs and entrypoint
 
@@ -615,6 +621,25 @@ Note: `Deno.createHttpClient({ caCerts })` **adds** to the system roots (does
 not replace them), so configuring the platform CA does not break validation of
 publicly-trusted certs.
 
+**Install command TLS** follows the selected origin (`src/lib/install-tls.ts`),
+not “we are in development”:
+
+- HTTPS on a non-443 port, loopback, RFC1918, or reserved LAN TLDs (`.lan` /
+  `.local` / …) → `curl -k` + `TURBOPANEL_INSECURE_TLS=1` (platform CA)
+- HTTPS on port 443 for a public hostname (Cloudflare/ngrok tunnel, opt-in Let’s
+  Encrypt, uploaded cert) → system trust; **no** `-k`
+- Plaintext `http://` (dev `:8880`) → no TLS flags
+
+Let’s Encrypt and uploaded certificates for the **control-plane origin** are
+operator opt-in. Caddy keeps `auto_https off` — the platform never obtains a
+public certificate unless the operator explicitly requests it. A Cloudflare
+tunnel presents a publicly-trusted cert at the edge; the origin can stay on the
+platform CA.
+
+Dev overlay install commands also set
+`TURBOPANEL_DL_BASE=<origin>/downloads/daemon` so remote servers fetch the
+compiled daemon from this instance, never `dl.trbp.nl`.
+
 ### Static UI
 
 Caddy serves the exported web build from `TURBOPANEL_UI_ROOT` (default
@@ -652,13 +677,13 @@ Four versioned surfaces each have REST + WS namespaces (where applicable).
 Prefixes live in `src/surfaces.ts`; `GET /api/health` is the single
 deliberately-unversioned probe.
 
-| Surface                      | REST                  | WS                        | Notes                                                                                                                                                             |
-| ---------------------------- | --------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ addresses/timeSync/effective timezone, labels), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org default-timezone + default-environment + server-capacity + TurboFabric (`GET`/`PUT /organizations/:id/fabric`) + `/timezones` |
-| Install (self-hosted wizard) | `/api/install/v1/*`   | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                           |
-| Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                          |
-| Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only        |
-| Daemon                       | `/api/daemon/v1/*`    | `/ws/daemon/v1`           | `version`, `instance/ca`; daemons connect on the WS path                                                                                                          |
+| Surface                      | REST                  | WS                        | Notes                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------- | --------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ addresses/timeSync/effective timezone, labels), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org default-timezone + default-environment + server-capacity + TurboFabric (`GET`/`PUT /organizations/:id/fabric`, `PATCH /organizations/:id/fabric/relays/:serverId`, `POST /organizations/:id/fabric/apply`) + `/timezones` |
+| Install (self-hosted wizard) | `/api/install/v1/*`   | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                                                                                                                                                                                                                                      |
+| Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                                                                                                                                                                                                                                     |
+| Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only                                                                                                                                                                                                                   |
+| Daemon                       | `/api/daemon/v1/*`    | `/ws/daemon/v1`           | `version`, `instance/ca`; daemons connect on the WS path                                                                                                                                                                                                                                                                                                                     |
 
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`,
   `src/lib/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
@@ -668,13 +693,13 @@ deliberately-unversioned probe.
   (admin/superadmin session required). Workers-safe developer REST lives in
   `src/developer/routes-core.ts` (`workers.ts`); full Deno developer surface in
   `src/developer/routes.ts`. Client bindings (`src/client/bindings/`) expose
-  `GET|POST|PATCH|DELETE /api/client/v1/bindings` — managed DB principal → compose
-  service materialization of binding-owned `variable` rows (no new command type).
-  List filters are mutually exclusive: `serviceId`, consumer `environmentId`, or
-  managed-cluster `managedEnvironmentId`. Create returns `{ ok, id }`; patch
-  returns `{ ok }`.
-- The TurboPanel Development Environment calls developer routes via `src/instance-client.ts`
-  (Unix socket + HTTPS fallback).
+  `GET|POST|PATCH|DELETE /api/client/v1/bindings` — managed DB principal →
+  compose service materialization of binding-owned `variable` rows (no new
+  command type). List filters are mutually exclusive: `serviceId`, consumer
+  `environmentId`, or managed-cluster `managedEnvironmentId`. Create returns
+  `{ ok, id }`; patch returns `{ ok }`.
+- The TurboPanel Development Environment calls developer routes via
+  `src/instance-client.ts` (Unix socket + HTTPS fallback).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes
   (`wrangler.jsonc`) moved together. The external CDN node installer must fetch
   the CA from the new `/api/daemon/v1/instance/ca` path.
@@ -689,30 +714,38 @@ deliberately-unversioned probe.
   Org defaults: `GET`/`PUT /organizations/:id/default-timezone`. Picker source:
   `GET /timezones` (`listTimezones()` / `isAllowedTimezone()`). Detail rows use
   the `server-detail` cached read model (mirrors `servers-list`).
-- **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` — read-gated
-  GET and manage-gated PUT; PUT is replace-all (`{ labels: { key: value } }`, no
-  per-key DELETE). `GET /servers/:id` includes `labels` from a primary-connection
-  read (not the cached `server-detail` row). Keys use the Docker engine-label
-  charset so `placement.constraints` `node.labels.*` parses cleanly.
+- **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` —
+  read-gated GET and manage-gated PUT; PUT is replace-all
+  (`{ labels: { key: value } }`, no per-key DELETE). `GET /servers/:id` includes
+  `labels` from a primary-connection read (not the cached `server-detail` row).
+  Keys use the Docker engine-label charset so `placement.constraints`
+  `node.labels.*` parses cleanly.
 - **TurboFabric (client surface):** `GET`/`PUT /organizations/:id/fabric` —
-  manage-gated opt-in. Default off (capable single-engine Docker standalone; no
-  `tp0`). Enabling creates the org `fabric` row plus per-server `relay` rows
-  (`tp0` identity + container prefix) and reconciles host interface `tp0` on
-  enrolled servers. Spanning compose networks persist per-host `segment` rows
-  (local bridge subnet). A deploy plan that would use two or more servers
-  without TurboFabric returns **422** `turbofabric_required`. Whole-environment
-  `environment.server_id` pins never require it. User-facing copy is
-  **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` / `segment`.
-  Additive to org site-to-site VPN (`server.wireguard.apply`) — never ask which
-  WireGuard network a container should join.
+  manage-gated opt-in, plus `PATCH /organizations/:id/fabric/relays/:serverId`
+  and `POST /organizations/:id/fabric/apply`. TurboFabric **is** the org
+  WireGuard mesh (one per org, interface `tp0`); `relay` carries the mesh
+  identity (address, gateway/member role, advertised LAN CIDRs, keepalive,
+  endpoint override, write-only PSK). Default off (capable single-engine Docker
+  standalone; no `tp0`). Enabling creates the org `fabric` row plus per-server
+  `relay` rows and reconciles host interface `tp0` on enrolled servers. Spanning
+  compose networks persist per-host `segment` rows (local bridge subnet). A
+  deploy plan that would use two or more servers without TurboFabric returns
+  **422** `turbofabric_required`. Multi-server deploys **wait for membership
+  convergence** (every participating relay has a public key and an applied
+  payload hash that includes peers) before enqueueing `environment.deploy`
+  (`422 fabric_reconcile_failed` / `409 fabric_reconcile_pending`). PUT disable
+  is a teardown (reclaims `network(kind='compose')` + `segment`).
+  Whole-environment `environment.server_id` pins never require it. User-facing
+  copy is **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` /
+  `segment`. Never ask which WireGuard network a container should join.
 - **Compiled runtime compose:** users author project + optional environment
   ComposeDocuments. Deploy compiles **one** `compose.yaml` (`role: 'runtime'`)
   per participating server plus a project `.env` for non-secrets. Secret
   `{$KEY}` / `{$scope.KEY}` refs compile to Compose standalone `secrets:` files
-  under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/`
-  (YAML holds paths only). Preview **Prepared** shows that snapshot (plus
-  `servers[]` when scheduled across hosts), redacted `.env`, and `secretPlan[]`.
-  Preview **Merged** stays the user-authored merge (including `{$…}`).
+  under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (YAML
+  holds paths only). Preview **Prepared** shows that snapshot (plus `servers[]`
+  when scheduled across hosts), redacted `.env`, and `secretPlan[]`. Preview
+  **Merged** stays the user-authored merge (including `{$…}`).
   `POST /api/daemon/v1/deployments/secrets/rehydrate` reseals current registry
   values after daemon boot because `/run` is tmpfs.
 - **Org server seat capacity:** `organization.options.maxServers`
@@ -720,17 +753,17 @@ deliberately-unversioned probe.
   `POST /licenses` returns **409** `server_capacity_exceeded` when enrolled
   servers + unconsumed keys fill the cap. Self-hosted operators set the cap;
   Workers/Stripe billing will write the same field later.
-- **Org default environment name:** `organization.options.defaultEnvironmentName`
-  (unset = `Production`). `GET`/`PUT /organizations/:id/default-environment`
-  (manage-gated) names the environment scaffolded by project create /
-  configure. Matching for existing literal "production" catalog environments
-  is unchanged.
+- **Org default environment name:**
+  `organization.options.defaultEnvironmentName` (unset = `Production`).
+  `GET`/`PUT /organizations/:id/default-environment` (manage-gated) names the
+  environment scaffolded by project create / configure. Matching for existing
+  literal "production" catalog environments is unchanged.
 - **Project default server:** `project.options.defaultServerId` (optional UUID).
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline
   picker; env-level pins still override.
-- **Environment lifecycle:** `POST /environments/:id/lifecycle`
-  (`start` / `stop` / `restart`) is non-destructive (`environment.lifecycle`);
+- **Environment lifecycle:** `POST /environments/:id/lifecycle` (`start` /
+  `stop` / `restart`) is non-destructive (`environment.lifecycle`);
   `POST /environments/:id/stop` tears down compose including volumes
   (`environment.stop`). Canonical detail: `src/lib/commands/AGENTS.md`.
 - **Containers list filter:** `GET /api/client/v1/containers?environmentId=`
@@ -744,10 +777,11 @@ deliberately-unversioned probe.
   datacenter metadata, and atomically assigns those currently-unassigned visible
   servers. Self-hosted installations without a geo provider may return an empty
   list. `src/lib/net/private-endpoint.ts` is the single resolver for
-  server-to-server private reachability (`local` → `datacenter` → `vpn`);
-  datacenter membership plus a CIDR-bearing `network(kind='datacenter')` (surfaced
-  on list/detail as `privateCidrs`) is the prerequisite that later managed-cluster
-  placement depends on (`src/lib/net/datacenter-networks.ts`).
+  server-to-server private reachability (`local` → `fabric` → `datacenter`);
+  `fabric` dials the peer's relay address over `tp0`. Datacenter membership plus
+  a CIDR-bearing `network(kind='datacenter')` (surfaced on list/detail as
+  `privateCidrs`) is the prerequisite that later managed-cluster placement
+  depends on (`src/lib/net/datacenter-networks.ts`).
 
 ## Subsystem docs (nested `AGENTS.md`)
 
@@ -756,47 +790,47 @@ loads the nearest one automatically when you work in that directory. **Read the
 matching file before editing that area.** This root keeps only cross-cutting
 orientation; the detail moved to:
 
-| Subsystem                         | Read before editing                                 | Covers                                                                                                                                                                                                                                                                                  |
-| --------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`                         | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column) |
-| **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                       |
-| **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                     |
-| **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/lib/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                             |
-| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL desired state; all status reads are Postgres-backed; logs use cell `managed-logs-request`                                                                              |
-| **Bindings**                      | `src/client/bindings/`                             | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                  |
-| **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                     |
-| **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                    |
-| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` display label (API `displayName`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `task` / `label`; TurboFabric `fabric` / `relay` / `segment`; storage identity `storage` / `location` / `mount` (+ schema-only `credential`) |
-| **Query cache**                   | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                      |
+| Subsystem                         | Read before editing                                 | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`                         | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column)                                                                                                                                                                          |
+| **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                                                                                                                                                                                                |
+| **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                                                                                                                                                                                              |
+| **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/lib/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                                                                                                          |
+| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL desired state; all status reads are Postgres-backed; logs use cell `managed-logs-request`                                                                                                                                                                           |
+| **Bindings**                      | `src/client/bindings/`                              | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                                                                                                     |
+| **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                                                                                                                                                                                              |
+| **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                             |
+| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` display label (API `displayName`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `task` (nullable `task.address`) / `label`; TurboFabric `fabric` / `relay` / `segment`; storage identity `storage` / `location` / `mount` (+ schema-only `credential`) |
+| **Query cache**                   | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                                                                                                                                                                                               |
 
 ## Self-host system inventory
 
-Co-located (self-hosted) installs run a fixed set of platform components on
-the same host as the instance. Some of them are Postgres/`container`-tracked
+Co-located (self-hosted) installs run a fixed set of platform components on the
+same host as the instance. Some of them are Postgres/`container`-tracked
 inventory managed by the daemon; the rest stay host-native and are never
 represented as `container` rows.
 
-| Component                                                             | Today                            | Decision                    | Inventory              |
-| ---------------------------------------------------------------------- | --------------------------------- | ---------------------------- | ----------------------- |
-| PostgreSQL                                                             | `docker run turbopanel-database`  | Compose service `database`   | service + container row |
-| RabbitMQ                                                               | `docker run turbopanel-queue`     | Compose service `queue`      | service + container row |
-| ClickHouse                                                             | `docker run turbopanel-analytics` | Compose service `analytics`  | service + container row |
-| ProxySQL (managed DB ingress)                                          | daemon compose `turbopanel-proxysql` | Compose service `proxysql` / system component `managed-ingress` | service + container row when provisioned |
-| Control plane (`turbopanel-instance.service`)                          | systemd + Deno                    | stays host-native            | none                    |
-| Control-plane Caddy                                                    | vendored binary                   | stays host-native            | none                    |
-| Hosting Caddy                                                          | vendored binary + systemd         | stays host-native            | none                    |
-| `turbopaneld.service`                                                  | native / Deno JS                  | stays host-native            | none                    |
-| Redis                                                                  | vendored `.deb`, unix socket      | stays host-native            | none                    |
-| Mailer, dbstudio, Expo UI, website, mailpit, tabix, redis-insight      | systemd / dev-only                | excluded                     | none                    |
+| Component                                                         | Today                                | Decision                                                        | Inventory                                |
+| ----------------------------------------------------------------- | ------------------------------------ | --------------------------------------------------------------- | ---------------------------------------- |
+| PostgreSQL                                                        | `docker run turbopanel-database`     | Compose service `database`                                      | service + container row                  |
+| RabbitMQ                                                          | `docker run turbopanel-queue`        | Compose service `queue`                                         | service + container row                  |
+| ClickHouse                                                        | `docker run turbopanel-analytics`    | Compose service `analytics`                                     | service + container row                  |
+| ProxySQL (managed DB ingress)                                     | daemon compose `turbopanel-proxysql` | Compose service `proxysql` / system component `managed-ingress` | service + container row when provisioned |
+| Control plane (`turbopanel-instance.service`)                     | systemd + Deno                       | stays host-native                                               | none                                     |
+| Control-plane Caddy                                               | vendored binary                      | stays host-native                                               | none                                     |
+| Hosting Caddy                                                     | vendored binary + systemd            | stays host-native                                               | none                                     |
+| `turbopaneld.service`                                             | native / Deno JS                     | stays host-native                                               | none                                     |
+| Redis                                                             | vendored `.deb`, unix socket         | stays host-native                                               | none                                     |
+| Mailer, dbstudio, Expo UI, website, mailpit, tabix, redis-insight | systemd / dev-only                   | excluded                                                        | none                                     |
 
 The three databases/brokers above are provisioned into the `turbopanel-system`
 Compose project (see daemon `src/deploy/AGENTS.md` → **Shared HTTP ingress
 identity**) so their container identity/status is inspectable through the same
 `container` table and client `GET /api/client/v1/containers` surface as tenant
-deploys — with `role: 'turbopanel'` and `service.composeServiceName` in `database` /
-`queue` / `analytics`. They remain **inspect-only**: the daemon reports their
-`docker compose ps` identity for inventory but never starts, stops, or
-self-heals them (no restart-via-`system.reconcile` path — see
+deploys — with `role: 'turbopanel'` and `service.composeServiceName` in
+`database` / `queue` / `analytics`. They remain **inspect-only**: the daemon
+reports their `docker compose ps` identity for inventory but never starts,
+stops, or self-heals them (no restart-via-`system.reconcile` path — see
 `SYSTEM_OPERATE_COMPONENTS` in `src/client/system/routes.ts`, which only lists
 `hosting-ingress`).
 
@@ -808,8 +842,11 @@ self-heals them (no restart-via-`system.reconcile` path — see
 the durable dynamic config on `managed.ingress.reconcile` and can self-heal via
 `system.reconcile` (`selfHeal: proxysql`). It is **not** part of
 `turbopanel-system` and is **not** inspect-only. Client SQL enters ProxySQL's
-published `5432`/`3306` listeners; managed engines never publish host ports.
-Tenant docker-compose raw TCP/UDP Traefik remains a separate pattern
+published `5432`/`3306` listeners; managed engines never publish arbitrary host
+ports. When a binding consumer is not co-resident, ProxySQL also joins
+`turbopanel-managed` **plus each consuming environment's spanning `tpn_*`
+network** (pinned to the reserved last-usable host address). Tenant
+docker-compose raw TCP/UDP Traefik remains a separate pattern
 (`turbopanel-ingress-<serviceId>`).
 
 **Why instance/Caddy/daemon/Redis stay host-native rather than joining the
@@ -818,29 +855,29 @@ compose stack:**
 - The control plane needs `pamtester`/PAM to gate the self-hosted install
   wizard, `systemctl`/`git` access to check for and apply trunk updates, and
   ownership of `/run/turbopanel/instance.sock` at a specific uid/gid so the
-  co-located daemon can connect — none of that is available to a process
-  running inside a container.
+  co-located daemon can connect — none of that is available to a process running
+  inside a container.
 - The daemon itself runs Ansible (which provisions the compose stack) — it
-  cannot be a container the daemon manages, and it needs host-level
-  `systemctl` control over every other unit.
-- Both Caddy units terminate TLS and bind privileged/host ports directly and
-  are simplest to keep as vendored host binaries under systemd, matching the
+  cannot be a container the daemon manages, and it needs host-level `systemctl`
+  control over every other unit.
+- Both Caddy units terminate TLS and bind privileged/host ports directly and are
+  simplest to keep as vendored host binaries under systemd, matching the
   daemon's own vendored-runtime model.
-- Redis is reached over a unix socket (`redis.sock`) with permissions scoped
-  to the dev user / `tpcache` group — a socket-permission model that is
-  simpler to keep host-native than to thread through a container network.
+- Redis is reached over a unix socket (`redis.sock`) with permissions scoped to
+  the dev user / `tpcache` group — a socket-permission model that is simpler to
+  keep host-native than to thread through a container network.
 
-**Bootstrap ordering:** Self-hosted install creates the **TurboPanel Platform** workspace
-(`kind='turbopanel'`) inside the install transaction — before any daemon enrolls.
-Self-host project/environment/services still wait on the colocated server
-(`ensureSelfHostSystemHierarchy`). Then `docker compose up` (with the labels
-below) runs via the `system-compose` Ansible role → the hierarchy allocates
-the `service` / `container` rows and assigns each service a UUID → a
-`system.reconcile` command carries that allocated `serviceId` (as the compose
-service's container name) to the daemon → the daemon inspects
+**Bootstrap ordering:** Self-hosted install creates the **TurboPanel Platform**
+workspace (`kind='turbopanel'`) inside the install transaction — before any
+daemon enrolls. Self-host project/environment/services still wait on the
+colocated server (`ensureSelfHostSystemHierarchy`). Then `docker compose up`
+(with the labels below) runs via the `system-compose` Ansible role → the
+hierarchy allocates the `service` / `container` rows and assigns each service a
+UUID → a `system.reconcile` command carries that allocated `serviceId` (as the
+compose service's container name) to the daemon → the daemon inspects
 `docker compose ps` by the `com.turbopanel.system.component` label and reports
-identity/status back by container name. Inventory rows exist before the
-daemon ever inspects the stack; the daemon never invents ids.
+identity/status back by container name. Inventory rows exist before the daemon
+ever inspects the stack; the daemon never invents ids.
 
 **Co-located delete / license revoke:** Server delete and license revoke are
 guarded by the durable self-host environment pin (the server that owns the
@@ -848,9 +885,9 @@ guarded by the durable self-host environment pin (the server that owns the
 so neither succeeds while the daemon is offline or the registry is unavailable.
 
 **Status / restart surface:** host-native components (Caddy, Redis, the
-instance, `turbopaneld`) have no `container` row and therefore never appear
-in a project/environment container table. Their health/restart affordances
-belong on the server **Control** tab / a system-component control API (e.g.
+instance, `turbopaneld`) have no `container` row and therefore never appear in a
+project/environment container table. Their health/restart affordances belong on
+the server **Control** tab / a system-component control API (e.g.
 `POST /servers/:id/system/:component/restart`, scoped to `hosting-ingress`
 today) — never bolted onto the tenant containers list.
 
@@ -907,10 +944,10 @@ sequenceDiagram
   daemon WS
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers
   `developer/routes-core` once per isolate
-- `scripts/check-workers-bundle.mjs` — Wrangler dry-run of the deploy
-  entrypoint (pre-commit / `pnpm check:workers-bundle`)
-- `src/lib/machine-key.ts` — machine-key derive/normalize (Workers + Deno;
-  no `@std` imports)
+- `scripts/check-workers-bundle.mjs` — Wrangler dry-run of the deploy entrypoint
+  (pre-commit / `pnpm check:workers-bundle`)
+- `src/lib/machine-key.ts` — machine-key derive/normalize (Workers + Deno; no
+  `@std` imports)
 - `src/surfaces.ts` — versioned API/WS prefix constants
 - `src/openapi.ts` / `src/scalar-html.ts` — hand-authored OpenAPI 3.1 specs +
   Scalar embed HTML
@@ -922,9 +959,9 @@ sequenceDiagram
   `organization:manage`, `team:own` / `team:manage`, `system:read` /
   `system:operate` / `system:manage`), `can`/`listVisible`, grant management.
   Org owner/manager grants never satisfy `system:*`; platform-admin bypass
-  covers read/operate but `system:manage` is superadmin-only. Mutation routes
-  on workspace-tree entities call `assertNotSystemOwnedOr403` after the org
-  check (`403` `system_resource_immutable`). Client workspace responses include
+  covers read/operate but `system:manage` is superadmin-only. Mutation routes on
+  workspace-tree entities call `assertNotSystemOwnedOr403` after the org check
+  (`403` `system_resource_immutable`). Client workspace responses include
   `workspace.kind` (`user` \| `system`).
 - `src/daemon/api-routes.ts` / `src/daemon/deno-ws.ts` /
   `src/daemon/workers-ws.ts` — daemon REST + WS (cell-backed)

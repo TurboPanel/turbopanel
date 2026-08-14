@@ -6,7 +6,6 @@
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
-  resolvePrivateEndpoint,
   resolvePrivateEndpoints,
   type PrivateEndpointError,
   type PrivateEndpointTransport,
@@ -210,7 +209,7 @@ export function serializeManagedMember(
   const transport =
     row.replicationTransport === 'local' ||
       row.replicationTransport === 'datacenter' ||
-      row.replicationTransport === 'vpn'
+      row.replicationTransport === 'fabric'
       ? row.replicationTransport
       : null
   const out: SerializedManagedMember = {
@@ -252,8 +251,8 @@ export async function listSerializedManagedMembers(
 }
 
 /**
- * Batched private-endpoint resolution from each non-primary member toward the
- * primary. Returns transport per member id, or a typed error.
+ * Batched private-endpoint resolution from the primary toward every replica.
+ * Returns transport per member id, or a typed error.
  */
 export async function resolveMemberTransports(
   db: Db,
@@ -273,11 +272,19 @@ export async function resolveMemberTransports(
   const replicas = members.filter((m) => m.id !== primary.id)
   if (replicas.length === 0) return transports
 
+  const endpoints = await resolvePrivateEndpoints(db, {
+    fromServerId: primary.serverId,
+    toServerIds: replicas.map((replica) => replica.serverId),
+  })
   for (const replica of replicas) {
-    const resolved = await resolvePrivateEndpoint(db, {
-      fromServerId: replica.serverId,
-      toServerId: primary.serverId,
-    })
+    const resolved = endpoints.get(replica.serverId)
+    if (!resolved) {
+      return {
+        kind: 'private_path_unavailable',
+        fromServerId: primary.serverId,
+        toServerId: replica.serverId,
+      }
+    }
     if ('kind' in resolved) return resolved
     transports.set(replica.id, resolved.transport)
   }
@@ -331,6 +338,7 @@ function findFreePrivatePort(used: ReadonlySet<number>): number | null {
 /**
  * Allocate or clear private listener ports for a multi-member cluster.
  * Single-member clusters clear any leftover `private_port`.
+ * Under a `fabric` transport the port is published on the relay `tp0` address.
  */
 export async function ensureMemberPrivatePorts(
   db: Db,
@@ -473,6 +481,8 @@ function resolveRemotePeer(
   other: ManagedMemberRow,
   endpoints: ReadonlyMap<string, ResolvedPrivateEndpoint | PrivateEndpointError>,
 ): ManagedMemberPeer | PrivateEndpointError {
+  // Address is the peer's `tp0` relay address when transport is `fabric`,
+  // matching the address the peer actually publishes.
   const resolved = endpoints.get(other.serverId)
   if (!resolved) return unavailablePeerError(fromMember, other)
   if ('kind' in resolved) return resolved

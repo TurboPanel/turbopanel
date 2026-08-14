@@ -480,6 +480,13 @@ export function evaluateReplicaPlacementPrechecks(
   return null
 }
 
+/** Fabric reachability satisfies cross-host placement without a datacenter CIDR. */
+export function replicaPlacementNeedsDatacenter(
+  transport: 'local' | 'datacenter' | 'fabric',
+): boolean {
+  return transport !== 'fabric'
+}
+
 export function evaluatePromoteMemberRole(
   role: string,
 ): ManagedRouteValidationError | null {

@@ -488,46 +488,6 @@ export const network = pgTable(
   ]
 )
 /** Org-scoped WireGuard mesh — owns its overlay CIDR directly (no `network` row). */
-export const vpn = pgTable(
-  'vpn',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
-    organizationId: uuid('organization_id').notNull(),
-    /** Overlay tunnel subnet for this mesh. */
-    cidr: cidr().notNull(),
-    name: varchar({ length: 255 }),
-  },
-  (table) => [
-    index('idx_vpn_organization_id').using(
-      'btree',
-      table.organizationId.asc().nullsLast().op('uuid_ops')
-    ),
-    foreignKey({
-      columns: [table.organizationId],
-      foreignColumns: [organization.id],
-      name: 'vpn_organization_id_organization_id_fk',
-    }).onDelete('cascade'),
-    uniqueIndex('uniq_vpn_organization_id_cidr').on(
-      table.organizationId,
-      table.cidr
-    ),
-    check(
-      'vpn_name_format_check',
-      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
-    ),
-  ]
-)
 /**
  * Org TurboFabric mesh (host interface `tp0`). At most one row per
  * organization; **absence means TurboFabric is off**. Container-pool CIDR and
@@ -574,9 +534,8 @@ export const fabric = pgTable(
  * Single source of truth for every managed address. Two non-overlapping private
  * facts: **site CIDR** lives on `network(kind='datacenter', datacenter_id=…)`;
  * **a server's private address** is `ip WHERE server_id = … AND scope = 'datacenter'`.
- * Public VPS addresses carry no `network_id`. Overlay tunnel addresses are
- * `scope = 'vpn'` with `vpn_id`. TurboFabric `tp0` addresses are
- * `scope = 'fabric'` with `fabric_id`. Address family (`version`) is derived from
+ * Public VPS addresses carry no `network_id`. TurboFabric `tp0` addresses live
+ * on `relay.address`, not here. Address family (`version`) is derived from
  * `address` in the API — not stored.
  */
 export const ip = pgTable(
@@ -598,8 +557,6 @@ export const ip = pgTable(
     datacenterId: uuid('datacenter_id'),
     networkId: uuid('network_id'),
     serverId: uuid('server_id'),
-    vpnId: uuid('vpn_id'),
-    fabricId: uuid('fabric_id'),
     address: inet('address').notNull(),
     allocation: text().notNull(),
     scope: text().notNull(),
@@ -616,8 +573,6 @@ export const ip = pgTable(
     ),
     index('idx_ip_network_id').using('btree', table.networkId.asc().nullsLast().op('uuid_ops')),
     index('idx_ip_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
-    index('idx_ip_vpn_id').using('btree', table.vpnId.asc().nullsLast().op('uuid_ops')),
-    index('idx_ip_fabric_id').using('btree', table.fabricId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -638,43 +593,17 @@ export const ip = pgTable(
       foreignColumns: [server.id],
       name: 'ip_server_id_server_id_fk',
     }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.vpnId],
-      foreignColumns: [vpn.id],
-      name: 'ip_vpn_id_vpn_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.fabricId],
-      foreignColumns: [fabric.id],
-      name: 'ip_fabric_id_fabric_id_fk',
-    }).onDelete('cascade'),
     check('ip_allocation_check', sql`allocation IN ('dedicated', 'shared')`),
-    check('ip_scope_check', sql`scope IN ('public', 'datacenter', 'vpn', 'fabric')`),
-    check(
-      'ip_vpn_scope_check',
-      sql`(${table.scope} = 'vpn' AND ${table.vpnId} IS NOT NULL) OR (${table.scope} <> 'vpn' AND ${table.vpnId} IS NULL)`
-    ),
-    check(
-      'ip_fabric_scope_check',
-      sql`(${table.scope} = 'fabric' AND ${table.fabricId} IS NOT NULL) OR (${table.scope} <> 'fabric' AND ${table.fabricId} IS NULL)`
-    ),
+    check('ip_scope_check', sql`scope IN ('public', 'datacenter')`),
     check(
       'ip_datacenter_scope_check',
       sql`(${table.scope} <> 'datacenter') OR (${table.serverId} IS NOT NULL OR ${table.datacenterId} IS NOT NULL)`
     ),
     check(
       'ip_datacenter_free_pool_check',
-      sql`(${table.datacenterId} IS NULL) OR (${table.serverId} IS NULL AND ${table.vpnId} IS NULL AND ${table.networkId} IS NULL AND ${table.fabricId} IS NULL)`
+      sql`(${table.datacenterId} IS NULL) OR (${table.serverId} IS NULL AND ${table.networkId} IS NULL)`
     ),
-    uniqueIndex('uniq_ip_org_address')
-      .on(table.organizationId, table.address)
-      .where(sql`${table.vpnId} IS NULL AND ${table.fabricId} IS NULL`),
-    uniqueIndex('uniq_ip_vpn_address')
-      .on(table.vpnId, table.address)
-      .where(sql`${table.vpnId} IS NOT NULL`),
-    uniqueIndex('uniq_ip_fabric_address')
-      .on(table.fabricId, table.address)
-      .where(sql`${table.fabricId} IS NOT NULL`),
+    uniqueIndex('uniq_ip_org_address').on(table.organizationId, table.address),
     check(
       'ip_name_format_check',
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
@@ -682,93 +611,11 @@ export const ip = pgTable(
   ]
 )
 /**
- * One server's membership in a VPN mesh.
- *
- * **WireGuard private keys are never stored in Postgres** — the daemon generates
- * and holds the keypair on the host and reports only the public key back
- * (`public_key` stays null until the first successful Apply). Overlay addresses
- * live as `ip(scope='vpn')` rows referenced by `tunnel_ip_id`.
- */
-export const peer = pgTable(
-  'peer',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
-      .defaultNow()
-      .notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
-    vpnId: uuid('vpn_id').notNull(),
-    serverId: uuid('server_id').notNull(),
-    /** Public `ip` row used as the WireGuard endpoint. */
-    endpointIpId: uuid('endpoint_ip_id'),
-    /** Overlay `ip` row (`scope = 'vpn'`) for this peer's tunnel address. */
-    tunnelIpId: uuid('tunnel_ip_id'),
-    /**
-     * Mesh role — `gateway` advertises its datacenter CIDR to remote peers;
-     * `member` is host-route only.
-     */
-    role: text().notNull().default('member'),
-    /**
-     * Daemon-reported WireGuard public key. Null until the first successful
-     * `server.wireguard.apply` reconciles the host keypair.
-     */
-    publicKey: text('public_key'),
-    listenPort: integer('listen_port'),
-    endpoint: varchar({ length: 255 }),
-    /** Sealed `tpsecret` envelope — write-only, same handling as `principal.password`. */
-    presharedKey: text('preshared_key'),
-  },
-  (table) => [
-    index('idx_peer_vpn_id').using('btree', table.vpnId.asc().nullsLast().op('uuid_ops')),
-    index('idx_peer_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
-    index('idx_peer_endpoint_ip_id').using(
-      'btree',
-      table.endpointIpId.asc().nullsLast().op('uuid_ops')
-    ),
-    index('idx_peer_tunnel_ip_id').using(
-      'btree',
-      table.tunnelIpId.asc().nullsLast().op('uuid_ops')
-    ),
-    foreignKey({
-      columns: [table.vpnId],
-      foreignColumns: [vpn.id],
-      name: 'peer_vpn_id_vpn_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.serverId],
-      foreignColumns: [server.id],
-      name: 'peer_server_id_server_id_fk',
-    }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.endpointIpId],
-      foreignColumns: [ip.id],
-      name: 'peer_endpoint_ip_id_ip_id_fk',
-    }).onDelete('set null'),
-    foreignKey({
-      columns: [table.tunnelIpId],
-      foreignColumns: [ip.id],
-      name: 'peer_tunnel_ip_id_ip_id_fk',
-    }).onDelete('restrict'),
-    unique('peer_vpn_server_unique').on(table.vpnId, table.serverId),
-    unique('peer_vpn_public_key_unique').on(table.vpnId, table.publicKey),
-    uniqueIndex('uniq_peer_vpn_tunnel_ip')
-      .on(table.vpnId, table.tunnelIpId)
-      .where(sql`${table.tunnelIpId} IS NOT NULL`),
-    check('peer_role_check', sql`role IN ('gateway', 'member')`),
-  ]
-)
-/**
- * One server in an org TurboFabric mesh (parallel to VPN `peer` / managed
- * `node`). Private key never stored; `public_key` stays null until the first
- * successful `server.fabric.reconcile`. `prefix` is that server's container
- * aggregate, forwarded over `tp0`.
+ * One server in an org TurboFabric mesh (parallel to managed `node`). Private
+ * key never stored; `public_key` stays null until the first successful
+ * `server.fabric.reconcile`. `address` is the `tp0` host address; `prefix` is
+ * that server's container aggregate, forwarded over `tp0`. Gateway LAN CIDRs
+ * persist on `advertised_cidrs` (empty when `role = 'member'`).
  */
 export const relay = pgTable(
   'relay',
@@ -787,11 +634,23 @@ export const relay = pgTable(
     options: jsonb(),
     fabricId: uuid('fabric_id').notNull(),
     serverId: uuid('server_id').notNull(),
-    /** `ip(scope='fabric')` row for this server's `tp0` /32. */
-    fabricIpId: uuid('fabric_ip_id'),
+    /** `tp0` host address (rendered `/32` by `hostRoute32`). */
+    address: inet('address').notNull(),
+    /**
+     * Mesh role — `gateway` advertises `advertised_cidrs` to remote peers;
+     * `member` is host-route only (list must stay empty).
+     */
+    role: text().notNull().default('member'),
+    keepalive: integer(),
+    /** Operator pin; null = auto-derive from datacenter / public / reported addresses. */
+    endpointAddress: inet('endpoint_address'),
     publicKey: text('public_key'),
     /** Container aggregate CIDR forwarded via this relay (e.g. `10.192.0.0/16`). */
     prefix: cidr().notNull(),
+    /** Operator-configured LAN CIDRs advertised by gateway relays. */
+    advertisedCidrs: jsonb('advertised_cidrs').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    /** Sealed `tpsecret` envelope — write-only, same handling as `principal.password`. */
+    presharedKey: text('preshared_key'),
   },
   (table) => [
     index('idx_relay_fabric_id').using(
@@ -801,10 +660,6 @@ export const relay = pgTable(
     index('idx_relay_server_id').using(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops'),
-    ),
-    index('idx_relay_fabric_ip_id').using(
-      'btree',
-      table.fabricIpId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.fabricId],
@@ -816,12 +671,18 @@ export const relay = pgTable(
       foreignColumns: [server.id],
       name: 'relay_server_id_server_id_fk',
     }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.fabricIpId],
-      foreignColumns: [ip.id],
-      name: 'relay_fabric_ip_id_ip_id_fk',
-    }).onDelete('restrict'),
     unique('relay_fabric_server_unique').on(table.fabricId, table.serverId),
+    unique('uniq_relay_fabric_address').on(table.fabricId, table.address),
+    unique('uniq_relay_fabric_public_key').on(table.fabricId, table.publicKey),
+    check('relay_role_check', sql`role IN ('gateway', 'member')`),
+    check(
+      'relay_keepalive_check',
+      sql`${table.keepalive} IS NULL OR (${table.keepalive} BETWEEN 1 AND 65535)`,
+    ),
+    check(
+      'relay_member_advertised_cidrs_empty_check',
+      sql`${table.role} <> 'member' OR ${table.advertisedCidrs} = '[]'::jsonb`,
+    ),
   ],
 )
 /**
@@ -1096,7 +957,7 @@ export const node = pgTable(
     /** 1-based member ordinal — mirrors the service-role container ordinal. */
     ordinal: integer().default(1).notNull(),
     /**
-     * Resolved private path to the primary (`local` | `datacenter` | `vpn`).
+     * Resolved private path to the primary (`local` | `datacenter` | `fabric`).
      * Null when not yet resolved (or primary self).
      */
     replicationTransport: text('replication_transport'),
@@ -1146,7 +1007,7 @@ export const node = pgTable(
     ),
     check(
       'node_transport_check',
-      sql`${table.replicationTransport} IS NULL OR ${table.replicationTransport} IN ('local','datacenter','vpn')`,
+      sql`${table.replicationTransport} IS NULL OR ${table.replicationTransport} IN ('local','fabric','datacenter')`,
     ),
     check(
       'node_status_check',
@@ -1431,6 +1292,11 @@ export const task = pgTable(
     environmentId: uuid('environment_id').notNull(),
     serviceId: uuid('service_id').notNull(),
     serverId: uuid('server_id').notNull(),
+    /**
+     * Cross-host address on a spanning compose network. One per task — a
+     * service typically joins one spanning network per environment.
+     */
+    address: inet('address'),
     /** 0-based replica slot (not 1-based like `container.ordinal`). */
     slot: integer().notNull(),
     generation: integer().default(0).notNull(),

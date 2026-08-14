@@ -6,11 +6,11 @@ import {
   assertCommandAmqpTopology,
   COMMAND_AMQP_QUEUE,
 } from './command-amqp-topology.ts'
-import type { VpnApplyResealDeps } from '../../client/vpns/apply-prepare.ts'
 import {
   isTransientError,
   processCommandEnvelope,
   type CommandConsumerDeps,
+  type CommandResealDeps,
 } from './consumer.ts'
 import { parseCommandEnvelope } from './envelope.ts'
 import type { CommandQueue } from './queue.ts'
@@ -46,7 +46,7 @@ export async function startCommandConsumer(opts: {
   registry: DaemonCellRegistry
   amqpUrl: string
   commandQueue?: CommandQueue
-  resealDeps?: VpnApplyResealDeps
+  resealDeps?: CommandResealDeps
   secretsConfig?: import('../../client/authn/secrets.ts').SecretsConfig
   dataEncryptionSecrets?: import('../../client/authn/secrets.ts').DerivedSecretsConfig
 }): Promise<{ close(): Promise<void> }> {

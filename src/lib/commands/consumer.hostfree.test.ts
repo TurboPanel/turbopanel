@@ -43,7 +43,6 @@ test('commandTimeoutMs returns per-type budgets and the default', () => {
   assertEquals(commandTimeoutMs('server.ntp.set'), 300_000)
   assertEquals(commandTimeoutMs('server.timezone.set'), 300_000)
   assertEquals(commandTimeoutMs('server.reboot'), 120_000)
-  assertEquals(commandTimeoutMs('server.wireguard.apply'), 300_000)
   assertEquals(commandTimeoutMs('server.fabric.reconcile'), 300_000)
   assertEquals(commandTimeoutMs('environment.deploy'), 600_000)
   assertEquals(commandTimeoutMs('environment.lifecycle'), 120_000)

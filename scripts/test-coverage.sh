@@ -161,12 +161,10 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/apply-prepare-pure.test.ts \
   src/client/managed/apply-prepare.test.ts \
   src/client/managed/ingress-desired.test.ts \
+  src/client/managed/ingress-desired.hostfree.test.ts \
   src/client/managed/ingress-desired-pure.hostfree.test.ts \
   src/client/managed/routes-helpers.hostfree.test.ts \
   src/client/managed/routes.hostfree.test.ts \
-  src/client/vpns/apply-prepare-pure.test.ts \
-  src/client/vpns/apply-prepare-enqueue.test.ts \
-  src/client/vpns/apply-prepare.test.ts \
   src/client/managed/backups.test.ts \
   src/client/managed/context.test.ts \
   src/client/managed/logs.test.ts \
@@ -311,7 +309,6 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/commands/queue.test.ts \
   src/lib/commands/schemas.test.ts \
   src/lib/commands/types.test.ts \
-  src/lib/commands/wireguard.test.ts \
   src/lib/commands/workers-queue.test.ts \
   src/lib/compose/ \
   src/lib/schedule/ \
@@ -320,6 +317,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/datacenter-name-suggestions.test.ts \
   src/lib/datacenter-options.test.ts \
   src/lib/daemon-install-command.deno.test.ts \
+  src/lib/install-tls.deno.test.ts \
   src/lib/db/command-records.test.ts \
   src/lib/db/command-records.hostfree.test.ts \
   src/lib/db/container-records.test.ts \
@@ -349,9 +347,6 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/ip-address.test.ts \
   src/lib/machine-key.test.ts \
   src/lib/managed/ \
-  src/lib/net/vpn-address-allocator.pure.test.ts \
-  src/lib/net/vpn-address-allocator.hostfree.test.ts \
-  src/lib/net/vpn-address-allocator.test.ts \
   src/lib/net/datacenter-networks.pure.test.ts \
   src/lib/net/private-endpoint.pure.test.ts \
   src/lib/naming.test.ts \
@@ -411,8 +406,6 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/tls/routes-helpers.test.ts \
   src/client/tls/routes-helpers.hostfree.test.ts \
   src/client/variables/routes.test.ts \
-  src/client/vpns/routes.test.ts \
-  src/client/vpns/routes-pure.test.ts \
   src/client/workspaces/routes.test.ts \
   src/client/workspaces/routes-helpers.hostfree.test.ts
 

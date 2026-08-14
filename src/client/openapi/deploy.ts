@@ -277,7 +277,7 @@ export const deployPaths = {
         },
         409: {
           description:
-            'Health-check, resource-limit, or no eligible server (`server_placement_required`)',
+            'Health-check, resource-limit, no eligible server (`server_placement_required`), or TurboFabric still converging (`fabric_reconcile_pending`)',
           content: {
             'application/json': {
               schema: {
@@ -292,7 +292,7 @@ export const deployPaths = {
         },
         422: {
           description:
-            'Scheduler rejected the plan (`turbofabric_required`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`)',
+            'Scheduler rejected the plan (`turbofabric_required`, `relay_endpoint_unavailable`, `fabric_segment_pool_exhausted`, `relay_missing`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`, `fabric_reconcile_failed`)',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -330,7 +330,7 @@ export const deployPaths = {
         },
         422: {
           description:
-            'Scheduler rejected the plan (`turbofabric_required`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`)',
+            'Scheduler rejected the plan (`turbofabric_required`, `relay_endpoint_unavailable`, `fabric_segment_pool_exhausted`, `relay_missing`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`)',
         },
       },
     },

@@ -211,8 +211,12 @@ test('isReservedPrincipalUsername covers denylist and systemd- prefix', () => {
   assertEquals(isReservedPrincipalUsername('appuser'), false)
 })
 
-test('serviceDnsName is most-specific-first (container then project)', () => {
-  assertEquals(serviceDnsName('project-id', 'container-id'), 'container-id.project-id')
+test('serviceDnsName is most-specific-first (replica then service)', () => {
+  assertEquals(
+    serviceDnsName('web', 1, 'env-1'),
+    ['web-1.env-1', 'web.env-1'],
+  )
+  assertEquals(serviceDnsName('web', null, 'env-1'), ['web.env-1'])
 })
 
 test('RESERVED_DEPLOY_VARIABLE_KEYS covers tenant-deploy reserved keys', () => {

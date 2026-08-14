@@ -22,3 +22,9 @@ export {
   type PlanDeployError,
   type PlannedDeploy,
 } from './plan-deploy.ts'
+export {
+  assignTaskAddresses,
+  buildCompileAddressMaps,
+  type SpanningHostsForService,
+  type TaskAddressExisting,
+} from './task-addresses.ts'

@@ -55,6 +55,30 @@ test('buildLicenseInstallCommand uses dev /run.sh with insecure TLS', () => {
   assertEquals(command.includes(`TURBOPANEL_LICENSE=${encoded}`), true)
   assertEquals(command.includes('TURBOPANEL_HOST=https://huey.turbopanel.dev:8443'), true)
   assertEquals(command.includes('TURBOPANEL_INSECURE_TLS=1'), true)
+  assertEquals(
+    command.includes(
+      'TURBOPANEL_DL_BASE=https://huey.turbopanel.dev:8443/downloads/daemon',
+    ),
+    true,
+  )
+})
+
+test('buildLicenseInstallCommand omits insecure TLS for public overlay HTTPS', () => {
+  const command = buildLicenseInstallCommand({
+    runtime: 'deno',
+    instanceUrl: 'https://turbopanel.dev',
+    licenseId: 'license-id',
+    licenseToken: 'token',
+    insecureTls: false,
+    useInstanceRunScript: true,
+  })
+  assertEquals(command.includes('curl -fsSL https://turbopanel.dev/run.sh'), true)
+  assertEquals(command.includes('curl -fsSLk'), false)
+  assertEquals(command.includes('TURBOPANEL_INSECURE_TLS'), false)
+  assertEquals(
+    command.includes('TURBOPANEL_DL_BASE=https://turbopanel.dev/downloads/daemon'),
+    true,
+  )
 })
 
 test('buildLicenseInstallCommand self-hosted Deno curls CDN with TURBOPANEL_HOST', () => {

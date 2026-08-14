@@ -112,10 +112,6 @@ test('bindingMaterializeHttpPayload maps endpoint failures to 422', () => {
     { status: 422, body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR } },
   )
   assertEquals(
-    bindingMaterializeHttpPayload({ kind: 'peer_tunnel_address_required' }),
-    { status: 422, body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR } },
-  )
-  assertEquals(
     bindingMaterializeHttpPayload({ kind: 'binding_password_unavailable' }),
     { status: 400, body: { error: 'binding_password_unavailable' } },
   )

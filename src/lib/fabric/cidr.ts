@@ -5,16 +5,17 @@
 
 import { isValidCidr, isValidIpAddress, stripInetPrefixSuffix } from '../ip-address.ts'
 
-export const DEFAULT_FABRIC_HOST_CIDR = '10.250.0.0/16'
-export const DEFAULT_FABRIC_CONTAINER_POOL = '10.192.0.0/12'
+export const DEFAULT_FABRIC_HOST_CIDR = '10.250.0.0/16' // NOSONAR typescript:S1313 — RFC1918 TurboFabric tp0 default, not a reachable host
+export const DEFAULT_FABRIC_CONTAINER_POOL = '10.192.0.0/12' // NOSONAR typescript:S1313 — RFC1918 container-pool default, not a reachable host
 export const DEFAULT_FABRIC_LISTEN_PORT = 51821
+export const DEFAULT_FABRIC_MTU = 1420
 export const RELAY_PREFIX_LENGTH = 16
 
 const CANDIDATE_HOST_CIDRS = [
   DEFAULT_FABRIC_HOST_CIDR,
-  '10.251.0.0/16',
-  '10.252.0.0/16',
-  '10.253.0.0/16',
+  '10.251.0.0/16', // NOSONAR typescript:S1313 — RFC1918 fallback tp0 range when the default overlaps
+  '10.252.0.0/16', // NOSONAR typescript:S1313 — RFC1918 fallback tp0 range when the default overlaps
+  '10.253.0.0/16', // NOSONAR typescript:S1313 — RFC1918 fallback tp0 range when the default overlaps
 ]
 
 type Ipv4Cidr = {
@@ -98,6 +99,16 @@ export function nthHostAddress(cidrValue: string, index: number): string | null 
   return intToIpv4(parsed.network + 1 + index)
 }
 
+/**
+ * Last usable host in a segment CIDR — reserved for the ProxySQL platform
+ * attachment so tenant tasks never collide with it.
+ */
+export function reservedManagedIngressAddress(cidrValue: string): string | null {
+  const parsed = parseIpv4Cidr(cidrValue)
+  if (!parsed || parsed.prefix >= 31) return null
+  return nthHostAddress(cidrValue, parsed.hostCount - 3)
+}
+
 export function nthSubnet(
   poolCidr: string,
   prefixLength: number,
@@ -121,6 +132,7 @@ export function hostRoute32(address: string): string | null {
 export function parseFabricOptions(value: unknown): {
   containerPool: string
   listenPort: number
+  mtu: number
 } {
   const record = typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -134,9 +146,70 @@ export function parseFabricOptions(value: unknown): {
       record.listenPort <= 65535
     ? record.listenPort
     : DEFAULT_FABRIC_LISTEN_PORT
-  return { containerPool: pool, listenPort: port }
+  const mtu = typeof record.mtu === 'number' &&
+      Number.isInteger(record.mtu) &&
+      record.mtu >= 1280 &&
+      record.mtu <= 9000
+    ? record.mtu
+    : DEFAULT_FABRIC_MTU
+  return { containerPool: pool, listenPort: port, mtu }
 }
 
 export function composeNetworkHostName(networkId: string): string {
   return `tpn_${networkId}`
+}
+
+function isPostgresUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null &&
+    'code' in err && (err as { code: string }).code === '23505'
+}
+
+/** True when the unique violation is on `relay(fabric_id, address)`. */
+export function isRelayAddressUniqueViolation(err: unknown): boolean {
+  if (!isPostgresUniqueViolation(err)) return false
+  const message = err instanceof Error ? err.message : String(err)
+  return message.includes('uniq_relay_fabric_address')
+}
+
+/** True when `child` is entirely inside `parent` (same family, longer-or-equal prefix). */
+export function cidrContains(parent: string, child: string): boolean {
+  const outer = parseIpv4Cidr(parent)
+  const inner = parseIpv4Cidr(child)
+  if (!outer || !inner) return false
+  if (inner.prefix < outer.prefix) return false
+  const outerEnd = outer.network + outer.hostCount - 1
+  const innerEnd = inner.network + inner.hostCount - 1
+  return inner.network >= outer.network && innerEnd <= outerEnd
+}
+
+/**
+ * Lowest-free subnet of `prefixLength` inside `poolCidr` that is not already
+ * listed in `taken`. Returns null when the pool is exhausted.
+ */
+export function nextFreeSubnet(
+  poolCidr: string,
+  prefixLength: number,
+  taken: Iterable<string>,
+): string | null {
+  const takenSet = new Set(taken)
+  for (let i = 0; ; i++) {
+    const candidate = nthSubnet(poolCidr, prefixLength, i)
+    if (!candidate) return null
+    if (!takenSet.has(candidate)) return candidate
+  }
+}
+
+/**
+ * Lowest-free `/24` inside `relayPrefix` whose CIDR is not already held by a
+ * segment that actually falls inside this prefix.
+ */
+export function nextFreeSegmentSubnet(
+  relayPrefix: string,
+  takenCidrs: Iterable<string>,
+): string | null {
+  const scoped: string[] = []
+  for (const cidrValue of takenCidrs) {
+    if (cidrContains(relayPrefix, cidrValue)) scoped.push(cidrValue)
+  }
+  return nextFreeSubnet(relayPrefix, 24, scoped)
 }

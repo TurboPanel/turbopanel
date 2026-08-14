@@ -1,8 +1,5 @@
 import { assertEquals, assertThrows } from 'jsr:@std/assert'
-import {
-  encodeCommandEnvelope,
-  parseCommandEnvelope,
-} from './envelope.ts'
+import { encodeCommandEnvelope, parseCommandEnvelope } from './envelope.ts'
 import {
   isSystemComponentKey,
   isValidNtpServer,
@@ -12,9 +9,11 @@ import {
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
+  parseEnvironmentLifecycleResult,
   parseEnvironmentStopPayload,
   parseEnvironmentStopResult,
-  parseEnvironmentLifecycleResult,
+  parseFabricReconcilePayload,
+  parseFabricReconcileResult,
   parseHostnameSetPayload,
   parseHostnameSetResult,
   parseManagedApplyPayload,
@@ -41,10 +40,6 @@ import {
   parseSystemReconcileResult,
   parseTimezoneSetPayload,
   parseTimezoneSetResult,
-  parseWireguardApplyPayload,
-  parseWireguardApplyResult,
-  parseFabricReconcilePayload,
-  parseFabricReconcileResult,
 } from './schemas.ts'
 import { COMMAND_TYPES, type CommandType } from './types.ts'
 
@@ -72,12 +67,18 @@ test('parseRebootPayload accepts empty object', () => {
 
 test('parseRebootPayload rejects non-object values', () => {
   for (const value of [null, [], 'x']) {
-    assertThrows(() => parseRebootPayload(value), Error, 'Invalid reboot payload')
+    assertThrows(
+      () => parseRebootPayload(value),
+      Error,
+      'Invalid reboot payload',
+    )
   }
 })
 
 test('parseHostnameSetPayload accepts valid hostname', () => {
-  assertEquals(parseHostnameSetPayload({ hostname: 'web-01' }), { hostname: 'web-01' })
+  assertEquals(parseHostnameSetPayload({ hostname: 'web-01' }), {
+    hostname: 'web-01',
+  })
 })
 
 test('parseHostnameSetPayload rejects invalid hostnames', () => {
@@ -163,7 +164,6 @@ const DAEMON_COMMAND_TYPES = [
   'server.ntp.set',
   'server.reboot',
   'server.timezone.set',
-  'server.wireguard.apply',
   'server.fabric.reconcile',
   'environment.deploy',
   'environment.lifecycle',
@@ -653,7 +653,10 @@ test('parseSystemReconcileResult is lenient and passes containers through', () =
       ],
     },
   )
-  assertEquals(parseSystemReconcileResult({ summary: 'ok' }).containers, undefined)
+  assertEquals(
+    parseSystemReconcileResult({ summary: 'ok' }).containers,
+    undefined,
+  )
   assertEquals(parseSystemReconcileResult({ containers: [] }).containers, [])
 })
 
@@ -661,7 +664,9 @@ test('parseTimezoneSetPayload accepts valid IANA shapes', () => {
   assertEquals(parseTimezoneSetPayload({ timezone: 'America/Chicago' }), {
     timezone: 'America/Chicago',
   })
-  assertEquals(parseTimezoneSetPayload({ timezone: 'UTC' }), { timezone: 'UTC' })
+  assertEquals(parseTimezoneSetPayload({ timezone: 'UTC' }), {
+    timezone: 'UTC',
+  })
 })
 
 test('parseTimezoneSetPayload rejects invalid timezones', () => {
@@ -769,11 +774,14 @@ const VALID_MANAGED_APPLY = {
   containerPort: 5432,
   composeYaml: 'services:\n  postgres:\n    image: postgres:18-alpine\n',
   configFiles: [
-    { path: 'postgresql.conf', contents: "listen_addresses = '*'\n", mode: '0640' },
+    {
+      path: 'postgresql.conf',
+      contents: "listen_addresses = '*'\n",
+      mode: '0640',
+    },
     {
       path: 'pg_hba.conf',
-      contents:
-        '# TurboPanel managed PostgreSQL — platform pg_hba\nlocal all all peer\n',
+      contents: '# TurboPanel managed PostgreSQL — platform pg_hba\nlocal all all peer\n',
       mode: '0640',
     },
   ],
@@ -798,7 +806,9 @@ const VALID_MANAGED_APPLY = {
 test('parseCommandPayload and parseCommandResult dispatch by type', () => {
   assertEquals(parseCommandPayload('daemon.ping' as CommandType, {}), {})
   assertEquals(
-    parseCommandPayload('server.hostname.set' as CommandType, { hostname: 'web-01' }),
+    parseCommandPayload('server.hostname.set' as CommandType, {
+      hostname: 'web-01',
+    }),
     { hostname: 'web-01' },
   )
   assertEquals(
@@ -856,15 +866,22 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
       action: 'stop',
     },
   )
-  assertEquals(parseCommandResult('daemon.ping' as CommandType, { daemonHostname: 'x' }), {
-    daemonHostname: 'x',
-  })
   assertEquals(
-    parseCommandResult('server.hostname.set' as CommandType, { observedHostname: 'web-01' }),
+    parseCommandResult('daemon.ping' as CommandType, { daemonHostname: 'x' }),
+    {
+      daemonHostname: 'x',
+    },
+  )
+  assertEquals(
+    parseCommandResult('server.hostname.set' as CommandType, {
+      observedHostname: 'web-01',
+    }),
     { observedHostname: 'web-01' },
   )
   assertEquals(
-    parseCommandResult('server.timezone.set' as CommandType, { timezone: 'UTC' }),
+    parseCommandResult('server.timezone.set' as CommandType, {
+      timezone: 'UTC',
+    }),
     { timezone: 'UTC' },
   )
   assertEquals(
@@ -872,7 +889,10 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
     { ntpServers: [] },
   )
   assertEquals(
-    parseCommandResult('server.reboot' as CommandType, { scheduled: true, summary: 'ok' }),
+    parseCommandResult('server.reboot' as CommandType, {
+      scheduled: true,
+      summary: 'ok',
+    }),
     { scheduled: true, summary: 'ok' },
   )
   assertEquals(
@@ -1098,17 +1118,29 @@ test('parseManagedApplyPayload accepts a valid fixture', () => {
 
 test('parseManagedApplyPayload rejects unsafe or incomplete input', () => {
   assertThrows(
-    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, projectName: 'Bad Name!' }),
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        projectName: 'Bad Name!',
+      }),
     Error,
     'Invalid managed.apply payload',
   )
   assertThrows(
-    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, containerName: '-bad' }),
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        containerName: '-bad',
+      }),
     Error,
     'Invalid managed.apply payload',
   )
   assertThrows(
-    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, containerPort: 70000 }),
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        containerPort: 70000,
+      }),
     Error,
     'Invalid managed.apply payload',
   )
@@ -1155,7 +1187,10 @@ test('parseManagedApplyPayload rejects unsafe or incomplete input', () => {
 
 test('parseManagedApplyPayload enforces the engine image allowlist', () => {
   // The fixture's approved postgres:18-alpine image is unaffected.
-  assertEquals(parseManagedApplyPayload(VALID_MANAGED_APPLY).image, VALID_MANAGED_APPLY.image)
+  assertEquals(
+    parseManagedApplyPayload(VALID_MANAGED_APPLY).image,
+    VALID_MANAGED_APPLY.image,
+  )
 
   // An old/EOL major version is syntactically a valid image ref but must still
   // be rejected — mirrors the settings-parser allowlist in `../managed/settings.ts`
@@ -1186,7 +1221,10 @@ test('parseManagedApplyPayload enforces the engine image allowlist', () => {
       ...VALID_MANAGED_APPLY,
       engine: 'mysql',
       image: 'docker.io/library/mysql:9.7',
-      credentials: [{ ...VALID_MANAGED_APPLY.credentials[0], username: 'root' }],
+      credentials: [{
+        ...VALID_MANAGED_APPLY.credentials[0],
+        username: 'root',
+      }],
     }).image,
     'docker.io/library/mysql:9.7',
   )
@@ -1196,7 +1234,10 @@ test('parseManagedApplyPayload enforces the engine image allowlist', () => {
         ...VALID_MANAGED_APPLY,
         engine: 'mariadb',
         image: 'docker.io/library/mariadb:11',
-        credentials: [{ ...VALID_MANAGED_APPLY.credentials[0], username: 'root' }],
+        credentials: [{
+          ...VALID_MANAGED_APPLY.credentials[0],
+          username: 'root',
+        }],
       }),
     Error,
     'Invalid managed.apply payload',
@@ -1266,6 +1307,40 @@ test('parseManagedApplyPayload accepts member fields and peers', () => {
   assertEquals(payload.memberRole, 'replica')
   assertEquals(payload.peers.length, 1)
   assertEquals(payload.peers[0]?.address, '203.0.113.10')
+})
+
+test('parseManagedApplyPayload round-trips a fabric peer and rejects vpn', () => {
+  const payload = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    peers: [
+      {
+        memberId: '00000000-0000-4000-8000-0000000000bb',
+        role: 'replica',
+        readEligible: true,
+        address: '203.0.113.11',
+        transport: 'fabric',
+        port: 45001,
+      },
+    ],
+  })
+  assertEquals(payload.peers[0]?.transport, 'fabric')
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        peers: [
+          {
+            memberId: '00000000-0000-4000-8000-0000000000bb',
+            role: 'replica',
+            readEligible: true,
+            address: '203.0.113.11',
+            transport: 'vpn',
+            port: 45001,
+          },
+        ],
+      }),
+    Error,
+  )
 })
 
 test('parseManagedPromotePayload and result accept valid shapes', () => {
@@ -1424,7 +1499,10 @@ test('parseManagedApplyPayload admits orgTlsMaterial and rejects incomplete mate
       caCertPem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n',
     },
   })
-  assertEquals(payload.orgTlsMaterial?.caCertPem.includes('BEGIN CERTIFICATE'), true)
+  assertEquals(
+    payload.orgTlsMaterial?.caCertPem.includes('BEGIN CERTIFICATE'),
+    true,
+  )
   assertThrows(
     () =>
       parseManagedApplyPayload({
@@ -1656,37 +1734,51 @@ const VALID_MANAGED_RESTORE = {
 } as const
 
 test('parseManagedRestorePayload accepts a valid fixture', () => {
-  assertEquals(parseManagedRestorePayload(VALID_MANAGED_RESTORE), VALID_MANAGED_RESTORE)
+  assertEquals(
+    parseManagedRestorePayload(VALID_MANAGED_RESTORE),
+    VALID_MANAGED_RESTORE,
+  )
 })
 
 test('parseManagedRestorePayload rejects hostile or malformed input', () => {
   assertThrows(
     () =>
-      parseManagedRestorePayload({ ...VALID_MANAGED_RESTORE, backupId: '../../etc' }),
+      parseManagedRestorePayload({
+        ...VALID_MANAGED_RESTORE,
+        backupId: '../../etc',
+      }),
     Error,
     'Invalid managed.restore payload',
   )
   assertThrows(
     () =>
-      parseManagedRestorePayload({ ...VALID_MANAGED_RESTORE, checksum: 'not-hex' }),
+      parseManagedRestorePayload({
+        ...VALID_MANAGED_RESTORE,
+        checksum: 'not-hex',
+      }),
     Error,
     'Invalid managed.restore payload',
   )
   assertThrows(
     () =>
-      parseManagedRestorePayload({ ...VALID_MANAGED_RESTORE, artifactExtension: 'sh' }),
+      parseManagedRestorePayload({
+        ...VALID_MANAGED_RESTORE,
+        artifactExtension: 'sh',
+      }),
     Error,
     'Invalid managed.restore payload',
   )
   assertThrows(
     () =>
-      parseManagedRestorePayload({ ...VALID_MANAGED_RESTORE, database: 'bad; name' }),
+      parseManagedRestorePayload({
+        ...VALID_MANAGED_RESTORE,
+        database: 'bad; name',
+      }),
     Error,
     'Invalid managed.restore payload database',
   )
   assertThrows(
-    () =>
-      parseManagedRestorePayload({ ...VALID_MANAGED_RESTORE, sizeBytes: -1 }),
+    () => parseManagedRestorePayload({ ...VALID_MANAGED_RESTORE, sizeBytes: -1 }),
     Error,
     'Invalid managed.restore payload sizeBytes',
   )
@@ -1969,7 +2061,14 @@ test('parseCommandPayload rejects overlong, unsafe, or empty principal material 
     Error,
     'Invalid environment.deploy payload',
   )
-  for (const home of ['relative/path', '/tmp/../etc/passwd', '/home/with space', '/bad\0path']) {
+  for (
+    const home of [
+      'relative/path',
+      '/tmp/../etc/passwd',
+      '/home/with space',
+      '/bad\0path',
+    ]
+  ) {
     assertThrows(
       () =>
         parseCommandPayload('environment.deploy' as CommandType, {
@@ -2049,6 +2148,83 @@ test('parseCommandPayload rejects overlong, unsafe, or empty principal material 
   )
 })
 
+test('parseCommandPayload accepts fabricNetworks with subnet mtu and gateway', () => {
+  assertEquals(
+    parseEnvironmentDeployPayload({
+      ...BASE_ENVIRONMENT_DEPLOY,
+      fabricNetworks: [
+        {
+          name: 'tpn_net1',
+          subnet: '203.0.113.0/24',
+          mtu: 1420,
+          gateway: '203.0.113.1',
+        },
+      ],
+    }).fabricNetworks,
+    [
+      {
+        name: 'tpn_net1',
+        subnet: '203.0.113.0/24',
+        mtu: 1420,
+        gateway: '203.0.113.1',
+      },
+    ],
+  )
+})
+
+test('parseCommandPayload rejects invalid fabricNetworks name', () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        fabricNetworks: [{ name: '-bad', subnet: '203.0.113.0/24' }],
+      }),
+    Error,
+    'Invalid fabricNetworks name',
+  )
+})
+
+test('parseCommandPayload rejects invalid fabricNetworks CIDR', () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        fabricNetworks: [{ name: 'tpn_net1', subnet: '203.0.113.0/99' }],
+      }),
+    Error,
+    'Invalid fabricNetworks subnet',
+  )
+})
+
+test('parseCommandPayload rejects fabricNetworks MTU out of range', () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        fabricNetworks: [{
+          name: 'tpn_net1',
+          subnet: '203.0.113.0/24',
+          mtu: 1279,
+        }],
+      }),
+    Error,
+    'Invalid fabricNetworks mtu',
+  )
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        fabricNetworks: [{
+          name: 'tpn_net1',
+          subnet: '203.0.113.0/24',
+          mtu: 9001,
+        }],
+      }),
+    Error,
+    'Invalid fabricNetworks mtu',
+  )
+})
+
 test('parseCommandPayload rejects invalid dockerExternalNetworks names', () => {
   assertThrows(
     () =>
@@ -2097,70 +2273,7 @@ test('parseCommandPayload rejects invalid managedNetworkServices entries', () =>
 })
 
 const WG_PUBKEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
-
-test('parseWireguardApplyPayload accepts valid mesh material', () => {
-  const payload = parseWireguardApplyPayload({
-    vpnId: '550e8400-e29b-41d4-a716-446655440000',
-    peerId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
-    interfaceName: 'tpwg550e8400',
-    address: '203.0.113.10/32',
-    listenPort: 51820,
-    peers: [
-      {
-        peerId: '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
-        publicKey: WG_PUBKEY,
-        allowedIps: ['203.0.113.11/32'],
-        endpoint: '203.0.113.1:51820',
-      },
-    ],
-  })
-  assertEquals(payload.interfaceName, 'tpwg550e8400')
-})
-
-test('parseWireguardApplyPayload rejects invalid wireguard material', () => {
-  const base = {
-    vpnId: '550e8400-e29b-41d4-a716-446655440000',
-    peerId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
-    interfaceName: 'tpwg550e8400',
-    address: '203.0.113.10/32',
-    peers: [{ peerId: '6ba7b811-9dad-11d1-80b4-00c04fd430c8', publicKey: WG_PUBKEY, allowedIps: ['203.0.113.11/32'] }],
-  }
-  assertThrows(
-    () => parseWireguardApplyPayload({ ...base, peers: [{ ...base.peers[0], publicKey: 'bad' }] }),
-    Error,
-    'Invalid wireguard peer publicKey',
-  )
-  assertThrows(
-    () => parseWireguardApplyPayload({ ...base, interfaceName: 'INVALID!' }),
-    Error,
-    'Invalid WireGuard interface name',
-  )
-  assertThrows(
-    () => parseWireguardApplyPayload({
-      ...base,
-      peers: [{ ...base.peers[0], allowedIps: ['203.0.113.11'] }],
-    }),
-    Error,
-    'Invalid wireguard peer allowedIps',
-  )
-  assertThrows(
-    () => parseWireguardApplyPayload({ ...base, listenPort: 70000 }),
-    Error,
-    'Invalid wireguard apply listenPort',
-  )
-})
-
-test('parseWireguardApplyResult round-trips applied flag', () => {
-  assertEquals(
-    parseWireguardApplyResult({
-      interfaceName: 'tpwg550e8400',
-      publicKey: WG_PUBKEY,
-      applied: true,
-      listenPort: 51820,
-    }).applied,
-    true,
-  )
-})
+const DAEMON_PSK = 'tpdaemon.v1.server.key.payload'
 
 test('parseFabricReconcilePayload skips extra fields when disabled', () => {
   assertEquals(
@@ -2180,12 +2293,17 @@ test('parseFabricReconcilePayload accepts enabled mesh material', () => {
         publicKey: WG_PUBKEY,
         allowedIPs: ['10.250.0.12/32', '10.193.0.0/16'],
         endpoint: '203.0.113.1:51820',
+        keepalive: 25,
+        presharedKeyEnvelope: DAEMON_PSK,
       },
     ],
+    mtu: 1420,
     networks: [
       {
         name: 'tpn_550e8400-e29b-41d4-a716-446655440000',
         subnet: '10.192.11.0/24',
+        mtu: 1420,
+        gateway: '10.192.11.1',
       },
     ],
   })
@@ -2193,6 +2311,10 @@ test('parseFabricReconcilePayload accepts enabled mesh material', () => {
   if (!payload.enabled) {
     throw new TypeError('expected enabled fabric payload')
   }
+  assertEquals(payload.mtu, 1420)
+  assertEquals(payload.peers[0]?.keepalive, 25)
+  assertEquals(payload.peers[0]?.presharedKeyEnvelope, DAEMON_PSK)
+  assertEquals(payload.networks?.[0]?.gateway, '10.192.11.1')
   assertEquals(payload.address, '10.250.0.11/32')
   assertEquals(
     parseCommandPayload('server.fabric.reconcile', { enabled: false }),
@@ -2205,20 +2327,40 @@ test('parseFabricReconcilePayload accepts enabled mesh material', () => {
     }),
     { summary: 'TurboFabric disabled', skipped: true },
   )
+  assertEquals(
+    parseCommandResult('server.fabric.reconcile', {
+      summary: 'TurboFabric torn down',
+    }),
+    { summary: 'TurboFabric torn down' },
+  )
 })
 
-test('parseFabricReconcileResult requires publicKey unless skipped', () => {
+test('parseFabricReconcileResult accepts skipped, reconciled, and teardown shapes', () => {
+  assertEquals(
+    parseFabricReconcileResult({
+      summary: 'TurboFabric disabled',
+      skipped: true,
+    }),
+    { summary: 'TurboFabric disabled', skipped: true },
+  )
   assertEquals(
     parseFabricReconcileResult({
       summary: 'TurboFabric reconciled',
       publicKey: WG_PUBKEY,
-    }).publicKey,
-    WG_PUBKEY,
+      peers: [
+        {
+          publicKey: WG_PUBKEY,
+          lastHandshakeAt: '2020-01-01T00:00:00.000Z',
+          transferRx: 10,
+          transferTx: 20,
+        },
+      ],
+    }).peers?.[0]?.transferRx,
+    10,
   )
-  assertThrows(
-    () => parseFabricReconcileResult({ summary: 'ok' }),
-    TypeError,
-    'Invalid fabric reconcile result publicKey',
+  assertEquals(
+    parseFabricReconcileResult({ summary: 'TurboFabric torn down' }),
+    { summary: 'TurboFabric torn down' },
   )
 })
 
@@ -2236,25 +2378,61 @@ test('encodeCommandEnvelope round-trips through parseCommandEnvelope', () => {
 })
 
 test('parseCommandEnvelope rejects invalid envelopes', () => {
-  assertThrows(() => parseCommandEnvelope('not-json'), Error, 'Invalid command envelope')
-  assertThrows(() => parseCommandEnvelope(null), Error, 'Invalid command envelope')
   assertThrows(
-    () => parseCommandEnvelope({ commandId: '', serverId: 's', type: 'daemon.ping', attempt: 1, queuedAt: 't' }),
+    () => parseCommandEnvelope('not-json'),
     Error,
     'Invalid command envelope',
   )
   assertThrows(
-    () => parseCommandEnvelope({ commandId: 'c', serverId: 's', type: 'unknown', attempt: 1, queuedAt: 't' }),
+    () => parseCommandEnvelope(null),
     Error,
     'Invalid command envelope',
   )
   assertThrows(
-    () => parseCommandEnvelope({ commandId: 'c', serverId: 's', type: 'daemon.ping', attempt: 0, queuedAt: 't' }),
+    () =>
+      parseCommandEnvelope({
+        commandId: '',
+        serverId: 's',
+        type: 'daemon.ping',
+        attempt: 1,
+        queuedAt: 't',
+      }),
     Error,
     'Invalid command envelope',
   )
   assertThrows(
-    () => parseCommandEnvelope({ commandId: 'c', serverId: 's', type: 'daemon.ping', attempt: 1.5, queuedAt: 't' }),
+    () =>
+      parseCommandEnvelope({
+        commandId: 'c',
+        serverId: 's',
+        type: 'unknown',
+        attempt: 1,
+        queuedAt: 't',
+      }),
+    Error,
+    'Invalid command envelope',
+  )
+  assertThrows(
+    () =>
+      parseCommandEnvelope({
+        commandId: 'c',
+        serverId: 's',
+        type: 'daemon.ping',
+        attempt: 0,
+        queuedAt: 't',
+      }),
+    Error,
+    'Invalid command envelope',
+  )
+  assertThrows(
+    () =>
+      parseCommandEnvelope({
+        commandId: 'c',
+        serverId: 's',
+        type: 'daemon.ping',
+        attempt: 1.5,
+        queuedAt: 't',
+      }),
     Error,
     'Invalid command envelope',
   )
@@ -2290,11 +2468,9 @@ const VALID_MANAGED_INGRESS_RECONCILE = {
   serverId: '00000000-0000-4000-8000-0000000000ab',
   bindAddress: '203.0.113.10',
   orgTlsMaterial: {
-    certificatePem:
-      '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+    certificatePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
     privateKeyEnvelope: 'tpdaemon.v1.server.key.payload',
-    caCertPem:
-      '-----BEGIN CERTIFICATE-----\nMIICaaaa\n-----END CERTIFICATE-----\n',
+    caCertPem: '-----BEGIN CERTIFICATE-----\nMIICaaaa\n-----END CERTIFICATE-----\n',
   },
   clusters: [
     {
@@ -2339,6 +2515,58 @@ test('parseManagedIngressReconcilePayload accepts a valid fixture', () => {
       VALID_MANAGED_INGRESS_RECONCILE,
     ),
     payload,
+  )
+})
+
+test('parseManagedIngressReconcilePayload admits fabric backends and sorted segments', () => {
+  const netId = '00000000-0000-4000-8000-0000000000cc'
+  const payload = parseManagedIngressReconcilePayload({
+    ...VALID_MANAGED_INGRESS_RECONCILE,
+    clusters: [
+      {
+        ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+        backends: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.backends[0],
+            transport: 'fabric',
+          },
+        ],
+      },
+    ],
+    segments: [
+      { name: `tpn_${netId}`, subnet: '203.0.113.0/24' },
+      { name: `tpn_${netId}`, subnet: '203.0.113.0/24' },
+    ],
+  })
+  assertEquals(payload.clusters[0]?.backends[0]?.transport, 'fabric')
+  assertEquals(payload.segments, [
+    { name: `tpn_${netId}`, subnet: '203.0.113.0/24' },
+  ])
+  assertThrows(
+    () =>
+      parseManagedIngressReconcilePayload({
+        ...VALID_MANAGED_INGRESS_RECONCILE,
+        clusters: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+            backends: [
+              {
+                ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.backends[0],
+                transport: 'vpn',
+              },
+            ],
+          },
+        ],
+      }),
+    TypeError,
+  )
+  assertThrows(
+    () =>
+      parseManagedIngressReconcilePayload({
+        ...VALID_MANAGED_INGRESS_RECONCILE,
+        segments: [{ name: 'not-tpn', subnet: '203.0.113.0/24' }],
+      }),
+    TypeError,
   )
 })
 
@@ -2523,132 +2751,6 @@ test('parsePingResult keeps lifecycle hop timestamps', () => {
   )
 })
 
-test('parseWireguardApplyPayload accepts optional gateway fields', () => {
-  const payload = parseWireguardApplyPayload({
-    vpnId: '550e8400-e29b-41d4-a716-446655440000',
-    peerId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
-    interfaceName: 'tpwg550e8400',
-    address: '203.0.113.10/32',
-    enableIpForwarding: true,
-    peers: [
-      {
-        peerId: '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
-        publicKey: WG_PUBKEY,
-        allowedIps: ['203.0.113.11/32'],
-        endpoint: '203.0.113.1:51820',
-        persistentKeepalive: 25,
-        presharedKeyEnvelope: 'enc:psk',
-      },
-    ],
-  })
-  assertEquals(payload.enableIpForwarding, true)
-  assertEquals(payload.peers[0]?.persistentKeepalive, 25)
-  assertEquals(payload.peers[0]?.presharedKeyEnvelope, 'enc:psk')
-})
-
-test('parseWireguardApplyPayload rejects malformed peer collections', () => {
-  const base = {
-    vpnId: '550e8400-e29b-41d4-a716-446655440000',
-    peerId: '6ba7b810-9dad-11d1-80b4-00c04fd430c8',
-    interfaceName: 'tpwg550e8400',
-    address: '203.0.113.10/32',
-    peers: [{
-      peerId: '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
-      publicKey: WG_PUBKEY,
-      allowedIps: ['203.0.113.11/32'],
-    }],
-  }
-  assertThrows(
-    () => parseWireguardApplyPayload(null),
-    Error,
-    'Invalid wireguard apply payload',
-  )
-  assertThrows(
-    () => parseWireguardApplyPayload({ ...base, peers: 'bad' }),
-    TypeError,
-    'Invalid wireguard apply peers',
-  )
-  assertThrows(
-    () => parseWireguardApplyPayload({ ...base, address: 'not-cidr' }),
-    Error,
-    'Invalid wireguard apply address',
-  )
-  assertThrows(
-    () =>
-      parseWireguardApplyPayload({
-        ...base,
-        peers: [{ ...base.peers[0], endpoint: 'bad-endpoint' }],
-      }),
-    Error,
-    'Invalid wireguard peer endpoint',
-  )
-  assertThrows(
-    () => parseWireguardApplyPayload({ ...base, enableIpForwarding: 'yes' }),
-    TypeError,
-    'Invalid wireguard apply enableIpForwarding',
-  )
-  assertThrows(
-    () =>
-      parseWireguardApplyPayload({
-        ...base,
-        peers: [{ ...base.peers[0], persistentKeepalive: 70_000 }],
-      }),
-    Error,
-    'Invalid wireguard peer persistentKeepalive',
-  )
-})
-
-test('parseWireguardApplyResult validates required fields', () => {
-  assertThrows(
-    () => parseWireguardApplyResult(null),
-    Error,
-    'Invalid wireguard apply result',
-  )
-  assertThrows(
-    () => parseWireguardApplyResult({
-      interfaceName: 'tpwg550e8400',
-      applied: true,
-    }),
-    Error,
-    'Invalid wireguard apply result publicKey',
-  )
-  assertThrows(
-    () =>
-      parseWireguardApplyResult({
-        interfaceName: 'tpwg550e8400',
-        publicKey: WG_PUBKEY,
-        applied: 'yes',
-      }),
-    TypeError,
-    'Invalid wireguard apply result applied',
-  )
-  assertThrows(
-    () =>
-      parseWireguardApplyResult({
-        interfaceName: 'tpwg550e8400',
-        publicKey: WG_PUBKEY,
-        applied: true,
-        listenPort: 70_000,
-      }),
-    Error,
-    'Invalid wireguard apply result listenPort',
-  )
-  assertEquals(
-    parseWireguardApplyResult({
-      interfaceName: 'tpwg550e8400',
-      publicKey: WG_PUBKEY,
-      applied: false,
-      summary: 'skipped',
-    }),
-    {
-      interfaceName: 'tpwg550e8400',
-      publicKey: WG_PUBKEY,
-      applied: false,
-      summary: 'skipped',
-    },
-  )
-})
-
 test('parseEnvironmentDeployPayload parses rich hostings and optional material', () => {
   const result = parseEnvironmentDeployPayload({
     ...BASE_ENVIRONMENT_DEPLOY,
@@ -2724,16 +2826,25 @@ test('parseEnvironmentDeployPayload parses rich hostings and optional material',
     gzip: true,
     stripPrefix: '/api',
   })
-  assertEquals(result.hostings[0]?.web, { env: { APP_ENV: 'prod' }, php: { version: '8.4' } })
+  assertEquals(result.hostings[0]?.web, {
+    env: { APP_ENV: 'prod' },
+    php: { version: '8.4' },
+  })
   assertEquals(result.hostings[1]?.protocol, 'tcp')
   assertEquals(result.hostings[1]?.ports, [{ published: 5432, target: 5432 }])
   assertEquals(result.tlsMaterial?.length, 1)
   assertEquals(result.variableMaterial?.[0]?.forBuild, true)
   assertEquals(result.envFile, 'web__PORT=3000\n')
   assertEquals(result.secretPlan?.[0]?.relativePath, 'web--TOKEN')
-  assertEquals(result.storageMaterial?.[0]?.volumeName, '01936b3e-8c7a-7b2d-a1f0-123456789abc')
+  assertEquals(
+    result.storageMaterial?.[0]?.volumeName,
+    '01936b3e-8c7a-7b2d-a1f0-123456789abc',
+  )
   assertEquals(result.serviceHooks?.[0]?.preDeployCommand, '/bin/true')
-  assertEquals(result.ingressServices?.[0]?.containerName, `${INGRESS_SERVICE_ID}-in`)
+  assertEquals(
+    result.ingressServices?.[0]?.containerName,
+    `${INGRESS_SERVICE_ID}-in`,
+  )
 })
 
 test('parseEnvironmentDeployPayload round-trips composeFiles in caller order', () => {
@@ -3036,6 +3147,45 @@ test('parseEnvironmentStopPayload accepts and validates ingressServices', () => 
       }),
     TypeError,
     'ingressServices must be an array',
+  )
+})
+
+test('parseEnvironmentStopPayload round-trips tpn_ fabricNetworks and rejects other names', () => {
+  assertEquals(
+    parseEnvironmentStopPayload({
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      fabricNetworks: ['tpn_net1'],
+    }),
+    {
+      environmentId: 'env-1',
+      projectId: 'proj-1',
+      projectName: 'tp-demo',
+      fabricNetworks: ['tpn_net1'],
+    },
+  )
+  assertThrows(
+    () =>
+      parseEnvironmentStopPayload({
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        projectName: 'tp-demo',
+        fabricNetworks: ['bridge_net1'],
+      }),
+    Error,
+    'Invalid environment.stop fabricNetworks name',
+  )
+  assertThrows(
+    () =>
+      parseEnvironmentStopPayload({
+        environmentId: 'env-1',
+        projectId: 'proj-1',
+        projectName: 'tp-demo',
+        fabricNetworks: 'tpn_net1',
+      }),
+    TypeError,
+    'fabricNetworks must be an array',
   )
 })
 
