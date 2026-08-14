@@ -96,6 +96,25 @@ const ALL_PREPARE_ERRORS: Array<{
     status: 400,
     body: 'managed_settings_invalid',
   },
+  {
+    error: { kind: 'managed_primary_missing' },
+    status: 500,
+    body: 'managed_primary_missing',
+  },
+  {
+    error: { kind: 'managed_private_port_exhausted', serverId: 's1' },
+    status: 409,
+    body: 'managed_private_port_exhausted',
+  },
+  {
+    error: {
+      kind: 'private_path_unavailable',
+      fromServerId: 's1',
+      toServerId: 's2',
+    },
+    status: 422,
+    body: 'private_path_unavailable',
+  },
 ]
 
 test('isPrepareError is true for every ManagedApplyPrepareError kind', () => {
@@ -296,4 +315,38 @@ test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replica
   assertEquals(leaf.dnsNames.includes(`managed-${managedId}`), true)
   assertEquals(leaf.dnsNames.includes('svc-1'), true)
   assertEquals(leaf.ipAddresses.includes('203.0.113.50'), true)
+})
+
+test('buildManagedOrgTlsMaterial dedupes managed leaf name and localhost from extraSans', async () => {
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
+  const managedId = 'dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb'
+  const ca = await mintOrganizationCa({ commonName: 'Org CA Dedupe Test' })
+  const material = await buildManagedOrgTlsMaterial(
+    secretsConfig,
+    dataEncryptionSecrets,
+    {
+      serverId: 'eeeeeeee-ffff-4aaa-8bbb-cccccccccccc',
+      keyId: 'ffffffff-0000-4bbb-8ccc-dddddddddddd',
+    },
+    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem },
+    managedId,
+    [`managed-${managedId}`, 'localhost', 'extra.example'],
+  )
+
+  const { parseCertificatePem } = await import('../../lib/tls/parse.ts')
+  const leaf = await parseCertificatePem(material.certificatePem)
+  const managedName = `managed-${managedId}`
+  assertEquals(
+    leaf.dnsNames.filter((name) => name === managedName).length,
+    1,
+  )
+  assertEquals(
+    leaf.dnsNames.filter((name) => name === 'localhost').length,
+    1,
+  )
+  assertEquals(leaf.dnsNames.includes('extra.example'), true)
 })

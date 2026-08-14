@@ -382,7 +382,7 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   // bootstrap superuser named by `POSTGRES_USER` — it does not additionally
   // create a role called "postgres" when that variable differs. The daemon's
   // admin paths (waitReady/psql/pg_dump/pg_restore/promote/replication health —
-  // `daemon/src/managed/apply.ts`, `backup.ts`, `promote.ts`, `containers.ts`)
+  // `turbopaneld/src/managed/apply.ts`, `backup.ts`, `promote.ts`, `containers.ts`)
   // all connect as the engine spec's static `rootUsername` ("postgres"), so
   // changing the container's actual superuser role out from under them would
   // leave every admin command targeting a role that no longer exists. The

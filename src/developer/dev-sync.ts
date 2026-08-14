@@ -35,7 +35,7 @@ export const MANAGED_DAEMON_DEV_SYNC_SKIPPED_REASON =
 
 /**
  * Refusal when the *instance host itself* has no daemon source checkout to
- * package (managed install). Source-sync streams this host's `../daemon`
+ * package (managed install). Source-sync streams this host's `../turbopaneld`
  * checkout; without it there is nothing to send and the flow is disabled.
  */
 export const INSTANCE_NO_DAEMON_CHECKOUT_REASON =

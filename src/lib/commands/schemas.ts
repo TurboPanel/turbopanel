@@ -1374,7 +1374,7 @@ function parseDeployStorageMaterialEntry(
 /**
  * Absolute path rules for principal `home` / `shell` — must stay in sync with
  * the daemon `isValidAbsolutePrincipalPath` in
- * `daemon/src/instance/commands/contracts.ts`.
+ * `turbopaneld/src/instance/commands/contracts.ts`.
  */
 function isValidAbsolutePrincipalPath(value: string): boolean {
   if (value.length === 0 || value.length > 255) return false
@@ -3623,7 +3623,7 @@ export function parseManagedPromoteResult(
   return result
 }
 
-/** Mirrors the daemon `SAFE_MANAGED_ID_RE` (`daemon/src/managed/paths.ts`) — backupId becomes a filename. */
+/** Mirrors the daemon `SAFE_MANAGED_ID_RE` (`turbopaneld/src/managed/paths.ts`) — backupId becomes a filename. */
 const SAFE_BACKUP_ID_RE = /^[A-Za-z0-9_-]+$/
 const MAX_BACKUP_ID_LENGTH = 64
 const CHECKSUM_SHA256_RE = /^[a-f0-9]{64}$/

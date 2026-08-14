@@ -5,7 +5,10 @@ import {
   type EndpointAddressCaches,
   FabricAllocationError,
   type FabricReconcileSnapshot,
+  hashFabricReconcileDesired,
   listFabricRelays,
+  loadRelayAddressesForServers,
+  nthSegmentSubnet,
   type RelayRecord,
   requireRelayHostAddress,
   requireRelayPrefix,
@@ -100,6 +103,62 @@ test("requireSegmentSubnet raises fabric_segment_pool_exhausted", () => {
     FabricAllocationError,
   );
   assertKind(err, "fabric_segment_pool_exhausted");
+});
+
+test("requireSegmentSubnet stays scoped to the relay prefix and ignores foreign CIDRs", () => {
+  assertEquals(
+    requireSegmentSubnet("10.192.0.0/16", [
+      "10.193.0.0/24",
+      "10.194.0.0/24",
+    ]),
+    "10.192.0.0/24",
+  );
+});
+
+test("requireSegmentSubnet reuses the lowest gap inside a /16 relay prefix", () => {
+  const taken: string[] = [];
+  for (let octet = 0; octet < 256; octet += 1) {
+    taken.push(`10.192.${String(octet)}.0/24`);
+  }
+  taken.splice(42, 1);
+  assertEquals(
+    requireSegmentSubnet("10.192.0.0/16", taken),
+    "10.192.42.0/24",
+  );
+});
+
+test("nthSegmentSubnet indexes /24 slices inside a relay prefix", () => {
+  assertEquals(nthSegmentSubnet("10.192.0.0/16", 0), "10.192.0.0/24");
+  assertEquals(nthSegmentSubnet("10.192.0.0/16", 1), "10.192.1.0/24");
+  assertEquals(nthSegmentSubnet("10.192.0.0/16", 255), "10.192.255.0/24");
+  assertEquals(nthSegmentSubnet("10.192.0.0/16", 256), null);
+});
+
+test("loadRelayAddressesForServers returns empty map for no ids and dedupes input", async () => {
+  assertEquals(await loadRelayAddressesForServers({} as never, []), new Map());
+
+  const rows = [
+    { serverId: "srv-1", address: "10.250.0.1/32" },
+    { serverId: "srv-2", address: "10.250.0.2" },
+  ];
+  const db = {
+    select() {
+      return {
+        from() {
+          return {
+            where() {
+              return thenable(rows);
+            },
+          };
+        },
+      };
+    },
+  } as unknown as Parameters<typeof loadRelayAddressesForServers>[0];
+
+  const map = await loadRelayAddressesForServers(db, ["srv-1", "srv-1", "srv-2"]);
+  assertEquals(map.get("srv-1"), "10.250.0.1");
+  assertEquals(map.get("srv-2"), "10.250.0.2");
+  assertEquals(map.size, 2);
 });
 
 test("FabricAllocationError carries each kind discriminant", () => {
@@ -229,6 +288,18 @@ test("buildPeerMaterial appends gateway advertised CIDRs to allowedIPs", async (
   assertEquals(material.endpoint, "203.0.113.1:51821");
 });
 
+test("buildPeerMaterial forwards keepalive and reseals pair PSK when provided", async () => {
+  const material = await buildPeerMaterial({
+    other: relayFixture({ keepalive: 25 }),
+    listenPort: 51821,
+    caches: emptyCaches(),
+    sealedPresharedKey: "sealed-psk",
+    resealPresharedKey: (sealed) => Promise.resolve(`plain:${sealed}`),
+  });
+  assertEquals(material.keepalive, 25);
+  assertEquals(material.presharedKey, "plain:sealed-psk");
+});
+
 test("buildPeerMaterial keeps member advertised CIDRs out of allowedIPs", async () => {
   const material = await buildPeerMaterial({
     other: relayFixture({
@@ -306,6 +377,14 @@ test("selectPairPresharedEnvelope falls back when the owner has no envelope", ()
   assertEquals(selectPairPresharedEnvelope("r1", "r2", sealed), "seal-b");
 });
 
+test("selectPairPresharedEnvelope returns null when neither relay stores an envelope", () => {
+  const sealed = new Map<string, string | null>([
+    ["r1", null],
+    ["r2", null],
+  ]);
+  assertEquals(selectPairPresharedEnvelope("r1", "r2", sealed), null);
+});
+
 test("both relay payloads use the same canonical pair PSK when stored envelopes differ", async () => {
   const relays: RelayRecord[] = [
     {
@@ -367,4 +446,19 @@ test("both relay payloads use the same canonical pair PSK when stored envelopes 
   }
   assertEquals(built1.payload.peers[0]?.presharedKeyEnvelope, "seal-owner");
   assertEquals(built2.payload.peers[0]?.presharedKeyEnvelope, "seal-owner");
+});
+
+test("hashFabricReconcileDesired is stable regardless of object key order", async () => {
+  const a = await hashFabricReconcileDesired({
+    enabled: true,
+    peers: [{ endpoint: "203.0.113.1:51821", publicKey: "pk" }],
+    listenPort: 51821,
+  });
+  const b = await hashFabricReconcileDesired({
+    listenPort: 51821,
+    enabled: true,
+    peers: [{ publicKey: "pk", endpoint: "203.0.113.1:51821" }],
+  });
+  assertEquals(a, b);
+  assertEquals(a.length > 0, true);
 });

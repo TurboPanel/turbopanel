@@ -171,6 +171,13 @@ export function isRelayAddressUniqueViolation(err: unknown): boolean {
   return message.includes('uniq_relay_fabric_address')
 }
 
+/** True when the unique violation is on `relay(fabric_id, prefix)`. */
+export function isRelayPrefixUniqueViolation(err: unknown): boolean {
+  if (!isPostgresUniqueViolation(err)) return false
+  const message = err instanceof Error ? err.message : String(err)
+  return message.includes('uniq_relay_fabric_prefix')
+}
+
 /** True when `child` is entirely inside `parent` (same family, longer-or-equal prefix). */
 export function cidrContains(parent: string, child: string): boolean {
   const outer = parseIpv4Cidr(parent)

@@ -432,3 +432,12 @@ test('resolvePrivateEndpoints batches multiple targets', async () => {
     datacenterId: 'dc-a',
   })
 })
+
+test('resolvePrivateEndpoints returns empty map for empty target list', async () => {
+  const db = createFixtureDb({})
+  const map = await resolvePrivateEndpoints(db, {
+    fromServerId: 's1',
+    toServerIds: [],
+  })
+  assertEquals(map.size, 0)
+})

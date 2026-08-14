@@ -8,16 +8,20 @@ import {
   buildDeployPreviewContainers,
   buildTraditionalWebSitesForDeploy,
   composeProjectName,
+  deployMaterialsErrorResponse,
   expandHostingsForComposeInstances,
+  fabricGateErrorResponse,
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
   parseLifecycleAction,
   preferredListenPortsFromHostings,
+  queuedCommandsResponseBody,
   readHostnames,
   readHostingPorts,
   readHostingProtocol,
   readPathPrefix,
   readTargetPort,
+  scheduleErrorResponse,
   tlsPinErrorCode,
   validateDeployMaterials,
 } from './deploy-routes-helpers.ts'
@@ -40,6 +44,55 @@ test('tlsPinErrorCode maps pin errors', () => {
   assertEquals(tlsPinErrorCode('pin_not_found'), 'tls_pin_not_found')
   assertEquals(tlsPinErrorCode('pin_mismatch'), 'tls_pin_mismatch')
   assertEquals(tlsPinErrorCode('pin_not_ready'), 'tls_pin_not_ready')
+})
+
+test('fabricGateErrorResponse maps failed and pending fabric gates', () => {
+  assertEquals(
+    fabricGateErrorResponse({
+      kind: 'failed',
+      serverId: projectId,
+      commandId: 'cmd-1',
+      error: 'peer down',
+    }),
+    {
+      status: 422,
+      body: {
+        error: 'fabric_reconcile_failed',
+        serverId: projectId,
+        commandId: 'cmd-1',
+        message: 'peer down',
+      },
+    },
+  )
+  assertEquals(
+    fabricGateErrorResponse({
+      kind: 'failed',
+      serverId: projectId,
+      commandId: 'cmd-2',
+      error: null,
+    }),
+    {
+      status: 422,
+      body: {
+        error: 'fabric_reconcile_failed',
+        serverId: projectId,
+        commandId: 'cmd-2',
+      },
+    },
+  )
+  assertEquals(
+    fabricGateErrorResponse({
+      kind: 'pending',
+      pending: [{ serverId: projectId, commandId: 'cmd-3' }],
+    }),
+    {
+      status: 409,
+      body: {
+        error: 'fabric_reconcile_pending',
+        pending: [{ serverId: projectId, commandId: 'cmd-3' }],
+      },
+    },
+  )
 })
 
 test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
@@ -203,6 +256,105 @@ test('validateDeployMaterials rejects tcp hostings without ports', () => {
   )
   if (!error) throw new TypeError('expected invalid deploy hosting')
   assertEquals(error.error, 'invalid_deploy_hosting')
+})
+
+test('validateDeployMaterials rejects invalid storage material', () => {
+  const error = validateDeployMaterials([], [{
+    storageId: 'st-1',
+    locationId: 'loc-1',
+    kind: 'volume',
+    name: 'data',
+    provider: 'path',
+    serverId: 'srv-1',
+    mounts: [{
+      composeServiceName: 'web',
+      destinationPath: '/data',
+      readOnly: false,
+    }],
+  }])
+  if (!error) throw new TypeError('expected invalid deploy storage')
+  assertEquals(error.error, 'invalid_deploy_storage')
+})
+
+test('deployMaterialsErrorResponse returns 400 for invalid materials', async () => {
+  assertEquals(deployMaterialsErrorResponse([], []), null)
+  const denied = deployMaterialsErrorResponse(
+    [{
+      hostingId: 'h1',
+      serviceId: 'svc',
+      composeServiceName: 'db',
+      hostnames: [],
+      protocol: 'udp',
+      ports: [],
+    }],
+    [],
+  )
+  assertEquals(denied?.status, 400)
+  assertEquals((await denied?.json())?.error, 'invalid_deploy_hosting')
+})
+
+test('scheduleErrorResponse maps placement and other schedule failures', () => {
+  assertEquals(scheduleErrorResponse('no_eligible_server', 'none'), {
+    status: 409,
+    body: { error: 'server_placement_required' },
+  })
+  assertEquals(
+    scheduleErrorResponse('host_port_conflict', 'port 80 taken'),
+    {
+      status: 422,
+      body: { error: 'host_port_conflict', message: 'port 80 taken' },
+    },
+  )
+  assertEquals(
+    scheduleErrorResponse('turbofabric_required', 'need mesh'),
+    {
+      status: 422,
+      body: { error: 'turbofabric_required', message: 'need mesh' },
+    },
+  )
+})
+
+test('queuedCommandsResponseBody shapes empty and multi-command payloads', () => {
+  assertEquals(queuedCommandsResponseBody([]), {
+    ok: true,
+    commandId: '',
+    status: 'queued',
+    commands: [],
+  })
+  assertEquals(
+    queuedCommandsResponseBody([
+      { commandId: 'c1', serverId: 's1', status: 'queued' },
+      { commandId: 'c2', serverId: 's2', status: 'queued' },
+    ]),
+    {
+      ok: true,
+      commandId: 'c1',
+      status: 'queued',
+      serverId: 's1',
+      commands: [
+        { commandId: 'c1', serverId: 's1', status: 'queued' },
+        { commandId: 'c2', serverId: 's2', status: 'queued' },
+      ],
+    },
+  )
+})
+
+test('mapPrepareErrorResponse health_check is the deploy ack conflict shape', () => {
+  assertEquals(
+    mapPrepareErrorResponse({
+      kind: 'health_check',
+      required: false,
+      services: ['web', 'api'],
+    }),
+    {
+      status: 409,
+      body: {
+        error: 'health_check_missing',
+        required: false,
+        services: ['web', 'api'],
+      },
+    },
+  )
 })
 
 test('buildTraditionalWebSitesForDeploy attaches listen ports from hostings', () => {

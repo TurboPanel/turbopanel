@@ -12,6 +12,7 @@ import {
 } from '../../lib/commands/deploy-validation.ts'
 import type { DeployPrepareError } from './deploy-prepare.ts'
 import type { FabricGateOutcome } from '../../lib/fabric/gate.ts'
+import type { ScheduleErrorCode } from '../../lib/schedule/index.ts'
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -110,6 +111,51 @@ export function fabricGateErrorResponse(
       pending: outcome.pending,
     },
   }
+}
+
+export function scheduleErrorResponse(
+  error: ScheduleErrorCode,
+  message: string,
+): PrepareErrorResponse {
+  if (error === 'no_eligible_server') {
+    return { status: 409, body: { error: 'server_placement_required' } }
+  }
+  return { status: 422, body: { error, message } }
+}
+
+export type QueuedCommandRef = {
+  commandId: string
+  serverId: string
+  status: 'queued'
+}
+
+export function queuedCommandsResponseBody(
+  commands: readonly QueuedCommandRef[],
+): Record<string, unknown> {
+  const first = commands[0]
+  return {
+    ok: true as const,
+    commandId: first?.commandId ?? '',
+    status: 'queued' as const,
+    ...(first ? { serverId: first.serverId } : {}),
+    commands: commands.map((row) => ({
+      commandId: row.commandId,
+      serverId: row.serverId,
+      status: row.status,
+    })),
+  }
+}
+
+export function deployMaterialsErrorResponse(
+  hostings: EnvironmentDeployHosting[],
+  storageMaterial: EnvironmentDeployStorageMaterial[],
+): Response | null {
+  const validationError = validateDeployMaterials(hostings, storageMaterial)
+  if (!validationError) return null
+  return Response.json(
+    { error: validationError.error, message: validationError.message },
+    { status: 400 },
+  )
 }
 
 type VariablePrepareError = Extract<

@@ -20,6 +20,7 @@ export {
 export {
   planEnvironmentDeploy,
   type PlanDeployError,
+  type PlanEnvironmentDeployDeps,
   type PlannedDeploy,
 } from './plan-deploy.ts'
 export {

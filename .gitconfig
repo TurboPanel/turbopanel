@@ -3,11 +3,11 @@
 	directory = /opt/turbopanel/platform/daemon
 	directory = /opt/turbopanel/platform/ui
 	directory = /opt/turbopanel/platform/website
-	directory = /home/tp/instance
-	directory = /home/tp/daemon
+	directory = /home/tp/turbopanel
+	directory = /home/tp/turbopaneld
 	directory = /home/tp/ui
 	directory = /home/tp/website
-	directory = /home/vagrant/instance
-	directory = /home/vagrant/daemon
+	directory = /home/vagrant/turbopanel
+	directory = /home/vagrant/turbopaneld
 	directory = /home/vagrant/ui
 	directory = /home/vagrant/website

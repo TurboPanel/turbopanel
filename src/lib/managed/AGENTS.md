@@ -46,7 +46,7 @@ argument, and every one of the three specs' `parseSettings` does. This is the
 reaches a compose file, so any surface that can ultimately produce a
 `settings.image` value — the `managed.apply` command payload parser
 (`parseManagedApplyPayload` in `../commands/schemas.ts`), the daemon mirror
-(`daemon/src/instance/commands/contracts.ts`), and the UI catalog
+(`turbopaneld/src/instance/commands/contracts.ts`), and the UI catalog
 (`ui/src/lib/managed-services.ts` `ManagedServiceCatalogEntry.allowedImages`) —
 must mirror the same list. Bump all four together when approving a new image; a
 version bump landed in only one of them is a bug. Neither MySQL nor MariaDB
@@ -142,7 +142,7 @@ check for its presence rather than special-casing engine codes). It carries
 
 **Same rule as `userOperations`: no argv or SQL text here.** The descriptor only
 names the client binaries (`pg_dump` / `pg_restore` for Postgres) — the daemon's
-`ManagedEngineRuntime.backup` (mirrored in `daemon/src/managed/engines/`) owns
+`ManagedEngineRuntime.backup` (mirrored in `turbopaneld/src/managed/engines/`) owns
 actual argv construction. This keeps the instance spec import-safe on both
 Workers and Deno and keeps command construction in one place (the daemon, which
 also validates identifiers before they reach argv).

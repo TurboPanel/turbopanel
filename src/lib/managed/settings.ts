@@ -151,7 +151,7 @@ export function getManagedReservedEnvKeys(engine: string): ReadonlySet<string> {
  * ultimately produce a `settings.image` value — this settings parser, the
  * `managed.apply` command payload parser (`parseManagedApplyPayload` in
  * `../commands/schemas.ts`), the daemon mirror
- * (`daemon/src/instance/commands/contracts.ts`), and the UI image picker
+ * (`turbopaneld/src/instance/commands/contracts.ts`), and the UI image picker
  * (`ui/src/lib/managed-services.ts`) — must reject anything outside this
  * list. An operator (or a replayed/forged command payload that skipped the
  * settings save path) must never be able to run an unsupported or EOL major

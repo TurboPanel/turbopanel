@@ -423,4 +423,271 @@ describe('apply-variables', () => {
       PORT: composeInterpolationRef(serviceEnvInterpolationKey('api', 'PORT')),
     })
   })
+
+  it('does not duplicate secret plan when binding and compose ref overlap', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      api: {
+        image: 'node:22',
+        environment: { DATABASE_PASSWORD: '{$DATABASE_PASSWORD}' },
+      },
+    }
+
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'DATABASE_PASSWORD',
+        value: 'bound-secret',
+        isSecret: true,
+        isLiteral: false,
+        forBuild: false,
+        forRuntime: true,
+        bindingId: '11111111-1111-4111-8111-111111111111',
+      }],
+      perServiceEntries: new Map(),
+    }))
+
+    assertEquals(result.secretPlan.length, 1)
+    assertEquals(result.secretMaterial.length, 1)
+    const env = (result.document.data.services as Record<string, Record<string, unknown>>)
+      .api.environment as Record<string, string>
+    assertEquals(env.DATABASE_PASSWORD, undefined)
+    assertEquals(
+      env.DATABASE_PASSWORD_FILE,
+      secretContainerPath('DATABASE_PASSWORD'),
+    )
+  })
+
+  it('does not auto-inject build-only secrets without a compose ref', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { api: { image: 'node:22', build: { context: '.' } } }
+
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'BUILD_TOKEN',
+        value: 'build-only-secret',
+        isSecret: true,
+        isLiteral: false,
+        forBuild: true,
+        forRuntime: false,
+      }],
+      perServiceEntries: new Map(),
+    }))
+
+    const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
+    assertEquals(api.environment, undefined)
+    assertEquals((api.build as { secrets?: unknown[] }).secrets, undefined)
+    assertEquals(result.secretMaterial.length, 0)
+    assertEquals(result.secretPlan.length, 0)
+  })
+
+  it('auto-attaches binding secrets flagged build-only onto build.secrets only', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { api: { image: 'node:22', build: { context: '.' } } }
+
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'BUILD_TOKEN',
+        value: 'bound-build-secret',
+        isSecret: true,
+        isLiteral: false,
+        forBuild: true,
+        forRuntime: false,
+        bindingId: '22222222-2222-4222-8222-222222222222',
+      }],
+      perServiceEntries: new Map(),
+    }))
+
+    assertEquals(result.secretPlan.length, 1)
+    assertEquals(result.secretPlan[0]?.forBuild, true)
+    assertEquals(result.secretPlan[0]?.forRuntime, false)
+    const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
+    assertEquals(api.environment, undefined)
+    const buildSecrets = (api.build as { secrets: Array<{ source: string }> }).secrets
+    assertEquals(buildSecrets.length, 1)
+    assertEquals((api.secrets as unknown[] | undefined), undefined)
+  })
+
+  it('merges runtime and build refs for build-only secret when both targets reference it', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      api: {
+        image: 'node:22',
+        build: { context: '.', args: { TOKEN: '{$TOKEN}' } },
+      },
+    }
+
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'TOKEN',
+        value: 'build-only-secret',
+        isSecret: true,
+        isLiteral: false,
+        forBuild: true,
+        forRuntime: false,
+      }],
+      perServiceEntries: new Map(),
+    }))
+
+    assertEquals(result.secretPlan.length, 1)
+    assertEquals(result.secretPlan[0]?.forBuild, true)
+    assertEquals(result.secretPlan[0]?.forRuntime, false)
+    const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
+    assertEquals((api.build as { args?: Record<string, string> }).args?.TOKEN, undefined)
+    assertEquals((api.secrets as unknown[] | undefined), undefined)
+  })
+
+  for (
+    const [scopeLabel, scopeToken, refToken] of [
+      ['organization', 'organization', 'org'],
+      ['workspace', 'workspace', 'workspace'],
+      ['hosting', 'hosting', 'hosting'],
+      ['server', 'server', 'server'],
+    ] as const
+  ) {
+    it(`resolves scoped {$${refToken}.KEY} via perServiceScopes (${scopeLabel})`, () => {
+      const doc = emptyComposeDocument()
+      doc.data.services = {
+        web: { image: 'nginx', environment: { X: `{$${refToken}.SCOPE_VAR}` } },
+      }
+      const result = mustApply(applyVariablesToComposeDocument(doc, {
+        globalEntries: [],
+        perServiceEntries: new Map(),
+        perServiceScopes: new Map([
+          ['web', {
+            [scopeToken]: new Map([
+              ['SCOPE_VAR', {
+                key: 'SCOPE_VAR',
+                value: `${scopeLabel}-value`,
+                isSecret: false,
+                isLiteral: false,
+                forBuild: false,
+                forRuntime: true,
+              }],
+            ]),
+          }],
+        ]),
+      }))
+      const env = (result.document.data.services as Record<string, Record<string, unknown>>)
+        .web.environment as Record<string, string>
+      assertEquals(
+        env.X,
+        composeInterpolationRef(serviceEnvInterpolationKey('web', 'SCOPE_VAR')),
+      )
+      assertEquals(result.envFileContent.includes('web__SCOPE_VAR='), true)
+    })
+  }
+
+  it('inlines TURBOPANEL_* build args without env file interpolation', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { api: { image: 'node:22', build: { context: '.' } } }
+
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'TURBOPANEL_SERVICE_ID',
+        value: '01989d42-9adb-7e65-bc2e-f38792c53691',
+        isSecret: false,
+        isLiteral: false,
+        forBuild: true,
+        forRuntime: false,
+      }],
+      perServiceEntries: new Map(),
+    }))
+
+    const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
+    assertEquals(
+      (api.build as { args: Record<string, string> }).args.TURBOPANEL_SERVICE_ID,
+      '01989d42-9adb-7e65-bc2e-f38792c53691',
+    )
+    assertEquals(result.envFileContent.includes('TURBOPANEL_SERVICE_ID'), false)
+  })
+
+  it('escapes literal TURBOPANEL_* inline values in environment', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { web: { image: 'nginx' } }
+
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'TURBOPANEL_PROJECT_ID',
+        value: '$RAW',
+        isSecret: false,
+        isLiteral: true,
+        forBuild: false,
+        forRuntime: true,
+      }],
+      perServiceEntries: new Map(),
+    }))
+
+    const env = (result.document.data.services as Record<string, Record<string, unknown>>)
+      .web.environment as Record<string, string>
+    assertEquals(env.TURBOPANEL_PROJECT_ID, '$$RAW')
+    assertEquals(result.envFileContent.includes('TURBOPANEL_PROJECT_ID'), false)
+  })
+
+  it('normalizes list-form build.args when resolving secret refs', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      api: {
+        image: 'node:22',
+        build: { context: '.', args: ['KEEP=yes', 'TOKEN={$TOKEN}'] },
+      },
+    }
+
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'TOKEN',
+        value: 'list-build-secret',
+        isSecret: true,
+        isLiteral: false,
+        forBuild: true,
+        forRuntime: false,
+      }],
+      perServiceEntries: new Map(),
+    }))
+
+    const build = (result.document.data.services as Record<string, Record<string, unknown>>)
+      .api.build as { args: Record<string, string>; secrets: Array<{ source: string }> }
+    assertEquals(build.args, { KEEP: 'yes' })
+    assertEquals(build.args.TOKEN, undefined)
+    assertEquals(build.secrets.length, 1)
+    assertEquals(result.secretPlan[0]?.forBuild, true)
+    assertEquals(result.secretPlan[0]?.forRuntime, false)
+  })
+
+  it('promotes runtime-only secret to build when referenced in environment and build.args', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      api: {
+        image: 'node:22',
+        environment: { DB_PASS: '{$DB_PASS}' },
+        build: { context: '.', args: ['DB_PASS={$DB_PASS}', 'STAGE=prod'] },
+      },
+    }
+
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'DB_PASS',
+        value: 'runtime-promoted-secret',
+        isSecret: true,
+        isLiteral: false,
+        forBuild: false,
+        forRuntime: true,
+      }],
+      perServiceEntries: new Map(),
+    }))
+
+    assertEquals(result.secretPlan.length, 1)
+    assertEquals(result.secretPlan[0]?.forRuntime, true)
+    assertEquals(result.secretPlan[0]?.forBuild, true)
+    const api = (result.document.data.services as Record<string, Record<string, unknown>>).api!
+    const env = api.environment as Record<string, string>
+    assertEquals(env.DB_PASS, undefined)
+    assertEquals(env.DB_PASS_FILE, secretContainerPath('DB_PASS'))
+    const build = api.build as {
+      args: Record<string, string>
+      secrets: Array<{ source: string }>
+    }
+    assertEquals(build.args, { STAGE: 'prod' })
+    assertEquals(build.secrets.length, 1)
+    assertEquals((api.secrets as unknown[]).length, 1)
+  })
 })

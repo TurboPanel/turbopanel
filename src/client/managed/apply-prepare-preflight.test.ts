@@ -48,6 +48,26 @@ test('preflightManagedApplyInfrastructure rejects missing secrets config', async
   assertEquals(result, { kind: 'daemon_key_unavailable', serverId: 'server-1' })
 })
 
+test('preflightManagedApplyInfrastructure rejects missing dataEncryptionSecrets only', async () => {
+  const c = mockContext({ secretsConfig })
+  const result = await preflightManagedApplyInfrastructure(
+    c,
+    createPreflightDb({ serverId: 'server-2' }),
+    { serverId: 'server-2', bind: 'local' },
+  )
+  assertEquals(result, { kind: 'daemon_key_unavailable', serverId: 'server-2' })
+})
+
+test('preflightManagedApplyInfrastructure rejects missing secretsConfig only', async () => {
+  const c = mockContext({ dataEncryptionSecrets })
+  const result = await preflightManagedApplyInfrastructure(
+    c,
+    createPreflightDb({ serverId: 'server-3' }),
+    { serverId: 'server-3', bind: 'local' },
+  )
+  assertEquals(result, { kind: 'daemon_key_unavailable', serverId: 'server-3' })
+})
+
 test('preflightManagedApplyInfrastructure rejects inactive daemon keys', async () => {
   const c = mockContext({
     secretsConfig,
@@ -120,4 +140,21 @@ test('preflightManagedApplyInfrastructure succeeds when bind resolves', async ()
     },
   )
   assertEquals(datacenterResult, null)
+})
+
+test('preflightManagedApplyInfrastructure accepts public bind without datacenter IP rows', async () => {
+  const c = mockContext({
+    secretsConfig,
+    dataEncryptionSecrets,
+  })
+
+  const result = await preflightManagedApplyInfrastructure(
+    c,
+    createPreflightDb({ serverId: 'server-public-only' }),
+    {
+      serverId: 'server-public-only',
+      bind: 'public',
+    },
+  )
+  assertEquals(result, null)
 })

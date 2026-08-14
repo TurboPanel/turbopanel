@@ -180,3 +180,27 @@ test("fetchDaemonCellDiagnostics returns diagnostics when debug is enabled", asy
   });
   assertEquals(result, { ok: true, diagnostics: sampleDiagnostics });
 });
+
+test("fetchDaemonCellDiagnostics surfaces storage counters for billing audits", async () => {
+  const withCallSites: CellDiagnostics = {
+    ...sampleDiagnostics,
+    storageReads: 42,
+    storageWrites: 7,
+    storageByCallSite: {
+      "sql:getSnapshot": { reads: 2, writes: 0 },
+      "setAlarm": { reads: 0, writes: 1 },
+    },
+  };
+  const registry = createRegistry({
+    getDiagnostics: async () => withCallSites,
+  });
+  const result = await fetchDaemonCellDiagnostics(registry, serverId, {
+    debugEnabled: true,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.diagnostics.storageReads, 42);
+  assertEquals(result.diagnostics.storageWrites, 7);
+  assertEquals(result.diagnostics.storageByCallSite["sql:getSnapshot"]?.reads, 2);
+  assertEquals(result.diagnostics.storageByCallSite["setAlarm"]?.writes, 1);
+});

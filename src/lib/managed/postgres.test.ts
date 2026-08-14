@@ -528,7 +528,7 @@ test(
     // trust rule, and healthcheck user must all stay pinned to the stable platform
     // admin ("postgres") regardless, because every daemon admin path
     // (`waitReady`/`psql`/`pg_dump`/`pg_restore`/promote/replication health — see
-    // `daemon/src/managed/apply.ts`, `backup.ts`, `promote.ts`, `containers.ts`)
+    // `turbopaneld/src/managed/apply.ts`, `backup.ts`, `promote.ts`, `containers.ts`)
     // connects as the engine spec's static `rootUsername`, never this payload value.
     const settings = defaultSettings({ initialDatabase: 'appdb' })
     const spec = postgresEngineSpec.buildRuntimeSpec({

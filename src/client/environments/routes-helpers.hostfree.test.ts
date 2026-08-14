@@ -9,6 +9,7 @@ import {
   parseCreateEnvironmentNames,
   parseEnvironmentPatchMetadata,
   parseEnvironmentPatchOptions,
+  parseJsonbField,
   parseOptionalServerIdShape,
   serializeEnvironment,
   stripEnvironmentPromotedMetadata,
@@ -92,4 +93,52 @@ test('parseEnvironmentPatchOptions rejects invalid compose', () => {
   const absent = parseEnvironmentPatchOptions({})
   if (!absent.ok) throw new TypeError('expected absent options')
   assertEquals(absent.options, 'absent')
+})
+
+test('parseCreateEnvironmentNames rejects bad description and prefers displayName', () => {
+  assertEquals(
+    parseCreateEnvironmentNames({ name: 'Ok', description: 12 }).ok,
+    false,
+  )
+  const named = parseCreateEnvironmentNames({ displayName: 'Prod', description: 'live' })
+  if (!named.ok) throw new TypeError('expected valid displayName create')
+  assertEquals(named.displayName, 'Prod')
+  assertEquals(named.description, 'live')
+})
+
+test('parseCreateEnvironmentJsonb rejects invalid metadata and compose', () => {
+  assertEquals(parseCreateEnvironmentJsonb({ metadata: [] }).ok, false)
+
+  const badCompose = parseCreateEnvironmentJsonb({
+    options: { compose: { services: { web: { imaage: 'nginx' } } } },
+  })
+  assertEquals(badCompose.ok, false)
+  if (badCompose.ok) throw new TypeError('expected compose_invalid')
+  assertEquals(badCompose.error, 'compose_invalid')
+})
+
+test('parseEnvironmentPatchMetadata strips promoted keys when present', () => {
+  const parsed = parseEnvironmentPatchMetadata({
+    metadata: { serverId: validUuid, component: 'x', label: 'keep' },
+  })
+  if (!parsed.ok) throw new TypeError('expected valid metadata patch')
+  assertEquals(parsed.metadata, { label: 'keep' })
+
+  assertEquals(parseEnvironmentPatchMetadata({ metadata: [] }).ok, false)
+})
+
+test('parseEnvironmentPatchOptions accepts valid compose overlays', () => {
+  const compose = emptyComposeDocument()
+  compose.data.services = {
+    api: { image: 'nginx:alpine' },
+  }
+  const parsed = parseEnvironmentPatchOptions({ options: { compose } })
+  if (!parsed.ok) throw new TypeError('expected valid options patch')
+  assertEquals(parsed.options === 'absent', false)
+})
+
+test('parseJsonbField distinguishes absent null and invalid shapes', () => {
+  assertEquals(parseJsonbField({}, 'metadata'), null)
+  assertEquals(parseJsonbField({ metadata: { a: 1 } }, 'metadata'), { a: 1 })
+  assertEquals(parseJsonbField({ metadata: [] }, 'metadata'), 'invalid')
 })

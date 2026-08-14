@@ -44,6 +44,7 @@ type MockAuthStateInternal = MockAuthState & {
   inTransaction?: boolean
   verificationSelectPhase?: number
   verificationDeletePhase?: number
+  lastVerificationInsert?: Record<string, unknown>
 }
 
 export type MockAuthState = {
@@ -335,6 +336,7 @@ function handleInsertValues(
   table: unknown,
   row: Record<string, unknown>,
 ) {
+  const internal = state as MockAuthStateInternal
   if (table === session) {
     state.insertedSessions.push(row)
     const userId = String(row.userId)
@@ -398,14 +400,29 @@ function handleInsertValues(
       row.createdAt,
       asString(row.updatedAt, new Date().toISOString()),
     )
-    state.verificationRows.push({
-      id,
-      identifier: String(row.identifier),
-      value: String(row.value),
-      expiresAt: String(row.expiresAt),
-      createdAt: stamp,
-    })
-    return { onConflictDoUpdate: () => Promise.resolve(undefined) }
+    internal.lastVerificationInsert = row
+    const identifier = String(row.identifier)
+    const existing = state.verificationRows.some((entry) => entry.identifier === identifier)
+    if (!existing) {
+      state.verificationRows.push({
+        id,
+        identifier,
+        value: String(row.value),
+        expiresAt: String(row.expiresAt),
+        createdAt: stamp,
+      })
+    }
+    return {
+      onConflictDoUpdate: (config: { set?: Record<string, unknown> }) => {
+        const target = state.verificationRows.find((entry) =>
+          entry.identifier === identifier
+        )
+        if (target && config.set?.value !== undefined) {
+          target.value = String(config.set.value)
+        }
+        return Promise.resolve(undefined)
+      },
+    }
   }
   if (
     table === team ||
@@ -457,6 +474,11 @@ async function returningAfterUpdate(
       : []
   }
   if (table === account) {
+    if (state.accounts.length === 0) return []
+    const accountRow = state.accounts[0]
+    if (patch.password !== undefined) {
+      accountRow.password = String(patch.password)
+    }
     return [{ id: crypto.randomUUID() }]
   }
   return []

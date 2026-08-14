@@ -286,3 +286,208 @@ test('lintComposeYaml errors on invalid TurboPanel variable refs', () => {
     true,
   )
 })
+
+test('lintComposeYaml accepts exact scoped variable refs in environment map', () => {
+  const source = `services:
+  web:
+    image: nginx
+    environment:
+      PORT: "{$project.PORT}"
+      HOST: "{$environment.HOST}"
+`
+  assertEquals(lintComposeYaml(source), [])
+})
+
+test('lintComposeYaml lints build.args variable refs', () => {
+  const issues = lintComposeYaml(`services:
+  api:
+    build:
+      context: .
+      args:
+        TOKEN: prefix-{$TOKEN}
+        OK: "{$project.API_KEY}"
+`)
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.api.build.args.TOKEN'),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.api.build.args.OK'),
+    false,
+  )
+})
+
+test('lintComposeYaml lints list-form environment values after separator', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    environment:
+      - BAD=prefix-{$PORT}
+      - GOOD: "{$project.PORT}"
+`)
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment[0]'),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment[1]'),
+    false,
+  )
+})
+
+test('lintComposeYaml suggests close misspelled service keys', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    restar: always
+`)
+  const unknown = issues.find((issue) => issue.path === 'services.web.restar')
+  assertEquals(unknown?.level, 'warning')
+  assertEquals(unknown?.message.includes('did you mean "restart"'), true)
+})
+
+test('lintComposeYaml tagged image satisfies image requirement', () => {
+  const source = `services:
+  web:
+    image: !override nginx:alpine
+`
+  assertEquals(
+    lintComposeYaml(source).some(
+      (issue) => issue.path === 'services.web' && issue.level === 'error',
+    ),
+    false,
+  )
+})
+
+test('lintComposeYaml tagged build satisfies build requirement without image', () => {
+  const source = `services:
+  api:
+    build: !override .
+`
+  assertEquals(
+    lintComposeYaml(source).some(
+      (issue) => issue.path === 'services.api' && issue.level === 'error',
+    ),
+    false,
+  )
+})
+
+test('lintComposeYaml skips structural checks for whole-service tag', () => {
+  const source = `services:
+  web: !reset null
+  api:
+    image: node:22
+`
+  const issues = lintComposeYaml(source)
+  assertEquals(
+    issues.some(
+      (issue) => issue.path === 'services.web' && issue.level === 'error',
+    ),
+    false,
+  )
+  assertEquals(
+    issues.some(
+      (issue) => issue.path === 'services.api' && issue.level === 'error',
+    ),
+    false,
+  )
+  assertEquals(
+    issues.some(
+      (issue) =>
+        issue.path === 'services.web' &&
+        issue.message.includes('only take effect in an overlay'),
+    ),
+    true,
+  )
+})
+
+test('lintComposeYaml emits nested tag advisory on base healthcheck.test', () => {
+  const source = `services:
+  web:
+    image: nginx
+    healthcheck:
+      test: !override
+        - CMD-SHELL
+        - exit 0
+`
+  const issues = lintComposeYaml(source)
+  const advisory = issues.find((issue) =>
+    issue.path === 'services.web.healthcheck.test'
+  )
+  assertEquals(advisory?.message.includes('only take effect in an overlay'), true)
+  assertEquals(advisory?.blocking, false)
+})
+
+test('lintComposeYaml sorts errors before warnings on the same line', () => {
+  const source = `services:
+  web:
+    image: nginx
+    restar: always
+    environment:
+      BAD: prefix-{$X}
+`
+  const issues = lintComposeYaml(source)
+  const sameLine = issues.filter((issue) => issue.line === 5)
+  if (sameLine.length >= 2) {
+    assertEquals(sameLine[0]?.level, 'error')
+  }
+})
+
+test('lintComposeYaml rejects traditional-web without engine via image requirement', () => {
+  const source = `services:
+  site:
+    x-turbopanel:
+      serviceKind: traditional-web
+`
+  const issues = lintComposeYaml(source)
+  assertEquals(
+    issues.some(
+      (issue) => issue.path === 'services.site' && issue.message.includes('image'),
+    ),
+    false,
+  )
+})
+
+test('lintComposeYaml warns on unknown service key without suggestion beyond distance 2', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    zztotallyunknownkey: true
+`)
+  const unknown = issues.find((issue) => issue.path === 'services.web.zztotallyunknownkey')
+  assertEquals(unknown?.level, 'warning')
+  assertEquals(unknown?.message.includes('did you mean'), false)
+})
+
+test('lintComposeYaml emits base-layer advisory when top-level services is tagged', () => {
+  const source = `services: !override
+  web:
+    image: nginx
+`
+  const issues = lintComposeYaml(source)
+  const advisory = issues.find((issue) => issue.path === 'services')
+  assertEquals(advisory?.message.includes('only take effect in an overlay'), true)
+  assertEquals(advisory?.blocking, false)
+  assertEquals(blockingComposeLintIssues(issues), [])
+  assertEquals(
+    lintComposeYaml(source, { layer: 'overlay' }).some((issue) => issue.path === 'services'),
+    false,
+  )
+})
+
+test('lintComposeYaml accepts build shorthand scalar and tagged override shorthand', () => {
+  assertEquals(lintComposeYaml(`services:
+  api:
+    build: .
+`), [])
+
+  assertEquals(
+    lintComposeYaml(`services:
+  api:
+    build: !override .
+`).some(
+      (issue) => issue.path === 'services.api' && issue.level === 'error',
+    ),
+    false,
+  )
+})

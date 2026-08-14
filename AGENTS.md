@@ -42,7 +42,7 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 the only party that runs Ansible to install/update everything else (runtimes,
 users, the instance, UI, Caddy). The instance does not install itself. In
 co-located dev the daemon runs the `instance-dev-install` playbook (see
-`../daemon/AGENTS.md`) when `TURBOPANEL_DEV_INSTANCE=1`. Nothing auto-updates —
+`../turbopaneld/AGENTS.md`) when `TURBOPANEL_DEV_INSTANCE=1`. Nothing auto-updates —
 updates are operator-driven (admin **Upgrade System** button or **Sync Dev
 Build**).
 
@@ -50,7 +50,7 @@ Build**).
 
 **Development (co-located):** a **single dev user** runs everything — no `tp`,
 `tpctrl`, or `tpcache` service accounts are created. Source repos live under
-`$HOME` (`~/daemon`, `~/instance`, `~/ui`, `~/website`) and are owned by the dev
+`$HOME` (`~/turbopaneld`, `~/turbopanel`, `~/ui`, `~/website`) and are owned by the dev
 user. Mutable data (`/etc/turbopanel`, `/var/lib/turbopanel`,
 `/var/log/turbopanel`, `/run/turbopanel`) is dev-user-owned. Per-service runtime
 state may still live in gitignored checkout dirs (`instance/.local`,
@@ -61,7 +61,7 @@ co-located daemon can connect.
 **Production:** dedicated service users — `tp` (daemon + Ansible), `tpctrl`
 (instance, UI, website, mailer, dbstudio), `tpcache` (Redis), `tpdata`
 (Postgres), `tpqueue` (RabbitMQ), `tpmetrics` (ClickHouse), `tpcaddy`
-(control-plane Caddy). See `../daemon/AGENTS.md` (Filesystem layout), the
+(control-plane Caddy). See `../turbopaneld/AGENTS.md` (Filesystem layout), the
 allocation table below, and the systemd table for ownership, ACLs, and
 `/run/turbopanel` **`2770 tp:tp`** (setgid).
 
@@ -218,7 +218,7 @@ change. Future agents read `AGENTS.md` first.
   call `Deno.test(...)` MUST** either use BDD
   (`import { describe, it } from '@std/testing/bdd'`) or alias `Deno.test` —
   never leave a bare `Deno.test(` in a test file. The canonical alias (same
-  pattern as `../daemon`, applied to all existing Deno test files) is placed
+  pattern as `../turbopaneld`, applied to all existing Deno test files) is placed
   once, right after the imports:
 
   ```ts
@@ -327,10 +327,10 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 | `turbopaneld.service`         | current dev user | `tp:tp`           | runs Ansible; has sudo (production only)                         |
 
 - `systemd/turbopanel-instance.service` was removed — the canonical unit is
-  templated by the `instance-launch` role in `../daemon`.
+  templated by the `instance-launch` role in `../turbopaneld`.
 - Logs:
   `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
-- Co-located daemon: `../daemon/scripts/install-daemon-systemd.sh`
+- Co-located daemon: `../turbopaneld/scripts/install-daemon-systemd.sh`
 
 ## Unix domain sockets
 
@@ -374,14 +374,14 @@ config `/etc/turbopanel`, state `/var/lib/turbopanel`, logs
 (`TURBOPANEL_CONFIG_DIR`, `TURBOPANEL_STATE_DIR`, `TURBOPANEL_LOG_DIR`,
 `TURBOPANEL_RUN_DIR`, `TURBOPANEL_UI_ROOT`, `TURBOPANEL_SOCKET(_DIR)`).
 Co-located dev uses the same FHS mutable paths by default, all
-**dev-user-owned**; source repos live under `$HOME` (`~/daemon`, `~/instance`,
+**dev-user-owned**; source repos live under `$HOME` (`~/turbopaneld`, `~/turbopanel`,
 `~/ui`, `~/website`). The module has no separate dev-mode branch — Ansible
 (`instance-launch`) and manual commands may override individual paths via env
 when needed. `resolveInstanceRuntimeConfigPaths` composes
 `<configDir>/instance/runtime.env` (+ `runtime.dev-vars`). Managed production
 installs also run the daemon as **`turbopaneld.service`** — native
 `/opt/turbopanel/bin/turbopaneld`, or `turbopaneld.js` via vendored Deno on
-hosts where that binary cannot load (see `../daemon/AGENTS.md` → Filesystem
+hosts where that binary cannot load (see `../turbopaneld/AGENTS.md` → Filesystem
 layout & path model). Defaults and overrides are pinned by
 `src/server-paths.deno.test.ts` (`deno task test:paths`).
 
@@ -652,14 +652,14 @@ remains available).
 Build the static export locally or switch via the dev console **Switch to
 production build** (runs `ui-build` → `instance-build` → `instance-launch`). For
 a compiled instance binary, `deno task compile` in this repo produces
-`dist/turbopanel-instance` with all `--allow-*` flags baked in at compile time
-(mirrors the `turbopanel-instance.service` `ExecStart` permissions).
+`dist/turbopanel-instance` from `src/deno.ts` with production `--allow-*` flags
+baked in at compile time. Development source mode runs `src/deno-dev.ts`.
 
 Manual export + Caddy:
 
 ```bash
 cd ../ui && pnpm export
-cd ../instance
+cd ../turbopanel
 TURBOPANEL_UI_ROOT=../ui/dist caddy run --config Caddyfile --adapter caddyfile
 ```
 
@@ -689,7 +689,7 @@ deliberately-unversioned probe.
   `src/lib/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
   `src/developer/system-routes.ts`, `src/developer/dev-sync.ts`,
   `src/developer/tunnel-routes.ts`, and the version route are registered in
-  `src/deno.ts`. `src/admin/routes.ts` is mounted on both Deno and Workers
+  `src/deno-dev.ts`. `src/admin/routes.ts` is mounted on both Deno and Workers
   (admin/superadmin session required). Workers-safe developer REST lives in
   `src/developer/routes-core.ts` (`workers.ts`); full Deno developer surface in
   `src/developer/routes.ts`. Client bindings (`src/client/bindings/`) expose
@@ -940,8 +940,9 @@ sequenceDiagram
 ## Layout
 
 - `src/app.ts` — shared Hono factory (`/api/health` + client/daemon routers)
-- `src/deno.ts` — Deno entry; registers install routes, developer surface,
-  daemon WS
+- `src/deno.ts` — production Deno entry (`deno-server.ts` + no developer modules)
+- `src/deno-dev.ts` — development Deno entry; registers install routes, developer
+  surface, `/api/daemon/v1/version`, daemon WS
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers
   `developer/routes-core` once per isolate
 - `scripts/check-workers-bundle.mjs` — Wrangler dry-run of the deploy entrypoint

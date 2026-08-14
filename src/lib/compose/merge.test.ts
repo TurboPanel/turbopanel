@@ -157,6 +157,48 @@ test('secrets and configs: unique key target ?? source', () => {
   assertEquals(web.configs, [{ source: 'app.conf', mode: 0o444 }])
 })
 
+test('secrets and configs: short and long syntax dedupe by source or target key', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        secrets: ['shared_secret', { source: 'mounted', target: '/run/mounted' }],
+        configs: ['shared_conf', { source: 'mounted_conf', target: '/etc/mounted' }],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        secrets: [
+          { source: 'shared_secret', target: '/run/shared' },
+          'mounted',
+          { source: 'overlay_only', target: '/run/overlay' },
+        ],
+        configs: [
+          { source: 'shared_conf', mode: 0o444 },
+          { source: 'mounted_conf' },
+          'overlay_conf',
+        ],
+      },
+    },
+  })
+  const web = servicesOf(mergeComposeOverlay(base, overlay)).web
+  // Short syntax keys on source name; long syntax with explicit target dedupes on target.
+  assertEquals(web.secrets, [
+    'shared_secret',
+    { source: 'mounted', target: '/run/mounted' },
+    { source: 'shared_secret', target: '/run/shared' },
+    'mounted',
+    { source: 'overlay_only', target: '/run/overlay' },
+  ])
+  assertEquals(web.configs, [
+    { source: 'shared_conf', mode: 0o444 },
+    { source: 'mounted_conf', target: '/etc/mounted' },
+    { source: 'mounted_conf' },
+    'overlay_conf',
+  ])
+})
+
 test('expose / extra_hosts scalar-dedup; dns / tmpfs / env_file plain-append preserves duplicates', () => {
   const base = docFrom({
     services: {
@@ -574,4 +616,194 @@ services:
 test('COMPOSE_TAG_KEY is stable', () => {
   assertEquals(COMPOSE_TAG_KEY, '__turbopanelComposeTag')
   assertEquals(emptyComposeDocument().data, {})
+})
+
+test('depends_on: list form keyed dedup with overlay winning values', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        depends_on: ['db', 'cache'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        depends_on: ['db:service_healthy', 'redis'],
+      },
+    },
+  })
+  const dependsOn = servicesOf(mergeComposeOverlay(base, overlay)).web.depends_on
+  assertEquals(dependsOn, ['db:service_healthy', 'cache', 'redis'])
+})
+
+test('depends_on: map overlay replaces list base via duality merge', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        depends_on: ['db'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        depends_on: {
+          db: { condition: 'service_healthy' },
+          cache: { condition: 'service_started' },
+        },
+      },
+    },
+  })
+  const dependsOn = servicesOf(mergeComposeOverlay(base, overlay)).web.depends_on
+  assertEquals(dependsOn, {
+    db: { condition: 'service_healthy' },
+    cache: { condition: 'service_started' },
+  })
+})
+
+test('!reset on overlay service removes service from merged result', () => {
+  const base = docFrom({
+    services: {
+      web: { image: 'nginx' },
+      db: { image: 'postgres' },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      db: makeComposeTag('reset', null),
+    },
+  })
+  const services = servicesOf(mergeComposeOverlay(base, overlay))
+  assertEquals('db' in services, false)
+  assertEquals(services.web.image, 'nginx')
+})
+
+test('ports: IPv6 bracket host_ip keeps distinct protocol keys', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        ports: ['[::1]:8080:80'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        ports: ['[::1]:8080:80/tcp'],
+      },
+    },
+  })
+  const ports = servicesOf(mergeComposeOverlay(base, overlay)).web.ports as string[]
+  assertEquals(ports.length, 2)
+  assertEquals(ports[0], '[::1]:8080:80')
+  assertEquals(ports[1], '[::1]:8080:80/tcp')
+})
+
+test('networks at root level deep-merge across overlay', () => {
+  const base = docFrom({
+    networks: {
+      front: { driver: 'bridge' },
+    },
+    services: {
+      web: { image: 'nginx', networks: ['front'] },
+    },
+  })
+  const overlay = docFrom({
+    networks: {
+      front: { name: 'custom-front' },
+      back: {},
+    },
+  })
+  const merged = mergeComposeOverlay(base, overlay)
+  const front = (merged.data.networks as Record<string, Record<string, unknown>>).front
+  assertEquals(front.driver, 'bridge')
+  assertEquals(front.name, 'custom-front')
+  assertEquals('back' in (merged.data.networks as object), true)
+})
+
+test('root-level secrets mapping deep-merges unique keys', () => {
+  const base = docFrom({
+    secrets: {
+      db_password: { file: './secrets/db.txt' },
+      api_token: { file: './secrets/api.txt' },
+    },
+    services: {
+      web: { image: 'nginx', secrets: ['db_password'] },
+    },
+  })
+  const overlay = docFrom({
+    secrets: {
+      db_password: { file: './overlay/db.txt' },
+      extra: { file: './overlay/extra.txt' },
+    },
+  })
+  const merged = mergeComposeOverlay(base, overlay)
+  const secrets = merged.data.secrets as Record<string, Record<string, unknown>>
+  assertEquals(secrets.db_password, { file: './overlay/db.txt' })
+  assertEquals(secrets.api_token, { file: './secrets/api.txt' })
+  assertEquals(secrets.extra, { file: './overlay/extra.txt' })
+})
+
+test('root-level configs mapping deep-merges unique keys', () => {
+  const base = docFrom({
+    configs: {
+      app_conf: { file: './configs/app.yml' },
+    },
+    services: {
+      web: { image: 'nginx', configs: ['app_conf'] },
+    },
+  })
+  const overlay = docFrom({
+    configs: {
+      app_conf: { file: './overlay/app.yml', mode: 0o444 },
+      extra_conf: { file: './overlay/extra.yml' },
+    },
+  })
+  const merged = mergeComposeOverlay(base, overlay)
+  const configs = merged.data.configs as Record<string, Record<string, unknown>>
+  assertEquals(configs.app_conf, { file: './overlay/app.yml', mode: 0o444 })
+  assertEquals(configs.extra_conf, { file: './overlay/extra.yml' })
+})
+
+test('depends_on: bare service names append without condition suffixes', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        depends_on: ['db'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        depends_on: ['cache', 'redis'],
+      },
+    },
+  })
+  const dependsOn = servicesOf(mergeComposeOverlay(base, overlay)).web.depends_on
+  assertEquals(dependsOn, ['db', 'cache', 'redis'])
+})
+
+test('depends_on: bare duplicate service name lets overlay win keyed slot', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        depends_on: ['db', 'cache'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        depends_on: ['db'],
+      },
+    },
+  })
+  const dependsOn = servicesOf(mergeComposeOverlay(base, overlay)).web.depends_on
+  assertEquals(dependsOn, ['db', 'cache'])
 })

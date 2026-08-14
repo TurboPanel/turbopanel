@@ -80,6 +80,31 @@ test('parseServicePatchFields normalizes metadata and options', () => {
   assertEquals(parsed.patch.options?.instances, 2)
 })
 
-test('SERVICE_CREATE_NOT_SUPPORTED message is stable', () => {
-  assertEquals(SERVICE_CREATE_NOT_SUPPORTED.error, 'service_create_not_supported')
+test('parseServiceCreateFields accepts display metadata and options', () => {
+  const parsed = parseServiceCreateFields({
+    displayName: 'API',
+    description: 'edge',
+    metadata: { composeServiceName: 'drop', note: 1 },
+    options: { instances: 2 },
+  })
+  if (!parsed.ok) throw new TypeError('expected valid service create')
+  assertEquals(parsed.displayName, 'API')
+  assertEquals(parsed.description, 'edge')
+  assertEquals(parsed.metadata?.composeServiceName, undefined)
+  assertEquals(parsed.metadata?.note, 1)
+  assertEquals(parsed.options?.instances, 2)
+})
+
+test('parseServicePatchFields rejects compose name and invalid options', () => {
+  const composeRejected = parseServicePatchFields({ composeServiceName: 'web' })
+  if (!composeRejected.ok) {
+    assertEquals(composeRejected.error, 'compose_service_name_read_only')
+  } else {
+    throw new TypeError('expected compose name rejection')
+  }
+
+  const invalidOptions = parseServicePatchFields({ options: 'bad' })
+  assertEquals(invalidOptions.ok, false)
+  if (invalidOptions.ok) throw new TypeError()
+  assertEquals(invalidOptions.error, 'invalid_service_options')
 })

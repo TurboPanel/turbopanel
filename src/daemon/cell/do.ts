@@ -64,6 +64,8 @@ import {
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
 } from "./protocol.ts";
+import { classifyDaemonCellSqlStorageOp } from "./sql-storage-classify.ts";
+export { classifyDaemonCellSqlStorageOp };
 
 /**
  * Hard client-side deadline for background work fired from the WS-upgrade /
@@ -156,14 +158,32 @@ const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
 export const CELL_SCHEMA_VERSION = 2;
 
 type ProjectionDbFactory = () => Db | null;
+type DaemonJwtKeyringFactory = () => Promise<DaemonJwtKeyring>;
 
 let projectionDbFactoryForTests: ProjectionDbFactory | null = null;
+let daemonJwtKeyringFactoryForTests: DaemonJwtKeyringFactory | null = null;
+let forceOutboxSendErrorForTests: Error | null = null;
 
 /** Test-only seam: override Postgres client used by DO→Postgres projection writes. */
 export function setDaemonCellProjectionDbFactoryForTests(
   factory: ProjectionDbFactory | null,
 ): void {
   projectionDbFactoryForTests = factory;
+}
+
+/** Test-only seam: override JWT keyring derivation on the WS-upgrade path. */
+export function setDaemonJwtKeyringFactoryForTests(
+  factory: DaemonJwtKeyringFactory | null,
+): void {
+  daemonJwtKeyringFactoryForTests = factory;
+}
+
+/**
+ * Test-only seam: force `#pumpOutboxToDaemonSockets` send to throw so the
+ * `#requeueOutbox` / poison-row path runs under real call-site attribution.
+ */
+export function setForceOutboxSendErrorForTests(error: Error | null): void {
+  forceOutboxSendErrorForTests = error;
 }
 
 function nowIso(now = Date.now()): string {
@@ -660,26 +680,8 @@ export class DaemonCellObject {
 
   #countStorage(callSite: string, query: string): void {
     if (!this.#isDaemonDebug()) return;
-    const trimmed = query.trimStart().toUpperCase();
-    if (
-      trimmed.startsWith("SELECT") ||
-      trimmed.startsWith("PRAGMA") ||
-      trimmed.startsWith("EXPLAIN")
-    ) {
-      this.#bumpStorageCount(callSite, "read");
-      return;
-    }
-    if (
-      trimmed.startsWith("INSERT") ||
-      trimmed.startsWith("UPDATE") ||
-      trimmed.startsWith("DELETE") ||
-      trimmed.startsWith("REPLACE") ||
-      trimmed.startsWith("CREATE") ||
-      trimmed.startsWith("ALTER") ||
-      trimmed.startsWith("DROP")
-    ) {
-      this.#bumpStorageCount(callSite, "write");
-    }
+    const kind = classifyDaemonCellSqlStorageOp(query);
+    if (kind) this.#bumpStorageCount(callSite, kind);
   }
 
   async #setAlarm(callSite: string, timeMs: number): Promise<void> {
@@ -698,6 +700,9 @@ export class DaemonCellObject {
   }
 
   async #getDaemonJwtKeyring(): Promise<DaemonJwtKeyring> {
+    if (daemonJwtKeyringFactoryForTests) {
+      return await daemonJwtKeyringFactoryForTests();
+    }
     if (this.#daemonJwtKeyring) return this.#daemonJwtKeyring;
     if (!this.#daemonJwtKeyringPromise) {
       this.#daemonJwtKeyringPromise = (async () => {
@@ -1463,6 +1468,9 @@ export class DaemonCellObject {
             requestId: envelope.requestId,
             kind: envelope.kind,
           });
+          if (forceOutboxSendErrorForTests) {
+            throw forceOutboxSendErrorForTests;
+          }
           ws.send(JSON.stringify(wireMsg));
           await this.#markSent(
             serverId,

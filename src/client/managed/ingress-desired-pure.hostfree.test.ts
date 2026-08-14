@@ -125,6 +125,14 @@ test("collectProxySqlListenerSans and hierarchy merge", () => {
   assertEquals(sans.dnsNames, ["peer.lan", "pg.example"]);
   assertEquals(sans.ipAddresses, ["203.0.113.50"]);
 
+  const ipv6Bind = collectProxySqlListenerSans({
+    hostname: null,
+    bindAddress: "2001:db8::1",
+    backendAddresses: [],
+  });
+  assertEquals(ipv6Bind.dnsNames, []);
+  assertEquals(ipv6Bind.ipAddresses, ["2001:db8::1"]);
+
   const merged = mergeHierarchyContainerSan(sans, "proxysql-1");
   assertEquals(merged.dnsNames.includes("proxysql-1"), true);
   assertEquals(merged.ipAddresses, sans.ipAddresses);
@@ -133,6 +141,7 @@ test("collectProxySqlListenerSans and hierarchy merge", () => {
 test("decideIngressBindScope covers omit/public/resolve", () => {
   assertEquals(decideIngressBindScope([]), { kind: "omit" });
   assertEquals(decideIngressBindScope([undefined]), { kind: "omit" });
+  assertEquals(decideIngressBindScope([undefined, undefined]), { kind: "omit" });
   assertEquals(decideIngressBindScope(["public"]), {
     kind: "public_all_interfaces",
     address: "0.0.0.0",
@@ -145,6 +154,21 @@ test("decideIngressBindScope covers omit/public/resolve", () => {
     kind: "resolve",
     bind: "datacenter",
   });
+});
+
+test("decideIngressBindScope ignores disabled clusters and promotes public over local", () => {
+  assertEquals(
+    decideIngressBindScope([undefined, "local", undefined]),
+    { kind: "resolve", bind: "local" },
+  );
+  assertEquals(
+    decideIngressBindScope([undefined, "public", "local"]),
+    { kind: "public_all_interfaces", address: "0.0.0.0" },
+  );
+  assertEquals(
+    decideIngressBindScope(["local", "datacenter"]),
+    { kind: "resolve", bind: "datacenter" },
+  );
 });
 
 test("buildLocalOrMissingPortBackend local and remote paths", () => {

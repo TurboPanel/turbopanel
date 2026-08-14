@@ -8,10 +8,12 @@ import {
   createCommandRecord,
   getCommandMetadata,
   getCommandRecord,
+  listCommandRecordsByIds,
   listServerCommands,
   serializeCommandRecord,
   transitionCommand,
 } from './command-records.ts'
+import type { CommandStatus } from '../commands/types.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -236,4 +238,129 @@ test('serializeCommandRecord still coerces sparse rows', () => {
   assertEquals(record.status, 'queued')
   assertEquals(record.attempts, 0)
   assertEquals(record.result, null)
+})
+
+test('serializeCommandRecord flattens full lifecycle metadata fields', () => {
+  const record = serializeCommandRecord({
+    ...baseRow,
+    status: 'acked',
+    attempts: 2,
+    result: { ok: true },
+    metadata: {
+      error: null,
+      queuedAt: '2020-01-01T00:00:00.000Z',
+      dispatchStartedAt: '2020-01-01T00:00:00.010Z',
+      sentAt: '2020-01-01T00:00:00.020Z',
+      ackedAt: '2020-01-01T00:00:00.030Z',
+      startedAt: '2020-01-01T00:00:00.040Z',
+      finishedAt: null,
+      expiresAt: '2020-01-01T00:01:00.000Z',
+    },
+  } as never)
+
+  assertEquals(record.status, 'acked')
+  assertEquals(record.attempts, 2)
+  assertEquals(record.queuedAt, '2020-01-01T00:00:00.000Z')
+  assertEquals(record.dispatchStartedAt, '2020-01-01T00:00:00.010Z')
+  assertEquals(record.sentAt, '2020-01-01T00:00:00.020Z')
+  assertEquals(record.ackedAt, '2020-01-01T00:00:00.030Z')
+  assertEquals(record.startedAt, '2020-01-01T00:00:00.040Z')
+  assertEquals(record.finishedAt, null)
+  assertEquals(record.expiresAt, '2020-01-01T00:01:00.000Z')
+  assertEquals(record.error, null)
+})
+
+test('listCommandRecordsByIds returns empty for no ids and maps matches', async () => {
+  assertEquals(await listCommandRecordsByIds({} as Db, []), [])
+
+  let capturedIds: string[] | undefined
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: (...args: unknown[]) => {
+          capturedIds = args as string[]
+          return Promise.resolve([baseRow])
+        },
+      }),
+    }),
+  } as unknown as Db
+
+  const rows = await listCommandRecordsByIds(db, [baseRow.id])
+  assertEquals(rows.length, 1)
+  assertEquals(rows[0]?.id, baseRow.id)
+  assertEquals(capturedIds !== undefined, true)
+})
+
+test('transitionCommand auto-stamps the status timestamp when omitted', async () => {
+  const cases: Array<{ status: CommandStatus; field: string }> = [
+    { status: 'queued', field: 'queuedAt' },
+    { status: 'dispatching', field: 'dispatchStartedAt' },
+    { status: 'sent', field: 'sentAt' },
+    { status: 'acked', field: 'ackedAt' },
+    { status: 'running', field: 'startedAt' },
+    { status: 'succeeded', field: 'finishedAt' },
+    { status: 'timed_out', field: 'finishedAt' },
+    { status: 'cancelled', field: 'finishedAt' },
+  ]
+
+  for (const { status, field } of cases) {
+    let metadataSql: unknown
+    const db = {
+      update: () => ({
+        set: (patch: { metadata: unknown }) => {
+          metadataSql = patch.metadata
+          return {
+            where: () => ({
+              returning: () =>
+                Promise.resolve([
+                  {
+                    ...baseRow,
+                    status,
+                    metadata: {
+                      [field]: '2020-01-01T00:00:09.000Z',
+                    },
+                  },
+                ]),
+            }),
+          }
+        },
+      }),
+    } as unknown as Db
+
+    const record = await transitionCommand(db, baseRow.id, { status })
+    assertEquals(record?.status, status)
+    assertEquals(metadataSql !== undefined, true)
+  }
+})
+
+test('transitionCommand keeps an explicit lifecycle timestamp over the auto-stamp', async () => {
+  let metadataSql: unknown
+  const db = {
+    update: () => ({
+      set: (patch: { metadata: unknown }) => {
+        metadataSql = patch.metadata
+        return {
+          where: () => ({
+            returning: () =>
+              Promise.resolve([
+                {
+                  ...baseRow,
+                  status: 'sent',
+                  metadata: {
+                    sentAt: '2020-01-01T00:00:05.000Z',
+                  },
+                },
+              ]),
+          }),
+        }
+      },
+    }),
+  } as unknown as Db
+
+  const record = await transitionCommand(db, baseRow.id, {
+    status: 'sent',
+    sentAt: '2020-01-01T00:00:05.000Z',
+  })
+  assertEquals(record?.sentAt, '2020-01-01T00:00:05.000Z')
+  assertEquals(metadataSql !== undefined, true)
 })

@@ -50,12 +50,26 @@ export type PlanDeployError =
   | { kind: 'not_found' }
   | { kind: 'invalid_compose' }
 
-function extractComposeFromOptions(options: unknown): unknown {
+/**
+ * Optional doubles for host-free tests. Production callers omit this; defaults
+ * are the real reconcile / register / task / label helpers.
+ */
+export type PlanEnvironmentDeployDeps = {
+  reconcileServicesFromCompose?: typeof reconcileServicesFromCompose
+  registerComposeVolumes?: typeof registerComposeVolumes
+  registerComposeMounts?: typeof registerComposeMounts
+  listEnvironmentTasks?: typeof listEnvironmentTasks
+  listServerLabelsForServers?: typeof listServerLabelsForServers
+}
+
+/** Host-free: pull `options.compose` (or null) from project/environment options. */
+export function extractComposeFromOptions(options: unknown): unknown {
   if (!isPlainObject(options)) return null
   return options.compose ?? null
 }
 
-function resolveMergedCompose(
+/** Host-free: merge project + environment compose layers, or `invalid_compose`. */
+export function resolveMergedCompose(
   projectOptions: unknown,
   environmentOptions: unknown,
   environmentFilename: string,
@@ -79,14 +93,49 @@ function resolveMergedCompose(
   }
 }
 
-function servicesMapping(document: ComposeDocument): Record<string, unknown> {
+/** Host-free: `document.data.services` as a mapping, else `{}`. */
+export function servicesMapping(document: ComposeDocument): Record<string, unknown> {
   const services = document.data.services
   return isPlainObject(services) ? services : {}
+}
+
+export type StoragePinMountRow = {
+  serviceId: string
+  storageId: string
+  locationServerId: string | null
+  locationRole: string | null
+}
+
+/**
+ * Host-free: pin each service to its storage primary server unless the volume
+ * has a shared (null-server) location.
+ */
+export function computeStoragePinsFromMountRows(
+  rows: readonly StoragePinMountRow[],
+): Map<string, string> {
+  const hasShared = new Set<string>()
+  const primaryServer = new Map<string, string>()
+  for (const row of rows) {
+    if (row.locationServerId === null) hasShared.add(row.storageId)
+    if (row.locationRole === 'primary' && row.locationServerId) {
+      primaryServer.set(row.storageId, row.locationServerId)
+    }
+  }
+
+  const pins = new Map<string, string>()
+  for (const row of rows) {
+    if (pins.has(row.serviceId) || hasShared.has(row.storageId)) continue
+    const serverId = primaryServer.get(row.storageId)
+    if (!serverId) continue
+    pins.set(row.serviceId, serverId)
+  }
+  return pins
 }
 
 async function loadFleet(
   db: Db,
   organizationId: string,
+  listLabels: typeof listServerLabelsForServers,
 ): Promise<FleetServer[]> {
   const rows = await db
     .select({
@@ -97,7 +146,7 @@ async function loadFleet(
     .from(server)
     .where(eq(server.organizationId, organizationId))
 
-  const labelsByServer = await listServerLabelsForServers(
+  const labelsByServer = await listLabels(
     db,
     rows.map((row) => row.id),
   )
@@ -131,28 +180,15 @@ async function loadStoragePins(
     .innerJoin(location, eq(location.storageId, storage.id))
     .where(eq(storage.environmentId, environmentId))
 
-  const hasShared = new Set<string>()
-  const primaryServer = new Map<string, string>()
-  for (const row of rows) {
-    if (row.locationServerId === null) hasShared.add(row.storageId)
-    if (row.locationRole === 'primary' && row.locationServerId) {
-      primaryServer.set(row.storageId, row.locationServerId)
-    }
-  }
-
-  const pins = new Map<string, string>()
-  for (const row of rows) {
-    if (pins.has(row.serviceId) || hasShared.has(row.storageId)) continue
-    const serverId = primaryServer.get(row.storageId)
-    if (!serverId) continue
-    pins.set(row.serviceId, serverId)
-  }
-  return pins
+  return computeStoragePinsFromMountRows(rows)
 }
 
 /**
  * Plan tasks for an environment deploy. Callers map `SchedulePlan` errors to
  * HTTP (`turbofabric_required` → 422, no eligible server → 409).
+ *
+ * Optional {@link PlanEnvironmentDeployDeps} lets host-free tests stub
+ * reconcile / register / list helpers without Postgres.
  */
 export async function planEnvironmentDeploy(
   db: Db,
@@ -160,7 +196,14 @@ export async function planEnvironmentDeploy(
     environmentId: string
     organizationId: string
   },
+  deps: PlanEnvironmentDeployDeps = {},
 ): Promise<PlannedDeploy | PlanDeployError> {
+  const reconcile = deps.reconcileServicesFromCompose ?? reconcileServicesFromCompose
+  const registerVolumes = deps.registerComposeVolumes ?? registerComposeVolumes
+  const registerMounts = deps.registerComposeMounts ?? registerComposeMounts
+  const listTasks = deps.listEnvironmentTasks ?? listEnvironmentTasks
+  const listLabels = deps.listServerLabelsForServers ?? listServerLabelsForServers
+
   const [envRow] = await db
     .select({
       id: environment.id,
@@ -191,7 +234,7 @@ export async function planEnvironmentDeploy(
   const merged = resolveMergedCompose(projectRow.options, envRow.options, filename)
   if ('kind' in merged) return merged
 
-  await reconcileServicesFromCompose(db, params.environmentId, merged)
+  await reconcile(db, params.environmentId, merged)
 
   const serviceRows = await db
     .select({
@@ -220,20 +263,20 @@ export async function planEnvironmentDeploy(
     .where(eq(fabric.organizationId, params.organizationId))
     .limit(1)
 
-  const existingTasks = await listEnvironmentTasks(db, params.environmentId)
-  const fleet = await loadFleet(db, params.organizationId)
+  const existingTasks = await listTasks(db, params.environmentId)
+  const fleet = await loadFleet(db, params.organizationId, listLabels)
   const projectOptions = parseProjectOptions(projectRow.options)
   const pinServerId = envRow.serverId
   const defaultServerId = projectOptions.defaultServerId ?? null
   const registerServerId = pinServerId ?? defaultServerId
   if (registerServerId) {
-    await registerComposeVolumes(db, {
+    await registerVolumes(db, {
       document: merged,
       organizationId: params.organizationId,
       environmentId: params.environmentId,
       serverId: registerServerId,
     })
-    await registerComposeMounts(db, {
+    await registerMounts(db, {
       document: merged,
       environmentId: params.environmentId,
     })

@@ -362,6 +362,7 @@ test("fleetPresenceToConnection maps presence to connection shape", () => {
     keyLastUsedAt: null,
     geo: null,
     os: null,
+    inventory: null,
     timeSync: null,
     addresses: null,
   };
@@ -391,11 +392,152 @@ test("fleetPresenceToConnection uses zero lastInboundAt when absent", () => {
     keyLastUsedAt: null,
     geo: null,
     os: null,
+    inventory: null,
     timeSync: null,
     addresses: null,
   });
   assertEquals(connection.lastInboundAt, 0);
   assertEquals(connection.connectedAt, "");
+});
+
+test("resolveFleetPresence enriches os / inventory / timeSync / addresses / geo from metadata", async () => {
+  const metadata: ServerMetadata = {
+    os: {
+      family: "linux",
+      id: "debian",
+      version: "13.5",
+      versionCodename: "trixie",
+      prettyName: "Debian GNU/Linux 13 (trixie)",
+    },
+    inventory: {
+      cpuCores: 4,
+      cpuThreads: 8,
+      memoryTotalBytes: 16_000_000_000,
+      swapTotalBytes: 2_000_000_000,
+    },
+    timeSync: {
+      timezone: "UTC",
+      ntpEnabled: true,
+      ntpSynced: true,
+    },
+    addresses: {
+      privateIpv4: ["10.0.0.5"],
+      privateIpv6: [],
+      publicIpv4: ["203.0.113.50"],
+      publicIpv6: [],
+    },
+    geo: {
+      country: "US",
+      region: "TX",
+      city: "Austin",
+      latitude: "30.27",
+      longitude: "-97.74",
+      capturedAt: "2020-01-01T00:00:00.000Z",
+    },
+  };
+  const db = createMockDb(
+    buildMockRow(baseDaemon, baseConnectedStatus, {}, metadata),
+  );
+  const registry = createThrowingSnapshotRegistry();
+
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  const row = presence.get(serverId);
+  assertEquals(row?.os?.id, "debian");
+  assertEquals(row?.inventory?.cpuThreads, 8);
+  assertEquals(row?.timeSync?.timezone, "UTC");
+  assertEquals(row?.addresses?.publicIpv4, ["203.0.113.50"]);
+  assertEquals(row?.geo?.country, "US");
+});
+
+test("resolveFleetPresence treats invalid snapshot lastInbound timestamps as disconnected", async () => {
+  const db = createMockDb(buildMockRow(baseDaemon, baseConnectedStatus));
+  const registry = createSnapshotRegistry({
+    snapshots: new Map([
+      [
+        serverId,
+        {
+          serverId,
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          connected: true,
+          connectedAt: new Date().toISOString(),
+          lastInboundAt: "not-a-date",
+        },
+      ],
+    ]),
+  });
+
+  const presence = await resolveFleetPresence(db, registry, [serverId], {
+    withSnapshots: true,
+  });
+  assertEquals(presence.get(serverId)?.connected, false);
+});
+
+test("resolveFleetPresence withSnapshots but no registry stays on Postgres columns", async () => {
+  const db = createMockDb(buildMockRow(baseDaemon, {
+    connected: false,
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  }));
+
+  const presence = await resolveFleetPresence(db, undefined, [serverId], {
+    withSnapshots: true,
+  });
+  assertEquals(presence.get(serverId)?.connected, false);
+  assertEquals(presence.get(serverId)?.lastInboundAt, null);
+});
+
+test("resolveFleetPresence prefers projection keyId then falls back to daemon key id", async () => {
+  const withProjectionKey: ServerDaemonState = {
+    ...baseDaemon,
+    projection: {
+      ...baseDaemon.projection!,
+      keyId: "proj-key",
+      remoteAddress: "203.0.113.9",
+    },
+  };
+  const db = createMockDb(
+    buildMockRow(withProjectionKey, baseConnectedStatus),
+  );
+  const presence = await resolveFleetPresence(
+    db,
+    createThrowingSnapshotRegistry(),
+    [serverId],
+  );
+  assertEquals(presence.get(serverId)?.keyId, "proj-key");
+
+  const keyOnly = createMockDb(buildMockRow(baseDaemon, baseConnectedStatus));
+  const keyOnlyPresence = await resolveFleetPresence(
+    keyOnly,
+    createThrowingSnapshotRegistry(),
+    [serverId],
+  );
+  assertEquals(keyOnlyPresence.get(serverId)?.keyId, "key-1");
+});
+
+test("resolveFleetPresence falls back lastInboundAt through lastSeenAt then connectedAt", async () => {
+  const db = createMockDb(buildMockRow(baseDaemon, baseConnectedStatus));
+  const connectedAt = new Date().toISOString();
+  const registry = createSnapshotRegistry({
+    snapshots: new Map([
+      [
+        serverId,
+        {
+          serverId,
+          version: 1,
+          updatedAt: connectedAt,
+          connected: true,
+          connectedAt,
+          // No lastInboundAt / lastSeenAt — connectedAt keeps the socket fresh.
+        },
+      ],
+    ]),
+  });
+
+  const presence = await resolveFleetPresence(db, registry, [serverId], {
+    withSnapshots: true,
+  });
+  assertEquals(presence.get(serverId)?.connected, true);
+  assertEquals(presence.get(serverId)?.lastInboundAt, connectedAt);
 });
 
 test("isServerConnected reads Postgres projection by default", async () => {

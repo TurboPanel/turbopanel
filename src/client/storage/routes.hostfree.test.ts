@@ -18,6 +18,10 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
  */
 const test = Deno.test.bind(Deno)
 
+const storageId = '11111111-1111-4111-8111-111111111111'
+const locationId = '22222222-2222-4222-8222-222222222222'
+const mountId = '33333333-3333-4333-8333-333333333333'
+
 async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -30,26 +34,40 @@ async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
   return app
 }
 
-test('GET /storage returns 401 without a session cookie', async () => {
-  const app = await buildApp(undefined)
-  const res = await app.request('/storage')
-  assertEquals(res.status, 401)
-  assertEquals(await res.json(), { ok: false, error: 'Unauthorized' })
-})
-
-test('GET /storage returns 401 when db is set but session is missing', async () => {
+test('storage routes return 401 without a session cookie', async () => {
   const app = await buildApp({} as Db)
+  const paths = [
+    ['GET', '/storage'],
+    ['POST', '/storage'],
+    ['GET', `/storage/${storageId}`],
+    ['PATCH', `/storage/${storageId}`],
+    ['DELETE', `/storage/${storageId}`],
+    ['GET', `/storage/${storageId}/locations`],
+    ['POST', `/storage/${storageId}/locations`],
+    ['PATCH', `/storage/${storageId}/locations/${locationId}`],
+    ['DELETE', `/storage/${storageId}/locations/${locationId}`],
+    ['GET', `/storage/${storageId}/mounts`],
+    ['POST', `/storage/${storageId}/mounts`],
+    ['PATCH', `/storage/${storageId}/mounts/${mountId}`],
+    ['DELETE', `/storage/${storageId}/mounts/${mountId}`],
+  ] as const
+
+  for (const [method, path] of paths) {
+    const res = await app.request(path, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: method === 'GET' || method === 'DELETE'
+        ? undefined
+        : JSON.stringify({}),
+    })
+    assertEquals(res.status, 401, `${method} ${path}`)
+    assertEquals(await res.json(), { ok: false, error: 'Unauthorized' })
+  }
+})
+
+test('GET /storage returns 401 when db is missing', async () => {
+  const app = await buildApp(undefined)
   const res = await app.request('/storage')
   assertEquals(res.status, 401)
   assertEquals(await res.json(), { ok: false, error: 'Unauthorized' })
-})
-
-test('POST /storage returns 401 without a session cookie', async () => {
-  const app = await buildApp(undefined)
-  const res = await app.request('/storage', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({}),
-  })
-  assertEquals(res.status, 401)
 })

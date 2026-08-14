@@ -5,6 +5,7 @@ import {
   composeNetworkHostName,
   hostRoute32,
   isRelayAddressUniqueViolation,
+  isRelayPrefixUniqueViolation,
   nextFreeSubnet,
   nthHostAddress,
   nthSubnet,
@@ -70,6 +71,20 @@ test('isRelayAddressUniqueViolation matches uniq_relay_fabric_address', () => {
   assertEquals(isRelayAddressUniqueViolation(hit), true)
   assertEquals(isRelayAddressUniqueViolation(miss), false)
   assertEquals(isRelayAddressUniqueViolation({ code: '23505' }), false)
+})
+
+test('isRelayPrefixUniqueViolation matches uniq_relay_fabric_prefix', () => {
+  const hit = Object.assign(
+    new Error('duplicate key value violates unique constraint "uniq_relay_fabric_prefix"'),
+    { code: '23505' },
+  )
+  const miss = Object.assign(
+    new Error('duplicate key value violates unique constraint "uniq_relay_fabric_address"'),
+    { code: '23505' },
+  )
+  assertEquals(isRelayPrefixUniqueViolation(hit), true)
+  assertEquals(isRelayPrefixUniqueViolation(miss), false)
+  assertEquals(isRelayPrefixUniqueViolation({ code: '23505' }), false)
 })
 
 test('cidrContains and nextFreeSubnet skip taken subnets', () => {

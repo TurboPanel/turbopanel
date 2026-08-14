@@ -47,7 +47,7 @@ Use when you designed in **Drizzle Studio** or applied DDL directly.
 1. Change tables in Studio (`/developer/database` → **Start API & open
    studio**).
 2. From the dev checkout, run `./scripts/introspect.sh` (resolves the instance
-   repo via `TURBOPANEL_INSTANCE_REPO` / `$HOME/instance`).
+   repo via `TURBOPANEL_INSTANCE_REPO` / `$HOME/turbopanel`).
 3. Review `schema.ts` (style, dropped tables).
 
 `dev/scripts/introspect.sh`: loads `TURBOPANEL_DATABASE_URL` from env or

@@ -7,6 +7,7 @@ import type {
   DaemonCellSnapshot,
 } from "./contracts.ts";
 import {
+  canDirectHealFromAeEvidence,
   isStale,
   OFFLINE_SWEEP_STALE_MS,
   resetOfflineSweepNullGraceForTests,
@@ -25,6 +26,21 @@ function connectedWithNullPing(): DaemonCellLiveness {
 function connectedWithWarmPing(nowMs: number): DaemonCellLiveness {
   return { connected: true, lastPingAtMs: nowMs - 30_000 };
 }
+
+it("canDirectHealFromAeEvidence requires a sample newer than offlineAt", () => {
+  const offlineAt = "2020-01-01T00:01:00.000Z";
+  const offlineMs = Date.parse(offlineAt);
+
+  assertEquals(canDirectHealFromAeEvidence(offlineAt, undefined), false);
+  assertEquals(canDirectHealFromAeEvidence(offlineAt, offlineMs), false);
+  assertEquals(canDirectHealFromAeEvidence(offlineAt, offlineMs - 1), false);
+  assertEquals(canDirectHealFromAeEvidence(offlineAt, offlineMs + 1), true);
+});
+
+it("canDirectHealFromAeEvidence rejects non-finite offlineAt", () => {
+  assertEquals(canDirectHealFromAeEvidence("not-a-date", Date.now()), false);
+  assertEquals(canDirectHealFromAeEvidence("", 1_700_000_000_000), false);
+});
 
 it("offline sweep first null auto-response observation is not stale", () => {
   resetOfflineSweepNullGraceForTests();

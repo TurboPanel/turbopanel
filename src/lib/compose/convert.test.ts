@@ -41,6 +41,22 @@ test('yaml round-trip keeps key inline comments and blank lines', () => {
   assertEquals(roundTrip.includes('inline key note'), true)
 })
 
+test('yaml round-trip preserves blankLines before keys through composeDocumentToYaml', () => {
+  const source = `services:
+
+  web:
+    image: nginx:alpine
+`
+  const doc = yamlToComposeDocument(source)
+  assertEquals(doc.presentation.blankLines?.services, 1)
+
+  const roundTrip = composeDocumentToYaml(doc)
+  assertEquals(/^services:\n\n  web:/.test(roundTrip), true)
+
+  const restored = yamlToComposeDocument(roundTrip)
+  assertEquals(restored.presentation.blankLines?.services, 1)
+})
+
 test('yaml round-trip supports numeric mapping keys via stringKey coercion', () => {
   const source = `services:
   8080:
@@ -83,4 +99,50 @@ test('yaml round-trip applies nested value commentBefore paths', () => {
   )
   const roundTrip = composeDocumentToYaml(doc)
   assertEquals(roundTrip.includes('# env note'), true)
+})
+
+test('yaml round-trip preserves document and sequence item comments', () => {
+  const source = `# file header
+
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8080:80"  # http
+`
+  const doc = yamlToComposeDocument(source)
+  assertEquals(
+    doc.presentation.documentCommentBefore?.includes('file header'),
+    true,
+  )
+  assertEquals(
+    doc.presentation.comments['services.web.ports[0]']?.inline?.includes('http'),
+    true,
+  )
+
+  const roundTrip = composeDocumentToYaml(doc)
+  assertEquals(roundTrip.includes('# file header'), true)
+  assertEquals(roundTrip.includes('# http'), true)
+})
+
+test('yaml round-trip preserves trailing document comment and keyBefore from YAML', () => {
+  const source = `# services section
+services:
+  web:
+    image: nginx:alpine
+# trailing note
+`
+  const doc = yamlToComposeDocument(source)
+  assertEquals(
+    doc.presentation.comments.services?.keyBefore?.includes('services section'),
+    true,
+  )
+  assertEquals(
+    doc.presentation.documentComment?.includes('trailing note'),
+    true,
+  )
+
+  const roundTrip = composeDocumentToYaml(doc)
+  assertEquals(roundTrip.includes('# services section'), true)
+  assertEquals(roundTrip.includes('# trailing note'), true)
 })

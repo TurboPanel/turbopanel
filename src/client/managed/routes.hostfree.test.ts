@@ -1,5 +1,15 @@
 /**
  * Host-free coverage for managed route short-circuits (no Postgres).
+ *
+ * Requires env read for `src/logger.ts` (`TURBOPANEL_DAEMON_DEBUG` /
+ * `TURBOPANEL_LOG_LEVEL`) because `routes.ts` imports the logger at module
+ * load. Run standalone with:
+ *
+ *   deno test --no-check --allow-read \
+ *     --allow-env=TURBOPANEL_DAEMON_DEBUG,TURBOPANEL_LOG_LEVEL \
+ *     src/client/managed/routes.hostfree.test.ts
+ *
+ * CI coverage uses `scripts/test-coverage.sh` (`deno test -A …`).
  */
 
 import { assertEquals } from 'jsr:@std/assert'

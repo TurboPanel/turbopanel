@@ -625,6 +625,20 @@ test('resolveMemberTransports maps primary local and replica path results', asyn
   assertEquals(remoteTransports.get('r2'), 'datacenter')
 })
 
+test('resolveMemberTransports surfaces datacenter_ip_required from replica overlay', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const replica = member({ id: 'r', serverId: 's2', role: 'replica', ordinal: 2 })
+  const db = privateEndpointDb([
+    { id: 's1', datacenterId: 'dc-a' },
+    { id: 's2', datacenterId: 'dc-a' },
+  ])
+  const result = await resolveMemberTransports(db, [primary, replica])
+  assertEquals(result, {
+    kind: 'datacenter_ip_required',
+    serverId: 's2',
+  })
+})
+
 test('resolveMemberTransports uses fabric when relays exist without datacenter IPs', async () => {
   const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
   const replica = member({

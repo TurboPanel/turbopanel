@@ -31,12 +31,12 @@ test('getDaemonRepoPath prefers TURBOPANEL_DAEMON_REPO override', () => {
   }
 })
 
-test('getDaemonRepoPath falls back to sibling daemon checkout', () => {
+test('getDaemonRepoPath falls back to sibling turbopaneld checkout', () => {
   const previous = Deno.env.get('TURBOPANEL_DAEMON_REPO')
   Deno.env.delete('TURBOPANEL_DAEMON_REPO')
   try {
     const path = getDaemonRepoPath()
-    assertEquals(path.endsWith('/daemon'), true)
+    assertEquals(path.endsWith('/turbopaneld'), true)
   } finally {
     if (previous === undefined) Deno.env.delete('TURBOPANEL_DAEMON_REPO')
     else Deno.env.set('TURBOPANEL_DAEMON_REPO', previous)

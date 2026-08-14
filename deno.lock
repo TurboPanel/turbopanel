@@ -10,6 +10,7 @@
     "jsr:@std/internal@^1.0.14": "1.0.14",
     "jsr:@std/path@*": "1.1.5",
     "jsr:@std/path@1": "1.1.5",
+    "jsr:@std/testing@*": "1.0.19",
     "jsr:@std/testing@1": "1.0.19",
     "jsr:@std/yaml@*": "1.1.2",
     "npm:@cloudflare/vitest-pool-workers@~0.21.2": "0.21.2_@vitest+runner@4.1.10_@vitest+snapshot@4.1.10_vitest@4.1.10__@vitest+coverage-istanbul@4.1.10_@cloudflare+workers-types@5.20260812.1_@vitest+coverage-istanbul@4.1.10__vitest@4.1.10__vite@8.2.0___esbuild@0.28.1___yaml@2.9.0",

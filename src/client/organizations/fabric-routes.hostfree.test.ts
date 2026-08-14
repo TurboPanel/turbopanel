@@ -2,15 +2,24 @@ import { assertEquals } from 'jsr:@std/assert'
 import type { Db } from '../../db.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import {
+  type EndpointAddressCaches,
+  type RelayRecord,
+} from '../../lib/db/fabric-records.ts'
+import {
   enqueueRelayPatchReconcile,
+  fabricEnableErrorResponse,
+  fabricNotEnabledErrorResponse,
   fabricSettingsResponse,
   fabricTypedEnqueueErrorResponse,
   gatewayRelayReadyErrorResponse,
   gatewayRolePatchErrorResponse,
+  observedForRelay,
   parseFabricPutBody,
   parseRelayPatchBody,
   relayPatchUpdateFields,
+  resolveRelayEndpointOrNull,
   resolveSealedRelayPresharedKey,
+  toFabricRelayApiRow,
 } from './fabric-routes-helpers.ts'
 
 /**
@@ -72,6 +81,18 @@ test('parseRelayPatchBody forces advertisedCidrs empty for member role', () => {
   assertEquals(parsed.ok, true)
   if (!parsed.ok) return
   assertEquals(parsed.patch.advertisedCidrs, [])
+})
+
+test('parseRelayPatchBody rejects non-objects and oversized advertisedCidrs', () => {
+  assertEquals(parseRelayPatchBody(null), { ok: false, error: 'Invalid request' })
+  assertEquals(parseRelayPatchBody([]), { ok: false, error: 'Invalid request' })
+  assertEquals(
+    parseRelayPatchBody({
+      advertisedCidrs: Array.from({ length: 33 }, (_, i) => `10.${i}.0.0/24`),
+    }).ok,
+    false,
+  )
+  assertEquals(parseRelayPatchBody({ keepalive: 65_536 }).ok, false)
 })
 
 test('fabricSettingsResponse omits fabric when TurboFabric is off', () => {
@@ -290,4 +311,168 @@ test('enqueueRelayPatchReconcile returns null when membership enqueue succeeds',
     }),
     null,
   )
+})
+
+test('fabricEnableErrorResponse maps CIDR and pool exhaustion to 409', async () => {
+  const cidr = fabricEnableErrorResponse(new Error('No free CIDR left in pool'))
+  assertEquals(cidr.status, 409)
+  assertEquals(await cidr.json(), { error: 'fabric_cidr_unavailable' })
+
+  const pool = fabricEnableErrorResponse(new Error('address pool exhausted'))
+  assertEquals(pool.status, 409)
+  assertEquals(await pool.json(), { error: 'fabric_address_pool_exhausted' })
+
+  const other = fabricEnableErrorResponse('boom')
+  assertEquals(other.status, 500)
+  assertEquals(await other.json(), { error: 'TurboFabric update failed' })
+})
+
+test('fabricNotEnabledErrorResponse returns stable 409', async () => {
+  const res = fabricNotEnabledErrorResponse()
+  assertEquals(res.status, 409)
+  assertEquals(await res.json(), { error: 'TurboFabric is not enabled' })
+})
+
+function relayRow(
+  overrides: Partial<RelayRecord> & Pick<RelayRecord, 'serverId'>,
+): RelayRecord {
+  return {
+    id: 'relay-1',
+    fabricId: 'fab-1',
+    address: '10.250.0.1',
+    role: 'member',
+    keepalive: null,
+    endpointAddress: null,
+    publicKey: WG_KEY,
+    prefix: '10.192.0.0/16',
+    advertisedCidrs: [],
+    metadata: {},
+    ...overrides,
+  }
+}
+
+function emptyEndpointCaches(): EndpointAddressCaches {
+  return {
+    datacenterAddressByServer: new Map(),
+    publicAddressByServer: new Map(),
+    reportedByServer: new Map(),
+  }
+}
+
+test('observedForRelay returns null without a public key', () => {
+  assertEquals(observedForRelay([], null), null)
+})
+
+test('observedForRelay picks the newest peer observation by public key', () => {
+  const otherKey = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB='
+  const relays = [
+    relayRow({
+      serverId: 's1',
+      publicKey: otherKey,
+      metadata: {
+        observed: {
+          at: '2020-01-01T00:00:00.000Z',
+          peers: [{
+            publicKey: WG_KEY,
+            lastHandshakeAt: '2020-01-01T00:01:00.000Z',
+            transferRx: 10,
+          }],
+        },
+      },
+    }),
+    relayRow({
+      serverId: 's2',
+      publicKey: WG_KEY,
+      metadata: {
+        observed: {
+          at: '2020-01-02T00:00:00.000Z',
+          peers: [{
+            publicKey: WG_KEY,
+            lastHandshakeAt: '2020-01-02T00:01:00.000Z',
+            transferTx: 99,
+          }],
+        },
+      },
+    }),
+  ]
+  assertEquals(observedForRelay(relays, WG_KEY), {
+    lastHandshakeAt: '2020-01-02T00:01:00.000Z',
+    transferTx: 99,
+  })
+})
+
+test('resolveRelayEndpointOrNull resolves pinned endpoints and swallows unavailable', () => {
+  const pinned = relayRow({
+    serverId: 's1',
+    endpointAddress: '203.0.113.10',
+  })
+  assertEquals(
+    resolveRelayEndpointOrNull(pinned, emptyEndpointCaches()),
+    '203.0.113.10',
+  )
+
+  const caches: EndpointAddressCaches = {
+    datacenterAddressByServer: new Map([['s2', '10.0.0.5']]),
+    publicAddressByServer: new Map(),
+    reportedByServer: new Map(),
+  }
+  assertEquals(
+    resolveRelayEndpointOrNull(relayRow({ serverId: 's2' }), caches),
+    '10.0.0.5',
+  )
+
+  assertEquals(
+    resolveRelayEndpointOrNull(relayRow({ serverId: 's3' }), emptyEndpointCaches()),
+    null,
+  )
+})
+
+test('resolveRelayEndpointOrNull prefers datacenter address over public fallback', () => {
+  const caches: EndpointAddressCaches = {
+    datacenterAddressByServer: new Map([['s1', '10.0.0.8']]),
+    publicAddressByServer: new Map([['s1', '203.0.113.20']]),
+    reportedByServer: new Map(),
+  }
+  assertEquals(
+    resolveRelayEndpointOrNull(relayRow({ serverId: 's1' }), caches),
+    '10.0.0.8',
+  )
+})
+
+test('toFabricRelayApiRow maps relay fields and omits presharedKey on the wire', () => {
+  const relay = relayRow({
+    serverId: 'srv-1',
+    role: 'gateway',
+    advertisedCidrs: ['10.0.0.0/24'],
+    keepalive: 25,
+    endpointAddress: '203.0.113.10',
+    metadata: {
+      observed: {
+        at: '2020-01-01T00:00:00.000Z',
+        peers: [{
+          publicKey: WG_KEY,
+          lastHandshakeAt: '2020-01-01T00:05:00.000Z',
+        }],
+      },
+    },
+  })
+  const caches: EndpointAddressCaches = {
+    datacenterAddressByServer: new Map(),
+    publicAddressByServer: new Map([['srv-1', '198.51.100.10']]),
+    reportedByServer: new Map(),
+  }
+  const row = toFabricRelayApiRow({
+    relay,
+    hasPresharedKey: true,
+    segments: [{ name: 'tpn_test', subnet: '10.192.0.0/24' }],
+    caches,
+    relays: [relay],
+  })
+  assertEquals(row.serverId, 'srv-1')
+  assertEquals(row.role, 'gateway')
+  assertEquals(row.advertisedCidrs, ['10.0.0.0/24'])
+  assertEquals(row.resolvedEndpoint, '203.0.113.10')
+  assertEquals(row.hasPresharedKey, true)
+  assertEquals(row.observed?.lastHandshakeAt, '2020-01-01T00:05:00.000Z')
+  assertEquals('presharedKey' in row, false)
 })

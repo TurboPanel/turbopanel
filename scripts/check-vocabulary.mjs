@@ -11,7 +11,7 @@
  *
  * Companion guard to `scripts/check-workers-bundle.mjs` -- keep the
  * forbidden-phrase list and allowlist in sync with the sibling checks in
- * `../daemon/scripts/check-vocabulary.ts` and
+ * `../turbopaneld/scripts/check-vocabulary.ts` and
  * `../website/scripts/check-vocabulary.mjs`.
  *
  * Usage:

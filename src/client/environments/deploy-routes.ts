@@ -41,18 +41,21 @@ import {
   buildDeployPreviewContainers,
   buildTraditionalWebSitesForDeploy,
   composeProjectName,
+  deployMaterialsErrorResponse,
   expandHostingsForComposeInstances,
   fabricGateErrorResponse,
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
   parseLifecycleAction,
+  queuedCommandsResponseBody,
+  type QueuedCommandRef,
   readHostingPorts,
   readHostingProtocol,
   readHostnames,
   readPathPrefix,
   readTargetPort,
+  scheduleErrorResponse,
   tlsPinErrorCode,
-  validateDeployMaterials,
 } from "./deploy-routes-helpers.ts";
 import { resolveTcpUdpIngressServices } from "./tcp-udp-ingress.ts";
 import { isNoopCommandQueue } from "../../lib/commands/noop-command-queue.ts";
@@ -98,7 +101,6 @@ import {
   buildCompileAddressMaps,
   planEnvironmentDeploy,
   type PlannedDeploy,
-  type ScheduleErrorCode,
 } from "../../lib/schedule/index.ts";
 import { enqueueManagedIngressReconcile } from "../managed/ingress-desired.ts";
 import {
@@ -139,21 +141,13 @@ import {
 
 type DeployHostingPayload = EnvironmentDeployHosting;
 
-type QueuedCommandRef = {
-  commandId: string;
-  serverId: string;
-  status: "queued";
-};
-
 function responseForScheduleError(
   c: Context<AppEnv>,
-  error: ScheduleErrorCode,
+  error: Parameters<typeof scheduleErrorResponse>[0],
   message: string,
 ): Response {
-  if (error === "no_eligible_server") {
-    return c.json({ error: "server_placement_required" }, 409);
-  }
-  return c.json({ error, message }, 422);
+  const mapped = scheduleErrorResponse(error, message);
+  return c.json(mapped.body, { status: mapped.status as 409 | 422 });
 }
 
 function serviceIdToNameMap(
@@ -189,23 +183,6 @@ function scheduleSliceForServer(
     ...(managedIngressHostsByService && managedIngressHostsByService.size > 0
       ? { managedIngressHostsByService }
       : {}),
-  };
-}
-
-function queuedCommandsJson(
-  commands: readonly QueuedCommandRef[],
-): Record<string, unknown> {
-  const first = commands[0];
-  return {
-    ok: true as const,
-    commandId: first?.commandId ?? "",
-    status: "queued" as const,
-    ...(first ? { serverId: first.serverId } : {}),
-    commands: commands.map((row) => ({
-      commandId: row.commandId,
-      serverId: row.serverId,
-      status: row.status,
-    })),
   };
 }
 
@@ -408,18 +385,6 @@ function responseForFabricGate(
 ): Response {
   const mapped = fabricGateErrorResponse(outcome);
   return c.json(mapped.body, { status: mapped.status as 409 | 422 });
-}
-
-function validateDeployMaterialsResponse(
-  hostings: DeployHostingPayload[],
-  storageMaterial: EnvironmentDeployStorageMaterial[],
-): Response | null {
-  const validationError = validateDeployMaterials(hostings, storageMaterial);
-  if (!validationError) return null;
-  return Response.json(
-    { error: validationError.error, message: validationError.message },
-    { status: 400 },
-  );
 }
 
 type BuildHostingResult =
@@ -771,18 +736,15 @@ async function sealTlsMaterialForDaemon(
   return material;
 }
 
-async function authorizeDeployRequest(
+/**
+ * Shared manage-gate for deploy-preview / stop / lifecycle (no deploy body flags).
+ * Exported for host-free unit coverage of thin authz branches.
+ */
+export async function authorizeEnvironmentManage(
   c: Context<AppEnv>,
   db: Db,
   environmentId: string,
-): Promise<
-  {
-    userId: string;
-    organizationId: string;
-    acknowledgeHealthCheckWarnings: boolean;
-    noCache: boolean;
-  } | Response
-> {
+): Promise<{ userId: string; organizationId: string } | Response> {
   const session = c.get("session");
   if (!session) return c.json({ error: "Unauthorized" }, 401);
 
@@ -808,6 +770,31 @@ async function authorizeDeployRequest(
   );
   if (immutable) return immutable;
 
+  return {
+    userId: session.userId,
+    organizationId: orgResult,
+  };
+}
+
+/**
+ * Deploy-only authz: {@link authorizeEnvironmentManage} plus deploy request flags.
+ * Exported for host-free unit coverage without full orchestration.
+ */
+export async function authorizeDeployRequest(
+  c: Context<AppEnv>,
+  db: Db,
+  environmentId: string,
+): Promise<
+  {
+    userId: string;
+    organizationId: string;
+    acknowledgeHealthCheckWarnings: boolean;
+    noCache: boolean;
+  } | Response
+> {
+  const auth = await authorizeEnvironmentManage(c, db, environmentId);
+  if (auth instanceof Response) return auth;
+
   const body = await parseJsonBody(c);
   if (body instanceof Response) return body;
 
@@ -817,8 +804,7 @@ async function authorizeDeployRequest(
   }
 
   return {
-    userId: session.userId,
-    organizationId: orgResult,
+    ...auth,
     acknowledgeHealthCheckWarnings: flags.acknowledgeHealthCheckWarnings,
     noCache: flags.noCache,
   };
@@ -1140,51 +1126,18 @@ async function deliverDeployFanOut(
 
 export {
   buildTraditionalWebSitesForDeploy,
+  deployMaterialsErrorResponse,
   expandHostingsForComposeInstances,
   preferredListenPortsFromHostings,
+  queuedCommandsResponseBody,
   readHostingPorts,
   readHostingProtocol,
   readHostnames,
   readPathPrefix,
   readTargetPort,
+  scheduleErrorResponse,
   validateDeployMaterials,
 } from "./deploy-routes-helpers.ts";
-
-async function authorizeEnvironmentManage(
-  c: Context<AppEnv>,
-  db: Db,
-  environmentId: string,
-): Promise<{ userId: string; organizationId: string } | Response> {
-  const session = c.get("session");
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
-
-  const orgResult = await getOrgId(c, session.userId);
-  if (orgResult instanceof Response) return orgResult;
-
-  const entityOrgId = await resolveEntityOrganizationId(
-    db,
-    "environment",
-    environmentId,
-  );
-  if (!entityOrgId || entityOrgId !== orgResult) {
-    return c.json({ error: "Not found" }, 404);
-  }
-
-  const denied = await assertCanManageOr403(c, "environment", environmentId);
-  if (denied) return denied;
-
-  const immutable = await assertNotSystemOwnedOr403(
-    c,
-    "environment",
-    environmentId,
-  );
-  if (immutable) return immutable;
-
-  return {
-    userId: session.userId,
-    organizationId: orgResult,
-  };
-}
 
 /**
  * GET /environments/:id/deploy-preview — exact compose YAML the daemon would
@@ -1551,7 +1504,7 @@ async function prepareOneServerDeploy(
   );
   if (tlsMaterial instanceof Response) return tlsMaterial;
 
-  const materialsError = validateDeployMaterialsResponse(
+  const materialsError = deployMaterialsErrorResponse(
     hostings,
     prepared.storageMaterial,
   );
@@ -1874,7 +1827,7 @@ async function runEnvironmentDeploy(
       ...spanningCtx,
     });
 
-    return Response.json(queuedCommandsJson(queued));
+    return Response.json(queuedCommandsResponseBody(queued));
   } finally {
     if (!spanningCommitted) {
       await purgeComposeNetworksCreatedAfter(
@@ -2110,7 +2063,7 @@ export function registerEnvironmentStopRoutes(
         });
       }
     }
-    return Response.json(queuedCommandsJson(queued));
+    return Response.json(queuedCommandsResponseBody(queued));
   });
 }
 
@@ -2221,6 +2174,6 @@ export function registerEnvironmentLifecycleRoutes(
       if (enqueued instanceof Response) return enqueued;
       queued.push(enqueued);
     }
-    return Response.json(queuedCommandsJson(queued));
+    return Response.json(queuedCommandsResponseBody(queued));
   });
 }

@@ -145,7 +145,7 @@ phase).
 
 `environment.deploy` uses a 600s consumer timeout. Compose merge + Traefik label
 injection + Docker/Caddy bootstrap run on the daemon
-(`daemon/src/instance/commands/deploy-environment.ts`). Optional payload
+(`turbopaneld/src/instance/commands/deploy-environment.ts`). Optional payload
 `noCache: true` (from UI cacheless redeploy) asks the daemon to run
 `docker compose build --no-cache --pull` before `up`. On success the daemon may
 also return best-effort per-container identity/status from `docker compose ps`;
@@ -222,7 +222,7 @@ per-service projects.
 `fabricNetworks[]` bridges (best-effort), removes the hosting Caddy site
 snippet, deletes the deployment dir, and `rm -rf`s the matching
 `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets` tree
-(`daemon/src/instance/commands/stop-environment.ts`). Idempotent when the
+(`turbopaneld/src/instance/commands/stop-environment.ts`). Idempotent when the
 compose file is already gone. Used as the teardown gate before project cascade
 delete. **Contrast with `environment.lifecycle`:** stop is **destructive
 teardown** (`down --remove-orphans --volumes`, hosting site + deployment dir +
@@ -391,7 +391,7 @@ blob).
 
 ### Dev sync (push a daemon build without git)
 
-`src/developer/dev-sync.ts` tars the local `../daemon` checkout, base64-encodes
+`src/developer/dev-sync.ts` tars the local `../turbopaneld` checkout, base64-encodes
 it, and streams `dev-sync-begin` → `dev-sync-chunk*` → `dev-sync-end` over the
 daemon WS; the daemon unpacks, `deno cache`s, replies `dev-sync-result`, and
 restarts. Developer routes: `POST /api/developer/v1/daemon/:id/sync-dev` and

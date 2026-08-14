@@ -225,6 +225,23 @@ export function fabricTypedEnqueueErrorResponse(
   return Response.json({ error: enqueueError }, { status: 422 })
 }
 
+/** Map enable-organization fabric failures to stable API error codes. */
+export function fabricEnableErrorResponse(err: unknown): Response {
+  const message = err instanceof Error ? err.message : String(err)
+  if (message.includes('No free CIDR')) {
+    return Response.json({ error: 'fabric_cidr_unavailable' }, { status: 409 })
+  }
+  if (message.includes('address pool exhausted')) {
+    return Response.json({ error: 'fabric_address_pool_exhausted' }, { status: 409 })
+  }
+  return Response.json({ error: 'TurboFabric update failed' }, { status: 500 })
+}
+
+/** Stable 409 when TurboFabric is off but a relay/apply route requires it. */
+export function fabricNotEnabledErrorResponse(): Response {
+  return Response.json({ error: 'TurboFabric is not enabled' }, { status: 409 })
+}
+
 export async function enqueueRelayPatchReconcile(params: {
   session: { userId: string } | null | undefined
   commandQueue: CommandQueue | Response

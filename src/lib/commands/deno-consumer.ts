@@ -19,6 +19,48 @@ type AmqpConnection = Awaited<ReturnType<typeof amqplib.connect>>
 type AmqpChannel = Awaited<ReturnType<AmqpConnection['createConfirmChannel']>>
 type AmqpMessage = Parameters<Parameters<AmqpChannel['consume']>[1]>[0]
 
+export type CommandMessageDisposition = 'ack' | 'nack_requeue' | 'nack_dead'
+
+export type StartCommandConsumerOpts = {
+  db: Db
+  registry: DaemonCellRegistry
+  amqpUrl: string
+  commandQueue?: CommandQueue
+  resealDeps?: CommandResealDeps
+  secretsConfig?: import('../../client/authn/secrets.ts').SecretsConfig
+  dataEncryptionSecrets?: import('../../client/authn/secrets.ts').DerivedSecretsConfig
+}
+
+/**
+ * Host-free: only wire optional consumer deps when at least one is present.
+ */
+export function buildCommandConsumerDeps(
+  opts: Pick<
+    StartCommandConsumerOpts,
+    'commandQueue' | 'resealDeps' | 'secretsConfig' | 'dataEncryptionSecrets'
+  >,
+): CommandConsumerDeps | undefined {
+  if (!(opts.commandQueue || opts.resealDeps || opts.secretsConfig)) {
+    return undefined
+  }
+  return {
+    commandQueue: opts.commandQueue,
+    resealDeps: opts.resealDeps,
+    secretsConfig: opts.secretsConfig,
+    dataEncryptionSecrets: opts.dataEncryptionSecrets,
+  }
+}
+
+/**
+ * Host-free: map success / transient / permanent errors to AMQP ack/nack.
+ */
+export function commandMessageDisposition(
+  outcome: { ok: true } | { ok: false; error: unknown },
+): CommandMessageDisposition {
+  if (outcome.ok) return 'ack'
+  return isTransientError(outcome.error) ? 'nack_requeue' : 'nack_dead'
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -41,29 +83,15 @@ async function connectAmqp(url: string): Promise<AmqpConnection> {
   throw new Error('connectAmqp: unreachable')
 }
 
-export async function startCommandConsumer(opts: {
-  db: Db
-  registry: DaemonCellRegistry
-  amqpUrl: string
-  commandQueue?: CommandQueue
-  resealDeps?: CommandResealDeps
-  secretsConfig?: import('../../client/authn/secrets.ts').SecretsConfig
-  dataEncryptionSecrets?: import('../../client/authn/secrets.ts').DerivedSecretsConfig
-}): Promise<{ close(): Promise<void> }> {
+export async function startCommandConsumer(
+  opts: StartCommandConsumerOpts,
+): Promise<{ close(): Promise<void> }> {
   const connection = await connectAmqp(opts.amqpUrl)
   const channel = await connection.createConfirmChannel()
   await assertCommandAmqpTopology(channel)
   await channel.prefetch(1)
 
-  const consumerDeps: CommandConsumerDeps | undefined =
-    opts.commandQueue || opts.resealDeps || opts.secretsConfig
-      ? {
-        commandQueue: opts.commandQueue,
-        resealDeps: opts.resealDeps,
-        secretsConfig: opts.secretsConfig,
-        dataEncryptionSecrets: opts.dataEncryptionSecrets,
-      }
-      : undefined
+  const consumerDeps = buildCommandConsumerDeps(opts)
 
   const { consumerTag } = await channel.consume(
     COMMAND_AMQP_QUEUE,
@@ -83,17 +111,16 @@ export async function startCommandConsumer(opts: {
         envelope,
         consumerDeps,
       )
-      channel.ack(msg)
+      applyCommandMessageDisposition(channel, msg, commandMessageDisposition({ ok: true }))
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
-      if (isTransientError(error)) {
+      const disposition = commandMessageDisposition({ ok: false, error })
+      if (disposition === 'nack_requeue') {
         compatLogWarn('command-consumer', `transient error, requeueing: ${errMsg}`)
-        channel.nack(msg, false, true)
-        return
+      } else {
+        compatLogError('command-consumer', `permanent error, dead-lettering: ${errMsg}`)
       }
-
-      compatLogError('command-consumer', `permanent error, dead-lettering: ${errMsg}`)
-      channel.nack(msg, false, false)
+      applyCommandMessageDisposition(channel, msg, disposition)
     }
   }
 
@@ -106,4 +133,17 @@ export async function startCommandConsumer(opts: {
       await connection.close().catch(() => undefined)
     },
   }
+}
+
+/** Apply ack/nack for a consumed message (kept thin for unit tests of disposition). */
+export function applyCommandMessageDisposition(
+  channel: Pick<AmqpChannel, 'ack' | 'nack'>,
+  msg: NonNullable<AmqpMessage>,
+  disposition: CommandMessageDisposition,
+): void {
+  if (disposition === 'ack') {
+    channel.ack(msg)
+    return
+  }
+  channel.nack(msg, false, disposition === 'nack_requeue')
 }

@@ -1,9 +1,12 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "../../db.ts";
 import { setDaemonCellProjectionDbFactoryForTests } from "./do.ts";
-import { createDurableObjectDaemonCellRegistry } from "./do-registry.ts";
+import {
+  createDurableObjectDaemonCellRegistry,
+  DurableObjectStubDaemonCell,
+} from "./do-registry.ts";
 import {
   generateDeliveryId,
   generateRequestId,
@@ -32,6 +35,26 @@ function createOnlineListDb(serverIds: string[]): Db {
       }),
     }),
   } as unknown as Db;
+}
+
+function createFakeCellEnv(
+  fetchImpl: (path: string, init?: RequestInit) => Promise<Response>,
+): CloudflareBindings {
+  return {
+    DAEMON_CELL: {
+      getByName: () => ({
+        fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === "string"
+            ? input
+            : input instanceof URL
+            ? input.href
+            : input.url;
+          const path = new URL(url).pathname + new URL(url).search;
+          return fetchImpl(path, init);
+        },
+      }),
+    },
+  } as unknown as CloudflareBindings;
 }
 
 beforeEach(() => {
@@ -153,6 +176,51 @@ describe("createDurableObjectDaemonCellRegistry", () => {
     const record = await cell.waitForRequest(requestId, 2000);
     expect(record?.status).toBe("done");
   });
+
+  it("waitForRequest returns null after the poll deadline when still non-terminal", async () => {
+    const serverId = "test-srv-registry-wait-timeout";
+    const registry = createDurableObjectDaemonCellRegistry(env);
+    const cell = registry.getCell(serverId);
+    const requestId = generateRequestId();
+
+    await cell.enqueue({
+      kind: "command-dispatch",
+      deliveryId: generateDeliveryId(),
+      requestId,
+      at: new Date().toISOString(),
+      commandId: "cmd-wait-timeout",
+      commandType: "daemon.ping",
+      payload: {},
+    });
+
+    const started = Date.now();
+    const record = await cell.waitForRequest(requestId, 400);
+    expect(record).toBeNull();
+    // At least one jittered poll sleep (POLL_BASE_MS = 250).
+    expect(Date.now() - started).toBeGreaterThanOrEqual(200);
+  }, 10_000);
+
+  it("createRequestAndWait expires when the poll deadline elapses", async () => {
+    const serverId = "test-srv-registry-create-wait-expire";
+    const registry = createDurableObjectDaemonCellRegistry(env);
+    const cell = registry.getCell(serverId);
+    const requestId = generateRequestId();
+
+    const record = await cell.createRequestAndWait(
+      {
+        kind: "command-dispatch",
+        deliveryId: generateDeliveryId(),
+        requestId,
+        at: new Date().toISOString(),
+        commandId: "cmd-create-wait-expire",
+        commandType: "daemon.ping",
+        payload: {},
+      },
+      350,
+    );
+    expect(record.status).toBe("expired");
+    expect(record.requestId).toBe(requestId);
+  }, 10_000);
 
   it("delivery lease claim, renew, and release succeed", async () => {
     const serverId = "test-srv-registry-lease";
@@ -311,5 +379,109 @@ describe("createDurableObjectDaemonCellRegistry", () => {
     const snapshot = await cell.getSnapshot();
     expect(snapshot.connected).toBe(false);
     expect(snapshot.serverId).toBe(serverId);
+  });
+});
+
+describe("DurableObjectStubDaemonCell RPC retry edges", () => {
+  it("does not retry when the stub reports overloaded", async () => {
+    let fetchCalls = 0;
+    const cell = new DurableObjectStubDaemonCell(
+      createFakeCellEnv(async () => {
+        fetchCalls += 1;
+        throw new Error("Durable Object is overloaded");
+      }),
+      undefined,
+      "test-srv-registry-overloaded",
+    );
+
+    await expect(cell.getDiagnostics()).rejects.toThrow(/overloaded/i);
+    expect(fetchCalls).toBe(1);
+  });
+
+  it("retries an idempotent RPC once after a transient network error", async () => {
+    let fetchCalls = 0;
+    const diagnostics = {
+      backend: "durable-object",
+      usesHibernationWebSocket: true,
+      constructorCalls: 1,
+      wsAccepted: 0,
+      wsClosed: 0,
+      alarmInvocations: 0,
+      heartbeatCount: 0,
+      commandDispatchCount: 0,
+      cleanupCount: 0,
+      fetchByRoute: {},
+      storageReads: 0,
+      storageWrites: 0,
+      storageByCallSite: {},
+    };
+    const cell = new DurableObjectStubDaemonCell(
+      createFakeCellEnv(async () => {
+        fetchCalls += 1;
+        if (fetchCalls === 1) {
+          throw new Error("network timeout while contacting cell");
+        }
+        return Response.json(diagnostics);
+      }),
+      undefined,
+      "test-srv-registry-transient",
+    );
+
+    await expect(cell.getDiagnostics()).resolves.toMatchObject({
+      backend: "durable-object",
+    });
+    expect(fetchCalls).toBe(2);
+  });
+
+  it("does not retry a non-idempotent RPC after a transient error", async () => {
+    let fetchCalls = 0;
+    const cell = new DurableObjectStubDaemonCell(
+      createFakeCellEnv(async () => {
+        fetchCalls += 1;
+        throw new Error("failed to fetch from durable object");
+      }),
+      undefined,
+      "test-srv-registry-non-idempotent",
+    );
+
+    await expect(
+      cell.attachDaemonSocket({ keyId: "key-no-retry" }),
+    ).rejects.toThrow(/failed to fetch/i);
+    expect(fetchCalls).toBe(1);
+  });
+
+  it("waitForRequest polls with jitter until a terminal status appears", async () => {
+    vi.useFakeTimers();
+    try {
+      let fetchCalls = 0;
+      const requestId = "req-poll-jitter";
+      const cell = new DurableObjectStubDaemonCell(
+        createFakeCellEnv(async (path) => {
+          fetchCalls += 1;
+          const status = fetchCalls >= 3 ? "done" : "queued";
+          expect(path).toContain(`/rpc/request?requestId=`);
+          return Response.json({
+            record: {
+              requestId,
+              requestKind: "command-dispatch",
+              status,
+              createdAt: new Date().toISOString(),
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+          });
+        }),
+        undefined,
+        "test-srv-registry-poll-jitter",
+      );
+
+      const pending = cell.waitForRequest(requestId, 5_000);
+      // Advance past two jittered sleeps (250–349 ms each).
+      await vi.advanceTimersByTimeAsync(800);
+      const record = await pending;
+      expect(record?.status).toBe("done");
+      expect(fetchCalls).toBeGreaterThanOrEqual(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

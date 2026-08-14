@@ -4,7 +4,7 @@
  * `TURBOPANEL_MACHINE_ID_NAMESPACE` is **not a secret** — it is a fixed
  * application-id constant. Both the daemon and the instance compute the same
  * HMAC independently and must never diverge. Keep the literal identical to
- * `daemon/src/host/machine-key.ts`.
+ * `turbopaneld/src/host/machine-key.ts`.
  *
  * Argument ordering matches systemd `sd_id128_get_machine_app_specific`:
  * key = raw machine id, message = namespace.

@@ -46,7 +46,7 @@ Do-not-retry-soon mapping for enroll/session responses (daemon intent):
 | `404 Server key not found` / `400 Server key mismatch` | stale-identity → recoverable re-enroll (keeps persisted `serverId`) |
 | `429` / `5xx` / `400 Invalid or expired challenge` | transient → normal full-jitter reconnect |
 
-The daemon-side parked state (not `DAEMON_REST_RATE_LIMITER`) is the primary protection against enroll/challenge storms after a control-plane identity loss (e.g. DB wipe); `DAEMON_REST_RATE_LIMITER` remains a backstop that must behave even when limits fail open. Canonical daemon backoff/unpark behavior: **`../daemon/AGENTS.md`** (Instance client → parked state) — do not duplicate it here.
+The daemon-side parked state (not `DAEMON_REST_RATE_LIMITER`) is the primary protection against enroll/challenge storms after a control-plane identity loss (e.g. DB wipe); `DAEMON_REST_RATE_LIMITER` remains a backstop that must behave even when limits fail open. Canonical daemon backoff/unpark behavior: **`../turbopaneld/AGENTS.md`** (Instance client → parked state) — do not duplicate it here.
 
 ```mermaid
 sequenceDiagram

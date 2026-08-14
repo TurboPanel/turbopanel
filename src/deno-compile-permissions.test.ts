@@ -6,13 +6,13 @@ const DEFAULT_CLICKHOUSE_HTTP_PORT = 8123;
 const DEFAULT_CLICKHOUSE_URL = `http://127.0.0.1:${DEFAULT_CLICKHOUSE_HTTP_PORT}`;
 
 /**
- * Co-located daemon checkout (`../daemon` next to this repo). CI only checks
+ * Co-located daemon checkout (`../turbopaneld` next to this repo). CI only checks
  * out turbopanel/turbopanel, so the unit template may be absent there.
  */
 function resolveDaemonRepoRoot(): string {
   const override = Deno.env.get("TURBOPANEL_DAEMON_REPO")?.trim();
   if (override) return override;
-  return new URL("../../daemon", import.meta.url).pathname;
+  return new URL("../../turbopaneld", import.meta.url).pathname;
 }
 
 function instanceLaunchUnitPath(): string {
@@ -94,4 +94,39 @@ it("compiled instance can reach configured TURBOPANEL_CLICKHOUSE_URL host", asyn
     allowNet.split(",").includes(requiredPermission),
     `compile --allow-net must include ${requiredPermission} for ${configuredUrl}`,
   );
+});
+
+it("production compile excludes developer-only permissions and entry", async () => {
+  const denoJsonPath = new URL("../deno.json", import.meta.url);
+  const denoJson = JSON.parse(await Deno.readTextFile(denoJsonPath));
+  const compileTask = denoJson.tasks?.compile;
+  assert(typeof compileTask === "string", "deno.json must define tasks.compile");
+  assert(
+    compileTask.endsWith(" src/deno.ts") || compileTask.includes(" src/deno.ts "),
+    "production compile must target src/deno.ts",
+  );
+  assert(
+    !compileTask.includes("src/deno-dev.ts"),
+    "production compile must not target src/deno-dev.ts",
+  );
+
+  const allowNet = extractAllowNetFlag(compileTask);
+  assert(allowNet, "compile task must include --allow-net");
+  const netHosts = allowNet.split(",");
+  assert(
+    !netHosts.includes("127.0.0.1:4983"),
+    "production compile must not allow Drizzle Studio :4983",
+  );
+  assert(
+    !netHosts.includes("127.0.0.1:1025"),
+    "production compile must not allow Mailpit SMTP :1025",
+  );
+
+  const allowRun = /--allow-run=([^\s]+)/.exec(compileTask)?.[1] ?? "";
+  for (const denied of ["git", "tar", "systemctl", "mkfifo"]) {
+    assert(
+      !allowRun.split(",").includes(denied),
+      `production compile must not --allow-run=${denied}`,
+    );
+  }
 });

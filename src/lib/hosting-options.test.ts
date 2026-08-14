@@ -130,3 +130,34 @@ test('parseHostingOptions accepts web env and php hints', () => {
     },
   )
 })
+
+test('parseHostingOptions drops invalid web env values and php fields', () => {
+  assertEquals(
+    parseHostingOptions({
+      web: {
+        env: {
+          OK: 'yes',
+          BAD: 'x'.repeat(5000),
+          ALSO: 12,
+        } as unknown as Record<string, string>,
+        php: {
+          version: 'eight',
+          memoryLimit: 'lots',
+          maxExecutionTime: 0,
+        },
+      },
+    }),
+    {
+      web: {
+        env: { OK: 'yes' },
+      },
+    },
+  )
+  assertEquals(parseHostingOptions({ web: { env: {} } }), {})
+  assertEquals(parseHostingOptions({ web: 'nope' }), {})
+})
+
+test('parseHostingOptions returns empty object for nullish input', () => {
+  assertEquals(parseHostingOptions(null), {})
+  assertEquals(parseHostingOptions(undefined), {})
+})

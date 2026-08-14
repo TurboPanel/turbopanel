@@ -6,12 +6,13 @@ import { DAEMON_API_PREFIX } from "../surfaces.ts";
  * Informational daemon checkout commit for the co-located daemon repo on this host.
  *
  * This is the HEAD of the daemon repository checkout that lives alongside the
- * instance (`../daemon`, override with `TURBOPANEL_DAEMON_REPO`). The REST
+ * instance (`../turbopaneld`, override with `TURBOPANEL_DAEMON_REPO`). The REST
  * endpoint and brief cache support operator upgrades and dev-sync — connected
  * daemons do not auto-sync or self-update from this value.
  *
  * Deno-only: it shells out to `git` and reads the daemon working tree, so it is
- * registered from `deno.ts` rather than the shared `createApp()` used by Workers.
+ * registered from `deno-dev.ts` rather than the shared `createApp()` used by
+ * Workers or the production `deno.ts` compile entry.
  */
 
 const TURBOPANEL_ROOT = (() => {
@@ -23,7 +24,7 @@ const TURBOPANEL_ROOT = (() => {
 export function getDaemonRepoPath(): string {
   const override = Deno.env.get("TURBOPANEL_DAEMON_REPO")?.trim();
   if (override) return override;
-  return join(TURBOPANEL_ROOT, "..", "daemon");
+  return join(TURBOPANEL_ROOT, "..", "turbopaneld");
 }
 
 export interface DaemonVersion {

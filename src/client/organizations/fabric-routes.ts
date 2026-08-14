@@ -24,14 +24,16 @@ import {
 } from '../../lib/db/fabric-records.ts'
 import {
   enqueueFabricReconcileForServers,
-  fabricEnqueueTypedError,
   reconcileFabricMembership,
 } from '../../lib/fabric/enqueue.ts'
 import {
   enqueueRelayPatchReconcile,
   type FabricMembershipSecrets,
   type FabricRelayApiRow,
+  fabricEnableErrorResponse,
+  fabricNotEnabledErrorResponse,
   fabricSettingsResponse,
+  fabricTypedEnqueueErrorResponse,
   gatewayRolePatchErrorResponse,
   parseFabricPutBody,
   parseRelayPatchBody,
@@ -39,17 +41,6 @@ import {
   resolveSealedRelayPresharedKey,
   toFabricRelayApiRow,
 } from './fabric-routes-helpers.ts'
-
-function fabricEnableErrorResponse(err: unknown): Response {
-  const message = err instanceof Error ? err.message : String(err)
-  if (message.includes('No free CIDR')) {
-    return Response.json({ error: 'fabric_cidr_unavailable' }, { status: 409 })
-  }
-  if (message.includes('address pool exhausted')) {
-    return Response.json({ error: 'fabric_address_pool_exhausted' }, { status: 409 })
-  }
-  return Response.json({ error: 'TurboFabric update failed' }, { status: 500 })
-}
 
 function fabricSecretsFromContext(c: {
   get: (key: 'secretsConfig' | 'dataEncryptionSecrets') => unknown
@@ -141,7 +132,7 @@ export function registerOrganizationFabricRoutes(
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
     const record = await getOrganizationFabric(db, id)
-    if (!record) return c.json({ error: 'TurboFabric is not enabled' }, 409)
+    if (!record) return fabricNotEnabledErrorResponse()
 
     const existing = (await listFabricRelays(db, record.id)).find((row) =>
       row.serverId === serverId
@@ -203,7 +194,7 @@ export function registerOrganizationFabricRoutes(
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
     const record = await getOrganizationFabric(db, id)
-    if (!record) return c.json({ error: 'TurboFabric is not enabled' }, 409)
+    if (!record) return fabricNotEnabledErrorResponse()
 
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
@@ -220,8 +211,8 @@ export function registerOrganizationFabricRoutes(
       force: true,
       ...fabricSecretsFromContext(c),
     })
-    const enqueueError = fabricEnqueueTypedError(results)
-    if (enqueueError) return c.json({ error: enqueueError }, 422)
+    const enqueueDenied = fabricTypedEnqueueErrorResponse(results)
+    if (enqueueDenied) return enqueueDenied
 
     return c.json({
       ok: true,
@@ -300,8 +291,8 @@ export function registerOrganizationFabricRoutes(
       organizationId: id,
       ...secrets,
     })
-    const enqueueError = fabricEnqueueTypedError(enqueueResults)
-    if (enqueueError) return c.json({ error: enqueueError }, 422)
+    const enqueueDenied = fabricTypedEnqueueErrorResponse(enqueueResults)
+    if (enqueueDenied) return enqueueDenied
     const relays = await listFabricRelays(db, record.id)
     return c.json(
       fabricSettingsResponse(record, await loadFabricRelayApiRows(db, relays)),

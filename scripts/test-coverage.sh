@@ -114,6 +114,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/credentials.test.ts \
   src/client/authn/crypto.test.ts \
   src/client/authn/data-encryption.deno.test.ts \
+  src/client/authn/envelope.deno.test.ts \
   src/client/authn/email-otp.deno.test.ts \
   src/client/authn/email-otp.test.ts \
   src/client/authn/email-verification.test.ts \
@@ -125,6 +126,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/license.test.ts \
   src/client/authn/middleware.test.ts \
   src/client/authn/otp-reset-password.test.ts \
+  src/client/authn/otp-http.hostfree.test.ts \
   src/client/authn/password.deno.test.ts \
   src/client/authn/secrets.deno.test.ts \
   src/client/authn/session-store.test.ts \
@@ -210,6 +212,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/storage/routes-helpers.test.ts \
   src/client/storage/routes.test.ts \
   src/client/storage/routes.hostfree.test.ts \
+  src/client/storage/routes-helpers.hostfree.test.ts \
   src/client/system/hierarchy.test.ts \
   src/client/system/hierarchy.hostfree.test.ts \
   src/client/system/operate.test.ts \
@@ -235,11 +238,13 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/api-routes.test.ts \
   src/daemon/rehydrate-secrets.hostfree.test.ts \
   src/daemon/cell/contracts.test.ts \
+  src/daemon/cell/do-storage-classify.test.ts \
   src/daemon/deno-ws.test.ts \
   src/daemon/cell/control-plane-monitor.test.ts \
   src/daemon/cell/fleet-diagnostics.test.ts \
   src/daemon/cell/fleet-presence.test.ts \
   src/daemon/cell/location.test.ts \
+  src/daemon/cell/snapshot-merge.test.ts \
   src/daemon/cell/offline-sweep.test.ts \
   src/daemon/cell/postgres-projection.test.ts \
   src/daemon/cell/protocol.test.ts \
@@ -302,7 +307,9 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/commands/consumer.test.ts \
   src/lib/commands/consumer.hostfree.test.ts \
   src/lib/commands/deno-amqp-queue.test.ts \
+  src/lib/commands/deno-consumer.hostfree.test.ts \
   src/lib/commands/deploy-validation.test.ts \
+  src/lib/commands/envelope.test.ts \
   src/lib/commands/hostname.test.ts \
   src/lib/commands/ids.test.ts \
   src/lib/commands/noop-command-queue.test.ts \
@@ -323,27 +330,36 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/container-records.test.ts \
   src/lib/db/container-records.hostfree.test.ts \
   src/lib/db/deployment-records.hostfree.test.ts \
+  src/lib/db/environment-generation.hostfree.test.ts \
+  src/lib/db/fabric-records.hostfree.test.ts \
+  src/lib/db/fabric-records-lifecycle.hostfree.test.ts \
+  src/lib/db/fabric-records-reconcile.hostfree.test.ts \
   src/lib/db/label-records.hostfree.test.ts \
   src/lib/db/net-types.test.ts \
   src/lib/db/project-delete.test.ts \
   src/lib/db/project-delete.hostfree.test.ts \
   src/lib/db/server-metadata.test.ts \
+  src/lib/db/storage-records.hostfree.test.ts \
   src/lib/db/table-naming.test.ts \
   src/lib/db/task-records.hostfree.test.ts \
   src/lib/db/workspace-kind.test.ts \
   src/lib/docker-network-name.test.ts \
+  src/lib/email/mailgun/deno-mailgun-queue.test.ts \
   src/lib/email/mailgun/send.test.ts \
   src/lib/email/mailgun/workers-queue.test.ts \
   src/lib/email/mailpit/send.test.ts \
   src/lib/email/noop-queue.test.ts \
   src/lib/email/smtp/amqp-topology.test.ts \
+  src/lib/email/smtp/deno-amqp-queue.test.ts \
   src/lib/email/smtp/smtp-resolve.test.ts \
   src/lib/email/templates.test.ts \
   src/lib/email/validate-address.test.ts \
   src/lib/geo/server-geo.test.ts \
+  src/lib/geo/self-hosted-geo-provider.test.ts \
   src/lib/hosting-options.test.ts \
   src/lib/hosting-web-env.test.ts \
   src/lib/install/parse-body.test.ts \
+  src/lib/install/routes.hostfree.test.ts \
   src/lib/ip-address.test.ts \
   src/lib/machine-key.test.ts \
   src/lib/managed/ \
@@ -363,6 +379,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/timezones.test.ts \
   src/lib/tls/ \
   src/lib/update/manifest.test.ts \
+  src/lib/update/constants.test.ts \
   src/log-compat.test.ts \
   src/node-path.test.ts \
   src/query-cache/passthrough-query-cache.test.ts \
@@ -380,28 +397,36 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/access/routes.test.ts \
   src/client/access/routes-helpers.test.ts \
   src/client/access/routes-helpers.hostfree.test.ts \
+  src/client/access/routes.hostfree.test.ts \
   src/client/containers/routes.test.ts \
   src/client/containers/routes-helpers.hostfree.test.ts \
   src/client/datacenters/routes.test.ts \
   src/client/datacenters/routes-pure.test.ts \
+  src/client/datacenters/routes.hostfree.test.ts \
   src/client/environments/routes-helpers.hostfree.test.ts \
+  src/client/environments/routes.hostfree.test.ts \
   src/client/environments/deploy-routes-helpers.hostfree.test.ts \
+  src/client/environments/deploy-routes-authz.hostfree.test.ts \
   src/client/hostings/routes.test.ts \
   src/client/hostings/routes-helpers.hostfree.test.ts \
   src/client/hostings/routes.hostfree.test.ts \
   src/client/ips/routes.test.ts \
   src/client/ips/routes-pure.test.ts \
+  src/client/ips/routes.hostfree.test.ts \
   src/client/licenses/routes.test.ts \
   src/client/licenses/routes-helpers.test.ts \
   src/client/licenses/routes-helpers.hostfree.test.ts \
   src/client/networks/routes.test.ts \
   src/client/networks/routes-pure.test.ts \
+  src/client/networks/routes.hostfree.test.ts \
   src/client/organizations/routes.test.ts \
   src/client/organizations/routes-helpers.hostfree.test.ts \
   src/client/organizations/fabric-routes.hostfree.test.ts \
+  src/client/organizations/fabric-routes-authz.hostfree.test.ts \
   src/client/projects/routes-helpers.hostfree.test.ts \
   src/client/services/routes.test.ts \
   src/client/services/routes-helpers.hostfree.test.ts \
+  src/client/services/routes.hostfree.test.ts \
   src/client/tls/routes.test.ts \
   src/client/tls/routes-helpers.test.ts \
   src/client/tls/routes-helpers.hostfree.test.ts \

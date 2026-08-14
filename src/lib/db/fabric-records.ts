@@ -16,6 +16,7 @@ import {
   composeNetworkHostName,
   hostRoute32,
   isRelayAddressUniqueViolation,
+  isRelayPrefixUniqueViolation,
   nextFreeSegmentSubnet,
   nextFreeSubnet,
   nthSubnet,
@@ -401,6 +402,11 @@ async function insertRelayOnce(
   });
 }
 
+function isRelayInsertUniqueViolation(err: unknown): boolean {
+  return isRelayAddressUniqueViolation(err) ||
+    isRelayPrefixUniqueViolation(err);
+}
+
 async function insertRelayWithRetry(
   db: Db,
   params: {
@@ -412,12 +418,15 @@ async function insertRelayWithRetry(
   try {
     await insertRelayOnce(db, params);
   } catch (err) {
-    if (!isRelayAddressUniqueViolation(err)) throw err;
+    if (!isRelayInsertUniqueViolation(err)) throw err;
     try {
       await insertRelayOnce(db, params);
     } catch (retryErr) {
       if (isRelayAddressUniqueViolation(retryErr)) {
         throw new FabricAllocationError("fabric_address_pool_exhausted");
+      }
+      if (isRelayPrefixUniqueViolation(retryErr)) {
+        throw new FabricAllocationError("fabric_prefix_pool_exhausted");
       }
       throw retryErr;
     }

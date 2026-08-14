@@ -67,4 +67,49 @@ test("extractCloudflareGeo returns null for non-records", () => {
 test("geoEquals detects field differences", () => {
   assertEquals(geoEquals({ country: "US" }, { country: "CA" }), false);
   assertEquals(geoEquals(null, { country: "US" }), false);
+  assertEquals(geoEquals(null, null), true);
+  assertEquals(geoEquals(undefined, undefined), true);
+});
+
+test("extractCloudflareGeo returns null when cf has no usable geo fields", () => {
+  assertEquals(extractCloudflareGeo({}), null);
+  assertEquals(extractCloudflareGeo({ country: "  " }), null);
+});
+
+test("extractCloudflareGeo maps the full string field set", () => {
+  const geo = extractCloudflareGeo({
+    asOrganization: " Example ISP ",
+    country: "US",
+    city: "Austin",
+    continent: "NA",
+    region: "Texas",
+    regionCode: "TX",
+    timezone: "America/Chicago",
+    longitude: "-97.7",
+    latitude: "30.2",
+    postalCode: "78701",
+    metroCode: "635",
+    colo: "DFW",
+    asn: 64500,
+  });
+  assertEquals(geo?.asOrganization, "Example ISP");
+  assertEquals(geo?.country, "US");
+  assertEquals(geo?.city, "Austin");
+  assertEquals(geo?.continent, "NA");
+  assertEquals(geo?.region, "Texas");
+  assertEquals(geo?.regionCode, "TX");
+  assertEquals(geo?.timezone, "America/Chicago");
+  assertEquals(geo?.longitude, "-97.7");
+  assertEquals(geo?.latitude, "30.2");
+  assertEquals(geo?.postalCode, "78701");
+  assertEquals(geo?.metroCode, "635");
+  assertEquals(geo?.datacenter, "DFW");
+  assertEquals(geo?.asn, 64500);
+  assertEquals(typeof geo?.capturedAt, "string");
+});
+
+test("parseServerGeo rejects non-records and empty payloads", () => {
+  assertEquals(parseServerGeo(null), null);
+  assertEquals(parseServerGeo([]), null);
+  assertEquals(parseServerGeo({ country: "" }), null);
 });
