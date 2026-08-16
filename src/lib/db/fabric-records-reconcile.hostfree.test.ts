@@ -136,7 +136,6 @@ function filterRows<T extends Record<string, unknown>>(
 type ServerRow = {
   id: string;
   organizationId: string;
-  datacenterId?: string | null;
   metadata?: unknown;
 };
 type RelayRow = {
@@ -284,8 +283,7 @@ function createReconcileDb(opts: {
       }
 
       if (
-        keySet.has("datacenterId") && keySet.has("metadata") &&
-        keySet.has("id")
+        keys.length === 2 && keySet.has("metadata") && keySet.has("id")
       ) {
         return {
           from: (table: unknown) => ({
@@ -294,7 +292,6 @@ function createReconcileDb(opts: {
               return thenableRows(
                 filterRows(servers, condition).map((row) => ({
                   id: row.id,
-                  datacenterId: row.datacenterId ?? null,
                   metadata: row.metadata ?? null,
                 })),
               );
@@ -436,7 +433,7 @@ test("loadFabricReconcileSnapshot batches relays PSK envelopes segments and cach
   const db = createReconcileDb({
     relays: sampleRelays(),
     servers: [
-      { id: "srv-1", organizationId: ORG, metadata: { addresses: { publicIpv4: ["198.51.100.1"] } } },
+      { id: "srv-1", organizationId: ORG, metadata: { ips: [{ address: "198.51.100.1", version: 4, scope: "public" }] } },
       { id: "srv-2", organizationId: ORG },
     ],
     ips: [{
@@ -469,7 +466,7 @@ test("loadFabricReconcileSnapshot batches relays PSK envelopes segments and cach
     "203.0.113.99",
   );
   assertEquals(
-    snapshot.caches.reportedByServer.get("srv-1")?.publicIpv4,
+    snapshot.caches.reportedByServer.get("srv-1")?.map((ip) => ip.address),
     ["198.51.100.1"],
   );
 });

@@ -363,6 +363,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/ip-address.test.ts \
   src/lib/machine-key.test.ts \
   src/lib/managed/ \
+  src/lib/net/datacenter-membership.hostfree.test.ts \
   src/lib/net/datacenter-networks.pure.test.ts \
   src/lib/net/private-endpoint.pure.test.ts \
   src/lib/naming.test.ts \

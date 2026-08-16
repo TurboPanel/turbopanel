@@ -75,7 +75,7 @@ function createEndpointlessFabricDb(relays: RelayRow[]): Db {
         };
       }
 
-      if (keySet.has("datacenterId") && keySet.has("metadata")) {
+      if (keys.length === 2 && keySet.has("id") && keySet.has("metadata")) {
         return {
           from() {
             return {
@@ -83,7 +83,6 @@ function createEndpointlessFabricDb(relays: RelayRow[]): Db {
                 return thenable(
                   relays.map((row) => ({
                     id: row.serverId,
-                    datacenterId: null,
                     metadata: null,
                   })),
                 );
@@ -544,7 +543,7 @@ test("enqueueFabricReconcileForServers loads one snapshot not per-relay full-sta
       if (keySet.has("presharedKey")) counts.psk += 1;
       if (keySet.has("networkId") && keySet.has("cidr")) counts.segments += 1;
       if (keySet.has("scope") && keySet.has("createdAt")) counts.ips += 1;
-      if (keySet.has("datacenterId") && keySet.has("metadata")) {
+      if (keys.length === 2 && keySet.has("id") && keySet.has("metadata")) {
         counts.servers += 1;
       }
       return (inner as unknown as {

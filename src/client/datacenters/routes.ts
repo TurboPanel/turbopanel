@@ -6,10 +6,19 @@ import { createSessionMiddleware } from "../authn/middleware.ts";
 import { assertCanOr403, listVisible } from "../authz/index.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
 import { type Db, getDb } from "../../db.ts";
-import { datacenter, network, server } from "../../lib/db/schema.ts";
+import { datacenter, ip, network, server } from "../../lib/db/schema.ts";
 import { parseDatacenterOptions } from "../../lib/datacenter-options.ts";
 import { suggestDatacenterNames } from "../../lib/datacenter-name-suggestions.ts";
 import { loadDatacenterCidrs } from "../../lib/net/datacenter-networks.ts";
+import {
+  countUnassignedServersAmong,
+  loadDatacenterMembershipsForDatacenter,
+  loadDatacenterMembershipsForServers,
+  loadSiteNetworkId,
+  siteCidrForAddress,
+  validateMemberPinAddress,
+} from "../../lib/net/datacenter-membership.ts";
+import { isIpAddressUniqueViolation } from "../ips/ip-create-validation.ts";
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -23,22 +32,22 @@ import {
 } from "../shared.ts";
 import {
   attachPrivateCidrs,
-  collectServerIdsToAssign,
-  parseAssignServerIds,
+  parseMemberPins,
   parseNameSuggestionsQuery,
   parseOptionalUuid,
   resolveSeededFields,
   type CreateDatacenterInput,
+  type ParsedMemberPin,
   type SelectedServerRow,
 } from "./create-input.ts";
 
 export {
   attachPrivateCidrs,
-  collectServerIdsToAssign,
   mergeDatacenterMetadata,
-  parseAssignServerIds,
+  parseMemberPins,
   parseNameSuggestionsQuery,
   parseOptionalUuid,
+  parseRequiredCidr,
   resolveSeededFields,
 } from "./create-input.ts";
 
@@ -55,9 +64,9 @@ function parseCreateDatacenterInput(
     return c.json({ error: "Invalid request" }, 400);
   }
 
+  const members = parseMemberPins(body.members);
   const sourceServerId = parseOptionalUuid(body.sourceServerId);
-  const assignServerIds = parseAssignServerIds(body.assignServerIds);
-  if (!sourceServerId.ok || !assignServerIds.ok) {
+  if (!members.ok || !sourceServerId.ok) {
     return c.json({ error: "Invalid request" }, 400);
   }
 
@@ -71,24 +80,37 @@ function parseCreateDatacenterInput(
     description,
     metadata,
     options: rawOptions === null ? null : parseDatacenterOptions(rawOptions),
+    members: members.value,
     sourceServerId: sourceServerId.value,
-    assignServerIds: assignServerIds.value,
   };
 }
 
-type AssignableServersResult =
+type MemberServersResult =
   | { ok: true; rows: SelectedServerRow[] }
   | { ok: false; status: 404 }
-  | { ok: false; status: 409; serverId: string };
+  | {
+    ok: false;
+    status: 400;
+    error:
+      | "invalid_address"
+      | "invalid_cidr"
+      | "address_not_in_cidr"
+      | "address_not_reported"
+      | "address_cidr_unreported";
+    serverId?: string;
+  }
+  | { ok: false; status: 409; error: "server_already_member"; serverId: string };
 
-async function loadAssignableServers(
+async function loadVisibleMemberServerRows(
   db: Db,
   userId: string,
   organizationId: string,
-  serverIds: string[],
-): Promise<AssignableServersResult> {
-  if (serverIds.length === 0) return { ok: true, rows: [] };
-
+  members: ParsedMemberPin[],
+): Promise<
+  | { ok: true; rows: SelectedServerRow[] }
+  | { ok: false; status: 404 }
+> {
+  const serverIds = members.map((m) => m.serverId);
   const visibleIds = await listVisible(db, {
     kind: "server",
     userId,
@@ -101,7 +123,6 @@ async function loadAssignableServers(
   const rows = await db
     .select({
       id: server.id,
-      datacenterId: server.datacenterId,
       metadata: server.metadata,
     })
     .from(server)
@@ -114,11 +135,112 @@ async function loadAssignableServers(
   if (rows.length !== serverIds.length) {
     return { ok: false, status: 404 };
   }
-  const assignedRow = rows.find((row) => row.datacenterId);
-  if (assignedRow) {
-    return { ok: false, status: 409, serverId: assignedRow.id };
+  return { ok: true, rows };
+}
+
+function validateLoadedMemberPins(
+  members: ParsedMemberPin[],
+  rows: SelectedServerRow[],
+  cidr: string,
+): MemberServersResult {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  for (const member of members) {
+    const row = byId.get(member.serverId);
+    if (!row) return { ok: false, status: 404 };
+    const validated = validateMemberPinAddress(
+      member.address,
+      cidr,
+      row.metadata,
+    );
+    if (!validated.ok) {
+      return {
+        ok: false,
+        status: 400,
+        error: validated.error,
+        serverId: member.serverId,
+      };
+    }
   }
   return { ok: true, rows };
+}
+
+async function loadMemberServers(
+  db: Db,
+  userId: string,
+  organizationId: string,
+  members: ParsedMemberPin[],
+  cidr: string,
+): Promise<MemberServersResult> {
+  const loaded = await loadVisibleMemberServerRows(
+    db,
+    userId,
+    organizationId,
+    members,
+  );
+  if (!loaded.ok) return loaded;
+  return validateLoadedMemberPins(members, loaded.rows, cidr);
+}
+
+function deriveCreateCidr(
+  members: ParsedMemberPin[],
+  rows: SelectedServerRow[],
+):
+  | { ok: true; cidr: string }
+  | Exclude<MemberServersResult, { ok: true }> {
+  const seed = members[0];
+  if (!seed) return { ok: false, status: 404 };
+  const seedRow = rows.find((row) => row.id === seed.serverId);
+  if (!seedRow) return { ok: false, status: 404 };
+  const cidr = siteCidrForAddress(seedRow.metadata, seed.address);
+  if (!cidr) {
+    return {
+      ok: false,
+      status: 400,
+      error: "address_cidr_unreported",
+      serverId: seed.serverId,
+    };
+  }
+  return { ok: true, cidr };
+}
+
+async function assertNotAlreadyMemberOfTarget(
+  db: Db,
+  members: ParsedMemberPin[],
+  datacenterId: string,
+): Promise<MemberServersResult | null> {
+  const memberships = await loadDatacenterMembershipsForServers(
+    db,
+    members.map((m) => m.serverId),
+  );
+  for (const member of members) {
+    const pins = memberships.get(member.serverId) ?? [];
+    if (pins.some((pin) => pin.datacenterId === datacenterId)) {
+      return {
+        ok: false,
+        status: 409,
+        error: "server_already_member",
+        serverId: member.serverId,
+      };
+    }
+  }
+  return null
+}
+
+function memberValidationResponse(
+  c: Context<AppEnv>,
+  result: Exclude<MemberServersResult, { ok: true }>,
+): Response {
+  if (result.status === 404) return c.json({ error: "Not found" }, 404);
+  if (result.status === 409) {
+    return c.json({ error: result.error, serverId: result.serverId }, 409);
+  }
+  return c.json(
+    {
+      error: result.error,
+      ...(result.serverId ? { serverId: result.serverId } : {}),
+    },
+    400,
+  );
 }
 
 export function registerDatacenterRoutes(
@@ -132,6 +254,11 @@ export function registerDatacenterRoutes(
 
   router.use("/datacenters", createSessionMiddleware(secrets));
   router.use("/datacenters/:id", createSessionMiddleware(secrets));
+  router.use("/datacenters/:id/members", createSessionMiddleware(secrets));
+  router.use(
+    "/datacenters/:id/members/:serverId",
+    createSessionMiddleware(secrets),
+  );
 
   router.get("/datacenters", async (c) => {
     const db = getDb(c);
@@ -229,7 +356,6 @@ export function registerDatacenterRoutes(
       .select({
         id: server.id,
         name: server.name,
-        datacenterId: server.datacenterId,
         metadata: server.metadata,
       })
       .from(server)
@@ -239,6 +365,11 @@ export function registerDatacenterRoutes(
           eq(server.organizationId, organizationId),
         ),
       );
+
+    const { memberServerIds } = await countUnassignedServersAmong(
+      db,
+      rows.map((row) => row.id),
+    );
 
     const suggestions = suggestDatacenterNames(
       rows.map((row) => {
@@ -255,7 +386,8 @@ export function registerDatacenterRoutes(
           id: row.id,
           name: row.name,
           hostname,
-          datacenterId: row.datacenterId,
+          // Name suggestions treat "unassigned" as zero memberships.
+          datacenterId: memberServerIds.has(row.id) ? "member" : null,
           metadata: row.metadata,
         };
       }),
@@ -304,8 +436,17 @@ export function registerDatacenterRoutes(
 
     const cidrsByDc = await loadDatacenterCidrs(db, [row.id]);
     const [withCidrs] = attachPrivateCidrs([row], cidrsByDc);
+    const members = await loadDatacenterMembershipsForDatacenter(db, row.id);
 
-    return c.json({ datacenter: withCidrs });
+    return c.json({
+      datacenter: withCidrs,
+      members: members.map((m) => ({
+        serverId: m.serverId,
+        address: m.address,
+        ipId: m.ipId,
+        networkId: m.networkId,
+      })),
+    });
   });
 
   router.post("/datacenters", async (c) => {
@@ -331,58 +472,203 @@ export function registerDatacenterRoutes(
 
     const input = parseCreateDatacenterInput(c, body);
     if (input instanceof Response) return input;
-    const serverIdsToAssign = collectServerIdsToAssign(input);
-    const assignableServers = await loadAssignableServers(
+
+    const loaded = await loadVisibleMemberServerRows(
       db,
       session.userId,
       organizationId,
-      serverIdsToAssign,
+      input.members,
     );
-    if (!assignableServers.ok) {
-      if (assignableServers.status === 409) {
-        return c.json({
-          error: "server_already_assigned",
-          serverId: assignableServers.serverId,
-        }, 409);
+    if (!loaded.ok) {
+      return memberValidationResponse(c, loaded);
+    }
+
+    const derived = deriveCreateCidr(input.members, loaded.rows);
+    if (!derived.ok) {
+      return memberValidationResponse(c, derived);
+    }
+    const cidr = derived.cidr;
+
+    const memberServers = validateLoadedMemberPins(
+      input.members,
+      loaded.rows,
+      cidr,
+    );
+    if (!memberServers.ok) {
+      return memberValidationResponse(c, memberServers);
+    }
+
+    const seeded = resolveSeededFields(input, memberServers.rows);
+
+    try {
+      const id = await db.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(datacenter)
+          .values({
+            organizationId,
+            name: seeded.name,
+            description: input.description,
+            ...(seeded.metadata !== null ? { metadata: seeded.metadata } : {}),
+            ...(input.options !== null ? { options: input.options } : {}),
+          })
+          .returning({ id: datacenter.id });
+
+        const [siteNetwork] = await tx
+          .insert(network)
+          .values({
+            organizationId,
+            datacenterId: inserted.id,
+            kind: "datacenter",
+            cidr,
+            name: seeded.name,
+          })
+          .returning({ id: network.id });
+
+        for (const member of input.members) {
+          await tx.insert(ip).values({
+            organizationId,
+            datacenterId: inserted.id,
+            networkId: siteNetwork.id,
+            serverId: member.serverId,
+            address: member.address,
+            allocation: "dedicated",
+            scope: "datacenter",
+          });
+        }
+
+        return inserted.id;
+      });
+
+      return c.json({ ok: true as const, id });
+    } catch (err) {
+      if (isIpAddressUniqueViolation(err)) {
+        return c.json({ error: "address_in_use" }, 409);
       }
+      throw err;
+    }
+  });
+
+  router.post("/datacenters/:id/members", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
+
+    const id = c.req.param("id");
+    const entityOrgId = await resolveEntityOrganizationId(db, "datacenter", id);
+    if (entityOrgId !== organizationId) {
       return c.json({ error: "Not found" }, 404);
     }
-    const seeded = resolveSeededFields(
-      input,
-      assignableServers.rows,
+
+    const denied = await assertCanOr403(
+      c,
+      "organization:manage",
+      "datacenter",
+      id,
     );
+    if (denied) return denied;
 
-    const id = await db.transaction(async (tx) => {
-      const [inserted] = await tx
-        .insert(datacenter)
-        .values({
-          organizationId,
-          name: seeded.name,
-          description: input.description,
-          ...(seeded.metadata !== null ? { metadata: seeded.metadata } : {}),
-          ...(input.options !== null ? { options: input.options } : {}),
-        })
-        .returning({ id: datacenter.id });
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
 
-      if (serverIdsToAssign.length > 0) {
-        await tx
-          .update(server)
-          .set({
-            datacenterId: inserted.id,
-            updatedAt: new Date().toISOString(),
-          })
-          .where(
-            and(
-              inArray(server.id, serverIdsToAssign),
-              eq(server.organizationId, organizationId),
-            ),
-          );
+    const members = parseMemberPins(body.members ?? [body]);
+    if (!members.ok) return c.json({ error: "Invalid request" }, 400);
+
+    const site = await loadSiteNetworkId(db, id);
+    if (!site) {
+      return c.json({ error: "datacenter_cidr_required" }, 422);
+    }
+
+    const memberServers = await loadMemberServers(
+      db,
+      session.userId,
+      organizationId,
+      members.value,
+      site.cidr,
+    );
+    if (!memberServers.ok) {
+      return memberValidationResponse(c, memberServers);
+    }
+
+    const already = await assertNotAlreadyMemberOfTarget(
+      db,
+      members.value,
+      id,
+    );
+    if (already && !already.ok) {
+      return memberValidationResponse(c, already);
+    }
+
+    try {
+      await db.transaction(async (tx) => {
+        for (const member of members.value) {
+          await tx.insert(ip).values({
+            organizationId,
+            datacenterId: id,
+            networkId: site.networkId,
+            serverId: member.serverId,
+            address: member.address,
+            allocation: "dedicated",
+            scope: "datacenter",
+          });
+        }
+      });
+      return c.json({ ok: true as const });
+    } catch (err) {
+      if (isIpAddressUniqueViolation(err)) {
+        return c.json({ error: "address_in_use" }, 409);
       }
+      throw err;
+    }
+  });
 
-      return inserted.id;
-    });
+  router.delete("/datacenters/:id/members/:serverId", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    return c.json({ ok: true as const, id });
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
+
+    const id = c.req.param("id");
+    const serverId = c.req.param("serverId");
+    const entityOrgId = await resolveEntityOrganizationId(db, "datacenter", id);
+    if (entityOrgId !== organizationId) {
+      return c.json({ error: "Not found" }, 404);
+    }
+
+    const denied = await assertCanOr403(
+      c,
+      "organization:manage",
+      "datacenter",
+      id,
+    );
+    if (denied) return denied;
+
+    const deleted = await db
+      .delete(ip)
+      .where(
+        and(
+          eq(ip.scope, "datacenter"),
+          eq(ip.datacenterId, id),
+          eq(ip.serverId, serverId),
+        ),
+      )
+      .returning({ id: ip.id });
+
+    if (deleted.length === 0) {
+      return c.json({ error: "Not found" }, 404);
+    }
+
+    return c.json({ ok: true as const });
   });
 
   router.patch("/datacenters/:id", async (c) => {
@@ -466,16 +752,30 @@ export function registerDatacenterRoutes(
     );
     if (denied) return denied;
 
-    const [scopedNetwork] = await db
-      .select({ id: network.id })
+    const members = await loadDatacenterMembershipsForDatacenter(db, id);
+    if (members.length > 0) {
+      return c.json({ error: "datacenter_has_members" }, 409);
+    }
+
+    const scopedNetworks = await db
+      .select({ id: network.id, kind: network.kind })
       .from(network)
-      .where(eq(network.datacenterId, id))
-      .limit(1);
-    if (scopedNetwork) {
+      .where(eq(network.datacenterId, id));
+    if (scopedNetworks.some((row) => row.kind !== "datacenter")) {
       return c.json({ error: "datacenter_has_networks" }, 409);
     }
 
-    await db.delete(datacenter).where(eq(datacenter.id, id));
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(network)
+        .where(
+          and(
+            eq(network.datacenterId, id),
+            eq(network.kind, "datacenter"),
+          ),
+        );
+      await tx.delete(datacenter).where(eq(datacenter.id, id));
+    });
 
     return c.json({ ok: true as const });
   });

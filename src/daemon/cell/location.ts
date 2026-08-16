@@ -15,7 +15,7 @@ function resolveCellLocationHintFromRow(
   metadata: ServerMetadata | null | undefined,
   options: ServerOptions | null | undefined,
 ): string | undefined {
-  return options?.cellLocationHint ?? metadata?.cellLocationHint;
+  return options?.cellLocationHint ?? metadata?.cell?.locationHint;
 }
 
 async function loadServerCellColumns(
@@ -39,7 +39,8 @@ async function loadServerCellColumns(
 }
 
 /**
- * Reads `cellLocationHint` from `server.options` then `server.metadata`.
+ * Reads `cellLocationHint` from `server.options` then
+ * `server.metadata.cell.locationHint`.
  *
  * `locationHint` is an enrollment-time decision. Cloudflare only respects it on
  * the first `getByName()` call for a given object name.

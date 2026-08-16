@@ -3,7 +3,7 @@
  */
 
 import { assertEquals } from 'jsr:@std/assert'
-import { collectServerAddresses } from './server-addresses-deno.ts'
+import { collectServerIps } from './server-addresses-deno.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -17,6 +17,8 @@ type FakeIface = {
   name: string
   family: 'IPv4' | 'IPv6'
   address: string
+  cidr?: string
+  netmask?: string
 }
 
 function withNetworkInterfaces(
@@ -34,7 +36,7 @@ function withNetworkInterfaces(
   }
 }
 
-test('collectServerAddresses classifies private/public IPv4 and skips virtual NICS', () => {
+test('collectServerIps classifies private/public IPv4 and skips virtual NICS', () => {
   withNetworkInterfaces(
     [
       { name: 'lo', family: 'IPv4', address: '127.0.0.1' },
@@ -53,17 +55,17 @@ test('collectServerAddresses classifies private/public IPv4 and skips virtual NI
       { name: 'eth0', family: 'IPv4', address: 'not-an-ip' },
     ],
     () => {
-      assertEquals(collectServerAddresses(), {
-        privateIpv4: ['10.0.0.5', '172.16.4.2', '192.168.1.10'],
-        privateIpv6: [],
-        publicIpv4: ['203.0.113.9'],
-        publicIpv6: [],
-      })
+      assertEquals(collectServerIps(), [
+        { address: '10.0.0.5', version: 4, scope: 'private' },
+        { address: '172.16.4.2', version: 4, scope: 'private' },
+        { address: '192.168.1.10', version: 4, scope: 'private' },
+        { address: '203.0.113.9', version: 4, scope: 'public' },
+      ])
     },
   )
 })
 
-test('collectServerAddresses classifies IPv6 private ULAs public and skips unusable', () => {
+test('collectServerIps classifies IPv6 private ULAs public and skips unusable', () => {
   withNetworkInterfaces(
     [
       { name: 'lo', family: 'IPv6', address: '::1' },
@@ -77,16 +79,21 @@ test('collectServerAddresses classifies IPv6 private ULAs public and skips unusa
       { name: 'eth0', family: 'IPv6', address: '0:0:0:0:0:0:0:1' },
     ],
     () => {
-      const got = collectServerAddresses()
-      assertEquals(got.privateIpv6, ['fc00::abcd', 'fd12:3456::1'])
-      assertEquals(got.publicIpv6, ['2001:db8::1', '3ffe::1'])
-      assertEquals(got.privateIpv4, [])
-      assertEquals(got.publicIpv4, [])
+      const got = collectServerIps()
+      assertEquals(
+        got.filter((row) => row.scope === 'private').map((row) => row.address),
+        ['fc00::abcd', 'fd12:3456::1'],
+      )
+      assertEquals(
+        got.filter((row) => row.scope === 'public').map((row) => row.address),
+        ['2001:db8::1', '3ffe::1'],
+      )
+      assertEquals(got.every((row) => row.version === 6), true)
     },
   )
 })
 
-test('collectServerAddresses sorts and dedupes addresses', () => {
+test('collectServerIps sorts and dedupes addresses', () => {
   withNetworkInterfaces(
     [
       { name: 'eth1', family: 'IPv4', address: '10.0.0.2' },
@@ -96,10 +103,38 @@ test('collectServerAddresses sorts and dedupes addresses', () => {
       { name: 'eth0', family: 'IPv4', address: '198.51.100.1' },
     ],
     () => {
-      assertEquals(collectServerAddresses().privateIpv4, ['10.0.0.1', '10.0.0.2'])
-      assertEquals(collectServerAddresses().publicIpv4, [
-        '198.51.100.1',
-        '198.51.100.2',
+      assertEquals(
+        collectServerIps().filter((row) => row.scope === 'private').map((row) => row.address),
+        ['10.0.0.1', '10.0.0.2'],
+      )
+      assertEquals(
+        collectServerIps().filter((row) => row.scope === 'public').map((row) => row.address),
+        ['198.51.100.1', '198.51.100.2'],
+      )
+    },
+  )
+})
+
+test('collectServerIps includes private interface CIDRs', () => {
+  withNetworkInterfaces(
+    [
+      {
+        name: 'eth0',
+        family: 'IPv4',
+        address: '10.0.0.5',
+        cidr: '10.0.0.5/24',
+      },
+      {
+        name: 'eth0',
+        family: 'IPv4',
+        address: '192.168.1.10',
+        netmask: '255.255.255.0',
+      },
+    ],
+    () => {
+      assertEquals(collectServerIps(), [
+        { address: '10.0.0.5', version: 4, scope: 'private', cidr: '10.0.0.5/24' },
+        { address: '192.168.1.10', version: 4, scope: 'private', cidr: '192.168.1.10/24' },
       ])
     },
   )

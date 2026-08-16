@@ -2073,10 +2073,9 @@ test("live WS update-result and heartbeat with addresses cover inbound dispatch"
     ws.send(JSON.stringify({
       type: "heartbeat",
       at: new Date().toISOString(),
-      addresses: {
-        ipv4: ["203.0.113.10"],
-        ipv6: [],
-      },
+      ips: [
+        { address: "203.0.113.10", version: 4, scope: "public" },
+      ],
     }));
     await new Promise((resolve) => setTimeout(resolve, 40));
 

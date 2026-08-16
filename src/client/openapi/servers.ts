@@ -23,7 +23,7 @@ export const serverSchemas = {
         description:
           'Point release when available (e.g. 13.5 from DEBIAN_VERSION_FULL), else VERSION_ID.',
       },
-      versionCodename: {
+      codename: {
         type: 'string',
         description: 'VERSION_CODENAME (e.g. trixie).',
       },
@@ -31,36 +31,56 @@ export const serverSchemas = {
         type: 'string',
         description: 'Raw PRETTY_NAME from os-release.',
       },
-      arch: { type: 'string', description: 'CPU arch (e.g. aarch64, x86_64).' },
+      architecture: {
+        type: 'string',
+        description: 'CPU arch (e.g. aarch64, x86_64).',
+      },
     },
   },
-  ServerHostInventory: {
+  ServerHostResources: {
     type: 'object',
     description:
-      'Static host capacity from daemon hello (/proc/cpuinfo physical cores, /proc/stat logical threads, /proc/meminfo totals).',
+      'Static host capacity from daemon hello (/proc/cpuinfo, /proc/stat, /proc/meminfo).',
     properties: {
-      cpuCores: {
-        type: 'integer',
-        minimum: 1,
-        description:
-          'Physical core count from /proc/cpuinfo topology (equals cpuThreads when topology is unknown).',
+      cpu: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          architecture: { type: 'string' },
+          socketCount: { type: 'integer', minimum: 1 },
+          coreCount: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Physical core count from /proc/cpuinfo topology.',
+          },
+          threadCount: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              'Online logical CPU / thread count (cpuN lines in /proc/stat). Used for load bars.',
+          },
+        },
       },
-      cpuThreads: {
-        type: 'integer',
-        minimum: 1,
-        description:
-          'Online logical CPU / thread count (cpuN lines in /proc/stat). Used for load bars.',
+      memory: {
+        type: 'object',
+        properties: {
+          totalBytes: {
+            type: 'integer',
+            minimum: 1,
+            description: 'MemTotal from /proc/meminfo in bytes.',
+          },
+        },
       },
-      memoryTotalBytes: {
-        type: 'integer',
-        minimum: 1,
-        description: 'MemTotal from /proc/meminfo in bytes.',
-      },
-      swapTotalBytes: {
-        type: 'integer',
-        minimum: 0,
-        description:
-          'SwapTotal from /proc/meminfo in bytes (0 when swap is disabled).',
+      swap: {
+        type: 'object',
+        properties: {
+          totalBytes: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              'SwapTotal from /proc/meminfo in bytes (0 when swap is disabled).',
+          },
+        },
       },
     },
   },
@@ -77,14 +97,19 @@ export const serverSchemas = {
       capturedAt: { type: 'string', format: 'date-time' },
     },
   },
-  ServerAddresses: {
+  ServerReportedIp: {
     type: 'object',
-    description: 'Host interface addresses reported by the daemon.',
+    description: 'One daemon-reported host interface address.',
+    required: ['address', 'version', 'scope'],
     properties: {
-      privateIpv4: { type: 'array', items: { type: 'string' } },
-      privateIpv6: { type: 'array', items: { type: 'string' } },
-      publicIpv4: { type: 'array', items: { type: 'string' } },
-      publicIpv6: { type: 'array', items: { type: 'string' } },
+      address: { type: 'string' },
+      version: { type: 'integer', enum: [4, 6] },
+      scope: { type: 'string', enum: ['private', 'public'] },
+      cidr: {
+        type: 'string',
+        description:
+          'Aligned interface network CIDR when known. Required to create a datacenter from a private address.',
+      },
     },
   },
   ServerRow: {
@@ -153,21 +178,24 @@ export const serverSchemas = {
         enum: ['debian', 'raspberry-pi-os', null],
         description: 'Logo key for the UI OS column.',
       },
-      inventory: {
+      resources: {
         oneOf: [
-          { $ref: '#/components/schemas/ServerHostInventory' },
+          { $ref: '#/components/schemas/ServerHostResources' },
           { type: 'null' },
         ],
         description:
-          'Host capacity (cpu cores / RAM / swap totals) from server.metadata.inventory. Null until the daemon hello reports it.',
+          'Host capacity (cpu / RAM / swap totals) from server.metadata.resources. Null until the daemon hello reports it.',
       },
-      addresses: {
+      ips: {
         oneOf: [
-          { $ref: '#/components/schemas/ServerAddresses' },
+          {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ServerReportedIp' },
+          },
           { type: 'null' },
         ],
         description:
-          'Host addresses from server.metadata.addresses. Null until reported.',
+          'Host addresses from server.metadata.ips. Null until reported.',
       },
       timeSync: {
         oneOf: [
@@ -193,8 +221,19 @@ export const serverSchemas = {
         description:
           'True when this server is the daemon co-located on the same host as this control plane instance.',
       },
-      datacenterId: { type: ['string', 'null'], format: 'uuid' },
-      datacenterDisplayName: { type: ['string', 'null'] },
+      datacenters: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            displayName: { type: ['string', 'null'] },
+          },
+        },
+        description:
+          'Datacenter membership pins (`ip` rows with scope=datacenter). A server may belong to many sites.',
+      },
     },
   },
   ServerLabel: {
@@ -239,7 +278,6 @@ export const serverSchemas = {
     type: 'object',
     properties: {
       displayName: { type: 'string' },
-      datacenterId: { type: ['string', 'null'], format: 'uuid' },
     },
   },
   ServerDetailResponse: {

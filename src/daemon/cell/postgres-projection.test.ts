@@ -431,7 +431,7 @@ test("projectServerDaemon identity trigger skips metadata.geo when stored geo ex
   assertEquals(updateCalls.length, 0);
 });
 
-test("stale identity projection does not clobber fresh timeSync, addresses, os, or geo", async () => {
+test("stale identity projection does not clobber fresh timeSync, ips, os, or geo", async () => {
   const freshTimeSync = {
     timezone: "UTC",
     ntpEnabled: true,
@@ -445,18 +445,13 @@ test("stale identity projection does not clobber fresh timeSync, addresses, os, 
     ntpServers: ["203.0.113.1"],
     capturedAt: "2020-01-01T00:00:00.000Z",
   };
-  const freshAddresses = {
-    privateIpv4: ["10.0.0.2"],
-    privateIpv6: [],
-    publicIpv4: ["203.0.113.50"],
-    publicIpv6: [],
-  };
-  const staleAddresses = {
-    privateIpv4: ["10.0.0.1"],
-    privateIpv6: [],
-    publicIpv4: [],
-    publicIpv6: [],
-  };
+  const freshIps = [
+    { address: "10.0.0.2", version: 4 as const, scope: "private" as const },
+    { address: "203.0.113.50", version: 4 as const, scope: "public" as const },
+  ];
+  const staleIps = [
+    { address: "10.0.0.1", version: 4 as const, scope: "private" as const },
+  ];
   const freshOs = {
     id: "debian",
     versionId: "13",
@@ -471,13 +466,13 @@ test("stale identity projection does not clobber fresh timeSync, addresses, os, 
     geo: testGeoUpdated,
     os: freshOs,
     timeSync: freshTimeSync,
-    addresses: freshAddresses,
+    ips: freshIps,
   };
   const staleMetadata: ServerMetadata = {
     geo: testGeo,
     os: staleOs,
     timeSync: staleTimeSync,
-    addresses: staleAddresses,
+    ips: staleIps,
   };
 
   const { db, updateCalls, getMetadata, getIdentity } = createStaleReadMockDb(
@@ -508,41 +503,34 @@ test("stale identity projection does not clobber fresh timeSync, addresses, os, 
   assertEquals(getIdentity().hostname, "projected-host");
   const metadata = getMetadata();
   assertEquals(metadata?.timeSync, freshTimeSync);
-  assertEquals(metadata?.addresses, freshAddresses);
+  assertEquals(metadata?.ips, freshIps);
   assertEquals(metadata?.os, freshOs);
   assertEquals(metadata?.geo, testGeoUpdated);
 });
 
-test("identity projection replaces stored addresses when daemon reports empty lists", async () => {
-  const priorAddresses = {
-    privateIpv4: ["10.0.0.1"],
-    privateIpv6: [] as string[],
-    publicIpv4: ["203.0.113.10"],
-    publicIpv6: [] as string[],
-  };
-  const emptyReport = {
-    privateIpv4: [] as string[],
-    privateIpv6: [] as string[],
-    publicIpv4: [] as string[],
-    publicIpv6: [] as string[],
-  };
+test("identity projection replaces stored ips when daemon reports empty lists", async () => {
+  const priorIps = [
+    { address: "10.0.0.1", version: 4 as const, scope: "private" as const },
+    { address: "203.0.113.10", version: 4 as const, scope: "public" as const },
+  ];
+  const emptyReport: [] = [];
   const { db, updateCalls } = createMockDb(
     { key: baseKey },
     {},
-    { addresses: priorAddresses },
+    { ips: priorIps },
   );
 
   // `identity` triggers only touch metadata when identity/geo actually changed
-  // (applyIdentityTrigger gates on identityDue/geoDue) — pair the addresses
+  // (applyIdentityTrigger gates on identityDue/geoDue) — pair the ips
   // report with a remoteAddress change so the metadata delta is computed.
   await projectServerDaemon(db, serverId, {
     kind: "identity",
-    identity: { remoteAddress: "203.0.113.10", addresses: emptyReport },
+    identity: { remoteAddress: "203.0.113.10", ips: emptyReport },
   });
 
   assertEquals(updateCalls.length, 1);
   const patch = unwrapMetadataPatch(updateCalls[0]?.metadata);
-  assertEquals(patch?.addresses, emptyReport);
+  assertEquals(patch?.ips, emptyReport);
 });
 
 test("projectServerDaemon online sets status columns and identity columns", async () => {

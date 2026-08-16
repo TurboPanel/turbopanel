@@ -1,5 +1,5 @@
 {
-  "id": "82be46cb-c44e-42b7-b6fc-85c08ee8cf43",
+  "id": "ae22548b-45fa-4b07-adb9-29c79b1c16be",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1923,6 +1923,28 @@
           "method": "btree",
           "with": {}
         },
+        "uniq_ip_server_datacenter_member": {
+          "name": "uniq_ip_server_datacenter_member",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"ip\".\"scope\" = 'datacenter' AND \"ip\".\"server_id\" IS NOT NULL AND \"ip\".\"datacenter_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "uniq_ip_org_address": {
           "name": "uniq_ip_org_address",
           "columns": [
@@ -1969,7 +1991,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         },
         "ip_network_id_network_id_fk": {
@@ -2013,11 +2035,11 @@
         },
         "ip_datacenter_scope_check": {
           "name": "ip_datacenter_scope_check",
-          "value": "(\"ip\".\"scope\" <> 'datacenter') OR (\"ip\".\"server_id\" IS NOT NULL OR \"ip\".\"datacenter_id\" IS NOT NULL)"
+          "value": "(\"ip\".\"scope\" <> 'datacenter') OR (\"ip\".\"datacenter_id\" IS NOT NULL)"
         },
-        "ip_datacenter_free_pool_check": {
-          "name": "ip_datacenter_free_pool_check",
-          "value": "(\"ip\".\"datacenter_id\" IS NULL) OR (\"ip\".\"server_id\" IS NULL AND \"ip\".\"network_id\" IS NULL)"
+        "ip_datacenter_anchor_check": {
+          "name": "ip_datacenter_anchor_check",
+          "value": "(\n        \"ip\".\"datacenter_id\" IS NULL OR\n        (\"ip\".\"server_id\" IS NULL AND \"ip\".\"network_id\" IS NULL) OR\n        \"ip\".\"server_id\" IS NOT NULL\n      )"
         },
         "ip_name_format_check": {
           "name": "ip_name_format_check",
@@ -2963,6 +2985,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "uniq_network_datacenter_site": {
+          "name": "uniq_network_datacenter_site",
+          "columns": [
+            {
+              "expression": "datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"network\".\"kind\" = 'datacenter' AND \"network\".\"datacenter_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -3016,7 +3054,7 @@
         },
         "network_single_scope_check": {
           "name": "network_single_scope_check",
-          "value": "(\n        (\"network\".\"kind\" = 'datacenter' AND \"network\".\"datacenter_id\" IS NOT NULL AND \"network\".\"server_id\" IS NULL AND \"network\".\"environment_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'docker' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"environment_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'compose' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"server_id\" IS NULL)\n      )"
+          "value": "(\n        (\"network\".\"kind\" = 'datacenter' AND \"network\".\"datacenter_id\" IS NOT NULL AND \"network\".\"server_id\" IS NULL AND \"network\".\"environment_id\" IS NULL AND \"network\".\"cidr\" IS NOT NULL) OR\n        (\"network\".\"kind\" = 'docker' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"environment_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'compose' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"server_id\" IS NULL)\n      )"
         },
         "network_name_format_check": {
           "name": "network_name_format_check",
@@ -4113,12 +4151,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "datacenter_id": {
-          "name": "datacenter_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "name": {
           "name": "name",
           "type": "varchar(255)",
@@ -4163,22 +4195,6 @@
           "columns": [
             {
               "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_server_datacenter_id": {
-          "name": "idx_server_datacenter_id",
-          "columns": [
-            {
-              "expression": "datacenter_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -4251,19 +4267,6 @@
             "id"
           ],
           "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "server_datacenter_id_datacenter_id_fk": {
-          "name": "server_datacenter_id_datacenter_id_fk",
-          "tableFrom": "server",
-          "tableTo": "datacenter",
-          "columnsFrom": [
-            "datacenter_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

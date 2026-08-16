@@ -11,7 +11,6 @@ import type { PlacementConstraint, ServiceScheduleSpec } from './interpret.ts'
 export type FleetServer = {
   id: string
   connected: boolean
-  datacenterId: string | null
   labels: Record<string, string>
 }
 
@@ -219,6 +218,106 @@ function fail(error: ScheduleErrorCode, message: string): SchedulePlan {
   return { ok: false, error, message }
 }
 
+type GroupPlaceResult =
+  | { ok: true; tasks: DesiredTaskInput[] }
+  | { ok: false; error: ScheduleErrorCode; message: string }
+
+function planEmptyEnvironment(input: PlanEnvironmentInput): SchedulePlan {
+  const fallbackId = input.pinServerId ?? input.defaultServerId
+  if (!fallbackId) return { ok: true, tasks: [], serverIds: [] }
+  if (!findServer(input.servers, fallbackId)) {
+    return fail('no_eligible_server', 'Pinned server is not in this organization')
+  }
+  return { ok: true, tasks: [], serverIds: [fallbackId] }
+}
+
+function missingPinnedServer(input: PlanEnvironmentInput): SchedulePlan | null {
+  if (!input.pinServerId) return null
+  if (findServer(input.servers, input.pinServerId)) return null
+  return fail('no_eligible_server', 'Pinned server is not in this organization')
+}
+
+function intersectGroupEligible(
+  pool: readonly FleetServer[],
+  groupServices: readonly PlannedService[],
+  input: PlanEnvironmentInput,
+): FleetServer[] {
+  let eligible = [...pool]
+  if (input.pinServerId) {
+    eligible = eligible.filter((row) => row.id === input.pinServerId)
+  }
+  for (const row of groupServices) {
+    const next = eligibleForService(
+      input.servers,
+      row.spec,
+      input.pinServerId,
+      input.defaultServerId,
+      input.storagePins.get(row.serviceId),
+    )
+    const allowed = new Set(next.map((server) => server.id))
+    eligible = eligible.filter((server) => allowed.has(server.id))
+  }
+  return eligible
+}
+
+function emptyGroupError(groupServices: readonly PlannedService[]): GroupPlaceResult {
+  const names = groupServices.map((row) => row.spec.composeServiceName).join(', ')
+  const colocated = groupServices.some((row) => row.spec.colocateWith.length > 0)
+  return fail(
+    colocated ? 'colocation_conflict' : 'constraint_unsatisfiable',
+    `No eligible server for ${names}`,
+  )
+}
+
+function placeGroupServices(
+  groupServices: readonly PlannedService[],
+  eligible: FleetServer[],
+  existing: Map<string, string>,
+  preferredId: string | null,
+): GroupPlaceResult {
+  const fallback = findServer(eligible, preferredId) ?? eligible[0]
+  if (!fallback) {
+    return fail('no_eligible_server', 'No eligible server remains after constraints')
+  }
+  const hosts = eligible.length > 0 ? eligible : [fallback]
+  const tasks: DesiredTaskInput[] = []
+  for (const row of groupServices) {
+    const placed = placeService({
+      service: row,
+      eligible: hosts,
+      existing,
+      requireEmptyHost: row.spec.publishedHostPorts.length > 0,
+      preferredId,
+    })
+    if ('error' in placed) return fail(placed.error, placed.message)
+    tasks.push(...placed.tasks)
+  }
+  return { ok: true, tasks }
+}
+
+function placeColocationGroup(
+  group: readonly string[],
+  byId: ReadonlyMap<string, PlannedService>,
+  pool: readonly FleetServer[],
+  existing: Map<string, string>,
+  input: PlanEnvironmentInput,
+): GroupPlaceResult {
+  const groupServices = group
+    .map((id) => byId.get(id))
+    .filter((row): row is PlannedService => row !== undefined)
+  const eligible = intersectGroupEligible(pool, groupServices, input)
+  if (eligible.length === 0) return emptyGroupError(groupServices)
+  return placeGroupServices(groupServices, eligible, existing, input.defaultServerId)
+}
+
+function fabricRequiredForServers(
+  serverIds: readonly string[],
+  fabricEnabled: boolean,
+  pinServerId: string | null,
+): boolean {
+  return serverIds.length > 1 && !fabricEnabled && !pinServerId
+}
+
 function placeService(params: {
   service: PlannedService
   eligible: FleetServer[]
@@ -283,14 +382,7 @@ function placeService(params: {
  * and `upsertDeploymentTargets`.
  */
 export function planEnvironmentSchedule(input: PlanEnvironmentInput): SchedulePlan {
-  if (input.services.length === 0) {
-    const fallbackId = input.pinServerId ?? input.defaultServerId
-    if (!fallbackId) return { ok: true, tasks: [], serverIds: [] }
-    if (!findServer(input.servers, fallbackId)) {
-      return fail('no_eligible_server', 'Pinned server is not in this organization')
-    }
-    return { ok: true, tasks: [], serverIds: [fallbackId] }
-  }
+  if (input.services.length === 0) return planEmptyEnvironment(input)
 
   const pool = schedulingPool(
     input.servers,
@@ -301,70 +393,22 @@ export function planEnvironmentSchedule(input: PlanEnvironmentInput): SchedulePl
     return fail('no_eligible_server', 'No connected servers are available')
   }
 
-  if (input.pinServerId) {
-    const pinned = findServer(input.servers, input.pinServerId)
-    if (!pinned) {
-      return fail('no_eligible_server', 'Pinned server is not in this organization')
-    }
-  }
+  const pinError = missingPinnedServer(input)
+  if (pinError) return pinError
 
   const existing = existingByServiceSlot(input.existingTasks)
   const byId = new Map(input.services.map((row) => [row.serviceId, row]))
   const allTasks: DesiredTaskInput[] = []
 
   for (const group of colocationGroups(input.services)) {
-    const groupServices = group
-      .map((id) => byId.get(id))
-      .filter((row): row is PlannedService => row !== undefined)
-
-    let eligible = pool
-    if (input.pinServerId) {
-      eligible = eligible.filter((row) => row.id === input.pinServerId)
-    }
-    for (const row of groupServices) {
-      const storagePin = input.storagePins.get(row.serviceId)
-      const next = eligibleForService(
-        input.servers,
-        row.spec,
-        input.pinServerId,
-        input.defaultServerId,
-        storagePin,
-      )
-      const allowed = new Set(next.map((server) => server.id))
-      eligible = eligible.filter((server) => allowed.has(server.id))
-    }
-    if (eligible.length === 0) {
-      const names = groupServices.map((row) => row.spec.composeServiceName).join(', ')
-      return fail(
-        groupServices.some((row) => row.spec.colocateWith.length > 0)
-          ? 'colocation_conflict'
-          : 'constraint_unsatisfiable',
-        `No eligible server for ${names}`,
-      )
-    }
-
-    const fallback = findServer(eligible, input.defaultServerId) ?? eligible[0]
-    if (!fallback) {
-      return fail('no_eligible_server', 'No eligible server remains after constraints')
-    }
-
-    for (const row of groupServices) {
-      const requireEmptyHost = row.spec.publishedHostPorts.length > 0
-      const placed = placeService({
-        service: row,
-        eligible: eligible.length > 0 ? eligible : [fallback],
-        existing,
-        requireEmptyHost,
-        preferredId: input.defaultServerId,
-      })
-      if ('error' in placed) return fail(placed.error, placed.message)
-      allTasks.push(...placed.tasks)
-    }
+    const placed = placeColocationGroup(group, byId, pool, existing, input)
+    if (!placed.ok) return placed
+    allTasks.push(...placed.tasks)
   }
 
   const serverIds = [...new Set(allTasks.map((task) => task.serverId))]
     .sort((a, b) => a.localeCompare(b))
-  if (serverIds.length > 1 && !input.fabricEnabled && !input.pinServerId) {
+  if (fabricRequiredForServers(serverIds, input.fabricEnabled, input.pinServerId)) {
     return fail(
       'turbofabric_required',
       'Enable TurboFabric to run this environment across servers',

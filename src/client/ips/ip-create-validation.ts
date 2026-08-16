@@ -92,8 +92,16 @@ export function assertIpScopeFkRules(
   const hasDatacenter =
     scopeFks.datacenterId !== undefined && scopeFks.datacenterId !== null
 
-  if (scope === 'datacenter' && !hasServer && !hasDatacenter) {
-    return c.json({ error: 'Invalid request' }, 400)
+  if (scope === 'datacenter') {
+    // Site membership pin or free pool — both require datacenterId.
+    if (!hasDatacenter) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    // Free pool: no server, no network. Membership: server (+ optional network).
+    if (!hasServer && hasNetwork) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    return null
   }
 
   if (hasDatacenter && (hasNetwork || hasServer)) {

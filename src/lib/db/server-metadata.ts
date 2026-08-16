@@ -1,4 +1,4 @@
-import type { ServerAddresses } from '../../server-addresses.ts'
+import type { ServerReportedIp } from '../../server-addresses.ts'
 import type { ServerGeo } from '../geo/server-geo.ts'
 import type { DatacenterOptions } from '../datacenter-options.ts'
 import type { OrganizationOptions } from '../organization-options.ts'
@@ -24,26 +24,27 @@ export type ServerOsMetadata = {
   /** Prefer dotted point-release (`"13.5"`) over bare major (`"13"`). */
   version?: string
   /** e.g. `VERSION_CODENAME` `"trixie"` */
-  versionCodename?: string
+  codename?: string
   /** Raw `PRETTY_NAME` from os-release when available. */
   prettyName?: string
-  /** e.g. arm64, x86_64 */
-  arch?: string
+  /** e.g. arm64, x86_64, aarch64 */
+  architecture?: string
 }
 
-/**
- * Hybrid / P+E style core counts (optional; omit on homogeneous or unknown CPUs).
- * `p` = performance cores, `e` = efficiency cores.
- */
-export type ServerCpuCores = {
-  p?: number
-  e?: number
-}
-
-export type ServerCpuMetadata = {
-  sockets?: number
-  cores?: ServerCpuCores
-  threads?: number
+export type ServerCpuResources = {
+  /** CPU model name from `/proc/cpuinfo` (`model name`). */
+  name?: string
+  /** e.g. `"x86_64"`, `"aarch64"`. */
+  architecture?: string
+  /** Distinct physical socket count. */
+  socketCount?: number
+  /** Physical core count (`/proc/cpuinfo` topology). */
+  coreCount?: number
+  /**
+   * Logical CPU / thread count (`/proc/stat` `cpuN` lines). Distinct from
+   * {@link coreCount} when SMT/HT is enabled. Used for load-average bars.
+   */
+  threadCount?: number
 }
 
 /**
@@ -51,17 +52,23 @@ export type ServerCpuMetadata = {
  * Used for fleet inventory totals and load-average normalization — not live
  * usage (that lives in the metrics backend).
  */
-export type ServerHostInventory = {
-  /** Physical core count (`/proc/cpuinfo` topology). */
-  cpuCores?: number
-  /**
-   * Logical CPU / thread count (`/proc/stat` `cpuN` lines). Distinct from
-   * {@link cpuCores} when SMT/HT is enabled. Used for load-average bars.
-   */
-  cpuThreads?: number
-  memoryTotalBytes?: number
-  /** 0 means swap is configured as empty / disabled. */
-  swapTotalBytes?: number
+export type ServerHostResources = {
+  cpu?: ServerCpuResources
+  memory?: { totalBytes?: number }
+  swap?: { totalBytes?: number }
+}
+
+/**
+ * Cell placement / generation facts nested under `server.metadata.cell`.
+ * Operator overrides for location/generation live on `server.options`.
+ */
+export type ServerCellMetadata = {
+  /** Cloudflare `locationHint` chosen at enrollment (e.g. `"wnam"`, `"eeur"`). */
+  locationHint?: string
+  /** Monotonically increasing; increment when a new DO logical name is issued. */
+  generation?: number
+  /** Last snapshot version written by the cell, for optimistic concurrency. */
+  snapshotVersion?: number
 }
 
 /**
@@ -83,31 +90,25 @@ export type ServerTimeSync = {
  */
 export type ServerMetadata = {
   os?: ServerOsMetadata
-  cpu?: ServerCpuMetadata
   /**
-   * Host capacity (cpu cores / RAM / swap totals) from daemon hello.
+   * Host capacity (cpu / RAM / swap totals) from daemon hello.
    * Rarely changes; process-cached on the daemon and projected once per connect.
    */
-  inventory?: ServerHostInventory
+  resources?: ServerHostResources
   /**
-   * Cloudflare `locationHint` chosen at enrollment time (e.g. `"wnam"`, `"eeur"`).
-   * Enrollment-time decision; region moves require a new generation.
+   * Host interface addresses from daemon hello / change-detected heartbeat.
    */
-  cellLocationHint?: string
-  /** Monotonically increasing; increment when a new DO logical name is issued after a region move. */
-  cellGeneration?: number
-  /** Last snapshot version written by the cell, for optimistic concurrency checks. */
-  cellSnapshotVersion?: number
+  ips?: ServerReportedIp[]
+  /**
+   * Cell placement / generation nested under `cell` (options overrides apply).
+   */
+  cell?: ServerCellMetadata
   /**
    * IP geolocation captured from the connecting request (Cloudflare `request.cf`
    * on Workers; stub/null on self-hosted). Refreshed only when the daemon's
    * connecting IP changes. Stored in jsonb — no migration required.
    */
   geo?: ServerGeo
-  /**
-   * Host interface addresses reported on daemon hello / change-detected heartbeat.
-   */
-  addresses?: ServerAddresses
   /**
    * Host timezone + NTP state from daemon hello / change-detected heartbeat
    * (and refreshed on successful timezone/NTP command outcomes).
@@ -117,18 +118,18 @@ export type ServerMetadata = {
 
 /**
  * JSON stored in `server.options`. Operator-controlled server configuration;
- * cell fields here override the enrollment copies in `server.metadata` when both
- * are present.
+ * cell fields here override the enrollment copies in `server.metadata.cell`
+ * when both are present.
  */
 export type ServerOptions = {
   /**
    * Cloudflare `locationHint` for the daemon cell (e.g. `"wnam"`, `"eeur"`).
-   * Takes precedence over `server.metadata.cellLocationHint` when set.
+   * Takes precedence over `server.metadata.cell.locationHint` when set.
    */
   cellLocationHint?: string
   /**
    * Monotonically increasing cell generation for logical DO naming.
-   * Takes precedence over `server.metadata.cellGeneration` when set.
+   * Takes precedence over `server.metadata.cell.generation` when set.
    */
   cellGeneration?: number
   /**
@@ -183,12 +184,12 @@ export function parseServerOsMetadata(
   }
   const version = optionalTrimmedString(value.version)
   if (version) os.version = version
-  const versionCodename = optionalTrimmedString(value.versionCodename)
-  if (versionCodename) os.versionCodename = versionCodename
+  const codename = optionalTrimmedString(value.codename)
+  if (codename) os.codename = codename
   const prettyName = optionalTrimmedString(value.prettyName)
   if (prettyName) os.prettyName = prettyName
-  const arch = optionalTrimmedString(value.arch)
-  if (arch) os.arch = arch
+  const architecture = optionalTrimmedString(value.architecture)
+  if (architecture) os.architecture = architecture
 
   return Object.keys(os).length > 0 ? os : undefined
 }
@@ -199,41 +200,116 @@ function optionalNonNegativeInt(value: unknown): number | undefined {
   return value
 }
 
-/** Parse host capacity block from daemon hello / stored metadata. */
-export function parseServerHostInventory(
-  value: unknown,
-): ServerHostInventory | undefined {
+function parseCpuResources(value: unknown): ServerCpuResources | undefined {
   if (!isRecord(value)) return undefined
-  const inventory: ServerHostInventory = {}
-  const cpuCores = optionalNonNegativeInt(value.cpuCores)
-  // Reject zero — that is never a real online CPU count.
-  if (cpuCores !== undefined && cpuCores > 0) inventory.cpuCores = cpuCores
-  const cpuThreads = optionalNonNegativeInt(value.cpuThreads)
-  if (cpuThreads !== undefined && cpuThreads > 0) {
-    inventory.cpuThreads = cpuThreads
-  }
-  const memoryTotalBytes = optionalNonNegativeInt(value.memoryTotalBytes)
-  if (memoryTotalBytes !== undefined && memoryTotalBytes > 0) {
-    inventory.memoryTotalBytes = memoryTotalBytes
-  }
-  const swapTotalBytes = optionalNonNegativeInt(value.swapTotalBytes)
-  // 0 is a valid SwapTotal (no swap).
-  if (swapTotalBytes !== undefined) inventory.swapTotalBytes = swapTotalBytes
-  return Object.keys(inventory).length > 0 ? inventory : undefined
+  const cpu: ServerCpuResources = {}
+  const name = optionalTrimmedString(value.name)
+  if (name) cpu.name = name
+  const architecture = optionalTrimmedString(value.architecture)
+  if (architecture) cpu.architecture = architecture
+  const socketCount = optionalNonNegativeInt(value.socketCount)
+  if (socketCount !== undefined && socketCount > 0) cpu.socketCount = socketCount
+  const coreCount = optionalNonNegativeInt(value.coreCount)
+  if (coreCount !== undefined && coreCount > 0) cpu.coreCount = coreCount
+  const threadCount = optionalNonNegativeInt(value.threadCount)
+  if (threadCount !== undefined && threadCount > 0) cpu.threadCount = threadCount
+  return Object.keys(cpu).length > 0 ? cpu : undefined
 }
 
-export function serverHostInventoryEquals(
-  a: ServerHostInventory | null | undefined,
-  b: ServerHostInventory | null | undefined,
+/** Parse host capacity block from daemon hello / stored metadata. */
+export function parseServerHostResources(
+  value: unknown,
+): ServerHostResources | undefined {
+  if (!isRecord(value)) return undefined
+  const resources: ServerHostResources = {}
+  const cpu = parseCpuResources(value.cpu)
+  if (cpu) resources.cpu = cpu
+  if (isRecord(value.memory)) {
+    const totalBytes = optionalNonNegativeInt(value.memory.totalBytes)
+    if (totalBytes !== undefined && totalBytes > 0) {
+      resources.memory = { totalBytes }
+    }
+  }
+  if (isRecord(value.swap)) {
+    const totalBytes = optionalNonNegativeInt(value.swap.totalBytes)
+    // 0 is a valid SwapTotal (no swap).
+    if (totalBytes !== undefined) {
+      resources.swap = { totalBytes }
+    }
+  }
+  return Object.keys(resources).length > 0 ? resources : undefined
+}
+
+/**
+ * Prefer current `resources`; fall back to the pre-rename `inventory`
+ * (`cpuCores` / `cpuThreads` / `memoryTotalBytes` / `swapTotalBytes`).
+ */
+export function resourcesFromDaemonPresence(
+  payload: unknown,
+): ServerHostResources | undefined {
+  if (!isRecord(payload)) return undefined
+  const fromResources = parseServerHostResources(payload.resources)
+  if (fromResources) return fromResources
+  if (!isRecord(payload.inventory)) return undefined
+  return parseServerHostResources({
+    cpu: {
+      coreCount: payload.inventory.cpuCores,
+      threadCount: payload.inventory.cpuThreads,
+    },
+    memory: { totalBytes: payload.inventory.memoryTotalBytes },
+    swap: { totalBytes: payload.inventory.swapTotalBytes },
+  })
+}
+
+function cpuResourcesEquals(
+  a: ServerCpuResources | undefined,
+  b: ServerCpuResources | undefined,
 ): boolean {
   if (a === b) return true
   if (!a || !b) return false
   return (
-    a.cpuCores === b.cpuCores &&
-    a.cpuThreads === b.cpuThreads &&
-    a.memoryTotalBytes === b.memoryTotalBytes &&
-    a.swapTotalBytes === b.swapTotalBytes
+    a.name === b.name &&
+    a.architecture === b.architecture &&
+    a.socketCount === b.socketCount &&
+    a.coreCount === b.coreCount &&
+    a.threadCount === b.threadCount
   )
+}
+
+export function serverHostResourcesEquals(
+  a: ServerHostResources | null | undefined,
+  b: ServerHostResources | null | undefined,
+): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return (
+    cpuResourcesEquals(a.cpu, b.cpu) &&
+    a.memory?.totalBytes === b.memory?.totalBytes &&
+    a.swap?.totalBytes === b.swap?.totalBytes
+  )
+}
+
+/** Parse nested `server.metadata.cell` block. */
+export function parseServerCellMetadata(
+  value: unknown,
+): ServerCellMetadata | undefined {
+  if (!isRecord(value)) return undefined
+  const cell: ServerCellMetadata = {}
+  const locationHint = optionalTrimmedString(value.locationHint)
+  if (locationHint) cell.locationHint = locationHint
+  if (
+    typeof value.generation === 'number' &&
+    Number.isInteger(value.generation)
+  ) {
+    cell.generation = value.generation
+  }
+  if (
+    typeof value.snapshotVersion === 'number' &&
+    Number.isInteger(value.snapshotVersion)
+  ) {
+    cell.snapshotVersion = value.snapshotVersion
+  }
+  return Object.keys(cell).length > 0 ? cell : undefined
 }
 
 function titleCaseWord(word: string): string {
@@ -296,7 +372,7 @@ export function formatServerOsDisplay(
   if (!os) return null
   const product = resolveOsProductName(os)
   const version = os.version?.trim()
-  const codename = os.versionCodename?.trim()
+  const codename = os.codename?.trim()
   const codenameLabel = codename ? titleCasePhrase(codename) : undefined
 
   if (product && version && codenameLabel) {
@@ -320,9 +396,9 @@ export function serverOsMetadataEquals(
     a.id === b.id &&
     a.variant === b.variant &&
     a.version === b.version &&
-    a.versionCodename === b.versionCodename &&
+    a.codename === b.codename &&
     a.prettyName === b.prettyName &&
-    a.arch === b.arch
+    a.architecture === b.architecture
   )
 }
 

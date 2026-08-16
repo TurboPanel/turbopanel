@@ -1,4 +1,4 @@
-import type { ServerAddresses } from "../../server-addresses.ts";
+import type { ServerReportedIp } from "../../server-addresses.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import type {
   DaemonInboundEnvelope,
@@ -50,7 +50,7 @@ export type DaemonCellSnapshot = {
   lastOutboundAt?: string;
   lastSeenAt?: string;
   keyLastUsedAt?: string;
-  addresses?: ServerAddresses;
+  ips?: ServerReportedIp[];
   metadata?: ServerMetadata;
   daemonBuild?: import("./protocol.ts").DaemonBuildInfo;
 };

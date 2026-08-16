@@ -36,8 +36,9 @@ import type {
 } from "../commands/schemas.ts";
 import { sha256HexUtf8 } from "../compose/desired-hash.ts";
 import {
-  parseServerAddresses,
-  type ServerAddresses,
+  parseServerIps,
+  preferredIpv4FromIps,
+  type ServerReportedIp,
 } from "../../server-addresses.ts";
 
 export type FabricRecord = {
@@ -114,13 +115,12 @@ export type RelayPeerMaterial = {
 export type EndpointAddressCaches = {
   datacenterAddressByServer: Map<string, string>;
   publicAddressByServer: Map<string, string>;
-  reportedByServer: Map<string, ServerAddresses | undefined>;
+  reportedByServer: Map<string, ServerReportedIp[] | undefined>;
 };
 
 type ServerEndpointRow = {
-  id: string;
-  datacenterId: string | null;
-  metadata: unknown;
+  id: string
+  metadata: unknown
 };
 
 async function occupiedCidrs(
@@ -240,10 +240,10 @@ function serializeRelay(row: {
     ),
     role,
     keepalive: row.keepalive,
-    endpointAddress: row.endpointAddress == null
-      ? null
-      : inetAddressToString(row.endpointAddress) ??
-        stripInetPrefixSuffix(String(row.endpointAddress)),
+    endpointAddress: inetAddressToString(row.endpointAddress) ??
+      (typeof row.endpointAddress === "string"
+        ? stripInetPrefixSuffix(row.endpointAddress)
+        : null),
     publicKey: row.publicKey,
     prefix: typeof row.prefix === "string" ? row.prefix : String(row.prefix),
     advertisedCidrs: role === "member"
@@ -917,20 +917,20 @@ export function selectPairPresharedEnvelope(
     null;
 }
 
-function reportedAddressesFromMetadata(
+function reportedIpsFromMetadata(
   metadata: unknown,
-): ServerAddresses | undefined {
+): ServerReportedIp[] | undefined {
   if (
     typeof metadata !== "object" || metadata === null || Array.isArray(metadata)
   ) {
     return undefined;
   }
-  return parseServerAddresses((metadata as Record<string, unknown>).addresses);
+  return parseServerIps((metadata as Record<string, unknown>).ips);
 }
 
 /**
  * Endpoint precedence: operator pin → datacenter `ip` → public `ip` →
- * reported `publicIpv4` → reported `privateIpv4`. Throws
+ * reported public IPv4 → reported private IPv4. Throws
  * `relay_endpoint_unavailable` rather than emitting a peer with no Endpoint.
  */
 export function resolveRelayEndpointAddress(
@@ -946,10 +946,8 @@ export function resolveRelayEndpointAddress(
   if (publicAddress) return publicAddress;
 
   const reported = caches.reportedByServer.get(row.serverId);
-  const publicIpv4 = reported?.publicIpv4[0];
-  if (publicIpv4) return publicIpv4;
-  const privateIpv4 = reported?.privateIpv4[0];
-  if (privateIpv4) return privateIpv4;
+  const preferred = preferredIpv4FromIps(reported);
+  if (preferred) return preferred;
 
   throw new FabricAllocationError("relay_endpoint_unavailable");
 }
@@ -988,7 +986,6 @@ export async function loadEndpointCaches(
     db
       .select({
         id: server.id,
-        datacenterId: server.datacenterId,
         metadata: server.metadata,
       })
       .from(server)
@@ -1016,7 +1013,7 @@ export async function loadEndpointCaches(
     serversById.set(row.id, row);
     caches.reportedByServer.set(
       row.id,
-      reportedAddressesFromMetadata(row.metadata),
+      reportedIpsFromMetadata(row.metadata),
     );
   }
   return { caches, serversById };

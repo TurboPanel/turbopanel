@@ -32,7 +32,6 @@ function server(
   return {
     id,
     connected: true,
-    datacenterId: 'dc-1',
     labels: {},
     ...opts,
   }

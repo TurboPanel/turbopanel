@@ -1,20 +1,22 @@
 import { assertEquals } from 'jsr:@std/assert'
 import {
-  parseServerAddresses,
-  serverAddressesEquals,
+  parseServerIps,
+  serverIpsEquals,
+  ipsFromDaemonPresence,
 } from '../../server-addresses.ts'
 import {
   formatServerOsDisplay,
   parseServerOptions,
   parseServerOsMetadata,
-  parseServerHostInventory,
+  parseServerHostResources,
   parseServerTimeSync,
   resolveEffectiveServerTimezone,
   resolveServerResponseTimezone,
   resolveServerOsLogoKey,
   serverOsMetadataEquals,
-  serverHostInventoryEquals,
+  serverHostResourcesEquals,
   serverTimeSyncEquals,
+  resourcesFromDaemonPresence,
 } from './server-metadata.ts'
 
 /**
@@ -31,7 +33,7 @@ test('formatServerOsDisplay formats Debian with point release', () => {
       family: 'linux',
       id: 'debian',
       version: '13.5',
-      versionCodename: 'trixie',
+      codename: 'trixie',
       prettyName: 'Debian GNU/Linux 13 (trixie)',
     }),
     'Debian 13.5 (Trixie)',
@@ -45,7 +47,7 @@ test('formatServerOsDisplay formats Raspberry Pi OS from variant', () => {
       id: 'debian',
       variant: 'raspberry-pi-os',
       version: '12.11',
-      versionCodename: 'bookworm',
+      codename: 'bookworm',
     }),
     'Raspberry Pi OS 12.11 (Bookworm)',
   )
@@ -57,7 +59,7 @@ test('formatServerOsDisplay formats raspbian ID as Raspberry Pi OS', () => {
       family: 'linux',
       id: 'raspbian',
       version: '11',
-      versionCodename: 'bullseye',
+      codename: 'bullseye',
     }),
     'Raspberry Pi OS 11 (Bullseye)',
   )
@@ -109,56 +111,68 @@ test('parseServerOsMetadata accepts daemon hello os blocks', () => {
       id: 'debian',
       variant: 'raspberry-pi-os',
       version: '13.5',
-      versionCodename: 'trixie',
+      codename: 'trixie',
       prettyName: 'Debian GNU/Linux 13 (trixie)',
-      arch: 'aarch64',
+      architecture: 'aarch64',
     }),
     {
       family: 'linux',
       id: 'debian',
       variant: 'raspberry-pi-os',
       version: '13.5',
-      versionCodename: 'trixie',
+      codename: 'trixie',
       prettyName: 'Debian GNU/Linux 13 (trixie)',
-      arch: 'aarch64',
+      architecture: 'aarch64',
     },
   )
   assertEquals(parseServerOsMetadata({ family: 'solaris' }), undefined)
   assertEquals(parseServerOsMetadata('nope'), undefined)
 })
 
-test('parseServerHostInventory accepts capacity totals', () => {
+test('parseServerHostResources accepts capacity totals', () => {
   assertEquals(
-    parseServerHostInventory({
-      cpuCores: 4,
-      cpuThreads: 8,
-      memoryTotalBytes: 16_384_000_000,
-      swapTotalBytes: 0,
+    parseServerHostResources({
+      cpu: { coreCount: 4, threadCount: 8, socketCount: 1 },
+      memory: { totalBytes: 16_384_000_000 },
+      swap: { totalBytes: 0 },
     }),
     {
-      cpuCores: 4,
-      cpuThreads: 8,
-      memoryTotalBytes: 16_384_000_000,
-      swapTotalBytes: 0,
+      cpu: { coreCount: 4, threadCount: 8, socketCount: 1 },
+      memory: { totalBytes: 16_384_000_000 },
+      swap: { totalBytes: 0 },
     },
   )
-  assertEquals(parseServerHostInventory({ cpuCores: 0 }), undefined)
-  assertEquals(parseServerHostInventory({ cpuThreads: 0 }), undefined)
-  assertEquals(parseServerHostInventory({ memoryTotalBytes: -1 }), undefined)
-  assertEquals(parseServerHostInventory(null), undefined)
+  assertEquals(parseServerHostResources({ cpu: { coreCount: 0 } }), undefined)
+  assertEquals(parseServerHostResources({ cpu: { threadCount: 0 } }), undefined)
+  assertEquals(
+    parseServerHostResources({ memory: { totalBytes: -1 } }),
+    undefined,
+  )
+  assertEquals(parseServerHostResources(null), undefined)
 })
 
-test('serverHostInventoryEquals compares field-wise', () => {
+test('serverHostResourcesEquals compares field-wise', () => {
   const a = {
-    cpuCores: 4,
-    cpuThreads: 8,
-    memoryTotalBytes: 100,
-    swapTotalBytes: 0,
+    cpu: { coreCount: 4, threadCount: 8 },
+    memory: { totalBytes: 100 },
+    swap: { totalBytes: 0 },
   }
-  assertEquals(serverHostInventoryEquals(a, { ...a }), true)
-  assertEquals(serverHostInventoryEquals(a, { ...a, cpuCores: 8 }), false)
-  assertEquals(serverHostInventoryEquals(a, { ...a, cpuThreads: 4 }), false)
-  assertEquals(serverHostInventoryEquals(a, null), false)
+  assertEquals(serverHostResourcesEquals(a, { ...a, cpu: { ...a.cpu } }), true)
+  assertEquals(
+    serverHostResourcesEquals(a, {
+      ...a,
+      cpu: { ...a.cpu, coreCount: 8 },
+    }),
+    false,
+  )
+  assertEquals(
+    serverHostResourcesEquals(a, {
+      ...a,
+      cpu: { ...a.cpu, threadCount: 4 },
+    }),
+    false,
+  )
+  assertEquals(serverHostResourcesEquals(a, null), false)
 })
 
 test('serverOsMetadataEquals compares field-wise including variant', () => {
@@ -316,40 +330,94 @@ test('resolveServerResponseTimezone falls back to daemon-reported zone', () => {
   )
 })
 
-test('parseServerAddresses and serverAddressesEquals', () => {
-  const addresses = parseServerAddresses({
-    privateIpv4: ['10.0.0.1', ''],
-    privateIpv6: [],
-    publicIpv4: ['203.0.113.10'],
-    publicIpv6: ['2001:db8::1'],
-  })
-  assertEquals(addresses, {
-    privateIpv4: ['10.0.0.1'],
-    privateIpv6: [],
-    publicIpv4: ['203.0.113.10'],
-    publicIpv6: ['2001:db8::1'],
-  })
+test('parseServerIps and serverIpsEquals', () => {
+  const ips = parseServerIps([
+    { address: '10.0.0.1', version: 4, scope: 'private' },
+    { address: '', version: 4, scope: 'private' },
+    { address: '203.0.113.10', version: 4, scope: 'public' },
+    { address: '2001:db8::1', version: 6, scope: 'public' },
+  ])
+  assertEquals(ips, [
+    { address: '10.0.0.1', version: 4, scope: 'private' },
+    { address: '2001:db8::1', version: 6, scope: 'public' },
+    { address: '203.0.113.10', version: 4, scope: 'public' },
+  ])
+  assertEquals(parseServerIps([]), [])
+  assertEquals(parseServerIps(undefined), undefined)
   assertEquals(
-    parseServerAddresses({
-      privateIpv4: [],
-      privateIpv6: [],
-      publicIpv4: [],
-      publicIpv6: [],
-    }),
-    {
-      privateIpv4: [],
+    parseServerIps([
+      { address: '10.0.0.5', version: 4, scope: 'private', cidr: '10.0.0.5/24' },
+    ]),
+    [
+      {
+        address: '10.0.0.5',
+        version: 4,
+        scope: 'private',
+        cidr: '10.0.0.0/24',
+      },
+    ],
+  )
+  assertEquals(serverIpsEquals(ips, ips), true)
+  assertEquals(
+    serverIpsEquals(ips, [
+      ...(ips ?? []),
+      { address: '203.0.113.11', version: 4, scope: 'public' },
+    ]),
+    false,
+  )
+})
+
+test('ipsFromDaemonPresence prefers ips[] and maps legacy addresses', () => {
+  const current = ipsFromDaemonPresence({
+    ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
+    addresses: {
+      privateIpv4: ['10.0.0.9'],
       privateIpv6: [],
       publicIpv4: [],
       publicIpv6: [],
     },
-  )
-  assertEquals(parseServerAddresses(undefined), undefined)
-  assertEquals(serverAddressesEquals(addresses, addresses), true)
+  })
+  assertEquals(current, [
+    { address: '10.0.0.8', version: 4, scope: 'private' },
+  ])
   assertEquals(
-    serverAddressesEquals(addresses, {
-      ...addresses!,
-      publicIpv4: ['203.0.113.11'],
+    ipsFromDaemonPresence({
+      addresses: {
+        privateIpv4: ['10.0.0.5'],
+        privateIpv6: [],
+        publicIpv4: ['203.0.113.10'],
+        publicIpv6: [],
+      },
     }),
-    false,
+    [
+      { address: '10.0.0.5', version: 4, scope: 'private' },
+      { address: '203.0.113.10', version: 4, scope: 'public' },
+    ],
+  )
+  assertEquals(ipsFromDaemonPresence({}), undefined)
+})
+
+test('resourcesFromDaemonPresence prefers resources and maps inventory', () => {
+  assertEquals(
+    resourcesFromDaemonPresence({
+      resources: { cpu: { coreCount: 8, threadCount: 16 } },
+      inventory: { cpuCores: 2, cpuThreads: 4 },
+    }),
+    { cpu: { coreCount: 8, threadCount: 16 } },
+  )
+  assertEquals(
+    resourcesFromDaemonPresence({
+      inventory: {
+        cpuCores: 4,
+        cpuThreads: 8,
+        memoryTotalBytes: 1024,
+        swapTotalBytes: 0,
+      },
+    }),
+    {
+      cpu: { coreCount: 4, threadCount: 8 },
+      memory: { totalBytes: 1024 },
+      swap: { totalBytes: 0 },
+    },
   )
 })

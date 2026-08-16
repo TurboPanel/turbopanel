@@ -2,11 +2,16 @@ import { buildSeededDatacenterMetadata } from '../../lib/datacenter-metadata.ts'
 import { parseDatacenterOptions } from '../../lib/datacenter-options.ts'
 import { suggestDatacenterDisplayNameFromGeo } from '../../lib/datacenter-name-suggestions.ts'
 import { parseServerGeo } from '../../lib/geo/server-geo.ts'
+import {
+  isValidCidr,
+  isValidIpAddress,
+  stripInetPrefixSuffix,
+} from '../../lib/ip-address.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-const MAX_ASSIGN_SERVERS = 64
+const MAX_MEMBERS = 64
 
 export type ParseResult<T> =
   | { ok: true; value: T }
@@ -16,27 +21,50 @@ export function parseOptionalUuid(value: unknown): ParseResult<string | null> {
   if (value === undefined || value === null) {
     return { ok: true, value: null }
   }
-  if (typeof value !== "string" || !UUID_RE.test(value)) {
+  if (typeof value !== 'string' || !UUID_RE.test(value)) {
     return { ok: false }
   }
   return { ok: true, value }
 }
 
-export function parseAssignServerIds(value: unknown): ParseResult<string[]> {
-  if (value === undefined || value === null) {
-    return { ok: true, value: [] }
-  }
-  if (!Array.isArray(value) || value.length > MAX_ASSIGN_SERVERS) {
+export function parseRequiredCidr(value: unknown): ParseResult<string> {
+  if (typeof value !== 'string' || !isValidCidr(value.trim())) {
     return { ok: false }
   }
-  const ids: string[] = []
+  return { ok: true, value: value.trim() }
+}
+
+export type ParsedMemberPin = {
+  serverId: string
+  address: string
+}
+
+export function parseMemberPins(value: unknown): ParseResult<ParsedMemberPin[]> {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_MEMBERS) {
+    return { ok: false }
+  }
+  const pins: ParsedMemberPin[] = []
+  const seenServers = new Set<string>()
+  const seenAddresses = new Set<string>()
   for (const entry of value) {
-    if (typeof entry !== 'string' || !UUID_RE.test(entry)) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
       return { ok: false }
     }
-    ids.push(entry)
+    const record = entry as Record<string, unknown>
+    if (typeof record.serverId !== 'string' || !UUID_RE.test(record.serverId)) {
+      return { ok: false }
+    }
+    if (typeof record.address !== 'string') return { ok: false }
+    const address = stripInetPrefixSuffix(record.address.trim())
+    if (!address || !isValidIpAddress(address)) return { ok: false }
+    if (seenServers.has(record.serverId) || seenAddresses.has(address)) {
+      return { ok: false }
+    }
+    seenServers.add(record.serverId)
+    seenAddresses.add(address)
+    pins.push({ serverId: record.serverId, address })
   }
-  return { ok: true, value: [...new Set(ids)] }
+  return { ok: true, value: pins }
 }
 
 export function mergeDatacenterMetadata(
@@ -53,13 +81,12 @@ export type CreateDatacenterInput = {
   description: string | null
   metadata: Record<string, unknown> | null
   options: ReturnType<typeof parseDatacenterOptions> | null
+  members: ParsedMemberPin[]
   sourceServerId: string | null
-  assignServerIds: string[]
 }
 
 export type SelectedServerRow = {
   id: string
-  datacenterId: string | null
   metadata: unknown
 }
 
@@ -70,11 +97,13 @@ export function resolveSeededFields(
   name: string | null
   metadata: Record<string, unknown> | null
 } {
-  if (!input.sourceServerId) {
+  const sourceServerId = input.sourceServerId ?? input.members[0]?.serverId ??
+    null
+  if (!sourceServerId) {
     return { name: input.name, metadata: input.metadata }
   }
 
-  const sourceRow = rows.find((row) => row.id === input.sourceServerId)
+  const sourceRow = rows.find((row) => row.id === sourceServerId)
   const rawMetadata = sourceRow?.metadata
   const geo = parseServerGeo(
     typeof rawMetadata === 'object' &&
@@ -89,7 +118,7 @@ export function resolveSeededFields(
 
   const seededMetadata = buildSeededDatacenterMetadata(
     geo,
-    input.sourceServerId,
+    sourceServerId,
   )
   return {
     name: input.name ??
@@ -99,8 +128,8 @@ export function resolveSeededFields(
 }
 
 export function attachPrivateCidrs<T extends { id: string }>(
-  rows: T[],
-  cidrsByDc: Map<string, string[]>,
+  rows: readonly T[],
+  cidrsByDc: ReadonlyMap<string, string[]>,
 ): Array<T & { privateCidrs: string[] }> {
   return rows.map((row) => ({
     ...row,
@@ -108,28 +137,16 @@ export function attachPrivateCidrs<T extends { id: string }>(
   }))
 }
 
-export type NameSuggestionsQuery = {
-  unassignedOnly: boolean
-  limit: number
-}
-
 export function parseNameSuggestionsQuery(
   unassignedOnlyRaw: string | undefined,
   limitRaw: string | undefined,
-): NameSuggestionsQuery | 'invalid' {
-  const unassignedOnly = unassignedOnlyRaw !== "0"
+):
+  | { unassignedOnly: boolean; limit: number }
+  | 'invalid' {
+  const unassignedOnly = unassignedOnlyRaw !== '0'
   const limit = limitRaw === undefined ? 8 : Number(limitRaw)
   if (!Number.isInteger(limit) || limit < 0 || limit > 32) {
     return 'invalid'
   }
   return { unassignedOnly, limit }
-}
-
-export function collectServerIdsToAssign(input: CreateDatacenterInput): string[] {
-  return [
-    ...new Set([
-      ...input.assignServerIds,
-      ...(input.sourceServerId ? [input.sourceServerId] : []),
-    ]),
-  ]
 }

@@ -2,21 +2,21 @@ import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
 import { verifyDaemonLicense } from './daemon/authn/license.ts'
 import {
-  parseServerAddresses,
-  serverAddressesEquals,
-  type ServerAddresses,
+  parseServerIps,
+  serverIpsEquals,
+  type ServerReportedIp,
 } from './server-addresses.ts'
 import {
   parseServerOsMetadata,
   parseServerTimeSync,
-  parseServerHostInventory,
+  parseServerHostResources,
   serverOsMetadataEquals,
   serverTimeSyncEquals,
-  serverHostInventoryEquals,
+  serverHostResourcesEquals,
   type ServerMetadata,
   type ServerOsMetadata,
   type ServerTimeSync,
-  type ServerHostInventory,
+  type ServerHostResources,
 } from './lib/db/server-metadata.ts'
 import { license, server } from './lib/db/schema.ts'
 import { normalizeMachineKey } from './lib/machine-key.ts'
@@ -71,17 +71,17 @@ export type ServerHelloIdentity = {
   licenseId?: string
   licenseToken?: string
   os?: ServerOsMetadata
-  inventory?: ServerHostInventory
+  resources?: ServerHostResources
   timeSync?: ServerTimeSync
-  addresses?: ServerAddresses
+  ips?: ServerReportedIp[]
 }
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   const patch: Partial<ServerMetadata> = {}
   const os = parseServerOsMetadata(identity.os)
   if (os) patch.os = os
-  const inventory = parseServerHostInventory(identity.inventory)
-  if (inventory) patch.inventory = inventory
+  const resources = parseServerHostResources(identity.resources)
+  if (resources) patch.resources = resources
   const timeSync = parseServerTimeSync(identity.timeSync)
   if (timeSync) {
     patch.timeSync = {
@@ -89,11 +89,9 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
       capturedAt: timeSync.capturedAt ?? new Date().toISOString(),
     }
   }
-  const addresses =
-    identity.addresses === undefined
-      ? undefined
-      : parseServerAddresses(identity.addresses)
-  if (addresses !== undefined) patch.addresses = addresses
+  const ips =
+    identity.ips === undefined ? undefined : parseServerIps(identity.ips)
+  if (ips !== undefined) patch.ips = ips
   return patch
 }
 
@@ -110,7 +108,7 @@ function identityColumnPatch(identity: ServerHelloIdentity): {
 }
 
 /**
- * Pure merge of os/inventory/timeSync/addresses into `server.metadata` — no DB I/O.
+ * Pure merge of os/resources/timeSync/ips into `server.metadata` — no DB I/O.
  * Hostname / machineKey are dedicated columns (see {@link touchServerMetadata}).
  * Returns null when nothing would change (idempotent skip).
  */
@@ -118,7 +116,7 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'inventory' | 'timeSync' | 'addresses'
+    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'ips'
   >,
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
@@ -133,10 +131,10 @@ export function mergeServerMetadataIdentity(
     changed = true
   }
   if (
-    patch.inventory !== undefined &&
-    !serverHostInventoryEquals(patch.inventory, base.inventory)
+    patch.resources !== undefined &&
+    !serverHostResourcesEquals(patch.resources, base.resources)
   ) {
-    next.inventory = patch.inventory
+    next.resources = patch.resources
     changed = true
   }
   if (patch.timeSync !== undefined) {
@@ -146,11 +144,8 @@ export function mergeServerMetadataIdentity(
       changed = true
     }
   }
-  if (
-    patch.addresses !== undefined &&
-    !serverAddressesEquals(patch.addresses, base.addresses)
-  ) {
-    next.addresses = patch.addresses
+  if (patch.ips !== undefined && !serverIpsEquals(patch.ips, base.ips)) {
+    next.ips = patch.ips
     changed = true
   }
 
@@ -188,10 +183,10 @@ function buildMetadataDelta(
     delta.os = patch.os
   }
   if (
-    patch.inventory !== undefined &&
-    !serverHostInventoryEquals(patch.inventory, base?.inventory)
+    patch.resources !== undefined &&
+    !serverHostResourcesEquals(patch.resources, base?.resources)
   ) {
-    delta.inventory = patch.inventory
+    delta.resources = patch.resources
   }
   if (patch.timeSync !== undefined) {
     const mergedTimeSync = { ...base?.timeSync, ...patch.timeSync }
@@ -201,11 +196,8 @@ function buildMetadataDelta(
       delta.timeSync = mergedTimeSync
     }
   }
-  if (
-    patch.addresses !== undefined &&
-    !serverAddressesEquals(patch.addresses, base?.addresses)
-  ) {
-    delta.addresses = patch.addresses
+  if (patch.ips !== undefined && !serverIpsEquals(patch.ips, base?.ips)) {
+    delta.ips = patch.ips
   }
   return delta
 }

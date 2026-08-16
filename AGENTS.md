@@ -704,7 +704,7 @@ deliberately-unversioned probe.
   (`wrangler.jsonc`) moved together. The external CDN node installer must fetch
   the CA from the new `/api/daemon/v1/instance/ca` path.
 - **Server timezone / NTP (client surface):** daemon hello + change-detected
-  heartbeats project `timeSync`/`addresses` onto `server.metadata` (jsonb
+  heartbeats project `timeSync`/`ips` onto `server.metadata` (jsonb
   merge). `GET /api/client/v1/servers` and `GET /servers/:id` return those facts
   plus an **effective timezone** = `server.options.timezone` unless
   `organization.options.enforceServerTimezone` is true (then org
@@ -770,18 +770,34 @@ deliberately-unversioned probe.
   narrows already-visible rows to containers whose `service.environmentId`
   matches (AND with `serviceId` / `serverId` / `status`); does not widen
   `listVisible`.
-- **Datacenter name suggestions:** `GET /datacenters/name-suggestions` groups
-  projected geolocation and ASN metadata from unassigned servers into
-  operator-editable, display-name-safe suggestions. `POST /datacenters` accepts
-  the selected `sourceServerId` / `assignServerIds`, snapshots source geo into
-  datacenter metadata, and atomically assigns those currently-unassigned visible
-  servers. Self-hosted installations without a geo provider may return an empty
-  list. `src/lib/net/private-endpoint.ts` is the single resolver for
-  server-to-server private reachability (`local` → `fabric` → `datacenter`);
-  `fabric` dials the peer's relay address over `tp0`. Datacenter membership plus
-  a CIDR-bearing `network(kind='datacenter')` (surfaced on list/detail as
-  `privateCidrs`) is the prerequisite that later managed-cluster placement
-  depends on (`src/lib/net/datacenter-networks.ts`).
+- **Datacenters (equal memberships, one CIDR):** There is no singular
+  `server.datacenter_id`. Membership is an `ip` pin
+  (`scope='datacenter'` + `serverId` + `datacenterId`, optional `networkId` →
+  site network). A server may hold pins in many datacenters. Each datacenter has
+  exactly one site `network(kind='datacenter')` with a required CIDR (another
+  range → another datacenter). `POST /datacenters` body is
+  `{ displayName?, description?, members: [{ serverId, address }],
+  sourceServerId? }` — at least one member is required; addresses must be
+  daemon-reported private IPs; the site CIDR is **derived** from that seed
+  member’s reported interface prefix (`ips[].cidr` where `scope='private'`, aligned
+  network form) when present — operator `cidr` is ignored. Hello ingest maps
+  current `ips[]` and the pre-rename `addresses` object (`privateIpv4` / …) so
+  remotes that have not rebuilt yet still appear as members. When the daemon still
+  reports `{ address, version, scope }` without a prefix, create infers a typical
+  LAN (`/24` IPv4, `/64` IPv6). Missing reported private IP → **400**
+  `address_cidr_unreported`. Extra members must already have a reported private
+  IP inside that CIDR. Create writes the site network + member pins in one txn.
+  `POST|DELETE /datacenters/:id/members` add/remove pins (delete removes the IP
+  row). Name suggestions (`GET /datacenters/name-suggestions`) group geo/ASN from
+  servers with zero memberships. List/detail expose `privateCidrs` (usually one
+  entry). Server list/detail expose `datacenters: { id, displayName }[]`.
+  `DELETE /datacenters/:id` returns **409** `datacenter_has_members` while any
+  membership pin remains; otherwise the site network is deleted with the
+  datacenter (**409** `datacenter_has_networks` only for leftover non-site
+  networks). `src/lib/net/private-endpoint.ts` resolves reachability
+  (`local` → `fabric` → `datacenter`); fabric dials over `tp0`. Shared
+  membership + site CIDR gate managed-cluster private placement
+  (`src/lib/net/datacenter-networks.ts`).
 
 ## Subsystem docs (nested `AGENTS.md`)
 

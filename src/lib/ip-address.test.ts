@@ -1,5 +1,6 @@
 import { assertEquals } from 'jsr:@std/assert'
 import {
+  addressInCidr,
   bigIntToIp,
   cidrHostRange,
   deriveIpVersion,
@@ -9,6 +10,9 @@ import {
   nextFreeHostAddress,
   parseCidr,
   parseIpVersion,
+  alignedNetworkCidr,
+  formatCidr,
+  inferSiteCidrFromAddress,
 } from './ip-address.ts'
 
 /**
@@ -48,12 +52,12 @@ test('isValidIpAddress rejects garbage', () => {
   assertEquals(isValidIpAddress('2001:db8::1'), true)
 })
 
-test('isValidCidr validates prefix bounds', () => {
-  assertEquals(isValidCidr('203.0.113.0/24'), true)
-  assertEquals(isValidCidr('203.0.113.0/33'), false)
-  assertEquals(isValidCidr('2001:db8::/32'), true)
-  assertEquals(isValidCidr('2001:db8::/129'), false)
-  assertEquals(isValidCidr('203.0.113.10'), false)
+test('addressInCidr checks containment including network address', () => {
+  assertEquals(addressInCidr('203.0.113.10', '203.0.113.0/24'), true)
+  assertEquals(addressInCidr('203.0.113.0', '203.0.113.0/24'), true)
+  assertEquals(addressInCidr('203.0.114.1', '203.0.113.0/24'), false)
+  assertEquals(addressInCidr('2001:db8::1', '2001:db8::/32'), true)
+  assertEquals(addressInCidr('203.0.113.10', '2001:db8::/32'), false)
 })
 
 test('deriveIpVersion matches parseIpVersion', () => {
@@ -68,6 +72,21 @@ test('parseCidr network-aligns and rejects garbage', () => {
   assertEquals(parsed?.prefix, 24)
   assertEquals(parsed?.base, ipToBigInt('203.0.113.0'))
   assertEquals(parseCidr('not-a-cidr'), null)
+})
+
+test('alignedNetworkCidr formats the network prefix from a host CIDR', () => {
+  assertEquals(alignedNetworkCidr('10.0.0.5/24'), '10.0.0.0/24')
+  assertEquals(alignedNetworkCidr('10.0.0.5/16'), '10.0.0.0/16')
+  const parsed = parseCidr('fd12:3456::1/64')
+  assertEquals(parsed ? formatCidr(parsed) : null, 'fd12:3456::/64')
+  assertEquals(alignedNetworkCidr('not-a-cidr'), null)
+})
+
+test('inferSiteCidrFromAddress uses typical LAN prefixes', () => {
+  assertEquals(inferSiteCidrFromAddress('10.0.0.5'), '10.0.0.0/24')
+  assertEquals(inferSiteCidrFromAddress('192.168.1.40'), '192.168.1.0/24')
+  assertEquals(inferSiteCidrFromAddress('fd00::1'), 'fd00::/64')
+  assertEquals(inferSiteCidrFromAddress('not-an-ip'), null)
 })
 
 test('cidrHostRange skips IPv4 network and broadcast for /24', () => {

@@ -70,16 +70,37 @@ test('parseCreateIpAddress rejects client-supplied version and invalid addresses
   assertEquals(parsed.address, '203.0.113.10')
 })
 
-test('assertIpScopeFkRules enforces free-pool and datacenter-anchor rules', async () => {
+test('assertIpScopeFkRules enforces free-pool and membership pin rules', async () => {
   const c = mockContext()
 
+  // Datacenter scope always requires datacenterId.
+  await expectInvalidRequest(assertIpScopeFkRules(c, 'datacenter', {}))
   await expectInvalidRequest(assertIpScopeFkRules(c, 'datacenter', {
-    datacenterId: 'dc-1',
     serverId: 'srv-1',
   }))
-  await expectInvalidRequest(assertIpScopeFkRules(c, 'datacenter', {}))
+  // Free pool cannot also pin a network.
+  await expectInvalidRequest(assertIpScopeFkRules(c, 'datacenter', {
+    datacenterId: 'dc-1',
+    networkId: 'net-1',
+  }))
+
+  // Free pool (datacenter only) and membership pin (server + datacenter) are OK.
   assertEquals(assertIpScopeFkRules(c, 'datacenter', { datacenterId: 'dc-1' }), null)
-  assertEquals(assertIpScopeFkRules(c, 'datacenter', { serverId: 'srv-1' }), null)
+  assertEquals(
+    assertIpScopeFkRules(c, 'datacenter', {
+      datacenterId: 'dc-1',
+      serverId: 'srv-1',
+    }),
+    null,
+  )
+  assertEquals(
+    assertIpScopeFkRules(c, 'datacenter', {
+      datacenterId: 'dc-1',
+      serverId: 'srv-1',
+      networkId: 'net-1',
+    }),
+    null,
+  )
   assertEquals(assertIpScopeFkRules(c, 'public', {}), null)
 })
 

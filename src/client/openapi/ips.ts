@@ -52,7 +52,7 @@ export const ipSchemas = {
     type: 'object',
     required: ['address', 'allocation', 'scope'],
     description:
-      'Do not send `version` (server returns 400 when present). `scope=datacenter` requires `serverId` or `datacenterId`. `serverId` and `datacenterId` are mutually exclusive.',
+      'Do not send `version` (server returns 400 when present). `scope=datacenter` requires `datacenterId`. Free pool: datacenterId only. Membership pin: datacenterId + serverId (optional networkId → site network).',
     properties: {
       address: { type: 'string' },
       allocation: { type: 'string', enum: ['dedicated', 'shared'] },
@@ -134,7 +134,7 @@ export const ipPaths: Record<string, unknown> = {
         },
         '400': {
           description:
-            'Invalid request — includes client-supplied `version`, invalid address/scope FKs, missing `serverId`/`datacenterId` when `scope=datacenter`, or free-pool datacenter mutual exclusion.',
+            'Invalid request — includes client-supplied `version`, invalid address/scope FKs, missing `datacenterId` when `scope=datacenter`, or free-pool rows that also set networkId.',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '401': { description: 'Unauthorized', content: { 'application/json': { schema: clientErrorJson } } },

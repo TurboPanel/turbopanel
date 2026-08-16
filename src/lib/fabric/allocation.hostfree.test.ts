@@ -176,12 +176,10 @@ test("resolveRelayEndpointAddress prefers operator pin then datacenter then publ
   const caches = emptyCaches();
   caches.datacenterAddressByServer.set("srv-1", "10.0.0.5");
   caches.publicAddressByServer.set("srv-1", "203.0.113.5");
-  caches.reportedByServer.set("srv-1", {
-    privateIpv4: ["10.1.0.5"],
-    privateIpv6: [],
-    publicIpv4: ["198.51.100.5"],
-    publicIpv6: [],
-  });
+  caches.reportedByServer.set("srv-1", [
+    { address: "10.1.0.5", version: 4, scope: "private" },
+    { address: "198.51.100.5", version: 4, scope: "public" },
+  ]);
 
   assertEquals(
     resolveRelayEndpointAddress(
@@ -216,12 +214,9 @@ test("resolveRelayEndpointAddress prefers operator pin then datacenter then publ
     "198.51.100.5",
   );
 
-  caches.reportedByServer.set("srv-1", {
-    privateIpv4: ["10.1.0.5"],
-    privateIpv6: [],
-    publicIpv4: [],
-    publicIpv6: [],
-  });
+  caches.reportedByServer.set("srv-1", [
+    { address: "10.1.0.5", version: 4, scope: "private" },
+  ]);
   assertEquals(
     resolveRelayEndpointAddress(
       { serverId: "srv-1", endpointAddress: null },

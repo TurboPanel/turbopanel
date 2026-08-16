@@ -12,7 +12,7 @@ import {
   type ServerOptions,
   type ServerOsMetadata,
   type ServerTimeSync,
-  type ServerHostInventory,
+  type ServerHostResources,
 } from '../../lib/db/server-metadata.ts'
 import type { OrganizationOptions } from '../../lib/organization-options.ts'
 import type { DatacenterOptions } from '../../lib/datacenter-options.ts'
@@ -74,7 +74,6 @@ export function currentCommitFromDaemonBuild(
 
 export type ServerPatchFields = {
   name?: string | null
-  datacenterId?: string | null
   options?: ServerOptions
   updatedAt: string
 }
@@ -85,24 +84,34 @@ export type ServerRouteValidationError = {
   status: 400
 }
 
-export type DatacenterIdParseResult =
-  | { ok: true; kind: 'null' }
-  | { ok: true; kind: 'uuid'; value: string }
-  | ServerRouteValidationError
+export type ServerDatacenterRef = {
+  id: string
+  displayName: string | null
+}
 
-export function parsePatchDatacenterIdValue(
-  value: unknown,
-): DatacenterIdParseResult {
-  if (value === null) return { ok: true, kind: 'null' }
-  if (typeof value !== 'string' || !SERVER_UUID_RE.test(value)) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+/**
+ * Unique datacenter memberships for a server list/detail DTO, sorted by id.
+ */
+export function shapeServerDatacenters(
+  memberships: ReadonlyArray<{ datacenterId: string }>,
+  displayNamesById: ReadonlyMap<string, string | null>,
+): ServerDatacenterRef[] {
+  const seen = new Set<string>()
+  const out: ServerDatacenterRef[] = []
+  for (const row of memberships) {
+    if (seen.has(row.datacenterId)) continue
+    seen.add(row.datacenterId)
+    out.push({
+      id: row.datacenterId,
+      displayName: displayNamesById.get(row.datacenterId) ?? null,
+    })
   }
-  return { ok: true, kind: 'uuid', value }
+  return out.sort((a, b) => a.id.localeCompare(b.id))
 }
 
 /**
  * Validate name / options / emptiness for a server PATCH body.
- * Datacenter id format is validated when present; org ownership stays in the route.
+ * Datacenter membership is managed via IP pins, not server PATCH.
  */
 export function parseServerPatchCore(
   body: Record<string, unknown>,
@@ -111,7 +120,6 @@ export function parseServerPatchCore(
   | {
     ok: true
     patch: ServerPatchFields
-    datacenterIdRaw: unknown
   }
   | ServerRouteValidationError {
   const patch: ServerPatchFields = { updatedAt }
@@ -124,13 +132,8 @@ export function parseServerPatchCore(
     }
   }
 
-  let datacenterIdRaw: unknown = undefined
   if (body.datacenterId !== undefined) {
-    datacenterIdRaw = body.datacenterId
-    const parsed = parsePatchDatacenterIdValue(body.datacenterId)
-    if (!parsed.ok) return parsed
-    if (parsed.kind === 'null') patch.datacenterId = null
-    else patch.datacenterId = parsed.value
+    return { ok: false, error: 'Invalid request', status: 400 }
   }
 
   if (body.options !== undefined) {
@@ -141,15 +144,11 @@ export function parseServerPatchCore(
     patch.options = options
   }
 
-  if (
-    patch.name === undefined &&
-    patch.datacenterId === undefined &&
-    patch.options === undefined
-  ) {
+  if (patch.name === undefined && patch.options === undefined) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
 
-  return { ok: true, patch, datacenterIdRaw }
+  return { ok: true, patch }
 }
 
 export function isHostingEnableTransition(
@@ -320,8 +319,8 @@ export type PresenceLike = {
   statusChangedAt?: string | null
   geo?: unknown
   os?: ServerOsMetadata | null
-  inventory?: ServerHostInventory | null
-  addresses?: unknown
+  resources?: ServerHostResources | null
+  ips?: unknown
   timeSync?: ServerTimeSync | null
 }
 
@@ -373,8 +372,8 @@ export function shapeServerPresenceFields(
     statusChangedAt: live?.statusChangedAt ?? null,
     geo: live?.geo ?? null,
     ...shapeServerOsFields(os),
-    inventory: live?.inventory ?? null,
-    addresses: live?.addresses ?? null,
+    resources: live?.resources ?? null,
+    ips: live?.ips ?? null,
     timeSync: live?.timeSync ?? null,
   }
 }

@@ -1,8 +1,13 @@
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
-import { fabric, ip, relay, server } from '../db/schema.ts'
+import { fabric, ip, relay } from '../db/schema.ts'
 import { inetAddressToString } from '../ip-address.ts'
+import {
+  loadDatacenterMembershipsForServers,
+  sharedDatacenterIds,
+  type DatacenterMembershipRow,
+} from './datacenter-membership.ts'
 
 export type PrivateEndpointTransport = 'local' | 'datacenter' | 'fabric'
 
@@ -40,7 +45,7 @@ export function privateEndpointErrorResponse(
   return c.json({ error: error.kind }, 422)
 }
 
-/** One `ip WHERE server_id AND scope='datacenter'` row (oldest first). */
+/** One membership pin address for a server (oldest first) — any datacenter. */
 export async function loadServerDatacenterAddress(
   db: Db,
   serverId: string,
@@ -48,15 +53,16 @@ export async function loadServerDatacenterAddress(
   const [row] = await db
     .select({ address: ip.address })
     .from(ip)
-    .where(and(eq(ip.serverId, serverId), eq(ip.scope, 'datacenter')))
+    .where(
+      and(
+        eq(ip.serverId, serverId),
+        eq(ip.scope, 'datacenter'),
+        isNotNull(ip.datacenterId),
+      ),
+    )
     .orderBy(asc(ip.createdAt))
     .limit(1)
   return inetAddressToString(row?.address) ?? null
-}
-
-type ServerDcRow = {
-  id: string
-  datacenterId: string | null
 }
 
 type RelayJoinRow = {
@@ -65,57 +71,6 @@ type RelayJoinRow = {
   fabricId: string
   fabricCreatedAt: string
   address: string
-}
-
-async function loadServerDatacenterIds(
-  db: Db,
-  serverIds: string[],
-): Promise<Map<string, string | null>> {
-  const byId = new Map<string, string | null>()
-  if (serverIds.length === 0) return byId
-
-  const rows = await db
-    .select({
-      id: server.id,
-      datacenterId: server.datacenterId,
-    })
-    .from(server)
-    .where(inArray(server.id, serverIds))
-
-  for (const row of rows as ServerDcRow[]) {
-    byId.set(row.id, row.datacenterId)
-  }
-  return byId
-}
-
-async function loadDatacenterAddresses(
-  db: Db,
-  serverIds: string[],
-): Promise<Map<string, string>> {
-  const byServer = new Map<string, string>()
-  if (serverIds.length === 0) return byServer
-
-  const rows = await db
-    .select({
-      serverId: ip.serverId,
-      address: ip.address,
-      createdAt: ip.createdAt,
-    })
-    .from(ip)
-    .where(
-      and(
-        inArray(ip.serverId, serverIds),
-        eq(ip.scope, 'datacenter'),
-      ),
-    )
-    .orderBy(asc(ip.createdAt))
-
-  for (const row of rows) {
-    if (!row.serverId || byServer.has(row.serverId)) continue
-    const address = inetAddressToString(row.address)
-    if (address) byServer.set(row.serverId, address)
-  }
-  return byServer
 }
 
 /**
@@ -165,16 +120,22 @@ async function loadFabricRelayRows(
   return out
 }
 
+function pinAddressForDatacenter(
+  pins: readonly DatacenterMembershipRow[],
+  datacenterId: string,
+): string | null {
+  return pins.find((row) => row.datacenterId === datacenterId)?.address ?? null
+}
+
 /**
  * Ordered ladder: local → fabric → datacenter.
  * Same-host loopback first; a shared relay mesh takes the cross-host private
- * path; same-site datacenter IPs are the fallback when no fabric path exists.
+ * path; a shared datacenter membership is the fallback when no fabric path exists.
  */
 function resolveOneFromCaches(params: {
   fromServerId: string
   toServerId: string
-  datacenterByServer: Map<string, string | null>
-  addressByServer: Map<string, string>
+  membershipsByServer: Map<string, DatacenterMembershipRow[]>
   relays: RelayJoinRow[]
 }): ResolvedPrivateEndpoint | PrivateEndpointError {
   if (params.fromServerId === params.toServerId) {
@@ -202,17 +163,19 @@ function resolveOneFromCaches(params: {
     }
   }
 
-  const fromDc = params.datacenterByServer.get(params.fromServerId) ?? null
-  const toDc = params.datacenterByServer.get(params.toServerId) ?? null
-  if (fromDc !== null && toDc !== null && fromDc === toDc) {
-    const address = params.addressByServer.get(params.toServerId)
+  const fromPins = params.membershipsByServer.get(params.fromServerId) ?? []
+  const toPins = params.membershipsByServer.get(params.toServerId) ?? []
+  const shared = sharedDatacenterIds(fromPins, toPins)
+  const sharedDc = shared[0]
+  if (sharedDc) {
+    const address = pinAddressForDatacenter(toPins, sharedDc)
     if (!address) {
       return { kind: 'datacenter_ip_required', serverId: params.toServerId }
     }
     return {
       address,
       transport: 'datacenter',
-      datacenterId: toDc,
+      datacenterId: sharedDc,
     }
   }
 
@@ -247,8 +210,8 @@ export async function resolvePrivateEndpoint(
 }
 
 /**
- * Batched resolver for one source server → many targets (one server query, one
- * ip query, one relay join — no N+1).
+ * Batched resolver for one source server → many targets (one membership query,
+ * one relay join — no N+1).
  */
 export async function resolvePrivateEndpoints(
   db: Db,
@@ -260,9 +223,8 @@ export async function resolvePrivateEndpoints(
   const uniqueTargets = [...new Set(params.toServerIds)]
   const allServerIds = [...new Set([params.fromServerId, ...uniqueTargets])]
 
-  const [datacenterByServer, addressByServer, relays] = await Promise.all([
-    loadServerDatacenterIds(db, allServerIds),
-    loadDatacenterAddresses(db, allServerIds),
+  const [membershipsByServer, relays] = await Promise.all([
+    loadDatacenterMembershipsForServers(db, allServerIds),
     loadFabricRelayRows(db, allServerIds),
   ])
 
@@ -272,8 +234,7 @@ export async function resolvePrivateEndpoints(
       resolveOneFromCaches({
         fromServerId: params.fromServerId,
         toServerId,
-        datacenterByServer,
-        addressByServer,
+        membershipsByServer,
         relays,
       }),
     )

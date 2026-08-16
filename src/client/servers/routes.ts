@@ -5,7 +5,6 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { isAdminRole } from '../authn/session-store.ts'
 import { can, listVisible } from '../authz/index.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
   assertCanManageOr403,
   assertCanReadOr403,
@@ -92,7 +91,6 @@ import {
   expiredBatchStatusCoalesceKeys,
   currentCommitFromDaemonBuild,
   parseServerPatchCore,
-  parsePatchDatacenterIdValue,
   isHostingEnableTransition,
   isHostingDisableTransition,
   hostingHierarchyFailedBody,
@@ -105,12 +103,17 @@ import {
   distinctNonEmptyIds,
   errorMessageFromUnknown,
   resolveServerTimezoneFields,
+  shapeServerDatacenters,
   shapeServerPresenceFields,
   shouldSkipProjectedUpdateRepair,
   repairedUpdateDoneProjection,
   repairedUpdateIdleProjection,
   type ServerPatchFields,
 } from './routes-helpers.ts'
+import {
+  loadDatacenterDisplayNames,
+  loadDatacenterMembershipsForServers,
+} from '../../lib/net/datacenter-membership.ts'
 
 const UPDATE_REQUEST_TTL_SECONDS = 300
 
@@ -306,69 +309,20 @@ async function loadDatacenterOptionsMap(
   return map
 }
 
-async function loadDatacenterDisplayNamesMap(
-  db: Db,
-  datacenterIds: Array<string | null | undefined>,
-): Promise<Map<string, string | null>> {
-  const distinct = distinctNonEmptyIds(datacenterIds)
-  if (distinct.length === 0) return new Map()
-
-  const rows = await db
-    .select({ id: datacenter.id, displayName: datacenter.name })
-    .from(datacenter)
-    .where(inArray(datacenter.id, distinct))
-
-  return new Map(rows.map((row) => [row.id, row.displayName]))
-}
-
-async function resolvePatchDatacenterId(
-  c: Context,
-  db: Db,
-  organizationId: string,
-  value: unknown,
-): Promise<string | null | Response> {
-  const parsed = parsePatchDatacenterIdValue(value)
-  if (!parsed.ok) {
-    return c.json({ error: parsed.error }, parsed.status)
-  }
-  if (parsed.kind === 'null') return null
-  const dcOrgId = await resolveEntityOrganizationId(db, 'datacenter', parsed.value)
-  if (dcOrgId !== organizationId) {
-    return c.json({ error: 'Not found' }, 404)
-  }
-  return parsed.value
-}
-
 async function parseServerPatchBody(
   c: Context,
-  db: Db,
-  organizationId: string,
   body: Record<string, unknown>,
 ): Promise<ServerPatchFields | Response> {
   const core = parseServerPatchCore(body)
   if (!core.ok) {
     return c.json({ error: core.error }, core.status)
   }
-
-  const patch = core.patch
-  if (core.datacenterIdRaw !== undefined) {
-    const datacenterId = await resolvePatchDatacenterId(
-      c,
-      db,
-      organizationId,
-      core.datacenterIdRaw,
-    )
-    if (datacenterId instanceof Response) return datacenterId
-    patch.datacenterId = datacenterId
-  }
-
-  return patch
+  return core.patch
 }
 
 function buildServerUpdateFields(patch: ServerPatchFields): Record<string, unknown> {
   const update: Record<string, unknown> = { updatedAt: patch.updatedAt }
   if (patch.name !== undefined) update.name = patch.name
-  if (patch.datacenterId !== undefined) update.datacenterId = patch.datacenterId
   if (patch.options !== undefined) {
     update.options = sql`COALESCE(${server.options}, '{}'::jsonb) || ${
       JSON.stringify(patch.options)
@@ -636,29 +590,34 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const orgOptions = parseOrganizationOptions(orgRow?.options)
 
     const serverIds = display.rows.map((row) => row.id)
-    const datacenterLinks = serverIds.length > 0
-      ? await db
-        .select({ id: server.id, datacenterId: server.datacenterId })
-        .from(server)
-        .where(inArray(server.id, serverIds))
-      : []
-    const datacenterIdByServerId = new Map(
-      datacenterLinks.map((link) => [link.id, link.datacenterId]),
+    const membershipsByServer = await loadDatacenterMembershipsForServers(
+      db,
+      serverIds,
     )
+    const membershipDcIds = [
+      ...membershipsByServer.values(),
+    ].flatMap((pins) => pins.map((pin) => pin.datacenterId))
     const datacenterOptionsById = await loadDatacenterOptionsMap(
       db,
-      datacenterLinks.map((link) => link.datacenterId),
+      membershipDcIds,
     )
-    const datacenterDisplayNamesById = await loadDatacenterDisplayNamesMap(
+    const datacenterDisplayNamesById = await loadDatacenterDisplayNames(
       db,
-      datacenterLinks.map((link) => link.datacenterId),
+      distinctNonEmptyIds(membershipDcIds),
     )
 
     return c.json({
       servers: display.rows.map((row) => {
         const live = presence.get(row.id)
-        const dcId = datacenterIdByServerId.get(row.id) ?? null
-        const dcOptions = dcId ? datacenterOptionsById.get(dcId) : undefined
+        const memberships = membershipsByServer.get(row.id) ?? []
+        const datacenters = shapeServerDatacenters(
+          memberships,
+          datacenterDisplayNamesById,
+        )
+        const primaryDcId = datacenters[0]?.id
+        const dcOptions = primaryDcId
+          ? datacenterOptionsById.get(primaryDcId)
+          : undefined
         const timezoneFields = resolveServerTimezoneFields(
           row.options,
           orgOptions,
@@ -667,10 +626,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         )
         return {
           ...row,
-          datacenterId: dcId,
-          datacenterDisplayName: dcId
-            ? datacenterDisplayNamesById.get(dcId) ?? null
-            : null,
+          datacenters,
           ...shapeServerPresenceFields(live, colocatedIds.has(row.id)),
           ...timezoneFields,
           licenseId: row.licenseId ?? null,
@@ -1083,7 +1039,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const organizationId = orgResult
 
     const [serverRow] = await db
-      .select({ id: server.id, datacenterId: server.datacenterId })
+      .select({ id: server.id })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
       .limit(1)
@@ -1106,16 +1062,26 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .where(eq(organization.id, organizationId))
       .limit(1)
     const orgOptions = parseOrganizationOptions(orgRow?.options)
+    const membershipsByServer = await loadDatacenterMembershipsForServers(db, [
+      id,
+    ])
+    const memberships = membershipsByServer.get(id) ?? []
+    const membershipDcIds = memberships.map((pin) => pin.datacenterId)
     const datacenterOptionsById = await loadDatacenterOptionsMap(
       db,
-      [serverRow.datacenterId],
+      membershipDcIds,
     )
-    const datacenterDisplayNamesById = await loadDatacenterDisplayNamesMap(
+    const datacenterDisplayNamesById = await loadDatacenterDisplayNames(
       db,
-      [serverRow.datacenterId],
+      distinctNonEmptyIds(membershipDcIds),
     )
-    const dcOptions = serverRow.datacenterId
-      ? datacenterOptionsById.get(serverRow.datacenterId)
+    const datacenters = shapeServerDatacenters(
+      memberships,
+      datacenterDisplayNamesById,
+    )
+    const primaryDcId = datacenters[0]?.id
+    const dcOptions = primaryDcId
+      ? datacenterOptionsById.get(primaryDcId)
       : undefined
     const labelRows = await listServerLabels(db, id)
     const live = display.presence
@@ -1130,10 +1096,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       ok: true,
       server: {
         ...display.row,
-        datacenterId: serverRow.datacenterId ?? null,
-        datacenterDisplayName: serverRow.datacenterId
-          ? datacenterDisplayNamesById.get(serverRow.datacenterId) ?? null
-          : null,
+        datacenters,
         ...shapeServerPresenceFields(live, display.colocatedWithInstance),
         ...timezoneFields,
         orgDefaultTimezone: orgOptions.defaultServerTimezone ?? null,
@@ -1169,7 +1132,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const patch = await parseServerPatchBody(c, db, organizationId, body)
+    const patch = await parseServerPatchBody(c, body)
     if (patch instanceof Response) return patch
 
     const previousOptions = parseServerOptions(existing.options)

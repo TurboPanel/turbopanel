@@ -12,7 +12,6 @@ import {
   buildBatchStatusCoalesceKey,
   expiredBatchStatusCoalesceKeys,
   currentCommitFromDaemonBuild,
-  parsePatchDatacenterIdValue,
   parseServerPatchCore,
   isHostingEnableTransition,
   isHostingDisableTransition,
@@ -26,6 +25,7 @@ import {
   distinctNonEmptyIds,
   errorMessageFromUnknown,
   resolveServerTimezoneFields,
+  shapeServerDatacenters,
   shapeServerOsFields,
   shapeServerPresenceFields,
   shouldSkipProjectedUpdateRepair,
@@ -99,21 +99,6 @@ test('currentCommitFromDaemonBuild maps daemonBuild commit fields', () => {
   )
 })
 
-test('parsePatchDatacenterIdValue accepts null and UUID, rejects junk', () => {
-  assertEquals(parsePatchDatacenterIdValue(null), { ok: true, kind: 'null' })
-  assertEquals(parsePatchDatacenterIdValue(UUID), {
-    ok: true,
-    kind: 'uuid',
-    value: UUID,
-  })
-  const bad = parsePatchDatacenterIdValue('nope')
-  if (bad.ok) {
-    throw new TypeError('expected invalid datacenter id rejection')
-  }
-  assertEquals(bad.error, 'Invalid request')
-  assertEquals(bad.status, 400)
-})
-
 test('parseServerPatchCore validates name, options, and emptiness', () => {
   const empty = parseServerPatchCore({})
   if (empty.ok) throw new TypeError('expected empty patch rejection')
@@ -125,27 +110,44 @@ test('parseServerPatchCore validates name, options, and emptiness', () => {
   const badOptions = parseServerPatchCore({ options: 'nope' })
   if (badOptions.ok) throw new TypeError('expected bad options rejection')
 
-  const badDc = parseServerPatchCore({ datacenterId: 'bad' })
-  if (badDc.ok) throw new TypeError('expected bad datacenter rejection')
+  const rejectedDc = parseServerPatchCore({ datacenterId: null })
+  if (rejectedDc.ok) throw new TypeError('expected datacenterId rejection')
+  assertEquals(rejectedDc.error, 'Invalid request')
 
-  const cleared = parseServerPatchCore(
-    { datacenterId: null },
+  const withName = parseServerPatchCore(
+    { displayName: 'edge-1' },
     '2020-01-01T00:00:00.000Z',
   )
-  if (!cleared.ok) throw new TypeError('expected null datacenter patch')
-  assertEquals(cleared.patch.datacenterId, null)
-  assertEquals(cleared.patch.updatedAt, '2020-01-01T00:00:00.000Z')
-
-  const withUuid = parseServerPatchCore({ datacenterId: UUID })
-  if (!withUuid.ok) throw new TypeError('expected uuid datacenter patch')
-  assertEquals(withUuid.patch.datacenterId, UUID)
-  assertEquals(withUuid.datacenterIdRaw, UUID)
+  if (!withName.ok) throw new TypeError('expected name patch')
+  assertEquals(withName.patch.name, 'edge-1')
+  assertEquals(withName.patch.updatedAt, '2020-01-01T00:00:00.000Z')
 
   const withHosting = parseServerPatchCore({
     options: { hosting: { enabled: true } },
   })
   if (!withHosting.ok) throw new TypeError('expected hosting options patch')
   assertEquals(withHosting.patch.options?.hosting?.enabled, true)
+})
+
+test('shapeServerDatacenters dedupes and sorts memberships', () => {
+  const names = new Map([
+    ['dc-b', 'Beta'],
+    ['dc-a', 'Alpha'],
+  ])
+  assertEquals(
+    shapeServerDatacenters(
+      [
+        { datacenterId: 'dc-b' },
+        { datacenterId: 'dc-a' },
+        { datacenterId: 'dc-b' },
+      ],
+      names,
+    ),
+    [
+      { id: 'dc-a', displayName: 'Alpha' },
+      { id: 'dc-b', displayName: 'Beta' },
+    ],
+  )
 })
 
 test('hosting enable/disable transitions detect edges only', () => {

@@ -28,7 +28,7 @@ import {
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
 import { organization, server } from '../lib/db/schema.ts'
-import { collectServerAddresses } from '../server-addresses-deno.ts'
+import { collectServerIps } from '../server-addresses-deno.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 import {
@@ -165,8 +165,8 @@ export function buildDeveloperRouter(
   })
 
   developer.get('/instance/addresses', (c) => {
-    const addresses = collectServerAddresses()
-    return c.json({ ok: true, source: 'instance', addresses })
+    const ips = collectServerIps()
+    return c.json({ ok: true, source: 'instance', ips })
   })
 
   developer.get('/daemon/addresses', async (c) => {
@@ -232,7 +232,7 @@ export function buildDeveloperRouter(
               error,
             }
           }
-          const addresses = extractAddresses(record)
+          const ips = extractAddresses(record)
           cellTrace('request-result', {
             requestId,
             serverId,
@@ -243,7 +243,7 @@ export function buildDeveloperRouter(
           return {
             daemonId: serverId,
             hostname: presence.hostname,
-            addresses,
+            ips,
           }
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err)
@@ -322,7 +322,7 @@ export function buildDeveloperRouter(
         })
         return c.json({ error }, 500)
       }
-      const addresses = extractAddresses(record)
+      const ips = extractAddresses(record)
       cellTrace('request-result', {
         requestId,
         serverId: id,
@@ -334,7 +334,7 @@ export function buildDeveloperRouter(
         ok: true,
         daemonId: id,
         hostname: live.hostname ?? null,
-        addresses,
+        ips,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

@@ -25,7 +25,7 @@ import {
 } from '../daemon/cell/protocol.ts'
 import { getDaemonCellRegistry, getDb } from '../db.ts'
 import { cellTrace } from '../logger.ts'
-import { emptyServerAddresses } from '../server-addresses.ts'
+import { emptyServerIps } from '../server-addresses.ts'
 import { buildAdminScalarHtml } from '../scalar-html.ts'
 import { ADMIN_API_PREFIX } from '../surfaces.ts'
 import { getAdminOpenApiSpec } from './openapi/index.ts'
@@ -136,12 +136,12 @@ export function registerAdminRoutes(app: Hono, opts: {
       return c.json({
         ok: false,
         error: 'instance address collection is not available on this runtime',
-        addresses: emptyServerAddresses(),
+        ips: emptyServerIps(),
       }, 422)
     }
-    const { collectServerAddresses } = await import('../server-addresses-deno.ts')
-    const addresses = collectServerAddresses()
-    return c.json({ ok: true, source: 'instance', addresses })
+    const { collectServerIps } = await import('../server-addresses-deno.ts')
+    const ips = collectServerIps()
+    return c.json({ ok: true, source: 'instance', ips })
   })
 
   admin.get('/instance/public-urls', async (c) => {
@@ -379,7 +379,7 @@ export function registerAdminRoutes(app: Hono, opts: {
               error,
             }
           }
-          const addresses = extractAddresses(record)
+          const ips = extractAddresses(record)
           cellTrace('request-result', {
             requestId,
             serverId,
@@ -390,7 +390,7 @@ export function registerAdminRoutes(app: Hono, opts: {
           return {
             daemonId: serverId,
             hostname: presence.hostname,
-            addresses,
+            ips,
           }
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err)
@@ -469,7 +469,7 @@ export function registerAdminRoutes(app: Hono, opts: {
         })
         return c.json({ error }, 500)
       }
-      const addresses = extractAddresses(record)
+      const ips = extractAddresses(record)
       cellTrace('request-result', {
         requestId,
         serverId: id,
@@ -481,7 +481,7 @@ export function registerAdminRoutes(app: Hono, opts: {
         ok: true,
         daemonId: id,
         hostname: live.hostname ?? null,
-        addresses,
+        ips,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

@@ -14,7 +14,6 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import {
   container,
   command,
-  datacenter,
   environment,
   fabric,
   grant,
@@ -1533,7 +1532,7 @@ test('GET /servers includes os, osDisplay, and osLogo from metadata without cach
             family: 'linux',
             id: 'debian',
             version: '13',
-            versionCodename: 'trixie',
+            codename: 'trixie',
             prettyName: 'Debian GNU/Linux 13 (trixie)',
           },
         },
@@ -1567,7 +1566,7 @@ test('GET /servers includes os, osDisplay, and osLogo from metadata without cach
       family: 'linux',
       id: 'debian',
       version: '13',
-      versionCodename: 'trixie',
+      codename: 'trixie',
       prettyName: 'Debian GNU/Linux 13 (trixie)',
     })
     assertEquals(body.servers[0].osDisplay, 'Debian 13 (Trixie)')
@@ -2036,12 +2035,10 @@ test('GET /servers/:id returns detail with effective timezone/addresses/timeSync
         },
         metadata: {
           ...(existing[0]?.metadata ?? {}),
-          addresses: {
-            privateIpv4: ['10.0.0.1'],
-            privateIpv6: [],
-            publicIpv4: ['203.0.113.10'],
-            publicIpv6: [],
-          },
+          ips: [
+            { address: '10.0.0.1', version: 4, scope: 'private' },
+            { address: '203.0.113.10', version: 4, scope: 'public' },
+          ],
           timeSync: {
             timezone: 'America/Chicago',
             ntpEnabled: true,
@@ -2077,7 +2074,7 @@ test('GET /servers/:id returns detail with effective timezone/addresses/timeSync
         timezone: string
         timezoneSource: string
         orgDefaultTimezone: string
-        addresses: { publicIpv4: string[] }
+        ips: Array<{ address: string; scope: string }>
         timeSync: { timezone: string }
       }
     }
@@ -2086,7 +2083,10 @@ test('GET /servers/:id returns detail with effective timezone/addresses/timeSync
     assertEquals(body.server.timezone, 'America/Chicago')
     assertEquals(body.server.timezoneSource, 'server')
     assertEquals(body.server.orgDefaultTimezone, 'UTC')
-    assertEquals(body.server.addresses.publicIpv4, ['203.0.113.10'])
+    assertEquals(
+      body.server.ips.find((ip) => ip.scope === 'public')?.address,
+      '203.0.113.10',
+    )
     assertEquals(body.server.timeSync.timezone, 'America/Chicago')
     assertEquals(recordingCache.readModels, ['server-detail'])
     assertEquals(readDb.selectCallCount, 1)
@@ -2218,7 +2218,7 @@ test('GET /servers/:id uses daemon timeSync when no configured timezone override
   })
 })
 
-test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', async () => {
+test('PATCH /servers/:id rejects datacenterId (membership is via member pins)', async () => {
   if (!dbUrl) return
 
   const db = createDenoDb()
@@ -2227,10 +2227,6 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
   const [orgA] = await db
     .insert(organization)
     .values({ name: 'Patch Server Org A' })
-    .returning({ id: organization.id })
-  const [orgB] = await db
-    .insert(organization)
-    .values({ name: 'Patch Server Org B' })
     .returning({ id: organization.id })
 
   const [u] = await db
@@ -2258,64 +2254,23 @@ test('PATCH /servers/:id pins datacenterId and rejects cross-org datacenter', as
     })
     .returning({ id: server.id })
 
-  const [dcA] = await db
-    .insert(datacenter)
-    .values({
-      organizationId: orgA!.id,
-      name: 'DC-A',
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning({ id: datacenter.id })
-
-  const [dcB] = await db
-    .insert(datacenter)
-    .values({
-      organizationId: orgB!.id,
-      name: 'DC-B',
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning({ id: datacenter.id })
-
   const cookie = await sessionCookie(db, secrets, userId)
 
-  const okRes = await app.request(`/servers/${srv!.id}`, {
+  const rejected = await app.request(`/servers/${srv!.id}`, {
     method: 'PATCH',
     headers: {
       Cookie: cookie,
       [ORG_ID_HEADER]: orgA!.id,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ datacenterId: dcA!.id }),
+    body: JSON.stringify({ datacenterId: crypto.randomUUID() }),
   })
-  assertEquals(okRes.status, 200)
-
-  const [updated] = await db
-    .select({ datacenterId: server.datacenterId })
-    .from(server)
-    .where(eq(server.id, srv!.id))
-    .limit(1)
-  assertEquals(updated?.datacenterId, dcA!.id)
-
-  const badRes = await app.request(`/servers/${srv!.id}`, {
-    method: 'PATCH',
-    headers: {
-      Cookie: cookie,
-      [ORG_ID_HEADER]: orgA!.id,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ datacenterId: dcB!.id }),
-  })
-  assertEquals(badRes.status, 404)
+  assertEquals(rejected.status, 400)
 
   await db.delete(server).where(eq(server.id, srv!.id))
-  await db.delete(datacenter).where(eq(datacenter.id, dcA!.id))
-  await db.delete(datacenter).where(eq(datacenter.id, dcB!.id))
   await db.delete(grant).where(eq(grant.actorId, userId))
   await db.delete(user).where(eq(user.id, userId))
   await db.delete(organization).where(eq(organization.id, orgA!.id))
-  await db.delete(organization).where(eq(organization.id, orgB!.id))
 })
 
 test('PATCH /servers/:id does not commit hosting.enabled when hierarchy fails', async () => {

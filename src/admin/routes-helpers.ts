@@ -7,7 +7,7 @@ import {
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
 import { cellTrace } from '../logger.ts'
-import type { ServerAddresses } from '../server-addresses.ts'
+import type { ServerReportedIp } from '../server-addresses.ts'
 import {
   getPublicUrls,
   parsePublicUrlEntries,
@@ -40,15 +40,15 @@ export function resolvePlatformEnv(
   return {}
 }
 
-export function extractAddresses(record: { status: string; result?: unknown }): ServerAddresses {
+export function extractAddresses(record: { status: string; result?: unknown }): ServerReportedIp[] {
   if (record.status !== 'done') {
     throw new Error(record.status === 'expired'
       ? 'timeout waiting for addresses'
       : 'failed to fetch addresses')
   }
-  const result = record.result as { addresses?: ServerAddresses } | undefined
-  if (!result?.addresses) throw new Error('missing addresses in daemon response')
-  return result.addresses
+  const result = record.result as { ips?: ServerReportedIp[] } | undefined
+  if (!result?.ips) throw new Error('missing ips in daemon response')
+  return result.ips
 }
 
 export type PublicUrlsApplyUrlsResult =

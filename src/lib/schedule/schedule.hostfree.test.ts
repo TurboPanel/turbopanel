@@ -61,19 +61,16 @@ test('interpretServiceSchedule reads constraints, spread, ports, and colocation'
 const alpha: FleetServer = {
   id: 'server-a',
   connected: true,
-  datacenterId: 'dc-1',
   labels: { role: 'web', datacenter: 'east' },
 }
 const bravo: FleetServer = {
   id: 'server-b',
   connected: true,
-  datacenterId: 'dc-2',
   labels: { role: 'web', datacenter: 'west' },
 }
 const charlie: FleetServer = {
   id: 'server-c',
   connected: false,
-  datacenterId: 'dc-1',
   labels: { role: 'web' },
 }
 

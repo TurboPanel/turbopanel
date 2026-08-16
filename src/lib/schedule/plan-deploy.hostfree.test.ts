@@ -66,7 +66,6 @@ type PlanDeployDbOpts = {
   servers?: Array<{
     id: string
     connected: boolean
-    datacenterId: string | null
   }>
   storagePinRows?: Array<{
     serviceId: string
@@ -372,8 +371,8 @@ test('planEnvironmentDeploy registers volumes/mounts and plans with pin + fabric
       ],
       fabric: { id: FABRIC_ID },
       servers: [
-        { id: SERVER_A, connected: true, datacenterId: null },
-        { id: SERVER_B, connected: true, datacenterId: null },
+        { id: SERVER_A, connected: true },
+        { id: SERVER_B, connected: true },
       ],
       storagePinRows: [
         {
@@ -470,7 +469,7 @@ test('planEnvironmentDeploy uses project defaultServerId for register when env h
         },
       },
       services: [],
-      servers: [{ id: SERVER_B, connected: true, datacenterId: null }],
+      servers: [{ id: SERVER_B, connected: true }],
     }),
     { environmentId: ENV_ID, organizationId: ORG_ID },
     noopDeps({

@@ -362,9 +362,9 @@ test("fleetPresenceToConnection maps presence to connection shape", () => {
     keyLastUsedAt: null,
     geo: null,
     os: null,
-    inventory: null,
+    resources: null,
     timeSync: null,
-    addresses: null,
+    ips: null,
   };
 
   const connection = fleetPresenceToConnection(presence);
@@ -392,40 +392,37 @@ test("fleetPresenceToConnection uses zero lastInboundAt when absent", () => {
     keyLastUsedAt: null,
     geo: null,
     os: null,
-    inventory: null,
+    resources: null,
     timeSync: null,
-    addresses: null,
+    ips: null,
   });
   assertEquals(connection.lastInboundAt, 0);
   assertEquals(connection.connectedAt, "");
 });
 
-test("resolveFleetPresence enriches os / inventory / timeSync / addresses / geo from metadata", async () => {
+test("resolveFleetPresence enriches os / resources / timeSync / ips / geo from metadata", async () => {
   const metadata: ServerMetadata = {
     os: {
       family: "linux",
       id: "debian",
       version: "13.5",
-      versionCodename: "trixie",
+      codename: "trixie",
       prettyName: "Debian GNU/Linux 13 (trixie)",
     },
-    inventory: {
-      cpuCores: 4,
-      cpuThreads: 8,
-      memoryTotalBytes: 16_000_000_000,
-      swapTotalBytes: 2_000_000_000,
+    resources: {
+      cpu: { coreCount: 4, threadCount: 8 },
+      memory: { totalBytes: 16_000_000_000 },
+      swap: { totalBytes: 2_000_000_000 },
     },
     timeSync: {
       timezone: "UTC",
       ntpEnabled: true,
       ntpSynced: true,
     },
-    addresses: {
-      privateIpv4: ["10.0.0.5"],
-      privateIpv6: [],
-      publicIpv4: ["203.0.113.50"],
-      publicIpv6: [],
-    },
+    ips: [
+      { address: "10.0.0.5", version: 4, scope: "private" },
+      { address: "203.0.113.50", version: 4, scope: "public" },
+    ],
     geo: {
       country: "US",
       region: "TX",
@@ -443,9 +440,9 @@ test("resolveFleetPresence enriches os / inventory / timeSync / addresses / geo 
   const presence = await resolveFleetPresence(db, registry, [serverId]);
   const row = presence.get(serverId);
   assertEquals(row?.os?.id, "debian");
-  assertEquals(row?.inventory?.cpuThreads, 8);
+  assertEquals(row?.resources?.cpu?.threadCount, 8);
   assertEquals(row?.timeSync?.timezone, "UTC");
-  assertEquals(row?.addresses?.publicIpv4, ["203.0.113.50"]);
+  assertEquals(row?.ips?.find((ip) => ip.scope === "public")?.address, "203.0.113.50");
   assertEquals(row?.geo?.country, "US");
 });
 

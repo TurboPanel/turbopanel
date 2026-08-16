@@ -88,7 +88,7 @@ function createCell(opts: Readonly<{
         createdAt: outbound.at,
         expiresAt: outbound.at,
         result: {
-          addresses: { public: [], private: [], loopback: [] },
+          ips: [],
         },
       }
     },
@@ -326,7 +326,7 @@ test('GET /instance/addresses is Deno-only', async () => {
   const body = await ok.json()
   assertEquals(body.ok, true)
   assertEquals(body.source, 'instance')
-  assertExists(body.addresses)
+  assertExists(body.ips)
 })
 
 test('GET/PUT /instance/public-urls handle missing db and validation', async () => {

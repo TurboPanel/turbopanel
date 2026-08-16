@@ -200,7 +200,7 @@ export const passkey = pgTable(
 )
 /**
  * Physical site grouping servers that share a private L2/L3 network; optional —
- * servers may have no datacenter. `options` mirrors `organization.options` for
+ * servers may have zero or many memberships via `ip` pins. `options` mirrors `organization.options` for
  * `defaultServerTimezone` / `enforceServerTimezone` (consumed by the next phase's
  * resolver). Must stay declared before `server` (same rule as `license`).
  */
@@ -263,7 +263,6 @@ export const server = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid('organization_id'),
-    datacenterId: uuid('datacenter_id'),
     name: varchar({ length: 255 }),
     hostname: varchar('hostname', { length: 255 }),
     /**
@@ -295,10 +294,6 @@ export const server = pgTable(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
     ),
-    index('idx_server_datacenter_id').using(
-      'btree',
-      table.datacenterId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_server_machine_key').using(
       'btree',
       table.machineKey.asc().nullsLast().op('text_ops')
@@ -315,11 +310,6 @@ export const server = pgTable(
       foreignColumns: [organization.id],
       name: 'server_organization_id_organization_id_fk',
     }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.datacenterId],
-      foreignColumns: [datacenter.id],
-      name: 'server_datacenter_id_datacenter_id_fk',
-    }).onDelete('set null'),
   ]
 )
 /**
@@ -476,11 +466,15 @@ export const network = pgTable(
     check(
       'network_single_scope_check',
       sql`(
-        (${table.kind} = 'datacenter' AND ${table.datacenterId} IS NOT NULL AND ${table.serverId} IS NULL AND ${table.environmentId} IS NULL) OR
+        (${table.kind} = 'datacenter' AND ${table.datacenterId} IS NOT NULL AND ${table.serverId} IS NULL AND ${table.environmentId} IS NULL AND ${table.cidr} IS NOT NULL) OR
         (${table.kind} = 'docker' AND ${table.datacenterId} IS NULL AND ${table.environmentId} IS NULL) OR
         (${table.kind} = 'compose' AND ${table.datacenterId} IS NULL AND ${table.serverId} IS NULL)
       )`
     ),
+    /** One site CIDR network per datacenter — additional ranges are separate datacenters. */
+    uniqueIndex('uniq_network_datacenter_site')
+      .on(table.datacenterId)
+      .where(sql`${table.kind} = 'datacenter' AND ${table.datacenterId} IS NOT NULL`),
     check(
       'network_name_format_check',
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
@@ -532,11 +526,13 @@ export const fabric = pgTable(
 )
 /**
  * Single source of truth for every managed address. Two non-overlapping private
- * facts: **site CIDR** lives on `network(kind='datacenter', datacenter_id=…)`;
- * **a server's private address** is `ip WHERE server_id = … AND scope = 'datacenter'`.
- * Public VPS addresses carry no `network_id`. TurboFabric `tp0` addresses live
- * on `relay.address`, not here. Address family (`version`) is derived from
- * `address` in the API — not stored.
+ * facts: **site CIDR** lives on `network(kind='datacenter', datacenter_id=…)`
+ * (exactly one per datacenter); **a server's private pin into a datacenter** is
+ * `ip WHERE server_id AND datacenter_id AND scope = 'datacenter'` (a server may
+ * hold pins in many datacenters). Free-pool rows keep `datacenter_id` with null
+ * `server_id`. Public VPS addresses carry no `network_id`. TurboFabric `tp0`
+ * addresses live on `relay.address`, not here. Address family (`version`) is
+ * derived from `address` in the API — not stored.
  */
 export const ip = pgTable(
   'ip',
@@ -582,7 +578,7 @@ export const ip = pgTable(
       columns: [table.datacenterId],
       foreignColumns: [datacenter.id],
       name: 'ip_datacenter_id_datacenter_id_fk',
-    }).onDelete('set null'),
+    }).onDelete('cascade'),
     foreignKey({
       columns: [table.networkId],
       foreignColumns: [network.id],
@@ -597,12 +593,26 @@ export const ip = pgTable(
     check('ip_scope_check', sql`scope IN ('public', 'datacenter')`),
     check(
       'ip_datacenter_scope_check',
-      sql`(${table.scope} <> 'datacenter') OR (${table.serverId} IS NOT NULL OR ${table.datacenterId} IS NOT NULL)`
+      sql`(${table.scope} <> 'datacenter') OR (${table.datacenterId} IS NOT NULL)`
     ),
+    /**
+     * Free pool: datacenter_id only (no server / network). Membership pin:
+     * server_id + datacenter_id (optional network_id → site network).
+     */
     check(
-      'ip_datacenter_free_pool_check',
-      sql`(${table.datacenterId} IS NULL) OR (${table.serverId} IS NULL AND ${table.networkId} IS NULL)`
+      'ip_datacenter_anchor_check',
+      sql`(
+        ${table.datacenterId} IS NULL OR
+        (${table.serverId} IS NULL AND ${table.networkId} IS NULL) OR
+        ${table.serverId} IS NOT NULL
+      )`
     ),
+    /** One pin per (server, datacenter) — multi-DC via multiple rows. */
+    uniqueIndex('uniq_ip_server_datacenter_member')
+      .on(table.serverId, table.datacenterId)
+      .where(
+        sql`${table.scope} = 'datacenter' AND ${table.serverId} IS NOT NULL AND ${table.datacenterId} IS NOT NULL`,
+      ),
     uniqueIndex('uniq_ip_org_address').on(table.organizationId, table.address),
     check(
       'ip_name_format_check',

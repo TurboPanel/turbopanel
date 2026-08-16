@@ -121,6 +121,37 @@ export function parseCidr(value: string): ParsedCidr | null {
   return { version, base: aligned, prefix }
 }
 
+/** Render an aligned network CIDR (`10.0.0.5/24` → `10.0.0.0/24`). */
+export function formatCidr(parsed: ParsedCidr): string {
+  return `${bigIntToIp(parsed.base, parsed.version)}/${parsed.prefix}`
+}
+
+/**
+ * Normalize a host-or-network CIDR to the network address + prefix.
+ * Daemon interface reports are typically `address/prefix`.
+ */
+export function alignedNetworkCidr(value: string): string | null {
+  const parsed = parseCidr(value)
+  if (!parsed) return null
+  return formatCidr(parsed)
+}
+
+/** Typical LAN prefixes when a daemon has not reported an interface CIDR. */
+export const SITE_LAN_PREFIX_V4 = 24
+export const SITE_LAN_PREFIX_V6 = 64
+
+/**
+ * Infer a site CIDR from a host address: IPv4 /24, IPv6 /64, aligned to the
+ * network address. Used when hello/heartbeat still omits `ips[].cidr`.
+ */
+export function inferSiteCidrFromAddress(address: string): string | null {
+  const host = stripInetPrefixSuffix(address.trim())
+  const version = parseIpVersion(host)
+  if (version === null) return null
+  const prefix = version === 4 ? SITE_LAN_PREFIX_V4 : SITE_LAN_PREFIX_V6
+  return alignedNetworkCidr(`${host}/${prefix}`)
+}
+
 export function ipToBigInt(address: string): bigint | null {
   const trimmed = stripInetPrefixSuffix(address)
   const version = parseIpVersion(trimmed)
@@ -229,6 +260,20 @@ function bigIntToIpv6(value: bigint): string {
 export function bigIntToIp(value: bigint, version: 4 | 6): string {
   if (version === 4) return bigIntToIpv4(value)
   return bigIntToIpv6(value)
+}
+
+export function addressInCidr(address: string, cidr: string): boolean {
+  const parsed = parseCidr(cidr)
+  const value = ipToBigInt(address)
+  if (!parsed || value === null) return false
+  if (parseIpVersion(stripInetPrefixSuffix(address)) !== parsed.version) {
+    return false
+  }
+  const bitWidth = parsed.version === 4 ? 32 : 128
+  const hostBits = bitWidth - parsed.prefix
+  if (hostBits === 0) return value === parsed.base
+  const hostMask = (1n << BigInt(hostBits)) - 1n
+  return (value & ~hostMask) === parsed.base
 }
 
 export type CidrHostRange = {

@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { network, server } from '../db/schema.ts'
+import { ip, network } from '../db/schema.ts'
+import { loadDatacenterMembershipsForServers } from './datacenter-membership.ts'
 
 export type DatacenterCidrRequiredError = {
   kind: 'datacenter_cidr_required'
@@ -13,7 +14,8 @@ export type ServerDatacenterReadyError =
 
 /**
  * Load every CIDR-bearing `network(kind='datacenter')` row for the given
- * datacenter ids, grouped as `datacenterId → cidr[]`.
+ * datacenter ids, grouped as `datacenterId → cidr[]` (at most one site CIDR
+ * per datacenter under the current unique index).
  */
 export async function loadDatacenterCidrs(
   db: Db,
@@ -45,7 +47,7 @@ export async function loadDatacenterCidrs(
   return byDc
 }
 
-/** Prerequisite for private/replica placement: the site has at least one CIDR. */
+/** Prerequisite for private/replica placement: the site has a CIDR. */
 export async function assertDatacenterHasCidr(
   db: Db,
   datacenterId: string,
@@ -59,24 +61,21 @@ export async function assertDatacenterHasCidr(
 }
 
 /**
- * Placement prerequisite: the server is pinned to a datacenter **and** that
- * datacenter has at least one CIDR-bearing `network(kind='datacenter')` row.
+ * Placement prerequisite: the server has at least one datacenter membership
+ * pin **and** that datacenter has a CIDR-bearing site network.
  */
 export async function assertServerDatacenterReady(
   db: Db,
   serverId: string,
 ): Promise<null | ServerDatacenterReadyError> {
-  const [row] = await db
-    .select({ datacenterId: server.datacenterId })
-    .from(server)
-    .where(eq(server.id, serverId))
-    .limit(1)
-
-  if (!row?.datacenterId) {
+  const memberships = await loadDatacenterMembershipsForServers(db, [serverId])
+  const pins = memberships.get(serverId) ?? []
+  const first = pins[0]
+  if (!first) {
     return { kind: 'datacenter_required', serverId }
   }
 
-  return await assertDatacenterHasCidr(db, row.datacenterId)
+  return await assertDatacenterHasCidr(db, first.datacenterId)
 }
 
 export type GatewayRelayReadyError =
@@ -84,9 +83,9 @@ export type GatewayRelayReadyError =
   | { kind: 'gateway_datacenter_cidr_required'; datacenterId: string }
 
 /**
- * Gateways must be pinned to a datacenter that has at least one CIDR-bearing
- * site network. Delegates to {@link assertServerDatacenterReady} and maps the
- * placement errors onto gateway wire codes (keyed on `serverId`).
+ * Gateways must hold a datacenter membership pin on a site that has a CIDR.
+ * Delegates to {@link assertServerDatacenterReady} and maps the placement
+ * errors onto gateway wire codes (keyed on `serverId`).
  */
 export async function assertGatewayRelaysReady(
   db: Db,
@@ -108,4 +107,24 @@ export async function assertGatewayRelaysReady(
     }
   }
   return null
+}
+
+/** True when the server has any membership pin into the given datacenter. */
+export async function serverIsMemberOfDatacenter(
+  db: Db,
+  serverId: string,
+  datacenterId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: ip.id })
+    .from(ip)
+    .where(
+      and(
+        eq(ip.scope, 'datacenter'),
+        eq(ip.serverId, serverId),
+        eq(ip.datacenterId, datacenterId),
+      ),
+    )
+    .limit(1)
+  return Boolean(row)
 }

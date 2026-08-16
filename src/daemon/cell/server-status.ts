@@ -13,15 +13,15 @@ import type {
   ServerMetadata,
   ServerOsMetadata,
   ServerTimeSync,
-  ServerHostInventory,
+  ServerHostResources,
 } from "../../lib/db/server-metadata.ts";
 import {
   parseServerOsMetadata,
   parseServerTimeSync,
-  parseServerHostInventory,
+  parseServerHostResources,
 } from "../../lib/db/server-metadata.ts";
-import type { ServerAddresses } from "../../server-addresses.ts";
-import { parseServerAddresses } from "../../server-addresses.ts";
+import type { ServerReportedIp } from "../../server-addresses.ts";
+import { parseServerIps } from "../../server-addresses.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import { server } from "../../lib/db/schema.ts";
@@ -55,12 +55,12 @@ export type ServerFleetPresence = {
   geo: ServerGeo | null;
   /** From `server.metadata.os` (daemon hello); null until reported. */
   os: ServerOsMetadata | null;
-  /** From `server.metadata.inventory` (daemon hello capacity totals). */
-  inventory: ServerHostInventory | null;
+  /** From `server.metadata.resources` (daemon hello capacity totals). */
+  resources: ServerHostResources | null;
   /** From `server.metadata.timeSync` (hello / change-detected heartbeat). */
   timeSync: ServerTimeSync | null;
-  /** From `server.metadata.addresses` (hello / change-detected heartbeat). */
-  addresses: ServerAddresses | null;
+  /** From `server.metadata.ips` (hello / change-detected heartbeat). */
+  ips: ServerReportedIp[] | null;
 };
 
 function normalizeRemoteAddress(
@@ -177,9 +177,9 @@ export async function resolveFleetPresence(
       daemonBuild: projection?.daemonBuild ?? snapshot?.daemonBuild ?? undefined,
       geo: parseServerGeo(metadata.geo),
       os: parseServerOsMetadata(metadata.os) ?? null,
-      inventory: parseServerHostInventory(metadata.inventory) ?? null,
+      resources: parseServerHostResources(metadata.resources) ?? null,
       timeSync: parseServerTimeSync(metadata.timeSync) ?? null,
-      addresses: parseServerAddresses(metadata.addresses) ?? null,
+      ips: parseServerIps(metadata.ips) ?? null,
     });
   }
 

@@ -32,7 +32,7 @@ function createMockDb(row: MockRow | null): Db {
 
 test("resolveCellLocationHint prefers options over metadata", async () => {
   const db = createMockDb({
-    metadata: { cellLocationHint: "meta-hint" },
+    metadata: { cell: { locationHint: "meta-hint" } },
     options: { cellLocationHint: "options-hint" },
   });
   assertEquals(await resolveCellLocationHint(db, serverId), "options-hint");
@@ -40,7 +40,7 @@ test("resolveCellLocationHint prefers options over metadata", async () => {
 
 test("resolveCellLocationHint falls back to metadata when options omit hint", async () => {
   const db = createMockDb({
-    metadata: { cellLocationHint: "meta-only" },
+    metadata: { cell: { locationHint: "meta-only" } },
     options: {},
   });
   assertEquals(await resolveCellLocationHint(db, serverId), "meta-only");

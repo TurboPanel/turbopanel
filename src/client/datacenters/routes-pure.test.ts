@@ -1,11 +1,11 @@
 import { assertEquals } from '@std/assert'
 import {
   attachPrivateCidrs,
-  collectServerIdsToAssign,
   mergeDatacenterMetadata,
-  parseAssignServerIds,
+  parseMemberPins,
   parseNameSuggestionsQuery,
   parseOptionalUuid,
+  parseRequiredCidr,
   resolveSeededFields,
 } from './create-input.ts'
 
@@ -29,19 +29,49 @@ test('mergeDatacenterMetadata prefers request metadata over seeded defaults', ()
   assertEquals(mergeDatacenterMetadata(null, { note: 'ops' }), { note: 'ops' })
 })
 
-test('parseAssignServerIds deduplicates and validates UUIDs', () => {
+test('parseMemberPins validates UUID + address pairs and rejects duplicates', () => {
   const validId = '550e8400-e29b-41d4-a716-446655440000'
   const otherId = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
 
-  assertEquals(parseAssignServerIds(undefined), { ok: true, value: [] })
-  assertEquals(parseAssignServerIds([validId, validId, otherId]), {
-    ok: true,
-    value: [validId, otherId],
-  })
-  assertEquals(parseAssignServerIds(['not-a-uuid']), { ok: false })
-  assertEquals(parseAssignServerIds(Array.from({ length: 65 }, () => validId)), {
+  assertEquals(
+    parseMemberPins([
+      { serverId: validId, address: '10.0.0.10' },
+      { serverId: otherId, address: '10.0.0.11' },
+    ]),
+    {
+      ok: true,
+      value: [
+        { serverId: validId, address: '10.0.0.10' },
+        { serverId: otherId, address: '10.0.0.11' },
+      ],
+    },
+  )
+  assertEquals(parseMemberPins(undefined), { ok: false })
+  assertEquals(parseMemberPins([]), { ok: false })
+  assertEquals(parseMemberPins([{ serverId: 'not-a-uuid', address: '10.0.0.1' }]), {
     ok: false,
   })
+  assertEquals(
+    parseMemberPins([
+      { serverId: validId, address: '10.0.0.10' },
+      { serverId: validId, address: '10.0.0.11' },
+    ]),
+    { ok: false },
+  )
+  assertEquals(
+    parseMemberPins(Array.from({ length: 65 }, (_, i) => ({
+      serverId: `550e8400-e29b-41d4-a716-${String(i).padStart(12, '0')}`,
+      address: `10.${String(Math.floor(i / 256))}.${String(Math.floor((i % 256) / 256))}.${String(i % 256)}`,
+    }))),
+    { ok: false },
+  )
+})
+
+test('parseRequiredCidr accepts valid CIDRs only', () => {
+  assertEquals(parseRequiredCidr('10.0.0.0/24'), { ok: true, value: '10.0.0.0/24' })
+  assertEquals(parseRequiredCidr(' 10.0.0.0/24 '), { ok: true, value: '10.0.0.0/24' })
+  assertEquals(parseRequiredCidr('not-a-cidr'), { ok: false })
+  assertEquals(parseRequiredCidr(undefined), { ok: false })
 })
 
 test('resolveSeededFields fills name and metadata from source server geo', () => {
@@ -52,11 +82,10 @@ test('resolveSeededFields fills name and metadata from source server geo', () =>
       metadata: { operatorNote: 'edge' },
       options: null,
       sourceServerId: 'server-a',
-      assignServerIds: ['server-a'],
+      members: [{ serverId: 'server-a', address: '10.0.0.10' }],
     },
     [{
       id: 'server-a',
-      datacenterId: null,
       metadata: {
         geo: {
           city: 'Amsterdam',
@@ -82,7 +111,7 @@ test('resolveSeededFields fills name and metadata from source server geo', () =>
       metadata: null,
       options: null,
       sourceServerId: null,
-      assignServerIds: [],
+      members: [],
     },
     [],
   )
@@ -119,20 +148,4 @@ test('parseNameSuggestionsQuery validates limit and unassignedOnly flag', () => 
   })
   assertEquals(parseNameSuggestionsQuery(undefined, '-1'), 'invalid')
   assertEquals(parseNameSuggestionsQuery(undefined, '33'), 'invalid')
-})
-
-test('collectServerIdsToAssign deduplicates source and assign ids', () => {
-  const source = '550e8400-e29b-41d4-a716-446655440000'
-  const other = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
-  assertEquals(
-    collectServerIdsToAssign({
-      name: null,
-      description: null,
-      metadata: null,
-      options: null,
-      sourceServerId: source,
-      assignServerIds: [source, other],
-    }).sort((a, b) => a.localeCompare(b)),
-    [source, other].sort((a, b) => a.localeCompare(b)),
-  )
 })

@@ -33,7 +33,7 @@ function queryResult<T>(rows: T[]) {
   })
 }
 
-test('mergeServerMetadataIdentity ignores invalid timeSync and empty addresses no-op', () => {
+test('mergeServerMetadataIdentity ignores invalid timeSync and empty ips no-op', () => {
   assertEquals(
     mergeServerMetadataIdentity(
       { timeSync: { timezone: 'UTC' } },
@@ -127,12 +127,10 @@ test('touchServerMetadata writes hostname and metadata deltas', async () => {
       version: '13',
     },
     timeSync: { timezone: 'America/Chicago', ntpEnabled: true },
-    addresses: {
-      privateIpv4: ['10.0.0.1'],
-      privateIpv6: [],
-      publicIpv4: ['203.0.113.10'],
-      publicIpv6: [],
-    },
+    ips: [
+      { address: '10.0.0.1', version: 4, scope: 'private' },
+      { address: '203.0.113.10', version: 4, scope: 'public' },
+    ],
   })
   assertEquals(patches.length, 1)
   assertEquals(patches[0]?.hostname, 'edge-1')

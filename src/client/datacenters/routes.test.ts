@@ -13,6 +13,7 @@ import { deriveSecretsConfig, parseSecretsEnv } from "../authn/secrets.ts";
 import {
   datacenter,
   grant,
+  ip,
   network,
   organization,
   server,
@@ -31,6 +32,22 @@ const dbUrl = getDatabaseUrl();
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno);
+
+function reportedPrivateAddress(
+  address: string,
+  cidr: string,
+): Record<string, unknown> {
+  return {
+    ips: [
+      {
+        address,
+        version: 4,
+        scope: 'private',
+        cidr,
+      },
+    ],
+  }
+}
 
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
@@ -180,10 +197,17 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
     .insert(server)
     .values({
       organizationId,
-      datacenterId: assignedDatacenter!.id,
       metadata: { geo: { city: "Dallas", regionCode: "TX", country: "US" } },
     })
     .returning({ id: server.id });
+  await db.insert(ip).values({
+    organizationId,
+    datacenterId: assignedDatacenter!.id,
+    serverId: assignedServer!.id,
+    address: "10.0.0.10",
+    allocation: "dedicated",
+    scope: "datacenter",
+  });
 
   const cookie = await sessionCookie(db, secrets, userId);
   const res = await app.request("/datacenters/name-suggestions", {
@@ -206,6 +230,7 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
     }],
   });
 
+  await db.delete(ip).where(eq(ip.serverId, assignedServer!.id));
   await db.delete(server).where(eq(server.id, unassignedServer!.id));
   await db.delete(server).where(eq(server.id, assignedServer!.id));
   await db.delete(datacenter).where(eq(datacenter.id, assignedDatacenter!.id));
@@ -423,7 +448,7 @@ test("DELETE /datacenters/:id succeeds when no scoped networks exist", async () 
   await db.delete(organization).where(eq(organization.id, organizationId));
 });
 
-test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () => {
+test("DELETE /datacenters/:id returns 409 when members remain", async () => {
   if (!dbUrl) {
     console.warn(
       "Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set",
@@ -485,11 +510,30 @@ test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () 
       organizationId,
       datacenterId: dc!.id,
       kind: "datacenter",
+      cidr: "10.10.0.0/24",
       name: "DC Net",
       createdAt: now,
       updatedAt: now,
     })
     .returning({ id: network.id });
+
+  const [srv] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id });
+  await db.insert(ip).values({
+    organizationId,
+    datacenterId: dc!.id,
+    networkId: net!.id,
+    serverId: srv!.id,
+    address: "10.10.0.10",
+    allocation: "dedicated",
+    scope: "datacenter",
+  });
 
   const cookie = await sessionCookie(db, secrets, userId);
   const res = await app.request(`/datacenters/${dc!.id}`, {
@@ -502,7 +546,7 @@ test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () 
 
   assertEquals(res.status, 409);
   const body = await res.json() as { error: string };
-  assertEquals(body.error, "datacenter_has_networks");
+  assertEquals(body.error, "datacenter_has_members");
 
   const [stillThere] = await db
     .select({ id: datacenter.id })
@@ -511,7 +555,9 @@ test("DELETE /datacenters/:id returns 409 when scoped networks exist", async () 
     .limit(1);
   assertEquals(stillThere?.id, dc!.id);
 
+  await db.delete(ip).where(eq(ip.datacenterId, dc!.id));
   await db.delete(network).where(eq(network.id, net!.id));
+  await db.delete(server).where(eq(server.id, srv!.id));
   await db.delete(datacenter).where(eq(datacenter.id, dc!.id));
   await db.delete(grant).where(eq(grant.actorId, userId));
   await db.delete(user).where(eq(user.id, userId));
@@ -656,7 +702,7 @@ test("GET /datacenters/:id returns datacenter detail with privateCidrs", async (
   });
 });
 
-test("POST /datacenters creates datacenter and assigns unassigned servers", async () => {
+test("POST /datacenters creates site network and membership pins", async () => {
   await withDatacenterFixtures(async ({
     db,
     app,
@@ -676,6 +722,7 @@ test("POST /datacenters creates datacenter and assigns unassigned servers", asyn
             asn: 24940,
             asOrganization: "Hetzner",
           },
+          ...reportedPrivateAddress("10.0.0.10", "10.0.0.10/24"),
         },
         createdAt: now,
         updatedAt: now,
@@ -692,7 +739,7 @@ test("POST /datacenters creates datacenter and assigns unassigned servers", asyn
       },
       body: JSON.stringify({
         sourceServerId: srv!.id,
-        assignServerIds: [srv!.id],
+        members: [{ serverId: srv!.id, address: "10.0.0.10" }],
       }),
     });
 
@@ -700,21 +747,182 @@ test("POST /datacenters creates datacenter and assigns unassigned servers", asyn
     const body = await res.json() as { ok: true; id: string };
     assertEquals(body.ok, true);
 
-    const [row] = await db
-      .select({
-        name: datacenter.name,
-        datacenterId: server.datacenterId,
-      })
-      .from(server)
-      .innerJoin(datacenter, eq(server.datacenterId, datacenter.id))
-      .where(eq(server.id, srv!.id))
+    const [dcRow] = await db
+      .select({ name: datacenter.name })
+      .from(datacenter)
+      .where(eq(datacenter.id, body.id))
       .limit(1);
-    assertEquals(row?.datacenterId, body.id);
-    assertEquals(row?.name, "Frankfurt DE - Hetzner AS24940");
+    assertEquals(dcRow?.name, "Frankfurt DE - Hetzner AS24940");
+
+    const [siteNet] = await db
+      .select({ cidr: network.cidr, kind: network.kind })
+      .from(network)
+      .where(eq(network.datacenterId, body.id))
+      .limit(1);
+    assertEquals(siteNet?.kind, "datacenter");
+    assertEquals(siteNet?.cidr, "10.0.0.0/24");
+
+    const [pin] = await db
+      .select({
+        serverId: ip.serverId,
+        address: ip.address,
+        scope: ip.scope,
+      })
+      .from(ip)
+      .where(
+        and(
+          eq(ip.datacenterId, body.id),
+          eq(ip.serverId, srv!.id),
+          eq(ip.scope, "datacenter"),
+        ),
+      )
+      .limit(1);
+    assertEquals(pin?.serverId, srv!.id);
+    assertEquals(String(pin?.address), "10.0.0.10");
   });
 });
 
-test("POST /datacenters returns 409 when server is already assigned", async () => {
+test("POST /datacenters derives CIDR from the reported prefix and ignores body.cidr", async () => {
+  await withDatacenterFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const now = new Date().toISOString();
+    const [srv] = await db
+      .insert(server)
+      .values({
+        organizationId,
+        metadata: reportedPrivateAddress("10.0.0.10", "10.0.0.10/16"),
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id });
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request("/datacenters", {
+      method: "POST",
+      headers: {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "Derived CIDR",
+        cidr: "10.0.0.0/24",
+        members: [{ serverId: srv!.id, address: "10.0.0.10" }],
+      }),
+    });
+
+    assertEquals(res.status, 200);
+    const body = await res.json() as { ok: true; id: string };
+    const [siteNet] = await db
+      .select({ cidr: network.cidr })
+      .from(network)
+      .where(eq(network.datacenterId, body.id))
+      .limit(1);
+    assertEquals(siteNet?.cidr, "10.0.0.0/16");
+  });
+});
+
+test("POST /datacenters infers a typical LAN CIDR when the seed IP has no prefix", async () => {
+  await withDatacenterFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const now = new Date().toISOString();
+    const [srv] = await db
+      .insert(server)
+      .values({
+        organizationId,
+        metadata: {
+          ips: [
+            { address: "10.0.0.10", version: 4, scope: "private" },
+          },
+        },
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id });
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request("/datacenters", {
+      method: "POST",
+      headers: {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        members: [{ serverId: srv!.id, address: "10.0.0.10" }],
+      }),
+    });
+
+    assertEquals(res.status, 200);
+    const body = await res.json() as { ok: true; id: string };
+    const [siteNet] = await db
+      .select({ cidr: network.cidr })
+      .from(network)
+      .where(eq(network.datacenterId, body.id))
+      .limit(1);
+    assertEquals(siteNet?.cidr, "10.0.0.0/24");
+  });
+});
+
+test("DELETE /datacenters/:id removes an empty datacenter including its site network", async () => {
+  await withDatacenterFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const now = new Date().toISOString();
+    const [dc] = await db
+      .insert(datacenter)
+      .values({
+        organizationId,
+        name: "Empty with LAN",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: datacenter.id });
+    await db.insert(network).values({
+      organizationId,
+      datacenterId: dc!.id,
+      kind: "datacenter",
+      cidr: "10.10.0.0/24",
+      name: "Site LAN",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request(`/datacenters/${dc!.id}`, {
+      method: "DELETE",
+      headers: { cookie, [ORG_ID_HEADER]: organizationId },
+    });
+    assertEquals(res.status, 200);
+
+    const leftoverDc = await db
+      .select({ id: datacenter.id })
+      .from(datacenter)
+      .where(eq(datacenter.id, dc!.id));
+    assertEquals(leftoverDc.length, 0);
+    const leftoverNet = await db
+      .select({ id: network.id })
+      .from(network)
+      .where(eq(network.datacenterId, dc!.id));
+    assertEquals(leftoverNet.length, 0);
+  });
+});
+
+test("POST /datacenters/:id/members returns 409 when already a member", async () => {
   await withDatacenterFixtures(async ({
     db,
     app,
@@ -732,18 +940,39 @@ test("POST /datacenters returns 409 when server is already assigned", async () =
         updatedAt: now,
       })
       .returning({ id: datacenter.id });
+    await db.insert(network).values({
+      organizationId,
+      datacenterId: existingDc!.id,
+      kind: "datacenter",
+      cidr: "10.0.0.0/24",
+      name: "Existing LAN",
+      createdAt: now,
+      updatedAt: now,
+    });
     const [srv] = await db
       .insert(server)
       .values({
         organizationId,
-        datacenterId: existingDc!.id,
+        metadata: {
+          ips: [
+            { address: "10.0.0.10", version: 4, scope: "private" },
+          },
+        },
         createdAt: now,
         updatedAt: now,
       })
       .returning({ id: server.id });
+    await db.insert(ip).values({
+      organizationId,
+      datacenterId: existingDc!.id,
+      serverId: srv!.id,
+      address: "10.0.0.10",
+      allocation: "dedicated",
+      scope: "datacenter",
+    });
 
     const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request("/datacenters", {
+    const res = await app.request(`/datacenters/${existingDc!.id}/members`, {
       method: "POST",
       headers: {
         cookie,
@@ -751,15 +980,81 @@ test("POST /datacenters returns 409 when server is already assigned", async () =
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        name: "New DC",
-        assignServerIds: [srv!.id],
+        members: [{ serverId: srv!.id, address: "10.0.0.10" }],
       }),
     });
 
     assertEquals(res.status, 409);
     const body = await res.json() as { error: string; serverId: string };
-    assertEquals(body.error, "server_already_assigned");
+    assertEquals(body.error, "server_already_member");
     assertEquals(body.serverId, srv!.id);
+  });
+});
+
+test("DELETE /datacenters/:id/members/:serverId removes the pin", async () => {
+  await withDatacenterFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const now = new Date().toISOString();
+    const [dc] = await db
+      .insert(datacenter)
+      .values({
+        organizationId,
+        name: "Unpin DC",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: datacenter.id });
+    await db.insert(network).values({
+      organizationId,
+      datacenterId: dc!.id,
+      kind: "datacenter",
+      cidr: "10.0.0.0/24",
+      name: "Unpin LAN",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const [srv] = await db
+      .insert(server)
+      .values({
+        organizationId,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id });
+    await db.insert(ip).values({
+      organizationId,
+      datacenterId: dc!.id,
+      serverId: srv!.id,
+      address: "10.0.0.11",
+      allocation: "dedicated",
+      scope: "datacenter",
+    });
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request(
+      `/datacenters/${dc!.id}/members/${srv!.id}`,
+      {
+        method: "DELETE",
+        headers: { cookie, [ORG_ID_HEADER]: organizationId },
+      },
+    );
+    assertEquals(res.status, 200);
+
+    const leftover = await db
+      .select({ id: ip.id })
+      .from(ip)
+      .where(
+        and(
+          eq(ip.datacenterId, dc!.id),
+          eq(ip.serverId, srv!.id),
+        ),
+      );
+    assertEquals(leftover.length, 0);
   });
 });
 
@@ -780,6 +1075,11 @@ test("POST /datacenters returns 404 for server in another org", async () => {
       .insert(server)
       .values({
         organizationId: otherOrg!.id,
+        metadata: {
+          ips: [
+            { address: "10.0.0.10", version: 4, scope: "private" },
+          },
+        },
         createdAt: now,
         updatedAt: now,
       })
@@ -795,7 +1095,8 @@ test("POST /datacenters returns 404 for server in another org", async () => {
       },
       body: JSON.stringify({
         name: "Cross Org DC",
-        assignServerIds: [otherSrv!.id],
+        cidr: "10.0.0.0/24",
+        members: [{ serverId: otherSrv!.id, address: "10.0.0.10" }],
       }),
     });
 
@@ -806,7 +1107,7 @@ test("POST /datacenters returns 404 for server in another org", async () => {
   });
 });
 
-test("POST /datacenters returns 400 for invalid assignServerIds", async () => {
+test("POST /datacenters returns 400 for invalid members", async () => {
   await withDatacenterFixtures(async ({
     app,
     db,
@@ -824,7 +1125,8 @@ test("POST /datacenters returns 400 for invalid assignServerIds", async () => {
       },
       body: JSON.stringify({
         name: "Bad DC",
-        assignServerIds: ["not-a-uuid"],
+        cidr: "10.0.0.0/24",
+        members: [{ serverId: "not-a-uuid", address: "10.0.0.10" }],
       }),
     });
     assertEquals(res.status, 400);

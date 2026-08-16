@@ -90,7 +90,7 @@ function createMockCell(
         createdAt: outbound.at,
         expiresAt: outbound.at,
         result: {
-          addresses: { public: [], private: [], loopback: [] },
+          ips: [],
         },
       }
     },

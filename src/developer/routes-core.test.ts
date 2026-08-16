@@ -229,10 +229,9 @@ function createDiagnosticsCell(
           ...base,
           status: "done",
           result: {
-            addresses: {
-              publicIpv4: ["203.0.113.10"],
-              interfaces: [],
-            },
+            ips: [
+              { address: "203.0.113.10", version: 4, scope: "public" },
+            ],
           },
         };
       }
@@ -702,7 +701,7 @@ describe("developer address routes", () => {
     const response = await app.request(
       `${DEVELOPER_API_PREFIX}/instance/addresses`,
     );
-    // collectServerAddresses reads Deno.networkInterfaces — unavailable in workerd.
+    // collectServerIps reads Deno.networkInterfaces — unavailable in workerd.
     expect([200, 500]).toContain(response.status);
   });
 
@@ -752,9 +751,9 @@ describe("developer address routes", () => {
     );
     expect(success.status).toBe(200);
     const successBody = await success.json() as {
-      servers: Array<{ addresses?: { publicIpv4: string[] } }>;
+      servers: Array<{ ips?: Array<{ address: string }> }>;
     };
-    expect(successBody.servers[0]?.addresses?.publicIpv4).toContain(
+    expect(successBody.servers[0]?.ips?.map((ip) => ip.address)).toContain(
       "203.0.113.10",
     );
   });
@@ -816,10 +815,10 @@ describe("developer address routes", () => {
     expect(ok.status).toBe(200);
     const body = await ok.json() as {
       ok: boolean;
-      addresses: { publicIpv4: string[] };
+      ips: Array<{ address: string }>;
     };
     expect(body.ok).toBe(true);
-    expect(body.addresses.publicIpv4).toContain("203.0.113.10");
+    expect(body.ips.map((ip) => ip.address)).toContain("203.0.113.10");
   });
 });
 

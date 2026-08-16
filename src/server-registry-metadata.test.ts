@@ -1,5 +1,6 @@
 import { assertEquals } from 'jsr:@std/assert'
 import { mergeServerMetadataIdentity } from './server-registry.ts'
+import type { ServerReportedIp } from './server-addresses.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -10,7 +11,7 @@ import { mergeServerMetadataIdentity } from './server-registry.ts'
 const test = Deno.test.bind(Deno)
 
 // `mergeServerMetadataIdentity` is a pure merge over `server.metadata` jsonb
-// (os / timeSync / addresses / geo) — hostname and machineKey are dedicated
+// (os / resources / timeSync / ips / geo) — hostname and machineKey are dedicated
 // `server` columns now (see `identityColumnPatch` / `touchServerMetadata` in
 // server-registry.ts) and are never read or written by this function.
 
@@ -19,7 +20,7 @@ test('mergeServerMetadataIdentity merges os and skips unchanged writes', () => {
     family: 'linux' as const,
     id: 'debian',
     version: '13',
-    versionCodename: 'trixie',
+    codename: 'trixie',
   }
   const merged = mergeServerMetadataIdentity(
     {},
@@ -36,19 +37,17 @@ test('mergeServerMetadataIdentity merges os and skips unchanged writes', () => {
   )
 })
 
-test('mergeServerMetadataIdentity merges timeSync/addresses without clobbering os/geo', () => {
+test('mergeServerMetadataIdentity merges timeSync/ips without clobbering os/geo', () => {
   const os = {
     family: 'linux' as const,
     id: 'debian',
     version: '13.5',
   }
   const geo = { country: 'US', city: 'Chicago' }
-  const addresses = {
-    privateIpv4: ['10.0.0.1'],
-    privateIpv6: [] as string[],
-    publicIpv4: ['203.0.113.10'],
-    publicIpv6: [] as string[],
-  }
+  const ips: ServerReportedIp[] = [
+    { address: '10.0.0.1', version: 4, scope: 'private' },
+    { address: '203.0.113.10', version: 4, scope: 'public' },
+  ]
   const merged = mergeServerMetadataIdentity(
     {
       os,
@@ -57,7 +56,7 @@ test('mergeServerMetadataIdentity merges timeSync/addresses without clobbering o
     },
     {
       timeSync: { timezone: 'America/Chicago' },
-      addresses,
+      ips,
     },
   )
   assertEquals(merged?.os, os)
@@ -65,7 +64,7 @@ test('mergeServerMetadataIdentity merges timeSync/addresses without clobbering o
   assertEquals(merged?.timeSync?.timezone, 'America/Chicago')
   assertEquals(merged?.timeSync?.ntpEnabled, true)
   assertEquals(merged?.timeSync?.ntpServers, ['a'])
-  assertEquals(merged?.addresses, addresses)
+  assertEquals(merged?.ips, ips)
   assertEquals(typeof merged?.timeSync?.capturedAt, 'string')
 
   assertEquals(
@@ -76,7 +75,7 @@ test('mergeServerMetadataIdentity merges timeSync/addresses without clobbering o
           ntpEnabled: true,
           ntpServers: ['a'],
         },
-        addresses,
+        ips,
       },
       {
         timeSync: {
@@ -84,31 +83,24 @@ test('mergeServerMetadataIdentity merges timeSync/addresses without clobbering o
           ntpEnabled: true,
           ntpServers: ['a'],
         },
-        addresses,
+        ips,
       },
     ),
     null,
   )
 })
 
-test('mergeServerMetadataIdentity replaces stale addresses with empty daemon report', () => {
-  const prior = {
-    privateIpv4: ['10.0.0.1'],
-    privateIpv6: [] as string[],
-    publicIpv4: ['203.0.113.10'],
-    publicIpv6: [] as string[],
-  }
-  const emptyReport = {
-    privateIpv4: [] as string[],
-    privateIpv6: [] as string[],
-    publicIpv4: [] as string[],
-    publicIpv6: [] as string[],
-  }
+test('mergeServerMetadataIdentity replaces stale ips with empty daemon report', () => {
+  const prior: ServerReportedIp[] = [
+    { address: '10.0.0.1', version: 4, scope: 'private' },
+    { address: '203.0.113.10', version: 4, scope: 'public' },
+  ]
+  const emptyReport: ServerReportedIp[] = []
   const merged = mergeServerMetadataIdentity(
-    { addresses: prior },
-    { addresses: emptyReport },
+    { ips: prior },
+    { ips: emptyReport },
   )
-  assertEquals(merged?.addresses, emptyReport)
+  assertEquals(merged?.ips, emptyReport)
 })
 
 test('mergeServerMetadataIdentity ignores hostname/machineKey on the identity payload', () => {
@@ -149,7 +141,7 @@ test('mergeServerMetadataIdentity deep-merges timeSync NTP fields', () => {
         timezone: 'UTC',
         ntpEnabled: true,
         ntpServers: ['a.example'],
-        fallbackServers: ['b.example'],
+        fallbackNtpServers: ['b.example'],
       },
     },
     {
@@ -162,5 +154,5 @@ test('mergeServerMetadataIdentity deep-merges timeSync NTP fields', () => {
   assertEquals(merged?.timeSync?.timezone, 'America/Chicago')
   assertEquals(merged?.timeSync?.ntpEnabled, false)
   assertEquals(merged?.timeSync?.ntpServers, ['a.example'])
-  assertEquals(merged?.timeSync?.fallbackServers, ['b.example'])
+  assertEquals(merged?.timeSync?.fallbackNtpServers, ['b.example'])
 })

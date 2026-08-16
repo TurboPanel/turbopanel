@@ -5,7 +5,7 @@ import {
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_STALE_MS,
 } from "../protocol.ts";
-import { emptyServerAddresses } from "../../../server-addresses.ts";
+import { emptyServerIps } from "../../../server-addresses.ts";
 import { RedisDaemonCell } from "./cell.ts";
 import {
   cellKeyPattern,
@@ -706,17 +706,19 @@ test("handleInbound completes addresses dev-sync and managed-logs requests", asy
       requestId: addressesId,
       at,
     });
-    const addresses = emptyServerAddresses();
-    addresses.publicIpv4.push("203.0.113.50");
+    const ips = [
+      ...emptyServerIps(),
+      { address: "203.0.113.50", version: 4 as const, scope: "public" as const },
+    ];
     const addrDone = await cell.handleInbound({
       kind: "addresses-result",
       requestId: addressesId,
       at,
-      addresses,
+      ips,
     });
     assertEquals(addrDone?.status, "done");
     const snapshot = await cell.getSnapshot();
-    assertEquals(snapshot.addresses?.publicIpv4, ["203.0.113.50"]);
+    assertEquals(snapshot.ips?.find((ip) => ip.scope === "public")?.address, "203.0.113.50");
 
     const syncId = generateRequestId();
     await cell.enqueue({

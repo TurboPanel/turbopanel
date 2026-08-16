@@ -28,9 +28,9 @@ import {
   type ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
 import {
-  parseServerAddresses,
-  serverAddressesEquals,
-  type ServerAddresses,
+  parseServerIps,
+  serverIpsEquals,
+  type ServerReportedIp,
 } from "../../server-addresses.ts";
 import {
   geoEquals,
@@ -51,7 +51,7 @@ export type ProjectionIdentity = {
   keyId?: string;
   geo?: ServerGeo;
   timeSync?: ServerTimeSync;
-  addresses?: ServerAddresses;
+  ips?: ServerReportedIp[];
 };
 
 export type ProjectionDaemonBuild = {
@@ -252,14 +252,14 @@ function buildMetadataPatch(
       delta.timeSync = merged;
     }
   }
-  const addresses = identity?.addresses !== undefined
-    ? parseServerAddresses(identity.addresses)
+  const ips = identity?.ips !== undefined
+    ? parseServerIps(identity.ips)
     : undefined;
   if (
-    addresses !== undefined &&
-    !serverAddressesEquals(addresses, existingMetadata?.addresses)
+    ips !== undefined &&
+    !serverIpsEquals(ips, existingMetadata?.ips)
   ) {
-    delta.addresses = addresses;
+    delta.ips = ips;
   }
 
   return Object.keys(delta).length > 0 ? delta : null;

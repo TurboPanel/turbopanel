@@ -26,11 +26,13 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test('extractAddresses returns addresses when status is done', () => {
-  const addresses = { public: [], private: [], loopback: [] }
+test('extractAddresses returns ips when status is done', () => {
+  const ips = [
+    { address: '203.0.113.10', version: 4 as const, scope: 'public' as const },
+  ]
   assertEquals(
-    extractAddresses({ status: 'done', result: { addresses } }),
-    addresses,
+    extractAddresses({ status: 'done', result: { ips } }),
+    ips,
   )
 })
 
@@ -51,7 +53,7 @@ test('extractAddresses throws on expired, failed, and missing payload', () => {
     extractAddresses({ status: 'done', result: {} })
     throw new TypeError('expected throw')
   } catch (err) {
-    assertEquals((err as Error).message, 'missing addresses in daemon response')
+    assertEquals((err as Error).message, 'missing ips in daemon response')
   }
 })
 

@@ -27,6 +27,8 @@ import {
   DEVELOPER_WS_PATH,
 } from "../surfaces.ts";
 import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
+import { ipsFromDaemonPresence } from "../server-addresses.ts";
+import { resourcesFromDaemonPresence } from "../lib/db/server-metadata.ts";
 import { touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
@@ -368,13 +370,16 @@ export function registerDaemonWebSocket(
         const cell = registry.getCell(payload.sub);
 
         if (message.type === "hello") {
+          const presence = message as unknown as Record<string, unknown>;
+          const ips = ipsFromDaemonPresence(presence);
+          const resources = resourcesFromDaemonPresence(presence);
           await touchServerMetadata(db, payload.sub, {
             hostname: message.hostname,
             machineKey: message.machineKey,
             os: message.os,
-            inventory: message.inventory,
+            resources,
             timeSync: message.timeSync,
-            addresses: message.addresses,
+            ips,
           });
           await cell.recordInbound({
             connectionId,
@@ -389,10 +394,12 @@ export function registerDaemonWebSocket(
         }
 
         if (message.type === "heartbeat") {
-          if (message.timeSync || message.addresses) {
+          const presence = message as unknown as Record<string, unknown>;
+          const ips = ipsFromDaemonPresence(presence);
+          if (message.timeSync || ips) {
             await touchServerMetadata(db, payload.sub, {
               timeSync: message.timeSync,
-              addresses: message.addresses,
+              ips,
             });
           }
           await cell.recordInbound({

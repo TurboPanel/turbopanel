@@ -1023,7 +1023,7 @@ export class RedisDaemonCell implements DaemonCell {
     switch (inbound.kind) {
       case "addresses-result":
         status = "done";
-        result = { addresses: inbound.addresses };
+        result = { ips: inbound.ips };
         break;
       case "managed-logs-result":
         status = inbound.error ? "failed" : "done";
@@ -1088,7 +1088,7 @@ export class RedisDaemonCell implements DaemonCell {
 
     if (inbound.kind === "addresses-result") {
       await this.putSnapshot({
-        addresses: inbound.addresses,
+        ips: inbound.ips,
         lastInboundAt: inbound.at,
       });
     } else {

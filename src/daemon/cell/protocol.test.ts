@@ -99,12 +99,9 @@ it("validateDaemonInboundEnvelope accepts a valid addresses result", () => {
     kind: "addresses-result",
     requestId: "req-1",
     at: "2020-01-01T00:00:00.000Z",
-    addresses: {
-      privateIpv4: [],
-      privateIpv6: [],
-      publicIpv4: [TEST_PUBLIC_IPV4],
-      publicIpv6: [],
-    },
+    ips: [
+      { address: TEST_PUBLIC_IPV4, version: 4, scope: "public" },
+    ],
   });
   assertEquals(result, { ok: true });
 });
@@ -117,23 +114,17 @@ it("wireMessageToInboundEnvelope maps inbound wire types", () => {
       type: "addresses-result",
       id: "r2",
       at,
-      addresses: {
-        privateIpv4: [],
-        privateIpv6: [],
-        publicIpv4: [TEST_PUBLIC_IPV4],
-        publicIpv6: [],
-      },
+      ips: [
+        { address: TEST_PUBLIC_IPV4, version: 4, scope: "public" },
+      ],
     }),
     {
       kind: "addresses-result",
       requestId: "r2",
       at,
-      addresses: {
-        privateIpv4: [],
-        privateIpv6: [],
-        publicIpv4: [TEST_PUBLIC_IPV4],
-        publicIpv6: [],
-      },
+      ips: [
+        { address: TEST_PUBLIC_IPV4, version: 4, scope: "public" },
+      ],
     },
   );
 
@@ -567,7 +558,7 @@ it("validateDaemonInboundFrame validates addresses-result envelope fields", () =
       type: "addresses-result",
       id: "req-1",
       at: VALID_AT,
-      addresses: { privateIpv4: [], privateIpv6: [], publicIpv4: [], publicIpv6: [] },
+      ips: [],
     }),
   );
   assertEquals(ok.ok, true);
@@ -578,7 +569,7 @@ it("validateDaemonInboundFrame validates addresses-result envelope fields", () =
         type: "addresses-result",
         id: "",
         at: VALID_AT,
-        addresses: {},
+        ips: {},
       }),
     ).ok,
     false,
@@ -589,7 +580,7 @@ it("validateDaemonInboundFrame validates addresses-result envelope fields", () =
         type: "addresses-result",
         id: "req-1",
         at: VALID_AT,
-        addresses: "not-an-object",
+        ips: "not-an-array",
       }),
     ).ok,
     false,
@@ -691,12 +682,7 @@ it("validateDaemonInboundEnvelope rejects invalid requestId and timestamps", () 
       kind: "addresses-result",
       requestId: "",
       at: VALID_AT,
-      addresses: {
-        privateIpv4: [],
-        privateIpv6: [],
-        publicIpv4: [],
-        publicIpv6: [],
-      },
+      ips: [],
     }),
     { ok: false, reason: "invalid requestId" },
   );

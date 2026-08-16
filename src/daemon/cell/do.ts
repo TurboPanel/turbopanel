@@ -13,12 +13,16 @@ import {
 import { evaluateSocketHealth } from "./socket-health.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
-import type {
-  ServerHostInventory,
-  ServerOsMetadata,
-  ServerTimeSync,
+import {
+  resourcesFromDaemonPresence,
+  type ServerHostResources,
+  type ServerOsMetadata,
+  type ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
-import type { ServerAddresses } from "../../server-addresses.ts";
+import {
+  ipsFromDaemonPresence,
+  type ServerReportedIp,
+} from "../../server-addresses.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { touchServerMetadata } from "../../server-registry.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
@@ -1102,7 +1106,7 @@ export class DaemonCellObject {
   }
 
   // COST RULE: #projectInbound for heartbeats runs only on daemon-build change,
-  // timeSync/addresses presence facts, or runtime/offline repair evidence —
+  // timeSync/ips presence facts, or runtime/offline repair evidence —
   // never because INBOUND_PROJECTION_COALESCE_MS elapsed alone. Hello keeps
   // identity/geo handling. Steady-state idle traffic performs no SQLite cell
   // writes and never opens a Hyperdrive connection. Every #withProjectionDb
@@ -1116,9 +1120,9 @@ export class DaemonCellObject {
       hostname?: string;
       machineKey?: string;
       os?: ServerOsMetadata;
-      inventory?: ServerHostInventory;
+      resources?: ServerHostResources;
       timeSync?: ServerTimeSync;
-      addresses?: ServerAddresses;
+      ips?: ServerReportedIp[];
     },
     geo?: ServerGeo,
   ): Promise<void> {
@@ -1127,17 +1131,17 @@ export class DaemonCellObject {
         hostIdentity?.hostname ||
         hostIdentity?.machineKey ||
         hostIdentity?.os ||
-        hostIdentity?.inventory ||
+        hostIdentity?.resources ||
         hostIdentity?.timeSync ||
-        hostIdentity?.addresses
+        hostIdentity?.ips
       ) {
         await touchServerMetadata(db, serverId, {
           hostname: hostIdentity.hostname,
           machineKey: hostIdentity.machineKey,
           os: hostIdentity.os,
-          inventory: hostIdentity.inventory,
+          resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
-          addresses: hostIdentity.addresses,
+          ips: hostIdentity.ips,
         });
       }
       await onDaemonInbound(
@@ -1638,9 +1642,9 @@ export class DaemonCellObject {
       hostname?: string;
       machineKey?: string;
       os?: ServerOsMetadata;
-      inventory?: ServerHostInventory;
+      resources?: ServerHostResources;
       timeSync?: ServerTimeSync;
-      addresses?: ServerAddresses;
+      ips?: ServerReportedIp[];
     },
   ): Promise<void> {
     this.#bumpDiag("heartbeatCount");
@@ -1660,21 +1664,21 @@ export class DaemonCellObject {
     );
     const presenceFacts = {
       timeSync: parsed.timeSync,
-      addresses: parsed.addresses,
+      ips: ipsFromDaemonPresence(parsed),
     };
     const hasPresenceFacts = Boolean(
-      presenceFacts.timeSync || presenceFacts.addresses,
+      presenceFacts.timeSync || presenceFacts.ips,
     );
-    // hostname/os/inventory stay hello-only; timeSync/addresses project on both
+    // hostname/os/resources stay hello-only; timeSync/ips project on both
     // hello and change-detected heartbeats.
     let hostIdentity:
       | {
         hostname?: string;
         machineKey?: string;
         os?: ServerOsMetadata;
-        inventory?: ServerHostInventory;
+        resources?: ServerHostResources;
         timeSync?: ServerTimeSync;
-        addresses?: ServerAddresses;
+        ips?: ServerReportedIp[];
       }
       | undefined;
     if (parsed.type === "hello") {
@@ -1682,7 +1686,7 @@ export class DaemonCellObject {
         hostname: parsed.hostname,
         machineKey: parsed.machineKey,
         os: parsed.os,
-        inventory: parsed.inventory,
+        resources: resourcesFromDaemonPresence(parsed),
         ...presenceFacts,
       };
     } else if (hasPresenceFacts) {
@@ -1692,9 +1696,9 @@ export class DaemonCellObject {
       hostIdentity?.hostname ||
         hostIdentity?.machineKey ||
         hostIdentity?.os ||
-        hostIdentity?.inventory ||
+        hostIdentity?.resources ||
         hostIdentity?.timeSync ||
-        hostIdentity?.addresses,
+        hostIdentity?.ips,
     );
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined;
     // Heartbeats: daemon-build change, presence facts, or offline repair only —
@@ -2587,7 +2591,7 @@ export class DaemonCellObject {
   ): { status: PendingRequestStatus; result?: unknown; error?: string } | null {
     switch (inbound.kind) {
       case "addresses-result":
-        return { status: "done", result: { addresses: inbound.addresses } };
+        return { status: "done", result: { ips: inbound.ips } };
       case "managed-logs-result":
         return {
           status: inbound.error ? "failed" : "done",

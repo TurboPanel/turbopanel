@@ -40,22 +40,39 @@ export const datacenterSchemas = {
   },
   CreateDatacenterRequest: {
     type: "object",
+    required: ["members"],
     properties: {
       displayName: { type: "string" },
       description: { type: "string" },
       metadata: { type: "object" },
       options: { type: "object" },
+      cidr: {
+        type: "string",
+        description:
+          "Ignored when present. Site CIDR is derived from the first member's daemon-reported `ips[].cidr` when present, otherwise a typical LAN (`/24` IPv4, `/64` IPv6).",
+      },
+      members: {
+        type: "array",
+        minItems: 1,
+        maxItems: 64,
+        items: {
+          type: "object",
+          required: ["serverId", "address"],
+          properties: {
+            serverId: { type: "string", format: "uuid" },
+            address: {
+              type: "string",
+              description:
+                "Daemon-reported private address. Site CIDR comes from matching `ips[].cidr` when present, otherwise a typical LAN prefix; extra members must fall inside that CIDR.",
+            },
+          },
+        },
+      },
       sourceServerId: {
         type: "string",
         format: "uuid",
         description:
-          "When displayName is omitted, seed the name and metadata.geo from this server",
-      },
-      assignServerIds: {
-        type: "array",
-        items: { type: "string", format: "uuid" },
-        description:
-          "Member servers to pin to the new datacenter (includes sourceServerId when set)",
+          "When displayName is omitted, seed the name and metadata.geo from this member (defaults to members[0])",
       },
     },
   },
@@ -202,7 +219,8 @@ export const datacenterPaths: Record<string, unknown> = {
           },
         },
         "400": {
-          description: "Invalid request",
+          description:
+            "`address_cidr_unreported` when the seed address is not a reported private IP; `address_not_reported` / `address_not_in_cidr` for member pins; otherwise invalid request",
           content: { "application/json": { schema: clientErrorJson } },
         },
         "401": {
@@ -351,7 +369,7 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         "409": {
           description:
-            "`datacenter_has_networks` — remove or reassign scoped networks first. Datacenter-kind network CIDRs are what mesh gateways advertise as site routes.",
+            "`datacenter_has_members` — unassign every server first. `datacenter_has_networks` if a non-site network is still scoped to the datacenter.",
           content: { "application/json": { schema: clientErrorJson } },
         },
       },

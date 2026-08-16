@@ -1,6 +1,6 @@
-import type { ServerAddresses } from "../../server-addresses.ts";
+import type { ServerReportedIp } from "../../server-addresses.ts";
 import type {
-  ServerHostInventory,
+  ServerHostResources,
   ServerOsMetadata,
   ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
@@ -46,14 +46,14 @@ export type DaemonMessage =
     /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.metadata.os`. */
     os?: ServerOsMetadata;
     /**
-     * Host capacity (cpu cores / RAM / swap totals) from `/proc`;
-     * persisted to `server.metadata.inventory`.
+     * Host capacity (cpu / RAM / swap totals) from `/proc`;
+     * persisted to `server.metadata.resources`.
      */
-    inventory?: ServerHostInventory;
+    resources?: ServerHostResources;
     /** Host timezone + NTP state; persisted to `server.metadata.timeSync`. */
     timeSync?: ServerTimeSync;
-    /** Host interface addresses; persisted to `server.metadata.addresses`. */
-    addresses?: ServerAddresses;
+    /** Host interface addresses; persisted to `server.metadata.ips`. */
+    ips?: ServerReportedIp[];
   }
   | {
     type: "heartbeat";
@@ -61,8 +61,8 @@ export type DaemonMessage =
     daemonBuild?: DaemonBuildInfo;
     /** Change-detected time-sync facts; persisted to `server.metadata.timeSync`. */
     timeSync?: ServerTimeSync;
-    /** Change-detected addresses; persisted to `server.metadata.addresses`. */
-    addresses?: ServerAddresses;
+    /** Change-detected addresses; persisted to `server.metadata.ips`. */
+    ips?: ServerReportedIp[];
   }
   | { type: "echo"; payload: unknown; at: string }
   | { type: "version"; commit: string; branch: string; at: string }
@@ -70,7 +70,7 @@ export type DaemonMessage =
   | {
     type: "addresses-result";
     id: string;
-    addresses: ServerAddresses;
+    ips: ServerReportedIp[];
     at: string;
   }
   | {
@@ -308,7 +308,7 @@ function validateAddressesResultFields(
 ): string | null {
   const base = validateResultEnvelopeFields(record);
   if (base) return base;
-  if (!isRecord(record.addresses)) return "invalid addresses";
+  if (!Array.isArray(record.ips)) return "invalid ips";
   return null;
 }
 
@@ -535,7 +535,7 @@ export type DaemonInboundEnvelope =
     kind: "addresses-result";
     requestId: string;
     at: string;
-    addresses: ServerAddresses;
+    ips: ServerReportedIp[];
   }
   | {
     kind: "managed-logs-result";
@@ -610,7 +610,7 @@ export function wireMessageToInboundEnvelope(
         kind: "addresses-result",
         requestId: msg.id,
         at: msg.at,
-        addresses: msg.addresses,
+        ips: msg.ips,
       };
     case "managed-logs-result":
       return {

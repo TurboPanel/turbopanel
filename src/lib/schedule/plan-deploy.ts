@@ -141,7 +141,6 @@ async function loadFleet(
     .select({
       id: server.id,
       connected: server.connected,
-      datacenterId: server.datacenterId,
     })
     .from(server)
     .where(eq(server.organizationId, organizationId))
@@ -158,7 +157,6 @@ async function loadFleet(
     return {
       id: row.id,
       connected: row.connected,
-      datacenterId: row.datacenterId,
       labels,
     }
   })

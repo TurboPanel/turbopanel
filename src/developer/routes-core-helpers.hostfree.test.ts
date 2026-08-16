@@ -83,8 +83,10 @@ test('parseOrganizationIdInput validates UUID and org existence', async () => {
 })
 
 test('extractAddresses and addressesFetchErrorStatus mirror admin behavior', () => {
-  const addresses = { public: [], private: [], loopback: [] }
-  assertEquals(extractAddresses({ status: 'done', result: { addresses } }), addresses)
+  const ips = [
+    { address: '203.0.113.10', version: 4 as const, scope: 'public' as const },
+  ]
+  assertEquals(extractAddresses({ status: 'done', result: { ips } }), ips)
   assertEquals(addressesFetchErrorStatus('daemon not connected'), 404)
   assertEquals(addressesFetchErrorStatus('timeout waiting for addresses'), 500)
 })
