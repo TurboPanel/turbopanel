@@ -1,5 +1,5 @@
 {
-  "id": "ae22548b-45fa-4b07-adb9-29c79b1c16be",
+  "id": "49d532c6-b03e-4e00-851a-f970ee016d62",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1851,8 +1851,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "name": {
-          "name": "name",
+        "description": {
+          "name": "description",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
@@ -2040,10 +2040,6 @@
         "ip_datacenter_anchor_check": {
           "name": "ip_datacenter_anchor_check",
           "value": "(\n        \"ip\".\"datacenter_id\" IS NULL OR\n        (\"ip\".\"server_id\" IS NULL AND \"ip\".\"network_id\" IS NULL) OR\n        \"ip\".\"server_id\" IS NOT NULL\n      )"
-        },
-        "ip_name_format_check": {
-          "name": "ip_name_format_check",
-          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
         }
       },
       "isRLSEnabled": false

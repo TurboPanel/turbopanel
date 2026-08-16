@@ -18,7 +18,7 @@ test("suggestDatacenterNames groups trusted geo and ASN metadata", () => {
       id: "a",
       name: null,
       hostname: null,
-      datacenterId: null,
+      hasMembership: false,
       metadata: {
         geo: {
           city: "Amsterdam",
@@ -32,7 +32,7 @@ test("suggestDatacenterNames groups trusted geo and ASN metadata", () => {
       id: "b",
       name: null,
       hostname: null,
-      datacenterId: null,
+      hasMembership: false,
       metadata: {
         geo: {
           city: "Amsterdam",
@@ -46,7 +46,7 @@ test("suggestDatacenterNames groups trusted geo and ASN metadata", () => {
       id: "c",
       name: null,
       hostname: null,
-      datacenterId: null,
+      hasMembership: false,
       metadata: {
         geo: {
           city: "Dallas",
@@ -91,7 +91,7 @@ test("suggestDatacenterNames emits names accepted by display-name validation", (
     id: "x",
     name: null,
     hostname: null,
-    datacenterId: null,
+    hasMembership: false,
     metadata: {
       geo: {
         city: "Montréal",
@@ -114,28 +114,28 @@ test("suggestDatacenterNames ignores absent or malformed geo and caps results", 
       id: "1",
       name: null,
       hostname: null,
-      datacenterId: null,
+      hasMembership: false,
       metadata: {},
     },
     {
       id: "2",
       name: null,
       hostname: null,
-      datacenterId: null,
+      hasMembership: false,
       metadata: { geo: { city: "" } },
     },
     {
       id: "3",
       name: null,
       hostname: null,
-      datacenterId: null,
+      hasMembership: false,
       metadata: { geo: { country: "US" } },
     },
     {
       id: "4",
       name: null,
       hostname: null,
-      datacenterId: null,
+      hasMembership: false,
       metadata: { geo: { country: "NL" } },
     },
   ], { limit: 1 });
@@ -169,14 +169,14 @@ test("suggestDatacenterNames prefers name and hostname labels", () => {
       id: "srv-1",
       name: " Edge-1 ",
       hostname: "host-a",
-      datacenterId: null,
+      hasMembership: false,
       metadata: { geo: { country: "US", city: "Chicago" } },
     },
     {
       id: "srv-2",
       name: null,
       hostname: " host-b ",
-      datacenterId: null,
+      hasMembership: false,
       metadata: { geo: { country: "US", city: "Chicago" } },
     },
   ]);
@@ -191,7 +191,7 @@ test("suggestDatacenterNames skips non-object metadata", () => {
         id: "bad",
         name: null,
         hostname: null,
-        datacenterId: null,
+        hasMembership: false,
         metadata: ["not", "geo"],
       },
     ]),
@@ -205,14 +205,14 @@ test("suggestDatacenterNames can require unassigned hosts only", () => {
       id: "free",
       name: "Free",
       hostname: null,
-      datacenterId: null,
+      hasMembership: false,
       metadata: { geo: { country: "US", city: "Chicago" } },
     },
     {
       id: "taken",
       name: "Taken",
       hostname: null,
-      datacenterId: "dc-1",
+      hasMembership: true,
       metadata: { geo: { country: "US", city: "Chicago" } },
     },
   ], { unassignedOnly: true, limit: 10 });

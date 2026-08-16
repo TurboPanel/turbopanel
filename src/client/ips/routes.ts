@@ -38,7 +38,7 @@ import {
   assertCanReadOr403,
   buildPatchUpdateFields,
   getOrgId,
-  parseDisplayName,
+  parseDescription,
   parseJsonBody,
   parseJsonbObject,
 } from '../shared.ts'
@@ -52,7 +52,7 @@ const IP_SELECT = {
   address: ip.address,
   allocation: ip.allocation,
   scope: ip.scope,
-  displayName: ip.name,
+  description: ip.description,
   metadata: ip.metadata,
   options: ip.options,
   createdAt: ip.createdAt,
@@ -72,7 +72,7 @@ type CreateIpFields = {
   address: string
   allocation: string
   scope: string
-  displayName: string | null
+  description: string | null
   metadata: Record<string, unknown> | null
   options: Record<string, unknown> | null
 } & IpScopeFks
@@ -201,9 +201,9 @@ async function parseCreateIpFields(
   const enums = parseCreateIpEnums(c, body)
   if (enums instanceof Response) return enums
 
-  let displayName: string | null
+  let description: string | null
   try {
-    displayName = parseDisplayName(body)
+    description = parseDescription(body)
   } catch {
     return c.json({ error: 'Invalid request' }, 400)
   }
@@ -222,7 +222,7 @@ async function parseCreateIpFields(
   return {
     ...addressFields,
     ...enums,
-    displayName,
+    description,
     metadata,
     options,
     ...scopeFks,
@@ -241,7 +241,11 @@ async function buildIpPatchFields(
 
   let patchFields: IpPatchFields
   try {
-    patchFields = buildPatchUpdateFields(body)
+    const { name, ...rest } = buildPatchUpdateFields(body)
+    if (name !== undefined) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    patchFields = rest
   } catch {
     return c.json({ error: 'Invalid request' }, 400)
   }
@@ -373,7 +377,7 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
             address: fields.address,
             allocation: fields.allocation,
             scope: fields.scope,
-            name: fields.displayName,
+            description: fields.description,
             ...(fields.datacenterId !== undefined
               ? { datacenterId: fields.datacenterId }
               : {}),

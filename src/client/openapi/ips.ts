@@ -27,7 +27,7 @@ export const ipSchemas = {
       },
       allocation: { type: 'string', enum: ['dedicated', 'shared'] },
       scope: { type: 'string', enum: ['public', 'datacenter'] },
-      displayName: { type: ['string', 'null'] },
+      description: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
       options: { type: ['object', 'null'] },
       createdAt: { type: 'string', format: 'date-time' },
@@ -57,7 +57,7 @@ export const ipSchemas = {
       address: { type: 'string' },
       allocation: { type: 'string', enum: ['dedicated', 'shared'] },
       scope: { type: 'string', enum: ['public', 'datacenter'] },
-      displayName: { type: 'string' },
+      description: { type: 'string' },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       networkId: { type: ['string', 'null'], format: 'uuid' },
       serverId: { type: ['string', 'null'], format: 'uuid' },
@@ -68,7 +68,7 @@ export const ipSchemas = {
   PatchIpRequest: {
     type: 'object',
     properties: {
-      displayName: { type: 'string' },
+      description: { type: 'string' },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       networkId: { type: ['string', 'null'], format: 'uuid' },
       serverId: { type: ['string', 'null'], format: 'uuid' },

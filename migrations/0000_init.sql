@@ -184,7 +184,7 @@ CREATE TABLE "ip" (
 	"address" "inet" NOT NULL,
 	"allocation" text NOT NULL,
 	"scope" text NOT NULL,
-	"name" varchar(255),
+	"description" varchar(255),
 	CONSTRAINT "ip_allocation_check" CHECK (allocation IN ('dedicated', 'shared')),
 	CONSTRAINT "ip_scope_check" CHECK (scope IN ('public', 'datacenter')),
 	CONSTRAINT "ip_datacenter_scope_check" CHECK (("ip"."scope" <> 'datacenter') OR ("ip"."datacenter_id" IS NOT NULL)),
@@ -192,8 +192,7 @@ CREATE TABLE "ip" (
         "ip"."datacenter_id" IS NULL OR
         ("ip"."server_id" IS NULL AND "ip"."network_id" IS NULL) OR
         "ip"."server_id" IS NOT NULL
-      )),
-	CONSTRAINT "ip_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+      ))
 );
 --> statement-breakpoint
 CREATE TABLE "label" (

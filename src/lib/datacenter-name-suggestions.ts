@@ -58,7 +58,8 @@ export type DatacenterSuggestionServerInput = {
   id: string;
   name: string | null;
   hostname: string | null;
-  datacenterId: string | null;
+  /** True when the server has at least one datacenter membership pin. */
+  hasMembership: boolean;
   metadata: unknown;
 };
 
@@ -85,7 +86,7 @@ export function suggestDatacenterNames(
   const groups = new Map<string, GeoGroup>();
 
   for (const row of servers) {
-    if (unassignedOnly && row.datacenterId) continue;
+    if (unassignedOnly && row.hasMembership) continue;
     if (
       typeof row.metadata !== "object" ||
       row.metadata === null ||

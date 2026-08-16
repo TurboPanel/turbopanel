@@ -18,8 +18,13 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-type ServerRow = { id: string; datacenterId: string | null }
-type IpRow = { serverId: string; address: string; createdAt: string }
+type MembershipPinRow = {
+  ipId: string
+  serverId: string
+  datacenterId: string
+  networkId: string | null
+  address: string
+}
 type RelayRow = {
   relayId: string
   serverId: string
@@ -28,9 +33,22 @@ type RelayRow = {
   address: string
 }
 
+function membershipPin(
+  serverId: string,
+  datacenterId: string,
+  address: string,
+): MembershipPinRow {
+  return {
+    ipId: `ip-${serverId}-${datacenterId}`,
+    serverId,
+    datacenterId,
+    networkId: null,
+    address,
+  }
+}
+
 type Fixture = {
-  servers?: ServerRow[]
-  ips?: IpRow[]
+  memberships?: MembershipPinRow[]
   relays?: RelayRow[]
   /** Single-row result for loadServerDatacenterAddress. */
   singleAddress?: string | null
@@ -45,8 +63,7 @@ function thenable<T>(value: T) {
 }
 
 function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndpoint>[0] {
-  const servers = fixture.servers ?? []
-  const ips = fixture.ips ?? []
+  const memberships = fixture.memberships ?? []
   const relays = fixture.relays ?? []
 
   return {
@@ -80,30 +97,19 @@ function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndp
         }
       }
 
-      // loadServerDatacenterIds: { id, datacenterId }
-      if (keySet.has('id') && keySet.has('datacenterId')) {
+      // loadDatacenterMembershipsForServers: { ipId, serverId, datacenterId, networkId, address }
+      if (
+        keySet.has('ipId') &&
+        keySet.has('serverId') &&
+        keySet.has('datacenterId') &&
+        keySet.has('networkId') &&
+        keySet.has('address')
+      ) {
         return {
           from() {
             return {
               where() {
-                return thenable(servers)
-              },
-            }
-          },
-        }
-      }
-
-      // loadDatacenterAddresses: { serverId, address, createdAt }
-      if (keySet.has('serverId') && keySet.has('address') && keySet.has('createdAt')) {
-        return {
-          from() {
-            return {
-              where() {
-                return {
-                  orderBy() {
-                    return thenable(ips)
-                  },
-                }
+                return thenable(memberships)
               },
             }
           },
@@ -195,7 +201,7 @@ test('loadServerDatacenterAddress returns null when missing', async () => {
 
 test('resolvePrivateEndpoint local same-server is loopback', async () => {
   const db = createFixtureDb({
-    servers: [{ id: 's1', datacenterId: 'dc-a' }],
+    memberships: [membershipPin('s1', 'dc-a', '10.0.0.1')],
   })
   assertEquals(await resolvePrivateEndpoint(db, {
     fromServerId: 's1',
@@ -208,13 +214,9 @@ test('resolvePrivateEndpoint local same-server is loopback', async () => {
 
 test('resolvePrivateEndpoint prefers fabric when both paths exist', async () => {
   const db = createFixtureDb({
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-a' },
-    ],
-    ips: [
-      { serverId: 's2', address: '10.0.0.2', createdAt: '2020-01-01T00:00:00.000Z' },
-      { serverId: 's2', address: '10.0.0.9', createdAt: '2020-01-02T00:00:00.000Z' },
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.2'),
     ],
     relays: [
       {
@@ -245,11 +247,7 @@ test('resolvePrivateEndpoint prefers fabric when both paths exist', async () => 
 
 test('resolvePrivateEndpoint prefers fabric over datacenter_ip_required', async () => {
   const db = createFixtureDb({
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-a' },
-    ],
-    ips: [],
+    memberships: [],
     relays: [
       {
         relayId: 'r1',
@@ -279,12 +277,9 @@ test('resolvePrivateEndpoint prefers fabric over datacenter_ip_required', async 
 
 test('resolvePrivateEndpoint falls back to datacenter when there is no shared fabric', async () => {
   const db = createFixtureDb({
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-a' },
-    ],
-    ips: [
-      { serverId: 's2', address: '10.0.0.2', createdAt: '2020-01-01T00:00:00.000Z' },
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.2'),
     ],
   })
   assertEquals(await resolvePrivateEndpoint(db, {
@@ -297,28 +292,28 @@ test('resolvePrivateEndpoint falls back to datacenter when there is no shared fa
   })
 })
 
-test('resolvePrivateEndpoint returns datacenter_ip_required when missing', async () => {
+test('resolvePrivateEndpoint returns private_path_unavailable when membership pins have no address', async () => {
   const db = createFixtureDb({
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-a' },
+    memberships: [
+      membershipPin('s1', 'dc-a', ''),
+      membershipPin('s2', 'dc-a', ''),
     ],
-    ips: [],
   })
   assertEquals(await resolvePrivateEndpoint(db, {
     fromServerId: 's1',
     toServerId: 's2',
   }), {
-    kind: 'datacenter_ip_required',
-    serverId: 's2',
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
   })
 })
 
 test('resolvePrivateEndpoint picks lowest fabric.createdAt when multiple meshes share', async () => {
   const db = createFixtureDb({
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-b' },
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-b', '10.1.0.2'),
     ],
     relays: [
       {
@@ -363,9 +358,9 @@ test('resolvePrivateEndpoint picks lowest fabric.createdAt when multiple meshes 
 
 test('resolvePrivateEndpoint returns private_path_unavailable when the target has no relay', async () => {
   const db = createFixtureDb({
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-b' },
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-b', '10.1.0.2'),
     ],
     relays: [
       {
@@ -389,9 +384,9 @@ test('resolvePrivateEndpoint returns private_path_unavailable when the target ha
 
 test('resolvePrivateEndpoint returns private_path_unavailable', async () => {
   const db = createFixtureDb({
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-b' },
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-b', '10.1.0.2'),
     ],
   })
   assertEquals(await resolvePrivateEndpoint(db, {
@@ -406,14 +401,10 @@ test('resolvePrivateEndpoint returns private_path_unavailable', async () => {
 
 test('resolvePrivateEndpoints batches multiple targets', async () => {
   const db = createFixtureDb({
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-a' },
-      { id: 's3', datacenterId: 'dc-a' },
-    ],
-    ips: [
-      { serverId: 's2', address: '10.0.0.2', createdAt: '2020-01-01T00:00:00.000Z' },
-      { serverId: 's3', address: '10.0.0.3', createdAt: '2020-01-01T00:00:00.000Z' },
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.2'),
+      membershipPin('s3', 'dc-a', '10.0.0.3'),
     ],
   })
   const map = await resolvePrivateEndpoints(db, {
@@ -440,4 +431,23 @@ test('resolvePrivateEndpoints returns empty map for empty target list', async ()
     toServerIds: [],
   })
   assertEquals(map.size, 0)
+})
+
+test('resolvePrivateEndpoint uses a shared membership when servers pin into many datacenters', async () => {
+  const db = createFixtureDb({
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s1', 'dc-b', '10.1.0.1'),
+      membershipPin('s2', 'dc-b', '10.1.0.2'),
+      membershipPin('s2', 'dc-c', '10.2.0.2'),
+    ],
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    toServerId: 's2',
+  }), {
+    address: '10.1.0.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-b',
+  })
 })

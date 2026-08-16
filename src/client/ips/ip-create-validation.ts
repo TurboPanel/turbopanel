@@ -18,7 +18,7 @@ export type IpScopeFks = {
 }
 
 export type IpPatchFields = {
-  displayName?: string | null
+  description?: string | null
   metadata?: Record<string, unknown> | null
   options?: Record<string, unknown> | null
   datacenterId?: string | null
@@ -44,7 +44,7 @@ export type IpRow = {
   address: string
   allocation: string
   scope: string
-  displayName: string | null
+  description: string | null
   metadata: unknown
   options: unknown
   createdAt: string
@@ -139,7 +139,7 @@ export function rejectImmutableIpPatchFields(
   c: Context,
   body: Record<string, unknown>,
 ): Response | null {
-  const immutable = ['address', 'version', 'allocation', 'scope'] as const
+  const immutable = ['address', 'version', 'allocation', 'scope', 'displayName', 'name'] as const
   if (immutable.some((key) => body[key] !== undefined)) {
     return c.json({ error: 'Invalid request' }, 400)
   }

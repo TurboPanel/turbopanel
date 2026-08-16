@@ -387,7 +387,7 @@ export function registerDatacenterRoutes(
           name: row.name,
           hostname,
           // Name suggestions treat "unassigned" as zero memberships.
-          datacenterId: memberServerIds.has(row.id) ? "member" : null,
+          hasMembership: memberServerIds.has(row.id),
           metadata: row.metadata,
         };
       }),

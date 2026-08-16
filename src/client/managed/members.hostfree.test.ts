@@ -388,9 +388,31 @@ test('ensureManagedPrimaryMember inserts primary and recovers race re-read', asy
   )
 })
 
+type MembershipPinRow = {
+  ipId: string
+  serverId: string
+  datacenterId: string
+  networkId: string | null
+  address: string
+}
+
+function membershipPin(
+  serverId: string,
+  datacenterId: string,
+  address: string,
+): MembershipPinRow {
+  return {
+    ipId: `ip-${serverId}-${datacenterId}`,
+    serverId,
+    datacenterId,
+    networkId: null,
+    address,
+  }
+}
+
 /** Minimal double covering private-endpoint batch queries used by members.ts. */
 function privateEndpointDb(
-  servers: Array<{ id: string; datacenterId: string | null }>,
+  memberships: MembershipPinRow[],
   opts?: {
     fabricId?: string
     relays?: Array<{
@@ -407,28 +429,18 @@ function privateEndpointDb(
       const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
       const keySet = new Set(keys)
 
-      if (keySet.has('id') && keySet.has('datacenterId')) {
+      if (
+        keySet.has('ipId') &&
+        keySet.has('serverId') &&
+        keySet.has('datacenterId') &&
+        keySet.has('networkId') &&
+        keySet.has('address')
+      ) {
         return {
           from() {
             return {
               where() {
-                return thenableRows(servers)
-              },
-            }
-          },
-        }
-      }
-
-      if (keySet.has('serverId') && keySet.has('address') && keySet.has('createdAt')) {
-        return {
-          from() {
-            return {
-              where() {
-                return {
-                  orderBy() {
-                    return thenableRows([])
-                  },
-                }
+                return thenableRows(memberships)
               },
             }
           },
@@ -485,10 +497,9 @@ function peerResolutionDb(opts: {
     role: string
     ordinal: number
   }>
-  servers: Array<{ id: string; datacenterId: string | null }>
-  addresses?: Array<{ serverId: string; address: string; createdAt: string }>
+  memberships?: MembershipPinRow[]
 }): Db {
-  const endpoint = privateEndpointDb(opts.servers)
+  const endpoint = privateEndpointDb(opts.memberships ?? [])
   return {
     select(fields: Record<string, unknown>) {
       const keys = Object.keys(fields)
@@ -504,26 +515,6 @@ function peerResolutionDb(opts: {
             return {
               where() {
                 return thenableRows(opts.containers)
-              },
-            }
-          },
-        }
-      }
-      if (
-        keySet.has('serverId') &&
-        keySet.has('address') &&
-        keySet.has('createdAt') &&
-        opts.addresses
-      ) {
-        return {
-          from() {
-            return {
-              where() {
-                return {
-                  orderBy() {
-                    return thenableRows(opts.addresses ?? [])
-                  },
-                }
               },
             }
           },
@@ -549,7 +540,7 @@ test('resolveMemberTransports maps primary local and replica path results', asyn
     ordinal: 2,
   })
   const transports = await resolveMemberTransports(
-    privateEndpointDb([{ id: 's1', datacenterId: null }]),
+    privateEndpointDb([]),
     [primary, replicaSame],
   )
   if (!('size' in transports)) {
@@ -564,78 +555,28 @@ test('resolveMemberTransports maps primary local and replica path results', asyn
     role: 'replica',
     ordinal: 2,
   })
-  const remoteDb = {
-    select(fields: Record<string, unknown>) {
-      const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
-      const keySet = new Set(keys)
-      if (keySet.has('id') && keySet.has('datacenterId')) {
-        return {
-          from: () => ({
-            where: () =>
-              thenableRows([
-                { id: 's1', datacenterId: 'dc-a' },
-                { id: 's2', datacenterId: 'dc-a' },
-              ]),
-          }),
-        }
-      }
-      if (keySet.has('serverId') && keySet.has('address') && keySet.has('createdAt')) {
-        return {
-          from: () => ({
-            where: () => ({
-              orderBy: () =>
-                thenableRows([
-                  {
-                    serverId: 's1',
-                    address: '10.0.0.1',
-                    createdAt: '2020-01-01T00:00:00.000Z',
-                  },
-                  {
-                    serverId: 's2',
-                    address: '10.0.0.2',
-                    createdAt: '2020-01-01T00:00:00.000Z',
-                  },
-                ]),
-            }),
-          }),
-        }
-      }
-      if (keys.length === 1 && keySet.has('fabricId')) {
-        return { from: () => ({ where: () => thenableRows([]) }) }
-      }
-      if (keySet.has('relayId')) {
-        return {
-          from: () => ({
-            innerJoin: () => ({
-              where: () => ({
-                orderBy: () => thenableRows([]),
-              }),
-            }),
-          }),
-        }
-      }
-      throw new TypeError(`unexpected keys ${keys.join(',')}`)
-    },
-  } as unknown as Db
-
-  const remoteTransports = await resolveMemberTransports(remoteDb, [primary, remote])
+  const remoteTransports = await resolveMemberTransports(
+    privateEndpointDb([
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.2'),
+    ]),
+    [primary, remote],
+  )
   if (!('size' in remoteTransports)) {
     throw new TypeError(JSON.stringify(remoteTransports))
   }
   assertEquals(remoteTransports.get('r2'), 'datacenter')
 })
 
-test('resolveMemberTransports surfaces datacenter_ip_required from replica overlay', async () => {
+test('resolveMemberTransports surfaces private_path_unavailable from replica overlay', async () => {
   const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
   const replica = member({ id: 'r', serverId: 's2', role: 'replica', ordinal: 2 })
-  const db = privateEndpointDb([
-    { id: 's1', datacenterId: 'dc-a' },
-    { id: 's2', datacenterId: 'dc-a' },
-  ])
+  const db = privateEndpointDb([])
   const result = await resolveMemberTransports(db, [primary, replica])
   assertEquals(result, {
-    kind: 'datacenter_ip_required',
-    serverId: 's2',
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
   })
 })
 
@@ -649,10 +590,7 @@ test('resolveMemberTransports uses fabric when relays exist without datacenter I
   })
   const transports = await resolveMemberTransports(
     privateEndpointDb(
-      [
-        { id: 's1', datacenterId: null },
-        { id: 's2', datacenterId: null },
-      ],
+      [],
       {
         fabricId: 'fab-1',
         relays: [
@@ -863,7 +801,7 @@ test('resolvePeersForMember returns empty for sole members and co-resident peers
         ordinal: 2,
       },
     ],
-    servers: [{ id: 's1', datacenterId: null }],
+    memberships: [],
   })
 
   const peers = await resolvePeersForMember(db, [primary, replica], primary, 5432)
@@ -894,16 +832,9 @@ test('resolvePeersForMember remote peer uses privatePort and datacenter address'
   })
   const db = peerResolutionDb({
     containers: [],
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-a' },
-    ],
-    addresses: [
-      {
-        serverId: 's2',
-        address: '10.0.0.22',
-        createdAt: '2020-01-01T00:00:00.000Z',
-      },
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.22'),
     ],
   })
 
@@ -926,7 +857,7 @@ test('resolvePeersForMember errors when co-resident peer lacks a container name'
   const replica = member({ id: 'r', serverId: 's1', role: 'replica', ordinal: 2 })
   const db = peerResolutionDb({
     containers: [],
-    servers: [{ id: 's1', datacenterId: null }],
+    memberships: [],
   })
 
   const err = await resolvePeersForMember(db, [primary, replica], primary, 5432)
@@ -948,16 +879,9 @@ test('resolvePeersForMember errors when remote peer has no privatePort', async (
   })
   const db = peerResolutionDb({
     containers: [],
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-a' },
-    ],
-    addresses: [
-      {
-        serverId: 's2',
-        address: '10.0.0.22',
-        createdAt: '2020-01-01T00:00:00.000Z',
-      },
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.22'),
     ],
   })
 
@@ -972,8 +896,8 @@ test('resolveMemberTransports returns private path error from replica', async ()
   const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
   const replica = member({ id: 'r', serverId: 's2', role: 'replica', ordinal: 2 })
   const db = privateEndpointDb([
-    { id: 's1', datacenterId: 'dc-a' },
-    { id: 's2', datacenterId: 'dc-b' },
+    membershipPin('s1', 'dc-a', '10.0.0.1'),
+    membershipPin('s2', 'dc-b', '10.1.0.2'),
   ])
   const result = await resolveMemberTransports(db, [primary, replica])
   assertEquals(result, {
@@ -1047,9 +971,9 @@ test('resolvePeersForMember surfaces private endpoint resolution failures', asyn
   // Different DCs, no VPN → private_path_unavailable on remote peer
   const db = peerResolutionDb({
     containers: [],
-    servers: [
-      { id: 's1', datacenterId: 'dc-a' },
-      { id: 's2', datacenterId: 'dc-b' },
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-b', '10.1.0.2'),
     ],
   })
   assertEquals(await resolvePeersForMember(db, [primary, replica], primary, 5432), {

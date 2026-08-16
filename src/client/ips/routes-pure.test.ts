@@ -114,7 +114,7 @@ test('serializeIpRow derives version from address', () => {
     address: '203.0.113.10',
     allocation: 'dedicated',
     scope: 'public',
-    displayName: null,
+    description: null,
     metadata: null,
     options: null,
     createdAt: '2020-01-01T00:00:00.000Z',
@@ -143,6 +143,9 @@ test('rejectImmutableIpPatchFields blocks address and scope mutations', async ()
   const denied = rejectImmutableIpPatchFields(c, { address: '203.0.113.11' })
   if (!(denied instanceof Response)) throw new TypeError('expected response')
   assertEquals(denied.status, 400)
+  const named = rejectImmutableIpPatchFields(c, { displayName: 'vip' })
+  if (!(named instanceof Response)) throw new TypeError('expected response')
+  assertEquals(named.status, 400)
 })
 
 test('mergeIpScopeFks preserves existing FKs when patch omits them', () => {

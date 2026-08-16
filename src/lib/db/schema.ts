@@ -239,6 +239,11 @@ export const datacenter = pgTable(
     ),
   ]
 )
+/**
+ * Enrolled host. Membership in datacenters is **not** a home FK here — a
+ * server may pin into many sites via `ip` rows (`scope='datacenter'` +
+ * `server_id` + `datacenter_id`).
+ */
 export const server = pgTable(
   'server',
   {
@@ -532,7 +537,8 @@ export const fabric = pgTable(
  * hold pins in many datacenters). Free-pool rows keep `datacenter_id` with null
  * `server_id`. Public VPS addresses carry no `network_id`. TurboFabric `tp0`
  * addresses live on `relay.address`, not here. Address family (`version`) is
- * derived from `address` in the API — not stored.
+ * derived from `address` in the API — not stored. Optional `description` is an
+ * operator note (`varchar(255)`); IPs are not named.
  */
 export const ip = pgTable(
   'ip',
@@ -556,7 +562,8 @@ export const ip = pgTable(
     address: inet('address').notNull(),
     allocation: text().notNull(),
     scope: text().notNull(),
-    name: varchar({ length: 255 }),
+    /** Optional operator note — IPs are identified by `address`, not a name. */
+    description: varchar('description', { length: 255 }),
   },
   (table) => [
     index('idx_ip_organization_id').using(
@@ -614,10 +621,6 @@ export const ip = pgTable(
         sql`${table.scope} = 'datacenter' AND ${table.serverId} IS NOT NULL AND ${table.datacenterId} IS NOT NULL`,
       ),
     uniqueIndex('uniq_ip_org_address').on(table.organizationId, table.address),
-    check(
-      'ip_name_format_check',
-      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
-    ),
   ]
 )
 /**
