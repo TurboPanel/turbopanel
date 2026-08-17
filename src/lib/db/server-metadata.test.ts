@@ -10,12 +10,14 @@ import {
   parseServerOsMetadata,
   parseServerHostResources,
   parseServerTimeSync,
+  parseServerDockerMetadata,
   resolveEffectiveServerTimezone,
   resolveServerResponseTimezone,
   resolveServerOsLogoKey,
   serverOsMetadataEquals,
   serverHostResourcesEquals,
   serverTimeSyncEquals,
+  serverDockerMetadataEquals,
   resourcesFromDaemonPresence,
 } from './server-metadata.ts'
 
@@ -228,6 +230,38 @@ test('serverTimeSyncEquals ignores capturedAt', () => {
     serverTimeSyncEquals(a, { ...a, timezone: 'Europe/London' }),
     false,
   )
+})
+
+test('parseServerDockerMetadata accepts daemon docker blocks', () => {
+  assertEquals(
+    parseServerDockerMetadata({
+      version: '28.3.3',
+      composeVersion: 'v2.39.1',
+    }),
+    { version: '28.3.3', composeVersion: '2.39.1' },
+  )
+  assertEquals(
+    parseServerDockerMetadata({ version: '28.3.3' }),
+    { version: '28.3.3' },
+  )
+  assertEquals(
+    parseServerDockerMetadata({ composeVersion: '2.39.1-desktop.1' }),
+    { composeVersion: '2.39.1-desktop.1' },
+  )
+  assertEquals(parseServerDockerMetadata({}), undefined)
+  assertEquals(parseServerDockerMetadata({ version: 'not a version' }), undefined)
+  assertEquals(parseServerDockerMetadata('nope'), undefined)
+})
+
+test('serverDockerMetadataEquals compares field-wise', () => {
+  const a = { version: '28.3.3', composeVersion: '2.39.1' }
+  assertEquals(serverDockerMetadataEquals(a, { ...a }), true)
+  assertEquals(
+    serverDockerMetadataEquals(a, { version: '28.3.3' }),
+    false,
+  )
+  assertEquals(serverDockerMetadataEquals(a, null), false)
+  assertEquals(serverDockerMetadataEquals(undefined, undefined), true)
 })
 
 test('parseServerOptions and resolveEffectiveServerTimezone', () => {

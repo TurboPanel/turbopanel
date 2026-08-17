@@ -1,5 +1,6 @@
 import type { ServerReportedIp } from "../../server-addresses.ts";
 import type {
+  ServerDockerMetadata,
   ServerHostResources,
   ServerOsMetadata,
   ServerTimeSync,
@@ -54,6 +55,11 @@ export type DaemonMessage =
     timeSync?: ServerTimeSync;
     /** Host interface addresses; persisted to `server.metadata.ips`. */
     ips?: ServerReportedIp[];
+    /**
+     * Docker CLI / Compose plugin versions; persisted to `server.metadata.docker`.
+     * Omit when Docker is not installed.
+     */
+    docker?: ServerDockerMetadata;
   }
   | {
     type: "heartbeat";
@@ -63,6 +69,11 @@ export type DaemonMessage =
     timeSync?: ServerTimeSync;
     /** Change-detected addresses; persisted to `server.metadata.ips`. */
     ips?: ServerReportedIp[];
+    /**
+     * Change-detected Docker facts; persisted to `server.metadata.docker`.
+     * Omit when Docker is not installed.
+     */
+    docker?: ServerDockerMetadata;
   }
   | { type: "echo"; payload: unknown; at: string }
   | { type: "version"; commit: string; branch: string; at: string }

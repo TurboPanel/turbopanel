@@ -365,6 +365,7 @@ test("fleetPresenceToConnection maps presence to connection shape", () => {
     resources: null,
     timeSync: null,
     ips: null,
+    docker: null,
   };
 
   const connection = fleetPresenceToConnection(presence);
@@ -395,12 +396,13 @@ test("fleetPresenceToConnection uses zero lastInboundAt when absent", () => {
     resources: null,
     timeSync: null,
     ips: null,
+    docker: null,
   });
   assertEquals(connection.lastInboundAt, 0);
   assertEquals(connection.connectedAt, "");
 });
 
-test("resolveFleetPresence enriches os / resources / timeSync / ips / geo from metadata", async () => {
+test("resolveFleetPresence enriches os / resources / timeSync / ips / docker / geo from metadata", async () => {
   const metadata: ServerMetadata = {
     os: {
       family: "linux",
@@ -418,6 +420,10 @@ test("resolveFleetPresence enriches os / resources / timeSync / ips / geo from m
       timezone: "UTC",
       ntpEnabled: true,
       ntpSynced: true,
+    },
+    docker: {
+      version: "28.3.3",
+      composeVersion: "2.39.1",
     },
     ips: [
       { address: "10.0.0.5", version: 4, scope: "private" },
@@ -442,6 +448,8 @@ test("resolveFleetPresence enriches os / resources / timeSync / ips / geo from m
   assertEquals(row?.os?.id, "debian");
   assertEquals(row?.resources?.cpu?.threadCount, 8);
   assertEquals(row?.timeSync?.timezone, "UTC");
+  assertEquals(row?.docker?.version, "28.3.3");
+  assertEquals(row?.docker?.composeVersion, "2.39.1");
   assertEquals(row?.ips?.find((ip) => ip.scope === "public")?.address, "203.0.113.50");
   assertEquals(row?.geo?.country, "US");
 });

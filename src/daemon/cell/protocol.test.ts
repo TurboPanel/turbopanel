@@ -501,6 +501,7 @@ it("validateDaemonInboundFrame rejects invalid json and message shape", () => {
 });
 
 it("validateDaemonInboundFrame accepts hello with optional fields", () => {
+  const docker = { version: "28.3.3", composeVersion: "2.39.1" };
   const result = validateDaemonInboundFrame(
     JSON.stringify({
       type: "hello",
@@ -508,9 +509,13 @@ it("validateDaemonInboundFrame accepts hello with optional fields", () => {
       daemonBuild: VALID_DAEMON_BUILD,
       hostname: "host-1",
       machineKey: "a".repeat(64),
+      docker,
     }),
   );
   assertEquals(result.ok, true);
+  if (result.ok && result.message.type === "hello") {
+    assertEquals(result.message.docker, docker);
+  }
 });
 
 it("validateDaemonInboundFrame rejects hello with invalid daemonBuild or hostname", () => {

@@ -97,6 +97,22 @@ export const serverSchemas = {
       capturedAt: { type: 'string', format: 'date-time' },
     },
   },
+  ServerDockerMetadata: {
+    type: 'object',
+    description:
+      'Docker CLI / Compose plugin versions from daemon hello / change-detected heartbeat. Omitted from server.metadata when Docker is not installed; the API returns null in that case.',
+    properties: {
+      version: {
+        type: 'string',
+        description: 'Docker CLI version (docker --version), e.g. 28.3.3.',
+      },
+      composeVersion: {
+        type: 'string',
+        description:
+          'Docker Compose plugin version (docker compose version), e.g. 2.39.1.',
+      },
+    },
+  },
   ServerReportedIp: {
     type: 'object',
     description: 'One daemon-reported host interface address.',
@@ -204,6 +220,14 @@ export const serverSchemas = {
         ],
         description:
           'Host time-sync from server.metadata.timeSync. Null until reported.',
+      },
+      docker: {
+        oneOf: [
+          { $ref: '#/components/schemas/ServerDockerMetadata' },
+          { type: 'null' },
+        ],
+        description:
+          'Docker CLI / Compose plugin versions from server.metadata.docker. Null when Docker is not installed or has not been reported.',
       },
       timezone: {
         type: ['string', 'null'],

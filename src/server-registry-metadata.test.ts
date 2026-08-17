@@ -156,3 +156,35 @@ test('mergeServerMetadataIdentity deep-merges timeSync NTP fields', () => {
   assertEquals(merged?.timeSync?.ntpServers, ['a.example'])
   assertEquals(merged?.timeSync?.fallbackNtpServers, ['b.example'])
 })
+
+test('mergeServerMetadataIdentity merges docker without clobbering os/geo', () => {
+  const os = {
+    family: 'linux' as const,
+    id: 'debian',
+    version: '13.5',
+  }
+  const geo = { country: 'US', city: 'Chicago' }
+  const merged = mergeServerMetadataIdentity(
+    { os, geo },
+    { docker: { version: '28.3.3', composeVersion: '2.39.1' } },
+  )
+  assertEquals(merged?.os, os)
+  assertEquals(merged?.geo, geo)
+  assertEquals(merged?.docker, { version: '28.3.3', composeVersion: '2.39.1' })
+
+  assertEquals(
+    mergeServerMetadataIdentity(
+      { docker: { version: '28.3.3', composeVersion: '2.39.1' } },
+      { docker: { version: '28.3.3', composeVersion: '2.39.1' } },
+    ),
+    null,
+  )
+})
+
+test('mergeServerMetadataIdentity replaces docker when compose appears later', () => {
+  const merged = mergeServerMetadataIdentity(
+    { docker: { version: '28.3.3' } },
+    { docker: { version: '28.3.3', composeVersion: '2.39.1' } },
+  )
+  assertEquals(merged?.docker, { version: '28.3.3', composeVersion: '2.39.1' })
+})

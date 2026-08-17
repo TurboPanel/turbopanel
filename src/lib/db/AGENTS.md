@@ -615,7 +615,7 @@ JSONB):
 
 `options` takes precedence over `metadata` when both define a value (see
 `src/daemon/cell/location.ts`). Residual `metadata` holds nested `os`,
-`resources`, `ips`, `geo`, `timeSync`, and `cell` — not hostname/machineKey.
+`resources`, `ips`, `geo`, `timeSync`, `docker`, and `cell` — not hostname/machineKey.
 
 **Daemon identity (`server.daemon` jsonb):** sparse `{ key, projection? }` only.
 Fleet liveness lives on dedicated columns (below). No separate `serverkey` table
@@ -671,7 +671,7 @@ were collapsed into this pair. `connectedAt` is **derived**, not stored:
 only while `connected` is true (otherwise `null`), and treats `!connected` as
 offline-since-`statusChangedAt`. Written by `postgres-projection.ts` only on
 connect/disconnect transitions and on meaningful heartbeats (daemon
-build-identity change, or new `timeSync`/`ips` facts) — never on a bare
+build-identity change, or new `timeSync`/`ips`/`docker` facts) — never on a bare
 elapsed-time debounce (there is no periodic "touch `last_seen_at` every N
 seconds" write path anymore). Identity columns `hostname` / `machine_key` are
 written on enroll/hello/identity projection.

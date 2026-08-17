@@ -85,6 +85,18 @@ export type ServerTimeSync = {
 }
 
 /**
+ * Host Docker CLI / Compose plugin versions from daemon hello / change-detected
+ * heartbeat. Omit the whole object when Docker is not installed — do not store
+ * an empty `{ }` placeholder.
+ */
+export type ServerDockerMetadata = {
+  /** Docker CLI version (`docker --version`), e.g. `"28.3.3"`. */
+  version?: string
+  /** Compose plugin version (`docker compose version`), e.g. `"2.39.1"`. */
+  composeVersion?: string
+}
+
+/**
  * JSON stored in `server.metadata`. Nested fields are optional.
  * Hostname / machineKey live on dedicated `server` columns (not here).
  */
@@ -114,6 +126,11 @@ export type ServerMetadata = {
    * (and refreshed on successful timezone/NTP command outcomes).
    */
   timeSync?: ServerTimeSync
+  /**
+   * Docker CLI / Compose plugin versions. Present only when the daemon
+   * reports Docker installed; omitted (not `null`) when it is not.
+   */
+  docker?: ServerDockerMetadata
 }
 
 /**
@@ -461,6 +478,42 @@ export function serverTimeSyncEquals(
     stringArraysEqual(a.ntpServers, b.ntpServers) &&
     stringArraysEqual(a.fallbackNtpServers, b.fallbackNtpServers)
   )
+}
+
+const DOCKER_VERSION_MAX_CHARS = 64
+const DOCKER_VERSION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/
+
+function parseDockerVersionToken(value: unknown): string | undefined {
+  const trimmed = optionalTrimmedString(value)
+  if (!trimmed || trimmed.length > DOCKER_VERSION_MAX_CHARS) return undefined
+  let token = trimmed
+  if (token.startsWith('v') || token.startsWith('V')) {
+    token = token.slice(1)
+  }
+  if (!DOCKER_VERSION_TOKEN.test(token)) return undefined
+  return token
+}
+
+/** Parse a best-effort docker block from daemon hello / stored metadata. */
+export function parseServerDockerMetadata(
+  value: unknown,
+): ServerDockerMetadata | undefined {
+  if (!isRecord(value)) return undefined
+  const docker: ServerDockerMetadata = {}
+  const version = parseDockerVersionToken(value.version)
+  if (version) docker.version = version
+  const composeVersion = parseDockerVersionToken(value.composeVersion)
+  if (composeVersion) docker.composeVersion = composeVersion
+  return Object.keys(docker).length > 0 ? docker : undefined
+}
+
+export function serverDockerMetadataEquals(
+  a: ServerDockerMetadata | null | undefined,
+  b: ServerDockerMetadata | null | undefined,
+): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.version === b.version && a.composeVersion === b.composeVersion
 }
 
 /** Parse operator-controlled `server.options` jsonb. */

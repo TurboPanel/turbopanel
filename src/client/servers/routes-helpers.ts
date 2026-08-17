@@ -13,6 +13,7 @@ import {
   type ServerOsMetadata,
   type ServerTimeSync,
   type ServerHostResources,
+  type ServerDockerMetadata,
 } from '../../lib/db/server-metadata.ts'
 import type { OrganizationOptions } from '../../lib/organization-options.ts'
 import type { DatacenterOptions } from '../../lib/datacenter-options.ts'
@@ -322,6 +323,7 @@ export type PresenceLike = {
   resources?: ServerHostResources | null
   ips?: unknown
   timeSync?: ServerTimeSync | null
+  docker?: ServerDockerMetadata | null
 }
 
 export type ServerListTimezoneFields = {
@@ -375,6 +377,7 @@ export function shapeServerPresenceFields(
     resources: live?.resources ?? null,
     ips: live?.ips ?? null,
     timeSync: live?.timeSync ?? null,
+    docker: live?.docker ?? null,
   }
 }
 

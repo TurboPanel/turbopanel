@@ -15,6 +15,7 @@ import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import {
   resourcesFromDaemonPresence,
+  type ServerDockerMetadata,
   type ServerHostResources,
   type ServerOsMetadata,
   type ServerTimeSync,
@@ -1106,7 +1107,7 @@ export class DaemonCellObject {
   }
 
   // COST RULE: #projectInbound for heartbeats runs only on daemon-build change,
-  // timeSync/ips presence facts, or runtime/offline repair evidence —
+  // timeSync/ips/docker presence facts, or runtime/offline repair evidence —
   // never because INBOUND_PROJECTION_COALESCE_MS elapsed alone. Hello keeps
   // identity/geo handling. Steady-state idle traffic performs no SQLite cell
   // writes and never opens a Hyperdrive connection. Every #withProjectionDb
@@ -1123,6 +1124,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources;
       timeSync?: ServerTimeSync;
       ips?: ServerReportedIp[];
+      docker?: ServerDockerMetadata;
     },
     geo?: ServerGeo,
   ): Promise<void> {
@@ -1133,7 +1135,8 @@ export class DaemonCellObject {
         hostIdentity?.os ||
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
-        hostIdentity?.ips
+        hostIdentity?.ips ||
+        hostIdentity?.docker
       ) {
         await touchServerMetadata(db, serverId, {
           hostname: hostIdentity.hostname,
@@ -1142,6 +1145,7 @@ export class DaemonCellObject {
           resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
           ips: hostIdentity.ips,
+          docker: hostIdentity.docker,
         });
       }
       await onDaemonInbound(
@@ -1645,6 +1649,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources;
       timeSync?: ServerTimeSync;
       ips?: ServerReportedIp[];
+      docker?: ServerDockerMetadata;
     },
   ): Promise<void> {
     this.#bumpDiag("heartbeatCount");
@@ -1665,11 +1670,12 @@ export class DaemonCellObject {
     const presenceFacts = {
       timeSync: parsed.timeSync,
       ips: ipsFromDaemonPresence(parsed),
+      docker: parsed.docker,
     };
     const hasPresenceFacts = Boolean(
-      presenceFacts.timeSync || presenceFacts.ips,
+      presenceFacts.timeSync || presenceFacts.ips || presenceFacts.docker,
     );
-    // hostname/os/resources stay hello-only; timeSync/ips project on both
+    // hostname/os/resources stay hello-only; timeSync/ips/docker project on both
     // hello and change-detected heartbeats.
     let hostIdentity:
       | {
@@ -1679,6 +1685,7 @@ export class DaemonCellObject {
         resources?: ServerHostResources;
         timeSync?: ServerTimeSync;
         ips?: ServerReportedIp[];
+        docker?: ServerDockerMetadata;
       }
       | undefined;
     if (parsed.type === "hello") {
@@ -1698,7 +1705,8 @@ export class DaemonCellObject {
         hostIdentity?.os ||
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
-        hostIdentity?.ips,
+        hostIdentity?.ips ||
+        hostIdentity?.docker,
     );
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined;
     // Heartbeats: daemon-build change, presence facts, or offline repair only —

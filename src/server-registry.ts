@@ -10,13 +10,16 @@ import {
   parseServerOsMetadata,
   parseServerTimeSync,
   parseServerHostResources,
+  parseServerDockerMetadata,
   serverOsMetadataEquals,
   serverTimeSyncEquals,
   serverHostResourcesEquals,
+  serverDockerMetadataEquals,
   type ServerMetadata,
   type ServerOsMetadata,
   type ServerTimeSync,
   type ServerHostResources,
+  type ServerDockerMetadata,
 } from './lib/db/server-metadata.ts'
 import { license, server } from './lib/db/schema.ts'
 import { normalizeMachineKey } from './lib/machine-key.ts'
@@ -74,6 +77,7 @@ export type ServerHelloIdentity = {
   resources?: ServerHostResources
   timeSync?: ServerTimeSync
   ips?: ServerReportedIp[]
+  docker?: ServerDockerMetadata
 }
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
@@ -92,6 +96,8 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   const ips =
     identity.ips === undefined ? undefined : parseServerIps(identity.ips)
   if (ips !== undefined) patch.ips = ips
+  const docker = parseServerDockerMetadata(identity.docker)
+  if (docker) patch.docker = docker
   return patch
 }
 
@@ -108,7 +114,7 @@ function identityColumnPatch(identity: ServerHelloIdentity): {
 }
 
 /**
- * Pure merge of os/resources/timeSync/ips into `server.metadata` — no DB I/O.
+ * Pure merge of os/resources/timeSync/ips/docker into `server.metadata` — no DB I/O.
  * Hostname / machineKey are dedicated columns (see {@link touchServerMetadata}).
  * Returns null when nothing would change (idempotent skip).
  */
@@ -116,7 +122,7 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'ips'
+    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'ips' | 'docker'
   >,
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
@@ -146,6 +152,13 @@ export function mergeServerMetadataIdentity(
   }
   if (patch.ips !== undefined && !serverIpsEquals(patch.ips, base.ips)) {
     next.ips = patch.ips
+    changed = true
+  }
+  if (
+    patch.docker !== undefined &&
+    !serverDockerMetadataEquals(patch.docker, base.docker)
+  ) {
+    next.docker = patch.docker
     changed = true
   }
 
@@ -198,6 +211,12 @@ function buildMetadataDelta(
   }
   if (patch.ips !== undefined && !serverIpsEquals(patch.ips, base?.ips)) {
     delta.ips = patch.ips
+  }
+  if (
+    patch.docker !== undefined &&
+    !serverDockerMetadataEquals(patch.docker, base?.docker)
+  ) {
+    delta.docker = patch.docker
   }
   return delta
 }

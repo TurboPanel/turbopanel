@@ -10,6 +10,7 @@ import { inArray } from "drizzle-orm";
 import type { Db } from "../../db.ts";
 import { parseServerDaemonState } from "../authn/daemon-state.ts";
 import type {
+  ServerDockerMetadata,
   ServerMetadata,
   ServerOsMetadata,
   ServerTimeSync,
@@ -19,6 +20,7 @@ import {
   parseServerOsMetadata,
   parseServerTimeSync,
   parseServerHostResources,
+  parseServerDockerMetadata,
 } from "../../lib/db/server-metadata.ts";
 import type { ServerReportedIp } from "../../server-addresses.ts";
 import { parseServerIps } from "../../server-addresses.ts";
@@ -61,6 +63,11 @@ export type ServerFleetPresence = {
   timeSync: ServerTimeSync | null;
   /** From `server.metadata.ips` (hello / change-detected heartbeat). */
   ips: ServerReportedIp[] | null;
+  /**
+   * From `server.metadata.docker` (hello / change-detected heartbeat).
+   * Null when Docker is not installed or has not been reported.
+   */
+  docker: ServerDockerMetadata | null;
 };
 
 function normalizeRemoteAddress(
@@ -180,6 +187,7 @@ export async function resolveFleetPresence(
       resources: parseServerHostResources(metadata.resources) ?? null,
       timeSync: parseServerTimeSync(metadata.timeSync) ?? null,
       ips: parseServerIps(metadata.ips) ?? null,
+      docker: parseServerDockerMetadata(metadata.docker) ?? null,
     });
   }
 

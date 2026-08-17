@@ -679,7 +679,7 @@ deliberately-unversioned probe.
 
 | Surface                      | REST                  | WS                        | Notes                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------- | --------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ addresses/timeSync/effective timezone, labels), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org default-timezone + default-environment + server-capacity + TurboFabric (`GET`/`PUT /organizations/:id/fabric`, `PATCH /organizations/:id/fabric/relays/:serverId`, `POST /organizations/:id/fabric/apply`) + `/timezones` |
+| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ ips/timeSync/docker/effective timezone, labels), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org default-timezone + default-environment + server-capacity + TurboFabric (`GET`/`PUT /organizations/:id/fabric`, `PATCH /organizations/:id/fabric/relays/:serverId`, `POST /organizations/:id/fabric/apply`) + `/timezones` |
 | Install (self-hosted wizard) | `/api/install/v1/*`   | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                                                                                                                                                                                                                                      |
 | Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                                                                                                                                                                                                                                     |
 | Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only                                                                                                                                                                                                                   |
@@ -705,8 +705,11 @@ deliberately-unversioned probe.
   the CA from the new `/api/daemon/v1/instance/ca` path.
 - **Server timezone / NTP (client surface):** daemon hello + change-detected
   heartbeats project `timeSync`/`ips` onto `server.metadata` (jsonb
-  merge). `GET /api/client/v1/servers` and `GET /servers/:id` return those facts
-  plus an **effective timezone** = `server.options.timezone` unless
+  merge). Docker CLI / Compose plugin versions project onto
+  `server.metadata.docker` the same way, but **only when Docker is installed**
+  (the key is omitted otherwise). `GET /api/client/v1/servers` and
+  `GET /servers/:id` return those facts plus an **effective timezone** =
+  `server.options.timezone` unless
   `organization.options.enforceServerTimezone` is true (then org
   `defaultServerTimezone` wins). Commands: `POST /servers/:id/timezone`
   (`server.timezone.set`, also persists the server override) and

@@ -300,14 +300,17 @@ test('timezone and presence shaping helpers', () => {
       connected: true,
       hostname: 'host',
       os: { family: 'linux' },
+      docker: { version: '28.3.3' },
     },
     true,
   )
   assertEquals(presence.connected, true)
   assertEquals(presence.hostname, 'host')
   assertEquals(presence.colocatedWithInstance, true)
+  assertEquals(presence.docker, { version: '28.3.3' })
 
   assertEquals(shapeServerPresenceFields(undefined, false).connected, false)
+  assertEquals(shapeServerPresenceFields(undefined, false).docker, null)
 })
 
 test('projected update repair helpers', () => {
