@@ -300,21 +300,27 @@ afterEach(async () => {
 });
 
 /**
- * Fleet status lives on dedicated columns in the UPDATE `.set()` patch now —
- * never on `patch.daemon` jsonb. Extract whichever status columns are present
- * on a given patch (callers only assert the subset relevant to that trigger).
+ * Fleet status lives on dedicated Drizzle columns in the UPDATE `.set()` patch
+ * (`isConnected`, `statusChangedAt`) — never on `patch.daemon` jsonb. Map
+ * `isConnected` onto `ServerDaemonStatus.connected` so callers can assert the
+ * domain status shape.
  */
 function statusFromPatch(
   patch: Record<string, unknown> | undefined,
 ): Partial<ServerDaemonStatus> | undefined {
   if (!patch) return undefined;
-  const keys = ["connected", "statusChangedAt"] as const;
-  if (!keys.some((key) => key in patch)) return undefined;
-  const result: Partial<Record<string, unknown>> = {};
-  for (const key of keys) {
-    if (key in patch) result[key] = patch[key];
+  const hasConnected = "isConnected" in patch;
+  const hasStatusChangedAt = "statusChangedAt" in patch;
+  if (!hasConnected && !hasStatusChangedAt) return undefined;
+  const result: Partial<ServerDaemonStatus> = {};
+  if (hasConnected) {
+    result.connected = patch.isConnected as boolean;
   }
-  return result as Partial<ServerDaemonStatus>;
+  if (hasStatusChangedAt) {
+    result.statusChangedAt = patch.statusChangedAt as
+      | ServerDaemonStatus["statusChangedAt"];
+  }
+  return result;
 }
 
 describe("DaemonCellObject diagnostics", () => {
