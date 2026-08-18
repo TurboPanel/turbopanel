@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -18,6 +18,8 @@ import {
   project,
   server,
   service,
+  team,
+  teammate,
   user,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -43,7 +45,7 @@ async function createContainerRoutesTestApp(db: ReturnType<typeof createDenoDb>)
     c.set('db', db)
     return next()
   })
-  registerContainerRoutes(app, { secrets, runtime: 'deno' })
+  registerContainerRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets }
 }
 
@@ -55,6 +57,22 @@ async function sessionCookie(
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
   return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
+}
+
+/** Org-context access without grants — the `teammate` replacement for retired `membership`. */
+async function insertOrgTeamMembership(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  userId: string,
+  teamName: string,
+): Promise<string> {
+  const [insertedTeam] = await db
+    .insert(team)
+    .values({ name: teamName, organizationId })
+    .returning({ id: team.id })
+  const teamId = insertedTeam!.id
+  await db.insert(teammate).values({ teamId, userId })
+  return teamId
 }
 
 async function withContainerFixtures(
@@ -529,7 +547,12 @@ test('GET /containers?environmentId= does not leak containers the caller cannot 
       })
       .returning({ id: user.id })
     const limitedUserId = limitedUser!.id
-
+    const limitedTeamId = await insertOrgTeamMembership(
+      db,
+      organizationId,
+      limitedUserId,
+      'Container Limited Team',
+    )
 
     try {
       const limitedCookie = await sessionCookie(db, secrets, limitedUserId)
@@ -548,6 +571,11 @@ test('GET /containers?environmentId= does not leak containers the caller cannot 
       }
       assertEquals(listBody.containers.length, 0)
     } finally {
+      await db.delete(teammate).where(and(
+        eq(teammate.teamId, limitedTeamId),
+        eq(teammate.userId, limitedUserId),
+      ))
+      await db.delete(team).where(eq(team.id, limitedTeamId))
       await db.delete(user).where(eq(user.id, limitedUserId))
     }
   })

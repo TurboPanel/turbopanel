@@ -56,6 +56,26 @@ test('parseMemberPins validates UUID + address pairs and rejects duplicates', ()
       { serverId: validId, address: '10.0.0.10' },
       { serverId: validId, address: '10.0.0.11' },
     ]),
+    {
+      ok: true,
+      value: [
+        { serverId: validId, address: '10.0.0.10' },
+        { serverId: validId, address: '10.0.0.11' },
+      ],
+    },
+  )
+  assertEquals(
+    parseMemberPins([
+      { serverId: validId, address: '10.0.0.10' },
+      { serverId: otherId, address: '10.0.0.10' },
+    ]),
+    { ok: false },
+  )
+  assertEquals(
+    parseMemberPins([
+      { serverId: validId, address: '10.0.0.10' },
+      { serverId: validId, address: '10.0.0.10' },
+    ]),
     { ok: false },
   )
   assertEquals(

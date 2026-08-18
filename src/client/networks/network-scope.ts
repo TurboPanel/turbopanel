@@ -30,6 +30,18 @@ export function assertNetworkKindScope(
   return null
 }
 
+/** Site subnets (`kind='datacenter'`) require a CIDR; docker does not. */
+export function assertDatacenterCidr(
+  c: Context,
+  kind: string,
+  cidr: string | null,
+): Response | null {
+  if (kind === 'datacenter' && cidr === null) {
+    return c.json({ error: 'network_cidr_required' }, 400)
+  }
+  return null
+}
+
 export type NetworkCreateFields = {
   kind: string
   datacenterId: string | null | undefined

@@ -1,12 +1,14 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
+  assertDatacenterCidr,
   assertNetworkKindScope,
   buildNetworkCreateValues,
 } from './network-scope.ts'
 import {
   applyCidrPatch,
+  type NetworkPatchFields,
   parseCreateNetworkOptions,
   parseCreateOrganizationId,
   parseNetworkKind,
@@ -79,6 +81,18 @@ test('assertNetworkKindScope enforces datacenter and docker scope rules', async 
   assertEquals(assertNetworkKindScope(c, 'docker', null, null), null)
 })
 
+test('assertDatacenterCidr requires a CIDR for kind=datacenter', async () => {
+  const c = mockContext() as Parameters<typeof assertDatacenterCidr>[0]
+
+  await expectErrorResponse(
+    assertDatacenterCidr(c, 'datacenter', null),
+    400,
+    'network_cidr_required',
+  )
+  assertEquals(assertDatacenterCidr(c, 'datacenter', '10.0.0.0/24'), null)
+  assertEquals(assertDatacenterCidr(c, 'docker', null), null)
+})
+
 test('buildNetworkCreateValues omits null optional fields', () => {
   assertEquals(
     buildNetworkCreateValues({
@@ -121,7 +135,7 @@ test('buildNetworkCreateValues omits null optional fields', () => {
   )
 })
 
-test('resolveKindQueryFilter accepts datacenter and docker only', async () => {
+test('resolveKindQueryFilter accepts datacenter and docker only', () => {
   const c = mockContext()
   assertEquals(resolveKindQueryFilter(c), undefined)
   assertEquals(resolveKindQueryFilter(mockContext({ kind: 'docker' })), 'docker')
@@ -130,7 +144,7 @@ test('resolveKindQueryFilter accepts datacenter and docker only', async () => {
   assertEquals(bad.status, 400)
 })
 
-test('parseUuidQueryParam validates list filter UUIDs', async () => {
+test('parseUuidQueryParam validates list filter UUIDs', () => {
   const c = mockContext()
   const valid = '550e8400-e29b-41d4-a716-446655440000'
   assertEquals(parseUuidQueryParam(c, undefined), undefined)
@@ -164,7 +178,7 @@ test('parseCreateOrganizationId rejects non-UUID organizationId', async () => {
   assertEquals(await bad.json(), { error: 'Invalid request' })
 })
 
-test('parseNetworkKind and CIDR helpers validate create/patch input', async () => {
+test('parseNetworkKind and CIDR helpers validate create/patch input', () => {
   const c = mockContext()
   assertEquals(parseNetworkKind(c, { kind: 'docker' }), 'docker')
   const badKind = parseNetworkKind(c, { kind: 'vpn' })
@@ -175,12 +189,12 @@ test('parseNetworkKind and CIDR helpers validate create/patch input', async () =
   assertEquals(parseOptionalCidrField(c, { cidr: '10.0.0.0/24' }), '10.0.0.0/24')
   assertEquals(parseOptionalCidrField(c, {}), null)
 
-  const patchFields = { updatedAt: '2020-01-01T00:00:00.000Z' }
+  const patchFields: NetworkPatchFields = { updatedAt: '2020-01-01T00:00:00.000Z' }
   assertEquals(applyCidrPatch(c, { cidr: null }, patchFields), null)
   assertEquals(patchFields.cidr, null)
 })
 
-test('parseOptionalDisplayNameField and CIDR helpers reject invalid values', async () => {
+test('parseOptionalDisplayNameField and CIDR helpers reject invalid values', () => {
   const c = mockContext()
   const badName = parseOptionalDisplayNameField(c, {
     displayName: 'bad\nname',
@@ -192,7 +206,7 @@ test('parseOptionalDisplayNameField and CIDR helpers reject invalid values', asy
   if (!(badCidr instanceof Response)) throw new TypeError('expected response')
   assertEquals(badCidr.status, 400)
 
-  const patchFields = { updatedAt: '2020-01-01T00:00:00.000Z' }
+  const patchFields: NetworkPatchFields = { updatedAt: '2020-01-01T00:00:00.000Z' }
   const badPatchCidr = applyCidrPatch(c, { cidr: '999.0.0.0/99' }, patchFields)
   if (!(badPatchCidr instanceof Response)) throw new TypeError('expected response')
   assertEquals(badPatchCidr.status, 400)
@@ -256,7 +270,7 @@ test('requireDockerNetworkOptions enforces dockerNetworkName', async () => {
   assertEquals(await bad.json(), { error: 'docker_network_name_required' })
 })
 
-test('parseNetworkPatchFields normalizes docker options on patch', async () => {
+test('parseNetworkPatchFields normalizes docker options on patch', () => {
   const c = mockContext()
   const dockerPatch = parseNetworkPatchFields(c, {
     options: { dockerNetworkName: 'external-net' },
@@ -271,7 +285,7 @@ test('parseNetworkPatchFields normalizes docker options on patch', async () => {
   assertEquals(datacenterPatch.options, { note: 'site lan' })
 })
 
-test('rejectImmutableNetworkScopePatch blocks datacenterId and serverId on patch', async () => {
+test('rejectImmutableNetworkScopePatch blocks datacenterId and serverId on patch', () => {
   const c = mockContext()
   assertEquals(rejectImmutableNetworkScopePatch(c, {}), null)
   const denied = rejectImmutableNetworkScopePatch(c, { serverId: '550e8400-e29b-41d4-a716-446655440000' })

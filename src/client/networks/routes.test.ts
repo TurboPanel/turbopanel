@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -50,7 +50,7 @@ async function createNetworkRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
     c.set('db', db)
     return next()
   })
-  registerNetworkRoutes(app, { secrets, runtime: 'deno' })
+  registerNetworkRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets }
 }
 
@@ -123,7 +123,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
     c.set('db', db)
     return next()
   })
-  registerNetworkRoutes(app, { secrets, runtime: 'deno' })
+  registerNetworkRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
 
   const [orgA] = await db
     .insert(organization)
@@ -160,7 +160,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
     }),
   })
   assertEquals(missing.status, 400)
-  assertEquals((await missing.json()).error, 'docker_network_name_required')
+  assertEquals((await missing.json() as { error: string }).error, 'docker_network_name_required')
 
   const created = await app.request('/networks', {
     method: 'POST',
@@ -199,7 +199,7 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
     c.set('db', db)
     return next()
   })
-  registerNetworkRoutes(app, { secrets, runtime: 'deno' })
+  registerNetworkRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
 
   const [orgA] = await db
     .insert(organization)
@@ -249,7 +249,7 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
   })
 
   assertEquals(res.status, 400)
-  const body = await res.json()
+  const body = await res.json() as { error: string }
   assertEquals(body.error, 'network_single_scope_conflict')
 
   await db.delete(server).where(eq(server.id, srv!.id))
@@ -273,7 +273,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     c.set('db', db)
     return next()
   })
-  registerNetworkRoutes(app, { secrets, runtime: 'deno' })
+  registerNetworkRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
 
   const [orgA] = await db
     .insert(organization)
@@ -335,7 +335,23 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     }),
   })
   assertEquals(missingDc.status, 400)
-  assertEquals((await missingDc.json()).error, 'network_scope_required')
+  assertEquals((await missingDc.json() as { error: string }).error, 'network_scope_required')
+
+  const missingCidr = await app.request('/networks', {
+    method: 'POST',
+    headers: {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      organizationId,
+      kind: 'datacenter',
+      datacenterId: dc!.id,
+    }),
+  })
+  assertEquals(missingCidr.status, 400)
+  assertEquals((await missingCidr.json() as { error: string }).error, 'network_cidr_required')
 
   const missingServer = await app.request('/networks', {
     method: 'POST',
@@ -384,7 +400,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     }),
   })
   assertEquals(dockerWithDc.status, 400)
-  assertEquals((await dockerWithDc.json()).error, 'network_single_scope_conflict')
+  assertEquals((await dockerWithDc.json() as { error: string }).error, 'network_single_scope_conflict')
 
   const okDc = await app.request('/networks', {
     method: 'POST',
@@ -397,6 +413,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
       organizationId,
       kind: 'datacenter',
       datacenterId: dc!.id,
+      cidr: '10.0.0.0/24',
     }),
   })
   assertEquals(okDc.status, 200)
@@ -424,7 +441,7 @@ test('GET /networks returns 403 for org member without organization:manage', asy
     c.set('db', db)
     return next()
   })
-  registerNetworkRoutes(app, { secrets, runtime: 'deno' })
+  registerNetworkRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
 
   const [orgA] = await db
     .insert(organization)
@@ -799,7 +816,6 @@ test('POST /networks returns 403 when organizationId is not accessible', async (
     db,
     secrets,
     userId,
-    organizationId,
   }) => {
     const [otherOrg] = await db
       .insert(organization)

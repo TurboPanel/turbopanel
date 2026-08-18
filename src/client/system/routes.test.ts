@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -22,6 +22,8 @@ import {
   project,
   server,
   service,
+  team,
+  teammate,
   user,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -41,59 +43,64 @@ const dbUrl = getDatabaseUrl()
 const test = Deno.test.bind(Deno)
 
 function createMockCell(serverId: string): DaemonCell {
-  const noopAsync = async () => {}
+  const noopAsync = () => Promise.resolve()
   return {
-    attachDaemonSocket: async () => ({
-      connectionId: 'conn',
-      lease: {
-        holder: 'conn',
-        token: 'conn',
-        expiresAt: new Date(Date.now() + 45_000).toISOString(),
-      },
-    }),
+    attachDaemonSocket: () =>
+      Promise.resolve({
+        connectionId: 'conn',
+        lease: {
+          holder: 'conn',
+          token: 'conn',
+          expiresAt: new Date(Date.now() + 45_000).toISOString(),
+        },
+      }),
     detachDaemonSocket: noopAsync,
     recordInbound: noopAsync,
-    getSnapshot: async () => ({
-      serverId,
-      version: 0,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-    }),
-    putSnapshot: async (patch) => ({
-      serverId,
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-      ...patch,
-    }),
-    enqueue: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'queued' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId,
+        version: 0,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+      }),
+    putSnapshot: (patch) =>
+      Promise.resolve({
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+        ...patch,
+      }),
+    enqueue: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'queued' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
     markSent: noopAsync,
-    handleInbound: async () => null,
-    getRequest: async () => null,
-    listRequests: async () => [],
-    waitForRequest: async () => null,
-    createRequestAndWait: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'done' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve([]),
+    waitForRequest: () => Promise.resolve(null),
+    createRequestAndWait: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'done' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
     releaseDeliveryLease: noopAsync,
-    readOutboxBatch: async () => [],
+    readOutboxBatch: () => Promise.resolve([]),
     ackOutbox: noopAsync,
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: noopAsync,
   }
 }
@@ -109,9 +116,9 @@ function createTrackingRegistry(): DaemonCellRegistry {
       }
       return cell
     },
-    listOnlineServerIds: async () => [],
-    getSnapshots: async () => new Map(),
-    purge: async () => {},
+    listOnlineServerIds: () => Promise.resolve([]),
+    getSnapshots: () => Promise.resolve(new Map()),
+    purge: () => Promise.resolve(),
   }
 }
 
@@ -121,8 +128,9 @@ function createRecordingCommandQueue(): CommandQueue & {
   const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
-    enqueue: async (envelope) => {
+    enqueue: (envelope) => {
       envelopes.push(envelope)
+      return Promise.resolve()
     },
   }
 }
@@ -188,7 +196,12 @@ async function withSystemRouteFixtures(
     .values({ email, isEmailVerified: true, role: 'user' })
     .returning({ id: user.id })
   const userId = insertedUser!.id
-
+  const [insertedTeam] = await db
+    .insert(team)
+    .values({ name: 'System Route Team', organizationId })
+    .returning({ id: team.id })
+  const teamId = insertedTeam!.id
+  await db.insert(teammate).values({ teamId, userId })
 
   if (options.withSystemOperateGrant !== false) {
     await db.insert(grant).values({
@@ -267,6 +280,11 @@ async function withSystemRouteFixtures(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
+    await db.delete(teammate).where(and(
+      eq(teammate.teamId, teamId),
+      eq(teammate.userId, userId),
+    ))
+    await db.delete(team).where(eq(team.id, teamId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }

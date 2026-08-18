@@ -2,7 +2,7 @@
  * Host-free coverage for managed cluster membership helpers (no Postgres).
  */
 
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   countReplicas,
@@ -410,79 +410,108 @@ function membershipPin(
   }
 }
 
+type PrivateEndpointFixtureOpts = {
+  fabricId?: string
+  relays?: Array<{
+    relayId: string
+    serverId: string
+    fabricId: string
+    fabricCreatedAt: string
+    address: string
+  }>
+  datacenterOptions?: Array<{ id: string; options: unknown }>
+}
+
+/** Route projected field keys the same way private-endpoint pure tests do. */
+function privateEndpointSelect(
+  memberships: MembershipPinRow[],
+  opts?: PrivateEndpointFixtureOpts,
+) {
+  const datacenterOptions = opts?.datacenterOptions ??
+    [...new Set(memberships.map((row) => row.datacenterId))]
+      .sort((a, b) => a.localeCompare(b))
+      .map((id) => ({ id, options: {} }))
+
+  return (fields: Record<string, unknown>) => {
+    const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
+    const keySet = new Set(keys)
+
+    if (
+      keySet.has('ipId') &&
+      keySet.has('serverId') &&
+      keySet.has('datacenterId') &&
+      keySet.has('networkId') &&
+      keySet.has('address')
+    ) {
+      return {
+        from() {
+          return {
+            where() {
+              return thenableRows(memberships)
+            },
+          }
+        },
+      }
+    }
+
+    if (keys.length === 1 && keySet.has('fabricId')) {
+      return {
+        from() {
+          return {
+            where() {
+              return thenableRows(
+                opts?.fabricId ? [{ fabricId: opts.fabricId }] : [],
+              )
+            },
+          }
+        },
+      }
+    }
+
+    if (keySet.has('relayId') && keySet.has('fabricCreatedAt')) {
+      return {
+        from() {
+          return {
+            innerJoin() {
+              return {
+                where() {
+                  return {
+                    orderBy() {
+                      return thenableRows(opts?.relays ?? [])
+                    },
+                  }
+                },
+              }
+            },
+          }
+        },
+      }
+    }
+
+    // loadDatacenterAddressPreferences: { id, options }
+    if (keys.length === 2 && keySet.has('id') && keySet.has('options')) {
+      return {
+        from() {
+          return {
+            where() {
+              return thenableRows(datacenterOptions)
+            },
+          }
+        },
+      }
+    }
+
+    throw new TypeError(`unexpected private-endpoint select keys: ${keys.join(',')}`)
+  }
+}
+
 /** Minimal double covering private-endpoint batch queries used by members.ts. */
 function privateEndpointDb(
   memberships: MembershipPinRow[],
-  opts?: {
-    fabricId?: string
-    relays?: Array<{
-      relayId: string
-      serverId: string
-      fabricId: string
-      fabricCreatedAt: string
-      address: string
-    }>
-  },
+  opts?: PrivateEndpointFixtureOpts,
 ): Db {
   return {
-    select(fields: Record<string, unknown>) {
-      const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
-      const keySet = new Set(keys)
-
-      if (
-        keySet.has('ipId') &&
-        keySet.has('serverId') &&
-        keySet.has('datacenterId') &&
-        keySet.has('networkId') &&
-        keySet.has('address')
-      ) {
-        return {
-          from() {
-            return {
-              where() {
-                return thenableRows(memberships)
-              },
-            }
-          },
-        }
-      }
-
-      if (keys.length === 1 && keySet.has('fabricId')) {
-        return {
-          from() {
-            return {
-              where() {
-                return thenableRows(
-                  opts?.fabricId ? [{ fabricId: opts.fabricId }] : [],
-                )
-              },
-            }
-          },
-        }
-      }
-
-      if (keySet.has('relayId') && keySet.has('fabricCreatedAt')) {
-        return {
-          from() {
-            return {
-              innerJoin() {
-                return {
-                  where() {
-                    return {
-                      orderBy() {
-                        return thenableRows(opts?.relays ?? [])
-                      },
-                    }
-                  },
-                }
-              },
-            }
-          },
-        }
-      }
-
-      throw new TypeError(`unexpected private-endpoint select keys: ${keys.join(',')}`)
-    },
+    select: privateEndpointSelect(memberships, opts),
   } as unknown as Db
 }
 
@@ -499,7 +528,7 @@ function peerResolutionDb(opts: {
   }>
   memberships?: MembershipPinRow[]
 }): Db {
-  const endpoint = privateEndpointDb(opts.memberships ?? [])
+  const endpointSelect = privateEndpointSelect(opts.memberships ?? [])
   return {
     select(fields: Record<string, unknown>) {
       const keys = Object.keys(fields)
@@ -520,17 +549,18 @@ function peerResolutionDb(opts: {
           },
         }
       }
-      return endpoint.select(fields)
+      return endpointSelect(fields)
     },
   } as unknown as Db
 }
 
 test('resolveMemberTransports maps primary local and replica path results', async () => {
   const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
-  assertEquals(
-    [...(await resolveMemberTransports({} as Db, [primary])).entries()],
-    [['p', 'local']],
-  )
+  const primaryOnly = await resolveMemberTransports({} as Db, [primary])
+  if (!('size' in primaryOnly)) {
+    throw new TypeError(`expected transport map, got ${JSON.stringify(primaryOnly)}`)
+  }
+  assertEquals([...primaryOnly.entries()], [['p', 'local']])
   assertEquals(await resolveMemberTransports({} as Db, []), new Map())
 
   const replicaSame = member({
@@ -707,7 +737,7 @@ test('ensureMemberPrivatePorts allocates free private ports per server', async (
   }
 
   const db = {
-    transaction: async (fn: (tx: typeof tx) => Promise<unknown>) => fn(tx),
+    transaction: (fn: (inner: typeof tx) => Promise<unknown>) => fn(tx),
   } as unknown as Db
 
   const result = await ensureMemberPrivatePorts(db, [primary, replica])
@@ -764,7 +794,7 @@ test('ensureMemberPrivatePorts returns exhausted when the range is full', async 
     },
   }
   const db = {
-    transaction: async (fn: (tx: typeof tx) => Promise<unknown>) => fn(tx),
+    transaction: (fn: (inner: typeof tx) => Promise<unknown>) => fn(tx),
   } as unknown as Db
 
   const result = await ensureMemberPrivatePorts(db, [primary, replica])
@@ -951,7 +981,7 @@ test('ensureMemberPrivatePorts reuses ports already on members', async () => {
     },
   }
   const db = {
-    transaction: async (fn: (tx: typeof tx) => Promise<unknown>) => fn(tx),
+    transaction: (fn: (inner: typeof tx) => Promise<unknown>) => fn(tx),
   } as unknown as Db
 
   const result = await ensureMemberPrivatePorts(db, [primary, replica])

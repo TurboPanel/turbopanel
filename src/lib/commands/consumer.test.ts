@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb, endDbConnection } from '../../db.ts'
@@ -104,64 +104,68 @@ function createDispatchMockRegistry(
   }
 
   const cell: DaemonCell = {
-    attachDaemonSocket: async () => ({
-      connectionId: 'conn',
-      lease: {
-        holder: 'conn',
-        expiresAt: new Date(Date.now() + 45_000).toISOString(),
-      },
-    }),
-    detachDaemonSocket: async () => {},
-    recordInbound: async () => {},
-    getSnapshot: async () => ({
-      serverId,
-      version: 0,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-    }),
-    putSnapshot: async (patch) => ({
-      serverId,
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-      ...patch,
-    }),
-    enqueue: async (outbound) => {
+    attachDaemonSocket: () =>
+      Promise.resolve({
+        connectionId: 'conn',
+        lease: {
+          holder: 'conn',
+          expiresAt: new Date(Date.now() + 45_000).toISOString(),
+        },
+      }),
+    detachDaemonSocket: () => Promise.resolve(),
+    recordInbound: () => Promise.resolve(),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId,
+        version: 0,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+      }),
+    putSnapshot: (patch) =>
+      Promise.resolve({
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+        ...patch,
+      }),
+    enqueue: (outbound) => {
       state.enqueueCalled = true
       state.capturedOutbound = outbound
-      return {
+      return Promise.resolve({
         serverId,
         requestId: outbound.requestId,
         requestKind: outbound.kind,
         status: 'queued' as const,
         createdAt: outbound.at,
         expiresAt: outbound.at,
-      }
+      })
     },
-    markSent: async () => {},
-    handleInbound: async () => null,
-    getRequest: async () => null,
-    listRequests: async () => [],
-    waitForRequest: async () => {
+    markSent: () => Promise.resolve(),
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve([]),
+    waitForRequest: () => {
       state.waitForRequestCalled = true
-      return options.waitForRequestResult
+      return Promise.resolve(options.waitForRequestResult)
     },
-    createRequestAndWait: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'done' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
-    releaseDeliveryLease: async () => {},
-    readOutboxBatch: async () => [],
-    ackOutbox: async () => {},
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
-    purge: async () => {},
+    createRequestAndWait: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'done' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
+    releaseDeliveryLease: () => Promise.resolve(),
+    readOutboxBatch: () => Promise.resolve([]),
+    ackOutbox: () => Promise.resolve(),
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
+    purge: () => Promise.resolve(),
   }
 
   return {
@@ -175,9 +179,9 @@ function createDispatchMockRegistry(
       return state.capturedOutbound
     },
     getCell: () => cell,
-    listOnlineServerIds: async () => [],
-    getSnapshots: async () => new Map(),
-    purge: async () => {},
+    listOnlineServerIds: () => Promise.resolve([]),
+    getSnapshots: () => Promise.resolve(new Map()),
+    purge: () => Promise.resolve(),
   }
 }
 
@@ -236,7 +240,7 @@ function buildEnvelope(
 }
 
 test('processCommandEnvelope fails fast when daemon is offline', async () => {
-  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
     const record = await createCommandRecord(db, {
       serverId,
       ...TEST_COMMAND_ACTOR,
@@ -284,7 +288,7 @@ test('processCommandEnvelope does not persist timezone option when daemon is off
 })
 
 test('processCommandEnvelope succeeds for online ping command', async () => {
-  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
     const record = await createCommandRecord(db, {
       serverId,
@@ -334,7 +338,7 @@ test('processCommandEnvelope succeeds for online ping command', async () => {
 })
 
 test('processCommandEnvelope updates server metadata on hostname success', async () => {
-  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
     const record = await createCommandRecord(db, {
       serverId,
@@ -479,7 +483,7 @@ test('processCommandEnvelope leaves server.options.timezone unchanged on timezon
 })
 
 test('processCommandEnvelope maps failed and timed out pending requests', async () => {
-  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
 
     const failedRecord = await createCommandRecord(db, {
@@ -576,12 +580,18 @@ test('processCommandEnvelope leaves NTP columns unchanged on malformed ntp succe
       .from(server)
       .where(eq(server.id, serverId))
       .limit(1)
-    assertEquals(row, {
-      timezone: 'UTC',
-      isTimeSyncEnabled: true,
-      ntpServers: priorNtpServers,
-      ntpLastSyncedAt: priorStamp,
-    })
+    assertEquals(row?.timezone, 'UTC')
+    assertEquals(row?.isTimeSyncEnabled, true)
+    assertEquals(row?.ntpServers, priorNtpServers)
+    // postgres.js may return timestamptz as 'YYYY-MM-DD HH:mm:ss+00'
+    const observedStamp = row?.ntpLastSyncedAt
+    if (observedStamp == null) {
+      throw new TypeError('expected ntpLastSyncedAt to remain set')
+    }
+    assertEquals(
+      new Date(observedStamp).toISOString(),
+      new Date(priorStamp).toISOString(),
+    )
   })
 })
 
@@ -811,7 +821,7 @@ test('processCommandEnvelope leaves the managed row and principals in place with
 })
 
 test('processCommandEnvelope no-ops for terminal or expired commands', async () => {
-  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
 
     const succeeded = await createCommandRecord(db, {
@@ -3216,8 +3226,9 @@ function createRecordingCommandQueue() {
   const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
-    enqueue: async (envelope: CommandEnvelope) => {
+    enqueue: (envelope: CommandEnvelope) => {
       envelopes.push(envelope)
+      return Promise.resolve()
     },
   }
 }

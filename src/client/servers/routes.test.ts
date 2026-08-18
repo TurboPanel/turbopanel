@@ -1,4 +1,4 @@
-import { assertEquals, assertExists, assertThrows } from 'jsr:@std/assert'
+import { assertEquals, assertExists, assertThrows } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -25,6 +25,8 @@ import {
   segment,
   server,
   service,
+  team,
+  teammate,
   user,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -101,68 +103,72 @@ function createMockCell(
   failPurge = false,
   options?: { listRequestsThrows?: boolean },
 ): DaemonCell {
-  const noopAsync = async () => {}
+  const noopAsync = () => Promise.resolve()
   return {
-    attachDaemonSocket: async () => ({
-      connectionId: 'conn',
-      lease: {
-        holder: 'conn',
-        token: 'conn',
-        expiresAt: new Date(Date.now() + 45_000).toISOString(),
-      },
-    }),
+    attachDaemonSocket: () =>
+      Promise.resolve({
+        connectionId: 'conn',
+        lease: {
+          holder: 'conn',
+          token: 'conn',
+          expiresAt: new Date(Date.now() + 45_000).toISOString(),
+        },
+      }),
     detachDaemonSocket: noopAsync,
     recordInbound: noopAsync,
-    getSnapshot: async () => ({
-      serverId,
-      version: 0,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-    }),
-    putSnapshot: async (patch) => ({
-      serverId,
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-      ...patch,
-    }),
-    enqueue: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'queued' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId,
+        version: 0,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+      }),
+    putSnapshot: (patch) =>
+      Promise.resolve({
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+        ...patch,
+      }),
+    enqueue: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'queued' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
     markSent: noopAsync,
-    handleInbound: async () => null,
-    getRequest: async () => null,
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
     listRequests: options?.listRequestsThrows
-      ? async () => {
-        throw new Error('listRequests should not be called')
-      }
-      : async () => [],
-    waitForRequest: async () => null,
-    createRequestAndWait: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'done' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
+      ? () => Promise.reject(new Error('listRequests should not be called'))
+      : () => Promise.resolve([]),
+    waitForRequest: () => Promise.resolve(null),
+    createRequestAndWait: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'done' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
     releaseDeliveryLease: noopAsync,
-    readOutboxBatch: async () => [],
+    readOutboxBatch: () => Promise.resolve([]),
     ackOutbox: noopAsync,
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
-    purge: async () => {
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
+    purge: () => {
       if (failPurge) {
-        throw new Error(`purge failed for ${serverId}`)
+        return Promise.reject(new Error(`purge failed for ${serverId}`))
       }
       purgedIds.push(serverId)
+      return Promise.resolve()
     },
   }
 }
@@ -201,15 +207,11 @@ function createTrackingRegistry(options?: {
     purgedIds,
     getCell,
     listOnlineServerIds: options?.listOnlineServerIdsThrows
-      ? async () => {
-        throw new Error('listOnlineServerIds must not be called')
-      }
-      : async () => onlineIds,
+      ? () => Promise.reject(new Error('listOnlineServerIds must not be called'))
+      : () => Promise.resolve(onlineIds),
     getSnapshots: options?.getSnapshotsThrows
-      ? async () => {
-        throw new Error('getSnapshots must not be called')
-      }
-      : async () => new Map(),
+      ? () => Promise.reject(new Error('getSnapshots must not be called'))
+      : () => Promise.resolve(new Map()),
     purge: async (serverId: string) => {
       await getCell(serverId).purge()
     },
@@ -462,6 +464,22 @@ async function sessionCookie(
   return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
 }
 
+/** Org-context access without grants — the `teammate` replacement for retired `membership`. */
+async function insertOrgTeamMembership(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  userId: string,
+  teamName: string,
+): Promise<string> {
+  const [insertedTeam] = await db
+    .insert(team)
+    .values({ name: teamName, organizationId })
+    .returning({ id: team.id })
+  const teamId = insertedTeam!.id
+  await db.insert(teammate).values({ teamId, userId })
+  return teamId
+}
+
 async function withServerDeleteFixtures(
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>
@@ -502,6 +520,12 @@ async function withServerDeleteFixtures(
     actorId: userId,
     permission: 'organization:manage',
   })
+  const teamId = await insertOrgTeamMembership(
+    db,
+    organizationId,
+    userId,
+    'Server Delete Team',
+  )
 
   const now = new Date().toISOString()
   const [insertedServer] = await db
@@ -531,6 +555,11 @@ async function withServerDeleteFixtures(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
     ))
+    await db.delete(teammate).where(and(
+      eq(teammate.teamId, teamId),
+      eq(teammate.userId, userId),
+    ))
+    await db.delete(team).where(eq(team.id, teamId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -1582,7 +1611,6 @@ test('GET /servers includes os, osDisplay, and osLogo from metadata without cach
 test('GET /servers/status returns Postgres data without calling getSnapshots', async () => {
   await withServerDeleteFixtures(async ({
     db,
-    secrets,
     userId,
     organizationId,
     serverId,
@@ -1620,7 +1648,6 @@ test('GET /servers/status returns Postgres data without calling getSnapshots', a
 test('GET /servers/:id/status returns Postgres data without calling getSnapshots', async () => {
   await withServerDeleteFixtures(async ({
     db,
-    secrets,
     userId,
     organizationId,
     serverId,
@@ -1740,7 +1767,6 @@ test('GET /servers uses only the approved servers-list read model cache helper',
     secrets,
     userId,
     organizationId,
-    serverId,
   }) => {
     const registry = createTrackingRegistry({
       getCellThrows: true,
@@ -1833,7 +1859,12 @@ test('GET /servers — empty visibleIds short-circuits before cache', async () =
     .values({ email, isEmailVerified: true, role: 'user' })
     .returning({ id: user.id })
   const userId = insertedUser!.id
-
+  const teamId = await insertOrgTeamMembership(
+    db,
+    organizationId,
+    userId,
+    'No Grant Team',
+  )
 
   const now = new Date().toISOString()
   const [insertedServer] = await db
@@ -1862,6 +1893,11 @@ test('GET /servers — empty visibleIds short-circuits before cache', async () =
     assertEquals(recordingCache.readModels.length, 0)
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(teammate).where(and(
+      eq(teammate.teamId, teamId),
+      eq(teammate.userId, userId),
+    ))
+    await db.delete(team).where(eq(team.id, teamId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -1873,7 +1909,6 @@ test('GET /servers — differing visibleIds produce different cache keys', async
     secrets,
     userId,
     organizationId,
-    serverId,
   }) => {
     const registry = createTrackingRegistry({
       getCellThrows: true,
@@ -2317,8 +2352,9 @@ test('DELETE /servers/:id succeeds after enable → disable → reconcile lifecy
     const envelopes: Array<{ type: string; commandId: string }> = []
     const commandQueue = {
       envelopes,
-      enqueue: async (envelope: { type: string; commandId: string }) => {
+      enqueue: (envelope: { type: string; commandId: string }) => {
         envelopes.push({ type: envelope.type, commandId: envelope.commandId })
+        return Promise.resolve()
       },
     }
     const { app } = await createServerRoutesTestApp(

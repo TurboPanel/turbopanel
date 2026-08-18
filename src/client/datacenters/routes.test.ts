@@ -73,7 +73,7 @@ async function createDatacenterRoutesTestApp(
     c.set("db", db);
     return next();
   });
-  registerDatacenterRoutes(app, { secrets, runtime: "deno" });
+  registerDatacenterRoutes(app, { secrets, runtime: "deno", signupEnvOverride: undefined });
   return { app, secrets };
 }
 
@@ -122,6 +122,7 @@ async function withDatacenterFixtures(
   try {
     await fn({ db, app, secrets, userId, organizationId });
   } finally {
+    await db.delete(ip).where(eq(ip.organizationId, organizationId));
     await db.delete(server).where(eq(server.organizationId, organizationId));
     await db.delete(network).where(eq(network.organizationId, organizationId));
     await db.delete(datacenter).where(
@@ -156,7 +157,7 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
     c.set("db", db);
     return next();
   });
-  registerDatacenterRoutes(app, { secrets, runtime: "deno" });
+  registerDatacenterRoutes(app, { secrets, runtime: "deno", signupEnvOverride: undefined });
 
   const [org] = await db
     .insert(organization)
@@ -275,7 +276,7 @@ test("GET /datacenters/:id returns 404 for datacenter in another org", async () 
     c.set("db", db);
     return next();
   });
-  registerDatacenterRoutes(app, { secrets, runtime: "deno" });
+  registerDatacenterRoutes(app, { secrets, runtime: "deno", signupEnvOverride: undefined });
 
   const [orgA] = await db
     .insert(organization)
@@ -351,7 +352,7 @@ test("GET /datacenters returns 403 for org member without organization:manage", 
     c.set("db", db);
     return next();
   });
-  registerDatacenterRoutes(app, { secrets, runtime: "deno" });
+  registerDatacenterRoutes(app, { secrets, runtime: "deno", signupEnvOverride: undefined });
 
   const [orgA] = await db
     .insert(organization)
@@ -402,7 +403,7 @@ test("DELETE /datacenters/:id succeeds when no scoped networks exist", async () 
     c.set("db", db);
     return next();
   });
-  registerDatacenterRoutes(app, { secrets, runtime: "deno" });
+  registerDatacenterRoutes(app, { secrets, runtime: "deno", signupEnvOverride: undefined });
 
   const [orgA] = await db
     .insert(organization)
@@ -483,7 +484,7 @@ test("DELETE /datacenters/:id returns 409 when members remain", async () => {
     c.set("db", db);
     return next();
   });
-  registerDatacenterRoutes(app, { secrets, runtime: "deno" });
+  registerDatacenterRoutes(app, { secrets, runtime: "deno", signupEnvOverride: undefined });
 
   const [orgA] = await db
     .insert(organization)

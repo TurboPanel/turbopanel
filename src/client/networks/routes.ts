@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import { Hono, type Context } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -17,6 +17,7 @@ import {
   parseJsonbObject,
 } from '../shared.ts'
 import {
+  assertDatacenterCidr,
   assertNetworkKindScope,
   buildNetworkCreateValues,
   type NetworkCreateFields,
@@ -34,7 +35,11 @@ import {
   UUID_RE,
 } from './routes-pure.ts'
 
-export { assertNetworkKindScope, buildNetworkCreateValues } from './network-scope.ts'
+export {
+  assertDatacenterCidr,
+  assertNetworkKindScope,
+  buildNetworkCreateValues,
+} from './network-scope.ts'
 
 const NETWORK_SELECT = {
   id: network.id,
@@ -138,6 +143,9 @@ async function parseNetworkCreateFields(
 
   const cidr = parseOptionalCidrField(c, body)
   if (cidr instanceof Response) return cidr
+
+  const cidrDenied = assertDatacenterCidr(c, kind, cidr)
+  if (cidrDenied) return cidrDenied
 
   const metadataResult = parseJsonbObject(c, body, 'metadata')
   if (metadataResult instanceof Response) return metadataResult

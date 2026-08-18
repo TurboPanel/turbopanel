@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv } from "../../app.ts";
@@ -168,19 +168,43 @@ test("tcpUdpIngressServiceRefs and attachmentServerIds project ids", () => {
   );
 });
 
+function stubPreparedDeployCompose(
+  managedNetworkServices: string[],
+): PreparedDeployCompose {
+  return {
+    composeYaml: "",
+    composeFiles: [],
+    desiredHash: "",
+    replicaCounts: {},
+    hooks: [],
+    variableMaterial: [],
+    storageMaterial: [],
+    principalMaterial: [],
+    traditionalWebSites: [],
+    dockerExternalNetworks: [],
+    fabricNetworks: [],
+    managedNetworkServices,
+    containers: [],
+    ingressServices: [],
+    composeServiceExpansion: {},
+    volumes: [],
+    warnings: [],
+  };
+}
+
 test("ingressServerIdsForDeploy includes attachments, leftovers, and managed hosts", () => {
   const ids = ingressServerIdsForDeploy({
     planServerIds: ["srv-a", "srv-b"],
     preparedByServer: [
       {
         serverId: "srv-a",
-        prepared: { managedNetworkServices: ["web"] } as PreparedDeployCompose,
+        prepared: stubPreparedDeployCompose(["web"]),
         hostings: [],
         tlsMaterial: [],
       },
       {
         serverId: "srv-b",
-        prepared: { managedNetworkServices: [] } as PreparedDeployCompose,
+        prepared: stubPreparedDeployCompose([]),
         hostings: [],
         tlsMaterial: [],
       },
@@ -268,66 +292,72 @@ function createRecordingCommandQueue(): CommandQueue & {
   const envelopes: CommandEnvelope[] = [];
   return {
     envelopes,
-    enqueue: async (envelope) => {
+    enqueue: (envelope) => {
       envelopes.push(envelope);
+      return Promise.resolve();
     },
   };
 }
 
 function createMockCell(serverId: string): DaemonCell {
-  const noopAsync = async () => {};
+  const noopAsync = () => Promise.resolve();
   return {
-    attachDaemonSocket: async () => ({
-      connectionId: "conn",
-      lease: {
-        holder: "conn",
-        token: "conn",
-        expiresAt: new Date(Date.now() + 45_000).toISOString(),
-      },
-    }),
+    attachDaemonSocket: () =>
+      Promise.resolve({
+        connectionId: "conn",
+        lease: {
+          holder: "conn",
+          token: "conn",
+          expiresAt: new Date(Date.now() + 45_000).toISOString(),
+        },
+      }),
     detachDaemonSocket: noopAsync,
     recordInbound: noopAsync,
-    getSnapshot: async () => ({
-      serverId,
-      version: 0,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-    }),
-    putSnapshot: async (patch) => ({
-      serverId,
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-      ...patch,
-    }),
-    enqueue: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: "queued" as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId,
+        version: 0,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+      }),
+    putSnapshot: (patch) =>
+      Promise.resolve({
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+        ...patch,
+      }),
+    enqueue: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: "queued" as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
     markSent: noopAsync,
-    handleInbound: async () => null,
-    getRequest: async () => null,
-    listRequests: async () => [],
-    waitForRequest: async () => null,
-    createRequestAndWait: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: "done" as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve([]),
+    waitForRequest: () => Promise.resolve(null),
+    createRequestAndWait: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: "done" as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
     releaseDeliveryLease: noopAsync,
-    readOutboxBatch: async () => [],
+    readOutboxBatch: () => Promise.resolve([]),
     ackOutbox: noopAsync,
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: noopAsync,
   };
 }
@@ -343,9 +373,9 @@ function createTrackingRegistry(): DaemonCellRegistry {
       }
       return cell;
     },
-    listOnlineServerIds: async () => [],
-    getSnapshots: async () => new Map(),
-    purge: async () => {},
+    listOnlineServerIds: () => Promise.resolve([]),
+    getSnapshots: () => Promise.resolve(new Map()),
+    purge: () => Promise.resolve(),
   };
 }
 
@@ -412,9 +442,14 @@ async function createDeployRoutesTestApp(
     c.set("dataEncryptionSecrets", dataEncryptionSecrets);
     return next();
   });
-  registerEnvironmentDeployPreviewRoutes(app, { secrets, runtime: "deno" });
-  registerEnvironmentDeployRoutes(app, { secrets, runtime: "deno" });
-  registerEnvironmentLifecycleRoutes(app, { secrets, runtime: "deno" });
+  const routeOpts = {
+    secrets,
+    runtime: "deno" as const,
+    signupEnvOverride: undefined,
+  };
+  registerEnvironmentDeployPreviewRoutes(app, routeOpts);
+  registerEnvironmentDeployRoutes(app, routeOpts);
+  registerEnvironmentLifecycleRoutes(app, routeOpts);
   return { app, secrets };
 }
 
@@ -748,11 +783,10 @@ test("POST /environments/:id/deploy payload carries composeYaml and ordered comp
     };
     assertEquals(typeof payload.composeYaml, "string");
     assertEquals(Array.isArray(payload.composeFiles), true);
-    assertEquals(payload.composeFiles!.length >= 1, true);
-    assertEquals(payload.composeFiles![0]!.role, "project");
-    const last = payload.composeFiles![payload.composeFiles!.length - 1]!;
-    assertEquals(last.role, "platform");
-    assertEquals(last.filename, "docker-compose.turbopanel.yml");
+    assertEquals(payload.composeFiles!.length, 1);
+    assertEquals(payload.composeFiles![0]!.role, "runtime");
+    assertEquals(payload.composeFiles![0]!.filename, "compose.yaml");
+    assertEquals(payload.composeFiles![0]!.content, payload.composeYaml);
   });
 });
 
@@ -1021,7 +1055,7 @@ test("POST /environments/:id/deploy requires persisted environment.server_id", a
   });
 });
 
-test("POST /environments/:id/deploy stale environment pin returns 404", async () => {
+test("POST /environments/:id/deploy stale environment pin returns 409", async () => {
   await withDeployFixtures(async ({
     db,
     app,
@@ -1069,8 +1103,8 @@ test("POST /environments/:id/deploy stale environment pin returns 404", async ()
         body: "{}",
       });
 
-      assertEquals(res.status, 404);
-      assertEquals(await res.json(), { error: "Not found" });
+      assertEquals(res.status, 409);
+      assertEquals(await res.json(), { error: "server_placement_required" });
       assertEquals(commandQueue.envelopes.length, 0);
     } finally {
       await db
@@ -1147,7 +1181,6 @@ test("POST /environments/:id/deploy rejects environment overlay compose placemen
     secrets,
     userId,
     organizationId,
-    projectId,
     environmentId,
     serverId,
     commandQueue,
@@ -1437,6 +1470,34 @@ async function cleanupMultiServerFabricDeploy(
   await db.delete(server).where(eq(server.id, params.extraServerId));
 }
 
+async function settleFabricReconcileEnqueue(
+  db: ReturnType<typeof createDenoDb>,
+  params: {
+    organizationId: string;
+    envelope: CommandEnvelope;
+    settleStatus: "succeeded" | "failed" | "queued";
+  },
+): Promise<void> {
+  if (params.envelope.type !== "server.fabric.reconcile") return;
+  if (params.settleStatus === "queued") return;
+  await transitionCommand(db, params.envelope.commandId, {
+    status: params.settleStatus,
+    ...(params.settleStatus === "failed" ? { error: "apply failed" } : {}),
+  });
+  if (params.settleStatus !== "succeeded") return;
+  const metadata = await getCommandMetadata(db, params.envelope.commandId);
+  const desiredHash = typeof metadata?.desiredHash === "string"
+    ? metadata.desiredHash
+    : null;
+  const fabricRow = await getOrganizationFabric(db, params.organizationId);
+  if (!desiredHash || !fabricRow) return;
+  await stampRelayReconcileSuccess(db, {
+    fabricId: fabricRow.id,
+    serverId: params.envelope.serverId,
+    appliedPayloadHash: desiredHash,
+  });
+}
+
 async function prepareMultiServerFabricDeploy(
   db: ReturnType<typeof createDenoDb>,
   params: {
@@ -1492,15 +1553,11 @@ async function prepareMultiServerFabricDeploy(
   const originalEnqueue = params.commandQueue.enqueue.bind(params.commandQueue);
   params.commandQueue.enqueue = async (envelope) => {
     await originalEnqueue(envelope);
-    if (
-      envelope.type === "server.fabric.reconcile" &&
-      params.settleStatus !== "queued"
-    ) {
-      await transitionCommand(db, envelope.commandId, {
-        status: params.settleStatus,
-        ...(params.settleStatus === "failed" ? { error: "apply failed" } : {}),
-      });
-    }
+    await settleFabricReconcileEnqueue(db, {
+      organizationId: params.organizationId,
+      envelope,
+      settleStatus: params.settleStatus,
+    });
   };
 
   return extraServerId;
@@ -1784,18 +1841,6 @@ test("POST /environments/:id/deploy records per-server failures when queue deliv
         }
       }
       await innerEnqueue(envelope);
-      if (envelope.type !== "server.fabric.reconcile") return;
-      const metadata = await getCommandMetadata(db, envelope.commandId);
-      const desiredHash = typeof metadata?.desiredHash === "string"
-        ? metadata.desiredHash
-        : null;
-      const fabricRow = await getOrganizationFabric(db, organizationId);
-      if (!desiredHash || !fabricRow) return;
-      await stampRelayReconcileSuccess(db, {
-        fabricId: fabricRow.id,
-        serverId: envelope.serverId,
-        appliedPayloadHash: desiredHash,
-      });
     };
     try {
       const cookie = await sessionCookie(db, secrets, userId);

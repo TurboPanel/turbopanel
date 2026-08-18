@@ -1,5 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
@@ -39,7 +40,7 @@ const CONTAINER_SELECT = {
   updatedAt: container.updatedAt,
 } as const
 
-export function registerContainerRoutes(router: Hono, opts: AuthRouteOpts) {
+export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/containers', createSessionMiddleware(opts.secrets))
   router.use('/containers/:id', createSessionMiddleware(opts.secrets))
 

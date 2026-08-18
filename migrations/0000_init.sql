@@ -323,8 +323,7 @@ CREATE TABLE "organization" (
 	"options" jsonb,
 	"name" varchar(255),
 	"slug" varchar(255),
-	CONSTRAINT "organization_slug_unique" UNIQUE("slug"),
-	CONSTRAINT "organization_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "organization_slug_unique" UNIQUE("slug")
 );
 --> statement-breakpoint
 CREATE TABLE "passkey" (

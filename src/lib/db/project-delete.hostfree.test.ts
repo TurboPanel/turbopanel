@@ -2,7 +2,7 @@
  * Host-free coverage for project cascade delete (mock Db — no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   deleteProjectCascade,
@@ -26,6 +26,7 @@ function createCascadeMockDb(scenario: {
   serviceIds?: string[]
   containers?: ContainerRow[]
   hostingIds?: string[]
+  composeNetworkIds?: string[]
 }): { db: Db; deletes: DeleteCall[]; stats: { transactions: number } } {
   const deletes: DeleteCall[] = []
   const stats = { transactions: 0 }
@@ -35,6 +36,7 @@ function createCascadeMockDb(scenario: {
   const serviceIds = scenario.serviceIds ?? []
   const containers = scenario.containers ?? []
   const hostingIds = scenario.hostingIds ?? []
+  const composeNetworkIds = scenario.composeNetworkIds ?? []
 
   const selectQueue: unknown[][] = [
     envIds.map((id) => ({ id })),
@@ -43,6 +45,30 @@ function createCascadeMockDb(scenario: {
     hostingIds.map((id) => ({ id })),
   ]
   let selectIndex = 0
+
+  const selectFromWhere = (rows: unknown[]) => ({
+    from: () => ({
+      where: () => Promise.resolve(rows),
+    }),
+  })
+
+  const tx = {
+    select: (fields: Record<string, unknown>) => {
+      const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
+      const keySet = new Set(keys)
+      // purgeEnvironmentsComposeNetworks: { id }
+      if (keys.length === 1 && keySet.has('id')) {
+        return selectFromWhere(composeNetworkIds.map((id) => ({ id })))
+      }
+      throw new TypeError(`unexpected cascade tx select keys: ${keys.join(',')}`)
+    },
+    delete: (_table: unknown) => ({
+      where: () => {
+        deletes.push({ table: 'tx-delete', ids: ['tx-batch'] })
+        return Promise.resolve(undefined)
+      },
+    }),
+  } as unknown as Db
 
   const db = {
     select: () => ({
@@ -60,16 +86,8 @@ function createCascadeMockDb(scenario: {
         return Promise.resolve(undefined)
       },
     }),
-    transaction: async (fn: (tx: Db) => Promise<void>) => {
+    transaction: async (fn: (inner: Db) => Promise<void>) => {
       stats.transactions += 1
-      const tx = {
-        delete: (_table: unknown) => ({
-          where: () => {
-            deletes.push({ table: 'tx-delete', ids: ['tx-batch'] })
-            return Promise.resolve(undefined)
-          },
-        }),
-      } as unknown as Db
       await fn(tx)
     },
   } as unknown as Db
@@ -88,8 +106,9 @@ test('deleteProjectCascade deletes bare project when no environments exist', asy
   const { db, deletes, stats } = createCascadeMockDb({})
   const result = await deleteProjectCascade(db, 'proj-1')
   assertEquals(result, { ok: true })
-  assertEquals(stats.transactions, 0)
-  assertEquals(deletes.length, 1)
+  assertEquals(stats.transactions, 1)
+  // storage retention delete + project row
+  assertEquals(deletes.length, 2)
 })
 
 test('deleteProjectCascade removes environments when no services exist', async () => {

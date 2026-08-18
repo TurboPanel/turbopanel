@@ -54,7 +54,7 @@ export function environmentComposeFilename(params: Readonly<{
   name: string | null | undefined
 }>): string {
   const raw = typeof params.name === 'string' ? params.name.trim() : ''
-  let slug = raw
+  const slug = raw
     .toLowerCase()
     .replaceAll(/[^a-z0-9._-]+/g, '-')
     .replaceAll(/[-._]{2,}/g, (match) => match[0]!)
@@ -334,7 +334,7 @@ export function renderRuntimeComposeFiles(
 
 /**
  * Render layers to the wire `composeFiles` shape. Blank YAML layers are
- * omitted; when every layer is blank, return a single empty project file so
+ * omitted; when every layer is blank, return a single empty runtime file so
  * the daemon always has something to run / tear down (all-traditional-web).
  */
 export function renderComposeFiles(

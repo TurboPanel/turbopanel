@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   buildPlatformComposeLayer,
   buildUserComposeLayers,
@@ -7,6 +7,7 @@ import {
   mergeComposeLayers,
   PLATFORM_COMPOSE_FILENAME,
   PROJECT_COMPOSE_FILENAME,
+  RUNTIME_COMPOSE_FILENAME,
   renderComposeFiles,
   stripComposeTurbopanelExtensions,
 } from './deploy-layers.ts'
@@ -223,7 +224,8 @@ test('renderComposeFiles omits blank environment overlay and falls back when all
     },
   ])
   assertEquals(allBlank.length, 1)
-  assertEquals(allBlank[0]!.role, 'project')
+  assertEquals(allBlank[0]!.role, 'runtime')
+  assertEquals(allBlank[0]!.filename, RUNTIME_COMPOSE_FILENAME)
   assertEquals(allBlank[0]!.content, 'services: {}\n')
 })
 
