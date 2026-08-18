@@ -49,18 +49,18 @@ class RollbackTestTransaction extends Error {
   }
 }
 
-async function createV1OnlySecrets() {
+function createV1OnlySecrets() {
   const config = parseSecretsEnv(undefined, `1:${V1_SECRET}`, "deno");
-  return await deriveEncryptionSecretsConfig(config, "data-encryption");
+  return deriveEncryptionSecretsConfig(config, "data-encryption");
 }
 
-async function createRotatedSecrets() {
+function createRotatedSecrets() {
   const config = parseSecretsEnv(
     undefined,
     `2:${V2_SECRET},1:${V1_SECRET}`,
     "deno",
   );
-  return await deriveEncryptionSecretsConfig(config, "data-encryption");
+  return deriveEncryptionSecretsConfig(config, "data-encryption");
 }
 
 /**
