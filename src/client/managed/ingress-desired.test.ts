@@ -45,6 +45,7 @@ import {
   loadBoundManagedIdsForServer,
   unionExposureBind,
 } from "./ingress-desired.ts";
+import { ensureManagedIngressHierarchy } from "../system/hierarchy.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -269,6 +270,111 @@ async function withSingleClusterIngressFixture(
   }
 }
 
+/**
+ * Org + connected server with no managed members and no bindings — the
+ * empty-`managedIdSet` case for lazy placement / teardown.
+ */
+async function withEmptyServerIngressFixture(
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>;
+    serverId: string;
+    organizationId: string;
+    secretsConfig: Awaited<
+      ReturnType<typeof testEncryptionContext>
+    >["secretsConfig"];
+    dataEncryptionSecrets: Awaited<
+      ReturnType<typeof testEncryptionContext>
+    >["dataEncryptionSecrets"];
+  }) => Promise<void>,
+): Promise<void> {
+  if (!dbUrl) {
+    console.warn(
+      "Skipping ingress-desired teardown tests: TURBOPANEL_DATABASE_URL not set",
+    );
+    return;
+  }
+
+  const { secretsConfig, dataEncryptionSecrets } =
+    await testEncryptionContext();
+  const db = createDenoDb();
+
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ name: "Ingress Teardown Org" })
+    .returning({ id: organization.id });
+  const organizationId = insertedOrg!.id;
+
+  const now = new Date().toISOString();
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      name: "Ingress Teardown Server",
+      createdAt: now,
+      updatedAt: now,
+      isConnected: true,
+      statusChangedAt: now,
+    })
+    .returning({ id: server.id });
+  const serverId = insertedServer!.id;
+
+  await attachDaemonStateToServer(db, serverId, {
+    publicJwk: {
+      kty: "OKP",
+      crv: "Ed25519",
+      x: `ingress-teardown-key-${serverId}`,
+    },
+    fingerprint: `ingress-teardown-fp-${serverId}`,
+  });
+
+  try {
+    await fn({
+      db,
+      serverId,
+      organizationId,
+      secretsConfig,
+      dataEncryptionSecrets,
+    });
+  } finally {
+    await db.delete(container).where(eq(container.serverId, serverId));
+    const workspaceIds = (
+      await db
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.organizationId, organizationId))
+    ).map((row) => row.id);
+    if (workspaceIds.length > 0) {
+      const projectIds = (
+        await db
+          .select({ id: project.id })
+          .from(project)
+          .where(inArray(project.workspaceId, workspaceIds))
+      ).map((row) => row.id);
+      if (projectIds.length > 0) {
+        const environmentIds = (
+          await db
+            .select({ id: environment.id })
+            .from(environment)
+            .where(inArray(environment.projectId, projectIds))
+        ).map((row) => row.id);
+        if (environmentIds.length > 0) {
+          await db.delete(service).where(
+            inArray(service.environmentId, environmentIds),
+          );
+          await db.delete(environment).where(
+            inArray(environment.id, environmentIds),
+          );
+        }
+        await db.delete(project).where(inArray(project.id, projectIds));
+      }
+      await db.delete(workspace).where(inArray(workspace.id, workspaceIds));
+    }
+    await db.delete(server).where(eq(server.id, serverId));
+    await db.delete(tls).where(eq(tls.organizationId, organizationId));
+    await db.delete(organization).where(eq(organization.id, organizationId));
+  }
+}
+
 test("hostgroupsForClusterIndex is stable writer=2i / reader=2i+1", () => {
   assertEquals(hostgroupsForClusterIndex(0), {
     writerHostgroup: 0,
@@ -337,6 +443,45 @@ test("collectProxySqlListenerSans skips wildcard binds and bare container names"
   });
   assertEquals(sans.dnsNames, []);
   assertEquals(sans.ipAddresses, []);
+});
+
+test("empty managedIdSet without hierarchy returns null", async () => {
+  await withEmptyServerIngressFixture(
+    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+      const built = await buildManagedIngressReconcilePayload(db, {
+        serverId,
+        secretsConfig,
+        dataEncryptionSecrets,
+      });
+      assertEquals(built, null);
+    },
+  );
+});
+
+test("empty managedIdSet with prior hierarchy returns teardown payload", async () => {
+  await withEmptyServerIngressFixture(
+    async ({
+      db,
+      serverId,
+      organizationId,
+      secretsConfig,
+      dataEncryptionSecrets,
+    }) => {
+      await ensureManagedIngressHierarchy(db, { organizationId, serverId });
+      const built = await buildManagedIngressReconcilePayload(db, {
+        serverId,
+        secretsConfig,
+        dataEncryptionSecrets,
+      });
+      if (built === null || "kind" in built) {
+        throw new TypeError(`expected teardown payload, got ${JSON.stringify(built)}`);
+      }
+      assertEquals(built.serverId, serverId);
+      assertEquals(built.clusters, []);
+      assertEquals("bindAddress" in built, false);
+      assertEquals(built.orgTlsMaterial, undefined);
+    },
+  );
 });
 
 test("exposure disabled omits bindAddress — no public ProxySQL publish", async () => {

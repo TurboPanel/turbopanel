@@ -6,6 +6,12 @@ import { DISPLAY_NAME_MAX_LENGTH } from "../../lib/display-name-format.ts";
 import { isAllowedTimezone } from "../../lib/timezones.ts";
 import type { OrganizationSummary } from "../org-context.ts";
 import { BadRequestError, parseDisplayName } from "../shared.ts";
+import {
+  parseDefaultFabricEnabledInput,
+  parseNtpDefaultsInput,
+  parseSshPortInput,
+  type NtpDefaults,
+} from "../../lib/host-defaults.ts";
 
 /** Matches {@link NEW_ORGANIZATION_NAME} in authn/install-state.ts. */
 const NEW_ORGANIZATION_DISPLAY_NAME = "New Organization";
@@ -19,6 +25,12 @@ export type OrganizationRouteValidationError = {
 export type DefaultTimezonePatch = {
   defaultServerTimezone?: string | null;
   enforceServerTimezone?: boolean;
+};
+
+export type HostDefaultsPatch = {
+  sshPort?: number | null;
+  ntp?: NtpDefaults | null;
+  defaultFabricEnabled?: boolean | null;
 };
 
 export function parseDefaultTimezonePatch(
@@ -46,6 +58,44 @@ export function parseDefaultTimezonePatch(
       return { ok: false, error: "Invalid enforceServerTimezone", status: 400 };
     }
     patch.enforceServerTimezone = body.enforceServerTimezone;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return { ok: false, error: "Invalid request", status: 400 };
+  }
+
+  return { ok: true, patch };
+}
+
+export function parseHostDefaultsPatch(
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: HostDefaultsPatch }
+  | OrganizationRouteValidationError {
+  const patch: HostDefaultsPatch = {};
+
+  if ("sshPort" in body) {
+    const parsed = parseSshPortInput(body.sshPort);
+    if (!parsed.ok) {
+      return { ok: false, error: "Invalid sshPort", status: 400 };
+    }
+    patch.sshPort = parsed.value;
+  }
+
+  if ("ntp" in body) {
+    const parsed = parseNtpDefaultsInput(body.ntp);
+    if (!parsed.ok) {
+      return { ok: false, error: "Invalid ntp", status: 400 };
+    }
+    patch.ntp = parsed.value;
+  }
+
+  if ("defaultFabricEnabled" in body) {
+    const parsed = parseDefaultFabricEnabledInput(body.defaultFabricEnabled);
+    if (!parsed.ok) {
+      return { ok: false, error: "Invalid defaultFabricEnabled", status: 400 };
+    }
+    patch.defaultFabricEnabled = parsed.value;
   }
 
   if (Object.keys(patch).length === 0) {
@@ -174,6 +224,29 @@ export function defaultTimezonePutResponse(options: {
   return {
     ok: true as const,
     ...defaultTimezoneGetResponse(options),
+  };
+}
+
+export function hostDefaultsGetResponse(options: {
+  sshPort?: number;
+  ntp?: NtpDefaults;
+  defaultFabricEnabled?: boolean;
+}) {
+  return {
+    sshPort: options.sshPort ?? null,
+    ntp: options.ntp ?? null,
+    defaultFabricEnabled: options.defaultFabricEnabled ?? false,
+  };
+}
+
+export function hostDefaultsPutResponse(options: {
+  sshPort?: number;
+  ntp?: NtpDefaults;
+  defaultFabricEnabled?: boolean;
+}) {
+  return {
+    ok: true as const,
+    ...hostDefaultsGetResponse(options),
   };
 }
 

@@ -193,3 +193,17 @@ export function preferredIpv4FromIps(
   )
   return privateV4?.address
 }
+
+/**
+ * First public IPv4 only — no private fallback.
+ *
+ * For values shown to readers whose network position is unknown (e.g. the
+ * fabric GET `resolvedEndpoint`), where a private LAN address would be wrong
+ * rather than merely less specific.
+ */
+export function publicIpv4FromIps(
+  ips: ServerReportedIp[] | null | undefined,
+): string | undefined {
+  if (!ips) return undefined
+  return ips.find((row) => row.scope === 'public' && row.version === 4)?.address
+}

@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
 import {
   ManagedSecretPlaceholder,
@@ -154,6 +154,19 @@ test('postgresql.conf is base plus appended operator snippet', () => {
     true,
   )
   assertEquals(conf.contents.includes('ssl = on'), false)
+  assertEquals(conf.contents.includes('max_replication_slots = 3'), true)
+})
+
+test('max_replication_slots scales with memberCount plus headroom', () => {
+  const spec = postgresEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings: defaultSettings({ ssl: { enabled: false } }),
+    rootUsername: 'postgres',
+    memberCount: 4,
+  })
+  const conf = spec.configFiles.find((f) => f.path === 'postgresql.conf')
+  if (!conf) throw new TypeError('missing postgresql.conf')
+  assertEquals(conf.contents.includes('max_replication_slots = 6'), true)
 })
 
 test('ssl = on and tlsMaterial only when enabled', () => {
@@ -444,6 +457,43 @@ test('buildPlatformPgHba grants replication for co-resident peers and /128 for I
   )
   // IPv6 must not be written as /32.
   assertEquals(hba.includes('2001:db8::10/32'), false)
+})
+
+test('buildPlatformPgHba scopes a public replica to its own address', () => {
+  const settings = defaultSettings({ ssl: { enabled: true } })
+  const spec = postgresEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings,
+    rootUsername: 'postgres',
+    useOrgTls: true,
+    member: {
+      role: 'primary',
+      ordinal: 1,
+      privateListener: {
+        address: '203.0.113.50',
+        port: 45001,
+        transport: 'public',
+      },
+      replication: {
+        username: 'tp_repl',
+        peerAddresses: ['203.0.113.51'],
+      },
+    },
+  })
+  const hba = spec.configFiles.find((f) => f.path === 'pg_hba.conf')?.contents ?? ''
+  assertEquals(
+    hba.includes(
+      'hostssl replication     tp_repl        203.0.113.51/32                 scram-sha-256',
+    ),
+    true,
+  )
+  // A public listener must never widen HBA beyond the known peer.
+  assertEquals(hba.includes('0.0.0.0/0'), false)
+  assertEquals(hba.includes('::/0'), false)
+  assertEquals(
+    hba.includes('host    all             all             all                     reject'),
+    true,
+  )
 })
 
 test('standby primary_conninfo has no passfile (no durable auth plaintext)', () => {

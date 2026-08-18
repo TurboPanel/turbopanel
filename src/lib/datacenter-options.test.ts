@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { parseDatacenterOptions } from './datacenter-options.ts'
 
 /**
@@ -25,15 +25,19 @@ test('parseDatacenterOptions omits blank timezone and invalid enforce flag', () 
   )
 })
 
-test('parseDatacenterOptions keeps trimmed timezone and boolean enforce', () => {
+test('parseDatacenterOptions keeps trimmed timezone, boolean enforce, and host defaults', () => {
   assertEquals(
     parseDatacenterOptions({
       defaultServerTimezone: '  Europe/Berlin  ',
       enforceServerTimezone: true,
+      sshPort: 2200,
+      ntp: { enabled: false },
     }),
     {
       defaultServerTimezone: 'Europe/Berlin',
       enforceServerTimezone: true,
+      sshPort: 2200,
+      ntp: { enabled: false },
     },
   )
 })

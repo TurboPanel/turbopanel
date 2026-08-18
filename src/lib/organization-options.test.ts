@@ -20,15 +20,24 @@ test("parseOrganizationOptions returns empty object for non-records", () => {
   assertEquals(parseOrganizationOptions([]), {});
 });
 
-test("parseOrganizationOptions reads timezone and maxServers", () => {
+test("parseOrganizationOptions reads timezone, maxServers, and host defaults", () => {
   const options = parseOrganizationOptions({
     defaultServerTimezone: " America/Chicago ",
     enforceServerTimezone: true,
     maxServers: 5,
+    sshPort: 2222,
+    ntp: { enabled: true, servers: ["time.cloudflare.com"] },
+    defaultFabricEnabled: true,
   });
   assertEquals(options.defaultServerTimezone, "America/Chicago");
   assertEquals(options.enforceServerTimezone, true);
   assertEquals(options.maxServers, 5);
+  assertEquals(options.sshPort, 2222);
+  assertEquals(options.ntp, {
+    enabled: true,
+    servers: ["time.cloudflare.com"],
+  });
+  assertEquals(options.defaultFabricEnabled, true);
 });
 
 test("parseOrganizationOptions treats null maxServers as unlimited sentinel", () => {

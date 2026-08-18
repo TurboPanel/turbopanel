@@ -3750,6 +3750,79 @@ describe("DaemonCellObject alarm / outbox / RPC branch coverage", () => {
     const body = await response.json() as { record: { status: string } };
     expect(body.record.status).toBe("failed");
   });
+
+  it("fabric-paths-result correlates done and failed", async () => {
+    const serverId = "test-srv-fabric-paths";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const doneId = generateRequestId();
+    const failId = generateRequestId();
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "fabric-paths-request",
+          deliveryId: generateDeliveryId(),
+          requestId: doneId,
+          at: new Date().toISOString(),
+          fabricId: crypto.randomUUID(),
+          probeMs: 0,
+          candidates: [],
+        },
+      }),
+    });
+    const doneResponse = await cellRpc(stub, serverId, "/rpc/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        inbound: {
+          kind: "fabric-paths-result",
+          requestId: doneId,
+          at: new Date().toISOString(),
+          paths: [{
+            publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            endpoint: "203.0.113.50:48172",
+            health: "healthy",
+          }],
+        },
+      }),
+    });
+    expect(doneResponse.status).toBe(200);
+    const doneBody = await doneResponse.json() as {
+      record: { status: string; result: { paths: unknown[] } };
+    };
+    expect(doneBody.record.status).toBe("done");
+    expect(doneBody.record.result.paths).toHaveLength(1);
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "fabric-paths-request",
+          deliveryId: generateDeliveryId(),
+          requestId: failId,
+          at: new Date().toISOString(),
+          fabricId: crypto.randomUUID(),
+          probeMs: 0,
+          candidates: [],
+        },
+      }),
+    });
+    const failResponse = await cellRpc(stub, serverId, "/rpc/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        inbound: {
+          kind: "fabric-paths-result",
+          requestId: failId,
+          at: new Date().toISOString(),
+          paths: [],
+          error: "wg dump failed",
+        },
+      }),
+    });
+    expect(failResponse.status).toBe(200);
+    const failBody = await failResponse.json() as { record: { status: string } };
+    expect(failBody.record.status).toBe("failed");
+  });
 });
 
 function wsSendCommandOutcome(ws: WebSocket, requestId: string): void {

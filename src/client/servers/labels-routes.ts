@@ -1,5 +1,5 @@
-import type { Context } from 'hono'
-import { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import {
@@ -54,7 +54,10 @@ async function resolveServerLabelAccess(
   return { db, serverId }
 }
 
-export function registerServerLabelRoutes(router: Hono, opts: AuthRouteOpts) {
+export function registerServerLabelRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for server label routes')
   }

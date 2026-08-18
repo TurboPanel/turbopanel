@@ -1,6 +1,5 @@
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
-import type { Context } from 'hono'
-import { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -20,6 +19,7 @@ import {
   workspace,
 } from '../../lib/db/schema.ts'
 import { getManagedEngineSpec } from '../../lib/managed/index.ts'
+import { managedIngressPortForEngine } from '../../lib/managed/ingress-ports.ts'
 import {
   clampManagedResources,
   type ManagedSettings,
@@ -93,7 +93,6 @@ import {
 } from './backups.ts'
 import { fetchManagedLogs, parseLogsTailQuery } from './logs.ts'
 import {
-  countReplicas,
   deleteManagedMember,
   ensureManagedPrimaryMember,
   findManagedMember,
@@ -101,11 +100,12 @@ import {
   listManagedMembers,
   listManagedMembersForManagedIds,
   listSerializedManagedMembers,
-  MANAGED_MAX_REPLICAS,
   nextReplicaOrdinal,
   serializeManagedMember,
   updateManagedMemberReadEligible,
+  updateManagedMemberReplicaClass,
   type ManagedMemberRow,
+  type ManagedReplicaClass,
 } from './members.ts'
 import {
   parseManagedRowOptions,
@@ -129,8 +129,12 @@ import {
   evaluateManagedUserRotateGuard,
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
+  evaluatePromoteReplicaClass,
+  evaluateReplicaClassConversion,
   evaluateReplicaPlacementPrechecks,
+  replicaEndpointPurpose,
   replicaPlacementNeedsDatacenter,
+  assertFailoverReplicaTransportAllowed,
   findManagedBackupById,
   isManagedRootPrincipal,
   isManagedReplicationPrincipal,
@@ -144,8 +148,10 @@ import {
   parseManagedLifecycleAction,
   parseManagedUserCreateFields,
   parseMemberReadEligibleCreate,
-  parseMemberReadEligiblePatch,
+  parseMemberPatch,
+  type MemberPatchFields,
   parsePromoteForce,
+  parseReplicaClassCreate,
   pickPrimaryCommandResult,
   readInitialDatabase,
   resolveManagedConnectionListener,
@@ -552,7 +558,7 @@ type PreparedManagedApply = {
 async function assertManagedApplyReady(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
-  ctx: ManagedContext,
+  _ctx: ManagedContext,
   managedRow: NonNullable<Awaited<ReturnType<typeof findManagedForEnvironment>>>,
   options: ManagedRowOptions,
   targetServerId: string,
@@ -690,7 +696,7 @@ async function createManagedAndEnqueueApply(
   let created: Awaited<ReturnType<typeof insertManagedCreateTransaction>>
   try {
     created = await db.transaction(async (tx) =>
-      insertManagedCreateTransaction(c, tx, {
+      await insertManagedCreateTransaction(c, tx, {
         environmentId,
         ctx,
         serverId: createServerId,
@@ -736,6 +742,7 @@ async function resolveReplicaPlacement(
     primaryServerId: string
     serverId: string
     members: readonly ManagedMemberRow[]
+    replicaClass: ManagedReplicaClass
   },
 ): Promise<
   Response | { toPrimaryTransport: PrivateEndpointTransport; ordinal: number }
@@ -743,19 +750,25 @@ async function resolveReplicaPlacement(
   const precheck = evaluateReplicaPlacementPrechecks(
     params.members,
     params.serverId,
-    countReplicas(params.members),
-    MANAGED_MAX_REPLICAS,
   )
   if (precheck) {
     return c.json({ error: precheck.error }, precheck.status)
   }
 
+  const purpose = replicaEndpointPurpose(params.replicaClass)
   const toPrimary = await resolvePrivateEndpoint(db, {
     fromServerId: params.serverId,
     toServerId: params.primaryServerId,
+    purpose,
   })
   if ('kind' in toPrimary) return privateEndpointErrorResponse(c, toPrimary)
-  if (replicaPlacementNeedsDatacenter(toPrimary.transport)) {
+  if (params.replicaClass === 'failover') {
+    const transportErr = assertFailoverReplicaTransportAllowed(toPrimary.transport)
+    if (transportErr) {
+      return c.json({ error: transportErr.kind }, 422)
+    }
+  }
+  if (replicaPlacementNeedsDatacenter(toPrimary.transport, params.replicaClass)) {
     const dcReady = await assertServerDatacenterReady(db, params.serverId)
     if (dcReady) {
       return c.json({ error: dcReady.kind }, 422)
@@ -765,18 +778,90 @@ async function resolveReplicaPlacement(
   const fromPrimary = await resolvePrivateEndpoint(db, {
     fromServerId: params.primaryServerId,
     toServerId: params.serverId,
+    purpose,
   })
   if ('kind' in fromPrimary) return privateEndpointErrorResponse(c, fromPrimary)
 
   const offline = await assertTargetServerOnline(c, db, params.serverId)
   if (offline) return offline
 
-  const ordinal = nextReplicaOrdinal(params.members)
-  if (ordinal === null) {
-    return c.json({ error: 'managed_replica_limit' }, 422)
+  return {
+    toPrimaryTransport: toPrimary.transport,
+    ordinal: nextReplicaOrdinal(params.members),
+  }
+}
+
+/**
+ * Resolves whether an existing replica may be converted to `failover`.
+ * Returns `false` (not a Response) when the transport disqualifies it so the
+ * caller can surface the class-conversion error instead.
+ */
+async function resolveFailoverConversionPlacement(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: { memberServerId: string; primaryServerId: string },
+): Promise<Response | boolean> {
+  const toPrimary = await resolvePrivateEndpoint(db, {
+    fromServerId: params.memberServerId,
+    toServerId: params.primaryServerId,
+    purpose: replicaEndpointPurpose('failover'),
+  })
+  if ('kind' in toPrimary) return privateEndpointErrorResponse(c, toPrimary)
+  if (assertFailoverReplicaTransportAllowed(toPrimary.transport)) return false
+  if (replicaPlacementNeedsDatacenter(toPrimary.transport, 'failover')) {
+    const dcReady = await assertServerDatacenterReady(db, params.memberServerId)
+    if (dcReady) {
+      return c.json({ error: dcReady.kind }, 422)
+    }
+  }
+  return true
+}
+
+async function applyMemberReplicaClassPatch(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: {
+    managedServerId: string | null
+    member: ManagedMemberRow
+    replicaClass: MemberPatchFields['replicaClass']
+  },
+): Promise<Response | null> {
+  const { member, replicaClass } = params
+  if (replicaClass === undefined) return null
+
+  const primaryServerId = resolveManagedTargetServerId(c, params.managedServerId)
+  if (primaryServerId instanceof Response) return primaryServerId
+
+  let placementOk = true
+  if (replicaClass === 'failover') {
+    const placement = await resolveFailoverConversionPlacement(c, db, {
+      memberServerId: member.serverId,
+      primaryServerId,
+    })
+    if (placement instanceof Response) return placement
+    placementOk = placement
   }
 
-  return { toPrimaryTransport: toPrimary.transport, ordinal }
+  const conversion = evaluateReplicaClassConversion(member, replicaClass, placementOk)
+  if (conversion) {
+    return c.json({ error: conversion.error }, conversion.status)
+  }
+
+  const converted = await updateManagedMemberReplicaClass(db, member.id, replicaClass)
+  if (!converted) return c.json({ error: 'Not found' }, 404)
+  return null
+}
+
+async function applyMemberReadEligiblePatch(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  memberId: string,
+  readEligible: MemberPatchFields['readEligible'],
+): Promise<Response | null> {
+  if (readEligible === undefined) return null
+  const updated = await updateManagedMemberReadEligible(db, memberId, readEligible)
+  if (!updated) return c.json({ error: 'Not found' }, 404)
+  return null
 }
 
 // Expanding the cluster onto a new server owner inherits that org's
@@ -909,7 +994,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const listener = serverId
       ? await resolveManagedConnectionListener(db, {
         serverId,
-        protocolPort: ctx.spec.defaultPort,
+        protocolPort: managedIngressPortForEngine(ctx.spec.engine, ctx.spec.defaultPort),
         exposure: parsed.settings.exposure,
       })
       : null
@@ -1875,10 +1960,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     const members = await listManagedMembers(db, row.id)
 
+    const readEligible = parseMemberReadEligibleCreate(body)
+    const replicaClassParsed = parseReplicaClassCreate(body)
+    if (!replicaClassParsed.ok) {
+      return c.json({ error: replicaClassParsed.error }, replicaClassParsed.status)
+    }
+    const replicaClass = replicaClassParsed.replicaClass
+
     const placement = await resolveReplicaPlacement(c, db, {
       primaryServerId,
       serverId,
       members,
+      replicaClass,
     })
     if (placement instanceof Response) return placement
 
@@ -1891,11 +1984,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: USERNAME_IN_USE_ERROR }, 409)
     }
 
-    const readEligible = parseMemberReadEligibleCreate(body)
     const member = await insertManagedReplicaMember(db, {
       managedId: row.id,
       serverId,
       ordinal: placement.ordinal,
+      replicaClass,
       readEligible,
       replicationTransport: placement.toPrimaryTransport,
     })
@@ -1967,17 +2060,25 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
-    const readEligibleParsed = parseMemberReadEligiblePatch(body)
-    if (!readEligibleParsed.ok) {
-      return c.json({ error: readEligibleParsed.error }, readEligibleParsed.status)
+    const patchParsed = parseMemberPatch(body)
+    if (!patchParsed.ok) {
+      return c.json({ error: patchParsed.error }, patchParsed.status)
     }
 
-    const updated = await updateManagedMemberReadEligible(
+    const classPatched = await applyMemberReplicaClassPatch(c, db, {
+      managedServerId: row.serverId,
+      member,
+      replicaClass: patchParsed.replicaClass,
+    })
+    if (classPatched) return classPatched
+
+    const readPatched = await applyMemberReadEligiblePatch(
+      c,
       db,
       memberId,
-      readEligibleParsed.readEligible,
+      patchParsed.readEligible,
     )
-    if (!updated) return c.json({ error: 'Not found' }, 404)
+    if (readPatched) return readPatched
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
@@ -2123,6 +2224,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (body instanceof Response) return body
     const force = parsePromoteForce(body)
 
+    const classError = evaluatePromoteReplicaClass(member.replicaClass, force)
+    if (classError) {
+      return c.json({ error: classError.error }, classError.status)
+    }
+
     const lagGate = assertManagedPromoteLagAllowed(c, member, force)
     if (lagGate) return lagGate
 
@@ -2216,7 +2322,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         if (parsed) {
           listener = await resolveManagedConnectionListener(db, {
             serverId: row.serverId,
-            protocolPort: spec.defaultPort,
+            protocolPort: managedIngressPortForEngine(spec.engine, spec.defaultPort),
             exposure: parsed.settings.exposure,
           })
         }

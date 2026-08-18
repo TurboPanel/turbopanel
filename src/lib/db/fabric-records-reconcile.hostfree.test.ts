@@ -3,7 +3,7 @@
  * and membership / org compose-network purge (no Postgres).
  */
 
-import { assertEquals, assertNotEquals } from "jsr:@std/assert";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import type { Db } from "../../db.ts";
 import { composeNetworkHostName } from "../fabric/cidr.ts";
 import {
@@ -11,12 +11,12 @@ import {
   buildFabricReconcilePayloadFromSnapshot,
   composeNetworkNamesByServer,
   deleteServerFabricMembership,
+  type FabricReconcileSnapshot,
+  type FabricRecord,
   hashFabricReconcileDesired,
   listEnvironmentComposeNetworks,
   loadFabricReconcileSnapshot,
   purgeOrganizationComposeNetworks,
-  type FabricRecord,
-  type FabricReconcileSnapshot,
   type RelayRecord,
 } from "./fabric-records.ts";
 import { ip, network, relay, segment, server } from "./schema.ts";
@@ -40,6 +40,52 @@ const FABRIC: FabricRecord = {
 
 const WG_KEY_A = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const WG_KEY_B = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+const WG_KEY_C = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=";
+
+function emptyCaches(): FabricReconcileSnapshot["caches"] {
+  return {
+    publicAddressByServer: new Map(),
+    reportedByServer: new Map(),
+    datacenterMembershipsByServer: new Map(),
+    addressPreferenceByDatacenter: new Map(),
+    natEndpointByPair: new Map(),
+    failedPathKindsByPair: new Map(),
+  };
+}
+
+function relayRecord(
+  overrides: Partial<RelayRecord> & Pick<
+    RelayRecord,
+    "id" | "serverId" | "address" | "publicKey" | "prefix"
+  >,
+): RelayRecord {
+  return {
+    fabricId: FABRIC.id,
+    role: "member",
+    keepalive: null,
+    endpointAddress: null,
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+    ...overrides,
+  };
+}
+
+function membershipPin(
+  serverId: string,
+  datacenterId: string,
+  address: string,
+) {
+  return {
+    ipId: `ip-${serverId}-${datacenterId}`,
+    serverId,
+    datacenterId,
+    networkId: `net-${datacenterId}`,
+    address,
+    family: 4 as const,
+  };
+}
 
 function thenableRows<T>(rows: T[]) {
   const promise = Promise.resolve(rows);
@@ -112,7 +158,10 @@ function extractWhereFilters(condition: unknown): Record<string, unknown> {
   return filters;
 }
 
-function matchesWhere(row: Record<string, unknown>, condition: unknown): boolean {
+function matchesWhere(
+  row: Record<string, unknown>,
+  condition: unknown,
+): boolean {
   const filters = extractWhereFilters(condition);
   for (const [column, expected] of Object.entries(filters)) {
     const field = COLUMN_TO_FIELD[column] ?? column;
@@ -151,6 +200,7 @@ type RelayRow = {
   prefix: string;
   advertisedCidrs: string[];
   metadata: unknown;
+  options?: unknown;
   presharedKey?: string | null;
 };
 type NetworkRow = {
@@ -332,7 +382,9 @@ function createReconcileDb(opts: {
             if (table === network) {
               if (keys.length === 1 && keys[0] === "id") {
                 return thenableRows(
-                  filterRows(networks, condition).map((row) => ({ id: row.id })),
+                  filterRows(networks, condition).map((row) => ({
+                    id: row.id,
+                  })),
                 );
               }
               return thenableRows(filterRows(networks, condition));
@@ -387,12 +439,16 @@ function createReconcileDb(opts: {
           segments.push(...next);
         }
         if (table === relay) {
-          const next = relays.filter((row) => !relayMatchesDelete(row, condition));
+          const next = relays.filter((row) =>
+            !relayMatchesDelete(row, condition)
+          );
           relays.length = 0;
           relays.push(...next);
         }
         if (table === network) {
-          const next = networks.filter((row) => !networkMatchesDelete(row, condition));
+          const next = networks.filter((row) =>
+            !networkMatchesDelete(row, condition)
+          );
           networks.length = 0;
           networks.push(...next);
         }
@@ -454,7 +510,13 @@ test("loadFabricReconcileSnapshot batches relays PSK envelopes segments and cach
   const db = createReconcileDb({
     relays: sampleRelays(),
     servers: [
-      { id: "srv-1", organizationId: ORG, metadata: { ips: [{ address: "198.51.100.1", version: 4, scope: "public" }] } },
+      {
+        id: "srv-1",
+        organizationId: ORG,
+        metadata: {
+          ips: [{ address: "198.51.100.1", version: 4, scope: "public" }],
+        },
+      },
       { id: "srv-2", organizationId: ORG },
     ],
     ips: [{
@@ -479,13 +541,21 @@ test("loadFabricReconcileSnapshot batches relays PSK envelopes segments and cach
   assertEquals(snapshot.sealedPresharedKeyByRelayId.get("r1"), "seal-a");
   assertEquals(snapshot.sealedPresharedKeyByRelayId.get("r2"), null);
   assertEquals(snapshot.segmentsByServer.get("srv-1")?.length, 1);
-  assertEquals(snapshot.segmentsByServer.get("srv-1")?.[0]?.name, "tpn_net-compose-a");
-  assertEquals(snapshot.segmentsByServer.get("srv-1")?.[0]?.gateway, "10.192.10.1");
+  assertEquals(
+    snapshot.segmentsByServer.get("srv-1")?.[0]?.name,
+    "tpn_net-compose-a",
+  );
+  assertEquals(
+    snapshot.segmentsByServer.get("srv-1")?.[0]?.gateway,
+    "10.192.10.1",
+  );
   assertEquals(snapshot.segmentsByServer.get("srv-2")?.length, 0);
   assertEquals(
     snapshot.caches.publicAddressByServer.get("srv-2"),
     "203.0.113.99",
   );
+  assertEquals(snapshot.caches.datacenterMembershipsByServer.size, 0);
+  assertEquals(snapshot.caches.addressPreferenceByDatacenter.size, 0);
   assertEquals(
     snapshot.caches.reportedByServer.get("srv-1")?.map((ip) => ip.address),
     ["198.51.100.1"],
@@ -495,6 +565,9 @@ test("loadFabricReconcileSnapshot batches relays PSK envelopes segments and cach
     "10.200.0.0/16",
   ]);
   assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.has("r3"), false);
+  assertEquals(snapshot.policy, { allowRelay: false });
+  assertEquals(snapshot.relays[0]?.allowRelay, null);
+  assertEquals(snapshot.relays[0]?.preferredGatewayIds, []);
 });
 
 test("loadFabricReconcileSnapshot returns empty maps when fabric has no relays", async () => {
@@ -510,14 +583,11 @@ test("buildFabricReconcilePayloadFromSnapshot returns null for unknown server", 
   const snapshot: FabricReconcileSnapshot = {
     fabric: FABRIC,
     relays: [],
-    caches: {
-      datacenterAddressByServer: new Map(),
-      publicAddressByServer: new Map(),
-      reportedByServer: new Map(),
-    },
+    caches: emptyCaches(),
     sealedPresharedKeyByRelayId: new Map(),
     segmentsByServer: new Map(),
     derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
   };
   const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: "missing",
@@ -538,18 +608,17 @@ test("buildFabricReconcilePayloadFromSnapshot returns null when relay address is
     prefix: "10.192.0.0/16",
     advertisedCidrs: [],
     metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
   }];
   const snapshot: FabricReconcileSnapshot = {
     fabric: FABRIC,
     relays,
-    caches: {
-      datacenterAddressByServer: new Map(),
-      publicAddressByServer: new Map(),
-      reportedByServer: new Map(),
-    },
+    caches: emptyCaches(),
     sealedPresharedKeyByRelayId: new Map(),
     segmentsByServer: new Map([["srv-bad", []]]),
     derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
   };
   const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: "srv-bad",
@@ -570,15 +639,13 @@ test("buildFabricReconcilePayloadFromSnapshot includes compose networks and mtu 
     prefix: "10.192.0.0/16",
     advertisedCidrs: [],
     metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
   }];
   const snapshot: FabricReconcileSnapshot = {
     fabric: FABRIC,
     relays,
-    caches: {
-      datacenterAddressByServer: new Map(),
-      publicAddressByServer: new Map(),
-      reportedByServer: new Map(),
-    },
+    caches: emptyCaches(),
     sealedPresharedKeyByRelayId: new Map([["r1", null]]),
     segmentsByServer: new Map([
       ["srv-1", [{
@@ -588,6 +655,7 @@ test("buildFabricReconcilePayloadFromSnapshot includes compose networks and mtu 
       }]],
     ]),
     derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
   };
   const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: "srv-1",
@@ -617,6 +685,8 @@ test("buildFabricReconcilePayloadFromSnapshot omits networks and skips peers wit
       prefix: "10.192.0.0/16",
       advertisedCidrs: [],
       metadata: {},
+      allowRelay: null,
+      preferredGatewayIds: [],
     },
     {
       id: "r2",
@@ -630,19 +700,18 @@ test("buildFabricReconcilePayloadFromSnapshot omits networks and skips peers wit
       prefix: "10.193.0.0/16",
       advertisedCidrs: [],
       metadata: {},
+      allowRelay: null,
+      preferredGatewayIds: [],
     },
   ];
   const snapshot: FabricReconcileSnapshot = {
     fabric: { ...FABRIC, options: null },
     relays,
-    caches: {
-      datacenterAddressByServer: new Map(),
-      publicAddressByServer: new Map(),
-      reportedByServer: new Map(),
-    },
+    caches: emptyCaches(),
     sealedPresharedKeyByRelayId: new Map([["r1", null], ["r2", null]]),
     segmentsByServer: new Map([["srv-1", []], ["srv-2", []]]),
     derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
   };
   const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: "srv-1",
@@ -667,6 +736,8 @@ test("buildFabricReconcilePayloadFromSnapshot hash reflects peer keepalive", asy
     prefix: "10.193.0.0/16",
     advertisedCidrs: [],
     metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
   };
   const selfRelay: RelayRecord = {
     id: "r1",
@@ -680,12 +751,10 @@ test("buildFabricReconcilePayloadFromSnapshot hash reflects peer keepalive", asy
     prefix: "10.192.0.0/16",
     advertisedCidrs: [],
     metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
   };
-  const caches = {
-    datacenterAddressByServer: new Map<string, string>(),
-    publicAddressByServer: new Map<string, string>(),
-    reportedByServer: new Map(),
-  };
+  const caches = emptyCaches();
   const withKeepalive = await buildFabricReconcilePayloadFromSnapshot({
     fabric: FABRIC,
     relays: [selfRelay, { ...baseRelay, keepalive: 25 }],
@@ -693,6 +762,7 @@ test("buildFabricReconcilePayloadFromSnapshot hash reflects peer keepalive", asy
     sealedPresharedKeyByRelayId: new Map([["r1", null], ["r2", null]]),
     segmentsByServer: new Map([["srv-1", []], ["srv-2", []]]),
     derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
   }, { serverId: "srv-1" });
   const withoutKeepalive = await buildFabricReconcilePayloadFromSnapshot({
     fabric: FABRIC,
@@ -701,6 +771,7 @@ test("buildFabricReconcilePayloadFromSnapshot hash reflects peer keepalive", asy
     sealedPresharedKeyByRelayId: new Map([["r1", null], ["r2", null]]),
     segmentsByServer: new Map([["srv-1", []], ["srv-2", []]]),
     derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
   }, { serverId: "srv-1" });
   if (!withKeepalive || !withoutKeepalive) {
     throw new TypeError("expected reconcile payloads");
@@ -708,6 +779,236 @@ test("buildFabricReconcilePayloadFromSnapshot hash reflects peer keepalive", asy
   assertNotEquals(withKeepalive.desiredHash, withoutKeepalive.desiredHash);
   if (!withKeepalive.payload.enabled) throw new TypeError("expected enabled");
   assertEquals(withKeepalive.payload.peers[0]?.keepalive, 25);
+});
+
+test("buildFabricReconcilePayloadFromSnapshot omits unreachable peers and still builds", async () => {
+  const selfRelay: RelayRecord = {
+    id: "r1",
+    fabricId: FABRIC.id,
+    serverId: "srv-1",
+    address: "10.250.0.1",
+    role: "member",
+    keepalive: null,
+    endpointAddress: "203.0.113.10",
+    publicKey: WG_KEY_A,
+    prefix: "10.192.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+  };
+  const reachable: RelayRecord = {
+    id: "r2",
+    fabricId: FABRIC.id,
+    serverId: "srv-2",
+    address: "10.250.0.2",
+    role: "member",
+    keepalive: null,
+    endpointAddress: "203.0.113.11",
+    publicKey: WG_KEY_B,
+    prefix: "10.193.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+  };
+  const unreachable: RelayRecord = {
+    id: "r3",
+    fabricId: FABRIC.id,
+    serverId: "srv-3",
+    address: "10.250.0.3",
+    role: "member",
+    keepalive: null,
+    endpointAddress: null,
+    publicKey: WG_KEY_C,
+    prefix: "10.194.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+  };
+  const built = await buildFabricReconcilePayloadFromSnapshot({
+    fabric: FABRIC,
+    relays: [selfRelay, reachable, unreachable],
+    caches: emptyCaches(),
+    sealedPresharedKeyByRelayId: new Map([
+      ["r1", null],
+      ["r2", null],
+      ["r3", null],
+    ]),
+    segmentsByServer: new Map([
+      ["srv-1", []],
+      ["srv-2", []],
+      ["srv-3", []],
+    ]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
+  }, { serverId: "srv-1" });
+  if (!built?.payload.enabled) throw new TypeError("expected enabled payload");
+  assertEquals(built.payload.peers.length, 1);
+  assertEquals(built.payload.peers[0]?.publicKey, WG_KEY_B);
+  assertEquals(built.unreachablePeers, [{ serverId: "srv-3" }]);
+});
+
+test("buildFabricReconcilePayloadFromSnapshot hash reflects peer pathKind", async () => {
+  const selfRelay: RelayRecord = {
+    id: "r1",
+    fabricId: FABRIC.id,
+    serverId: "srv-1",
+    address: "10.250.0.1",
+    role: "member",
+    keepalive: null,
+    endpointAddress: "203.0.113.10",
+    publicKey: WG_KEY_A,
+    prefix: "10.192.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+  };
+  const other: RelayRecord = {
+    id: "r2",
+    fabricId: FABRIC.id,
+    serverId: "srv-2",
+    address: "10.250.0.2",
+    role: "member",
+    keepalive: null,
+    endpointAddress: null,
+    publicKey: WG_KEY_B,
+    prefix: "10.193.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+  };
+  const lanCaches = emptyCaches();
+  lanCaches.datacenterMembershipsByServer.set("srv-1", [{
+    ipId: "ip-1",
+    serverId: "srv-1",
+    datacenterId: "dc-a",
+    networkId: "net-a",
+    address: "10.0.0.1",
+    family: 4,
+  }]);
+  lanCaches.datacenterMembershipsByServer.set("srv-2", [{
+    ipId: "ip-2",
+    serverId: "srv-2",
+    datacenterId: "dc-a",
+    networkId: "net-a",
+    address: "203.0.113.11",
+    family: 4,
+  }]);
+  lanCaches.addressPreferenceByDatacenter.set("dc-a", "ipv4");
+  lanCaches.publicAddressByServer.set("srv-2", "198.51.100.11");
+  const publicCaches = emptyCaches();
+  publicCaches.publicAddressByServer.set("srv-2", "203.0.113.11");
+  const snapshotBase = {
+    fabric: FABRIC,
+    relays: [selfRelay, other],
+    sealedPresharedKeyByRelayId: new Map([["r1", null], ["r2", null]]),
+    segmentsByServer: new Map([["srv-1", []], ["srv-2", []]]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
+  };
+  const lanBuilt = await buildFabricReconcilePayloadFromSnapshot({
+    ...snapshotBase,
+    caches: lanCaches,
+  }, { serverId: "srv-1" });
+  const publicBuilt = await buildFabricReconcilePayloadFromSnapshot({
+    ...snapshotBase,
+    caches: publicCaches,
+  }, { serverId: "srv-1" });
+  if (!lanBuilt?.payload.enabled || !publicBuilt?.payload.enabled) {
+    throw new TypeError("expected enabled payloads");
+  }
+  assertEquals(lanBuilt.payload.peers[0]?.endpoint, "203.0.113.11:51830");
+  assertEquals(publicBuilt.payload.peers[0]?.endpoint, "203.0.113.11:51830");
+  assertNotEquals(lanBuilt.desiredHash, publicBuilt.desiredHash);
+});
+
+test("buildFabricReconcilePayloadFromSnapshot omits a reported private IPv4 as a public path", async () => {
+  const selfRelay: RelayRecord = {
+    id: "r1",
+    fabricId: FABRIC.id,
+    serverId: "srv-1",
+    address: "10.250.0.1",
+    role: "member",
+    keepalive: null,
+    endpointAddress: "203.0.113.10",
+    publicKey: WG_KEY_A,
+    prefix: "10.192.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+  };
+  const other: RelayRecord = {
+    id: "r2",
+    fabricId: FABRIC.id,
+    serverId: "srv-2",
+    address: "10.250.0.2",
+    role: "member",
+    keepalive: null,
+    endpointAddress: null,
+    publicKey: WG_KEY_B,
+    prefix: "10.193.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+  };
+  const caches = emptyCaches();
+  caches.datacenterMembershipsByServer.set("srv-1", [{
+    ipId: "ip-1",
+    serverId: "srv-1",
+    datacenterId: "dc-a",
+    networkId: "net-a",
+    address: "10.0.0.1",
+    family: 4,
+  }]);
+  caches.datacenterMembershipsByServer.set("srv-2", [{
+    ipId: "ip-2",
+    serverId: "srv-2",
+    datacenterId: "dc-b",
+    networkId: "net-b",
+    address: "10.8.0.5",
+    family: 4,
+  }]);
+  caches.reportedByServer.set("srv-2", [
+    { address: "10.8.0.5", version: 4, scope: "private" },
+  ]);
+  const snapshotBase = {
+    fabric: FABRIC,
+    relays: [selfRelay, other],
+    sealedPresharedKeyByRelayId: new Map([["r1", null], ["r2", null]]),
+    segmentsByServer: new Map([["srv-1", []], ["srv-2", []]]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
+  };
+  const privateOnly = await buildFabricReconcilePayloadFromSnapshot({
+    ...snapshotBase,
+    caches,
+  }, { serverId: "srv-1" });
+  if (!privateOnly?.payload.enabled) {
+    throw new TypeError("expected enabled payload");
+  }
+  assertEquals(privateOnly.payload.peers, []);
+  assertEquals(privateOnly.unreachablePeers, [{ serverId: "srv-2" }]);
+
+  caches.reportedByServer.set("srv-2", [
+    { address: "10.8.0.5", version: 4, scope: "private" },
+    { address: "203.0.113.9", version: 4, scope: "public" },
+  ]);
+  const withPublic = await buildFabricReconcilePayloadFromSnapshot({
+    ...snapshotBase,
+    caches,
+  }, { serverId: "srv-1" });
+  if (!withPublic?.payload.enabled) {
+    throw new TypeError("expected enabled payload");
+  }
+  assertEquals(withPublic.payload.peers.length, 1);
+  assertEquals(withPublic.payload.peers[0]?.endpoint, "203.0.113.9:51830");
+  assertEquals(withPublic.unreachablePeers, []);
 });
 
 test("buildFabricReconcilePayload loads snapshot from db", async () => {
@@ -831,7 +1132,9 @@ test("loadFabricReconcileSnapshot derives gateway IPv4 subnets into peer allowed
     nextSnapshot,
     { serverId: "srv-1" },
   );
-  if (!nextBuilt) throw new TypeError("expected reconcile payload after subnet add");
+  if (!nextBuilt) {
+    throw new TypeError("expected reconcile payload after subnet add");
+  }
   assertNotEquals(built.desiredHash, nextBuilt.desiredHash);
   if (!nextBuilt.payload.enabled) {
     throw new TypeError("expected enabled payload after subnet add");
@@ -935,6 +1238,228 @@ test("loadFabricReconcileSnapshot assigns a shared subnet to the public-keyed ga
   assertEquals(keyedPeer.allowedIPs.includes("203.0.113.0/24"), true);
 });
 
+test("buildFabricReconcilePayloadFromSnapshot routes a destination through one gateway stanza", async () => {
+  const selfRelay = relayRecord({
+    id: "r1",
+    serverId: "srv-1",
+    address: "10.250.0.1",
+    endpointAddress: "203.0.113.10",
+    publicKey: WG_KEY_A,
+    prefix: "10.192.0.0/16",
+  });
+  const gateway = relayRecord({
+    id: "r-gw",
+    serverId: "srv-gw",
+    address: "10.250.0.10",
+    role: "gateway",
+    publicKey: WG_KEY_B,
+    prefix: "10.200.0.0/16",
+  });
+  const routed = relayRecord({
+    id: "r2",
+    serverId: "srv-2",
+    address: "10.250.0.2",
+    publicKey: WG_KEY_C,
+    prefix: "10.193.0.0/16",
+  });
+  const caches = emptyCaches();
+  caches.datacenterMembershipsByServer.set("srv-1", [
+    membershipPin("srv-1", "dc-src", "10.0.0.1"),
+  ]);
+  caches.datacenterMembershipsByServer.set("srv-gw", [
+    membershipPin("srv-gw", "dc-dst", "10.0.1.2"),
+  ]);
+  caches.datacenterMembershipsByServer.set("srv-2", [
+    membershipPin("srv-2", "dc-dst", "10.0.1.1"),
+  ]);
+  caches.addressPreferenceByDatacenter.set("dc-src", "ipv4");
+  caches.addressPreferenceByDatacenter.set("dc-dst", "ipv4");
+  caches.publicAddressByServer.set("srv-gw", "203.0.113.20");
+  const built = await buildFabricReconcilePayloadFromSnapshot({
+    fabric: FABRIC,
+    relays: [selfRelay, gateway, routed],
+    caches,
+    sealedPresharedKeyByRelayId: new Map([
+      ["r1", null],
+      ["r-gw", null],
+      ["r2", null],
+    ]),
+    segmentsByServer: new Map([
+      ["srv-1", []],
+      ["srv-gw", []],
+      ["srv-2", []],
+    ]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
+  }, { serverId: "srv-1" });
+  if (!built?.payload.enabled) throw new TypeError("expected enabled payload");
+  assertEquals(built.payload.peers.length, 1);
+  assertEquals(built.payload.peers[0]?.publicKey, WG_KEY_B);
+  assertEquals(built.payload.peers[0]?.pathKind, "gateway");
+  assertEquals(built.payload.peers[0]?.viaServerId, "srv-gw");
+  const allowed = built.payload.peers[0]?.allowedIPs ?? [];
+  assertEquals(allowed.includes("10.250.0.10/32"), true);
+  assertEquals(allowed.includes("10.200.0.0/16"), true);
+  assertEquals(allowed.includes("10.250.0.2/32"), true);
+  assertEquals(allowed.includes("10.193.0.0/16"), true);
+  const owned = new Set<string>();
+  for (const peer of built.payload.peers) {
+    for (const cidr of peer.allowedIPs) {
+      assertEquals(owned.has(cidr), false);
+      owned.add(cidr);
+    }
+  }
+  assertEquals(built.gatewayRoutedPeers, [{
+    serverId: "srv-2",
+    viaServerId: "srv-gw",
+  }]);
+  assertEquals(built.unreachablePeers, []);
+  assertEquals("gateway" in built.payload, false);
+});
+
+test("buildFabricReconcilePayloadFromSnapshot hash changes when the next hop changes", async () => {
+  const selfRelay = relayRecord({
+    id: "r1",
+    serverId: "srv-1",
+    address: "10.250.0.1",
+    endpointAddress: "203.0.113.10",
+    publicKey: WG_KEY_A,
+    prefix: "10.192.0.0/16",
+  });
+  const gwFirst = relayRecord({
+    id: "r-aaa",
+    serverId: "srv-gw-a",
+    address: "10.250.0.10",
+    role: "gateway",
+    publicKey: WG_KEY_B,
+    prefix: "10.200.0.0/16",
+  });
+  const gwPreferred = relayRecord({
+    id: "r-zzz",
+    serverId: "srv-gw-z",
+    address: "10.250.0.11",
+    role: "gateway",
+    publicKey: WG_KEY_C,
+    prefix: "10.201.0.0/16",
+  });
+  const routed = relayRecord({
+    id: "r2",
+    serverId: "srv-2",
+    address: "10.250.0.2",
+    publicKey: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+    prefix: "10.193.0.0/16",
+  });
+  const caches = emptyCaches();
+  caches.datacenterMembershipsByServer.set("srv-1", [
+    membershipPin("srv-1", "dc-src", "10.0.0.1"),
+  ]);
+  caches.datacenterMembershipsByServer.set("srv-gw-a", [
+    membershipPin("srv-gw-a", "dc-dst", "10.0.1.2"),
+  ]);
+  caches.datacenterMembershipsByServer.set("srv-gw-z", [
+    membershipPin("srv-gw-z", "dc-dst", "10.0.1.3"),
+  ]);
+  caches.datacenterMembershipsByServer.set("srv-2", [
+    membershipPin("srv-2", "dc-dst", "10.0.1.1"),
+  ]);
+  caches.addressPreferenceByDatacenter.set("dc-src", "ipv4");
+  caches.addressPreferenceByDatacenter.set("dc-dst", "ipv4");
+  caches.publicAddressByServer.set("srv-gw-a", "203.0.113.20");
+  caches.publicAddressByServer.set("srv-gw-z", "203.0.113.21");
+  const snapshotBase = {
+    fabric: FABRIC,
+    relays: [selfRelay, gwFirst, gwPreferred, routed],
+    caches,
+    sealedPresharedKeyByRelayId: new Map([
+      ["r1", null],
+      ["r-aaa", null],
+      ["r-zzz", null],
+      ["r2", null],
+    ]),
+    segmentsByServer: new Map([
+      ["srv-1", []],
+      ["srv-gw-a", []],
+      ["srv-gw-z", []],
+      ["srv-2", []],
+    ]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
+  };
+  const defaultHop = await buildFabricReconcilePayloadFromSnapshot(
+    snapshotBase,
+    { serverId: "srv-1" },
+  );
+  const preferredHop = await buildFabricReconcilePayloadFromSnapshot({
+    ...snapshotBase,
+    relays: [
+      { ...selfRelay, preferredGatewayIds: ["srv-gw-z"] },
+      gwFirst,
+      gwPreferred,
+      routed,
+    ],
+  }, { serverId: "srv-1" });
+  if (!defaultHop?.payload.enabled || !preferredHop?.payload.enabled) {
+    throw new TypeError("expected enabled payloads");
+  }
+  const defaultVia = defaultHop.payload.peers.find((peer) =>
+    peer.pathKind === "gateway"
+  )?.viaServerId;
+  const preferredVia = preferredHop.payload.peers.find((peer) =>
+    peer.pathKind === "gateway"
+  )?.viaServerId;
+  assertEquals(defaultVia, "srv-gw-a");
+  assertEquals(preferredVia, "srv-gw-z");
+  assertNotEquals(defaultHop.desiredHash, preferredHop.desiredHash);
+});
+
+test("buildFabricReconcilePayloadFromSnapshot still builds when one pair is unreachable", async () => {
+  const selfRelay = relayRecord({
+    id: "r1",
+    serverId: "srv-1",
+    address: "10.250.0.1",
+    endpointAddress: "203.0.113.10",
+    publicKey: WG_KEY_A,
+    prefix: "10.192.0.0/16",
+  });
+  const reachable = relayRecord({
+    id: "r2",
+    serverId: "srv-2",
+    address: "10.250.0.2",
+    endpointAddress: "203.0.113.11",
+    publicKey: WG_KEY_B,
+    prefix: "10.193.0.0/16",
+  });
+  const unreachable = relayRecord({
+    id: "r3",
+    serverId: "srv-3",
+    address: "10.250.0.3",
+    publicKey: WG_KEY_C,
+    prefix: "10.194.0.0/16",
+  });
+  const built = await buildFabricReconcilePayloadFromSnapshot({
+    fabric: FABRIC,
+    relays: [selfRelay, reachable, unreachable],
+    caches: emptyCaches(),
+    sealedPresharedKeyByRelayId: new Map([
+      ["r1", null],
+      ["r2", null],
+      ["r3", null],
+    ]),
+    segmentsByServer: new Map([
+      ["srv-1", []],
+      ["srv-2", []],
+      ["srv-3", []],
+    ]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
+    policy: { allowRelay: false },
+  }, { serverId: "srv-1" });
+  if (!built?.payload.enabled) throw new TypeError("expected enabled payload");
+  assertEquals(built.payload.peers.length, 1);
+  assertEquals(built.payload.peers[0]?.publicKey, WG_KEY_B);
+  assertEquals(built.unreachablePeers, [{ serverId: "srv-3" }]);
+  assertEquals(built.gatewayRoutedPeers, []);
+});
+
 test("hashFabricReconcileDesired differs for distinct peer lists", async () => {
   const base = {
     enabled: true,
@@ -946,11 +1471,19 @@ test("hashFabricReconcileDesired differs for distinct peer lists", async () => {
   };
   const a = await hashFabricReconcileDesired({
     ...base,
-    peers: [{ publicKey: "pk-a", allowedIPs: ["10.0.0.1/32"], endpoint: "1.2.3.4:51821" }],
+    peers: [{
+      publicKey: "pk-a",
+      allowedIPs: ["10.0.0.1/32"],
+      endpoint: "1.2.3.4:51821",
+    }],
   });
   const b = await hashFabricReconcileDesired({
     ...base,
-    peers: [{ publicKey: "pk-b", allowedIPs: ["10.0.0.1/32"], endpoint: "1.2.3.4:51821" }],
+    peers: [{
+      publicKey: "pk-b",
+      allowedIPs: ["10.0.0.1/32"],
+      endpoint: "1.2.3.4:51821",
+    }],
   });
   assertNotEquals(a, b);
 });

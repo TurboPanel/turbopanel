@@ -13,7 +13,12 @@ import {
   type DatacenterMembershipRow,
 } from './datacenter-membership.ts'
 
-export type PrivateEndpointTransport = 'local' | 'datacenter' | 'fabric'
+export type PrivateEndpointPurpose =
+  | 'failover-replication'
+  | 'read-replication'
+  | 'client-backend'
+
+export type PrivateEndpointTransport = 'local' | 'datacenter' | 'fabric' | 'public'
 
 export type ResolvedPrivateEndpoint = {
   address: string
@@ -75,6 +80,66 @@ export async function loadServerDatacenterAddress(
   return inetAddressToString(row?.address) ?? null
 }
 
+/**
+ * Newest/oldest `ip.scope='public'` address for a server (oldest first).
+ *
+ * Future: when no public `ip` row exists, a later phase may fall back to
+ * daemon-reported public addresses from hello/heartbeat.
+ */
+export async function loadServerPublicAddress(
+  db: Db,
+  serverId: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ address: ip.address })
+    .from(ip)
+    .where(
+      and(
+        eq(ip.serverId, serverId),
+        eq(ip.scope, 'public'),
+      ),
+    )
+    .orderBy(asc(ip.createdAt))
+    .limit(1)
+  return inetAddressToString(row?.address) ?? null
+}
+
+/**
+ * Oldest `ip.scope='public'` address per server (one `inArray` select).
+ *
+ * Future: when no public `ip` row exists, a later phase may fall back to
+ * daemon-reported public addresses from hello/heartbeat.
+ */
+export async function loadPublicAddressesForServers(
+  db: Db,
+  serverIds: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (serverIds.length === 0) return out
+
+  const rows = await db
+    .select({
+      serverId: ip.serverId,
+      address: ip.address,
+    })
+    .from(ip)
+    .where(
+      and(
+        eq(ip.scope, 'public'),
+        isNotNull(ip.serverId),
+        inArray(ip.serverId, serverIds),
+      ),
+    )
+    .orderBy(asc(ip.createdAt))
+
+  for (const row of rows) {
+    if (!row.serverId || out.has(row.serverId)) continue
+    const address = inetAddressToString(row.address)
+    if (address) out.set(row.serverId, address)
+  }
+  return out
+}
+
 type RelayJoinRow = {
   relayId: string
   serverId: string
@@ -130,7 +195,11 @@ async function loadFabricRelayRows(
   return out
 }
 
-function familiesInDatacenter(
+/**
+ * Address families present for a server in one datacenter.
+ * Shared with TurboFabric path planning (`planRelayPath`).
+ */
+export function familiesInDatacenter(
   pins: readonly DatacenterMembershipRow[],
   datacenterId: string,
 ): Set<4 | 6> {
@@ -141,14 +210,22 @@ function familiesInDatacenter(
   return families
 }
 
-function preferredFamilyOrder(
+/**
+ * Datacenter address-family preference order (RFC 6724 default IPv6-first).
+ * Shared with TurboFabric path planning (`planRelayPath`).
+ */
+export function preferredFamilyOrder(
   preference: DatacenterAddressPreference,
 ): Array<4 | 6> {
   if (preference === 'ipv4') return [4, 6]
   return [6, 4]
 }
 
-function pinAddressForDatacenter(
+/**
+ * Family-intersected pin address for `toPins` in a shared datacenter.
+ * Shared with TurboFabric path planning (`planRelayPath`).
+ */
+export function pinAddressForDatacenter(
   fromPins: readonly DatacenterMembershipRow[],
   toPins: readonly DatacenterMembershipRow[],
   datacenterId: string,
@@ -170,43 +247,23 @@ function pinAddressForDatacenter(
   return null
 }
 
-/**
- * Ordered ladder: local → fabric → datacenter.
- * Same-host loopback first; a shared relay mesh takes the cross-host private
- * path; a shared datacenter membership is the fallback when no fabric path exists.
- */
-function resolveOneFromCaches(params: {
+function unavailablePath(
+  fromServerId: string,
+  toServerId: string,
+): PrivateEndpointError {
+  return {
+    kind: 'private_path_unavailable',
+    fromServerId,
+    toServerId,
+  }
+}
+
+function resolveDatacenterFromCaches(params: {
   fromServerId: string
   toServerId: string
   membershipsByServer: Map<string, DatacenterMembershipRow[]>
-  relays: RelayJoinRow[]
   preferencesByDatacenter: Map<string, DatacenterAddressPreference>
-}): ResolvedPrivateEndpoint | PrivateEndpointError {
-  if (params.fromServerId === params.toServerId) {
-    return { address: '127.0.0.1', transport: 'local' }
-  }
-
-  const fromFabricIds = new Set(
-    params.relays
-      .filter((row) => row.serverId === params.fromServerId)
-      .map((row) => row.fabricId),
-  )
-  const sharedOnTo = params.relays
-    .filter(
-      (row) =>
-        row.serverId === params.toServerId && fromFabricIds.has(row.fabricId),
-    )
-    .sort((a, b) => a.fabricCreatedAt.localeCompare(b.fabricCreatedAt))
-
-  const chosen = sharedOnTo[0]
-  if (chosen) {
-    return {
-      address: chosen.address,
-      transport: 'fabric',
-      fabricId: chosen.fabricId,
-    }
-  }
-
+}): ResolvedPrivateEndpoint | PrivateEndpointError | null {
   const fromPins = params.membershipsByServer.get(params.fromServerId) ?? []
   const toPins = params.membershipsByServer.get(params.toServerId) ?? []
   const shared = sharedDatacenterIds(fromPins, toPins)
@@ -236,44 +293,114 @@ function resolveOneFromCaches(params: {
       datacenterId: mismatchDatacenterId,
     }
   }
+  return null
+}
 
+function resolveFabricFromCaches(params: {
+  fromServerId: string
+  toServerId: string
+  relays: RelayJoinRow[]
+}): ResolvedPrivateEndpoint | null {
+  const fromFabricIds = new Set(
+    params.relays
+      .filter((row) => row.serverId === params.fromServerId)
+      .map((row) => row.fabricId),
+  )
+  const sharedOnTo = params.relays
+    .filter(
+      (row) =>
+        row.serverId === params.toServerId && fromFabricIds.has(row.fabricId),
+    )
+    .sort((a, b) => a.fabricCreatedAt.localeCompare(b.fabricCreatedAt))
+
+  const chosen = sharedOnTo[0]
+  if (!chosen) return null
   return {
-    kind: 'private_path_unavailable',
-    fromServerId: params.fromServerId,
-    toServerId: params.toServerId,
+    address: chosen.address,
+    transport: 'fabric',
+    fabricId: chosen.fabricId,
   }
 }
 
 /**
+ * Purpose-aware ladder. Same-host loopback is always first. Cross-host order
+ * is inverted from the former fabric-first path: datacenter (LAN) before
+ * fabric, then public.
+ *
+ * - `failover-replication`: `local` → `datacenter` only (never fabric/public).
+ * - `read-replication` / `client-backend`: `local` → `datacenter` → `fabric`
+ *   → `public`.
+ *
+ * A shared-datacenter family mismatch is returned before fabric/public for
+ * every purpose.
+ */
+function resolveOneFromCaches(params: {
+  fromServerId: string
+  toServerId: string
+  purpose: PrivateEndpointPurpose
+  membershipsByServer: Map<string, DatacenterMembershipRow[]>
+  relays: RelayJoinRow[]
+  preferencesByDatacenter: Map<string, DatacenterAddressPreference>
+  publicAddressesByServer: Map<string, string>
+}): ResolvedPrivateEndpoint | PrivateEndpointError {
+  if (params.fromServerId === params.toServerId) {
+    return { address: '127.0.0.1', transport: 'local' }
+  }
+
+  const datacenter = resolveDatacenterFromCaches(params)
+  if (datacenter) return datacenter
+
+  if (params.purpose === 'failover-replication') {
+    return unavailablePath(params.fromServerId, params.toServerId)
+  }
+
+  const fabricPath = resolveFabricFromCaches(params)
+  if (fabricPath) return fabricPath
+
+  const publicAddress = params.publicAddressesByServer.get(params.toServerId)
+  if (publicAddress) {
+    return { address: publicAddress, transport: 'public' }
+  }
+
+  return unavailablePath(params.fromServerId, params.toServerId)
+}
+
+/**
  * Answer "what address does `fromServerId` use to reach `toServerId`?" using
- * transport order local → fabric → datacenter.
+ * the purpose-aware ladder (see {@link resolveOneFromCaches}).
  */
 export async function resolvePrivateEndpoint(
   db: Db,
-  params: Readonly<{ fromServerId: string; toServerId: string }>,
+  params: Readonly<{
+    fromServerId: string
+    toServerId: string
+    purpose: PrivateEndpointPurpose
+  }>,
 ): Promise<ResolvedPrivateEndpoint | PrivateEndpointError> {
   const results = await resolvePrivateEndpoints(db, {
     fromServerId: params.fromServerId,
     toServerIds: [params.toServerId],
+    purpose: params.purpose,
   })
   const value = results.get(params.toServerId)
   if (!value) {
-    return {
-      kind: 'private_path_unavailable',
-      fromServerId: params.fromServerId,
-      toServerId: params.toServerId,
-    }
+    return unavailablePath(params.fromServerId, params.toServerId)
   }
   return value
 }
 
 /**
  * Batched resolver for one source server → many targets (one membership query,
- * one relay join — no N+1).
+ * one relay join, one public-address query — no N+1). Relays and public
+ * addresses are always loaded; failover-replication simply ignores them.
  */
 export async function resolvePrivateEndpoints(
   db: Db,
-  params: Readonly<{ fromServerId: string; toServerIds: readonly string[] }>,
+  params: Readonly<{
+    fromServerId: string
+    toServerIds: readonly string[]
+    purpose: PrivateEndpointPurpose
+  }>,
 ): Promise<Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>> {
   const out = new Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>()
   if (params.toServerIds.length === 0) return out
@@ -281,9 +408,10 @@ export async function resolvePrivateEndpoints(
   const uniqueTargets = [...new Set(params.toServerIds)]
   const allServerIds = [...new Set([params.fromServerId, ...uniqueTargets])]
 
-  const [membershipsByServer, relays] = await Promise.all([
+  const [membershipsByServer, relays, publicAddressesByServer] = await Promise.all([
     loadDatacenterMembershipsForServers(db, allServerIds),
     loadFabricRelayRows(db, allServerIds),
+    loadPublicAddressesForServers(db, allServerIds),
   ])
 
   const datacenterIds = new Set<string>()
@@ -301,9 +429,11 @@ export async function resolvePrivateEndpoints(
       resolveOneFromCaches({
         fromServerId: params.fromServerId,
         toServerId,
+        purpose: params.purpose,
         membershipsByServer,
         relays,
         preferencesByDatacenter,
+        publicAddressesByServer,
       }),
     )
   }

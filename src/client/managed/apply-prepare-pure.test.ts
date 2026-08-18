@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
@@ -107,6 +107,11 @@ const ALL_PREPARE_ERRORS: Array<{
     body: 'managed_private_port_exhausted',
   },
   {
+    error: { kind: 'managed_listener_bind_conflict', serverId: 's1' },
+    status: 422,
+    body: 'managed_listener_bind_conflict',
+  },
+  {
     error: {
       kind: 'private_path_unavailable',
       fromServerId: 's1',
@@ -114,6 +119,16 @@ const ALL_PREPARE_ERRORS: Array<{
     },
     status: 422,
     body: 'private_path_unavailable',
+  },
+  {
+    error: {
+      kind: 'private_family_mismatch',
+      fromServerId: 's1',
+      toServerId: 's2',
+      datacenterId: 'dc-a',
+    },
+    status: 422,
+    body: 'private_family_mismatch',
   },
 ]
 

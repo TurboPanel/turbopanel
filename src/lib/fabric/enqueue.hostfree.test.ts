@@ -1,7 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { CommandQueue } from "../commands/queue.ts";
-import { buildFabricReconcilePayload } from "../db/fabric-records.ts";
+import { buildFabricReconcilePayload, type RelayRecord } from "../db/fabric-records.ts";
 import {
   awaitParticipatingFabricConvergence,
   enqueueFabricReconcileForServers,
@@ -10,6 +10,7 @@ import {
   isFabricMembershipConverged,
   reconcileFabricMembership,
   relayNeedsFabricEnqueue,
+  fabricNeedsRendezvous,
 } from "./enqueue.ts";
 
 /**
@@ -30,9 +31,12 @@ type RelayRow = {
   endpointAddress: string | null;
   publicKey: string | null;
   prefix: string;
-  advertisedCidrs: string[];
-  metadata: { appliedPayloadHash?: string };
-};
+      advertisedCidrs: string[];
+      metadata: { appliedPayloadHash?: string };
+      options?: unknown;
+      allowRelay?: boolean | null;
+      preferredGatewayIds?: string[];
+    };
 
 type MembershipPinRow = {
   ipId: string;
@@ -103,6 +107,18 @@ function createEndpointlessFabricDb(
             return {
               where() {
                 return thenable(datacenterNetworks);
+              },
+            };
+          },
+        };
+      }
+
+      if (keys.length === 2 && keySet.has("id") && keySet.has("options")) {
+        return {
+          from() {
+            return {
+              where() {
+                return thenable([]);
               },
             };
           },
@@ -261,10 +277,11 @@ test("enqueueFabricReconcileForServers skips when enabled without fabric snapsho
   ]);
 });
 
-test("enqueueFabricReconcileForServers returns typed relay_endpoint_unavailable without throwing", async () => {
+test("enqueueFabricReconcileForServers queues when a peer has no path", async () => {
+  const enqueued: string[] = [];
   const results = await enqueueFabricReconcileForServers({
-    db: createEndpointlessFabricDb(ENDPOINTLESS_RELAYS),
-    commandQueue: throwingQueue(),
+    db: createMembershipFabricDb(ENDPOINTLESS_RELAYS),
+    commandQueue: recordingQueue(enqueued),
     actorType: "user",
     actorId: "user-1",
     fabric: FABRIC,
@@ -274,16 +291,19 @@ test("enqueueFabricReconcileForServers returns typed relay_endpoint_unavailable 
   assertEquals(results, [
     {
       serverId: "srv-1",
-      status: "failed",
-      error: "relay_endpoint_unavailable",
+      commandId: "cmd-1",
+      status: "queued",
+      unreachablePeers: [{ serverId: "srv-2" }],
     },
     {
       serverId: "srv-2",
-      status: "failed",
-      error: "relay_endpoint_unavailable",
+      commandId: "cmd-2",
+      status: "queued",
+      unreachablePeers: [{ serverId: "srv-1" }],
     },
     { serverId: "srv-missing", status: "skipped" },
   ]);
+  assertEquals(enqueued, ["srv-1", "srv-2"]);
 });
 
 test("enqueueFabricReconcileForServers still throws non-allocation errors", async () => {
@@ -306,6 +326,73 @@ test("enqueueFabricReconcileForServers still throws non-allocation errors", asyn
     Error,
     "db exploded",
   );
+});
+
+const FLEET_RELAYS: RelayRow[] = [
+  {
+    id: "r1",
+    fabricId: "fab-1",
+    serverId: "srv-1",
+    address: "10.250.0.1",
+    role: "member",
+    keepalive: null,
+    endpointAddress: "203.0.113.10",
+    publicKey: "pk1",
+    prefix: "10.192.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+  },
+  {
+    id: "r2",
+    fabricId: "fab-1",
+    serverId: "srv-2",
+    address: "10.250.0.2",
+    role: "member",
+    keepalive: null,
+    endpointAddress: "203.0.113.11",
+    publicKey: "pk2",
+    prefix: "10.193.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+  },
+  {
+    id: "r3",
+    fabricId: "fab-1",
+    serverId: "srv-3",
+    address: "10.250.0.3",
+    role: "member",
+    keepalive: null,
+    endpointAddress: null,
+    publicKey: "pk3",
+    prefix: "10.194.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+  },
+];
+
+test("enqueueFabricReconcileForServers queues the rest of the fleet when one pair is unreachable", async () => {
+  const enqueued: string[] = [];
+  const results = await enqueueFabricReconcileForServers({
+    db: createMembershipFabricDb(FLEET_RELAYS),
+    commandQueue: recordingQueue(enqueued),
+    actorType: "user",
+    actorId: "user-1",
+    fabric: FABRIC,
+    serverIds: ["srv-1", "srv-2", "srv-3"],
+    enabled: true,
+  });
+  assertEquals(
+    results.map((row) => row.status),
+    ["queued", "queued", "queued"],
+  );
+  assertEquals(results[0]?.unreachablePeers, [{ serverId: "srv-3" }]);
+  assertEquals(results[1]?.unreachablePeers, [{ serverId: "srv-3" }]);
+  assertEquals(results[2]?.unreachablePeers, undefined);
+  assertEquals(
+    enqueued.sort((a, b) => a.localeCompare(b)),
+    ["srv-1", "srv-2", "srv-3"],
+  );
+  assertEquals(fabricEnqueueTypedError(results), null);
 });
 
 const WG_KEY_A = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -1056,7 +1143,11 @@ test("awaitParticipatingFabricConvergence waits for second-wave peer payloads be
   assertEquals(
     isFabricMembershipConverged({
       participatingServerIds: ["srv-1", "srv-2"],
-      relays,
+      relays: relays.map((row) => ({
+        ...row,
+        allowRelay: row.allowRelay ?? null,
+        preferredGatewayIds: row.preferredGatewayIds ?? [],
+      })),
       desiredHashByServer: new Map(),
     }),
     false,
@@ -1087,6 +1178,88 @@ test("awaitParticipatingFabricConvergence waits for second-wave peer payloads be
   assertEquals(withPeers.length, 2);
   assertEquals(
     withPeers.every((payload) => (payload.peers?.length ?? 0) === 1),
+    true,
+  );
+});
+
+function rendezvousRelay(
+  overrides: Partial<RelayRecord> & Pick<RelayRecord, "serverId" | "publicKey">,
+): RelayRecord {
+  return {
+    id: `relay-${overrides.serverId}`,
+    fabricId: "fab-1",
+    address: "10.250.0.1",
+    role: "member",
+    keepalive: null,
+    endpointAddress: null,
+    prefix: "10.192.0.0/16",
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+    ...overrides,
+  };
+}
+
+test("fabricNeedsRendezvous requires two public-keyed relays and non-direct paths", () => {
+  const a = rendezvousRelay({
+    serverId: "srv-a",
+    publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  });
+  const b = rendezvousRelay({
+    serverId: "srv-b",
+    publicKey: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+  });
+  assertEquals(fabricNeedsRendezvous([a]), false);
+  assertEquals(fabricNeedsRendezvous([a, b]), true);
+  assertEquals(
+    fabricNeedsRendezvous([
+      {
+        ...a,
+        metadata: {
+          paths: {
+            at: "2020-01-01T00:00:00.000Z",
+            entries: [{
+              peerServerId: "srv-b",
+              selected: "direct_lan",
+              degraded: false,
+            }],
+          },
+        },
+      },
+      {
+        ...b,
+        metadata: {
+          paths: {
+            at: "2020-01-01T00:00:00.000Z",
+            entries: [{
+              peerServerId: "srv-a",
+              selected: "direct_public",
+              degraded: false,
+            }],
+          },
+        },
+      },
+    ]),
+    false,
+  );
+  assertEquals(
+    fabricNeedsRendezvous([
+      {
+        ...a,
+        metadata: {
+          paths: {
+            at: "2020-01-01T00:00:00.000Z",
+            entries: [{
+              peerServerId: "srv-b",
+              selected: "unreachable",
+              degraded: false,
+            }],
+          },
+        },
+      },
+      b,
+    ]),
     true,
   );
 });

@@ -1,4 +1,5 @@
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
@@ -69,7 +70,7 @@ async function authorizeServerRead(c: Parameters<
 }
 
 export function registerServerMetricsRoutes(
-  router: Hono,
+  router: Hono<AppEnv>,
   opts: AuthRouteOpts,
 ) {
   const cache = createMetricsChartCache(opts.runtime)

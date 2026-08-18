@@ -36,14 +36,29 @@ import type {
 } from "../commands/schemas.ts";
 import { sha256HexUtf8 } from "../compose/desired-hash.ts";
 import {
+  publicIpv4FromIps,
   reportedIpsFromServerMetadata,
-  preferredIpv4FromIps,
   type ServerReportedIp,
 } from "../../server-addresses.ts";
 import {
+  type DatacenterAddressPreference,
+  loadDatacenterAddressPreferences,
   loadDatacenterSubnetsForServers,
   resolveDerivedAdvertisedCidrsByRelay,
 } from "../net/datacenter-networks.ts";
+import {
+  type DatacenterMembershipRow,
+  loadDatacenterMembershipsForServers,
+  sharedDatacenterIds,
+} from "../net/datacenter-membership.ts";
+import { pinAddressForDatacenter } from "../net/private-endpoint.ts";
+import { WIREGUARD_PERSISTENT_KEEPALIVE } from "../fabric/wg.ts";
+import {
+  type FabricPolicy,
+  mergeRelayPolicyOptions,
+  parseFabricPolicy,
+  parseRelayPolicy,
+} from "../fabric/policy.ts";
 
 export type FabricRecord = {
   id: string;
@@ -63,6 +78,21 @@ export type RelayMetadata = {
     at: string;
     peers: RelayObservedPeer[];
   };
+  /** Diagnostics-only path summary; never hashed into desired reconcile state. */
+  paths?: {
+    at: string;
+    entries: FabricPathSummaryEntry[];
+  };
+};
+
+export type FabricPathSummaryEntry = {
+  peerServerId: string;
+  selected: RelayPathKind;
+  endpoint?: string;
+  viaServerId?: string;
+  lastHandshakeAt?: string;
+  latencyMs?: number;
+  degraded: boolean;
 };
 
 export type RelayRecord = {
@@ -77,6 +107,8 @@ export type RelayRecord = {
   prefix: string;
   advertisedCidrs: string[];
   metadata: RelayMetadata;
+  allowRelay: boolean | null;
+  preferredGatewayIds: string[];
 };
 
 export type FabricAllocationErrorKind =
@@ -107,6 +139,44 @@ export class FabricAllocationError extends Error {
   }
 }
 
+export type RelayPathKind =
+  | "direct_lan"
+  | "direct_public"
+  | "direct_nat"
+  | "gateway"
+  | "relay"
+  | "unreachable";
+
+export type RelayPathCandidate = {
+  kind: RelayPathKind;
+  address?: string;
+  datacenterId?: string;
+  viaServerId?: string;
+  viaRelayId?: string;
+};
+
+export type RelayPathSelected = {
+  kind: RelayPathKind;
+  /** Present for emitted direct kinds (`direct_lan` / `direct_public` / `direct_nat`). */
+  endpoint?: string;
+  datacenterId?: string;
+  viaServerId?: string;
+  viaRelayId?: string;
+};
+
+/**
+ * Ranked viable candidates plus the selected path. `gateway` /
+ * `relay` stay typed on this shape so later phases can fill them without
+ * changing the top-level return.
+ */
+export type RelayPathPlan = {
+  candidates: RelayPathCandidate[];
+  selected: RelayPathSelected;
+  directNat: RelayPathCandidate | null;
+  gateway: RelayPathCandidate | null;
+  relay: RelayPathCandidate | null;
+};
+
 export type RelayPeerMaterial = {
   publicKey: string;
   allowedIPs: string[];
@@ -114,17 +184,63 @@ export type RelayPeerMaterial = {
   keepalive: number | null;
   sealedPresharedKey: string | null;
   presharedKey: string | null;
+  pathKind: RelayPathKind;
+  viaServerId?: string;
 };
 
 export type EndpointAddressCaches = {
-  datacenterAddressByServer: Map<string, string>;
   publicAddressByServer: Map<string, string>;
   reportedByServer: Map<string, ServerReportedIp[] | undefined>;
+  datacenterMembershipsByServer: Map<string, DatacenterMembershipRow[]>;
+  addressPreferenceByDatacenter: Map<string, DatacenterAddressPreference>;
+  /** Runtime-only NAT hole-punch endpoints; never loaded from Postgres. */
+  natEndpointByPair: Map<string, string>;
+  /** Runtime-only demoted kinds so the planner falls through. */
+  failedPathKindsByPair: Map<string, Set<RelayPathKind>>;
 };
 
+/** Pair cache key: `${fromServerId}>${toServerId}`. */
+export function fabricPairCacheKey(
+  fromServerId: string,
+  toServerId: string,
+): string {
+  return `${fromServerId}>${toServerId}`;
+}
+
+function emptyPairPlanningCaches(): Pick<
+  EndpointAddressCaches,
+  | "datacenterMembershipsByServer"
+  | "addressPreferenceByDatacenter"
+  | "natEndpointByPair"
+  | "failedPathKindsByPair"
+> {
+  return {
+    datacenterMembershipsByServer: new Map(),
+    addressPreferenceByDatacenter: new Map(),
+    natEndpointByPair: new Map(),
+    failedPathKindsByPair: new Map(),
+  };
+}
+
+const EMITTED_RELAY_PATH_KINDS = new Set<RelayPathKind>([
+  "direct_lan",
+  "direct_public",
+  "direct_nat",
+]);
+
+function isEmittedDirectPath(
+  selected: RelayPathSelected,
+): selected is RelayPathSelected & {
+  kind: "direct_lan" | "direct_public" | "direct_nat";
+  endpoint: string;
+} {
+  return EMITTED_RELAY_PATH_KINDS.has(selected.kind) &&
+    typeof selected.endpoint === "string";
+}
+
 type ServerEndpointRow = {
-  id: string
-  metadata: unknown
+  id: string;
+  metadata: unknown;
 };
 
 async function occupiedCidrs(
@@ -233,8 +349,10 @@ function serializeRelay(row: {
   prefix: unknown;
   advertisedCidrs: unknown;
   metadata: unknown;
+  options?: unknown;
 }): RelayRecord {
   const role = serializeRelayRole(row.role);
+  const policy = parseRelayPolicy(row.options);
   return {
     id: row.id,
     fabricId: row.fabricId,
@@ -254,6 +372,8 @@ function serializeRelay(row: {
       ? []
       : serializeAdvertisedCidrs(row.advertisedCidrs),
     metadata: serializeRelayMetadata(row.metadata),
+    allowRelay: policy.allowRelay,
+    preferredGatewayIds: policy.preferredGatewayIds,
   };
 }
 
@@ -269,6 +389,7 @@ const RELAY_SELECT = {
   prefix: relay.prefix,
   advertisedCidrs: relay.advertisedCidrs,
   metadata: relay.metadata,
+  options: relay.options,
 };
 
 export async function listFabricRelays(
@@ -557,6 +678,40 @@ function mergeRelayMetadata(
   return next;
 }
 
+export async function stampRelayPathSummary(
+  db: Db,
+  params: {
+    fabricId: string;
+    serverId: string;
+    entries: FabricPathSummaryEntry[];
+  },
+): Promise<void> {
+  const [existing] = await db
+    .select({ metadata: relay.metadata })
+    .from(relay)
+    .where(
+      and(
+        eq(relay.fabricId, params.fabricId),
+        eq(relay.serverId, params.serverId),
+      ),
+    )
+    .limit(1);
+  if (!existing) return;
+
+  const metadata = mergeRelayMetadata(existing.metadata, {
+    paths: { at: nowIso(), entries: params.entries },
+  });
+  await db
+    .update(relay)
+    .set({ metadata, updatedAt: nowIso() })
+    .where(
+      and(
+        eq(relay.fabricId, params.fabricId),
+        eq(relay.serverId, params.serverId),
+      ),
+    );
+}
+
 export async function stampRelayReconcileSuccess(
   db: Db,
   params: {
@@ -636,6 +791,8 @@ export async function updateFabricRelay(
     keepalive?: number | null;
     endpointAddress?: string | null;
     presharedKey?: string | null;
+    allowRelay?: boolean | null;
+    preferredGatewayIds?: string[];
   },
 ): Promise<RelayRecord | null> {
   const patch: {
@@ -644,6 +801,7 @@ export async function updateFabricRelay(
     keepalive?: number | null;
     endpointAddress?: string | null;
     presharedKey?: string | null;
+    options?: unknown;
     updatedAt: string;
   } = { updatedAt: nowIso() };
   if (params.role !== undefined) patch.role = params.role;
@@ -656,6 +814,29 @@ export async function updateFabricRelay(
   }
   if (params.presharedKey !== undefined) {
     patch.presharedKey = params.presharedKey;
+  }
+  if (
+    params.allowRelay !== undefined || params.preferredGatewayIds !== undefined
+  ) {
+    const [current] = await db
+      .select({ options: relay.options })
+      .from(relay)
+      .where(
+        and(
+          eq(relay.fabricId, params.fabricId),
+          eq(relay.serverId, params.serverId),
+        ),
+      )
+      .limit(1);
+    if (!current) return null;
+    patch.options = mergeRelayPolicyOptions(current.options, {
+      ...(params.allowRelay !== undefined
+        ? { allowRelay: params.allowRelay }
+        : {}),
+      ...(params.preferredGatewayIds !== undefined
+        ? { preferredGatewayIds: params.preferredGatewayIds }
+        : {}),
+    });
   }
 
   const [row] = await db
@@ -670,6 +851,36 @@ export async function updateFabricRelay(
     .returning(RELAY_SELECT);
   if (!row) return null;
   return serializeRelay(row);
+}
+
+const FABRIC_RECORD_SELECT = {
+  id: fabric.id,
+  organizationId: fabric.organizationId,
+  cidr: fabric.cidr,
+  options: fabric.options,
+};
+
+export async function updateFabricPolicy(
+  db: Db,
+  params: { fabricId: string; allowRelay: boolean },
+): Promise<FabricRecord | null> {
+  const [existing] = await db
+    .select({ options: fabric.options })
+    .from(fabric)
+    .where(eq(fabric.id, params.fabricId))
+    .limit(1);
+  if (!existing) return null;
+  const options = {
+    ...parseFabricOptions(existing.options),
+    allowRelay: params.allowRelay,
+  };
+  const [row] = await db
+    .update(fabric)
+    .set({ options, updatedAt: nowIso() })
+    .where(eq(fabric.id, params.fabricId))
+    .returning(FABRIC_RECORD_SELECT);
+  if (!row) return null;
+  return serializeFabric(row);
 }
 
 export async function deleteServerFabricMembership(
@@ -928,27 +1139,406 @@ function reportedIpsFromMetadata(
 }
 
 /**
- * Endpoint precedence: operator pin → datacenter `ip` → public `ip` →
- * reported public IPv4 → reported private IPv4. Throws
- * `relay_endpoint_unavailable` rather than emitting a peer with no Endpoint.
+ * Globally-meaningful endpoint for a relay, for display only. Not
+ * authoritative for peer building — use {@link planRelayPath} instead.
+ *
+ * **Deliberately excludes datacenter and other private addresses.** GET fabric
+ * lists every relay with no viewer/`self` pair, so a destination-only lookup
+ * cannot know whether the reader shares that datacenter; publishing a private
+ * LAN pin as a generic `resolvedEndpoint` told cross-datacenter readers to dial
+ * an address that is not routable for them. Pair-aware detail belongs on the
+ * per-peer path summary (`relay.metadata.paths.entries[].endpoint`), which is
+ * source-aware by construction.
+ *
+ * Returns `null` when the relay has no operator pin and no public address —
+ * the mesh may still be reachable over a shared LAN or a gateway, which the
+ * path summary reports.
  */
-export function resolveRelayEndpointAddress(
+export function resolveRelayGlobalEndpointAddress(
   row: Pick<RelayRecord, "serverId" | "endpointAddress">,
-  caches: EndpointAddressCaches,
-): string {
+  caches: Pick<
+    EndpointAddressCaches,
+    "publicAddressByServer" | "reportedByServer"
+  >,
+): string | null {
   if (row.endpointAddress) return row.endpointAddress;
-
-  const datacenter = caches.datacenterAddressByServer.get(row.serverId);
-  if (datacenter) return datacenter;
 
   const publicAddress = caches.publicAddressByServer.get(row.serverId);
   if (publicAddress) return publicAddress;
 
-  const reported = caches.reportedByServer.get(row.serverId);
-  const preferred = preferredIpv4FromIps(reported);
-  if (preferred) return preferred;
+  return publicIpv4FromIps(caches.reportedByServer.get(row.serverId)) ?? null;
+}
 
-  throw new FabricAllocationError("relay_endpoint_unavailable");
+function lanPathCandidate(
+  selfServerId: string,
+  otherServerId: string,
+  caches: EndpointAddressCaches,
+): RelayPathCandidate | null {
+  const fromPins = caches.datacenterMembershipsByServer.get(selfServerId) ?? [];
+  const toPins = caches.datacenterMembershipsByServer.get(otherServerId) ?? [];
+  const shared = sharedDatacenterIds(fromPins, toPins);
+  for (const datacenterId of shared) {
+    const preference = caches.addressPreferenceByDatacenter.get(datacenterId) ??
+      "ipv6";
+    const address = pinAddressForDatacenter(
+      fromPins,
+      toPins,
+      datacenterId,
+      preference,
+    );
+    if (address) return { kind: "direct_lan", address, datacenterId };
+  }
+  return null;
+}
+
+function reportedPublicIpv4(
+  ips: ServerReportedIp[] | undefined,
+): string | undefined {
+  return ips?.find((row) => row.scope === "public" && row.version === 4)
+    ?.address;
+}
+
+function publicPathCandidate(
+  other: Pick<RelayRecord, "serverId" | "endpointAddress">,
+  caches: EndpointAddressCaches,
+): RelayPathCandidate | null {
+  if (other.endpointAddress) {
+    return { kind: "direct_public", address: other.endpointAddress };
+  }
+  const publicAddress = caches.publicAddressByServer.get(other.serverId);
+  if (publicAddress) return { kind: "direct_public", address: publicAddress };
+  const reported = reportedPublicIpv4(
+    caches.reportedByServer.get(other.serverId),
+  );
+  if (reported) return { kind: "direct_public", address: reported };
+  return null;
+}
+
+function natPathCandidate(
+  selfServerId: string,
+  other: Pick<RelayRecord, "serverId">,
+  caches: EndpointAddressCaches,
+): RelayPathCandidate | null {
+  const endpoint = caches.natEndpointByPair.get(
+    fabricPairCacheKey(selfServerId, other.serverId),
+  );
+  if (!endpoint) return null;
+  return { kind: "direct_nat", address: endpoint };
+}
+
+function failedKindsForPair(
+  selfServerId: string,
+  otherServerId: string,
+  caches: EndpointAddressCaches,
+): Set<RelayPathKind> | undefined {
+  return caches.failedPathKindsByPair.get(
+    fabricPairCacheKey(selfServerId, otherServerId),
+  );
+}
+
+/** Direct LAN then public then NAT candidates for an arbitrary `(from → to)` pair. */
+export function directCandidates(
+  selfServerId: string,
+  other: Pick<RelayRecord, "serverId" | "endpointAddress">,
+  caches: EndpointAddressCaches,
+): RelayPathCandidate[] {
+  const failed = failedKindsForPair(selfServerId, other.serverId, caches);
+  const candidates: RelayPathCandidate[] = [];
+  const lan = lanPathCandidate(selfServerId, other.serverId, caches);
+  if (lan && !failed?.has("direct_lan")) candidates.push(lan);
+  const pub = publicPathCandidate(other, caches);
+  if (pub && !failed?.has("direct_public")) candidates.push(pub);
+  const nat = natPathCandidate(selfServerId, other, caches);
+  if (nat && !failed?.has("direct_nat")) candidates.push(nat);
+  return candidates;
+}
+
+function selectedFromCandidate(
+  candidate: RelayPathCandidate,
+): RelayPathSelected {
+  if (
+    (candidate.kind === "direct_lan" ||
+      candidate.kind === "direct_public" ||
+      candidate.kind === "direct_nat") &&
+    candidate.address
+  ) {
+    return {
+      kind: candidate.kind,
+      endpoint: candidate.address,
+      ...(candidate.datacenterId
+        ? { datacenterId: candidate.datacenterId }
+        : {}),
+    };
+  }
+  if (candidate.kind === "gateway") {
+    return {
+      kind: "gateway",
+      ...(candidate.viaServerId ? { viaServerId: candidate.viaServerId } : {}),
+      ...(candidate.viaRelayId ? { viaRelayId: candidate.viaRelayId } : {}),
+    };
+  }
+  return { kind: candidate.kind };
+}
+
+const UNIMPLEMENTED_PATH_CANDIDATES: Pick<
+  RelayPathPlan,
+  "gateway" | "relay"
+> = {
+  gateway: null,
+  relay: null,
+};
+
+function relayPathPlan(
+  candidates: RelayPathCandidate[],
+  selected: RelayPathSelected,
+  extras?: Partial<Pick<RelayPathPlan, "directNat" | "gateway" | "relay">>,
+): RelayPathPlan {
+  const directNat = extras?.directNat ??
+    candidates.find((row) => row.kind === "direct_nat") ??
+    null;
+  return {
+    candidates,
+    selected,
+    directNat,
+    ...UNIMPLEMENTED_PATH_CANDIDATES,
+    ...extras,
+  };
+}
+
+function selectRelayPath(
+  candidates: readonly RelayPathCandidate[],
+  operatorPin: string | null,
+): RelayPathSelected {
+  if (operatorPin) {
+    const pinned = candidates.find((row) =>
+      row.kind === "direct_public" && row.address === operatorPin
+    );
+    if (pinned) return selectedFromCandidate(pinned);
+  }
+  const first = candidates[0];
+  if (first) return selectedFromCandidate(first);
+  return { kind: "unreachable" };
+}
+
+/** Public-keyed `role === 'gateway'` relays (a keyless gateway cannot be a peer). */
+export type GatewayCandidateRelay = Pick<
+  RelayRecord,
+  "id" | "serverId" | "role" | "publicKey" | "endpointAddress"
+>;
+
+const MAX_GATEWAY_HOPS = 2;
+
+function gatewayCandidateRelays(
+  relays: readonly GatewayCandidateRelay[],
+  selfServerId: string,
+  otherServerId: string,
+): GatewayCandidateRelay[] {
+  return relays.filter((row) =>
+    row.role === "gateway" &&
+    Boolean(row.publicKey) &&
+    row.serverId !== selfServerId &&
+    row.serverId !== otherServerId
+  );
+}
+
+function datacenterIdSet(
+  serverId: string,
+  caches: EndpointAddressCaches,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const pin of caches.datacenterMembershipsByServer.get(serverId) ?? []) {
+    ids.add(pin.datacenterId);
+  }
+  return ids;
+}
+
+function sharesDatacenterIds(
+  serverId: string,
+  ids: ReadonlySet<string>,
+  caches: EndpointAddressCaches,
+): boolean {
+  for (const pin of caches.datacenterMembershipsByServer.get(serverId) ?? []) {
+    if (ids.has(pin.datacenterId)) return true;
+  }
+  return false;
+}
+
+function gatewayReachesDestination(
+  from: GatewayCandidateRelay,
+  dest: Pick<RelayRecord, "serverId" | "endpointAddress">,
+  gateways: readonly GatewayCandidateRelay[],
+  caches: EndpointAddressCaches,
+  remainingHops: number,
+  visited: ReadonlySet<string>,
+): boolean {
+  if (remainingHops < 1) return false;
+  if (visited.has(from.serverId)) return false;
+  const nextVisited = new Set(visited);
+  nextVisited.add(from.serverId);
+  if (directCandidates(from.serverId, dest, caches).length > 0) return true;
+  if (remainingHops < 2) return false;
+  for (const hop of gateways) {
+    if (hop.serverId === from.serverId || hop.serverId === dest.serverId) {
+      continue;
+    }
+    if (hop.role !== "gateway" || !hop.publicKey) continue;
+    if (directCandidates(from.serverId, hop, caches).length === 0) continue;
+    if (
+      gatewayReachesDestination(
+        hop,
+        dest,
+        gateways,
+        caches,
+        remainingHops - 1,
+        nextVisited,
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function gatewayLocalityAllowed(
+  gateway: GatewayCandidateRelay,
+  destDcIds: ReadonlySet<string>,
+  selfDcIds: ReadonlySet<string>,
+  caches: EndpointAddressCaches,
+): boolean {
+  return sharesDatacenterIds(gateway.serverId, destDcIds, caches) ||
+    sharesDatacenterIds(gateway.serverId, selfDcIds, caches);
+}
+
+function gatewayRankTier(
+  gateway: GatewayCandidateRelay,
+  destDcIds: ReadonlySet<string>,
+  selfDcIds: ReadonlySet<string>,
+  caches: EndpointAddressCaches,
+): number {
+  if (sharesDatacenterIds(gateway.serverId, destDcIds, caches)) return 0;
+  if (sharesDatacenterIds(gateway.serverId, selfDcIds, caches)) return 1;
+  return 2;
+}
+
+function preferredGatewayRank(
+  serverId: string,
+  preferredGatewayIds: readonly string[],
+): number {
+  const index = preferredGatewayIds.indexOf(serverId);
+  return index === -1 ? preferredGatewayIds.length : index;
+}
+
+function compareGatewayNextHops(
+  a: GatewayCandidateRelay,
+  b: GatewayCandidateRelay,
+  destDcIds: ReadonlySet<string>,
+  selfDcIds: ReadonlySet<string>,
+  caches: EndpointAddressCaches,
+  preferredGatewayIds: readonly string[],
+): number {
+  const tierDiff = gatewayRankTier(a, destDcIds, selfDcIds, caches) -
+    gatewayRankTier(b, destDcIds, selfDcIds, caches);
+  if (tierDiff !== 0) return tierDiff;
+  const preferredDiff = preferredGatewayRank(a.serverId, preferredGatewayIds) -
+    preferredGatewayRank(b.serverId, preferredGatewayIds);
+  if (preferredDiff !== 0) return preferredDiff;
+  return a.id.localeCompare(b.id);
+}
+
+export function resolveGatewayNextHop(params: {
+  self: Pick<RelayRecord, "serverId">;
+  other: Pick<RelayRecord, "serverId" | "endpointAddress">;
+  gateways: readonly GatewayCandidateRelay[];
+  caches: EndpointAddressCaches;
+  preferredGatewayIds: readonly string[];
+}): GatewayCandidateRelay | null {
+  const destDcIds = datacenterIdSet(params.other.serverId, params.caches);
+  const selfDcIds = datacenterIdSet(params.self.serverId, params.caches);
+  const candidates = gatewayCandidateRelays(
+    params.gateways,
+    params.self.serverId,
+    params.other.serverId,
+  ).filter((gateway) => {
+    if (directCandidates(params.self.serverId, gateway, params.caches).length === 0) {
+      return false;
+    }
+    if (
+      !gatewayReachesDestination(
+        gateway,
+        params.other,
+        params.gateways,
+        params.caches,
+        MAX_GATEWAY_HOPS,
+        new Set(),
+      )
+    ) {
+      return false;
+    }
+    return gatewayLocalityAllowed(
+      gateway,
+      destDcIds,
+      selfDcIds,
+      params.caches,
+    );
+  });
+  candidates.sort((a, b) =>
+    compareGatewayNextHops(
+      a,
+      b,
+      destDcIds,
+      selfDcIds,
+      params.caches,
+      params.preferredGatewayIds,
+    )
+  );
+  return candidates[0] ?? null;
+}
+
+/**
+ * Pair-aware path from `self` to `other`. Returns ranked `direct_lan` then
+ * `direct_public` then `direct_nat` candidates plus the selected path. An
+ * operator pin still wins selection over LAN. When no direct candidate exists
+ * and `gateways` is provided, fills `plan.gateway` with a bounded (≤2 hop)
+ * next hop. `relay` stays unset (relay data plane is out of scope).
+ * `allowRelay` is reserved for a future relay candidate slot and must not
+ * loosen gateway locality.
+ */
+export function planRelayPath(params: {
+  self: Pick<RelayRecord, "serverId">;
+  other: Pick<RelayRecord, "serverId" | "endpointAddress">;
+  caches: EndpointAddressCaches;
+  gateways?: readonly GatewayCandidateRelay[];
+  allowRelay?: boolean;
+  preferredGatewayIds?: readonly string[];
+}): RelayPathPlan {
+  const candidates = directCandidates(
+    params.self.serverId,
+    params.other,
+    params.caches,
+  );
+  if (candidates.length > 0) {
+    return relayPathPlan(
+      candidates,
+      selectRelayPath(candidates, params.other.endpointAddress),
+    );
+  }
+  if (!params.gateways) {
+    return relayPathPlan(candidates, { kind: "unreachable" });
+  }
+  const hop = resolveGatewayNextHop({
+    self: params.self,
+    other: params.other,
+    gateways: params.gateways,
+    caches: params.caches,
+    preferredGatewayIds: params.preferredGatewayIds ?? [],
+  });
+  if (!hop) return relayPathPlan(candidates, { kind: "unreachable" });
+  const gateway: RelayPathCandidate = {
+    kind: "gateway",
+    viaServerId: hop.serverId,
+    viaRelayId: hop.id,
+  };
+  return relayPathPlan(candidates, selectedFromCandidate(gateway), { gateway });
 }
 
 export async function loadEndpointCaches(
@@ -958,15 +1548,18 @@ export async function loadEndpointCaches(
   { caches: EndpointAddressCaches; serversById: Map<string, ServerEndpointRow> }
 > {
   const caches: EndpointAddressCaches = {
-    datacenterAddressByServer: new Map(),
     publicAddressByServer: new Map(),
     reportedByServer: new Map(),
+    ...emptyPairPlanningCaches(),
   };
   const serversById = new Map<string, ServerEndpointRow>();
   if (serverIds.length === 0) return { caches, serversById };
 
   const ids = [...serverIds];
   const [ipRows, serverRows] = await Promise.all([
+    // Public pins only. Datacenter pins are pair-aware — path planning reads
+    // them through `datacenterMembershipsByServer` so it can require *shared*
+    // membership; a destination-only datacenter address has no valid consumer.
     db
       .select({
         serverId: ip.serverId,
@@ -975,12 +1568,7 @@ export async function loadEndpointCaches(
         createdAt: ip.createdAt,
       })
       .from(ip)
-      .where(
-        and(
-          inArray(ip.serverId, ids),
-          inArray(ip.scope, ["datacenter", "public"]),
-        ),
-      )
+      .where(and(inArray(ip.serverId, ids), eq(ip.scope, "public")))
       .orderBy(asc(ip.createdAt)),
     db
       .select({
@@ -995,12 +1583,6 @@ export async function loadEndpointCaches(
     if (!row.serverId) continue;
     const address = inetAddressToString(row.address);
     if (!address) continue;
-    if (row.scope === "datacenter") {
-      if (!caches.datacenterAddressByServer.has(row.serverId)) {
-        caches.datacenterAddressByServer.set(row.serverId, address);
-      }
-      continue;
-    }
     if (
       row.scope === "public" && !caches.publicAddressByServer.has(row.serverId)
     ) {
@@ -1018,41 +1600,72 @@ export async function loadEndpointCaches(
   return { caches, serversById };
 }
 
+function appendUniqueCidrs(
+  target: string[],
+  values: readonly string[],
+): void {
+  for (const value of values) {
+    if (value.length === 0 || target.includes(value)) continue;
+    target.push(value);
+  }
+}
+
 export async function buildPeerMaterial(
   params: {
+    self: Pick<RelayRecord, "serverId">;
     other: RelayRecord;
     listenPort: number;
     caches: EndpointAddressCaches;
     sealedPresharedKey: string | null;
+    plan: RelayPathPlan;
+    extraAllowedIPs?: readonly string[];
     resealPresharedKey?: (sealed: string) => Promise<string | null>;
     advertisedCidrs?: readonly string[];
   },
-): Promise<RelayPeerMaterial> {
+): Promise<RelayPeerMaterial | null> {
+  if (!isEmittedDirectPath(params.plan.selected)) return null;
+
   const host32 = hostRoute32(params.other.address);
-  const allowedIPs = [host32, params.other.prefix].filter(
-    (value): value is string => typeof value === "string",
+  const allowedIPs: string[] = [];
+  appendUniqueCidrs(
+    allowedIPs,
+    [host32, params.other.prefix].filter(
+      (value): value is string => typeof value === "string",
+    ),
   );
   if (params.other.role === "gateway") {
     const advertised = params.advertisedCidrs ?? params.other.advertisedCidrs;
-    for (const cidrValue of advertised) {
-      if (!allowedIPs.includes(cidrValue)) allowedIPs.push(cidrValue);
-    }
+    appendUniqueCidrs(allowedIPs, advertised);
   }
+  const extra = [...(params.extraAllowedIPs ?? [])].sort((a, b) =>
+    a.localeCompare(b)
+  );
+  appendUniqueCidrs(allowedIPs, extra);
 
-  const endpointHost = resolveRelayEndpointAddress(params.other, params.caches);
   let presharedKey: string | null = null;
   if (params.sealedPresharedKey && params.resealPresharedKey) {
     presharedKey = await params.resealPresharedKey(params.sealedPresharedKey);
   }
 
-  return {
+  const carriesTransit = extra.length > 0;
+  const keepalive = params.other.keepalive ??
+    (params.plan.selected.kind === "direct_nat"
+      ? WIREGUARD_PERSISTENT_KEEPALIVE
+      : null);
+  const endpoint = params.plan.selected.kind === "direct_nat"
+    ? params.plan.selected.endpoint
+    : `${params.plan.selected.endpoint}:${String(params.listenPort)}`;
+  const material: RelayPeerMaterial = {
     publicKey: params.other.publicKey ?? "",
     allowedIPs,
-    endpoint: `${endpointHost}:${String(params.listenPort)}`,
-    keepalive: params.other.keepalive,
+    endpoint,
+    keepalive,
     sealedPresharedKey: params.sealedPresharedKey,
     presharedKey,
+    pathKind: carriesTransit ? "gateway" : params.plan.selected.kind,
   };
+  if (carriesTransit) material.viaServerId = params.other.serverId;
+  return material;
 }
 
 export type FabricSegmentMaterial = {
@@ -1152,7 +1765,7 @@ function stableJson(value: unknown): string {
 export async function hashFabricReconcileDesired(
   value: unknown,
 ): Promise<string> {
-  return sha256HexUtf8(stableJson(value));
+  return await sha256HexUtf8(stableJson(value));
 }
 
 export type FabricReconcileSnapshot = {
@@ -1162,6 +1775,7 @@ export type FabricReconcileSnapshot = {
   sealedPresharedKeyByRelayId: Map<string, string | null>;
   segmentsByServer: Map<string, FabricSegmentMaterial[]>;
   derivedAdvertisedCidrsByRelayId: Map<string, string[]>;
+  policy: FabricPolicy;
 };
 
 type EnabledFabricReconcilePayload = Extract<
@@ -1183,8 +1797,10 @@ function publicKeyedRelays(relays: readonly RelayRecord[]): RelayRecord[] {
 
 /**
  * One batched read of everything needed to build every relay's reconcile
- * payload: relays, endpoint caches, PSK envelopes, segments, and derived
- * gateway advertised CIDRs (owned among public-keyed relays only).
+ * payload: relays, endpoint caches, PSK envelopes, segments, derived
+ * gateway advertised CIDRs (owned among public-keyed relays only), plus
+ * datacenter memberships and address-family preferences for pair-aware
+ * `planRelayPath`.
  */
 export async function loadFabricReconcileSnapshot(
   db: Db,
@@ -1193,17 +1809,36 @@ export async function loadFabricReconcileSnapshot(
   const relays = await listFabricRelays(db, fabric.id);
   const serverIds = relays.map((row) => row.serverId);
   const relayIds = relays.map((row) => row.id);
-  const [{ caches }, sealedRows, segmentsByServer, subnetsByServer] =
-    await Promise.all([
-      loadEndpointCaches(db, serverIds),
-      loadRelayPresharedKeyRows(db, relayIds),
-      listSegmentsForServers(db, serverIds),
-      loadDatacenterSubnetsForServers(db, serverIds),
-    ]);
+  const [
+    { caches: endpointCaches },
+    sealedRows,
+    segmentsByServer,
+    subnetsByServer,
+    datacenterMembershipsByServer,
+  ] = await Promise.all([
+    loadEndpointCaches(db, serverIds),
+    loadRelayPresharedKeyRows(db, relayIds),
+    listSegmentsForServers(db, serverIds),
+    loadDatacenterSubnetsForServers(db, serverIds),
+    loadDatacenterMembershipsForServers(db, serverIds),
+  ]);
+  const datacenterIds = new Set<string>();
+  for (const pins of datacenterMembershipsByServer.values()) {
+    for (const pin of pins) datacenterIds.add(pin.datacenterId);
+  }
+  const addressPreferenceByDatacenter = await loadDatacenterAddressPreferences(
+    db,
+    [...datacenterIds],
+  );
   const sealedPresharedKeyByRelayId = new Map<string, string | null>();
   for (const row of sealedRows) {
     sealedPresharedKeyByRelayId.set(row.id, row.presharedKey);
   }
+  const caches: EndpointAddressCaches = {
+    ...endpointCaches,
+    datacenterMembershipsByServer,
+    addressPreferenceByDatacenter,
+  };
   return {
     fabric,
     relays,
@@ -1214,6 +1849,7 @@ export async function loadFabricReconcileSnapshot(
       publicKeyedRelays(relays),
       subnetsByServer,
     ),
+    policy: parseFabricPolicy(fabric.options),
   };
 }
 
@@ -1237,7 +1873,20 @@ function reconcilePeerViews(material: RelayPeerMaterial): {
     publicKey: material.publicKey,
     allowedIPs: material.allowedIPs,
     endpoint: material.endpoint,
+    pathKind: material.pathKind,
   };
+  if (
+    material.pathKind === "direct_lan" ||
+    material.pathKind === "direct_public" ||
+    material.pathKind === "direct_nat" ||
+    material.pathKind === "gateway"
+  ) {
+    peer.pathKind = material.pathKind;
+  }
+  if (material.viaServerId) {
+    peer.viaServerId = material.viaServerId;
+    hashPeer.viaServerId = material.viaServerId;
+  }
   if (material.presharedKey) {
     peer.presharedKeyEnvelope = material.presharedKey;
   }
@@ -1251,6 +1900,74 @@ function reconcilePeerViews(material: RelayPeerMaterial): {
   return { peer, hashPeer };
 }
 
+function destinationOwnedCidrs(other: RelayRecord): string[] {
+  const host32 = hostRoute32(other.address);
+  const cidrs: string[] = [];
+  if (host32) cidrs.push(host32);
+  cidrs.push(other.prefix);
+  return cidrs;
+}
+
+export type GatewayRoutedPeer = { serverId: string; viaServerId: string };
+
+type PeerListBuild = {
+  peers: FabricReconcilePeer[];
+  hashPeers: unknown[];
+  unreachablePeers: Array<{ serverId: string }>;
+  gatewayRoutedPeers: GatewayRoutedPeer[];
+};
+
+function planPathToOther(
+  snapshot: FabricReconcileSnapshot,
+  self: RelayRecord,
+  other: RelayRecord,
+  gateways: readonly RelayRecord[],
+): RelayPathPlan {
+  return planRelayPath({
+    self,
+    other,
+    caches: snapshot.caches,
+    gateways,
+    preferredGatewayIds: self.preferredGatewayIds,
+  });
+}
+
+async function emitPeerStanza(
+  snapshot: FabricReconcileSnapshot,
+  self: RelayRecord,
+  other: RelayRecord,
+  plan: RelayPathPlan,
+  extraAllowedIPs: readonly string[],
+  params: {
+    resealPresharedKey?: (sealed: string) => Promise<string | null>;
+  },
+  listenPort: number,
+): Promise<
+  { peer: FabricReconcilePeer; hashPeer: Record<string, unknown> } | null
+> {
+  const sealedPresharedKey = selectPairPresharedEnvelope(
+    self.id,
+    other.id,
+    snapshot.sealedPresharedKeyByRelayId,
+  );
+  const material = await buildPeerMaterial({
+    self,
+    other,
+    listenPort,
+    caches: snapshot.caches,
+    sealedPresharedKey,
+    plan,
+    extraAllowedIPs,
+    advertisedCidrs: snapshot.derivedAdvertisedCidrsByRelayId.get(other.id) ??
+      other.advertisedCidrs,
+    ...(params.resealPresharedKey
+      ? { resealPresharedKey: params.resealPresharedKey }
+      : {}),
+  });
+  if (!material) return null;
+  return reconcilePeerViews(material);
+}
+
 async function buildReconcilePeerLists(
   snapshot: FabricReconcileSnapshot,
   self: RelayRecord,
@@ -1259,38 +1976,76 @@ async function buildReconcilePeerLists(
     resealPresharedKey?: (sealed: string) => Promise<string | null>;
   },
   listenPort: number,
-): Promise<{ peers: FabricReconcilePeer[]; hashPeers: unknown[] }> {
+): Promise<PeerListBuild> {
   const peers: FabricReconcilePeer[] = [];
   const hashPeers: unknown[] = [];
+  const unreachablePeers: Array<{ serverId: string }> = [];
+  const gatewayRoutedPeers: GatewayRoutedPeer[] = [];
   const peerRelays = snapshot.relays.filter(
     (row) => row.serverId !== params.serverId && row.publicKey,
   );
+  const gateways = snapshot.relays.filter((row) =>
+    row.role === "gateway" && Boolean(row.publicKey)
+  );
+  const extraByNextHopId = new Map<string, string[]>();
+  const emitIds = new Set<string>();
+  const plansByRelayId = new Map<string, RelayPathPlan>();
+
   for (const other of peerRelays) {
-    const sealedPresharedKey = selectPairPresharedEnvelope(
-      self.id,
-      other.id,
-      snapshot.sealedPresharedKeyByRelayId,
-    );
-    // Derived advertised CIDRs land in allowedIPs, which hashPeer already
-    // includes in desiredHash, so adding/removing a datacenter subnet makes
-    // relayNeedsFabricEnqueue return true on the next apply.
-    const material = await buildPeerMaterial({
+    const plan = planPathToOther(snapshot, self, other, gateways);
+    plansByRelayId.set(other.id, plan);
+    if (isEmittedDirectPath(plan.selected)) {
+      emitIds.add(other.id);
+      continue;
+    }
+    if (
+      plan.selected.kind === "gateway" && plan.selected.viaRelayId &&
+      plan.selected.viaServerId
+    ) {
+      const extra = extraByNextHopId.get(plan.selected.viaRelayId) ?? [];
+      appendUniqueCidrs(extra, destinationOwnedCidrs(other));
+      extraByNextHopId.set(plan.selected.viaRelayId, extra);
+      emitIds.add(plan.selected.viaRelayId);
+      gatewayRoutedPeers.push({
+        serverId: other.serverId,
+        viaServerId: plan.selected.viaServerId,
+      });
+      continue;
+    }
+    unreachablePeers.push({ serverId: other.serverId });
+  }
+
+  for (const other of peerRelays) {
+    if (!emitIds.has(other.id)) continue;
+    const plan = plansByRelayId.get(other.id) ??
+      planPathToOther(snapshot, self, other, gateways);
+    const extra = extraByNextHopId.get(other.id) ?? [];
+    extra.sort((a, b) => a.localeCompare(b));
+    const views = await emitPeerStanza(
+      snapshot,
+      self,
       other,
+      plan,
+      extra,
+      params,
       listenPort,
-      caches: snapshot.caches,
-      sealedPresharedKey,
-      advertisedCidrs: snapshot.derivedAdvertisedCidrsByRelayId.get(other.id) ??
-        other.advertisedCidrs,
-      ...(params.resealPresharedKey
-        ? { resealPresharedKey: params.resealPresharedKey }
-        : {}),
-    });
-    const views = reconcilePeerViews(material);
+    );
+    if (!views) {
+      unreachablePeers.push({ serverId: other.serverId });
+      continue;
+    }
     peers.push(views.peer);
     hashPeers.push(views.hashPeer);
   }
-  return { peers, hashPeers };
+  return { peers, hashPeers, unreachablePeers, gatewayRoutedPeers };
 }
+
+type FabricReconcileBuild = {
+  payload: FabricReconcileCommandPayload;
+  desiredHash: string;
+  unreachablePeers: Array<{ serverId: string }>;
+  gatewayRoutedPeers: GatewayRoutedPeer[];
+};
 
 export async function buildFabricReconcilePayloadFromSnapshot(
   snapshot: FabricReconcileSnapshot,
@@ -1299,9 +2054,7 @@ export async function buildFabricReconcilePayloadFromSnapshot(
     mtu?: number;
     resealPresharedKey?: (sealed: string) => Promise<string | null>;
   },
-): Promise<
-  { payload: FabricReconcileCommandPayload; desiredHash: string } | null
-> {
+): Promise<FabricReconcileBuild | null> {
   const self = snapshot.relays.find((row) => row.serverId === params.serverId);
   if (!self) return null;
 
@@ -1310,13 +2063,15 @@ export async function buildFabricReconcilePayloadFromSnapshot(
 
   const options = parseFabricOptions(snapshot.fabric.options);
   const mtu = params.mtu ?? options.mtu;
-  const { peers, hashPeers } = await buildReconcilePeerLists(
-    snapshot,
-    self,
-    params,
-    options.listenPort,
-  );
+  const { peers, hashPeers, unreachablePeers, gatewayRoutedPeers } =
+    await buildReconcilePeerLists(
+      snapshot,
+      self,
+      params,
+      options.listenPort,
+    );
   const networks = snapshot.segmentsByServer.get(params.serverId) ?? [];
+  const gatewayFlag = self.role === "gateway" ? { gateway: true as const } : {};
   const shared = {
     enabled: true as const,
     fabricId: snapshot.fabric.id,
@@ -1325,13 +2080,14 @@ export async function buildFabricReconcilePayloadFromSnapshot(
     address: host32,
     prefix: self.prefix,
     ...optionalNetworksField(networks),
+    ...gatewayFlag,
   };
   const payload: EnabledFabricReconcilePayload = { ...shared, peers };
   const desiredHash = await hashFabricReconcileDesired({
     ...shared,
     peers: hashPeers,
   });
-  return { payload, desiredHash };
+  return { payload, desiredHash, unreachablePeers, gatewayRoutedPeers };
 }
 
 export async function buildFabricReconcilePayload(
@@ -1342,9 +2098,7 @@ export async function buildFabricReconcilePayload(
     mtu?: number;
     resealPresharedKey?: (sealed: string) => Promise<string | null>;
   },
-): Promise<
-  { payload: FabricReconcileCommandPayload; desiredHash: string } | null
-> {
+): Promise<FabricReconcileBuild | null> {
   const snapshot = await loadFabricReconcileSnapshot(db, params.fabric);
   return await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: params.serverId,

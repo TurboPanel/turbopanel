@@ -1,23 +1,33 @@
 import { assertEquals } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb, endDbConnection } from '../../db.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../daemon/cell/contracts.ts'
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
+import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../client/authn/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import {
+  binding,
   command,
   container,
+  datacenter,
   environment,
   fabric,
+  ip,
   managed,
+  network,
   node,
   organization,
   principal,
   project,
   server,
   service,
+  tls,
+  variable,
   workspace,
 } from '../db/schema.ts'
+import { createManagedPrincipal } from '../../client/principals/store.ts'
+import { ensureManagedIngressHierarchy } from '../../client/system/hierarchy.ts'
 import {
   createCommandRecord,
   getCommandRecord,
@@ -1391,6 +1401,245 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
         registry,
         buildEnvelope(record, serverId),
       )
+
+      const [row] = await db
+        .select({
+          id: container.id,
+          containerId: container.containerId,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.id, containerRowId))
+        .limit(1)
+      assertEquals(row?.id, containerRowId)
+      assertEquals(row?.containerId, null)
+      assertEquals(row?.status, 'exited')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+})
+
+test('processCommandEnvelope reconciles containers on managed.ingress.reconcile success', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({
+        organizationId,
+        name: 'Managed Ingress Workspace',
+        kind: 'turbopanel',
+      })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        name: 'Managed Ingress Project',
+        metadata: { type: 'docker-compose', component: 'managed-ingress' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        name: 'Managed Ingress',
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        name: 'proxysql',
+        composeServiceName: 'proxysql',
+      })
+      .returning({ id: service.id })
+    const serviceId = serviceRow!.id
+    const containerName = `${serviceId}-sql`
+    const [containerRow] = await db
+      .insert(container)
+      .values({
+        serviceId,
+        serverId,
+        containerId: null,
+        containerName,
+        status: 'pending',
+        role: 'turbopanel',
+        composeServiceName: 'proxysql',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+    const containerRowId = containerRow!.id
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.ingress.reconcile',
+        payload: {
+          serverId,
+          clusters: [],
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            summary: 'managed ingress reconciled',
+            appliedUsers: [],
+            appliedBackends: [],
+            restarted: false,
+            containers: [
+              {
+                serviceId,
+                composeServiceName: 'proxysql',
+                containerId: 'proxysql-cid-1',
+                containerName,
+                status: 'running',
+                role: 'turbopanel',
+              },
+            ],
+          },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const updated = await getCommandRecord(db, record.id)
+      assertEquals(updated?.status, 'succeeded')
+
+      const [row] = await db
+        .select({
+          id: container.id,
+          containerId: container.containerId,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.id, containerRowId))
+        .limit(1)
+      assertEquals(row?.id, containerRowId)
+      assertEquals(row?.containerId, 'proxysql-cid-1')
+      assertEquals(row?.status, 'running')
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(service).where(eq(service.environmentId, environmentId))
+      await db.delete(environment).where(eq(environment.id, environmentId))
+      await db.delete(project).where(eq(project.id, projectRow!.id))
+      await db.delete(workspace).where(eq(workspace.id, workspaceRow!.id))
+    }
+  })
+})
+
+test('processCommandEnvelope clears pins when managed.ingress.reconcile reports empty containers', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+
+    const [workspaceRow] = await db
+      .insert(workspace)
+      .values({
+        organizationId,
+        name: 'Managed Ingress Empty Workspace',
+        kind: 'turbopanel',
+      })
+      .returning({ id: workspace.id })
+    const [projectRow] = await db
+      .insert(project)
+      .values({
+        workspaceId: workspaceRow!.id,
+        name: 'Managed Ingress Empty Project',
+        metadata: { type: 'docker-compose', component: 'managed-ingress' },
+      })
+      .returning({ id: project.id })
+    const [environmentRow] = await db
+      .insert(environment)
+      .values({
+        projectId: projectRow!.id,
+        serverId,
+        name: 'Managed Ingress',
+      })
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    const [serviceRow] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        name: 'proxysql',
+        composeServiceName: 'proxysql',
+      })
+      .returning({ id: service.id })
+    const serviceId = serviceRow!.id
+    const containerName = `${serviceId}-sql`
+    const [containerRow] = await db
+      .insert(container)
+      .values({
+        serviceId,
+        serverId,
+        containerId: 'old-proxysql-cid',
+        containerName,
+        status: 'running',
+        role: 'turbopanel',
+        composeServiceName: 'proxysql',
+        ordinal: 1,
+      })
+      .returning({ id: container.id })
+    const containerRowId = containerRow!.id
+
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.ingress.reconcile',
+        payload: {
+          serverId,
+          clusters: [],
+        },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            summary: 'managed ingress torn down',
+            appliedUsers: [],
+            appliedBackends: [],
+            restarted: false,
+            containers: [],
+          },
+        },
+      })
+
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+      )
+
+      const updated = await getCommandRecord(db, record.id)
+      assertEquals(updated?.status, 'succeeded')
 
       const [row] = await db
         .select({
@@ -3571,6 +3820,424 @@ test('processCommandEnvelope deletes member only after destroy success with dele
     } finally {
       await db.delete(node).where(eq(node.managedId, managedId))
     }
+  })
+})
+
+/**
+ * Three servers in one datacenter: primary member, standby member, and a
+ * **third** server that hosts no engine member but runs a compose service
+ * bound to the cluster. The promote fan-out has to reach that consumer host —
+ * its ProxySQL is what routes the app's writes.
+ */
+type PromoteConsumerFixture = {
+  db: ReturnType<typeof createDenoDb>
+  organizationId: string
+  primaryServerId: string
+  standbyServerId: string
+  consumerServerId: string
+  managedId: string
+  primaryMemberId: string
+  standbyMemberId: string
+  bindingId: string
+  secretsConfig: ReturnType<typeof parseSecretsEnv>
+  dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
+}
+
+async function insertPromoteFixtureServer(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  name: string,
+): Promise<string> {
+  const now = new Date().toISOString()
+  const [row] = await db
+    .insert(server)
+    .values({ createdAt: now, updatedAt: now, organizationId, name })
+    .returning({ id: server.id })
+  const serverId = row!.id
+  await attachConnectedDaemonStatus(db, serverId)
+  return serverId
+}
+
+/**
+ * Delete every workspace-tree / network row this organization owns.
+ *
+ * `buildManagedIngressReconcilePayload` self-heals a managed-ingress
+ * hierarchy per reconciled server, so the fan-out creates rows the test never
+ * named; sweeping by organization keeps `RESTRICT` foreign keys from blocking
+ * the `server` / `organization` deletes.
+ */
+async function sweepPromoteFixtureOrganization(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  serverIds: readonly string[],
+): Promise<void> {
+  const workspaceIds = (
+    await db
+      .select({ id: workspace.id })
+      .from(workspace)
+      .where(eq(workspace.organizationId, organizationId))
+  ).map((row) => row.id)
+  const projectIds = workspaceIds.length === 0 ? [] : (
+    await db
+      .select({ id: project.id })
+      .from(project)
+      .where(inArray(project.workspaceId, workspaceIds))
+  ).map((row) => row.id)
+  const environmentIds = projectIds.length === 0 ? [] : (
+    await db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(inArray(environment.projectId, projectIds))
+  ).map((row) => row.id)
+  const serviceIds = environmentIds.length === 0 ? [] : (
+    await db
+      .select({ id: service.id })
+      .from(service)
+      .where(inArray(service.environmentId, environmentIds))
+  ).map((row) => row.id)
+  const managedIds = environmentIds.length === 0 ? [] : (
+    await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(inArray(managed.environmentId, environmentIds))
+  ).map((row) => row.id)
+
+  if (serviceIds.length > 0) {
+    await db.delete(variable).where(inArray(variable.serviceId, serviceIds))
+    await db.delete(binding).where(inArray(binding.serviceId, serviceIds))
+  }
+  if (managedIds.length > 0) {
+    await db.delete(node).where(inArray(node.managedId, managedIds))
+    await db.delete(principal).where(inArray(principal.managedId, managedIds))
+  }
+  // Ingress hierarchy self-heal allocates containers on every reconciled
+  // server, including the outer fixture's server — sweep by organization so
+  // its own teardown is not blocked by a `RESTRICT` container reference.
+  const orgServerIds = (
+    await db
+      .select({ id: server.id })
+      .from(server)
+      .where(eq(server.organizationId, organizationId))
+  ).map((row) => row.id)
+  if (orgServerIds.length > 0) {
+    await db.delete(container).where(inArray(container.serverId, orgServerIds))
+  }
+  if (serviceIds.length > 0) {
+    await db.delete(service).where(inArray(service.id, serviceIds))
+  }
+  if (managedIds.length > 0) {
+    await db.delete(managed).where(inArray(managed.id, managedIds))
+  }
+  if (environmentIds.length > 0) {
+    await db.delete(environment).where(inArray(environment.id, environmentIds))
+  }
+  if (projectIds.length > 0) {
+    await db.delete(project).where(inArray(project.id, projectIds))
+  }
+  await db.delete(ip).where(eq(ip.organizationId, organizationId))
+  await db.delete(network).where(eq(network.organizationId, organizationId))
+  await db.delete(datacenter).where(eq(datacenter.organizationId, organizationId))
+  await db.delete(command).where(inArray(command.serverId, [...serverIds]))
+  await db.delete(server).where(inArray(server.id, [...serverIds]))
+  if (workspaceIds.length > 0) {
+    await db.delete(workspace).where(inArray(workspace.id, workspaceIds))
+  }
+  await db.delete(tls).where(eq(tls.organizationId, organizationId))
+}
+
+async function withPromoteConsumerFixtures(
+  fn: (ctx: PromoteConsumerFixture) => Promise<void>,
+): Promise<void> {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+    const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+      secretsConfig,
+      'data-encryption',
+    )
+
+    const standbyServerId = await insertPromoteFixtureServer(
+      db,
+      organizationId,
+      'Promote Fan-out Standby',
+    )
+    const consumerServerId = await insertPromoteFixtureServer(
+      db,
+      organizationId,
+      'Promote Fan-out Consumer',
+    )
+    const extraServerIds = [standbyServerId, consumerServerId]
+
+    try {
+      const now = new Date().toISOString()
+      // Shared datacenter so ProxySQL on the consumer host has a private path
+      // to both engine members (`local → datacenter` ladder).
+      const [dcRow] = await db
+        .insert(datacenter)
+        .values({
+          organizationId,
+          name: 'Promote Fan-out DC',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: datacenter.id })
+      const [netRow] = await db
+        .insert(network)
+        .values({
+          organizationId,
+          datacenterId: dcRow!.id,
+          kind: 'datacenter',
+          cidr: '10.40.50.0/24',
+          name: 'Promote Fan-out LAN',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: network.id })
+      const pins: Array<[string, string]> = [
+        [serverId, '10.40.50.11'],
+        [standbyServerId, '10.40.50.12'],
+        [consumerServerId, '10.40.50.13'],
+      ]
+      for (const [pinServerId, address] of pins) {
+        await db.insert(ip).values({
+          organizationId,
+          datacenterId: dcRow!.id,
+          networkId: netRow!.id,
+          serverId: pinServerId,
+          address,
+          allocation: 'dedicated',
+          scope: 'datacenter',
+          createdAt: now,
+          updatedAt: now,
+        })
+      }
+
+      const [workspaceRow] = await db
+        .insert(workspace)
+        .values({ organizationId, name: 'Promote Fan-out Workspace' })
+        .returning({ id: workspace.id })
+      const [managedProjectRow] = await db
+        .insert(project)
+        .values({
+          workspaceId: workspaceRow!.id,
+          name: 'Promote Fan-out Database',
+          metadata: { type: 'managed', code: 'postgres' },
+        })
+        .returning({ id: project.id })
+      const [managedEnvironmentRow] = await db
+        .insert(environment)
+        .values({
+          projectId: managedProjectRow!.id,
+          serverId,
+          name: 'Production',
+        })
+        .returning({ id: environment.id })
+      const [managedRow] = await db
+        .insert(managed)
+        .values({
+          environmentId: managedEnvironmentRow!.id,
+          serverId,
+          name: 'Promote Fan-out Postgres',
+          engine: 'postgres',
+          status: 'ready',
+          metadata: {},
+          options: { settings: {}, databases: ['postgres'] },
+        })
+        .returning({ id: managed.id })
+      const managedId = managedRow!.id
+
+      const [primaryMemberRow] = await db
+        .insert(node)
+        .values({
+          managedId,
+          serverId,
+          role: 'primary',
+          ordinal: 1,
+          status: 'ready',
+          privatePort: 45001,
+        })
+        .returning({ id: node.id })
+      const [standbyMemberRow] = await db
+        .insert(node)
+        .values({
+          managedId,
+          serverId: standbyServerId,
+          role: 'replica',
+          replicaClass: 'failover',
+          ordinal: 2,
+          status: 'ready',
+          privatePort: 45002,
+        })
+        .returning({ id: node.id })
+
+      // Engine containers: a local member's ProxySQL backend address is its
+      // Docker container name, so `managed.ingress.reconcile` cannot be built
+      // for a member server without an allocated `container` row.
+      const [engineServiceRow] = await db
+        .insert(service)
+        .values({
+          environmentId: managedEnvironmentRow!.id,
+          name: 'postgres',
+          composeServiceName: 'postgres',
+        })
+        .returning({ id: service.id })
+      for (const [engineServerId, ordinal] of [[serverId, 1], [standbyServerId, 2]] as const) {
+        await db.insert(container).values({
+          serviceId: engineServiceRow!.id,
+          serverId: engineServerId,
+          containerName: `managed-postgres-${ordinal}`,
+          composeServiceName: 'postgres',
+          role: 'service',
+          ordinal,
+          status: 'running',
+        })
+      }
+
+      const rootPrincipal = await createManagedPrincipal(db, dataEncryptionSecrets, {
+        managedId,
+        provider: 'postgres',
+        username: 'postgres',
+        metadata: { managedRoot: true, databases: ['postgres'] },
+      })
+
+      // Consumer app on the third server, bound to the cluster.
+      const [consumerProjectRow] = await db
+        .insert(project)
+        .values({
+          workspaceId: workspaceRow!.id,
+          name: 'Promote Fan-out App',
+          metadata: { type: 'docker-compose' },
+        })
+        .returning({ id: project.id })
+      const [consumerEnvironmentRow] = await db
+        .insert(environment)
+        .values({
+          projectId: consumerProjectRow!.id,
+          serverId: consumerServerId,
+          name: 'Production',
+        })
+        .returning({ id: environment.id })
+      const [consumerServiceRow] = await db
+        .insert(service)
+        .values({
+          environmentId: consumerEnvironmentRow!.id,
+          name: 'api',
+          composeServiceName: 'api',
+        })
+        .returning({ id: service.id })
+      const [bindingRow] = await db
+        .insert(binding)
+        .values({
+          principalId: rootPrincipal.principalId,
+          serviceId: consumerServiceRow!.id,
+          databaseName: 'postgres',
+          keyPrefix: 'DB',
+        })
+        .returning({ id: binding.id })
+
+      await fn({
+        db,
+        organizationId,
+        primaryServerId: serverId,
+        standbyServerId,
+        consumerServerId,
+        managedId,
+        primaryMemberId: primaryMemberRow!.id,
+        standbyMemberId: standbyMemberRow!.id,
+        bindingId: bindingRow!.id,
+        secretsConfig,
+        dataEncryptionSecrets,
+      })
+    } finally {
+      await sweepPromoteFixtureOrganization(db, organizationId, extraServerIds)
+    }
+  })
+}
+
+test('processCommandEnvelope fans promote ingress reconcile out to bound consumer servers', async () => {
+  await withPromoteConsumerFixtures(async ({
+    db,
+    organizationId,
+    primaryServerId,
+    standbyServerId,
+    consumerServerId,
+    managedId,
+    primaryMemberId,
+    standbyMemberId,
+    bindingId,
+    secretsConfig,
+    dataEncryptionSecrets,
+  }) => {
+    const before = await db
+      .select({ id: variable.id })
+      .from(variable)
+      .where(eq(variable.bindingId, bindingId))
+    assertEquals(before.length, 0)
+
+    const queue = createRecordingCommandQueue()
+    const record = await createCommandRecord(db, {
+      serverId: standbyServerId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.promote',
+      payload: {
+        managedId,
+        memberId: standbyMemberId,
+        engine: 'postgres',
+        demoteMemberId: primaryMemberId,
+      },
+    })
+
+    const registry = createDispatchMockRegistry(standbyServerId, {
+      waitForRequestResult: {
+        serverId: standbyServerId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'done',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        result: {
+          promotedMemberId: standbyMemberId,
+          demotedMemberId: primaryMemberId,
+          status: 'ready',
+          summary: 'promoted',
+        },
+      },
+    })
+
+    await processCommandEnvelope(
+      db,
+      registry,
+      buildEnvelope(record, standbyServerId),
+      { commandQueue: queue, secretsConfig, dataEncryptionSecrets },
+    )
+
+    assertEquals(await getCommandRecord(db, record.id).then((r) => r?.status), 'succeeded')
+
+    // Member servers **and** the consuming server all reconcile ProxySQL: the
+    // consumer's frontend is what routes app writes at the new primary.
+    const reconciledServerIds = new Set(
+      queue.envelopes
+        .filter((envelope) => envelope.type === 'managed.ingress.reconcile')
+        .map((envelope) => envelope.serverId),
+    )
+    assertEquals(reconciledServerIds.has(primaryServerId), true)
+    assertEquals(reconciledServerIds.has(standbyServerId), true)
+    assertEquals(reconciledServerIds.has(consumerServerId), true)
+
+    // Binding-owned HOST/PORT variables are re-materialized against the
+    // consumer host's ProxySQL listener, not the demoted primary's engine.
+    const materialized = await db
+      .select({ key: variable.key, value: variable.value })
+      .from(variable)
+      .where(eq(variable.bindingId, bindingId))
+    const byKey = new Map(materialized.map((row) => [row.key, row.value]))
+    const hierarchy = await ensureManagedIngressHierarchy(db, {
+      organizationId,
+      serverId: consumerServerId,
+    })
+    assertEquals(byKey.get('DB_HOST'), hierarchy.containerName)
+    assertEquals(byKey.get('DB_PORT'), '15432')
   })
 })
 

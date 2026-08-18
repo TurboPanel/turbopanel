@@ -8,14 +8,12 @@ import type { Db } from '../../db.ts'
 import {
   resolvePrivateEndpoints,
   type PrivateEndpointError,
+  type PrivateEndpointPurpose,
   type PrivateEndpointTransport,
   type ResolvedPrivateEndpoint,
 } from '../../lib/net/private-endpoint.ts'
 import { container, node, server } from '../../lib/db/schema.ts'
 import type { ManagedReplicationHealth } from '../../lib/commands/schemas.ts'
-
-/** Max replica members per cluster (ordinals 2 and 3). Primary is unlimited-slot. */
-export const MANAGED_MAX_REPLICAS = 2
 
 /**
  * High contiguous host-port range for multi-member private listeners
@@ -25,12 +23,14 @@ export const MANAGED_PRIVATE_PORT_MIN = 45_000
 export const MANAGED_PRIVATE_PORT_MAX = 45_999
 
 export type ManagedMemberRole = 'primary' | 'replica'
+export type ManagedReplicaClass = 'failover' | 'read'
 
 export type ManagedMemberRow = {
   id: string
   managedId: string
   serverId: string
   role: string
+  replicaClass: string | null
   readEligible: boolean
   ordinal: number
   replicationTransport: string | null
@@ -47,6 +47,7 @@ export type SerializedManagedMember = {
   serverId: string
   serverDisplayName: string | null
   role: ManagedMemberRole
+  replicaClass: ManagedReplicaClass | null
   readEligible: boolean
   ordinal: number
   status: string | null
@@ -75,6 +76,7 @@ const MEMBER_RETURNING = {
   managedId: node.managedId,
   serverId: node.serverId,
   role: node.role,
+  replicaClass: node.replicaClass,
   readEligible: node.isReadEligible,
   ordinal: node.ordinal,
   replicationTransport: node.replicationTransport,
@@ -192,13 +194,14 @@ export async function listManagedMembersForManagedIds(
     .orderBy(asc(node.ordinal))
 }
 
-/** Smallest free ordinal in 2..3, or null when the replica set is full. */
-export function nextReplicaOrdinal(members: readonly ManagedMemberRow[]): number | null {
+/** Smallest unused ordinal ≥ 2 (no replica-count ceiling). */
+export function nextReplicaOrdinal(members: readonly ManagedMemberRow[]): number {
   const used = new Set(members.map((m) => m.ordinal))
-  for (let ordinal = 2; ordinal <= MANAGED_MAX_REPLICAS + 1; ordinal++) {
-    if (!used.has(ordinal)) return ordinal
+  let ordinal = 2
+  while (used.has(ordinal)) {
+    ordinal++
   }
-  return null
+  return ordinal
 }
 
 export function serializeManagedMember(
@@ -206,10 +209,16 @@ export function serializeManagedMember(
   serverDisplayName: string | null,
 ): SerializedManagedMember {
   const role: ManagedMemberRole = row.role === 'replica' ? 'replica' : 'primary'
+  const replicaClass =
+    role === 'replica' &&
+      (row.replicaClass === 'failover' || row.replicaClass === 'read')
+      ? row.replicaClass
+      : null
   const transport =
     row.replicationTransport === 'local' ||
       row.replicationTransport === 'datacenter' ||
-      row.replicationTransport === 'fabric'
+      row.replicationTransport === 'fabric' ||
+      row.replicationTransport === 'public'
       ? row.replicationTransport
       : null
   const out: SerializedManagedMember = {
@@ -217,6 +226,7 @@ export function serializeManagedMember(
     serverId: row.serverId,
     serverDisplayName,
     role,
+    replicaClass,
     readEligible: row.readEligible,
     ordinal: row.ordinal,
     status: row.status,
@@ -250,6 +260,34 @@ export async function listSerializedManagedMembers(
   )
 }
 
+/** A read replica is the only member allowed on the fabric/public ladder. */
+function isReadMember(
+  row: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>,
+): boolean {
+  return row.role === 'replica' && row.replicaClass === 'read'
+}
+
+/**
+ * Replication ladder for the link between two cluster members.
+ *
+ * Failover-critical links (primary ↔ failover replica, and failover ↔ failover
+ * so a promote keeps every remaining failover peer reachable) stay on the
+ * strict `local → datacenter` ladder; any link touching a `read` replica may
+ * ride the longer `datacenter → fabric → public` ladder. A legacy `null`
+ * `replica_class` counts as failover — same precedence as the promote transport
+ * recompute in `ingress-desired.ts`, and the fail-safe direction, since a typed
+ * `private_path_unavailable` beats silently shipping a replication path a
+ * promote cannot honor.
+ */
+export function replicationPurposeForMemberPair(
+  a: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>,
+  b: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>,
+): PrivateEndpointPurpose {
+  return isReadMember(a) || isReadMember(b)
+    ? 'read-replication'
+    : 'failover-replication'
+}
+
 /**
  * Batched private-endpoint resolution from the primary toward every replica.
  * Returns transport per member id, or a typed error.
@@ -257,6 +295,7 @@ export async function listSerializedManagedMembers(
 export async function resolveMemberTransports(
   db: Db,
   members: readonly ManagedMemberRow[],
+  purpose: PrivateEndpointPurpose,
 ): Promise<
   | Map<string, PrivateEndpointTransport>
   | PrivateEndpointError
@@ -275,6 +314,7 @@ export async function resolveMemberTransports(
   const endpoints = await resolvePrivateEndpoints(db, {
     fromServerId: primary.serverId,
     toServerIds: replicas.map((replica) => replica.serverId),
+    purpose,
   })
   for (const replica of replicas) {
     const resolved = endpoints.get(replica.serverId)
@@ -498,12 +538,46 @@ function resolveRemotePeer(
 }
 
 /**
+ * Batched private-endpoint resolution for one member's remote peers, grouped by
+ * the class-aware purpose of each link (at most one round trip per purpose).
+ */
+async function resolvePeerEndpointsByPurpose(
+  db: Db,
+  fromMember: ManagedMemberRow,
+  remotePeers: readonly ManagedMemberRow[],
+): Promise<Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>> {
+  const byPurpose = new Map<PrivateEndpointPurpose, string[]>()
+  for (const peer of remotePeers) {
+    const purpose = replicationPurposeForMemberPair(fromMember, peer)
+    const group = byPurpose.get(purpose)
+    if (group) group.push(peer.serverId)
+    else byPurpose.set(purpose, [peer.serverId])
+  }
+
+  const endpoints = new Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>()
+  for (const [purpose, toServerIds] of byPurpose) {
+    const resolved = await resolvePrivateEndpoints(db, {
+      fromServerId: fromMember.serverId,
+      toServerIds,
+      purpose,
+    })
+    for (const serverId of toServerIds) {
+      const entry = resolved.get(serverId)
+      if (entry) endpoints.set(serverId, entry)
+    }
+  }
+  return endpoints
+}
+
+/**
  * Resolve peer endpoints for one member (reachability of every other member
  * from this member's server). Used when building apply payloads.
  *
  * Co-resident peers are dialled by Docker container name on `turbopanel-managed`
  * (never host loopback). Remote peers use the private address + allocated
- * `private_port` private listener.
+ * `private_port` private listener, resolved with the per-link ladder from
+ * `replicationPurposeForMemberPair` — a failover peer never silently falls back
+ * to fabric/public just because a read replica in the same cluster may.
  */
 export async function resolvePeersForMember(
   db: Db,
@@ -515,10 +589,11 @@ export async function resolvePeersForMember(
   if (others.length === 0) return []
 
   const containerNames = await loadMemberContainerNames(db, members)
-  const endpoints = await resolvePrivateEndpoints(db, {
-    fromServerId: fromMember.serverId,
-    toServerIds: others.map((m) => m.serverId),
-  })
+  const endpoints = await resolvePeerEndpointsByPurpose(
+    db,
+    fromMember,
+    others.filter((m) => m.serverId !== fromMember.serverId),
+  )
 
   const peers: ManagedMemberPeer[] = []
   for (const other of others) {
@@ -537,6 +612,7 @@ export async function insertManagedReplicaMember(
     managedId: string
     serverId: string
     ordinal: number
+    replicaClass: ManagedReplicaClass
     readEligible: boolean
     replicationTransport: PrivateEndpointTransport | null
   },
@@ -547,6 +623,7 @@ export async function insertManagedReplicaMember(
       managedId: params.managedId,
       serverId: params.serverId,
       role: 'replica',
+      replicaClass: params.replicaClass,
       isReadEligible: params.readEligible,
       ordinal: params.ordinal,
       replicationTransport: params.replicationTransport,
@@ -568,6 +645,22 @@ export async function updateManagedMemberReadEligible(
     .update(node)
     .set({
       isReadEligible: readEligible,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(node.id, memberId))
+    .returning(MEMBER_RETURNING)
+  return updated ?? null
+}
+
+export async function updateManagedMemberReplicaClass(
+  db: Db,
+  memberId: string,
+  replicaClass: ManagedReplicaClass,
+): Promise<ManagedMemberRow | null> {
+  const [updated] = await db
+    .update(node)
+    .set({
+      replicaClass,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(node.id, memberId))

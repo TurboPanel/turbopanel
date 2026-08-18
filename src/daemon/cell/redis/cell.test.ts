@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   generateDeliveryId,
   generateRequestId,
@@ -20,7 +20,10 @@ import {
   requestsKey,
   snapshotKey,
 } from "./keys.ts";
-import { createFakeRedisCellClient } from "./fake-redis-cell-client.ts";
+import {
+  createFakeRedisCellClient,
+  type FakeRedisCellClient,
+} from "./fake-redis-cell-client.ts";
 import type { RedisCellClient } from "./client.ts";
 
 /**
@@ -46,7 +49,7 @@ function createTestCell(serverId?: string): {
 }
 
 async function cleanupCell(
-  client: RedisCellClient,
+  client: FakeRedisCellClient,
   serverId: string,
 ): Promise<void> {
   await client.deleteByPattern(cellKeyPattern(serverId));
@@ -757,6 +760,63 @@ test("handleInbound completes addresses dev-sync and managed-logs requests", asy
     });
     assertEquals(logsDone?.status, "done");
     assertEquals(logsDone?.result, { logs: "line1\nline2" });
+  } finally {
+    await cleanupCell(client, serverId);
+  }
+});
+
+test("handleInbound correlates fabric-paths-result done and failed", async () => {
+  const { client, cell, serverId } = createTestCell();
+  try {
+    const at = new Date().toISOString();
+    const doneId = generateRequestId();
+    await cell.enqueue({
+      kind: "fabric-paths-request",
+      deliveryId: generateDeliveryId(),
+      requestId: doneId,
+      at,
+      fabricId: "00000000-0000-4000-8000-000000000001",
+      probeMs: 0,
+      candidates: [],
+    });
+    const done = await cell.handleInbound({
+      kind: "fabric-paths-result",
+      requestId: doneId,
+      at,
+      paths: [{
+        publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        endpoint: "203.0.113.50:48172",
+        health: "healthy",
+      }],
+    });
+    assertEquals(done?.status, "done");
+    assertEquals(done?.result, {
+      paths: [{
+        publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        endpoint: "203.0.113.50:48172",
+        health: "healthy",
+      }],
+    });
+
+    const failId = generateRequestId();
+    await cell.enqueue({
+      kind: "fabric-paths-request",
+      deliveryId: generateDeliveryId(),
+      requestId: failId,
+      at,
+      fabricId: "00000000-0000-4000-8000-000000000001",
+      probeMs: 0,
+      candidates: [],
+    });
+    const failed = await cell.handleInbound({
+      kind: "fabric-paths-result",
+      requestId: failId,
+      at,
+      paths: [],
+      error: "wg dump failed",
+    });
+    assertEquals(failed?.status, "failed");
+    assertEquals(failed?.error, "wg dump failed");
   } finally {
     await cleanupCell(client, serverId);
   }

@@ -7,14 +7,18 @@ import {
 } from '../../lib/fabric/enqueue.ts'
 import {
   type EndpointAddressCaches,
-  FabricAllocationError,
+  type FabricPathSummaryEntry,
   type FabricRecord,
   type FabricSegmentMaterial,
   type RelayRecord,
   type RelayRole,
-  resolveRelayEndpointAddress,
+  resolveRelayGlobalEndpointAddress,
 } from '../../lib/db/fabric-records.ts'
 import { parseFabricOptions } from '../../lib/fabric/cidr.ts'
+import {
+  PREFERRED_GATEWAY_IDS_MAX,
+  resolveEffectiveAllowRelay,
+} from '../../lib/fabric/policy.ts'
 import { isValidCidr, isValidIpAddress } from '../../lib/ip-address.ts'
 import { isValidWireguardPublicKey } from '../../lib/fabric/wg.ts'
 import type { GatewayRelayReadyError } from '../../lib/net/datacenter-networks.ts'
@@ -29,6 +33,8 @@ export type RelayPatchReconcileFn = typeof reconcileFabricMembership
 export type { RelayMetadata } from '../../lib/db/fabric-records.ts'
 
 const ADVERTISED_CIDRS_MAX = 32
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 type FieldResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -38,11 +44,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 export function parseFabricPutBody(
   body: unknown,
-): { ok: true; enabled: boolean } | { ok: false; error: string } {
+): { ok: true; enabled: boolean; allowRelay?: boolean } | { ok: false; error: string } {
   if (!isPlainObject(body) || typeof body.enabled !== 'boolean') {
     return { ok: false, error: 'Invalid request' }
   }
-  return { ok: true, enabled: body.enabled }
+  const parsed: { ok: true; enabled: boolean; allowRelay?: boolean } = {
+    ok: true,
+    enabled: body.enabled,
+  }
+  if (body.allowRelay !== undefined) {
+    if (typeof body.allowRelay !== 'boolean') {
+      return { ok: false, error: 'Invalid allowRelay' }
+    }
+    parsed.allowRelay = body.allowRelay
+  }
+  return parsed
 }
 
 export type RelayPatchBody = {
@@ -51,6 +67,8 @@ export type RelayPatchBody = {
   keepalive?: number | null
   endpointAddress?: string | null
   presharedKey?: string | null
+  allowRelay?: boolean | null
+  preferredGatewayIds?: string[]
 }
 
 function parseRelayRoleField(value: unknown): FieldResult<RelayRole> {
@@ -93,6 +111,30 @@ function parseEndpointAddressField(value: unknown): FieldResult<string | null> {
     return { ok: false, error: 'Invalid endpointAddress' }
   }
   return { ok: true, value }
+}
+
+function parseAllowRelayField(value: unknown): FieldResult<boolean | null> {
+  if (value === null) return { ok: true, value: null }
+  if (typeof value !== 'boolean') return { ok: false, error: 'Invalid allowRelay' }
+  return { ok: true, value }
+}
+
+function parsePreferredGatewayIdsField(value: unknown): FieldResult<string[]> {
+  if (value === null) return { ok: true, value: [] }
+  if (!Array.isArray(value) || value.length > PREFERRED_GATEWAY_IDS_MAX) {
+    return { ok: false, error: 'Invalid preferredGatewayIds' }
+  }
+  const ids: string[] = []
+  const seen = new Set<string>()
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !UUID_RE.test(entry)) {
+      return { ok: false, error: 'Invalid preferredGatewayIds' }
+    }
+    if (seen.has(entry)) continue
+    seen.add(entry)
+    ids.push(entry)
+  }
+  return { ok: true, value: ids }
 }
 
 function parsePresharedKeyField(value: unknown): FieldResult<string | null> {
@@ -157,6 +199,20 @@ export function parseRelayPatchBody(
     parsePresharedKeyField,
   )
   if (!psk.ok) return psk
+  const allowRelay = applyOptionalPatchField(
+    patch,
+    'allowRelay',
+    body.allowRelay,
+    parseAllowRelayField,
+  )
+  if (!allowRelay.ok) return allowRelay
+  const preferred = applyOptionalPatchField(
+    patch,
+    'preferredGatewayIds',
+    body.preferredGatewayIds,
+    parsePreferredGatewayIdsField,
+  )
+  if (!preferred.ok) return preferred
 
   if (patch.role === 'member') {
     patch.advertisedCidrs = []
@@ -171,6 +227,8 @@ export type RelayPatchUpdateFields = {
   keepalive?: number | null
   endpointAddress?: string | null
   presharedKey?: string | null
+  allowRelay?: boolean | null
+  preferredGatewayIds?: string[]
 }
 
 export function relayPatchUpdateFields(
@@ -188,6 +246,10 @@ export function relayPatchUpdateFields(
   }
   if (sealedPresharedKey !== undefined) {
     fields.presharedKey = sealedPresharedKey
+  }
+  if (patch.allowRelay !== undefined) fields.allowRelay = patch.allowRelay
+  if (patch.preferredGatewayIds !== undefined) {
+    fields.preferredGatewayIds = patch.preferredGatewayIds
   }
   return fields
 }
@@ -215,6 +277,57 @@ export function gatewayRolePatchErrorResponse(
 ): Response | null {
   if (role !== 'gateway') return null
   return gatewayRelayReadyErrorResponse(gatewayError)
+}
+
+export function preferredGatewayInvalidErrorResponse(): Response {
+  return Response.json({ error: 'preferred_gateway_invalid' }, { status: 422 })
+}
+
+export function findByServerId<T extends { serverId: string }>(
+  rows: readonly T[],
+  serverId: string,
+): T | undefined {
+  return rows.find((row) => row.serverId === serverId)
+}
+
+export function preferredGatewayPatchErrorResponse(
+  patch: Pick<RelayPatchBody, 'preferredGatewayIds' | 'role'>,
+  relays: readonly RelayRecord[],
+  serverId: string,
+): Response | null {
+  if (!patch.preferredGatewayIds) return null
+  return preferredGatewayIdsErrorResponse(
+    patch.preferredGatewayIds,
+    relays,
+    serverId,
+    patch.role,
+  )
+}
+
+export function bindSecretEncryptFn<T>(
+  secrets: T | undefined,
+  encrypt: (secrets: T, plaintext: string) => Promise<string>,
+): ((plaintext: string) => Promise<string>) | null {
+  if (!secrets) return null
+  return (plaintext) => encrypt(secrets, plaintext)
+}
+
+export function preferredGatewayIdsErrorResponse(
+  preferredGatewayIds: readonly string[],
+  relays: readonly RelayRecord[],
+  patchServerId: string,
+  patchedRole: RelayRole | undefined,
+): Response | null {
+  if (preferredGatewayIds.length === 0) return null
+  const gatewayServerIds = new Set<string>()
+  for (const row of relays) {
+    const role = row.serverId === patchServerId ? (patchedRole ?? row.role) : row.role
+    if (role === 'gateway') gatewayServerIds.add(row.serverId)
+  }
+  for (const id of preferredGatewayIds) {
+    if (!gatewayServerIds.has(id)) return preferredGatewayInvalidErrorResponse()
+  }
+  return null
 }
 
 export function fabricTypedEnqueueErrorResponse(
@@ -283,6 +396,12 @@ export type FabricRelayApiRow = {
   hasPresharedKey: boolean
   segments: FabricSegmentMaterial[]
   observed: FabricRelayObserved | null
+  allowRelay: boolean | null
+  effectiveAllowRelay: boolean
+  preferredGatewayIds: string[]
+  gatewayEligible: boolean
+  /** Diagnostics-only per-peer path summary. */
+  paths: FabricPathSummaryEntry[]
 }
 
 export function observedForRelay(
@@ -310,21 +429,24 @@ export function observedForRelay(
   return match
 }
 
+/**
+ * `resolvedEndpoint` for GET fabric: the operator pin, else a public address,
+ * else `null`.
+ *
+ * GET lists every relay with no viewer/`self` pair, so this value has to be
+ * meaningful from **anywhere**. Private datacenter pins are therefore excluded
+ * — a LAN address published here read as a generic endpoint to callers in
+ * other datacenters, who cannot route it. Source-aware detail (including LAN,
+ * NAT, and gateway hops) lives on `paths[]`, which is stamped per source relay.
+ */
 export function resolveRelayEndpointOrNull(
   row: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
-  caches: EndpointAddressCaches,
+  caches: Pick<
+    EndpointAddressCaches,
+    'publicAddressByServer' | 'reportedByServer'
+  >,
 ): string | null {
-  try {
-    return resolveRelayEndpointAddress(row, caches)
-  } catch (err) {
-    if (
-      err instanceof FabricAllocationError &&
-      err.kind === 'relay_endpoint_unavailable'
-    ) {
-      return null
-    }
-    throw err
-  }
+  return resolveRelayGlobalEndpointAddress(row, caches)
 }
 
 export function toFabricRelayApiRow(params: {
@@ -334,6 +456,7 @@ export function toFabricRelayApiRow(params: {
   caches: EndpointAddressCaches
   relays: readonly RelayRecord[]
   resolvedAdvertisedCidrs: string[]
+  orgAllowRelay?: boolean
 }): FabricRelayApiRow {
   return {
     serverId: params.relay.serverId,
@@ -349,6 +472,14 @@ export function toFabricRelayApiRow(params: {
     hasPresharedKey: params.hasPresharedKey,
     segments: params.segments,
     observed: observedForRelay(params.relays, params.relay.publicKey),
+    allowRelay: params.relay.allowRelay,
+    effectiveAllowRelay: resolveEffectiveAllowRelay(
+      params.orgAllowRelay === true,
+      params.relay.allowRelay,
+    ),
+    preferredGatewayIds: params.relay.preferredGatewayIds,
+    gatewayEligible: params.relay.role === 'gateway',
+    paths: params.relay.metadata.paths?.entries ?? [],
   }
 }
 
@@ -357,14 +488,19 @@ export function fabricSettingsResponse(
   relays: FabricRelayApiRow[] = [],
 ): {
   enabled: boolean
-  fabric?: { id: string; cidr: string; mtu: number }
+  fabric?: { id: string; cidr: string; mtu: number; allowRelay: boolean }
   relays: FabricRelayApiRow[]
 } {
   if (!record) return { enabled: false, relays: [] }
   const options = parseFabricOptions(record.options)
   return {
     enabled: true,
-    fabric: { id: record.id, cidr: record.cidr, mtu: options.mtu },
+    fabric: {
+      id: record.id,
+      cidr: record.cidr,
+      mtu: options.mtu,
+      allowRelay: options.allowRelay,
+    },
     relays,
   }
 }

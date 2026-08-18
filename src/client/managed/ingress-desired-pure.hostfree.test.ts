@@ -2,7 +2,7 @@
  * Host-free coverage for ProxySQL ingress pure helpers.
  */
 
-import { assertEquals, assertThrows } from "jsr:@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
   addBackendAddressSan,
   addBindAddressSan,
@@ -18,6 +18,8 @@ import {
   isManagedReplicationPrincipal,
   isManagedRootPrincipal,
   looksLikeIpLiteral,
+  managedIngressFamilyForPort,
+  managedIngressPortForEngine,
   mergeHierarchyContainerSan,
   principalDefaultDatabase,
   protocolPortForEngine,
@@ -58,12 +60,22 @@ test("unionExposureBind picks most permissive scope", () => {
 });
 
 test("protocolPortForEngine prefers defaultPort then engine family", () => {
-  assertEquals(protocolPortForEngine("postgres", 5432), 5432);
-  assertEquals(protocolPortForEngine("mysql", 3306), 3306);
-  assertEquals(protocolPortForEngine("postgres", 9999), 5432);
-  assertEquals(protocolPortForEngine("mysql", 9999), 3306);
-  assertEquals(protocolPortForEngine("mariadb", 9999), 3306);
-  assertEquals(protocolPortForEngine("redis", 9999), 5432);
+  assertEquals(protocolPortForEngine("postgres", 5432), 15432);
+  assertEquals(protocolPortForEngine("mysql", 3306), 16306);
+  assertEquals(protocolPortForEngine("postgres", 9999), 15432);
+  assertEquals(protocolPortForEngine("mysql", 9999), 16306);
+  assertEquals(protocolPortForEngine("mariadb", 9999), 16306);
+  assertEquals(protocolPortForEngine("redis", 9999), 15432);
+  assertEquals(managedIngressPortForEngine("postgres", 5432), 15432);
+  assertEquals(managedIngressPortForEngine("mysql", 3306), 16306);
+});
+
+test("managedIngressFamilyForPort accepts legacy and new listener ports", () => {
+  assertEquals(managedIngressFamilyForPort(5432), "pgsql");
+  assertEquals(managedIngressFamilyForPort(15432), "pgsql");
+  assertEquals(managedIngressFamilyForPort(3306), "mysql");
+  assertEquals(managedIngressFamilyForPort(16306), "mysql");
+  assertEquals(managedIngressFamilyForPort(9999), null);
 });
 
 test("principal metadata helpers", () => {
@@ -254,6 +266,25 @@ test("buildLocalOrMissingPortBackend local and remote paths", () => {
       address: "203.0.113.9",
       port: 54001,
       transport: "fabric",
+    },
+  );
+
+  assertEquals(
+    buildRemoteIngressBackend({
+      memberId: "m2",
+      role: "replica",
+      readEligible: true,
+      address: "203.0.113.10",
+      privatePort: 54001,
+      transport: "public",
+    }),
+    {
+      memberId: "m2",
+      role: "replica",
+      readEligible: true,
+      address: "203.0.113.10",
+      port: 54001,
+      transport: "public",
     },
   );
 });

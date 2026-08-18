@@ -1,11 +1,11 @@
 import { eq } from 'drizzle-orm'
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { encryptSecret } from '../authn/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
-import { getDb } from '../../db.ts'
+import { getDb, getDaemonCellRegistry } from '../../db.ts'
 import { organization } from '../../lib/db/schema.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import {
@@ -24,13 +24,16 @@ import {
   loadRelayPresharedKeyPresence,
   purgeOrganizationComposeNetworks,
   type RelayRecord,
+  updateFabricPolicy,
   updateFabricRelay,
 } from '../../lib/db/fabric-records.ts'
+import { parseFabricPolicy } from '../../lib/fabric/policy.ts'
 import {
   enqueueFabricReconcileForServers,
   reconcileFabricMembership,
 } from '../../lib/fabric/enqueue.ts'
 import {
+  bindSecretEncryptFn,
   enqueueRelayPatchReconcile,
   type FabricMembershipSecrets,
   type FabricRelayApiRow,
@@ -38,9 +41,11 @@ import {
   fabricNotEnabledErrorResponse,
   fabricSettingsResponse,
   fabricTypedEnqueueErrorResponse,
+  findByServerId,
   gatewayRolePatchErrorResponse,
   parseFabricPutBody,
   parseRelayPatchBody,
+  preferredGatewayPatchErrorResponse,
   relayPatchUpdateFields,
   resolveSealedRelayPresharedKey,
   toFabricRelayApiRow,
@@ -64,6 +69,7 @@ function fabricSecretsFromContext(c: {
 async function loadFabricRelayApiRows(
   db: Parameters<typeof listFabricRelays>[0],
   relays: RelayRecord[],
+  orgAllowRelay: boolean,
 ): Promise<FabricRelayApiRow[]> {
   const serverIds = relays.map((row) => row.serverId)
   const [{ caches }, segmentsByServer, pskPresence, subnetsByServer] =
@@ -85,6 +91,7 @@ async function loadFabricRelayApiRows(
       caches,
       relays,
       resolvedAdvertisedCidrs: derivedByRelayId.get(row.id) ?? [],
+      orgAllowRelay,
     })
   )
 }
@@ -93,9 +100,17 @@ export function registerOrganizationFabricRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
 ) {
-  router.use('/organizations/:id/fabric', createSessionMiddleware(opts.secrets))
-  router.use('/organizations/:id/fabric/relays/:serverId', createSessionMiddleware(opts.secrets))
-  router.use('/organizations/:id/fabric/apply', createSessionMiddleware(opts.secrets))
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for fabric routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/organizations/:id/fabric', createSessionMiddleware(secrets))
+  router.use(
+    '/organizations/:id/fabric/relays/:serverId',
+    createSessionMiddleware(secrets),
+  )
+  router.use('/organizations/:id/fabric/apply', createSessionMiddleware(secrets))
 
   router.get('/organizations/:id/fabric', async (c) => {
     const db = getDb(c)
@@ -116,7 +131,14 @@ export function registerOrganizationFabricRoutes(
     if (!record) return c.json(fabricSettingsResponse(null))
     const relays = await listFabricRelays(db, record.id)
     return c.json(
-      fabricSettingsResponse(record, await loadFabricRelayApiRows(db, relays)),
+      fabricSettingsResponse(
+        record,
+        await loadFabricRelayApiRows(
+          db,
+          relays,
+          parseFabricPolicy(record.options).allowRelay,
+        ),
+      ),
     )
   })
 
@@ -145,9 +167,8 @@ export function registerOrganizationFabricRoutes(
     const record = await getOrganizationFabric(db, id)
     if (!record) return fabricNotEnabledErrorResponse()
 
-    const existing = (await listFabricRelays(db, record.id)).find((row) =>
-      row.serverId === serverId
-    )
+    const fabricRelays = await listFabricRelays(db, record.id)
+    const existing = findByServerId(fabricRelays, serverId)
     if (!existing) return c.json({ error: 'Not found' }, 404)
 
     const role = parsed.patch.role ?? existing.role
@@ -157,12 +178,16 @@ export function registerOrganizationFabricRoutes(
     )
     if (gatewayDenied) return gatewayDenied
 
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const preferredDenied = preferredGatewayPatchErrorResponse(
+      parsed.patch,
+      fabricRelays,
+      serverId,
+    )
+    if (preferredDenied) return preferredDenied
+
     const sealedPresharedKey = await resolveSealedRelayPresharedKey(
       parsed.patch.presharedKey,
-      dataEncryptionSecrets
-        ? (plaintext) => encryptSecret(dataEncryptionSecrets, plaintext)
-        : null,
+      bindSecretEncryptFn(c.get('dataEncryptionSecrets'), encryptSecret),
     )
     const updated = await updateFabricRelay(db, {
       fabricId: record.id,
@@ -182,8 +207,13 @@ export function registerOrganizationFabricRoutes(
     if (enqueueDenied) return enqueueDenied
 
     const relays = await listFabricRelays(db, record.id)
-    const row = (await loadFabricRelayApiRows(db, relays)).find((entry) =>
-      entry.serverId === serverId
+    const row = findByServerId(
+      await loadFabricRelayApiRows(
+        db,
+        relays,
+        parseFabricPolicy(record.options).allowRelay,
+      ),
+      serverId,
     )
     if (!row) return c.json({ error: 'Not found' }, 404)
     return c.json({ ok: true, relay: row })
@@ -220,6 +250,7 @@ export function registerOrganizationFabricRoutes(
       actorId: session.userId,
       organizationId: id,
       force: true,
+      registry: getDaemonCellRegistry(c),
       ...fabricSecretsFromContext(c),
     })
     const enqueueDenied = fabricTypedEnqueueErrorResponse(results)
@@ -234,6 +265,18 @@ export function registerOrganizationFabricRoutes(
         status: row.status,
         ...(row.commandId ? { commandId: row.commandId } : {}),
         ...(row.error ? { error: row.error } : {}),
+        ...(row.unreachablePeers && row.unreachablePeers.length > 0
+          ? { unreachablePeers: row.unreachablePeers }
+          : {}),
+        ...(row.gatewayRoutedPeers && row.gatewayRoutedPeers.length > 0
+          ? { gatewayRoutedPeers: row.gatewayRoutedPeers }
+          : {}),
+        ...(row.natCandidates && row.natCandidates > 0
+          ? { natCandidates: row.natCandidates }
+          : {}),
+        ...(row.degradedPeers && row.degradedPeers > 0
+          ? { degradedPeers: row.degradedPeers }
+          : {}),
       })),
     })
   })
@@ -294,19 +337,34 @@ export function registerOrganizationFabricRoutes(
     } catch (err) {
       return fabricEnableErrorResponse(err)
     }
+    if (parsed.allowRelay !== undefined) {
+      const updated = await updateFabricPolicy(db, {
+        fabricId: record.id,
+        allowRelay: parsed.allowRelay,
+      })
+      if (updated) record = updated
+    }
     const enqueueResults = await reconcileFabricMembership({
       db,
       commandQueue,
       actorType: 'user',
       actorId: session.userId,
       organizationId: id,
+      registry: getDaemonCellRegistry(c),
       ...secrets,
     })
     const enqueueDenied = fabricTypedEnqueueErrorResponse(enqueueResults)
     if (enqueueDenied) return enqueueDenied
     const relays = await listFabricRelays(db, record.id)
     return c.json(
-      fabricSettingsResponse(record, await loadFabricRelayApiRows(db, relays)),
+      fabricSettingsResponse(
+        record,
+        await loadFabricRelayApiRows(
+          db,
+          relays,
+          parseFabricPolicy(record.options).allowRelay,
+        ),
+      ),
     )
   })
 }

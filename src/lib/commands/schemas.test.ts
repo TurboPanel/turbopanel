@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from 'jsr:@std/assert'
+import { assertEquals, assertThrows } from '@std/assert'
 import { encodeCommandEnvelope, parseCommandEnvelope } from './envelope.ts'
 import {
   isSystemComponentKey,
@@ -1324,6 +1324,22 @@ test('parseManagedApplyPayload round-trips a fabric peer and rejects vpn', () =>
     ],
   })
   assertEquals(payload.peers[0]?.transport, 'fabric')
+  assertEquals(
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      peers: [
+        {
+          memberId: '00000000-0000-4000-8000-0000000000bb',
+          role: 'replica',
+          readEligible: true,
+          address: '203.0.113.11',
+          transport: 'public',
+          port: 45001,
+        },
+      ],
+    }).peers[0]?.transport,
+    'public',
+  )
   assertThrows(
     () =>
       parseManagedApplyPayload({
@@ -1340,6 +1356,41 @@ test('parseManagedApplyPayload round-trips a fabric peer and rejects vpn', () =>
         ],
       }),
     Error,
+  )
+})
+
+test('parseManagedApplyPayload tags an optional privateListener transport', () => {
+  const untagged = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    privateListener: { address: '203.0.113.50', port: 45001 },
+  })
+  // Omitted stays omitted so pre-transport daemons keep the old semantics.
+  assertEquals(untagged.privateListener?.transport, undefined)
+
+  assertEquals(
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      privateListener: {
+        address: '203.0.113.50',
+        port: 45001,
+        transport: 'public',
+      },
+    }).privateListener?.transport,
+    'public',
+  )
+
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        privateListener: {
+          address: '203.0.113.50',
+          port: 45001,
+          transport: 'vpn',
+        },
+      }),
+    Error,
+    'Invalid managed.apply privateListener',
   )
 })
 
@@ -2295,9 +2346,12 @@ test('parseFabricReconcilePayload accepts enabled mesh material', () => {
         endpoint: '203.0.113.1:51820',
         keepalive: 25,
         presharedKeyEnvelope: DAEMON_PSK,
+        pathKind: 'gateway',
+        viaServerId: '550e8400-e29b-41d4-a716-446655440001',
       },
     ],
     mtu: 1420,
+    gateway: true,
     networks: [
       {
         name: 'tpn_550e8400-e29b-41d4-a716-446655440000',
@@ -2314,6 +2368,12 @@ test('parseFabricReconcilePayload accepts enabled mesh material', () => {
   assertEquals(payload.mtu, 1420)
   assertEquals(payload.peers[0]?.keepalive, 25)
   assertEquals(payload.peers[0]?.presharedKeyEnvelope, DAEMON_PSK)
+  assertEquals(payload.peers[0]?.pathKind, 'gateway')
+  assertEquals(
+    payload.peers[0]?.viaServerId,
+    '550e8400-e29b-41d4-a716-446655440001',
+  )
+  assertEquals(payload.gateway, true)
   assertEquals(payload.networks?.[0]?.gateway, '10.192.11.1')
   assertEquals(payload.address, '10.250.0.11/32')
   assertEquals(
@@ -2353,6 +2413,8 @@ test('parseFabricReconcileResult accepts skipped, reconciled, and teardown shape
           lastHandshakeAt: '2020-01-01T00:00:00.000Z',
           transferRx: 10,
           transferTx: 20,
+          endpoint: '203.0.113.50:48172',
+          health: 'healthy',
         },
       ],
     }).peers?.[0]?.transferRx,
@@ -2539,6 +2601,23 @@ test('parseManagedIngressReconcilePayload admits fabric backends and sorted segm
     ],
   })
   assertEquals(payload.clusters[0]?.backends[0]?.transport, 'fabric')
+  assertEquals(
+    parseManagedIngressReconcilePayload({
+      ...VALID_MANAGED_INGRESS_RECONCILE,
+      clusters: [
+        {
+          ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+          backends: [
+            {
+              ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.backends[0],
+              transport: 'public',
+            },
+          ],
+        },
+      ],
+    }).clusters[0]?.backends[0]?.transport,
+    'public',
+  )
   assertEquals(payload.segments, [
     { name: `tpn_${netId}`, subnet: '203.0.113.0/24' },
   ])
@@ -2605,6 +2684,24 @@ test('parseManagedIngressReconcilePayload rejects incomplete or hostile input', 
       }),
     TypeError,
   )
+  assertEquals(
+    parseManagedIngressReconcilePayload({
+      ...VALID_MANAGED_INGRESS_RECONCILE,
+      clusters: [
+        {
+          ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+          protocolPort: 15432,
+        },
+      ],
+    }).clusters[0]?.protocolPort,
+    15432,
+  )
+  const teardown = parseManagedIngressReconcilePayload({
+    serverId: VALID_MANAGED_INGRESS_RECONCILE.serverId,
+    clusters: [],
+  })
+  assertEquals(teardown.clusters, [])
+  assertEquals(teardown.orgTlsMaterial, undefined)
 })
 
 test('parseManagedIngressReconcileResult accepts applied counts and containers', () => {

@@ -68,6 +68,7 @@ export const managedSchemas = {
       'serverId',
       'serverDisplayName',
       'role',
+      'replicaClass',
       'readEligible',
       'ordinal',
       'status',
@@ -78,6 +79,12 @@ export const managedSchemas = {
       serverId: { type: 'string' },
       serverDisplayName: { type: 'string', nullable: true },
       role: { type: 'string', enum: ['primary', 'replica'] },
+      replicaClass: {
+        type: 'string',
+        nullable: true,
+        enum: ['failover', 'read'],
+        description: 'Null on primary. Failover replicas are same-datacenter and promotable; read replicas may use fabric/public.',
+      },
       readEligible: { type: 'boolean' },
       ordinal: { type: 'integer', minimum: 1 },
       status: {
@@ -88,7 +95,7 @@ export const managedSchemas = {
       replicationTransport: {
         type: 'string',
         nullable: true,
-        enum: ['local', 'datacenter', 'fabric'],
+        enum: ['local', 'datacenter', 'fabric', 'public'],
       },
     },
   },
@@ -419,11 +426,16 @@ export const managedSchemas = {
             memberId: { type: 'string' },
             serverId: { type: 'string' },
             role: { type: 'string', enum: ['primary', 'replica'] },
+            replicaClass: {
+              type: 'string',
+              nullable: true,
+              enum: ['failover', 'read'],
+            },
             status: { type: 'string', nullable: true },
             replicationTransport: {
               type: 'string',
               nullable: true,
-              enum: ['local', 'datacenter', 'fabric'],
+              enum: ['local', 'datacenter', 'fabric', 'public'],
             },
           },
         },
@@ -554,7 +566,10 @@ export const managedSchemas = {
   UsernameInUseError: errorSchema('username_in_use'),
   ManagedMemberExistsError: errorSchema('managed_member_exists'),
   ManagedMemberIsPrimaryError: errorSchema('managed_member_is_primary'),
-  ManagedReplicaLimitError: errorSchema('managed_replica_limit'),
+  ManagedReplicaNotPromotableError: errorSchema('managed_replica_not_promotable'),
+  FailoverReplicaRequiresDatacenterTransportError: errorSchema(
+    'failover_replica_requires_datacenter_transport',
+  ),
   DatacenterRequiredError: errorSchema('datacenter_required'),
   DatacenterCidrRequiredError: errorSchema('datacenter_cidr_required'),
   PrivatePathUnavailableError: errorSchema('private_path_unavailable'),
@@ -1055,7 +1070,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Add a managed replica member',
       description:
-        'Body `{ serverId, readEligible? }`. Caps at 2 replicas. Requires private reachability to primary and a ready datacenter CIDR for non-local paths.',
+        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR.',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -1065,6 +1080,11 @@ export const managedPaths = {
               required: ['serverId'],
               properties: {
                 serverId: { type: 'string' },
+                replicaClass: {
+                  type: 'string',
+                  enum: ['failover', 'read'],
+                  default: 'failover',
+                },
                 readEligible: { type: 'boolean' },
               },
             },
@@ -1098,12 +1118,12 @@ export const managedPaths = {
         },
         422: {
           description:
-            'managed_replica_limit / datacenter_required / datacenter_cidr_required / private_path_unavailable',
+            'failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
-                  { $ref: '#/components/schemas/ManagedReplicaLimitError' },
+                  { $ref: '#/components/schemas/FailoverReplicaRequiresDatacenterTransportError' },
                   { $ref: '#/components/schemas/DatacenterRequiredError' },
                   { $ref: '#/components/schemas/DatacenterCidrRequiredError' },
                   { $ref: '#/components/schemas/PrivatePathUnavailableError' },
@@ -1118,7 +1138,9 @@ export const managedPaths = {
   '/api/client/v1/environments/{id}/managed/members/{memberId}': {
     patch: {
       tags: ['Managed services'],
-      summary: 'Update managed member (readEligible only)',
+      summary: 'Update managed member (readEligible and/or replicaClass)',
+      description:
+        'Body `{ readEligible?, replicaClass? }` — at least one field required. Converting `read` → `failover` re-runs failover placement (shared datacenter + datacenter address). Failover → read is always allowed.',
       parameters: [ENV_ID_PARAM, MEMBER_ID_PARAM],
       requestBody: {
         content: {
@@ -1127,6 +1149,10 @@ export const managedPaths = {
               type: 'object',
               properties: {
                 readEligible: { type: 'boolean' },
+                replicaClass: {
+                  type: 'string',
+                  enum: ['failover', 'read'],
+                },
               },
             },
           },
@@ -1138,6 +1164,22 @@ export const managedPaths = {
           content: {
             'application/json': {
               schema: { type: 'object', additionalProperties: true },
+            },
+          },
+        },
+        422: {
+          description:
+            'failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/FailoverReplicaRequiresDatacenterTransportError' },
+                  { $ref: '#/components/schemas/DatacenterRequiredError' },
+                  { $ref: '#/components/schemas/DatacenterCidrRequiredError' },
+                  { $ref: '#/components/schemas/PrivatePathUnavailableError' },
+                ],
+              },
             },
           },
         },
@@ -1168,7 +1210,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Enqueue managed.promote for a replica member',
       description:
-        'Promotes a streaming replica to primary. Body may include `{ force: true }` to bypass the lag health gate for dead-primary failover (accepts possible data loss). Best-effort fences the old primary with managed.lifecycle stop when online (payload carries the managed engine code so the daemon resolves the correct runtime). On success the consumer flips roles and re-reconciles ProxySQL. The enqueued managed.promote payload includes optional `engine` (postgres|mysql|mariadb) for multi-engine promote; older commands without `engine` default to postgres on the daemon.',
+        'Promotes a streaming **failover** replica to primary. Read-class replicas return 422 `managed_replica_not_promotable` unless `{ force: true }`. Body may include `{ force: true }` to bypass the lag health gate (and the class gate) for dead-primary failover (accepts possible data loss). Best-effort fences the old primary with managed.lifecycle stop when online (payload carries the managed engine code so the daemon resolves the correct runtime). On success the consumer flips roles and re-reconciles ProxySQL. The enqueued managed.promote payload includes optional `engine` (postgres|mysql|mariadb) for multi-engine promote; older commands without `engine` default to postgres on the daemon.',
       parameters: [ENV_ID_PARAM, MEMBER_ID_PARAM],
       requestBody: {
         required: false,
@@ -1221,6 +1263,10 @@ export const managedPaths = {
               },
             },
           },
+        },
+        422: {
+          description: 'managed_replica_not_promotable — read-class replica without force',
+          ...jsonSchema('ManagedReplicaNotPromotableError'),
         },
       },
     },

@@ -2,7 +2,7 @@
  * Host-free coverage for managed route pure helpers extracted from routes.ts.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { BadRequestError } from '../shared.ts'
 import {
   buildEmptyManagedDetailResponse,
@@ -21,7 +21,11 @@ import {
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
   evaluateReplicaPlacementPrechecks,
+  replicaEndpointPurpose,
   replicaPlacementNeedsDatacenter,
+  assertFailoverReplicaTransportAllowed,
+  evaluatePromoteReplicaClass,
+  evaluateReplicaClassConversion,
   findManagedBackupById,
   mergeManagedPatchSettings,
   nextDatabasesAfterCreate,
@@ -30,7 +34,9 @@ import {
   parseManagedLifecycleAction,
   parseMemberReadEligibleCreate,
   parseMemberReadEligiblePatch,
+  parseMemberPatch,
   parsePromoteForce,
+  parseReplicaClassCreate,
   pickPrimaryCommandResult,
   sortManagedBackupsDesc,
   validateManagedDatabaseCreateName,
@@ -189,6 +195,30 @@ test('parsePromoteForce and readEligible parsers', () => {
     error: 'Invalid request',
     status: 400,
   })
+  assertEquals(parseReplicaClassCreate({}), { ok: true, replicaClass: 'failover' })
+  assertEquals(parseReplicaClassCreate({ replicaClass: 'read' }), {
+    ok: true,
+    replicaClass: 'read',
+  })
+  assertEquals(parseReplicaClassCreate({ replicaClass: 'nope' }), {
+    ok: false,
+    error: 'Invalid request',
+    status: 400,
+  })
+  assertEquals(parseMemberPatch({ replicaClass: 'read' }), {
+    ok: true,
+    replicaClass: 'read',
+  })
+  assertEquals(parseMemberPatch({ readEligible: true, replicaClass: 'failover' }), {
+    ok: true,
+    readEligible: true,
+    replicaClass: 'failover',
+  })
+  assertEquals(parseMemberPatch({}), {
+    ok: false,
+    error: 'Invalid request',
+    status: 400,
+  })
 })
 
 test('canHardDeleteManaged covers terminal and unplaced states', () => {
@@ -200,13 +230,11 @@ test('canHardDeleteManaged covers terminal and unplaced states', () => {
   assertEquals(canHardDeleteManaged('applying', 's1'), false)
 })
 
-test('evaluateReplicaPlacementPrechecks blocks duplicate and over-limit', () => {
+test('evaluateReplicaPlacementPrechecks blocks duplicate members only', () => {
   assertEquals(
     evaluateReplicaPlacementPrechecks(
       [{ serverId: 's1', role: 'primary' }],
       's1',
-      0,
-      2,
     ),
     { ok: false, error: 'managed_member_exists', status: 409 },
   )
@@ -214,26 +242,77 @@ test('evaluateReplicaPlacementPrechecks blocks duplicate and over-limit', () => 
     evaluateReplicaPlacementPrechecks(
       [{ serverId: 's1', role: 'primary' }],
       's2',
-      2,
-      2,
-    ),
-    { ok: false, error: 'managed_replica_limit', status: 422 },
-  )
-  assertEquals(
-    evaluateReplicaPlacementPrechecks(
-      [{ serverId: 's1', role: 'primary' }],
-      's2',
-      1,
-      2,
     ),
     null,
   )
 })
 
-test('replicaPlacementNeedsDatacenter is false only for fabric', () => {
-  assertEquals(replicaPlacementNeedsDatacenter('fabric'), false)
-  assertEquals(replicaPlacementNeedsDatacenter('datacenter'), true)
-  assertEquals(replicaPlacementNeedsDatacenter('local'), true)
+test('replicaPlacementNeedsDatacenter is class-aware', () => {
+  assertEquals(replicaPlacementNeedsDatacenter('fabric', 'read'), false)
+  assertEquals(replicaPlacementNeedsDatacenter('public', 'read'), false)
+  assertEquals(replicaPlacementNeedsDatacenter('datacenter', 'read'), true)
+  assertEquals(replicaPlacementNeedsDatacenter('local', 'read'), true)
+  assertEquals(replicaPlacementNeedsDatacenter('fabric', 'failover'), true)
+  assertEquals(replicaPlacementNeedsDatacenter('public', 'failover'), true)
+  assertEquals(replicaPlacementNeedsDatacenter('datacenter', 'failover'), true)
+  assertEquals(replicaPlacementNeedsDatacenter('local', 'failover'), true)
+})
+
+test('assertFailoverReplicaTransportAllowed rejects fabric and public', () => {
+  assertEquals(assertFailoverReplicaTransportAllowed('local'), null)
+  assertEquals(assertFailoverReplicaTransportAllowed('datacenter'), null)
+  assertEquals(assertFailoverReplicaTransportAllowed('fabric'), {
+    kind: 'failover_replica_requires_datacenter_transport',
+  })
+  assertEquals(assertFailoverReplicaTransportAllowed('public'), {
+    kind: 'failover_replica_requires_datacenter_transport',
+  })
+})
+
+test('evaluateReplicaClassConversion allows failover to read and gates the reverse', () => {
+  const replica = { role: 'replica', replicaClass: 'failover' as const }
+  assertEquals(evaluateReplicaClassConversion(replica, 'read', false), null)
+  assertEquals(
+    evaluateReplicaClassConversion(
+      { role: 'replica', replicaClass: 'read' },
+      'failover',
+      false,
+    ),
+    {
+      ok: false,
+      error: 'failover_replica_requires_datacenter_transport',
+      status: 422,
+    },
+  )
+  assertEquals(
+    evaluateReplicaClassConversion(
+      { role: 'replica', replicaClass: 'read' },
+      'failover',
+      true,
+    ),
+    null,
+  )
+  assertEquals(
+    evaluateReplicaClassConversion({ role: 'primary', replicaClass: null }, 'read', true),
+    { ok: false, error: 'Invalid request', status: 400 },
+  )
+})
+
+test('replica add/promote/conversion route helpers encode class rules', () => {
+  assertEquals(replicaEndpointPurpose('failover'), 'failover-replication')
+  assertEquals(replicaEndpointPurpose('read'), 'read-replication')
+  assertEquals(evaluatePromoteReplicaClass('failover', false), null)
+  assertEquals(evaluatePromoteReplicaClass('read', false), {
+    ok: false,
+    error: 'managed_replica_not_promotable',
+    status: 422,
+  })
+  assertEquals(evaluatePromoteReplicaClass('read', true), null)
+  assertEquals(evaluatePromoteReplicaClass(null, false), {
+    ok: false,
+    error: 'managed_replica_not_promotable',
+    status: 422,
+  })
 })
 
 test('evaluatePromoteMemberRole requires replica', () => {
@@ -392,6 +471,7 @@ test('buildStatusMemberView and org list entry', () => {
       id: 'm1',
       serverId: 's1',
       role: 'replica',
+      replicaClass: 'read',
       status: 'ready',
       replicationTransport: 'fabric',
       privatePort: 54000,
@@ -401,11 +481,23 @@ test('buildStatusMemberView and org list entry', () => {
       id: 'm1',
       serverId: 's1',
       role: 'replica',
+      replicaClass: 'read',
       status: 'ready',
       replicationTransport: 'fabric',
       privatePort: 54000,
       replication: { state: 'streaming' },
     },
+  )
+  assertEquals(
+    buildStatusMemberView({
+      id: 'm1-public',
+      serverId: 's1',
+      role: 'replica',
+      status: 'ready',
+      replicationTransport: 'public',
+      privatePort: 54000,
+    }).replicationTransport,
+    'public',
   )
   assertEquals(
     buildStatusMemberView({

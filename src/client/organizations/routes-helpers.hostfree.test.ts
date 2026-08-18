@@ -2,14 +2,17 @@
  * Host-free coverage for organization route pure validation helpers.
  */
 
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   defaultEnvironmentGetResponse,
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
   defaultTimezonePutResponse,
+  hostDefaultsGetResponse,
+  hostDefaultsPutResponse,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
+  parseHostDefaultsPatch,
   parseOrganizationCreateDisplayName,
   parseOrganizationPatchDisplayName,
   parseServerCapacityPutBody,
@@ -23,6 +26,70 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno);
+
+test("parseHostDefaultsPatch rejects empty and invalid patches", () => {
+  assertEquals(parseHostDefaultsPatch({}).ok, false);
+  assertEquals(
+    parseHostDefaultsPatch({ sshPort: 0 }),
+    { ok: false, error: "Invalid sshPort", status: 400 },
+  );
+  assertEquals(
+    parseHostDefaultsPatch({ ntp: { servers: [] } }),
+    { ok: false, error: "Invalid ntp", status: 400 },
+  );
+  assertEquals(
+    parseHostDefaultsPatch({ defaultFabricEnabled: "yes" }),
+    { ok: false, error: "Invalid defaultFabricEnabled", status: 400 },
+  );
+});
+
+test("parseHostDefaultsPatch accepts sshPort, ntp, fabric default, and clears", () => {
+  const port = parseHostDefaultsPatch({ sshPort: 2222 });
+  if (!port.ok) {
+    throw new TypeError("expected sshPort patch");
+  }
+  assertEquals(port.patch.sshPort, 2222);
+
+  const clearPort = parseHostDefaultsPatch({ sshPort: null });
+  if (!clearPort.ok) {
+    throw new TypeError("expected sshPort clear");
+  }
+  assertEquals(clearPort.patch.sshPort, null);
+
+  const ntp = parseHostDefaultsPatch({
+    ntp: { enabled: true, servers: ["time.cloudflare.com"] },
+    defaultFabricEnabled: true,
+  });
+  if (!ntp.ok) {
+    throw new TypeError("expected ntp/fabric patch");
+  }
+  assertEquals(ntp.patch.ntp, {
+    enabled: true,
+    servers: ["time.cloudflare.com"],
+  });
+  assertEquals(ntp.patch.defaultFabricEnabled, true);
+});
+
+test("hostDefaultsGetResponse and PutResponse expose configured org values", () => {
+  assertEquals(hostDefaultsGetResponse({}), {
+    sshPort: null,
+    ntp: null,
+    defaultFabricEnabled: false,
+  });
+  assertEquals(
+    hostDefaultsPutResponse({
+      sshPort: 2222,
+      ntp: { enabled: true },
+      defaultFabricEnabled: true,
+    }),
+    {
+      ok: true,
+      sshPort: 2222,
+      ntp: { enabled: true },
+      defaultFabricEnabled: true,
+    },
+  );
+});
 
 test("parseDefaultTimezonePatch rejects empty and invalid patches", () => {
   assertEquals(parseDefaultTimezonePatch({}).ok, false);

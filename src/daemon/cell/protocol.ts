@@ -5,6 +5,10 @@ import type {
   ServerOsMetadata,
   ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
+import {
+  isValidWireguardEndpoint,
+  isValidWireguardPublicKey,
+} from "../../lib/fabric/wg.ts";
 
 export type DaemonBuildInfo = {
   commit: string;
@@ -35,6 +39,21 @@ export function parseDaemonBuildInfo(
   if (isString(value.channel)) daemonBuild.channel = value.channel;
   return daemonBuild;
 }
+
+export type FabricPathPeerHealth = "healthy" | "stale" | "never";
+
+export type FabricPathWireCandidate = {
+  publicKey: string;
+  endpoints: string[];
+};
+
+export type FabricPathWireObservation = {
+  publicKey: string;
+  endpoint?: string;
+  lastHandshakeAt?: string;
+  health: FabricPathPeerHealth;
+  latencyMs?: number;
+};
 
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
@@ -100,6 +119,21 @@ export type DaemonMessage =
     type: "managed-logs-result";
     id: string;
     logs: string;
+    error?: string;
+    at: string;
+  }
+  | {
+    type: "fabric-paths-request";
+    id: string;
+    fabricId: string;
+    probeMs: number;
+    candidates: FabricPathWireCandidate[];
+    at: string;
+  }
+  | {
+    type: "fabric-paths-result";
+    id: string;
+    paths: FabricPathWireObservation[];
     error?: string;
     at: string;
   }
@@ -195,6 +229,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "heartbeat",
     "addresses-result",
     "managed-logs-result",
+    "fabric-paths-result",
     "dev-sync-result",
     "tunnel-token-result",
     "public-urls-update-result",
@@ -215,6 +250,14 @@ export const MAX_DAEMON_WS_ERROR_CHARS = 4 * 1024;
 
 /** Max characters for `managed-logs-result.logs`. */
 export const MAX_DAEMON_WS_LOGS_CHARS = 200 * 1024;
+
+/** Max `fabric-paths-request.candidates` / `fabric-paths-result.paths` entries. */
+export const MAX_DAEMON_WS_FABRIC_PATH_ENTRIES = 256;
+
+/** Max candidate endpoints per `fabric-paths-request` entry. */
+export const MAX_DAEMON_WS_FABRIC_PATH_CANDIDATES = 8;
+
+const FABRIC_PEER_HEALTH = new Set(["healthy", "stale", "never"]);
 
 /** Max UTF-8 bytes for JSON-serialized `command-outcome.result`. */
 export const MAX_DAEMON_WS_RESULT_JSON_BYTES = 64 * 1024;
@@ -340,6 +383,49 @@ function validateManagedLogsResultFields(
   return null;
 }
 
+function isFabricPeerHealth(value: unknown): value is FabricPathPeerHealth {
+  return typeof value === "string" && FABRIC_PEER_HEALTH.has(value);
+}
+
+function validateFabricPathObservation(
+  value: unknown,
+): string | null {
+  if (!isRecord(value)) return "invalid path entry";
+  if (!isValidWireguardPublicKey(value.publicKey)) return "invalid path publicKey";
+  if (!isFabricPeerHealth(value.health)) return "invalid path health";
+  if (value.endpoint !== undefined && !isValidWireguardEndpoint(value.endpoint)) {
+    return "invalid path endpoint";
+  }
+  const handshakeIssue = validateOptionalIsoTimestamp(
+    value.lastHandshakeAt,
+    "path lastHandshakeAt",
+  );
+  if (handshakeIssue) return handshakeIssue;
+  if (value.latencyMs !== undefined) {
+    if (typeof value.latencyMs !== "number" || !Number.isFinite(value.latencyMs) ||
+      value.latencyMs < 0) {
+      return "invalid path latencyMs";
+    }
+  }
+  return null;
+}
+
+function validateFabricPathsResultFields(
+  record: Record<string, unknown>,
+): string | null {
+  const base = validateResultEnvelopeFields(record);
+  if (base) return base;
+  if (!Array.isArray(record.paths)) return "invalid paths";
+  if (record.paths.length > MAX_DAEMON_WS_FABRIC_PATH_ENTRIES) {
+    return "paths exceed max entries";
+  }
+  for (const entry of record.paths) {
+    const issue = validateFabricPathObservation(entry);
+    if (issue) return issue;
+  }
+  return null;
+}
+
 function validateOkResultFields(
   record: Record<string, unknown>,
 ): string | null {
@@ -424,6 +510,8 @@ function validateInboundMessageFields(
       return validateAddressesResultFields(record);
     case "managed-logs-result":
       return validateManagedLogsResultFields(record);
+    case "fabric-paths-result":
+      return validateFabricPathsResultFields(record);
     case "dev-sync-result":
     case "tunnel-token-result":
     case "public-urls-update-result":
@@ -435,6 +523,62 @@ function validateInboundMessageFields(
       return validateCommandOutcomeFields(record);
     default:
       return `disallowed type ${String(record.type)}`;
+  }
+}
+
+function validateManagedLogsEnvelope(
+  inbound: Extract<DaemonInboundEnvelope, { kind: "managed-logs-result" }>,
+): string | null {
+  if (inbound.logs.length > MAX_DAEMON_WS_LOGS_CHARS) {
+    return "logs exceed max length";
+  }
+  return validateOptionalError(inbound.error);
+}
+
+function validateFabricPathsEnvelope(
+  inbound: Extract<DaemonInboundEnvelope, { kind: "fabric-paths-result" }>,
+): string | null {
+  if (inbound.paths.length > MAX_DAEMON_WS_FABRIC_PATH_ENTRIES) {
+    return "paths exceed max entries";
+  }
+  for (const entry of inbound.paths) {
+    const issue = validateFabricPathObservation(entry);
+    if (issue) return issue;
+  }
+  return validateOptionalError(inbound.error);
+}
+
+function validateCommandAckEnvelope(
+  inbound: Extract<DaemonInboundEnvelope, { kind: "command-ack" }>,
+): string | null {
+  if (!isIsoTimestamp(inbound.daemonReceivedAt)) {
+    return "invalid daemonReceivedAt";
+  }
+  return null;
+}
+
+function validateInboundEnvelopeKind(
+  inbound: DaemonInboundEnvelope,
+): string | null {
+  switch (inbound.kind) {
+    case "managed-logs-result":
+      return validateManagedLogsEnvelope(inbound);
+    case "fabric-paths-result":
+      return validateFabricPathsEnvelope(inbound);
+    case "command-outcome":
+      return validateOptionalError(inbound.error) ??
+        validateCommandResult(inbound.result);
+    case "dev-sync-result":
+    case "tunnel-token-result":
+    case "public-urls-update-result":
+    case "update-result":
+      return validateOptionalError(inbound.error);
+    case "command-ack":
+      return validateCommandAckEnvelope(inbound);
+    case "addresses-result":
+      return null;
+    default:
+      return "unknown envelope kind";
   }
 }
 
@@ -452,42 +596,9 @@ export function validateDaemonInboundEnvelope(
   if (!isIsoTimestamp(inbound.at)) {
     return { ok: false, reason: "invalid at timestamp" };
   }
-
-  switch (inbound.kind) {
-    case "managed-logs-result": {
-      if (inbound.logs.length > MAX_DAEMON_WS_LOGS_CHARS) {
-        return { ok: false, reason: "logs exceed max length" };
-      }
-      const errorIssue = validateOptionalError(inbound.error);
-      if (errorIssue) return { ok: false, reason: errorIssue };
-      return { ok: true };
-    }
-    case "command-outcome": {
-      const errorIssue = validateOptionalError(inbound.error);
-      if (errorIssue) return { ok: false, reason: errorIssue };
-      const resultIssue = validateCommandResult(inbound.result);
-      if (resultIssue) return { ok: false, reason: resultIssue };
-      return { ok: true };
-    }
-    case "dev-sync-result":
-    case "tunnel-token-result":
-    case "public-urls-update-result":
-    case "update-result": {
-      const errorIssue = validateOptionalError(inbound.error);
-      if (errorIssue) return { ok: false, reason: errorIssue };
-      return { ok: true };
-    }
-    case "command-ack": {
-      if (!isIsoTimestamp(inbound.daemonReceivedAt)) {
-        return { ok: false, reason: "invalid daemonReceivedAt" };
-      }
-      return { ok: true };
-    }
-    case "addresses-result":
-      return { ok: true };
-    default:
-      return { ok: false, reason: "unknown envelope kind" };
-  }
+  const kindIssue = validateInboundEnvelopeKind(inbound);
+  if (kindIssue) return { ok: false, reason: kindIssue };
+  return { ok: true };
 }
 
 /** Auto-response ping/pong pair — handled by the runtime without waking the DO. */
@@ -515,6 +626,12 @@ export type DaemonOutboundEnvelope =
     kind: "managed-logs-request";
     managedId: string;
     tail: number;
+  })
+  | (OutboundEnvelopeBase & {
+    kind: "fabric-paths-request";
+    fabricId: string;
+    probeMs: number;
+    candidates: FabricPathWireCandidate[];
   })
   | (OutboundEnvelopeBase & {
     kind: "dev-sync";
@@ -558,6 +675,13 @@ export type DaemonInboundEnvelope =
     requestId: string;
     at: string;
     logs: string;
+    error?: string;
+  }
+  | {
+    kind: "fabric-paths-result";
+    requestId: string;
+    at: string;
+    paths: FabricPathWireObservation[];
     error?: string;
   }
   | {
@@ -636,6 +760,14 @@ export function wireMessageToInboundEnvelope(
         logs: msg.logs,
         error: msg.error,
       };
+    case "fabric-paths-result":
+      return {
+        kind: "fabric-paths-result",
+        requestId: msg.id,
+        at: msg.at,
+        paths: msg.paths,
+        error: msg.error,
+      };
     case "dev-sync-result":
       return {
         kind: "dev-sync-result",
@@ -703,6 +835,23 @@ export function outboundEnvelopeToWireMessage(
         id: env.requestId,
         managedId: env.managedId,
         tail: env.tail,
+        at: env.at,
+      };
+    case "fabric-paths-request":
+      return {
+        type: "fabric-paths-request",
+        id: env.requestId,
+        fabricId: env.fabricId,
+        probeMs: env.probeMs,
+        candidates: env.candidates.slice(0, MAX_DAEMON_WS_FABRIC_PATH_ENTRIES).map(
+          (candidate) => ({
+            publicKey: candidate.publicKey,
+            endpoints: candidate.endpoints.slice(
+              0,
+              MAX_DAEMON_WS_FABRIC_PATH_CANDIDATES,
+            ),
+          }),
+        ),
         at: env.at,
       };
     case "dev-sync":

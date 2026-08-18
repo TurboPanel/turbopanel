@@ -54,6 +54,8 @@ import {
   parseManagedBackupResult,
   parseManagedDestroyPayload,
   parseManagedDestroyResult,
+  parseManagedIngressReconcilePayload,
+  parseManagedIngressReconcileResult,
   parseManagedLifecyclePayload,
   parseManagedLifecycleResult,
   parseManagedPromotePayload,
@@ -67,6 +69,7 @@ import {
   parseTimezoneSetResult,
 } from './schemas.ts'
 import { updateManagedMemberObservedReplication } from '../../client/managed/members.ts'
+import { findManagedIngressHierarchy } from '../../client/system/hierarchy.ts'
 import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
@@ -712,6 +715,54 @@ async function applySystemReconcileSideEffect(
   }
 }
 
+async function applyManagedIngressReconcileSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  if (record.type !== 'managed.ingress.reconcile') return
+  try {
+    const payload = parseManagedIngressReconcilePayload(record.payload)
+    const reconcileResult = parseManagedIngressReconcileResult(result)
+    // Omitted containers = collection failed — skip reconcile. An explicit
+    // empty array is authoritative teardown (empty-cluster ProxySQL removal).
+    if (reconcileResult.containers === undefined) return
+    const hierarchy = await findManagedIngressHierarchy(db, {
+      serverId: payload.serverId,
+    })
+    if (!hierarchy) return
+    const expectedAllocations = [
+      {
+        serviceId: hierarchy.serviceId,
+        role: 'turbopanel' as const,
+        ordinal: 1,
+      },
+    ]
+    await reconcileContainersSafely(
+      db,
+      record,
+      envelope,
+      hierarchy.environmentId,
+      reconcileResult.containers,
+      expectedAllocations,
+    )
+  } catch (err) {
+    const message = errorMessage(err)
+    commandConsumerTrace('dispatch-result', {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      resultStatus: 'succeeded',
+      containerReconcileError: message,
+    })
+    compatLogWarn(
+      'command-consumer',
+      `container reconcile failed for command ${record.id}: ${message}`,
+    )
+  }
+}
+
 async function applyManagedApplySideEffect(
   db: Db,
   record: CommandRecord,
@@ -1324,6 +1375,7 @@ async function applySucceededSideEffects(
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)
+  await applyManagedIngressReconcileSideEffect(db, record, envelope, result)
   await applyManagedApplySideEffect(db, record, envelope, result, deps)
   await applyManagedLifecycleSideEffect(db, record, envelope, result, deps)
   await applyManagedDestroySideEffect(db, record, envelope, result, deps)
@@ -1335,7 +1387,9 @@ async function applySucceededSideEffects(
 /**
  * After a successful promote: demote the old primary **before** promoting so
  * `uniq_node_primary` is never violated mid-flip, then re-point
- * `managed.server_id`, project health, and re-reconcile ProxySQL.
+ * `managed.server_id`, project health, and hand off to
+ * `fanOutManagedIngressReconcile` so member and consuming servers both
+ * re-reconcile ProxySQL against the new primary.
  */
 async function applyManagedPromoteSideEffect(
   db: Db,
@@ -1407,31 +1461,25 @@ async function applyManagedPromoteSideEffect(
       })
     }
 
-    if (
-      !deps?.commandQueue ||
-      !deps.secretsConfig ||
-      !deps.dataEncryptionSecrets ||
-      isNoopCommandQueue(deps.commandQueue)
-    ) {
-      return
-    }
+    if (!hasManagedFollowUpDeps(deps)) return
 
-    const memberServers = await db
-      .select({ serverId: node.serverId })
-      .from(node)
-      .where(eq(node.managedId, managedId))
-    const serverIds = new Set(memberServers.map((row) => row.serverId).concat(envelope.serverId))
-    const { enqueueManagedIngressReconcile } =
+    // Consumer-aware tail: recompute member replication transports relative to
+    // the new primary, re-materialize binding-owned HOST/PORT/URL variables,
+    // then reconcile ProxySQL on member **and** consuming servers. A
+    // member-only fan-out left every bound consumer host routing writes at the
+    // demoted primary. The fence-then-promote path enqueues a real
+    // `managed.promote` command (see `applyManagedLifecycleSideEffect`), so it
+    // lands here too once that promote succeeds.
+    const { fanOutManagedIngressReconcile } =
       await import('../../client/managed/ingress-desired.ts')
-    for (const serverId of serverIds) {
-      await enqueueManagedIngressReconcile(db, deps.commandQueue, {
-        serverId,
-        actorType: 'system',
-        actorId: envelope.serverId,
-        secretsConfig: deps.secretsConfig,
-        dataEncryptionSecrets: deps.dataEncryptionSecrets,
-      })
-    }
+    await fanOutManagedIngressReconcile(db, deps.commandQueue, {
+      managedId,
+      actorType: 'system',
+      actorId: envelope.serverId,
+      secretsConfig: deps.secretsConfig,
+      dataEncryptionSecrets: deps.dataEncryptionSecrets,
+      extraServerIds: [envelope.serverId],
+    })
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(

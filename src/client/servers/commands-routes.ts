@@ -1,5 +1,5 @@
-import type { Context } from 'hono'
-import { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import {
@@ -56,7 +56,10 @@ async function resolveServerCommandAccess(
   return { db, serverId, userId: session.userId }
 }
 
-export function registerServerCommandRoutes(router: Hono, opts: AuthRouteOpts) {
+export function registerServerCommandRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+) {
   router.use('/servers/:id/commands/*', createSessionMiddleware(opts.secrets))
   router.use('/servers/:id/hostname', createSessionMiddleware(opts.secrets))
   router.use('/servers/:id/timezone', createSessionMiddleware(opts.secrets))

@@ -173,10 +173,20 @@ export type BuildRuntimeSpecInput = {
     privateListener?: {
       address: string
       port: number
+      /**
+       * Reachability class of `address`. `public` obliges the daemon to refuse
+       * the listener unless org-CA TLS material is present.
+       */
+      transport?: 'datacenter' | 'fabric' | 'public'
     }
   }
   /** When true, use org-CA leaf paths for engine SSL (multi-member / verify-full). */
   useOrgTls?: boolean
+  /**
+   * Cluster member count at apply time. Used to size Postgres
+   * `max_replication_slots` (count + headroom). Defaults to 1.
+   */
+  memberCount?: number
 }
 
 export type BuildConnectionInfoInput = {

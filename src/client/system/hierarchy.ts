@@ -42,6 +42,7 @@ import type { Db } from '../../db.ts'
 import {
   container,
   environment,
+  project,
   server,
   service,
   workspace,
@@ -519,6 +520,50 @@ export async function ensureManagedIngressHierarchy(
   params: { organizationId: string; serverId: string },
 ): Promise<SystemHierarchyIds> {
   return await managedIngressHierarchyProvision.ensure(db, params)
+}
+
+/**
+ * Read-only lookup of an existing managed-ingress service/container for this
+ * server. Does not provision rows. Used for empty-cluster teardown so we never
+ * create hierarchy on a host that never had a ProxySQL stack.
+ */
+export async function findManagedIngressHierarchy(
+  db: Db,
+  params: { serverId: string },
+): Promise<SystemHierarchyIds | null> {
+  const rows = await db
+    .select({
+      workspaceId: workspace.id,
+      projectId: project.id,
+      environmentId: environment.id,
+      serviceId: service.id,
+      containerRowId: container.id,
+      containerName: container.containerName,
+    })
+    .from(environment)
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .innerJoin(service, eq(service.environmentId, environment.id))
+    .innerJoin(container, eq(container.serviceId, service.id))
+    .where(
+      and(
+        eq(environment.serverId, params.serverId),
+        eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
+        sql`${project.metadata}->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}`,
+        eq(service.composeServiceName, SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME),
+      ),
+    )
+    .limit(1)
+  const row = rows[0]
+  if (!row) return null
+  return {
+    workspaceId: row.workspaceId,
+    projectId: row.projectId,
+    environmentId: row.environmentId,
+    serviceId: row.serviceId,
+    containerRowId: row.containerRowId,
+    containerName: row.containerName,
+  }
 }
 
 /**

@@ -75,10 +75,15 @@ type SystemReconcileEnvironmentEntry = {
    */
   ingressObserved: boolean
   /**
-   * True when this server hosts at least one managed cluster `node` row — the
-   * shared ProxySQL frontend is only desired while cluster members exist.
+   * True when this server hosts at least one managed cluster `node` row.
    */
   hasManagedMembers: boolean
+  /**
+   * True when this server is a bound consumer of a managed cluster
+   * (environment pin, project default, or task pin) — ProxySQL is desired
+   * even with no local members.
+   */
+  hasBoundManagedConsumers: boolean
   services: Array<{ serviceId: string; composeServiceName: string }>
 }
 
@@ -99,13 +104,19 @@ export function resolveHostingIngressDesired(params: Readonly<{
 }
 
 /**
- * Shared ProxySQL is desired whenever any managed member is placed on the
- * server. Absent inventory alone must not keep it up once members leave.
+ * Shared ProxySQL is desired when this server hosts managed members **or**
+ * is a bound consumer of a managed cluster (environment pin, project
+ * default, or task pin). Absent inventory alone must not keep it up once
+ * both are gone.
  */
 export function resolveManagedIngressDesired(params: Readonly<{
   hasManagedMembers: boolean
+  hasBoundManagedConsumers: boolean
 }>): 'present' | 'absent' {
-  return params.hasManagedMembers ? 'present' : 'absent'
+  if (params.hasManagedMembers || params.hasBoundManagedConsumers) {
+    return 'present'
+  }
+  return 'absent'
 }
 
 /** Build the per-environment component list from its identity + service rows. */
@@ -147,6 +158,7 @@ function buildSystemReconcileComponents(
         role: 'turbopanel',
         desired: resolveManagedIngressDesired({
           hasManagedMembers: entry.hasManagedMembers,
+          hasBoundManagedConsumers: entry.hasBoundManagedConsumers,
         }),
       },
     ]
@@ -181,6 +193,8 @@ function buildSystemReconcileComponents(
  * - hosting-ingress: present only when hosting is enabled **and** some HTTP
  *   hostname hosting on this server needs the shared Traefik, or the
  *   ingress was already observed (self-heal after first start)
+ * - managed-ingress: present when this server hosts managed members **or**
+ *   bound managed consumers (environment pin, project default, or task pin)
  * - self-host (`turbopanel`) components are always `'present'`
  *
  * Returns an empty array when no system hierarchy is provisioned for the
@@ -195,6 +209,7 @@ export async function buildSystemReconcilePayload(
       server_options: unknown
       has_http_ingress_demand: boolean
       has_managed_members: boolean
+      has_bound_managed_consumers: boolean
       ingress_container_id: string | null
       ingress_status: string | null
     }
@@ -220,6 +235,26 @@ export async function buildSystemReconcilePayload(
         FROM node mm
         WHERE mm.server_id = ${params.serverId}::uuid
       ) AS has_managed_members,
+      EXISTS (
+        SELECT 1
+        FROM binding b
+        JOIN service bs ON bs.id = b.service_id
+        JOIN environment be ON be.id = bs.environment_id
+        JOIN project bp ON bp.id = be.project_id
+        JOIN workspace bw ON bw.id = bp.workspace_id
+        JOIN principal pr ON pr.id = b.principal_id
+        LEFT JOIN task t ON t.service_id = bs.id
+        WHERE bw.organization_id = srv.organization_id
+          AND pr.managed_id IS NOT NULL
+          AND (
+            be.server_id = ${params.serverId}::uuid
+            OR t.server_id = ${params.serverId}::uuid
+            OR (
+              be.server_id IS NULL
+              AND bp.options->>'defaultServerId' = ${params.serverId}
+            )
+          )
+      ) AS has_bound_managed_consumers,
       c.container_id AS ingress_container_id,
       c.status AS ingress_status
     FROM environment e
@@ -250,6 +285,7 @@ export async function buildSystemReconcilePayload(
           parseServerOptions(row.server_options)?.hosting?.enabled === true,
         hasHttpIngressDemand: row.has_http_ingress_demand === true,
         hasManagedMembers: row.has_managed_members === true,
+        hasBoundManagedConsumers: row.has_bound_managed_consumers === true,
         ingressObserved:
           row.ingress_container_id != null || row.ingress_status === 'running',
         services: [],
@@ -261,6 +297,9 @@ export async function buildSystemReconcilePayload(
     }
     if (row.has_managed_members === true) {
       entry.hasManagedMembers = true
+    }
+    if (row.has_bound_managed_consumers === true) {
+      entry.hasBoundManagedConsumers = true
     }
     if (row.ingress_container_id != null || row.ingress_status === 'running') {
       entry.ingressObserved = true

@@ -2,7 +2,7 @@
  * Host-free coverage for compose named-volume mount registration.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { emptyComposeDocument } from '../../lib/compose/types.ts'
 import {
@@ -149,7 +149,7 @@ test('registerComposeMounts inserts named-volume mounts and skips scratch-only s
       storageId: 'stor-data',
       serviceId: 'svc-web',
       destinationPath: '/var/lib/data',
-      readOnly: true,
+      isReadOnly: true,
     },
   ])
 })

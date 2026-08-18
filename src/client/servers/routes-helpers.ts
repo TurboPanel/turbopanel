@@ -20,6 +20,13 @@ import type { DatacenterOptions } from '../../lib/datacenter-options.ts'
 import { parseDisplayName } from '../shared.ts'
 import { colocatedServerUpdateBlockedReason } from './update-status.ts'
 import type { ServerUpdateCommit } from './update-status.ts'
+import {
+  parseNtpDefaultsInput,
+  parseSshPortInput,
+  resolveEffectiveNtpDefaults,
+  resolveEffectiveSshPort,
+  type NtpDefaults,
+} from '../../lib/host-defaults.ts'
 
 export const SERVER_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -27,6 +34,10 @@ export const SERVER_UUID_RE =
 export const STATUS_CACHE_CONTROL = 'private, max-age=5'
 export const STATUS_CACHE_MAX_AGE_MS = 5_000
 export const UPDATE_CHANNEL = 'trunk' as const
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 export function isServerUuid(value: unknown): value is string {
   return typeof value === 'string' && SERVER_UUID_RE.test(value)
@@ -75,7 +86,10 @@ export function currentCommitFromDaemonBuild(
 
 export type ServerPatchFields = {
   name?: string | null
-  options?: ServerOptions
+  options?: Omit<ServerOptions, 'sshPort' | 'ntp'> & {
+    sshPort?: number | null
+    ntp?: NtpDefaults | null
+  }
   updatedAt: string
 }
 
@@ -110,6 +124,50 @@ export function shapeServerDatacenters(
   return out.sort((a, b) => a.id.localeCompare(b.id))
 }
 
+function invalidServerPatchRequest(): ServerRouteValidationError {
+  return { ok: false, error: 'Invalid request', status: 400 }
+}
+
+function parseServerPatchName(
+  body: Record<string, unknown>,
+): { ok: true; name: string | null } | ServerRouteValidationError {
+  try {
+    return { ok: true, name: parseDisplayName(body) }
+  } catch {
+    return invalidServerPatchRequest()
+  }
+}
+
+/**
+ * Overlay sshPort / ntp onto parsed server options. `null` clears inherit.
+ */
+function parseServerPatchOptions(
+  raw: unknown,
+):
+  | { ok: true; options: NonNullable<ServerPatchFields['options']> }
+  | ServerRouteValidationError {
+  const parsed = parseServerOptions(raw)
+  if (!isRecord(raw) || parsed === null) {
+    return invalidServerPatchRequest()
+  }
+  const options: NonNullable<ServerPatchFields['options']> = { ...parsed }
+  if ('sshPort' in raw) {
+    const sshPort = parseSshPortInput(raw.sshPort)
+    if (!sshPort.ok) {
+      return { ok: false, error: 'Invalid sshPort', status: 400 }
+    }
+    options.sshPort = sshPort.value
+  }
+  if ('ntp' in raw) {
+    const ntp = parseNtpDefaultsInput(raw.ntp)
+    if (!ntp.ok) {
+      return { ok: false, error: 'Invalid ntp', status: 400 }
+    }
+    options.ntp = ntp.value
+  }
+  return { ok: true, options }
+}
+
 /**
  * Validate name / options / emptiness for a server PATCH body.
  * Datacenter membership is managed via IP pins, not server PATCH.
@@ -126,27 +184,23 @@ export function parseServerPatchCore(
   const patch: ServerPatchFields = { updatedAt }
 
   if (body.displayName !== undefined || body.name !== undefined) {
-    try {
-      patch.name = parseDisplayName(body)
-    } catch {
-      return { ok: false, error: 'Invalid request', status: 400 }
-    }
+    const name = parseServerPatchName(body)
+    if (!name.ok) return name
+    patch.name = name.name
   }
 
   if (body.datacenterId !== undefined) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+    return invalidServerPatchRequest()
   }
 
   if (body.options !== undefined) {
-    const options = parseServerOptions(body.options)
-    if (options === null) {
-      return { ok: false, error: 'Invalid request', status: 400 }
-    }
-    patch.options = options
+    const options = parseServerPatchOptions(body.options)
+    if (!options.ok) return options
+    patch.options = options.options
   }
 
   if (patch.name === undefined && patch.options === undefined) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+    return invalidServerPatchRequest()
   }
 
   return { ok: true, patch }
@@ -331,6 +385,13 @@ export type ServerListTimezoneFields = {
   timezoneSource: string | null
 }
 
+export type ServerHostDefaultsFields = {
+  sshPort: number
+  sshPortSource: string | null
+  ntpDefaults: NtpDefaults | null
+  ntpDefaultsSource: string | null
+}
+
 export function resolveServerTimezoneFields(
   rowOptions: unknown,
   orgOptions: OrganizationOptions | null | undefined,
@@ -348,6 +409,22 @@ export function resolveServerTimezoneFields(
   return {
     timezone: effective.timezone,
     timezoneSource: effective.source,
+  }
+}
+
+export function resolveServerHostDefaultsFields(
+  rowOptions: unknown,
+  orgOptions: OrganizationOptions | null | undefined,
+  dcOptions: DatacenterOptions | null | undefined,
+): ServerHostDefaultsFields {
+  const serverOptions = parseServerOptions(rowOptions)
+  const ssh = resolveEffectiveSshPort(serverOptions, dcOptions, orgOptions)
+  const ntp = resolveEffectiveNtpDefaults(serverOptions, dcOptions, orgOptions)
+  return {
+    sshPort: ssh.sshPort,
+    sshPortSource: ssh.source,
+    ntpDefaults: ntp.ntp,
+    ntpDefaultsSource: ntp.source,
   }
 }
 

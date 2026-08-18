@@ -33,9 +33,9 @@ import type { ManagedSettings } from '../../lib/managed/settings.ts'
 import {
   isPrivateEndpointError,
   privateEndpointErrorResponse,
+  resolvePrivateEndpoint,
   type PrivateEndpointError,
 } from '../../lib/net/private-endpoint.ts'
-import { loadRelayAddressesForServers } from '../../lib/db/fabric-records.ts'
 import { managed, principal, server as serverTable, tls } from '../../lib/db/schema.ts'
 import {
   issueLeafCertificate,
@@ -61,6 +61,7 @@ import {
   listManagedMembers,
   type ManagedMemberPeer,
   type ManagedMemberRow,
+  replicationPurposeForMemberPair,
   resolvePeersForMember,
   updateMemberReplicationTransport,
 } from './members.ts'
@@ -173,6 +174,12 @@ export type ManagedApplyPrepareError =
   | { kind: 'managed_settings_invalid' }
   | { kind: 'managed_primary_missing' }
   | { kind: 'managed_private_port_exhausted'; serverId: string }
+  /**
+   * Peers of one member would dial it on more than one address/transport, and
+   * the wire payload carries a single `privateListener` bind. Rejected instead
+   * of publishing a bind half the cluster cannot reach.
+   */
+  | { kind: 'managed_listener_bind_conflict'; serverId: string }
   | PrivateEndpointError
 
 export type BuildManagedApplyInput = {
@@ -275,7 +282,10 @@ export function prepareErrorResponse(
       return c.json({ error: 'managed_primary_missing' }, 500)
     case 'managed_private_port_exhausted':
       return c.json({ error: 'managed_private_port_exhausted' }, 409)
+    case 'managed_listener_bind_conflict':
+      return c.json({ error: 'managed_listener_bind_conflict' }, 422)
     case 'private_path_unavailable':
+    case 'private_family_mismatch':
       return privateEndpointErrorResponse(c, error)
   }
 }
@@ -323,6 +333,7 @@ function composeFromRuntimeSpec(
   rootUsername: string,
   member?: BuildRuntimeSpecInput['member'],
   useOrgTls?: boolean,
+  memberCount?: number,
 ): { composeYaml: string; runtime: ReturnType<ManagedEngineSpec['buildRuntimeSpec']> } {
   const runtime = spec.buildRuntimeSpec({
     managedId,
@@ -330,6 +341,7 @@ function composeFromRuntimeSpec(
     rootUsername,
     ...(member !== undefined ? { member } : {}),
     ...(useOrgTls === true ? { useOrgTls: true } : {}),
+    ...(memberCount !== undefined ? { memberCount } : {}),
   })
 
   const volumes: Record<string, Record<string, never>> = {}
@@ -627,23 +639,64 @@ function resolveRootUsername(
   return residual.rootUsername ?? input.rootUsername ?? input.spec.rootUsername
 }
 
-async function resolveMemberPrivateBindAddress(
+type ResolvedMemberPrivateBind = {
+  address: string
+  transport: 'datacenter' | 'fabric' | 'public'
+}
+
+/**
+ * Resolve the address this member publishes its private listener on by asking
+ * the reverse question for every remote peer: "which address does that peer
+ * dial to reach this member?" — the same class-aware ladder
+ * (`replicationPurposeForMemberPair`) the peer list itself was built with, so
+ * the publish can never disagree with the dial.
+ *
+ * Returns `undefined` when no remote peer needs a published bind (single-member
+ * or all co-resident — those dial the container name on `turbopanel-managed`),
+ * a `PrivateEndpointError` when a peer has no path to this member, and
+ * `managed_listener_bind_conflict` when peers disagree on the address or
+ * transport: the wire payload carries exactly one `privateListener`, so a mixed
+ * datacenter/fabric/public peer set is rejected instead of shipping a bind that
+ * only some peers can reach.
+ *
+ * The returned `transport` tags the wire payload so the daemon can mandate
+ * org-CA TLS for a public bind.
+ *
+ * Exported for host-free unit tests (fake `Db`).
+ */
+export async function resolveMemberPrivateBindAddress(
   db: Db,
   member: ManagedMemberRow,
-  peers: ManagedMemberPeer[],
-): Promise<string | undefined> {
-  if (peers.some((peer) => peer.transport === 'fabric')) {
-    const relays = await loadRelayAddressesForServers(db, [member.serverId])
-    return relays.get(member.serverId)
+  members: readonly ManagedMemberRow[],
+): Promise<ResolvedMemberPrivateBind | undefined | ManagedApplyPrepareError> {
+  const remotePeers = members.filter(
+    (row) => row.id !== member.id && row.serverId !== member.serverId,
+  )
+  if (remotePeers.length === 0) return undefined
+
+  let bind: ResolvedMemberPrivateBind | undefined
+  for (const peer of remotePeers) {
+    const resolved = await resolvePrivateEndpoint(db, {
+      fromServerId: peer.serverId,
+      toServerId: member.serverId,
+      purpose: replicationPurposeForMemberPair(member, peer),
+    })
+    if (isPrivateEndpointError(resolved)) return resolved
+    if (resolved.transport === 'local') continue
+
+    const candidate: ResolvedMemberPrivateBind = {
+      address: resolved.address,
+      transport: resolved.transport,
+    }
+    if (!bind) {
+      bind = candidate
+      continue
+    }
+    if (bind.address !== candidate.address || bind.transport !== candidate.transport) {
+      return { kind: 'managed_listener_bind_conflict', serverId: member.serverId }
+    }
   }
-  const privateBind = await resolveHostingBindAddress(db, {
-    serverId: member.serverId,
-    options: { bind: 'datacenter' },
-    ipId: null,
-  })
-  return typeof privateBind === 'string' && privateBind.length > 0
-    ? privateBind
-    : undefined
+  return bind
 }
 
 /**
@@ -652,8 +705,8 @@ async function resolveMemberPrivateBindAddress(
  * desired-slots / peer addresses, or standby slot + upstream primary).
  * Returns `undefined` for single-member clusters (no replication username).
  *
- * Bind follows the cluster's already-resolved peer transports: `fabric`
- * publishes on the relay `tp0` address; otherwise the datacenter bind.
+ * Bind is whatever address remote peers actually dial for this member (see
+ * `resolveMemberPrivateBindAddress`), not an independent ladder walk.
  */
 async function resolveMemberReplicationInput(
   db: Db,
@@ -670,17 +723,17 @@ async function resolveMemberReplicationInput(
   const { members, member, roleForSpec, replicationUsername, multiMember, peers } = params
   if (!multiMember || !replicationUsername) return undefined
 
-  let privateListener: { address: string; port: number } | undefined
+  let privateListener:
+    | NonNullable<NonNullable<BuildRuntimeSpecInput['member']>['privateListener']>
+    | undefined
   if (member.privatePort !== null) {
-    const privateBind = await resolveMemberPrivateBindAddress(db, member, peers)
-    if (typeof privateBind === 'string' && privateBind.length > 0) {
-      privateListener = { address: privateBind, port: member.privatePort }
-    } else if (members.some((row) => row.serverId !== member.serverId)) {
-      const remote = members.find((row) => row.serverId !== member.serverId)!
-      return {
-        kind: 'private_path_unavailable',
-        fromServerId: member.serverId,
-        toServerId: remote.serverId,
+    const privateBind = await resolveMemberPrivateBindAddress(db, member, members)
+    if (isPrepareError(privateBind)) return privateBind
+    if (privateBind) {
+      privateListener = {
+        address: privateBind.address,
+        port: member.privatePort,
+        transport: privateBind.transport,
       }
     }
     // All co-resident: no private listener publish needed.
@@ -900,10 +953,12 @@ async function buildPayloadForMember(
     member.role === 'replica' ? 'standby' : 'primary'
 
   // Resolve peer endpoints early — needed for replication + private listener.
+  // The ladder per link is class-aware (see `replicationPurposeForMemberPair`).
   const peers = await resolvePeersForMember(
     db,
     members,
     member,
+    // Engine-native backend port (5432/3306), not the ProxySQL client listener.
     input.spec.defaultPort,
   )
   if (isPrivateEndpointError(peers)) return peers
@@ -927,6 +982,7 @@ async function buildPayloadForMember(
     rootUsername,
     memberInput,
     multiMember,
+    members.length,
   )
 
   const memberOrdinals = members.map((m) => m.ordinal)
@@ -989,6 +1045,7 @@ async function buildPayloadForMember(
     projectName: `turbopanel-managed-${input.managedRow.id}`,
     containerName: allocation.containerName,
     image: input.settings.image ?? input.spec.defaultImage,
+    // Engine-native listen port inside the container — not the ingress listener.
     containerPort: input.spec.defaultPort,
     composeYaml,
     configFiles: runtime.configFiles,
@@ -1516,7 +1573,7 @@ export async function enqueueManagedDestroyFanout(
 }
 
 /** Compatibility wrappers used by paths that still target a single primary. */
-export async function enqueueManagedApply(
+export function enqueueManagedApply(
   c: Context<AppEnv>,
   db: Db,
   commandQueue: CommandQueue,
@@ -1541,7 +1598,7 @@ export async function enqueueManagedApply(
   })
 }
 
-export async function enqueueManagedLifecycle(
+export function enqueueManagedLifecycle(
   c: Context<AppEnv>,
   db: Db,
   commandQueue: CommandQueue,
@@ -1572,7 +1629,7 @@ export async function enqueueManagedLifecycle(
   })
 }
 
-export async function enqueueManagedDestroy(
+export function enqueueManagedDestroy(
   c: Context<AppEnv>,
   db: Db,
   commandQueue: CommandQueue,

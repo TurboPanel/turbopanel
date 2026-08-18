@@ -7,6 +7,7 @@ import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { binding, hosting, managed, principal, variable } from '../../lib/db/schema.ts'
 import { getManagedEngineSpec } from '../../lib/managed/index.ts'
+import { managedIngressPortForEngine } from '../../lib/managed/ingress-ports.ts'
 import {
   assertSafeBindingKeyPrefix,
   DEFAULT_BINDING_KEY_PREFIX,
@@ -266,7 +267,7 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
           const resolved = await resolveBindingEndpoint(db, {
             serviceId: row.serviceId,
             managedId: mrow.id,
-            protocolPort: spec.defaultPort,
+            protocolPort: managedIngressPortForEngine(mrow.engine, spec.defaultPort),
           })
           if (!isBindingEndpointError(resolved)) {
             endpoint = { host: resolved.host, port: resolved.port }

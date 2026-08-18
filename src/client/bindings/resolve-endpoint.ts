@@ -2,9 +2,10 @@
  * Resolve the host/port a compose service dials for a managed cluster.
  *
  * A placed consuming service always dials **its own server's** ProxySQL
- * listener, addressed by Docker container name on the shared
- * {@link MANAGED_INGRESS_NETWORK} — never a host-published address. That
- * listener routes to local or remote engine backends over the private path
+ * listener (15432 Postgres family / 16306 MySQL family), addressed by Docker
+ * container name on the shared {@link MANAGED_INGRESS_NETWORK} — never a
+ * host-published address and never the engine-native port. That listener
+ * routes to local or remote engine backends over the private path
  * (configured by `managed.ingress.reconcile` on the consumer host). This is
  * independent of the cluster's public `exposure` setting: a compose service
  * on the same Docker host reaches ProxySQL over the internal network
@@ -16,11 +17,14 @@
 import { and, asc, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
+  binding,
   environment,
   node,
+  principal,
   project,
   server,
   service,
+  task,
 } from '../../lib/db/schema.ts'
 import type { PrivateEndpointError } from '../../lib/net/private-endpoint.ts'
 import {
@@ -178,4 +182,39 @@ export async function memberServerIdsForManaged(
     .from(node)
     .where(and(eq(node.managedId, managedId)))
   return rows.map((r) => r.serverId)
+}
+
+/**
+ * Servers that host a compose service bound to this managed cluster.
+ * Inverse of `loadBoundManagedIdsForServer`: env pin, project default, and
+ * any `task.serverId`. One query — no per-service round trips.
+ */
+export async function consumerServerIdsForManaged(
+  db: Db,
+  managedId: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({
+      environmentServerId: environment.serverId,
+      projectOptions: project.options,
+      taskServerId: task.serverId,
+    })
+    .from(binding)
+    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .innerJoin(service, eq(binding.serviceId, service.id))
+    .innerJoin(environment, eq(service.environmentId, environment.id))
+    .innerJoin(project, eq(environment.projectId, project.id))
+    .leftJoin(task, eq(task.serviceId, service.id))
+    .where(eq(principal.managedId, managedId))
+
+  const ids = new Set<string>()
+  for (const row of rows) {
+    const placement = resolveEffectivePlacementServerId(
+      row.environmentServerId,
+      parseProjectOptions(row.projectOptions),
+    )
+    if (placement) ids.add(placement)
+    if (row.taskServerId) ids.add(row.taskServerId)
+  }
+  return [...ids]
 }

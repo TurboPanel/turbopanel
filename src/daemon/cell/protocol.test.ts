@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertNotEquals } from "jsr:@std/assert";
+import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import {
   type DaemonMessage,
@@ -10,6 +10,7 @@ import {
   generateDeliveryId,
   generateRequestId,
   MAX_DAEMON_WS_ERROR_CHARS,
+  MAX_DAEMON_WS_FABRIC_PATH_ENTRIES,
   MAX_DAEMON_WS_FRAME_BYTES,
   MAX_DAEMON_WS_HOST_FIELD_CHARS,
   MAX_DAEMON_WS_ID_CHARS,
@@ -766,5 +767,108 @@ it("cell ping/pong constants and timing exports are stable", () => {
   assertEquals(
     (DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has("hello"),
     true,
+  );
+  assertEquals(
+    (DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has("fabric-paths-result"),
+    true,
+  );
+});
+
+const WG_PUBKEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const FABRIC_PATH_AT = "2020-01-01T00:00:00.000Z";
+
+it("validateDaemonInboundFrame accepts a fabric-paths-result", () => {
+  const result = validateDaemonInboundFrame(JSON.stringify({
+    type: "fabric-paths-result",
+    id: "req-1",
+    at: FABRIC_PATH_AT,
+    paths: [{
+      publicKey: WG_PUBKEY,
+      endpoint: "203.0.113.50:48172",
+      health: "healthy",
+    }],
+  }));
+  assertEquals(result.ok, true);
+});
+
+it("validateDaemonInboundFrame rejects oversized fabric-paths-result entries", () => {
+  const result = validateDaemonInboundFrame(JSON.stringify({
+    type: "fabric-paths-result",
+    id: "req-1",
+    at: FABRIC_PATH_AT,
+    paths: Array.from(
+      { length: MAX_DAEMON_WS_FABRIC_PATH_ENTRIES + 1 },
+      () => ({ publicKey: WG_PUBKEY, health: "never" }),
+    ),
+  }));
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.reason, "paths exceed max entries");
+  }
+});
+
+it("validateDaemonInboundEnvelope rejects oversized fabric path lists", () => {
+  const oversized = Array.from(
+    { length: MAX_DAEMON_WS_FABRIC_PATH_ENTRIES + 1 },
+    () => ({ publicKey: WG_PUBKEY, health: "never" as const }),
+  );
+  assertEquals(
+    validateDaemonInboundEnvelope({
+      kind: "fabric-paths-result",
+      requestId: "req-1",
+      at: FABRIC_PATH_AT,
+      paths: oversized,
+    }),
+    { ok: false, reason: "paths exceed max entries" },
+  );
+});
+
+it("wire mappings round-trip fabric-paths request and result", () => {
+  const outbound = outboundEnvelopeToWireMessage({
+    kind: "fabric-paths-request",
+    deliveryId: "del-1",
+    requestId: "req-1",
+    fabricId: "00000000-0000-4000-8000-000000000001",
+    probeMs: 3000,
+    candidates: [{
+      publicKey: WG_PUBKEY,
+      endpoints: ["203.0.113.50:48172"],
+    }],
+    at: FABRIC_PATH_AT,
+  });
+  assertEquals(outbound, {
+    type: "fabric-paths-request",
+    id: "req-1",
+    fabricId: "00000000-0000-4000-8000-000000000001",
+    probeMs: 3000,
+    candidates: [{
+      publicKey: WG_PUBKEY,
+      endpoints: ["203.0.113.50:48172"],
+    }],
+    at: FABRIC_PATH_AT,
+  });
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "fabric-paths-result",
+      id: "req-1",
+      at: FABRIC_PATH_AT,
+      paths: [{
+        publicKey: WG_PUBKEY,
+        endpoint: "203.0.113.50:48172",
+        health: "healthy",
+      }],
+    }),
+    {
+      kind: "fabric-paths-result",
+      requestId: "req-1",
+      at: FABRIC_PATH_AT,
+      paths: [{
+        publicKey: WG_PUBKEY,
+        endpoint: "203.0.113.50:48172",
+        health: "healthy",
+      }],
+      error: undefined,
+    },
   );
 });

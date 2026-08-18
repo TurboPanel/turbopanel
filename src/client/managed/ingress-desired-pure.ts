@@ -7,6 +7,18 @@
 
 import type { HostingBindScope } from '../../lib/hosting-options.ts'
 import type { ManagedIngressReconcileBackend } from '../../lib/commands/schemas.ts'
+import {
+  managedIngressPortForEngine,
+  type ManagedIngressListenerPort,
+} from '../../lib/managed/ingress-ports.ts'
+
+export {
+  MANAGED_INGRESS_LISTENER_PORTS,
+  MANAGED_INGRESS_MYSQL_PORT,
+  MANAGED_INGRESS_PGSQL_PORT,
+  managedIngressFamilyForPort,
+  managedIngressPortForEngine,
+} from '../../lib/managed/ingress-ports.ts'
 
 // Wildcard "any interface" bind markers — listen-address sentinels, never
 // real endpoints to advertise as a SAN.
@@ -62,12 +74,8 @@ export function isIngressRecord(
 export function protocolPortForEngine(
   engine: string,
   defaultPort: number,
-): 5432 | 3306 {
-  if (defaultPort === 3306) return 3306
-  if (defaultPort === 5432) return 5432
-  // Postgres-first — treat unknown defaults as the shared Postgres listener.
-  if (engine === 'mysql' || engine === 'mariadb') return 3306
-  return 5432
+): ManagedIngressListenerPort {
+  return managedIngressPortForEngine(engine, defaultPort)
 }
 
 export function isManagedRootPrincipal(metadata: unknown): boolean {

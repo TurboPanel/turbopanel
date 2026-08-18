@@ -176,6 +176,13 @@ function formatStopGracePeriod(seconds: number): string {
   return `${seconds}s`
 }
 
+/** Headroom above live members for backup / inspection replication slots. */
+const REPLICATION_SLOT_HEADROOM = 2
+
+function replicationSlotCount(memberCount: number | undefined): number {
+  return Math.max(memberCount ?? 1, 1) + REPLICATION_SLOT_HEADROOM
+}
+
 function buildPlatformPostgresqlConf(
   settings: PostgresManagedSettings,
   input: BuildRuntimeSpecInput,
@@ -189,8 +196,8 @@ function buildPlatformPostgresqlConf(
     // cluster can grow to multi-member without a restart-level wal_level change.
     "wal_level = replica",
     'max_wal_senders = 10',
-    // MANAGED_MAX_REPLICAS (2) + 1 headroom for resync / promotion.
-    'max_replication_slots = 4',
+    // Member count + headroom for backup / inspection connections.
+    `max_replication_slots = ${replicationSlotCount(input.memberCount)}`,
     'hot_standby = on',
     'wal_log_hints = on',
   ]

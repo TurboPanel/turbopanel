@@ -17,14 +17,15 @@ import {
   listSerializedManagedMembers,
   markMembersApplying,
   nextReplicaOrdinal,
+  replicationPurposeForMemberPair,
   resolveMemberTransports,
   resolvePeersForMember,
   serializeManagedMember,
   updateManagedMemberObservedReplication,
   updateManagedMemberReadEligible,
+  updateManagedMemberReplicaClass,
   updateMemberReplicationTransport,
   type ManagedMemberRow,
-  MANAGED_MAX_REPLICAS,
   MANAGED_PRIVATE_PORT_MIN,
 } from './members.ts'
 
@@ -41,6 +42,7 @@ function member(
 ): ManagedMemberRow {
   return {
     managedId: 'managed-1',
+    replicaClass: overrides.role === 'replica' ? 'failover' : null,
     readEligible: overrides.role === 'primary',
     replicationTransport: null,
     privatePort: null,
@@ -76,7 +78,7 @@ function selectListDb(rows: ManagedMemberRow[]): Db {
   } as unknown as Db
 }
 
-test('nextReplicaOrdinal assigns 2 then 3 then null when full', () => {
+test('nextReplicaOrdinal assigns the smallest unused ordinal at or above 2', () => {
   assertEquals(nextReplicaOrdinal([]), 2)
   assertEquals(nextReplicaOrdinal([member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 })]), 2)
   assertEquals(
@@ -92,9 +94,17 @@ test('nextReplicaOrdinal assigns 2 then 3 then null when full', () => {
       member({ id: 'r2', serverId: 's2', role: 'replica', ordinal: 2 }),
       member({ id: 'r3', serverId: 's3', role: 'replica', ordinal: 3 }),
     ]),
-    null,
+    4,
   )
-  assertEquals(MANAGED_MAX_REPLICAS, 2)
+  assertEquals(
+    nextReplicaOrdinal([
+      member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 }),
+      member({ id: 'r2', serverId: 's2', role: 'replica', ordinal: 2 }),
+      member({ id: 'r3', serverId: 's3', role: 'replica', ordinal: 3 }),
+      member({ id: 'r4', serverId: 's4', role: 'replica', ordinal: 4 }),
+    ]),
+    5,
+  )
 })
 
 test('countReplicas ignores primary members', () => {
@@ -145,6 +155,7 @@ test('serializeManagedMember maps role transport and replication health', () => 
     serverId: 's1',
     serverDisplayName: 'db-1',
     role: 'replica',
+    replicaClass: 'failover',
     readEligible: true,
     ordinal: 2,
     status: 'ready',
@@ -170,6 +181,7 @@ test('serializeManagedMember maps role transport and replication health', () => 
     null,
   )
   assertEquals(primaryish.role, 'primary')
+  assertEquals(primaryish.replicaClass, null)
   assertEquals(primaryish.replicationTransport, null)
   assertEquals(primaryish.replication, undefined)
 
@@ -209,6 +221,33 @@ test('serializeManagedMember maps role transport and replication health', () => 
     'v',
   )
   assertEquals(transportVpn.replicationTransport, 'fabric')
+
+  const transportPublic = serializeManagedMember(
+    member({
+      id: 'm5',
+      serverId: 's5',
+      role: 'replica',
+      ordinal: 2,
+      replicationTransport: 'public',
+      metadata: null,
+    }),
+    'pub',
+  )
+  assertEquals(transportPublic.replicationTransport, 'public')
+
+  const readReplica = serializeManagedMember(
+    member({
+      id: 'm6',
+      serverId: 's6',
+      role: 'replica',
+      ordinal: 2,
+      replicaClass: 'read',
+      replicationTransport: 'public',
+    }),
+    'edge',
+  )
+  assertEquals(readReplica.replicaClass, 'read')
+  assertEquals(readReplica.replicationTransport, 'public')
 })
 
 test('listManagedMembers and listManagedMembersForManagedIds wire orderBy / empty short-circuit', async () => {
@@ -419,6 +458,7 @@ type PrivateEndpointFixtureOpts = {
     fabricCreatedAt: string
     address: string
   }>
+  publicAddresses?: Array<{ serverId: string; address: string }>
   datacenterOptions?: Array<{ id: string; options: unknown }>
 }
 
@@ -448,6 +488,26 @@ function privateEndpointSelect(
           return {
             where() {
               return thenableRows(memberships)
+            },
+          }
+        },
+      }
+    }
+
+    if (
+      keys.length === 2 &&
+      keySet.has('serverId') &&
+      keySet.has('address')
+    ) {
+      return {
+        from() {
+          return {
+            where() {
+              return {
+                orderBy() {
+                  return thenableRows(opts?.publicAddresses ?? [])
+                },
+              }
             },
           }
         },
@@ -527,8 +587,8 @@ function peerResolutionDb(opts: {
     ordinal: number
   }>
   memberships?: MembershipPinRow[]
-}): Db {
-  const endpointSelect = privateEndpointSelect(opts.memberships ?? [])
+} & PrivateEndpointFixtureOpts): Db {
+  const endpointSelect = privateEndpointSelect(opts.memberships ?? [], opts)
   return {
     select(fields: Record<string, unknown>) {
       const keys = Object.keys(fields)
@@ -556,12 +616,16 @@ function peerResolutionDb(opts: {
 
 test('resolveMemberTransports maps primary local and replica path results', async () => {
   const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
-  const primaryOnly = await resolveMemberTransports({} as Db, [primary])
+  const primaryOnly = await resolveMemberTransports(
+    {} as Db,
+    [primary],
+    'read-replication',
+  )
   if (!('size' in primaryOnly)) {
     throw new TypeError(`expected transport map, got ${JSON.stringify(primaryOnly)}`)
   }
   assertEquals([...primaryOnly.entries()], [['p', 'local']])
-  assertEquals(await resolveMemberTransports({} as Db, []), new Map())
+  assertEquals(await resolveMemberTransports({} as Db, [], 'read-replication'), new Map())
 
   const replicaSame = member({
     id: 'r',
@@ -572,6 +636,7 @@ test('resolveMemberTransports maps primary local and replica path results', asyn
   const transports = await resolveMemberTransports(
     privateEndpointDb([]),
     [primary, replicaSame],
+    'read-replication',
   )
   if (!('size' in transports)) {
     throw new TypeError(`expected transport map, got ${JSON.stringify(transports)}`)
@@ -591,6 +656,7 @@ test('resolveMemberTransports maps primary local and replica path results', asyn
       membershipPin('s2', 'dc-a', '10.0.0.2'),
     ]),
     [primary, remote],
+    'read-replication',
   )
   if (!('size' in remoteTransports)) {
     throw new TypeError(JSON.stringify(remoteTransports))
@@ -602,7 +668,7 @@ test('resolveMemberTransports surfaces private_path_unavailable from replica ove
   const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
   const replica = member({ id: 'r', serverId: 's2', role: 'replica', ordinal: 2 })
   const db = privateEndpointDb([])
-  const result = await resolveMemberTransports(db, [primary, replica])
+  const result = await resolveMemberTransports(db, [primary, replica], 'read-replication')
   assertEquals(result, {
     kind: 'private_path_unavailable',
     fromServerId: 's1',
@@ -642,6 +708,7 @@ test('resolveMemberTransports uses fabric when relays exist without datacenter I
       },
     ),
     [primary, replica],
+    'read-replication',
   )
   if (!('size' in transports)) {
     throw new TypeError(JSON.stringify(transports))
@@ -929,7 +996,7 @@ test('resolveMemberTransports returns private path error from replica', async ()
     membershipPin('s1', 'dc-a', '10.0.0.1'),
     membershipPin('s2', 'dc-b', '10.1.0.2'),
   ])
-  const result = await resolveMemberTransports(db, [primary, replica])
+  const result = await resolveMemberTransports(db, [primary, replica], 'read-replication')
   assertEquals(result, {
     kind: 'private_path_unavailable',
     fromServerId: 's1',
@@ -1013,6 +1080,119 @@ test('resolvePeersForMember surfaces private endpoint resolution failures', asyn
   })
 })
 
+test('replicationPurposeForMemberPair keeps failover links off fabric and public', () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const failover = member({
+    id: 'f',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    replicaClass: 'failover',
+  })
+  const read = member({
+    id: 'r',
+    serverId: 's3',
+    role: 'replica',
+    ordinal: 3,
+    replicaClass: 'read',
+  })
+  const legacy = member({
+    id: 'l',
+    serverId: 's4',
+    role: 'replica',
+    ordinal: 4,
+    replicaClass: null,
+  })
+
+  assertEquals(
+    replicationPurposeForMemberPair(primary, failover),
+    'failover-replication',
+  )
+  assertEquals(
+    replicationPurposeForMemberPair(failover, primary),
+    'failover-replication',
+  )
+  assertEquals(
+    replicationPurposeForMemberPair(failover, legacy),
+    'failover-replication',
+  )
+  assertEquals(replicationPurposeForMemberPair(primary, read), 'read-replication')
+  assertEquals(replicationPurposeForMemberPair(read, failover), 'read-replication')
+})
+
+test('resolvePeersForMember routes each peer by its replica class', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const failover = member({
+    id: 'f',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    replicaClass: 'failover',
+    privatePort: 45_100,
+  })
+  const read = member({
+    id: 'r',
+    serverId: 's3',
+    role: 'replica',
+    ordinal: 3,
+    replicaClass: 'read',
+    readEligible: true,
+    privatePort: 45_101,
+  })
+  // s2 shares dc-a with the primary; s3 is reachable only over public.
+  const db = peerResolutionDb({
+    containers: [],
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.22'),
+    ],
+    publicAddresses: [
+      { serverId: 's1', address: '203.0.113.1' },
+      { serverId: 's3', address: '203.0.113.3' },
+    ],
+  })
+
+  const peers = await resolvePeersForMember(db, [primary, failover, read], primary, 5432)
+  if (!Array.isArray(peers)) {
+    throw new TypeError(JSON.stringify(peers))
+  }
+  assertEquals(
+    peers.map((peer) => [peer.memberId, peer.transport, peer.address]),
+    [
+      ['f', 'datacenter', '10.0.0.22'],
+      ['r', 'public', '203.0.113.3'],
+    ],
+  )
+})
+
+test('resolvePeersForMember refuses a failover peer that only public can reach', async () => {
+  const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
+  const failover = member({
+    id: 'f',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    replicaClass: 'failover',
+    privatePort: 45_100,
+  })
+  // No shared datacenter: a read replica would take the public rung, a
+  // failover peer must not.
+  const db = peerResolutionDb({
+    containers: [],
+    memberships: [],
+    publicAddresses: [
+      { serverId: 's1', address: '203.0.113.1' },
+      { serverId: 's2', address: '203.0.113.2' },
+    ],
+  })
+
+  assertEquals(await resolvePeersForMember(db, [primary, failover], primary, 5432), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
+})
+
 test('crud helpers: insert update delete find mark and observed replication', async () => {
   let insertValues: unknown
   const insertDb = {
@@ -1038,11 +1218,13 @@ test('crud helpers: insert update delete find mark and observed replication', as
     managedId: 'managed-1',
     serverId: 's2',
     ordinal: 2,
+    replicaClass: 'failover',
     readEligible: true,
     replicationTransport: 'fabric',
   })
   assertEquals(inserted.id, 'r-new')
-  assertEquals((insertValues as { role: string }).role, 'replica')
+  assertEquals((insertValues as { role: string; replicaClass: string }).role, 'replica')
+  assertEquals((insertValues as { replicaClass: string }).replicaClass, 'failover')
 
   const emptyInsert = {
     insert: () => ({
@@ -1057,6 +1239,7 @@ test('crud helpers: insert update delete find mark and observed replication', as
         managedId: 'm',
         serverId: 's',
         ordinal: 2,
+        replicaClass: 'read',
         readEligible: false,
         replicationTransport: null,
       }),
@@ -1092,6 +1275,27 @@ test('crud helpers: insert update delete find mark and observed replication', as
     }),
   } as unknown as Db
   assertEquals(await updateManagedMemberReadEligible(missUpdate, 'missing', false), null)
+
+  const classRow = member({
+    id: 'r1',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    replicaClass: 'read',
+  })
+  const classDb = {
+    update: () => ({
+      set: (values: { replicaClass?: string }) => {
+        assertEquals(values.replicaClass, 'read')
+        return {
+          where: () => ({
+            returning: () => Promise.resolve([classRow]),
+          }),
+        }
+      },
+    }),
+  } as unknown as Db
+  assertEquals(await updateManagedMemberReplicaClass(classDb, 'r1', 'read'), classRow)
 
   let deleted = false
   const deleteDb = {

@@ -1,12 +1,17 @@
 /**
  * Defensive parsers for `organization.options` jsonb fields used by the
- * client timezone, server-capacity, and default-environment APIs.
+ * client timezone, host-defaults, server-capacity, and default-environment APIs.
  */
 
 import {
   isValidDisplayName,
   normalizeDisplayName,
 } from "./display-name-format.ts";
+import {
+  parseNtpDefaults,
+  parseSshPort,
+  type NtpDefaults,
+} from "./host-defaults.ts";
 
 /** Platform fallback when `defaultEnvironmentName` is unset. */
 export const DEFAULT_ENVIRONMENT_NAME = "Production";
@@ -31,6 +36,18 @@ export type OrganizationOptions = {
    * Platform fallback is {@link DEFAULT_ENVIRONMENT_NAME} (`Production`).
    */
   defaultEnvironmentName?: string;
+  /**
+   * Desired SSH listen port for fleet hosts that do not set a datacenter or
+   * server override. Omitted → inherit platform default 22.
+   */
+  sshPort?: number;
+  /** Desired NTP client settings inherited by datacenters and servers. */
+  ntp?: NtpDefaults;
+  /**
+   * Preferred TurboFabric state for this organization. Does not create or tear
+   * down the mesh — `PUT /organizations/:id/fabric` remains the enable path.
+   */
+  defaultFabricEnabled?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -102,6 +119,13 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.defaultEnvironmentName === "string") {
     const trimmed = value.defaultEnvironmentName.trim();
     if (trimmed.length > 0) options.defaultEnvironmentName = trimmed;
+  }
+  const sshPort = parseSshPort(value.sshPort);
+  if (sshPort !== undefined) options.sshPort = sshPort;
+  const ntp = parseNtpDefaults(value.ntp);
+  if (ntp) options.ntp = ntp;
+  if (typeof value.defaultFabricEnabled === "boolean") {
+    options.defaultFabricEnabled = value.defaultFabricEnabled;
   }
   return options;
 }

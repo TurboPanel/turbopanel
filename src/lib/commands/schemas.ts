@@ -1,6 +1,10 @@
 import { HOSTNAME_MAX_LENGTH, isValidHostname } from './hostname.ts'
 import { isValidCidr, isValidIpAddress } from '../ip-address.ts'
 import {
+  isManagedIngressProtocolPort,
+  type ManagedIngressProtocolPort,
+} from '../managed/ingress-ports.ts'
+import {
   isManagedBackupArtifactExtension,
   isManagedEngineCode,
   type ManagedBackupArtifactExtension,
@@ -401,6 +405,13 @@ export function parseRebootResult(value: unknown): RebootCommandResult {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** Must stay in sync with the daemon `server.fabric.reconcile` shape. */
+export type FabricReconcilePeerPathKind =
+  | 'direct_lan'
+  | 'direct_public'
+  | 'direct_nat'
+  | 'gateway'
+
+/** Must stay in sync with the daemon `server.fabric.reconcile` shape. */
 export type FabricReconcilePeerMaterial = {
   publicKey: string
   endpoint?: string
@@ -408,6 +419,8 @@ export type FabricReconcilePeerMaterial = {
   /** Daemon-recipient sealed PSK (`tpdaemon.…`). */
   presharedKeyEnvelope?: string
   keepalive?: number
+  pathKind?: FabricReconcilePeerPathKind
+  viaServerId?: string
 }
 
 /** Must stay in sync with the daemon `server.fabric.reconcile` shape. */
@@ -434,13 +447,24 @@ export type FabricReconcileCommandPayload =
     prefix: string
     peers: FabricReconcilePeerMaterial[]
     networks?: FabricReconcileNetworkMaterial[]
+    gateway?: boolean
   }
+
+export type FabricPeerHealth = 'healthy' | 'stale' | 'never'
+
+const FABRIC_PEER_HEALTH = new Set<FabricPeerHealth>([
+  'healthy',
+  'stale',
+  'never',
+])
 
 export type FabricReconcileObservedPeer = {
   publicKey: string
   lastHandshakeAt?: string
   transferRx?: number
   transferTx?: number
+  endpoint?: string
+  health?: FabricPeerHealth
 }
 
 /**
@@ -490,6 +514,20 @@ function parseFabricMtu(value: unknown, field: string): number {
   return value
 }
 
+const FABRIC_PEER_PATH_KINDS = new Set<FabricReconcilePeerPathKind>([
+  'direct_lan',
+  'direct_public',
+  'direct_nat',
+  'gateway',
+])
+
+function parseFabricPeerPathKind(value: unknown): FabricReconcilePeerPathKind {
+  if (typeof value !== 'string' || !FABRIC_PEER_PATH_KINDS.has(value as FabricReconcilePeerPathKind)) {
+    throw new TypeError('Invalid fabric peer pathKind')
+  }
+  return value as FabricReconcilePeerPathKind
+}
+
 function parseFabricPeerEntry(value: unknown): FabricReconcilePeerMaterial {
   if (!isRecord(value)) {
     throw new TypeError('Invalid fabric peer entry')
@@ -528,6 +566,12 @@ function parseFabricPeerEntry(value: unknown): FabricReconcilePeerMaterial {
   }
   if (value.keepalive !== undefined) {
     peer.keepalive = parseFabricKeepalive(value.keepalive)
+  }
+  if (value.pathKind !== undefined) {
+    peer.pathKind = parseFabricPeerPathKind(value.pathKind)
+  }
+  if (value.viaServerId !== undefined) {
+    peer.viaServerId = parseFabricUuid(value.viaServerId, 'peer viaServerId')
   }
   return peer
 }
@@ -599,6 +643,12 @@ function parseEnabledFabricPayload(
       throw new TypeError('Invalid fabric networks')
     }
     payload.networks = value.networks.map(parseFabricNetworkEntry)
+  }
+  if (value.gateway !== undefined) {
+    if (typeof value.gateway !== 'boolean') {
+      throw new TypeError('Invalid fabric gateway')
+    }
+    payload.gateway = value.gateway
   }
   return payload
 }
@@ -689,6 +739,21 @@ function parseFabricObservedPeer(value: unknown): FabricReconcileObservedPeer {
       value.transferTx,
       'peer transferTx',
     )
+  }
+  if (value.endpoint !== undefined) {
+    if (!isString(value.endpoint) || !isValidWireguardEndpoint(value.endpoint)) {
+      throw new TypeError('Invalid fabric reconcile result peer endpoint')
+    }
+    peer.endpoint = value.endpoint
+  }
+  if (value.health !== undefined) {
+    if (
+      typeof value.health !== 'string' ||
+      !FABRIC_PEER_HEALTH.has(value.health as FabricPeerHealth)
+    ) {
+      throw new TypeError('Invalid fabric reconcile result peer health')
+    }
+    peer.health = value.health as FabricPeerHealth
   }
   return peer
 }
@@ -2339,7 +2404,7 @@ const MAX_MANAGED_DROP_USERS = 32
 const MAX_MANAGED_IMAGE_LENGTH = 256
 const MAX_MANAGED_PEERS = 4
 const MANAGED_MEMBER_ROLES = new Set(['primary', 'replica'])
-const MANAGED_PEER_TRANSPORTS = new Set(['local', 'datacenter', 'fabric'])
+const MANAGED_PEER_TRANSPORTS = new Set(['local', 'datacenter', 'fabric', 'public'])
 const MANAGED_EXPOSURE_PROTOCOLS = new Set(['tcp', 'udp', 'http'])
 const MANAGED_CREDENTIAL_ROLES = new Set(['root', 'user', 'replication'])
 const MANAGED_REPLICATION_ROLES = new Set(['primary', 'standby'])
@@ -2500,7 +2565,11 @@ export type ManagedApplyPeer = {
   role: 'primary' | 'replica'
   readEligible: boolean
   address: string
-  transport: 'local' | 'datacenter' | 'fabric'
+  /**
+   * `public` is accepted on the wire this phase; daemon org-CA TLS
+   * enforcement for a public listener is a later phase.
+   */
+  transport: 'local' | 'datacenter' | 'fabric' | 'public'
   /**
    * Reachable port: engine native for co-resident peers, allocated private-
    * listener port for remote peers.
@@ -2514,6 +2583,13 @@ export type ManagedApplyPeer = {
 export type ManagedApplyPrivateListener = {
   address: string
   port: number
+  /**
+   * Reachability class of `address`. Optional for back-compat with daemons and
+   * queued commands from before this field existed (omitted = not public).
+   * `public` obliges the daemon to refuse the listener without org-CA TLS
+   * material.
+   */
+  transport?: 'local' | 'datacenter' | 'fabric' | 'public'
 }
 
 export type ManagedApplyReplicationPrimary = {
@@ -2682,7 +2758,11 @@ export type ManagedIngressReconcileBackend = {
   readEligible: boolean
   address: string
   port: number
-  transport: 'local' | 'datacenter' | 'fabric'
+  /**
+   * `public` is accepted on the wire this phase; daemon org-CA TLS
+   * enforcement for a public listener is a later phase.
+   */
+  transport: 'local' | 'datacenter' | 'fabric' | 'public'
 }
 
 /** Must stay in sync with the daemon `managed.ingress.reconcile` shape. */
@@ -2698,7 +2778,8 @@ export type ManagedIngressReconcileUser = {
 export type ManagedIngressReconcileCluster = {
   managedId: string
   engine: ManagedEngineCode
-  protocolPort: 5432 | 3306
+  /** New listeners 15432/16306; legacy 5432/3306 accepted for daemon skew. */
+  protocolPort: ManagedIngressProtocolPort
   writerHostgroup: number
   readerHostgroup: number
   backends: ManagedIngressReconcileBackend[]
@@ -2709,7 +2790,8 @@ export type ManagedIngressReconcileCluster = {
 export type ManagedIngressReconcileCommandPayload = {
   serverId: string
   bindAddress?: string
-  orgTlsMaterial: ManagedApplyOrgTlsMaterial
+  /** Omitted on empty-cluster teardown so it does not need a CA round trip. */
+  orgTlsMaterial?: ManagedApplyOrgTlsMaterial
   clusters: ManagedIngressReconcileCluster[]
   segments?: Array<{ name: string; subnet: string }>
 }
@@ -2925,7 +3007,21 @@ function parseManagedApplyPrivateListener(
   ) {
     throw new Error('Invalid managed.apply privateListener')
   }
-  return { address: value.address, port: value.port }
+  const listener: ManagedApplyPrivateListener = {
+    address: value.address,
+    port: value.port,
+  }
+  if (value.transport !== undefined) {
+    if (
+      !isString(value.transport) ||
+      !MANAGED_PEER_TRANSPORTS.has(value.transport)
+    ) {
+      throw new Error('Invalid managed.apply privateListener')
+    }
+    listener.transport = value
+      .transport as ManagedApplyPrivateListener['transport']
+  }
+  return listener
 }
 
 function parseManagedApplyReplicationSlotName(
@@ -3910,7 +4006,7 @@ function parseManagedIngressReconcileCluster(
     !SAFE_BACKUP_ID_RE.test(value.managedId) ||
     !isString(value.engine) ||
     !isManagedEngineCode(value.engine) ||
-    (value.protocolPort !== 5432 && value.protocolPort !== 3306) ||
+    !isManagedIngressProtocolPort(value.protocolPort) ||
     !isValidHostgroupId(value.writerHostgroup) ||
     !isValidHostgroupId(value.readerHostgroup) ||
     !Array.isArray(value.backends) ||
@@ -3993,13 +4089,12 @@ export function parseManagedIngressReconcilePayload(
     throw new TypeError('Invalid managed.ingress.reconcile payload')
   }
   const orgTlsMaterial = parseManagedApplyOrgTlsMaterial(value.orgTlsMaterial)
-  if (orgTlsMaterial === undefined) {
-    throw new TypeError('Invalid managed.ingress.reconcile orgTlsMaterial')
-  }
   const payload: ManagedIngressReconcileCommandPayload = {
     serverId: value.serverId,
-    orgTlsMaterial,
     clusters: value.clusters.map(parseManagedIngressReconcileCluster),
+  }
+  if (orgTlsMaterial !== undefined) {
+    payload.orgTlsMaterial = orgTlsMaterial
   }
   if (value.bindAddress !== undefined) {
     payload.bindAddress = parseManagedIngressBindAddress(value.bindAddress)

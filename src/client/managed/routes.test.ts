@@ -864,7 +864,7 @@ test('GET /environments/:id/managed/status returns status host port containers',
     }
     assertEquals(body.status, 'ready')
     assertEquals(body.host, '127.0.0.1')
-    assertEquals(body.port, 5432)
+    assertEquals(body.port, 15432)
     assertEquals(Array.isArray(body.containers), true)
     for (const row of body.containers) {
       assertEquals(typeof row.role, 'string')
@@ -2243,12 +2243,14 @@ test('create self-heals primary member; GET managed and status include members',
         role: string
         ordinal: number
         serverId: string
+        replicaClass: 'failover' | 'read' | null
       }>
     }
     assertEquals(membersBody.members.length, 1)
     assertEquals(membersBody.members[0]?.role, 'primary')
     assertEquals(membersBody.members[0]?.ordinal, 1)
     assertEquals(membersBody.members[0]?.serverId, serverId)
+    assertEquals(membersBody.members[0]?.replicaClass, null)
 
     const detail = await app.request(`/environments/${environmentId}/managed`, {
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },

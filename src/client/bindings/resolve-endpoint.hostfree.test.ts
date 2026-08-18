@@ -2,9 +2,10 @@
  * Host-free placement + member list helpers for binding endpoints.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from "@std/assert";
 import type { Db } from '../../db.ts'
 import {
+  consumerServerIdsForManaged,
   isBindingEndpointError,
   loadServicePlacementServerId,
   memberServerIdsForManaged,
@@ -83,6 +84,66 @@ test('loadServicePlacementServerId prefers environment server over project defau
     await loadServicePlacementServerId(projectOnly, 'svc'),
     projectServer,
   )
+})
+
+function consumerServerQuery(rows: unknown[]) {
+  return {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                leftJoin: () => ({
+                  where: () => Promise.resolve(rows),
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    }),
+  } as unknown as Db
+}
+
+test('consumerServerIdsForManaged uses environment pin', async () => {
+  const envServer = '00000000-0000-4000-8000-0000000000c1'
+  const db = consumerServerQuery([
+    {
+      environmentServerId: envServer,
+      projectOptions: null,
+      taskServerId: null,
+    },
+  ])
+  assertEquals(await consumerServerIdsForManaged(db, 'm1'), [envServer])
+})
+
+test('consumerServerIdsForManaged uses project default when env is unpinned', async () => {
+  const projectServer = '00000000-0000-4000-8000-0000000000c2'
+  const db = consumerServerQuery([
+    {
+      environmentServerId: null,
+      projectOptions: { defaultServerId: projectServer },
+      taskServerId: null,
+    },
+  ])
+  assertEquals(await consumerServerIdsForManaged(db, 'm1'), [projectServer])
+})
+
+test('consumerServerIdsForManaged unions task pin with effective placement', async () => {
+  const envServer = '00000000-0000-4000-8000-0000000000c3'
+  const taskServer = '00000000-0000-4000-8000-0000000000c4'
+  const db = consumerServerQuery([
+    {
+      environmentServerId: envServer,
+      projectOptions: null,
+      taskServerId: taskServer,
+    },
+  ])
+  const ids = await consumerServerIdsForManaged(db, 'm1')
+  assertEquals(ids.includes(envServer), true)
+  assertEquals(ids.includes(taskServer), true)
+  assertEquals(ids.length, 2)
 })
 
 test('memberServerIdsForManaged maps node rows', async () => {

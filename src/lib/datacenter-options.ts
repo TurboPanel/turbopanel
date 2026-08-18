@@ -1,7 +1,13 @@
 /**
  * Defensive parsers for `datacenter.options` jsonb fields used by the
- * client timezone APIs.
+ * client timezone and host-defaults APIs.
  */
+
+import {
+  parseNtpDefaults,
+  parseSshPort,
+  type NtpDefaults,
+} from './host-defaults.ts'
 
 export type DatacenterOptions = {
   /** Datacenter-wide default timezone applied when a server has no override. */
@@ -18,6 +24,13 @@ export type DatacenterOptions = {
    * `'ipv4'`.
    */
   addressPreference?: 'ipv6' | 'ipv4'
+  /**
+   * Desired SSH listen port for member hosts that do not set a server override.
+   * Omitted → inherit the organization default (then 22).
+   */
+  sshPort?: number
+  /** Desired NTP client settings inherited by member servers. */
+  ntp?: NtpDefaults
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -38,5 +51,9 @@ export function parseDatacenterOptions(value: unknown): DatacenterOptions {
   if (value.addressPreference === 'ipv6' || value.addressPreference === 'ipv4') {
     options.addressPreference = value.addressPreference
   }
+  const sshPort = parseSshPort(value.sshPort)
+  if (sshPort !== undefined) options.sshPort = sshPort
+  const ntp = parseNtpDefaults(value.ntp)
+  if (ntp) options.ntp = ntp
   return options
 }

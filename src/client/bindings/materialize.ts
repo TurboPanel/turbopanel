@@ -23,6 +23,7 @@ import {
   workspace,
 } from '../../lib/db/schema.ts'
 import { getManagedEngineSpec } from '../../lib/managed/index.ts'
+import { managedIngressPortForEngine } from '../../lib/managed/ingress-ports.ts'
 import { bindingPrefixedKeys } from '../../lib/naming.ts'
 import type {
   ResolvedVariableEntry,
@@ -296,7 +297,7 @@ export async function materializeBinding(
   const endpoint = await resolveBindingEndpoint(db, {
     serviceId: row.serviceId,
     managedId: row.managedId,
-    protocolPort: spec.defaultPort,
+    protocolPort: managedIngressPortForEngine(row.managedEngine, spec.defaultPort),
   })
   if (isBindingEndpointError(endpoint)) {
     return endpoint

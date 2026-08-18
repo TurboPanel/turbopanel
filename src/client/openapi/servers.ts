@@ -337,6 +337,35 @@ export const serverSchemas = {
         description:
           'Which configured layer supplied timezone (null when only the daemon-reported zone is shown).',
       },
+      sshPort: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 65535,
+        description:
+          'Effective SSH listen port: server.options.sshPort, else datacenter, else organization, else 22.',
+      },
+      sshPortSource: {
+        type: ['string', 'null'],
+        enum: ['server', 'organization', 'datacenter', null],
+        description:
+          'Which configured layer supplied sshPort (null when the platform default 22 is used).',
+      },
+      ntpDefaults: {
+        type: ['object', 'null'],
+        description:
+          'Effective desired NTP settings from the host-defaults cascade. Observed host NTP stays on timeSync.',
+        properties: {
+          enabled: { type: 'boolean' },
+          servers: { type: 'array', items: { type: 'string' } },
+          fallbackServers: { type: 'array', items: { type: 'string' } },
+        },
+      },
+      ntpDefaultsSource: {
+        type: ['string', 'null'],
+        enum: ['server', 'organization', 'datacenter', null],
+        description:
+          'Which configured layer supplied ntpDefaults (null when none are set).',
+      },
       colocatedWithInstance: {
         type: 'boolean',
         description:
@@ -400,6 +429,19 @@ export const serverSchemas = {
     type: 'object',
     properties: {
       displayName: { type: 'string' },
+      options: {
+        type: 'object',
+        description:
+          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade.',
+        properties: {
+          sshPort: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
+          ntp: { type: ['object', 'null'] },
+          hosting: {
+            type: 'object',
+            properties: { enabled: { type: 'boolean' } },
+          },
+        },
+      },
     },
   },
   ServerDetailResponse: {
@@ -415,6 +457,8 @@ export const serverSchemas = {
             properties: {
               orgDefaultTimezone: { type: ['string', 'null'] },
               enforceServerTimezone: { type: 'boolean' },
+              datacenterDefaultTimezone: { type: ['string', 'null'] },
+              datacenterEnforceServerTimezone: { type: 'boolean' },
               labels: {
                 type: 'array',
                 items: { $ref: '#/components/schemas/ServerLabel' },

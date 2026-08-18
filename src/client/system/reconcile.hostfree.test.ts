@@ -3,7 +3,7 @@
  * short-circuits (Db doubles only — no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
@@ -49,8 +49,9 @@ function createRecordingQueue(): CommandQueue & { envelopes: CommandEnvelope[] }
   const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
-    enqueue: async (envelope) => {
+    enqueue: (envelope) => {
       envelopes.push(envelope)
+      return Promise.resolve()
     },
   }
 }
@@ -90,21 +91,40 @@ test('resolveHostingIngressDesired requires demand or prior observation', () => 
   )
 })
 
-test('resolveManagedIngressDesired follows member presence only', () => {
-  assertEquals(resolveManagedIngressDesired({ hasManagedMembers: true }), 'present')
-  assertEquals(resolveManagedIngressDesired({ hasManagedMembers: false }), 'absent')
+test('resolveManagedIngressDesired follows member or bound-consumer presence', () => {
+  assertEquals(
+    resolveManagedIngressDesired({
+      hasManagedMembers: true,
+      hasBoundManagedConsumers: false,
+    }),
+    'present',
+  )
+  assertEquals(
+    resolveManagedIngressDesired({
+      hasManagedMembers: false,
+      hasBoundManagedConsumers: true,
+    }),
+    'present',
+  )
+  assertEquals(
+    resolveManagedIngressDesired({
+      hasManagedMembers: false,
+      hasBoundManagedConsumers: false,
+    }),
+    'absent',
+  )
 })
 
 test('buildSystemReconcilePayload returns empty when hierarchy is absent', async () => {
   const db = {
-    execute: async () => [],
+    execute: () => Promise.resolve([]),
   } as unknown as Db
   assertEquals(await buildSystemReconcilePayload(db, { serverId: SERVER }), [])
 })
 
 test('buildSystemReconcilePayload builds hosting/managed/self-host components', async () => {
   const db = {
-    execute: async () => [
+    execute: () => Promise.resolve([
       {
         environment_id: ENV_HOSTING,
         project_component: SYSTEM_HOSTING_INGRESS_COMPONENT,
@@ -182,7 +202,7 @@ test('buildSystemReconcilePayload builds hosting/managed/self-host components', 
         ingress_container_id: null,
         ingress_status: null,
       },
-    ],
+    ]),
   } as unknown as Db
 
   const payloads = await buildSystemReconcilePayload(db, { serverId: SERVER })
@@ -217,7 +237,7 @@ test('buildSystemReconcilePayload builds hosting/managed/self-host components', 
 
 test('buildSystemReconcilePayload marks hosting absent without demand or observation', async () => {
   const db = {
-    execute: async () => [
+    execute: () => Promise.resolve([
       {
         environment_id: ENV_HOSTING,
         project_component: SYSTEM_HOSTING_INGRESS_COMPONENT,
@@ -237,10 +257,11 @@ test('buildSystemReconcilePayload marks hosting absent without demand or observa
         server_options: {},
         has_http_ingress_demand: false,
         has_managed_members: false,
+        has_bound_managed_consumers: false,
         ingress_container_id: null,
         ingress_status: null,
       },
-    ],
+    ]),
   } as unknown as Db
 
   const payloads = await buildSystemReconcilePayload(db, { serverId: SERVER })
@@ -248,9 +269,32 @@ test('buildSystemReconcilePayload marks hosting absent without demand or observa
   assertEquals(payloads[1]?.components[0]?.desired, 'absent')
 })
 
+test('buildSystemReconcilePayload marks managed-ingress present for consumer-only servers', async () => {
+  const db = {
+    execute: () => Promise.resolve([
+      {
+        environment_id: ENV_MANAGED,
+        project_component: SYSTEM_MANAGED_INGRESS_COMPONENT,
+        service_id: SVC_PROXY,
+        name: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
+        server_options: {},
+        has_http_ingress_demand: false,
+        has_managed_members: false,
+        has_bound_managed_consumers: true,
+        ingress_container_id: null,
+        ingress_status: null,
+      },
+    ]),
+  } as unknown as Db
+
+  const payloads = await buildSystemReconcilePayload(db, { serverId: SERVER })
+  assertEquals(payloads[0]?.components[0]?.desired, 'present')
+  assertEquals(payloads[0]?.components[0]?.composeServiceName, SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME)
+})
+
 test('buildSystemReconcilePayload skips environments with no matching services', async () => {
   const db = {
-    execute: async () => [
+    execute: () => Promise.resolve([
       {
         environment_id: ENV_HOSTING,
         project_component: SYSTEM_HOSTING_INGRESS_COMPONENT,
@@ -273,7 +317,7 @@ test('buildSystemReconcilePayload skips environments with no matching services',
         ingress_container_id: null,
         ingress_status: null,
       },
-    ],
+    ]),
   } as unknown as Db
 
   assertEquals(await buildSystemReconcilePayload(db, { serverId: SERVER }), [])
@@ -281,7 +325,7 @@ test('buildSystemReconcilePayload skips environments with no matching services',
 
 test('buildSystemReconcilePayload merges demand/observation flags across rows', async () => {
   const db = {
-    execute: async () => [
+    execute: () => Promise.resolve([
       {
         environment_id: ENV_HOSTING,
         project_component: SYSTEM_HOSTING_INGRESS_COMPONENT,
@@ -304,7 +348,7 @@ test('buildSystemReconcilePayload merges demand/observation flags across rows', 
         ingress_container_id: 'docker-abc',
         ingress_status: 'running',
       },
-    ],
+    ]),
   } as unknown as Db
 
   const payloads = await buildSystemReconcilePayload(db, { serverId: SERVER })
@@ -313,7 +357,7 @@ test('buildSystemReconcilePayload merges demand/observation flags across rows', 
 
 test('enqueueSystemReconcile returns not_provisioned when no payloads', async () => {
   const db = {
-    execute: async () => [],
+    execute: () => Promise.resolve([]),
   } as unknown as Db
   const queue = createRecordingQueue()
   const result = await enqueueSystemReconcile(db, queue, {
@@ -328,7 +372,7 @@ test('enqueueSystemReconcile returns not_provisioned when no payloads', async ()
 test('enqueueSystemReconcile scopes to environmentId and enqueues', async () => {
   let insertCount = 0
   const db = {
-    execute: async () => [
+    execute: () => Promise.resolve([
       {
         environment_id: ENV_HOSTING,
         project_component: SYSTEM_HOSTING_INGRESS_COMPONENT,
@@ -351,7 +395,7 @@ test('enqueueSystemReconcile scopes to environmentId and enqueues', async () => 
         ingress_container_id: null,
         ingress_status: null,
       },
-    ],
+    ]),
     insert: () => ({
       values: (values: Record<string, unknown>) => {
         insertCount += 1
@@ -398,7 +442,7 @@ test('enqueueSystemReconcile scopes to environmentId and enqueues', async () => 
 
 test('enqueueSystemReconcile returns enqueue_failed when queue rejects all', async () => {
   const db = {
-    execute: async () => [
+    execute: () => Promise.resolve([
       {
         environment_id: ENV_HOSTING,
         project_component: SYSTEM_HOSTING_INGRESS_COMPONENT,
@@ -410,7 +454,7 @@ test('enqueueSystemReconcile returns enqueue_failed when queue rejects all', asy
         ingress_container_id: 'cid',
         ingress_status: 'running',
       },
-    ],
+    ]),
     insert: () => ({
       values: (values: Record<string, unknown>) => ({
         returning: () =>
@@ -462,9 +506,7 @@ test('enqueueSystemReconcile returns enqueue_failed when queue rejects all', asy
   } as unknown as Db
 
   const queue: CommandQueue = {
-    enqueue: async () => {
-      throw new TypeError('queue down')
-    },
+    enqueue: () => Promise.reject(new TypeError('queue down')),
   }
 
   const result = await enqueueSystemReconcile(db, queue, {
@@ -479,14 +521,14 @@ test('runSystemReconcileSweep enqueues candidates and counts successes', async (
   let executeN = 0
   let insertCount = 0
   const db = {
-    execute: async () => {
+    execute: () => {
       executeN += 1
       if (executeN === 1) {
         // sweep candidates
-        return [{ server_id: SERVER }]
+        return Promise.resolve([{ server_id: SERVER }])
       }
       // buildSystemReconcilePayload for that server
-      return [
+      return Promise.resolve([
         {
           environment_id: ENV_HOSTING,
           project_component: SYSTEM_HOSTING_INGRESS_COMPONENT,
@@ -498,7 +540,7 @@ test('runSystemReconcileSweep enqueues candidates and counts successes', async (
           ingress_container_id: null,
           ingress_status: 'pending',
         },
-      ]
+      ])
     },
     insert: () => ({
       values: (values: Record<string, unknown>) => {
@@ -534,7 +576,7 @@ test('runSystemReconcileSweep enqueues candidates and counts successes', async (
 
 test('runSystemReconcileSweep returns zero when no candidates', async () => {
   const db = {
-    execute: async () => [],
+    execute: () => Promise.resolve([]),
   } as unknown as Db
   const queue = createRecordingQueue()
   assertEquals(await runSystemReconcileSweep(db, queue), { enqueued: 0 })

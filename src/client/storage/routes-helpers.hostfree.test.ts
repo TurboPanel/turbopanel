@@ -2,7 +2,7 @@
  * Host-free coverage for storage location/mount patch helpers (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
@@ -102,7 +102,7 @@ test('parseMountPatchFields rejects blank destinationPath and bad readOnly', asy
   }
   assertEquals(fields.destinationPath, '/var/lib/data')
   assertEquals(fields.subpath, null)
-  assertEquals(fields.readOnly, true)
+  assertEquals(fields.isReadOnly, true)
   assertEquals(fields.metadata, { note: 1 })
 })
 

@@ -2,7 +2,7 @@
  * Host-free coverage for server route pure helpers (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   SERVER_UUID_RE,
   STATUS_CACHE_CONTROL,
@@ -25,6 +25,7 @@ import {
   distinctNonEmptyIds,
   errorMessageFromUnknown,
   resolveServerTimezoneFields,
+  resolveServerHostDefaultsFields,
   shapeServerDatacenters,
   shapeServerOsFields,
   shapeServerPresenceFields,
@@ -127,6 +128,32 @@ test('parseServerPatchCore validates name, options, and emptiness', () => {
   })
   if (!withHosting.ok) throw new TypeError('expected hosting options patch')
   assertEquals(withHosting.patch.options?.hosting?.enabled, true)
+
+  const withSsh = parseServerPatchCore({ options: { sshPort: 2222 } })
+  if (!withSsh.ok) throw new TypeError('expected sshPort patch')
+  assertEquals(withSsh.patch.options?.sshPort, 2222)
+
+  const clearSsh = parseServerPatchCore({ options: { sshPort: null } })
+  if (!clearSsh.ok) throw new TypeError('expected sshPort clear')
+  assertEquals(clearSsh.patch.options?.sshPort, null)
+
+  const badSsh = parseServerPatchCore({ options: { sshPort: 0 } })
+  if (badSsh.ok) throw new TypeError('expected invalid sshPort rejection')
+  assertEquals(badSsh.error, 'Invalid sshPort')
+
+  const withNtp = parseServerPatchCore({
+    options: { ntp: { enabled: true } },
+  })
+  if (!withNtp.ok) throw new TypeError('expected ntp patch')
+  assertEquals(withNtp.patch.options?.ntp, { enabled: true })
+
+  const clearNtp = parseServerPatchCore({ options: { ntp: null } })
+  if (!clearNtp.ok) throw new TypeError('expected ntp clear')
+  assertEquals(clearNtp.patch.options?.ntp, null)
+
+  const badNtp = parseServerPatchCore({ options: { ntp: 0 } })
+  if (badNtp.ok) throw new TypeError('expected invalid ntp rejection')
+  assertEquals(badNtp.error, 'Invalid ntp')
 })
 
 test('shapeServerDatacenters dedupes and sorts memberships', () => {
@@ -290,6 +317,21 @@ test('timezone and presence shaping helpers', () => {
   )
   assertEquals(tz.timezone, 'UTC')
   assertEquals(tz.timezoneSource, 'server')
+
+  const inherited = resolveServerHostDefaultsFields(
+    {},
+    { sshPort: 22022, ntp: { enabled: true } },
+    { sshPort: 2222 },
+  )
+  assertEquals(inherited.sshPort, 2222)
+  assertEquals(inherited.sshPortSource, 'datacenter')
+  assertEquals(inherited.ntpDefaults, { enabled: true })
+  assertEquals(inherited.ntpDefaultsSource, 'organization')
+
+  const builtin = resolveServerHostDefaultsFields({}, {}, undefined)
+  assertEquals(builtin.sshPort, 22)
+  assertEquals(builtin.sshPortSource, null)
+  assertEquals(builtin.ntpDefaults, null)
 
   const os = shapeServerOsFields({ family: 'linux', id: 'debian' })
   assertEquals(os.os?.id, 'debian')

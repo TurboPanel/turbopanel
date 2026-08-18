@@ -133,6 +133,7 @@ export function parseFabricOptions(value: unknown): {
   containerPool: string
   listenPort: number
   mtu: number
+  allowRelay: boolean
 } {
   const record = typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -152,7 +153,12 @@ export function parseFabricOptions(value: unknown): {
       record.mtu <= 9000
     ? record.mtu
     : DEFAULT_FABRIC_MTU
-  return { containerPool: pool, listenPort: port, mtu }
+  return {
+    containerPool: pool,
+    listenPort: port,
+    mtu,
+    allowRelay: record.allowRelay === true,
+  }
 }
 
 export function composeNetworkHostName(networkId: string): string {

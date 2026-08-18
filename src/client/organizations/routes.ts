@@ -1,5 +1,5 @@
 import { eq, sql } from "drizzle-orm";
-import { Hono } from "hono";
+import type { Hono } from "hono";
 import type { AppEnv } from "../../app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
@@ -20,8 +20,11 @@ import {
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
   defaultTimezonePutResponse,
+  hostDefaultsGetResponse,
+  hostDefaultsPutResponse,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
+  parseHostDefaultsPatch,
   parseOrganizationCreateDisplayName,
   parseOrganizationPatchDisplayName,
   parseServerCapacityPutBody,
@@ -46,21 +49,30 @@ export function registerOrganizationRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
 ) {
-  router.use("/organizations", createSessionMiddleware(opts.secrets));
-  router.use("/organizations/:id", createSessionMiddleware(opts.secrets));
+  if (!opts.secrets) {
+    throw new TypeError("session secrets are required for organization routes");
+  }
+  const secrets = opts.secrets;
+
+  router.use("/organizations", createSessionMiddleware(secrets));
+  router.use("/organizations/:id", createSessionMiddleware(secrets));
   router.use(
     "/organizations/:id/default-timezone",
-    createSessionMiddleware(opts.secrets),
+    createSessionMiddleware(secrets),
+  );
+  router.use(
+    "/organizations/:id/host-defaults",
+    createSessionMiddleware(secrets),
   );
   router.use(
     "/organizations/:id/default-environment",
-    createSessionMiddleware(opts.secrets),
+    createSessionMiddleware(secrets),
   );
   router.use(
     "/organizations/:id/server-capacity",
-    createSessionMiddleware(opts.secrets),
+    createSessionMiddleware(secrets),
   );
-  router.use("/timezones", createSessionMiddleware(opts.secrets));
+  router.use("/timezones", createSessionMiddleware(secrets));
   registerOrganizationFabricRoutes(router, opts);
 
   router.get("/organizations", async (c) => {
@@ -211,6 +223,66 @@ export function registerOrganizationRoutes(
     return c.json(defaultTimezonePutResponse(options));
   });
 
+  router.get("/organizations/:id/host-defaults", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    const options = parseOrganizationOptions(orgRow.options);
+    return c.json(hostDefaultsGetResponse(options));
+  });
+
+  router.put("/organizations/:id/host-defaults", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
+
+    const parsedPatch = parseHostDefaultsPatch(body);
+    if (!parsedPatch.ok) {
+      return c.json({ error: parsedPatch.error }, parsedPatch.status);
+    }
+    const patch = parsedPatch.patch;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    await db.update(organization).set({
+      options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+        JSON.stringify(patch)
+      }::jsonb`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id));
+
+    const [updated] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    const options = parseOrganizationOptions(updated?.options);
+
+    return c.json(hostDefaultsPutResponse(options));
+  });
+
   router.get("/organizations/:id/default-environment", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ error: "Database unavailable" }, 503);
@@ -322,7 +394,7 @@ export function registerOrganizationRoutes(
     return c.json({ ok: true as const, ...capacity });
   });
 
-  router.get("/timezones", async (c) => {
+  router.get("/timezones", (c) => {
     return c.json({ timezones: listTimezones() });
   });
 }

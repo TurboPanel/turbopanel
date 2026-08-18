@@ -1004,12 +1004,17 @@ export const node = pgTable(
     serverId: uuid('server_id').notNull(),
     /** `primary` | `replica` */
     role: text().default('primary').notNull(),
+    /**
+     * Replica class: `failover` (same-datacenter, promotable) or `read`
+     * (any org server). Null on primary; ignored when role is primary.
+     */
+    replicaClass: text('replica_class'),
     /** API JSON still serializes as `readEligible`. */
     isReadEligible: boolean('is_read_eligible').default(false).notNull(),
     /** 1-based member ordinal — mirrors the service-role container ordinal. */
     ordinal: integer().default(1).notNull(),
     /**
-     * Resolved private path to the primary (`local` | `datacenter` | `fabric`).
+     * Resolved private path to the primary (`local` | `datacenter` | `fabric` | `public`).
      * Null when not yet resolved (or primary self).
      */
     replicationTransport: text('replication_transport'),
@@ -1054,12 +1059,16 @@ export const node = pgTable(
       sql`${table.role} IN ('primary','replica')`,
     ),
     check(
+      'node_replica_class_check',
+      sql`${table.replicaClass} IS NULL OR ${table.replicaClass} IN ('failover','read')`,
+    ),
+    check(
       'node_ordinal_positive_check',
       sql`${table.ordinal} >= 1`,
     ),
     check(
       'node_transport_check',
-      sql`${table.replicationTransport} IS NULL OR ${table.replicationTransport} IN ('local','fabric','datacenter')`,
+      sql`${table.replicationTransport} IS NULL OR ${table.replicationTransport} IN ('local','fabric','datacenter','public')`,
     ),
     check(
       'node_status_check',

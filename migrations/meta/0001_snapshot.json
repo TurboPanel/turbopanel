@@ -3133,6 +3133,12 @@
           "notNull": true,
           "default": "'primary'"
         },
+        "replica_class": {
+          "name": "replica_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "is_read_eligible": {
           "name": "is_read_eligible",
           "type": "boolean",
@@ -3291,13 +3297,17 @@
           "name": "node_role_check",
           "value": "\"node\".\"role\" IN ('primary','replica')"
         },
+        "node_replica_class_check": {
+          "name": "node_replica_class_check",
+          "value": "\"node\".\"replica_class\" IS NULL OR \"node\".\"replica_class\" IN ('failover','read')"
+        },
         "node_ordinal_positive_check": {
           "name": "node_ordinal_positive_check",
           "value": "\"node\".\"ordinal\" >= 1"
         },
         "node_transport_check": {
           "name": "node_transport_check",
-          "value": "\"node\".\"replication_transport\" IS NULL OR \"node\".\"replication_transport\" IN ('local','fabric','datacenter')"
+          "value": "\"node\".\"replication_transport\" IS NULL OR \"node\".\"replication_transport\" IN ('local','fabric','datacenter','public')"
         },
         "node_status_check": {
           "name": "node_status_check",

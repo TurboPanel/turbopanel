@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   ipsFromDaemonPresence,
   parseServerIps,
@@ -332,6 +332,16 @@ test('parseServerOptions and resolveEffectiveServerTimezone', () => {
     timezone: 'UTC',
     cellGeneration: 2,
   })
+  assertEquals(
+    parseServerOptions({
+      sshPort: 2222,
+      ntp: { enabled: true, servers: ['pool.ntp.org'] },
+    }),
+    {
+      sshPort: 2222,
+      ntp: { enabled: true, servers: ['pool.ntp.org'] },
+    },
+  )
   assertEquals(parseServerOptions(null), null)
   assertEquals(parseServerOptions({}), {})
 

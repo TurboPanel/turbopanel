@@ -161,6 +161,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/apply-prepare-enqueue.test.ts \
   src/client/managed/apply-prepare-preflight.test.ts \
   src/client/managed/apply-prepare-pure.test.ts \
+  src/client/managed/apply-prepare-bind.hostfree.test.ts \
   src/client/managed/apply-prepare.test.ts \
   src/client/managed/ingress-desired.test.ts \
   src/client/managed/ingress-desired.hostfree.test.ts \
@@ -248,6 +249,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/cell/snapshot-merge.test.ts \
   src/daemon/cell/offline-sweep.test.ts \
   src/daemon/cell/postgres-projection.test.ts \
+  src/daemon/cell/inbound-outcome.hostfree.test.ts \
   src/daemon/cell/protocol.test.ts \
   src/daemon/cell/redis/cell.test.ts \
   src/daemon/cell/redis/client.hostfree.test.ts \
@@ -371,6 +373,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/naming.test.ts \
   src/lib/display-name-format.test.ts \
   src/lib/organization-options.test.ts \
+  src/lib/host-defaults.test.ts \
   src/lib/principal-options.test.ts \
   src/lib/project-options.test.ts \
   src/lib/resolve-public-base-url.test.ts \

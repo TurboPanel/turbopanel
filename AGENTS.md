@@ -682,7 +682,7 @@ deliberately-unversioned probe.
 
 | Surface                      | REST                  | WS                        | Notes                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------- | --------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ ips/timeSync/docker/effective timezone, labels), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org record (`GET`/`PATCH /organizations/:id`), org default-timezone + default-environment + server-capacity + TurboFabric (`GET`/`PUT /organizations/:id/fabric`, `PATCH /organizations/:id/fabric/relays/:serverId`, `POST /organizations/:id/fabric/apply`) + `/timezones` |
+| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ ips/timeSync/docker/effective timezone, labels, effective sshPort/ntpDefaults), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org record (`GET`/`PATCH /organizations/:id`), org default-timezone + host-defaults + default-environment + server-capacity + TurboFabric (`GET`/`PUT /organizations/:id/fabric`, `PATCH /organizations/:id/fabric/relays/:serverId`, `POST /organizations/:id/fabric/apply`) + `/timezones` |
 | Install (self-hosted wizard) | `/api/install/v1/*`   | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                                                                                                                                                                                                                                      |
 | Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                                                                                                                                                                                                                                     |
 | Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only                                                                                                                                                                                                                   |
@@ -731,6 +731,23 @@ deliberately-unversioned probe.
   Org defaults: `GET`/`PUT /organizations/:id/default-timezone`. Picker source:
   `GET /timezones` (`listTimezones()` / `isAllowedTimezone()`). Detail rows use
   the `server-detail` cached read model (mirrors `servers-list`).
+- **Host defaults (client surface):** org → datacenter → server cascade stored
+  in existing `options` jsonb (`src/lib/host-defaults.ts`). Most specific
+  configured value wins; SSH falls back to **22**. Keys: `sshPort` (1–65535),
+  `ntp` (`enabled` / `servers` / `fallbackServers` — desired config, not
+  observed `timeSync`), `defaultFabricEnabled` (**organization only**; a
+  preference that does **not** create or tear down the mesh). Timezone stays
+  on its own enforce resolver (`resolveEffectiveServerTimezone`) — do not add
+  a soft timezone default into this cascade.
+  `GET`/`PUT /organizations/:id/host-defaults` is manage-gated (jsonb `||`
+  merge; JSON `null` clears a key). Datacenter `PATCH` **replaces** parsed
+  `options` (UI must `mergeDatacenterOptions`). Server `PATCH options.sshPort`
+  / `ntp` (`null` inherits). List/detail expose effective `sshPort` /
+  `sshPortSource` / `ntpDefaults` / `ntpDefaultsSource`; detail also adds
+  `datacenterDefaultTimezone` / `datacenterEnforceServerTimezone`. Saving
+  defaults does **not** rewrite sshd or enqueue NTP/timezone commands.
+  Multi-DC membership inherits from the first pin after sort by datacenter
+  id (same as timezone).
 - **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` —
   read-gated GET and manage-gated PUT; PUT is replace-all
   (`{ labels: { key: value } }`, no per-key DELETE). `GET /servers/:id` includes
@@ -743,7 +760,13 @@ deliberately-unversioned probe.
   WireGuard mesh (one per org, interface `tp0`); `relay` carries the mesh
   identity (address, gateway/member role, advertised LAN CIDRs plus
   `resolvedAdvertisedCidrs` for the effective IPv4 list, keepalive,
-  endpoint override, write-only PSK). Reconcile assigns derived CIDR
+  endpoint override, write-only PSK). GET fabric returns diagnostics-only
+  per-relay `paths[]` (`peerServerId`, `selected` path kind, optional
+  `endpoint` / `viaServerId` / `lastHandshakeAt` / `latencyMs`, `degraded`)
+  plus `allowRelay` / `effectiveAllowRelay` / `preferredGatewayIds` /
+  `gatewayEligible`. Org PUT accepts `allowRelay` (tightening-only; default
+  off). Relay PATCH accepts `allowRelay` (`null` inherits org) and
+  `preferredGatewayIds`. Reconcile assigns derived CIDR
   ownership among public-keyed relays only. Default off (capable single-engine Docker
   standalone; no `tp0`). Enabling creates the org `fabric` row plus per-server
   `relay` rows and reconciles host interface `tp0` on enrolled servers. Spanning
@@ -757,6 +780,11 @@ deliberately-unversioned probe.
   Whole-environment `environment.server_id` pins never require it. User-facing
   copy is **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` /
   `segment`. Never ask which WireGuard network a container should join.
+  NAT rendezvous feeds `direct_nat` only from a probing peer's fresh healthy
+  handshake (observer-mapped endpoints stay in candidate exchange). Path-state
+  strike counters are process-local across reconcile rounds. `allowRelay` is
+  reserved for a future relay slot and does not loosen gateway datacenter
+  locality.
 - **Compiled runtime compose:** users author project + optional environment
   ComposeDocuments. Deploy compiles **one** `compose.yaml` (`role: 'runtime'`)
   per participating server plus a project `.env` for non-secrets. Secret
@@ -858,7 +886,7 @@ orientation; the detail moved to:
 | **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                                                                                                                                                                                                |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                                                                                                                                                                                              |
 | **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/lib/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                                                                                                          |
-| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL desired state; all status reads are Postgres-backed; logs use cell `managed-logs-request`                                                                                                                                                                           |
+| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL desired state (lazy: only servers that host a member or bound consumer; empty clusters tear the stack down). Promote fans reconcile to member **and** consuming servers after transport recompute. All status reads are Postgres-backed; logs use cell `managed-logs-request` |
 | **Bindings**                      | `src/client/bindings/`                              | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                                                                                                     |
 | **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                                                                                                                                                                                              |
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                             |
@@ -904,7 +932,7 @@ stops, or self-heals them (no restart-via-`system.reconcile` path — see
 the durable dynamic config on `managed.ingress.reconcile` and can self-heal via
 `system.reconcile` (`selfHeal: proxysql`). It is **not** part of
 `turbopanel-system` and is **not** inspect-only. Client SQL enters ProxySQL's
-published `5432`/`3306` listeners; managed engines never publish arbitrary host
+published `15432`/`16306` listeners; managed engines never publish arbitrary host
 ports. When a binding consumer is not co-resident, ProxySQL also joins
 `turbopanel-managed` **plus each consuming environment's spanning `tpn_*`
 network** (pinned to the reserved last-usable host address). Tenant

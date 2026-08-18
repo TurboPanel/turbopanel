@@ -3,6 +3,7 @@
  */
 
 import type { Db } from "../../db.ts";
+import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
@@ -35,13 +36,25 @@ import {
   type FabricGateCommand,
   type FabricGateOutcome,
 } from "./gate.ts";
+import {
+  fabricNeedsRendezvous,
+  hydrateFabricPathStates,
+  runFabricRendezvousRound,
+  type FabricRendezvousRoundResult,
+} from "./rendezvous.ts";
 
 export type FabricEnqueueResult = {
   serverId: string;
   commandId?: string;
   status: "queued" | "failed" | "skipped" | "converged";
   error?: string;
+  unreachablePeers?: Array<{ serverId: string }>;
+  gatewayRoutedPeers?: Array<{ serverId: string; viaServerId: string }>;
+  natCandidates?: number;
+  degradedPeers?: number;
 };
+
+export { fabricNeedsRendezvous } from "./rendezvous.ts";
 
 export type FabricEnqueueTypedError =
   | "relay_endpoint_unavailable"
@@ -131,13 +144,63 @@ async function resealPresharedKeyForTarget(
   }
 }
 
+function enqueueFieldsFromPeerLists(
+  unreachablePeers: Array<{ serverId: string }>,
+  gatewayRoutedPeers: Array<{ serverId: string; viaServerId: string }>,
+  extras?: Pick<FabricEnqueueResult, "natCandidates" | "degradedPeers">,
+): Pick<
+  FabricEnqueueResult,
+  "unreachablePeers" | "gatewayRoutedPeers" | "natCandidates" | "degradedPeers"
+> {
+  const fields: Pick<
+    FabricEnqueueResult,
+    "unreachablePeers" | "gatewayRoutedPeers" | "natCandidates" | "degradedPeers"
+  > = {};
+  if (unreachablePeers.length > 0) fields.unreachablePeers = unreachablePeers;
+  if (gatewayRoutedPeers.length > 0) {
+    fields.gatewayRoutedPeers = gatewayRoutedPeers;
+  }
+  if (extras?.natCandidates && extras.natCandidates > 0) {
+    fields.natCandidates = extras.natCandidates;
+  }
+  if (extras?.degradedPeers && extras.degradedPeers > 0) {
+    fields.degradedPeers = extras.degradedPeers;
+  }
+  return fields;
+}
+
+function rendezvousCountsForServer(
+  round: FabricRendezvousRoundResult | null,
+  serverId: string,
+): Pick<FabricEnqueueResult, "natCandidates" | "degradedPeers"> | undefined {
+  if (!round) return undefined;
+  const entries = round.summariesByServerId.get(serverId) ?? [];
+  let natCandidates = 0;
+  let degradedPeers = 0;
+  for (const entry of entries) {
+    if (entry.selected === "direct_nat") natCandidates += 1;
+    if (entry.degraded) degradedPeers += 1;
+  }
+  if (natCandidates === 0 && degradedPeers === 0) return undefined;
+  return {
+    ...(natCandidates > 0 ? { natCandidates } : {}),
+    ...(degradedPeers > 0 ? { degradedPeers } : {}),
+  };
+}
+
 async function buildEnabledReconcilePayloadFromSnapshot(params: {
   db: Db;
   snapshot: FabricReconcileSnapshot;
   serverId: string;
   secrets?: FabricSecretDeps;
 }): Promise<
-  | { ok: true; payload: FabricReconcileCommandPayload; desiredHash: string }
+  | {
+    ok: true;
+    payload: FabricReconcileCommandPayload;
+    desiredHash: string;
+    unreachablePeers: Array<{ serverId: string }>;
+    gatewayRoutedPeers: Array<{ serverId: string; viaServerId: string }>;
+  }
   | { ok: false; status: "skipped" | "failed"; error?: string }
 > {
   try {
@@ -158,7 +221,13 @@ async function buildEnabledReconcilePayloadFromSnapshot(params: {
       },
     );
     if (!built) return { ok: false, status: "skipped" };
-    return { ok: true, payload: built.payload, desiredHash: built.desiredHash };
+    return {
+      ok: true,
+      payload: built.payload,
+      desiredHash: built.desiredHash,
+      unreachablePeers: built.unreachablePeers,
+      gatewayRoutedPeers: built.gatewayRoutedPeers,
+    };
   } catch (err) {
     if (err instanceof FabricAllocationError) {
       return { ok: false, status: "failed", error: err.kind };
@@ -424,7 +493,13 @@ async function enqueueOne(params: {
   payload: FabricReconcileCommandPayload;
   expiresAt: string;
   desiredHash?: string;
+  unreachablePeers?: Array<{ serverId: string }>;
+  gatewayRoutedPeers?: Array<{ serverId: string; viaServerId: string }>;
 }): Promise<FabricEnqueueResult> {
+  const reachability = enqueueFieldsFromPeerLists(
+    params.unreachablePeers ?? [],
+    params.gatewayRoutedPeers ?? [],
+  );
   try {
     const record = await createCommandRecord(params.db, {
       serverId: params.serverId,
@@ -462,6 +537,7 @@ async function enqueueOne(params: {
       serverId: params.serverId,
       commandId: record.id,
       status: "queued",
+      ...reachability,
     };
   } catch {
     return {
@@ -472,12 +548,12 @@ async function enqueueOne(params: {
   }
 }
 
-async function loadEnabledFabricSnapshot(
+function loadEnabledFabricSnapshot(
   db: Db,
   enabled: boolean,
   fabric: FabricRecord | null,
 ): Promise<FabricReconcileSnapshot | null> {
-  if (!enabled || !fabric) return null;
+  if (!enabled || !fabric) return Promise.resolve(null);
   return loadFabricReconcileSnapshot(db, fabric);
 }
 
@@ -537,7 +613,14 @@ async function enqueueFabricReconcileForServer(params: {
       built.desiredHash,
     )
   ) {
-    return { serverId: params.serverId, status: "converged" };
+    return {
+      serverId: params.serverId,
+      status: "converged",
+      ...enqueueFieldsFromPeerLists(
+        built.unreachablePeers,
+        built.gatewayRoutedPeers,
+      ),
+    };
   }
   return enqueueOne({
     db: params.db,
@@ -548,6 +631,10 @@ async function enqueueFabricReconcileForServer(params: {
     payload: built.payload,
     expiresAt: params.expiresAt,
     desiredHash: built.desiredHash,
+    ...enqueueFieldsFromPeerLists(
+      built.unreachablePeers,
+      built.gatewayRoutedPeers,
+    ),
   });
 }
 
@@ -605,6 +692,7 @@ export async function reconcileFabricMembership(params: {
   secretsConfig?: SecretsConfig;
   dataEncryptionSecrets?: DerivedSecretsConfig;
   force?: boolean;
+  registry?: DaemonCellRegistry;
 }): Promise<FabricEnqueueResult[]> {
   const fabric = await getOrganizationFabric(params.db, params.organizationId);
   if (!fabric) return [];
@@ -614,6 +702,25 @@ export async function reconcileFabricMembership(params: {
     organizationId: params.organizationId,
   });
   const snapshot = await loadFabricReconcileSnapshot(params.db, fabric);
+  let rendezvousRound: FabricRendezvousRoundResult | null = null;
+  if (
+    params.registry &&
+    fabricNeedsRendezvous(snapshot.relays)
+  ) {
+    rendezvousRound = await runFabricRendezvousRound({
+      db: params.db,
+      registry: params.registry,
+      fabricId: fabric.id,
+      relays: snapshot.relays,
+      pathStates: hydrateFabricPathStates(fabric.id, snapshot.relays),
+      orgAllowRelay: snapshot.policy.allowRelay,
+    });
+    if (rendezvousRound) {
+      snapshot.caches.natEndpointByPair = rendezvousRound.natEndpointByPair;
+      snapshot.caches.failedPathKindsByPair =
+        rendezvousRound.failedPathKindsByPair;
+    }
+  }
   const expiresAt = new Date(Date.now() + 300_000).toISOString();
   const secrets = fabricSecretEnqueueFields(params);
   const results: FabricEnqueueResult[] = [];
@@ -626,8 +733,12 @@ export async function reconcileFabricMembership(params: {
       serverId: row.serverId,
       secrets,
     });
+    const counts = rendezvousCountsForServer(rendezvousRound, row.serverId);
     if (!built.ok) {
-      results.push(enqueueResultFromBuildFailure(row.serverId, built));
+      results.push({
+        ...enqueueResultFromBuildFailure(row.serverId, built),
+        ...counts,
+      });
       continue;
     }
     if (
@@ -637,11 +748,19 @@ export async function reconcileFabricMembership(params: {
         force,
       )
     ) {
-      results.push({ serverId: row.serverId, status: "skipped" });
+      results.push({
+        serverId: row.serverId,
+        status: "skipped",
+        ...enqueueFieldsFromPeerLists(
+          built.unreachablePeers,
+          built.gatewayRoutedPeers,
+          counts,
+        ),
+      });
       continue;
     }
-    results.push(
-      await enqueueOne({
+    results.push({
+      ...(await enqueueOne({
         db: params.db,
         commandQueue: params.commandQueue,
         actorType: params.actorType,
@@ -650,8 +769,13 @@ export async function reconcileFabricMembership(params: {
         payload: built.payload,
         expiresAt,
         desiredHash: built.desiredHash,
-      }),
-    );
+        ...enqueueFieldsFromPeerLists(
+          built.unreachablePeers,
+          built.gatewayRoutedPeers,
+        ),
+      })),
+      ...counts,
+    });
   }
   return results;
 }

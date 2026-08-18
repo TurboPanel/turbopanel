@@ -2,7 +2,7 @@
  * Host-free wave-4 coverage for TurboFabric lifecycle helpers (no Postgres).
  */
 
-import { assertEquals, assertRejects } from "jsr:@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import type { Db } from "../../db.ts";
 import { composeNetworkHostName } from "../fabric/cidr.ts";
 import {
@@ -163,6 +163,7 @@ type RelayRow = {
   prefix: string;
   advertisedCidrs: string[];
   metadata: unknown;
+  options?: unknown;
   presharedKey?: string | null;
   updatedAt?: string;
 };
@@ -244,6 +245,9 @@ function applyRelayUpdate(
   }
   if (patch.presharedKey !== undefined) {
     row.presharedKey = patch.presharedKey as string | null;
+  }
+  if (patch.options !== undefined) {
+    row.options = patch.options;
   }
   if (patch.updatedAt !== undefined) {
     row.updatedAt = String(patch.updatedAt);
@@ -502,6 +506,20 @@ function createLifecycleDb(opts: {
               }
             }
             return thenableRows([]);
+          }
+          if (table === fabric) {
+            const matches = fabrics.filter((row) => matchesWhere(row, condition));
+            for (const row of matches) {
+              if (patch.options !== undefined) row.options = patch.options;
+            }
+            return thenableRows(
+              matches.map((row) => ({
+                id: row.id,
+                organizationId: row.organizationId,
+                cidr: row.cidr,
+                options: row.options,
+              })),
+            );
           }
           return thenableRows([]);
         },
@@ -815,7 +833,7 @@ test("stampRelayReconcileSuccess merges metadata on the relay row", async () => 
     fabricId: "fab-1",
     serverId: "srv-a",
     appliedPayloadHash: "new-hash",
-    observedPeers: [{ publicKey: "pk-b", endpoint: "1.2.3.4:51821" }],
+    observedPeers: [{ publicKey: "pk-b" }],
   });
 
   const metadata = db.relays[0]?.metadata as {

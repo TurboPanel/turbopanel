@@ -59,6 +59,7 @@ import type {
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
 } from "./protocol.ts";
+import { deriveInboundOutcome } from "./inbound-outcome.ts";
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -2619,40 +2620,6 @@ export class DaemonCellObject {
     return this.#readRequestRow(serverId, inbound.requestId) ?? existing;
   }
 
-  #deriveInboundOutcome(
-    inbound: DaemonInboundEnvelope,
-  ): { status: PendingRequestStatus; result?: unknown; error?: string } | null {
-    switch (inbound.kind) {
-      case "addresses-result":
-        return { status: "done", result: { ips: inbound.ips } };
-      case "managed-logs-result":
-        return {
-          status: inbound.error ? "failed" : "done",
-          result: { logs: inbound.logs },
-          error: inbound.error ? inbound.error : undefined,
-        };
-      case "command-outcome":
-        return {
-          status: inbound.ok ? "done" : "failed",
-          result: inbound.result === undefined
-            ? { ok: inbound.ok, error: inbound.error }
-            : inbound.result,
-          error: inbound.ok ? undefined : inbound.error,
-        };
-      case "public-urls-update-result":
-      case "dev-sync-result":
-      case "tunnel-token-result":
-      case "update-result":
-        return {
-          status: inbound.ok ? "done" : "failed",
-          result: { ok: inbound.ok, error: inbound.error },
-          error: inbound.ok ? undefined : inbound.error,
-        };
-      default:
-        return null;
-    }
-  }
-
   #deriveCommandOutcomeTimestamps(
     inbound: DaemonInboundEnvelope,
     row: Record<string, SqlStorageValue>,
@@ -2683,7 +2650,7 @@ export class DaemonCellObject {
     daemonRespondedAt: string | null;
     ackAt: string | null;
   } | null {
-    const outcome = this.#deriveInboundOutcome(inbound);
+    const outcome = deriveInboundOutcome(inbound);
     if (!outcome) return null;
 
     return {

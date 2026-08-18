@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
-import { Hono, type Context } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -103,6 +103,7 @@ import {
   distinctNonEmptyIds,
   errorMessageFromUnknown,
   resolveServerTimezoneFields,
+  resolveServerHostDefaultsFields,
   shapeServerDatacenters,
   shapeServerPresenceFields,
   shouldSkipProjectedUpdateRepair,
@@ -309,10 +310,10 @@ async function loadDatacenterOptionsMap(
   return map
 }
 
-async function parseServerPatchBody(
+function parseServerPatchBody(
   c: Context,
   body: Record<string, unknown>,
-): Promise<ServerPatchFields | Response> {
+): ServerPatchFields | Response {
   const core = parseServerPatchCore(body)
   if (!core.ok) {
     return c.json({ error: core.error }, core.status)
@@ -479,7 +480,7 @@ async function assertSystemEnvironmentIdleOrBlocked(
   return { systemEnvironmentId }
 }
 
-async function deleteServerWithSystemSubtree(
+function deleteServerWithSystemSubtree(
   db: Db,
   serverId: string,
   systemEnvironmentId: string | null,
@@ -624,11 +625,17 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           dcOptions,
           live?.timeSync?.timezone,
         )
+        const hostDefaultsFields = resolveServerHostDefaultsFields(
+          row.options,
+          orgOptions,
+          dcOptions,
+        )
         return {
           ...row,
           datacenters,
           ...shapeServerPresenceFields(live, colocatedIds.has(row.id)),
           ...timezoneFields,
+          ...hostDefaultsFields,
           licenseId: row.licenseId ?? null,
         }
       }),
@@ -668,7 +675,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const servers = await Promise.all(
       visibleIds.map(async (serverId) => {
         const current = currentCommitFromDaemonBuild(presence.get(serverId)?.daemonBuild)
-        let projection = projections.get(serverId)
+        const projection = projections.get(serverId)
         const repairedUpdate = await repairProjectedUpdateIfStale(
           db,
           serverId,
@@ -1020,7 +1027,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       )
     }
 
-    return c.json({ ok: true, ...queued })
+    return c.json(queued)
   })
 
   router.get('/servers/:id', async (c) => {
@@ -1091,6 +1098,11 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       dcOptions,
       live?.timeSync?.timezone,
     )
+    const hostDefaultsFields = resolveServerHostDefaultsFields(
+      display.row.options,
+      orgOptions,
+      dcOptions,
+    )
 
     return c.json({
       ok: true,
@@ -1099,8 +1111,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         datacenters,
         ...shapeServerPresenceFields(live, display.colocatedWithInstance),
         ...timezoneFields,
+        ...hostDefaultsFields,
         orgDefaultTimezone: orgOptions.defaultServerTimezone ?? null,
         enforceServerTimezone: orgOptions.enforceServerTimezone ?? false,
+        datacenterDefaultTimezone: dcOptions?.defaultServerTimezone ?? null,
+        datacenterEnforceServerTimezone:
+          dcOptions?.enforceServerTimezone ?? false,
         licenseId: display.row.licenseId ?? null,
         labels: labelRows.map((row) => ({ key: row.key, value: row.value })),
       },
@@ -1132,7 +1148,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const patch = await parseServerPatchBody(c, body)
+    const patch = parseServerPatchBody(c, body)
     if (patch instanceof Response) return patch
 
     const previousOptions = parseServerOptions(existing.options)

@@ -72,6 +72,75 @@ export const organizationSchemas = {
       enforceServerTimezone: { type: "boolean" },
     },
   },
+  OrganizationHostDefaults: {
+    type: "object",
+    required: ["sshPort", "ntp", "defaultFabricEnabled"],
+    properties: {
+      sshPort: {
+        type: ["integer", "null"],
+        minimum: 1,
+        maximum: 65535,
+        description:
+          "Org-wide SSH listen port. null = inherit platform default 22. Datacenter and server options override this.",
+      },
+      ntp: {
+        type: ["object", "null"],
+        description:
+          "Desired NTP client settings inherited by datacenters and servers. null = no org NTP default. Apply-to-host stays on POST /servers/{id}/ntp.",
+        properties: {
+          enabled: { type: "boolean" },
+          servers: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+          fallbackServers: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+        },
+      },
+      defaultFabricEnabled: {
+        type: "boolean",
+        description:
+          "Preferred TurboFabric state for this organization. Does not enable or tear down the mesh — use PUT /organizations/{id}/fabric.",
+      },
+    },
+  },
+  OrganizationHostDefaultsUpdate: {
+    type: "object",
+    properties: {
+      sshPort: {
+        type: ["integer", "null"],
+        minimum: 1,
+        maximum: 65535,
+        description: "TCP port 1–65535, or null to clear the org default.",
+      },
+      ntp: {
+        type: ["object", "null"],
+        description:
+          "Replace the org NTP defaults object, or null to clear. At least one of enabled, servers, fallbackServers is required when an object is sent.",
+        properties: {
+          enabled: { type: "boolean" },
+          servers: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+          fallbackServers: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+        },
+      },
+      defaultFabricEnabled: {
+        type: ["boolean", "null"],
+        description: "Boolean preference, or null to clear (treated as off).",
+      },
+    },
+  },
   OrganizationDefaultEnvironment: {
     type: "object",
     required: ["defaultEnvironmentName"],
@@ -165,11 +234,16 @@ export const organizationSchemas = {
       },
       fabric: {
         type: "object",
-        required: ["id", "cidr", "mtu"],
+        required: ["id", "cidr", "mtu", "allowRelay"],
         properties: {
           id: { type: "string", format: "uuid" },
           cidr: { type: "string" },
           mtu: { type: "integer", minimum: 1280, maximum: 9000 },
+          allowRelay: {
+            type: "boolean",
+            description:
+              "Org-level relay transport. Default false (opt-in / degraded). A relay may only tighten this; it cannot enable relay when the org has it off.",
+          },
           status: { type: "string" },
         },
       },
@@ -195,6 +269,11 @@ export const organizationSchemas = {
       "hasPresharedKey",
       "segments",
       "observed",
+      "allowRelay",
+      "effectiveAllowRelay",
+      "preferredGatewayIds",
+      "gatewayEligible",
+      "paths",
     ],
     properties: {
       serverId: { type: "string", format: "uuid" },
@@ -212,7 +291,11 @@ export const organizationSchemas = {
         type: ["string", "null"],
         description: "Operator pin only; null means auto-derive.",
       },
-      resolvedEndpoint: { type: ["string", "null"] },
+      resolvedEndpoint: {
+        type: ["string", "null"],
+        description:
+          "Globally-reachable endpoint only: the operator pin, else a public address, else null. Private datacenter addresses are never reported here because this response has no viewer context — read paths[] for source-aware (LAN / NAT / gateway) detail.",
+      },
       publicKey: { type: ["string", "null"] },
       prefix: { type: "string" },
       hasPresharedKey: {
@@ -241,6 +324,52 @@ export const organizationSchemas = {
           transferTx: { type: "integer", minimum: 0 },
         },
       },
+      allowRelay: {
+        type: ["boolean", "null"],
+        description:
+          "Relay-layer override. null inherits the org policy. A relay may only tighten org `allowRelay`.",
+      },
+      effectiveAllowRelay: {
+        type: "boolean",
+        description: "Resolved as org allowRelay AND (relay allowRelay ?? true).",
+      },
+      preferredGatewayIds: {
+        type: "array",
+        items: { type: "string", format: "uuid" },
+        description: "Preferred gateway server ids (order preserved, max 32).",
+      },
+      gatewayEligible: {
+        type: "boolean",
+        description: "True when this relay's role is gateway.",
+      },
+      paths: {
+        type: "array",
+        description:
+          "Diagnostics-only per-peer path summary stamped after rendezvous. Never hashed into desired reconcile state.",
+        items: {
+          type: "object",
+          required: ["peerServerId", "selected", "degraded"],
+          properties: {
+            peerServerId: { type: "string", format: "uuid" },
+            selected: {
+              type: "string",
+              enum: [
+                "direct_lan",
+                "direct_public",
+                "direct_nat",
+                "gateway",
+                "relay",
+                "unreachable",
+              ],
+            },
+            endpoint: { type: "string" },
+            viaServerId: { type: "string", format: "uuid" },
+            lastHandshakeAt: { type: "string", format: "date-time" },
+            latencyMs: { type: "number" },
+            degraded: { type: "boolean" },
+          },
+        },
+      },
     },
   },
   OrganizationFabricRelayUpdate: {
@@ -258,6 +387,15 @@ export const organizationSchemas = {
       presharedKey: {
         type: ["string", "null"],
         description: "Write-only WireGuard PSK. Never echoed on GET.",
+      },
+      allowRelay: {
+        type: ["boolean", "null"],
+        description: "null inherits org policy. A relay may only tighten.",
+      },
+      preferredGatewayIds: {
+        type: ["array", "null"],
+        items: { type: "string", format: "uuid" },
+        description: "null or [] clears. Must reference gateway-role relays in this fabric.",
       },
     },
   },
@@ -278,6 +416,29 @@ export const organizationSchemas = {
             status: { type: "string", enum: ["queued", "failed", "skipped"] },
             commandId: { type: "string", format: "uuid" },
             error: { type: "string" },
+            unreachablePeers: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["serverId"],
+                properties: {
+                  serverId: { type: "string", format: "uuid" },
+                },
+              },
+            },
+            gatewayRoutedPeers: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["serverId", "viaServerId"],
+                properties: {
+                  serverId: { type: "string", format: "uuid" },
+                  viaServerId: { type: "string", format: "uuid" },
+                },
+              },
+            },
+            natCandidates: { type: "integer", minimum: 0 },
+            degradedPeers: { type: "integer", minimum: 0 },
           },
         },
       },
@@ -290,6 +451,11 @@ export const organizationSchemas = {
       enabled: {
         type: "boolean",
         description: "Enable or disable TurboFabric for the organization.",
+      },
+      allowRelay: {
+        type: "boolean",
+        description:
+          "Opt-in relay transport (default false, degraded). Relays may only tighten this policy.",
       },
     },
   },
@@ -533,6 +699,107 @@ export const organizationPaths: Record<string, unknown> = {
         },
         "400": {
           description: "Invalid timezone or body",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Forbidden",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/organizations/{id}/host-defaults": {
+    get: {
+      tags: ["Organizations"],
+      summary: "Get organization host defaults",
+      description:
+        "SSH port, desired NTP, and TurboFabric preference stored on organization.options. Most-specific datacenter/server overrides win on server reads.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Org host defaults",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/OrganizationHostDefaults" },
+            },
+          },
+        },
+        "403": {
+          description: "Forbidden",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Organization not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ["Organizations"],
+      summary: "Update organization host defaults",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              $ref: "#/components/schemas/OrganizationHostDefaultsUpdate",
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Updated org host defaults",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/OrganizationHostDefaults" },
+                  {
+                    type: "object",
+                    required: ["ok"],
+                    properties: { ok: { type: "boolean", const: true } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Invalid sshPort, ntp, or body",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ErrorResponse" },
@@ -968,7 +1235,7 @@ export const organizationPaths: Record<string, unknown> = {
         },
         "422": {
           description:
-            "`gateway_datacenter_required` / `gateway_datacenter_cidr_required`",
+            "`gateway_datacenter_required` / `gateway_datacenter_cidr_required` / `preferred_gateway_invalid`",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ErrorResponse" },
@@ -983,7 +1250,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ["Organizations"],
       summary: "Apply TurboFabric membership",
       description:
-        "Manage-gated. Force-reconciles `server.fabric.reconcile` on every org relay. Returns per-server `results[]` (`queued` / `failed` / `skipped`). 409 when TurboFabric is off.",
+        "Manage-gated. Force-reconciles `server.fabric.reconcile` on every org relay. Returns per-server `results[]` (`queued` / `failed` / `skipped`, optional `unreachablePeers` / `gatewayRoutedPeers` / `natCandidates` / `degradedPeers`). 409 when TurboFabric is off.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {

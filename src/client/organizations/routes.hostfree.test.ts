@@ -39,6 +39,8 @@ const ORG_PATHS = [
   ['PATCH', `/organizations/${orgId}`],
   ['GET', `/organizations/${orgId}/default-timezone`],
   ['PUT', `/organizations/${orgId}/default-timezone`],
+  ['GET', `/organizations/${orgId}/host-defaults`],
+  ['PUT', `/organizations/${orgId}/host-defaults`],
   ['GET', `/organizations/${orgId}/default-environment`],
   ['PUT', `/organizations/${orgId}/default-environment`],
   ['GET', `/organizations/${orgId}/server-capacity`],
@@ -257,6 +259,23 @@ test('PATCH /organizations/:id returns 400 for an empty displayName', async () =
     body: JSON.stringify({ displayName: '' }),
   })
   assertEquals(res.status, 400)
+})
+
+test('PUT /host-defaults returns 400 for an invalid sshPort', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    executeQueue: [[{ allowed: true }]],
+  })
+  const res = await app.request(`/organizations/${orgId}/host-defaults`, {
+    method: 'PUT',
+    headers: {
+      Cookie: cookie,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ sshPort: 0 }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'Invalid sshPort' })
 })
 
 test('PUT /default-timezone returns 400 for an invalid timezone', async () => {

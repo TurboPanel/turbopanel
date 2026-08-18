@@ -108,8 +108,8 @@ async function installIsolatedFixtureSchema(
       value text DEFAULT '' NOT NULL,
       is_secret boolean DEFAULT false NOT NULL,
       is_literal boolean DEFAULT false NOT NULL,
-      for_build boolean DEFAULT false NOT NULL,
-      for_runtime boolean DEFAULT true NOT NULL,
+      is_for_build boolean DEFAULT false NOT NULL,
+      is_for_runtime boolean DEFAULT true NOT NULL,
       description varchar(255),
       binding_id uuid
     )

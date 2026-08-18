@@ -19,6 +19,7 @@ import {
   DAEMON_STALE_MS,
   validateDaemonInboundEnvelope,
 } from "../protocol.ts";
+import { deriveInboundOutcome } from "../inbound-outcome.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../../lib/update/constants.ts";
 import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo } from "../../../logger.ts";
 import { onDaemonUpdateExpired } from "../control-plane-monitor.ts";
@@ -1009,49 +1010,6 @@ export class RedisDaemonCell implements DaemonCell {
     );
   }
 
-  #resolveInboundCompletion(
-    inbound: DaemonInboundEnvelope,
-  ): {
-    status: PendingRequestStatus;
-    result?: unknown;
-    error?: string;
-  } | null {
-    let status: PendingRequestStatus;
-    let result: unknown;
-    let error: string | undefined;
-
-    switch (inbound.kind) {
-      case "addresses-result":
-        status = "done";
-        result = { ips: inbound.ips };
-        break;
-      case "managed-logs-result":
-        status = inbound.error ? "failed" : "done";
-        result = { logs: inbound.logs };
-        if (inbound.error) error = inbound.error;
-        break;
-      case "public-urls-update-result":
-      case "dev-sync-result":
-      case "tunnel-token-result":
-      case "update-result":
-      case "command-outcome":
-        status = inbound.ok ? "done" : "failed";
-        if (inbound.kind === "command-outcome") {
-          result = inbound.result === undefined
-            ? { ok: inbound.ok, error: inbound.error }
-            : inbound.result;
-        } else {
-          result = { ok: inbound.ok, error: inbound.error };
-        }
-        if (!inbound.ok) error = inbound.error;
-        break;
-      default:
-        return null;
-    }
-
-    return { status, result, error };
-  }
-
   async #applyInboundCompletion(
     inbound: DaemonInboundEnvelope,
     existing: PendingRequestRecord,
@@ -1168,7 +1126,7 @@ export class RedisDaemonCell implements DaemonCell {
       );
     }
 
-    const completion = this.#resolveInboundCompletion(inbound);
+    const completion = deriveInboundOutcome(inbound);
     if (!completion) return existing;
 
     return this.#applyInboundCompletion(

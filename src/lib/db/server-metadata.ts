@@ -5,6 +5,11 @@ import {
 } from '../../server-addresses.ts'
 import type { ServerGeo } from '../geo/server-geo.ts'
 import type { DatacenterOptions } from '../datacenter-options.ts'
+import {
+  parseNtpDefaults,
+  parseSshPort,
+  type NtpDefaults,
+} from '../host-defaults.ts'
 import type { OrganizationOptions } from '../organization-options.ts'
 
 /** OS families we may report from the daemon; extend the union as support is added. */
@@ -238,6 +243,13 @@ export type ServerOptions = {
    * unless the org enforces its default (`enforceServerTimezone`).
    */
   timezone?: string
+  /**
+   * Desired SSH listen port for this host. Omitted → inherit datacenter, then
+   * organization, then platform default 22.
+   */
+  sshPort?: number
+  /** Desired NTP client settings for this host. Omitted → inherit parent layers. */
+  ntp?: NtpDefaults
   /**
    * Desired state for Docker-hosting provisioning; consumed by later phases to
    * choose self-heal vs report-only.
@@ -1114,6 +1126,10 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   if (isRecord(value.hosting) && typeof value.hosting.enabled === 'boolean') {
     options.hosting = { enabled: value.hosting.enabled }
   }
+  const sshPort = parseSshPort(value.sshPort)
+  if (sshPort !== undefined) options.sshPort = sshPort
+  const ntp = parseNtpDefaults(value.ntp)
+  if (ntp) options.ntp = ntp
   return Object.keys(options).length > 0 ? options : {}
 }
 

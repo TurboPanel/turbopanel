@@ -302,6 +302,7 @@ CREATE TABLE "node" (
 	"managed_id" uuid NOT NULL,
 	"server_id" uuid NOT NULL,
 	"role" text DEFAULT 'primary' NOT NULL,
+	"replica_class" text,
 	"read_eligible" boolean DEFAULT false NOT NULL,
 	"ordinal" integer DEFAULT 1 NOT NULL,
 	"replication_transport" text,
@@ -310,8 +311,9 @@ CREATE TABLE "node" (
 	CONSTRAINT "uniq_node_managed_ordinal" UNIQUE("managed_id","ordinal"),
 	CONSTRAINT "uniq_node_managed_server" UNIQUE("managed_id","server_id"),
 	CONSTRAINT "node_role_check" CHECK ("node"."role" IN ('primary','replica')),
+	CONSTRAINT "node_replica_class_check" CHECK ("node"."replica_class" IS NULL OR "node"."replica_class" IN ('failover','read')),
 	CONSTRAINT "node_ordinal_positive_check" CHECK ("node"."ordinal" >= 1),
-	CONSTRAINT "node_transport_check" CHECK ("node"."replication_transport" IS NULL OR "node"."replication_transport" IN ('local','fabric','datacenter')),
+	CONSTRAINT "node_transport_check" CHECK ("node"."replication_transport" IS NULL OR "node"."replication_transport" IN ('local','fabric','datacenter','public')),
 	CONSTRAINT "node_status_check" CHECK (status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed','needs_resync'))
 );
 --> statement-breakpoint

@@ -83,9 +83,12 @@ re-asserted at the daemon command-contract boundary.
    Compose fragments never publish host ports for single-member clusters.
    Multi-member clusters may include one deliberate `ports:` entry
    (`privateListener.address:private_port:enginePort`) for cross-host
-   replication and remote ProxySQL backends. Client traffic still enters via
-   shared ProxySQL (`5432` / `3306`) — never a per-service published map for
-   public SQL clients and never per-managed Traefik.
+   replication and remote ProxySQL backends. The address comes from the
+   `fabric` → `datacenter` → `public` ladder and is tagged on
+   `privateListener.transport`; a `public` bind is only ever emitted with
+   org-CA TLS material (the daemon refuses it otherwise).    Client traffic still
+   enters via shared ProxySQL (`15432` / `16306`) — never a per-service published
+   map for public SQL clients and never per-managed Traefik.
 3. **Named volumes only.** `volumes[]` are Docker named volumes — never host
    bind paths. Config/TLS dirs are relative mounts under managed state. Volume
    **names** must satisfy `SAFE_IDENTIFIER_RE` / `SAFE_VOLUME_NAME_RE`
@@ -120,7 +123,7 @@ ensures/issues org-library `organization_ca` leaves into
 
 | Surface                    | Shape                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client connection endpoint | Shared ProxySQL host:port — **pgsql `5432`** and **mysql `3306`** on the **placement server** (member or bound consumer), TLS to the **server-owner org CA**, default `sslmode=verify-full` for Postgres                                                                                                                                            |
+| Client connection endpoint | Shared ProxySQL host:port — **pgsql `15432`** and **mysql `16306`** on the **placement server** (member or bound consumer), TLS to the **server-owner org CA**, default `sslmode=verify-full` for Postgres                                                                                                                                            |
 | Routing                    | ProxySQL hostgroups + query rules map username → primary/replica backends over the local Docker network, a fabric relay address over `tp0`, or a datacenter private address                                                                                                                                                                         |
 | Engine containers          | Reachable only on the managed network (container DNS / IP from apply peers); no host `ports:`                                                                                                                                                                                                                                                       |
 | Desired-state command      | Whole-server `managed.ingress.reconcile` builds `clusters[]` + **resealed frontend user passwords** for every managed cluster needed on that server (local members **and** clusters bound by compose services placed on the server). Binding lookup is scoped to the target org + server; cluster members/users/endpoints are batched per reconcile |
@@ -157,7 +160,7 @@ outside of the retention-keep pruning that runs on every successful backup.
 
 One engine `service` row per managed cluster; each **member** owns one
 `role='service'` container at `ordinal = member.ordinal`, named
-`managedContainerName(serviceId, ordinal)` → `<service.id>-1`|`-2`|`-3`. There
+`managedContainerName(serviceId, ordinal)` → `<service.id>-<ordinal>`. There
 is **no** per-managed Traefik / `-in` ingress container row on the engine
 service. Shared ProxySQL is the **`managed-ingress`** system component (project
 `turbopanel-proxysql`, compose service `proxysql`) and lives in the system
@@ -183,12 +186,14 @@ last-usable host) so remote consumers resolve it by name. Coverage:
 ## Cluster members
 
 `node` is the authoritative fan-out set. `managed.server_id` remains the
-**primary** pin. Roles: exactly one `primary` (partial unique), up to **2
-replicas** (API-enforced `MANAGED_MAX_REPLICAS`, ordinals 2–3).
+**primary** pin. Roles: exactly one `primary` (partial unique) plus unbounded
+replicas. Each replica has **`replica_class`** `failover` (same datacenter as
+the primary, local/datacenter transport only, promotable) or `read` (any org
+server; local/datacenter/fabric/public). Ordinals start at 2 with no ceiling.
 `replication_transport` records the private path (`local` | `fabric` |
-`datacenter`) resolved via `resolvePrivateEndpoint` toward the primary (`local`
-co-resident container name → `fabric` relay address over `tp0` → `datacenter`
-private address). `private_port` is an instance-allocated high port (range in
+`datacenter` | `public`) resolved via `resolvePrivateEndpoint` toward the
+primary (`failover-replication` vs `read-replication` purpose). `private_port`
+is an instance-allocated high port (range in
 `members.ts`) unique per `(server_id, private_port)` for multi-member clusters —
 the host-side half of the private listener; cleared when the cluster falls back
 to one member. Create/apply call `ensureManagedPrimaryMember` so pre-member rows
@@ -196,9 +201,11 @@ self-heal without a data migration. Multi-member apply also ensures a platform
 `managedReplication` principal (not listed as a client user), builds
 **per-member** `postgresql.conf` + `pg_hba.conf` (platform-owned HBA), and ships
 an org-CA engine leaf for `sslmode=verify-full` on both the ProxySQL backend leg
-and `primary_conninfo`. Member CRUD: `GET/POST …/managed/members`,
-`PATCH/DELETE …/members/:memberId`, `POST …/members/:memberId/promote` (lag-
-gated; `{ force: true }` bypasses for dead-primary failover).
+and `primary_conninfo`. Member CRUD: `GET/POST …/managed/members`
+(`replicaClass` default `failover`), `PATCH/DELETE …/members/:memberId`
+(`readEligible` / `replicaClass` conversion), `POST …/members/:memberId/promote`
+(lag-gated; failover class required unless `{ force: true }` for dead-primary
+failover).
 
 ## Login namespace
 

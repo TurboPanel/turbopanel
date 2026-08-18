@@ -12,7 +12,7 @@ import type { ManagedRowOptions } from './options.ts'
 
 /**
  * Client connection endpoint for managed engines goes through the shared
- * ProxySQL listener (protocol port 5432/3306), not a per-service published port.
+ * ProxySQL listener (protocol port 15432/16306), not a per-service published port.
  */
 export async function resolveManagedConnectionListener(
   db: Db,
@@ -435,6 +435,18 @@ export function parseMemberReadEligibleCreate(
   return body.readEligible === true
 }
 
+export function parseReplicaClassCreate(
+  body: Record<string, unknown>,
+): { ok: true; replicaClass: 'failover' | 'read' } | ManagedRouteValidationError {
+  if (body.replicaClass === undefined) {
+    return { ok: true, replicaClass: 'failover' }
+  }
+  if (body.replicaClass === 'failover' || body.replicaClass === 'read') {
+    return { ok: true, replicaClass: body.replicaClass }
+  }
+  return { ok: false, error: 'Invalid request', status: 400 }
+}
+
 export function parseMemberReadEligiblePatch(
   body: Record<string, unknown>,
 ): { ok: true; readEligible: boolean } | ManagedRouteValidationError {
@@ -442,6 +454,36 @@ export function parseMemberReadEligiblePatch(
     return { ok: false, error: 'Invalid request', status: 400 }
   }
   return { ok: true, readEligible: body.readEligible }
+}
+
+export type MemberPatchFields = {
+  readEligible?: boolean
+  replicaClass?: 'failover' | 'read'
+}
+
+export function parseMemberPatch(
+  body: Record<string, unknown>,
+): ({ ok: true } & MemberPatchFields) | ManagedRouteValidationError {
+  const hasReadEligible = Object.hasOwn(body, 'readEligible')
+  const hasReplicaClass = Object.hasOwn(body, 'replicaClass')
+  if (!hasReadEligible && !hasReplicaClass) {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+
+  const patch: { ok: true } & MemberPatchFields = { ok: true }
+  if (hasReadEligible) {
+    if (typeof body.readEligible !== 'boolean') {
+      return { ok: false, error: 'Invalid request', status: 400 }
+    }
+    patch.readEligible = body.readEligible
+  }
+  if (hasReplicaClass) {
+    if (body.replicaClass !== 'failover' && body.replicaClass !== 'read') {
+      return { ok: false, error: 'Invalid request', status: 400 }
+    }
+    patch.replicaClass = body.replicaClass
+  }
+  return patch
 }
 
 /**
@@ -460,7 +502,6 @@ export function canHardDeleteManaged(
 
 export type ReplicaPlacementPrecheckError =
   | { ok: false; error: 'managed_member_exists'; status: 409 }
-  | { ok: false; error: 'managed_replica_limit'; status: 422 }
 
 /**
  * Pure prechecks before datacenter / private-endpoint / online probes.
@@ -468,23 +509,46 @@ export type ReplicaPlacementPrecheckError =
 export function evaluateReplicaPlacementPrechecks(
   members: ReadonlyArray<{ serverId: string; role: string }>,
   serverId: string,
-  replicaCount: number,
-  maxReplicas: number,
 ): ReplicaPlacementPrecheckError | null {
   if (members.some((m) => m.serverId === serverId)) {
     return { ok: false, error: 'managed_member_exists', status: 409 }
   }
-  if (replicaCount >= maxReplicas) {
-    return { ok: false, error: 'managed_replica_limit', status: 422 }
+  return null
+}
+
+export function replicaEndpointPurpose(
+  replicaClass: 'failover' | 'read',
+): 'failover-replication' | 'read-replication' {
+  return replicaClass === 'read' ? 'read-replication' : 'failover-replication'
+}
+
+export type FailoverReplicaTransportError = {
+  kind: 'failover_replica_requires_datacenter_transport'
+}
+
+/** Failover replicas may only use local or datacenter transport — never fabric/public. */
+export function assertFailoverReplicaTransportAllowed(
+  transport: 'local' | 'datacenter' | 'fabric' | 'public',
+): FailoverReplicaTransportError | null {
+  if (transport === 'fabric' || transport === 'public') {
+    return { kind: 'failover_replica_requires_datacenter_transport' }
   }
   return null
 }
 
-/** Fabric reachability satisfies cross-host placement without a datacenter CIDR. */
+/**
+ * Whether placement still needs a ready datacenter CIDR after transport resolve.
+ * Failover always needs a datacenter (fabric/public are rejected earlier).
+ * Read replicas skip the CIDR check on fabric/public (already overlay/TLS).
+ */
 export function replicaPlacementNeedsDatacenter(
-  transport: 'local' | 'datacenter' | 'fabric',
+  transport: 'local' | 'datacenter' | 'fabric' | 'public',
+  replicaClass: 'failover' | 'read',
 ): boolean {
-  return transport !== 'fabric'
+  if (replicaClass === 'failover') {
+    return true
+  }
+  return transport !== 'fabric' && transport !== 'public'
 }
 
 export function evaluatePromoteMemberRole(
@@ -492,6 +556,44 @@ export function evaluatePromoteMemberRole(
 ): ManagedRouteValidationError | null {
   if (role !== 'replica') {
     return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  return null
+}
+
+export function evaluatePromoteReplicaClass(
+  replicaClass: string | null,
+  force: boolean,
+): { ok: false; error: 'managed_replica_not_promotable'; status: 422 } | null {
+  if (force) return null
+  if (replicaClass !== 'failover') {
+    return { ok: false, error: 'managed_replica_not_promotable', status: 422 }
+  }
+  return null
+}
+
+export type ReplicaClassConversionError =
+  | { ok: false; error: 'Invalid request'; status: 400 }
+  | { ok: false; error: 'failover_replica_requires_datacenter_transport'; status: 422 }
+
+/**
+ * Class conversion: failover → read always allowed; read → failover requires
+ * shared-datacenter placement to already have succeeded.
+ */
+export function evaluateReplicaClassConversion(
+  member: Readonly<{ role: string; replicaClass: string | null }>,
+  targetClass: 'failover' | 'read',
+  placementOk: boolean,
+): ReplicaClassConversionError | null {
+  if (member.role !== 'replica') {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  if (targetClass === 'read') return null
+  if (!placementOk) {
+    return {
+      ok: false,
+      error: 'failover_replica_requires_datacenter_transport',
+      status: 422,
+    }
   }
   return null
 }
@@ -606,6 +708,7 @@ export function buildStatusMemberView(serialized: {
   id: string
   serverId: string
   role: string
+  replicaClass?: string | null
   status: string | null
   replicationTransport: string | null
   privatePort: number | null
@@ -615,6 +718,7 @@ export function buildStatusMemberView(serialized: {
     id: serialized.id,
     serverId: serialized.serverId,
     role: serialized.role,
+    replicaClass: serialized.replicaClass ?? null,
     status: serialized.status,
     replicationTransport: serialized.replicationTransport,
     privatePort: serialized.privatePort,
@@ -681,8 +785,7 @@ export function buildPromoteQueuedResponse(params: {
   }
 }
 
-export function buildOrgManagedListEntry(params: {
-  serializedRow: Record<string, unknown>
+type OrgManagedListEntryExtras = {
   engineDisplayName: string | null
   environmentDisplayName: string | null
   projectId: string
@@ -691,7 +794,11 @@ export function buildOrgManagedListEntry(params: {
   workspaceDisplayName: string | null
   serverDisplayName: string | null
   members: unknown[]
-}) {
+}
+
+export function buildOrgManagedListEntry<T extends Record<string, unknown>>(
+  params: OrgManagedListEntryExtras & { serializedRow: T },
+): T & OrgManagedListEntryExtras {
   return {
     ...params.serializedRow,
     engineDisplayName: params.engineDisplayName,

@@ -53,6 +53,7 @@ import type { ManagedEngineCode } from "../../lib/managed/types.ts";
 import {
   isPrivateEndpointError,
   type PrivateEndpointError,
+  type PrivateEndpointPurpose,
   resolvePrivateEndpoints,
 } from "../../lib/net/private-endpoint.ts";
 import type { HostingBindScope } from "../../lib/hosting-options.ts";
@@ -63,7 +64,20 @@ import {
 import { listServerSegments } from "../../lib/db/fabric-records.ts";
 import { loadListenerAttachedSegmentNames } from "./ingress-attachments.ts";
 import { resolveHostingBindAddress } from "../environments/deploy-prepare.ts";
-import { ensureManagedIngressHierarchy } from "../system/hierarchy.ts";
+import { consumerServerIdsForManaged } from "../bindings/resolve-endpoint.ts";
+import { materializeBindingsForPrincipal } from "../bindings/materialize.ts";
+import { compatLogWarn } from "../../log-compat.ts";
+import {
+  ensureManagedIngressHierarchy,
+  findManagedIngressHierarchy,
+} from "../system/hierarchy.ts";
+import {
+  ensureMemberPrivatePorts,
+  isManagedPrivatePortExhaustedError,
+  listManagedMembers,
+  resolveMemberTransports,
+  updateMemberReplicationTransport,
+} from "./members.ts";
 import {
   buildManagedOrgTlsMaterial,
   ensureActiveOrganizationCa,
@@ -465,6 +479,7 @@ async function buildIngressClusters(
   const endpoints = await resolvePrivateEndpoints(db, {
     fromServerId: serverId,
     toServerIds: remoteIds,
+    purpose: "client-backend",
   });
   const usersByManaged = await loadClusterUsersForManagedIds(db, managedIds, {
     serverId,
@@ -544,8 +559,11 @@ async function resolveAdvertisedHost(
 /**
  * Build the full `managed.ingress.reconcile` payload for a server.
  *
- * Returns `null` when the server neither hosts managed members nor hosts
- * compose services bound to a managed cluster (nothing to reconcile).
+ * The ProxySQL stack exists on a server **iff** it hosts a managed `node` row
+ * or a bound consumer (`loadBoundManagedIdsForServer`) — never on every org
+ * server. Returns `null` when neither is true **and** no prior hierarchy
+ * exists. When a prior hierarchy exists but the set is empty, returns a
+ * teardown payload `{ serverId, clusters: [] }` with no bindAddress / TLS.
  */
 export async function buildManagedIngressReconcilePayload(
   db: Db,
@@ -585,7 +603,13 @@ export async function buildManagedIngressReconcilePayload(
     ...localMembers.map((row) => row.managedId),
     ...boundManagedIds,
   ]);
-  if (managedIdSet.size === 0) return null;
+  if (managedIdSet.size === 0) {
+    const existing = await findManagedIngressHierarchy(db, {
+      serverId: params.serverId,
+    });
+    if (!existing) return null;
+    return { serverId: params.serverId, clusters: [] };
+  }
 
   const hierarchy = await ensureManagedIngressHierarchy(db, {
     organizationId,
@@ -791,4 +815,129 @@ export async function enqueueManagedIngressReconcile(
   }
 
   return { ok: true, commandId: record.id, serverId: params.serverId };
+}
+
+async function recomputeMemberTransportsAfterPromote(
+  db: Db,
+  managedId: string,
+): Promise<void> {
+  const members = await listManagedMembers(db, managedId);
+  const withPorts = await ensureMemberPrivatePorts(db, members);
+  if (isManagedPrivatePortExhaustedError(withPorts)) {
+    compatLogWarn(
+      "managed-ingress",
+      `private port exhausted during promote fan-out managedId=${managedId} serverId=${withPorts.serverId}`,
+    );
+    return;
+  }
+
+  const failoverSubset = withPorts.filter((member) =>
+    member.role === "primary" || member.replicaClass !== "read"
+  );
+  const readSubset = withPorts.filter((member) =>
+    member.role === "primary" || member.replicaClass === "read"
+  );
+
+  const persist = async (
+    subset: typeof withPorts,
+    purpose: PrivateEndpointPurpose,
+  ): Promise<void> => {
+    if (subset.length === 0) return;
+    const transports = await resolveMemberTransports(db, subset, purpose);
+    if (isPrivateEndpointError(transports)) {
+      compatLogWarn(
+        "managed-ingress",
+        `transport recompute failed during promote fan-out managedId=${managedId} kind=${transports.kind}`,
+      );
+      return;
+    }
+    for (const member of subset) {
+      const transport = transports.get(member.id) ?? null;
+      await updateMemberReplicationTransport(db, member.id, transport);
+    }
+  };
+
+  await persist(failoverSubset, "failover-replication");
+  const hasReadReplica = readSubset.some((member) =>
+    member.replicaClass === "read"
+  );
+  if (hasReadReplica) {
+    await persist(readSubset, "read-replication");
+  }
+}
+
+async function rematerializeManagedBindings(
+  db: Db,
+  managedId: string,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+): Promise<void> {
+  const principals = await db
+    .select({ id: principal.id })
+    .from(principal)
+    .where(eq(principal.managedId, managedId));
+  for (const row of principals) {
+    const result = await materializeBindingsForPrincipal(
+      db,
+      dataEncryptionSecrets,
+      row.id,
+    );
+    if (!("ok" in result)) {
+      compatLogWarn(
+        "managed-ingress",
+        `binding rematerialize failed during promote fan-out managedId=${managedId} principalId=${row.id} kind=${result.kind}`,
+      );
+    }
+  }
+}
+
+/**
+ * Ordered promote-pipeline tail: recompute member transports relative to the
+ * new primary, re-materialize binding-owned HOST/PORT/URL variables, then
+ * enqueue `managed.ingress.reconcile` on every member and consuming server.
+ *
+ * Non-goals: no automatic failover (promote stays operator-triggered), no
+ * ProxySQL→ProxySQL chaining, no DNS / floating-IP primary discovery.
+ *
+ * Older daemons reject a TLS-less empty-clusters teardown payload; the stack
+ * simply keeps running — acceptable, no data-plane risk.
+ */
+export async function fanOutManagedIngressReconcile(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: Readonly<{
+    managedId: string;
+    actorType: "user" | "system";
+    actorId: string;
+    secretsConfig: SecretsConfig;
+    dataEncryptionSecrets: DerivedSecretsConfig;
+    extraServerIds?: readonly string[];
+  }>,
+): Promise<void> {
+  await recomputeMemberTransportsAfterPromote(db, params.managedId);
+  await rematerializeManagedBindings(
+    db,
+    params.managedId,
+    params.dataEncryptionSecrets,
+  );
+
+  const memberIds = await db
+    .select({ serverId: node.serverId })
+    .from(node)
+    .where(eq(node.managedId, params.managedId));
+  const consumerIds = await consumerServerIdsForManaged(db, params.managedId);
+  const serverIds = new Set<string>([
+    ...memberIds.map((row) => row.serverId),
+    ...consumerIds,
+    ...(params.extraServerIds ?? []),
+  ]);
+
+  for (const serverId of serverIds) {
+    await enqueueManagedIngressReconcile(db, commandQueue, {
+      serverId,
+      actorType: params.actorType,
+      actorId: params.actorId,
+      secretsConfig: params.secretsConfig,
+      dataEncryptionSecrets: params.dataEncryptionSecrets,
+    });
+  }
 }
