@@ -13,8 +13,6 @@
     "jsr:@std/testing@*": "1.0.19",
     "jsr:@std/testing@1": "1.0.19",
     "jsr:@std/yaml@*": "1.1.2",
-    "npm:@cloudflare/vitest-pool-workers@~0.21.2": "0.21.2_@vitest+runner@4.1.10_@vitest+snapshot@4.1.10_vitest@4.1.10__@vitest+coverage-istanbul@4.1.10_@cloudflare+workers-types@5.20260812.1_@vitest+coverage-istanbul@4.1.10__vitest@4.1.10__vite@8.2.0___esbuild@0.28.1___yaml@2.9.0",
-    "npm:@cloudflare/workers-types@^5.20260812.1": "5.20260812.1",
     "npm:@noble/hashes@1.8.0": "1.8.0",
     "npm:@vitest/coverage-istanbul@^4.1.0": "4.1.10_vitest@4.1.10_vite@8.2.0__esbuild@0.28.1__yaml@2.9.0",
     "npm:amqplib@^2.0.1": "2.0.1",
@@ -25,7 +23,6 @@
     "npm:nodemailer@^6.10.1": "6.10.1",
     "npm:postgres@^3.4.7": "3.4.9",
     "npm:vitest@^4.1.0": "4.1.10_@vitest+coverage-istanbul@4.1.10",
-    "npm:wrangler@^4.122.0": "4.122.0_@cloudflare+workers-types@5.20260812.1",
     "npm:yaml@^2.8.0": "2.9.0",
     "npm:yaml@^2.9.0": "2.9.0"
   },
@@ -1797,9 +1794,10 @@
     ],
     "packageJson": {
       "dependencies": [
-        "npm:@cloudflare/vitest-pool-workers@~0.21.2",
-        "npm:@cloudflare/workers-types@^5.20260812.1",
+        "npm:@cloudflare/vitest-pool-workers@0.22",
+        "npm:@cloudflare/workers-types@^5.20260818.1",
         "npm:@noble/hashes@1.8.0",
+        "npm:@types/node@^24.13.3",
         "npm:@vitest/coverage-istanbul@^4.1.0",
         "npm:amqplib@^2.0.1",
         "npm:drizzle-kit@~0.31.1",
@@ -1809,7 +1807,7 @@
         "npm:nodemailer@^6.10.1",
         "npm:postgres@^3.4.7",
         "npm:vitest@^4.1.0",
-        "npm:wrangler@^4.122.0",
+        "npm:wrangler@^4.124.0",
         "npm:yaml@^2.9.0"
       ]
     }

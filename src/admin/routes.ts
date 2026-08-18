@@ -1,51 +1,54 @@
-import { Hono } from 'hono'
-import type { AppEnv } from '../app.ts'
-import { createAdminAccessMiddleware, createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import { Hono } from "hono";
+import type { AppEnv } from "../app.ts";
+import {
+  createAdminAccessMiddleware,
+  createRootOnlyMiddleware,
+} from "../client/authn/middleware.ts";
 import {
   getSignupSettingMeta,
   resolveColocatedServerId,
   setSignupEnabledSetting,
-} from '../client/authn/install-state.ts'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
+} from "../client/authn/install-state.ts";
+import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import {
   broadcastEchoToFleet,
   collectFleetCommands,
   enqueueEchoToServer,
   listFleetServerIds,
-} from '../daemon/cell/fleet-diagnostics.ts'
+} from "../daemon/cell/fleet-diagnostics.ts";
 import {
   fleetPresenceToConnection,
   isServerConnected,
   resolveFleetPresence,
   resolveOnlineFleetPresence,
-} from '../daemon/cell/fleet-presence.ts'
-import type { DaemonOutboundEnvelope } from '../daemon/cell/protocol.ts'
+} from "../daemon/cell/fleet-presence.ts";
+import type { DaemonOutboundEnvelope } from "../daemon/cell/protocol.ts";
 import {
   generateDeliveryId,
   generateRequestId,
-} from '../daemon/cell/protocol.ts'
-import { getDaemonCellRegistry, getDb } from '../db.ts'
-import { cellTrace } from '../logger.ts'
-import { emptyServerIps } from '../server-addresses.ts'
-import { buildAdminScalarHtml } from '../scalar-html.ts'
-import { ADMIN_API_PREFIX } from '../surfaces.ts'
-import { getAdminOpenApiSpec } from './openapi/index.ts'
+} from "../daemon/cell/protocol.ts";
+import { getDaemonCellRegistry, getDb } from "../db.ts";
+import { cellTrace } from "../logger.ts";
+import { emptyServerIps } from "../server-addresses.ts";
+import { buildAdminScalarHtml } from "../scalar-html.ts";
+import { ADMIN_API_PREFIX } from "../surfaces.ts";
+import { getAdminOpenApiSpec } from "./openapi/index.ts";
 import {
   getPublicUrls,
   parsePublicUrlEntries,
   setPublicUrls,
-} from './public-urls.ts'
+} from "./public-urls.ts";
 import {
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
   resolveEmailSettings,
   updateEmailSettings,
-} from '../lib/settings/email-settings.ts'
+} from "../lib/settings/email-settings.ts";
 import {
   endReencryptSweep,
   reencryptAtRestSecrets,
   tryBeginReencryptSweep,
-} from './reencrypt-secrets.ts'
+} from "./reencrypt-secrets.ts";
 import {
   extractAddresses,
   parseCellPurgeBatchBody,
@@ -58,543 +61,614 @@ import {
   resolvePlatformEnv,
   resolvePublicUrlsForApply,
   waitForPublicUrlsApply,
-} from './routes-helpers.ts'
+} from "./routes-helpers.ts";
 
-const ADDRESSES_TIMEOUT_MS = 10_000
+const ADDRESSES_TIMEOUT_MS = 10_000;
 
 function nowTs(): string {
-  return new Date().toISOString()
+  return new Date().toISOString();
 }
 
 /**
  * Admin UI surface: fleet diagnostics, public URL management, and (dev-only) shell.
  */
 export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
-  secrets: DerivedSecretsConfig
-  runtime: 'deno' | 'workers'
-  devSurface: boolean
-  getEnv?: () => Record<string, string | undefined>
+  secrets: DerivedSecretsConfig;
+  runtime: "deno" | "workers";
+  devSurface: boolean;
+  getEnv?: () => Record<string, string | undefined>;
 }) {
-  const admin = new Hono<AppEnv>()
-  admin.use('*', createAdminAccessMiddleware(opts.secrets))
+  const admin = new Hono<AppEnv>();
+  admin.use("*", createAdminAccessMiddleware(opts.secrets));
 
-  admin.get('/daemon/connections', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ connections: [] })
+  admin.get("/daemon/connections", async (c) => {
+    const registry = getDaemonCellRegistry(c);
+    const db = getDb(c);
+    if (!registry || !db) return c.json({ connections: [] });
     const connections = (await resolveOnlineFleetPresence(db, registry))
-      .map(fleetPresenceToConnection)
-    return c.json({ connections })
-  })
+      .map(fleetPresenceToConnection);
+    return c.json({ connections });
+  });
 
-  admin.get('/daemon/events', (c) => {
-    return c.json({ events: [] })
-  })
+  admin.get("/daemon/events", (c) => {
+    return c.json({ events: [] });
+  });
 
-  admin.post('/daemon/broadcast', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const body = await c.req.json().catch(() => null)
-    const parsedPayload = parsePayloadBody(body)
-    if (!parsedPayload.ok) {
-      return c.json({ error: parsedPayload.error }, 400)
+  admin.post("/daemon/broadcast", async (c) => {
+    const registry = getDaemonCellRegistry(c);
+    if (!registry) {
+      return c.json({ error: "Daemon cell registry unavailable" }, 503);
     }
-    const ids = await registry.listOnlineServerIds()
-    const sent = await broadcastEchoToFleet(registry, ids, parsedPayload.payload)
-    return c.json({ ok: true, sent })
-  })
-
-  admin.post('/daemon/:id/send', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const id = c.req.param('id')
-    const body = await c.req.json().catch(() => null)
-    const parsedPayload = parsePayloadBody(body)
+    const body = await c.req.json().catch(() => null);
+    const parsedPayload = parsePayloadBody(body);
     if (!parsedPayload.ok) {
-      return c.json({ error: parsedPayload.error }, 400)
+      return c.json({ error: parsedPayload.error }, 400);
+    }
+    const ids = await registry.listOnlineServerIds();
+    const sent = await broadcastEchoToFleet(
+      registry,
+      ids,
+      parsedPayload.payload,
+    );
+    return c.json({ ok: true, sent });
+  });
+
+  admin.post("/daemon/:id/send", async (c) => {
+    const registry = getDaemonCellRegistry(c);
+    const db = getDb(c);
+    if (!registry || !db) {
+      return c.json({ error: "Daemon cell registry unavailable" }, 503);
+    }
+    const id = c.req.param("id");
+    const body = await c.req.json().catch(() => null);
+    const parsedPayload = parsePayloadBody(body);
+    if (!parsedPayload.ok) {
+      return c.json({ error: parsedPayload.error }, 400);
     }
     if (!await isServerConnected(db, registry, id)) {
-      return c.json({ error: 'daemon not connected' }, 404)
+      return c.json({ error: "daemon not connected" }, 404);
     }
-    await enqueueEchoToServer(registry, id, parsedPayload.payload)
-    return c.json({ ok: true, id })
-  })
+    await enqueueEchoToServer(registry, id, parsedPayload.payload);
+    return c.json({ ok: true, id });
+  });
 
-  admin.get('/daemon/commands', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ commands: [] })
-    const db = getDb(c)
-    if (!db) return c.json({ commands: [] })
-    const perServerLimit = resolvePerServerLimit(c.req.query('limit'))
-    const serverIds = await listFleetServerIds(db)
-    const commands = await collectFleetCommands(registry, serverIds, perServerLimit)
-    return c.json({ commands })
-  })
+  admin.get("/daemon/commands", async (c) => {
+    const registry = getDaemonCellRegistry(c);
+    if (!registry) return c.json({ commands: [] });
+    const db = getDb(c);
+    if (!db) return c.json({ commands: [] });
+    const perServerLimit = resolvePerServerLimit(c.req.query("limit"));
+    const serverIds = await listFleetServerIds(db);
+    const commands = await collectFleetCommands(
+      registry,
+      serverIds,
+      perServerLimit,
+    );
+    return c.json({ commands });
+  });
 
-  admin.get('/instance/addresses', async (c) => {
-    if (opts.runtime !== 'deno') {
+  admin.get("/instance/addresses", async (c) => {
+    if (opts.runtime !== "deno") {
       return c.json({
         ok: false,
-        error: 'instance address collection is not available on this runtime',
+        error: "instance address collection is not available on this runtime",
         ips: emptyServerIps(),
-      }, 422)
+      }, 422);
     }
-    const { collectServerIps } = await import('../server-addresses-deno.ts')
-    const ips = collectServerIps()
-    return c.json({ ok: true, source: 'instance', ips })
-  })
+    const { collectServerIps } = await import("../server-addresses-deno.ts");
+    const ips = collectServerIps();
+    return c.json({ ok: true, source: "instance", ips });
+  });
 
-  admin.get('/instance/public-urls', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ ok: true, urls: [] })
-    const urls = await getPublicUrls(db)
-    return c.json({ ok: true, urls })
-  })
+  admin.get("/instance/public-urls", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: true, urls: [] });
+    const urls = await getPublicUrls(db);
+    return c.json({ ok: true, urls });
+  });
 
-  admin.put('/instance/public-urls', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+  admin.put("/instance/public-urls", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
 
-    const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object' || !('urls' in body)) {
-      return c.json({ ok: false, error: 'expected { urls: string[] }' }, 400)
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body !== "object" || !("urls" in body)) {
+      return c.json({ ok: false, error: "expected { urls: string[] }" }, 400);
     }
-    if (!Array.isArray(body.urls) || !body.urls.every((u: unknown) => typeof u === 'string')) {
-      return c.json({ ok: false, error: 'expected { urls: string[] }' }, 400)
+    if (
+      !Array.isArray(body.urls) ||
+      !body.urls.every((u: unknown) => typeof u === "string")
+    ) {
+      return c.json({ ok: false, error: "expected { urls: string[] }" }, 400);
     }
 
-    const parsed = parsePublicUrlEntries(body.urls, { allowHttp: opts.devSurface })
+    const parsed = parsePublicUrlEntries(body.urls, {
+      allowHttp: opts.devSurface,
+    });
     if (!parsed.ok) {
-      return c.json(parsed, 422)
+      return c.json(parsed, 422);
     }
 
-    await setPublicUrls(db, parsed.urls)
-    return c.json({ ok: true, urls: parsed.urls, applied: false })
-  })
+    await setPublicUrls(db, parsed.urls);
+    return c.json({ ok: true, urls: parsed.urls, applied: false });
+  });
 
-  admin.get('/settings/email', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  admin.get("/settings/email", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     const resolved = await resolveEmailSettings(
       db,
       resolvePlatformEnv(c, opts),
       dataEncryptionSecrets,
-    )
-    return c.json({ settings: emailSettingsToApiShape(resolved) })
-  })
+    );
+    return c.json({ settings: emailSettingsToApiShape(resolved) });
+  });
 
-  admin.put('/settings/email', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  admin.put("/settings/email", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const body = await c.req.json().catch(() => null)
-    const updates = parseEmailSettingsUpdates(body)
+    const body = await c.req.json().catch(() => null);
+    const updates = parseEmailSettingsUpdates(body);
     if (!updates) {
-      return c.json({ error: 'expected a JSON object of setting keys' }, 400)
+      return c.json({ error: "expected a JSON object of setting keys" }, 400);
     }
 
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     // DB-backed secret writes must be sealed at rest — require an encryption key,
     // mirroring TLS and variable secret writes.
     if (emailUpdatesRequireEncryption(updates) && !dataEncryptionSecrets) {
       return c.json(
-        { error: 'Encryption unavailable — no encryption key configured' },
+        { error: "Encryption unavailable — no encryption key configured" },
         503,
-      )
+      );
     }
 
-    const env = resolvePlatformEnv(c, opts)
-    const resolved = await updateEmailSettings(db, env, updates, dataEncryptionSecrets)
+    const env = resolvePlatformEnv(c, opts);
+    const resolved = await updateEmailSettings(
+      db,
+      env,
+      updates,
+      dataEncryptionSecrets,
+    );
     // Workers resolves the email queue per request from current DB settings
     // (see workers.ts fetch middleware) — no isolate-level queue cache to
     // invalidate after this write.
-    return c.json({ settings: emailSettingsToApiShape(resolved) })
-  })
+    return c.json({ settings: emailSettingsToApiShape(resolved) });
+  });
 
-  admin.get('/settings/signup', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  admin.get("/settings/signup", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const platformEnv = resolvePlatformEnv(c, opts)
+    const platformEnv = resolvePlatformEnv(c, opts);
     const meta = await getSignupSettingMeta(
       db,
       opts.runtime,
       platformEnv.TURBOPANEL_IS_SIGNUP_ENABLED,
-    )
+    );
     return c.json({
       enabled: meta.enabled,
       dbValue: meta.dbValue,
       isEnvForced: meta.isEnvForced,
       envOverride: meta.envOverride,
-    })
-  })
+    });
+  });
 
-  admin.put('/settings/signup', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  admin.put("/settings/signup", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const body = await c.req.json().catch(() => null)
-    const parsedSignup = parseSignupEnabledBody(body)
+    const body = await c.req.json().catch(() => null);
+    const parsedSignup = parseSignupEnabledBody(body);
     if (!parsedSignup.ok) {
-      return c.json({ error: parsedSignup.error }, 400)
+      return c.json({ error: parsedSignup.error }, 400);
     }
-    const enabled = parsedSignup.enabled
+    const enabled = parsedSignup.enabled;
 
-    const platformEnv = resolvePlatformEnv(c, opts)
+    const platformEnv = resolvePlatformEnv(c, opts);
     const before = await getSignupSettingMeta(
       db,
       opts.runtime,
       platformEnv.TURBOPANEL_IS_SIGNUP_ENABLED,
-    )
+    );
     if (before.isEnvForced) {
       return c.json(
         {
           error:
-            'Sign-up is force-controlled by TURBOPANEL_IS_SIGNUP_ENABLED; clear that env var to use the panel toggle.',
+            "Sign-up is force-controlled by TURBOPANEL_IS_SIGNUP_ENABLED; clear that env var to use the panel toggle.",
           enabled: before.enabled,
           dbValue: before.dbValue,
           isEnvForced: true,
           envOverride: before.envOverride,
         },
         409,
-      )
+      );
     }
 
-    await setSignupEnabledSetting(db, enabled)
+    await setSignupEnabledSetting(db, enabled);
     const meta = await getSignupSettingMeta(
       db,
       opts.runtime,
       platformEnv.TURBOPANEL_IS_SIGNUP_ENABLED,
-    )
+    );
     return c.json({
       enabled: meta.enabled,
       dbValue: meta.dbValue,
       isEnvForced: meta.isEnvForced,
       envOverride: meta.envOverride,
-    })
-  })
+    });
+  });
 
-  admin.post('/instance/public-urls/apply', async (c) => {
-    if (opts.runtime === 'workers') {
+  admin.post("/instance/public-urls/apply", async (c) => {
+    if (opts.runtime === "workers") {
       return c.json(
-        { ok: false, error: 'cert apply is not applicable on this runtime' },
+        { ok: false, error: "cert apply is not applicable on this runtime" },
         422,
-      )
+      );
     }
 
-    const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
 
-    const body = await c.req.json().catch(() => null)
-    const urlsResult = await resolvePublicUrlsForApply(db, body, opts.devSurface)
+    const body = await c.req.json().catch(() => null);
+    const urlsResult = await resolvePublicUrlsForApply(
+      db,
+      body,
+      opts.devSurface,
+    );
     if (!urlsResult.ok) {
-      return c.json(urlsResult.body, urlsResult.status)
+      return c.json(urlsResult.body, urlsResult.status);
     }
 
-    const registry = getDaemonCellRegistry(c)
+    const registry = getDaemonCellRegistry(c);
     if (!registry) {
-      return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
+      return c.json(
+        { ok: false, error: "Daemon cell registry unavailable" },
+        503,
+      );
     }
 
-    const serverId = await resolveColocatedServerId(db, registry)
+    const serverId = await resolveColocatedServerId(db, registry);
     if (!serverId) {
       return c.json(
-        { ok: false, error: 'no co-located daemon connected to apply public URLs' },
+        {
+          ok: false,
+          error: "no co-located daemon connected to apply public URLs",
+        },
         503,
-      )
+      );
     }
 
-    const snapshots = await registry.getSnapshots([serverId])
+    const snapshots = await registry.getSnapshots([serverId]);
     if (!snapshots.get(serverId)?.connected) {
-      return c.json({ ok: false, error: 'co-located daemon disconnected' }, 503)
+      return c.json(
+        { ok: false, error: "co-located daemon disconnected" },
+        503,
+      );
     }
 
-    const result = await waitForPublicUrlsApply(registry, serverId, urlsResult.urls)
-    const response = publicUrlsApplyWaitToResponse(result)
-    return c.json(response.body, response.status)
-  })
+    const result = await waitForPublicUrlsApply(
+      registry,
+      serverId,
+      urlsResult.urls,
+    );
+    const response = publicUrlsApplyWaitToResponse(result);
+    return c.json(response.body, response.status);
+  });
 
-  admin.get('/daemon/addresses', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ servers: [] })
-    const online = await resolveOnlineFleetPresence(db, registry)
+  admin.get("/daemon/addresses", async (c) => {
+    const registry = getDaemonCellRegistry(c);
+    const db = getDb(c);
+    if (!registry || !db) return c.json({ servers: [] });
+    const online = await resolveOnlineFleetPresence(db, registry);
     const servers = await Promise.all(
       online.map(async (presence) => {
-        const serverId = presence.serverId
-        const requestId = generateRequestId()
-        cellTrace('request-start', {
+        const serverId = presence.serverId;
+        const requestId = generateRequestId();
+        cellTrace("request-start", {
           requestId,
           serverId,
-          kind: 'addresses-request',
-        })
+          kind: "addresses-request",
+        });
         const envelope: DaemonOutboundEnvelope = {
-          kind: 'addresses-request',
+          kind: "addresses-request",
           deliveryId: generateDeliveryId(),
           requestId,
           at: nowTs(),
-        }
-        cellTrace('request-enqueued', {
+        };
+        cellTrace("request-enqueued", {
           requestId,
           serverId,
-          kind: 'addresses-request',
+          kind: "addresses-request",
           deliveryId: envelope.deliveryId,
-        })
+        });
         try {
           const record = await registry.getCell(serverId).createRequestAndWait(
             envelope,
             ADDRESSES_TIMEOUT_MS,
-          )
-          if (record.status === 'failed') {
-            const error = record.error ?? 'failed to fetch addresses'
-            cellTrace('request-result', {
+          );
+          if (record.status === "failed") {
+            const error = record.error ?? "failed to fetch addresses";
+            cellTrace("request-result", {
               requestId,
               serverId,
-              kind: 'addresses-request',
+              kind: "addresses-request",
               pendingStatus: record.status,
-              resultStatus: 'failed',
+              resultStatus: "failed",
               error,
-            })
+            });
             return {
               daemonId: serverId,
               hostname: presence.hostname,
               error,
-            }
+            };
           }
-          if (record.status === 'expired') {
-            const error = 'timeout waiting for addresses'
-            cellTrace('request-result', {
+          if (record.status === "expired") {
+            const error = "timeout waiting for addresses";
+            cellTrace("request-result", {
               requestId,
               serverId,
-              kind: 'addresses-request',
+              kind: "addresses-request",
               pendingStatus: record.status,
-              resultStatus: 'timeout',
+              resultStatus: "timeout",
               error,
-            })
+            });
             return {
               daemonId: serverId,
               hostname: presence.hostname,
               error,
-            }
+            };
           }
-          const ips = extractAddresses(record)
-          cellTrace('request-result', {
+          const ips = extractAddresses(record);
+          cellTrace("request-result", {
             requestId,
             serverId,
-            kind: 'addresses-request',
+            kind: "addresses-request",
             pendingStatus: record.status,
-            resultStatus: 'done',
-          })
+            resultStatus: "done",
+          });
           return {
             daemonId: serverId,
             hostname: presence.hostname,
             ips,
-          }
+          };
         } catch (err) {
-          const error = err instanceof Error ? err.message : String(err)
-          cellTrace('request-result', {
+          const error = err instanceof Error ? err.message : String(err);
+          cellTrace("request-result", {
             requestId,
             serverId,
-            kind: 'addresses-request',
-            resultStatus: 'error',
+            kind: "addresses-request",
+            resultStatus: "error",
             error,
-          })
+          });
           return {
             daemonId: serverId,
             hostname: presence.hostname,
             error,
-          }
+          };
         }
       }),
-    )
-    return c.json({ servers })
-  })
+    );
+    return c.json({ servers });
+  });
 
-  admin.get('/daemon/:id/addresses', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const id = c.req.param('id')
-    const presence = await resolveFleetPresence(db, registry, [id])
-    const live = presence.get(id)
-    if (!live?.connected) {
-      return c.json({ error: 'daemon not connected' }, 404)
+  admin.get("/daemon/:id/addresses", async (c) => {
+    const registry = getDaemonCellRegistry(c);
+    const db = getDb(c);
+    if (!registry || !db) {
+      return c.json({ error: "Daemon cell registry unavailable" }, 503);
     }
-    const requestId = generateRequestId()
-    cellTrace('request-start', {
+    const id = c.req.param("id");
+    const presence = await resolveFleetPresence(db, registry, [id]);
+    const live = presence.get(id);
+    if (!live?.connected) {
+      return c.json({ error: "daemon not connected" }, 404);
+    }
+    const requestId = generateRequestId();
+    cellTrace("request-start", {
       requestId,
       serverId: id,
-      kind: 'addresses-request',
-    })
+      kind: "addresses-request",
+    });
     try {
       const envelope: DaemonOutboundEnvelope = {
-        kind: 'addresses-request',
+        kind: "addresses-request",
         deliveryId: generateDeliveryId(),
         requestId,
         at: nowTs(),
-      }
-      cellTrace('request-enqueued', {
+      };
+      cellTrace("request-enqueued", {
         requestId,
         serverId: id,
-        kind: 'addresses-request',
+        kind: "addresses-request",
         deliveryId: envelope.deliveryId,
-      })
+      });
       const record = await registry.getCell(id).createRequestAndWait(
         envelope,
         ADDRESSES_TIMEOUT_MS,
-      )
-      if (record.status === 'failed') {
-        const error = record.error ?? 'failed to fetch addresses'
-        cellTrace('request-result', {
+      );
+      if (record.status === "failed") {
+        const error = record.error ?? "failed to fetch addresses";
+        cellTrace("request-result", {
           requestId,
           serverId: id,
-          kind: 'addresses-request',
+          kind: "addresses-request",
           pendingStatus: record.status,
-          resultStatus: 'failed',
+          resultStatus: "failed",
           error,
-        })
-        return c.json({ error }, 500)
+        });
+        return c.json({ error }, 500);
       }
-      if (record.status === 'expired') {
-        const error = 'timeout waiting for addresses'
-        cellTrace('request-result', {
+      if (record.status === "expired") {
+        const error = "timeout waiting for addresses";
+        cellTrace("request-result", {
           requestId,
           serverId: id,
-          kind: 'addresses-request',
+          kind: "addresses-request",
           pendingStatus: record.status,
-          resultStatus: 'timeout',
+          resultStatus: "timeout",
           error,
-        })
-        return c.json({ error }, 500)
+        });
+        return c.json({ error }, 500);
       }
-      const ips = extractAddresses(record)
-      cellTrace('request-result', {
+      const ips = extractAddresses(record);
+      cellTrace("request-result", {
         requestId,
         serverId: id,
-        kind: 'addresses-request',
+        kind: "addresses-request",
         pendingStatus: record.status,
-        resultStatus: 'done',
-      })
+        resultStatus: "done",
+      });
       return c.json({
         ok: true,
         daemonId: id,
         hostname: live.hostname ?? null,
         ips,
-      })
+      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      cellTrace('request-result', {
+      const message = err instanceof Error ? err.message : String(err);
+      cellTrace("request-result", {
         requestId,
         serverId: id,
-        kind: 'addresses-request',
-        resultStatus: 'error',
+        kind: "addresses-request",
+        resultStatus: "error",
         error: message,
-      })
-      const status = message === 'daemon not connected' ? 404 : 500
-      return c.json({ error: message }, status)
+      });
+      const status = message === "daemon not connected" ? 404 : 500;
+      return c.json({ error: message }, status);
     }
-  })
+  });
 
-  admin.post('/cells/purge-batch', createRootOnlyMiddleware(opts.secrets), async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-
-    const body = await c.req.json().catch(() => null)
-    const parsedBatch = parseCellPurgeBatchBody(body)
-    if (!parsedBatch.ok) {
-      return c.json({ error: parsedBatch.error }, 400)
-    }
-
-    const settled = await Promise.allSettled(
-      parsedBatch.serverIds.map((serverId: string) => registry.purge(serverId)),
-    )
-    const results = parsedBatch.serverIds.map((serverId: string, index: number) => {
-      const outcome = settled[index]!
-      if (outcome.status === 'fulfilled') {
-        return { serverId, ok: true as const }
+  admin.post(
+    "/cells/purge-batch",
+    createRootOnlyMiddleware(opts.secrets),
+    async (c) => {
+      const registry = getDaemonCellRegistry(c);
+      if (!registry) {
+        return c.json({
+          error: "Daemon cell registry unavailable",
+        }, 503);
       }
-      const error = outcome.reason instanceof Error
-        ? outcome.reason.message
-        : String(outcome.reason)
-      return { serverId, ok: false as const, error }
-    })
 
-    return c.json({ ok: true, results })
-  })
+      const body = await c.req.json().catch(() => null);
+      const parsedBatch = parseCellPurgeBatchBody(body);
+      if (!parsedBatch.ok) {
+        return c.json({ error: parsedBatch.error }, 400);
+      }
 
-  admin.post('/cells/:serverId/purge', createRootOnlyMiddleware(opts.secrets), async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-
-    const serverId = c.req.param('serverId')
-    if (!serverId) {
-      return c.json({ error: 'serverId is required' }, 400)
-    }
-
-    try {
-      await registry.getCell(serverId).purge()
-      return c.json({ ok: true, serverId, purged: true })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      return c.json({ ok: false, error: message }, 500)
-    }
-  })
-
-  admin.post('/secrets/reencrypt', createRootOnlyMiddleware(opts.secrets), async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-    if (!dataEncryptionSecrets) {
-      return c.json(
-        { ok: false, error: 'Encryption unavailable — no encryption key configured' },
-        503,
-      )
-    }
-
-    const body = await c.req.json().catch(() => null)
-    const parsed = parseReencryptRequestBody(body)
-    if (!parsed.ok) {
-      return c.json({ ok: false, error: parsed.error }, 400)
-    }
-
-    if (!tryBeginReencryptSweep()) {
-      return c.json(
-        {
-          ok: false,
-          error: 'reencrypt_in_progress',
-          message: 'Another secret re-encryption sweep is already running',
+      const settled = await Promise.allSettled(
+        parsedBatch.serverIds.map((serverId: string) =>
+          registry.purge(serverId)
+        ),
+      );
+      const results = parsedBatch.serverIds.map(
+        (serverId: string, index: number) => {
+          const outcome = settled[index]!;
+          if (outcome.status === "fulfilled") {
+            return { serverId, ok: true as const };
+          }
+          const error = outcome.reason instanceof Error
+            ? outcome.reason.message
+            : String(outcome.reason);
+          return { serverId, ok: false as const, error };
         },
-        409,
-      )
-    }
+      );
 
-    try {
-      const result = await reencryptAtRestSecrets(db, dataEncryptionSecrets, {
-        cursor: parsed.cursor,
-        limit: parsed.limit,
-      })
-      return c.json({ ok: true, ...result })
-    } finally {
-      endReencryptSweep()
-    }
-  })
+      return c.json({ ok: true, results });
+    },
+  );
+
+  admin.post(
+    "/cells/:serverId/purge",
+    createRootOnlyMiddleware(opts.secrets),
+    async (c) => {
+      const registry = getDaemonCellRegistry(c);
+      if (!registry) {
+        return c.json({
+          error: "Daemon cell registry unavailable",
+        }, 503);
+      }
+
+      const serverId = c.req.param("serverId");
+      if (!serverId) {
+        return c.json({ error: "serverId is required" }, 400);
+      }
+
+      try {
+        await registry.getCell(serverId).purge();
+        return c.json({ ok: true, serverId, purged: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return c.json({ ok: false, error: message }, 500);
+      }
+    },
+  );
+
+  admin.post(
+    "/secrets/reencrypt",
+    createRootOnlyMiddleware(opts.secrets),
+    async (c) => {
+      const db = getDb(c);
+      if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+      const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+      if (!dataEncryptionSecrets) {
+        return c.json(
+          {
+            ok: false,
+            error: "Encryption unavailable — no encryption key configured",
+          },
+          503,
+        );
+      }
+
+      const body = await c.req.json().catch(() => null);
+      const parsed = parseReencryptRequestBody(body);
+      if (!parsed.ok) {
+        return c.json({ ok: false, error: parsed.error }, 400);
+      }
+
+      const lock = await tryBeginReencryptSweep(db);
+      if (!lock) {
+        return c.json(
+          {
+            ok: false,
+            error: "reencrypt_in_progress",
+            message: "Another secret re-encryption sweep is already running",
+          },
+          409,
+        );
+      }
+
+      try {
+        const result = await reencryptAtRestSecrets(db, dataEncryptionSecrets, {
+          cursor: parsed.cursor,
+          limit: parsed.limit,
+        });
+        return c.json({ ok: true, ...result });
+      } finally {
+        await endReencryptSweep(db, lock);
+      }
+    },
+  );
 
   if (opts.devSurface) {
-    admin.get('/openapi.json', (c) => {
-      const origin = new URL(c.req.url).origin
-      return c.json(getAdminOpenApiSpec(origin, { devSurface: opts.devSurface }))
-    })
-    admin.get('/reference', (c) => {
-      const origin = new URL(c.req.url).origin
-      const specUrl = `${ADMIN_API_PREFIX}/openapi.json`
-      return c.html(buildAdminScalarHtml(specUrl, origin))
-    })
+    admin.get("/openapi.json", (c) => {
+      const origin = new URL(c.req.url).origin;
+      return c.json(
+        getAdminOpenApiSpec(origin, { devSurface: opts.devSurface }),
+      );
+    });
+    admin.get("/reference", (c) => {
+      const origin = new URL(c.req.url).origin;
+      const specUrl = `${ADMIN_API_PREFIX}/openapi.json`;
+      return c.html(buildAdminScalarHtml(specUrl, origin));
+    });
   }
 
-  app.route(ADMIN_API_PREFIX, admin)
-  return app
+  app.route(ADMIN_API_PREFIX, admin);
+  return app;
 }

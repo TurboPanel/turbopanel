@@ -209,7 +209,7 @@ The DO caches `#serverId` (and live-socket presence) once in the constructor via
 | `GET /api/daemon/v1/jwks.json` | public | Ed25519 public JWKS for daemon JWT verification (`Cache-Control: public, max-age=300`) |
 | `POST /api/daemon/v1/commands/lease` | daemon JWT | Poll for pending commands (stub — returns `{ commands: [] }`) |
 | `POST /api/daemon/v1/secrets/decrypt` | daemon JWT | Batch-decrypt recipient-scoped **`tpdaemon`** envelopes (`{ ciphertexts }` → `{ plaintexts }`; null per failed entry); rejects at-rest **`tpsecret`** blobs |
-| `POST /api/daemon/v1/deployments/secrets/rehydrate` | daemon JWT | Last-applied Compose secret **plan** plus `tpdaemon` envelopes for deployments on this server (no plaintext). Daemon writes `/run` files then `compose up -d`. |
+| `POST /api/daemon/v1/deployments/secrets/rehydrate` | daemon JWT | Last-applied Compose secret **plan** plus `tpdaemon` envelopes for deployments on this server (no plaintext). Omits a deployment when the requested generation does not match `deployment.desiredGeneration`, or when any planned secret is not a valid at-rest `tpsecret`. Daemon writes `/run` files then `compose up -d` only when the returned generation matches local `deployment.json`. |
 | `POST /api/daemon/v1/metrics` | daemon JWT | Ingest a v1 host-metrics frame; serverId from JWT `sub`; fire-and-forget to AE/ClickHouse; never wakes the DO; returns `202` |
 
 - No `version` push / auto-update: the daemon never self-updates.

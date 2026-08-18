@@ -1076,7 +1076,9 @@ sequenceDiagram
   `setting` table; `GET/PUT /settings/signup` toggles public sign-up via
   `IS_SIGNUP_ENABLED`; superadmin `POST /secrets/reencrypt` runs a bounded
   at-rest re-encrypt sweep onto the current data-encryption key version
-  (`src/admin/reencrypt-secrets.ts` — resume via `cursor` until `completed`).
+  (`src/admin/reencrypt-secrets.ts` — resume via `cursor` until `completed`;
+  durable `REENCRYPT_SWEEP_LOCK` setting lease across isolates; **409**
+  `reencrypt_in_progress` when another sweep holds the lease).
 - `src/resource-routes.ts` — workspace/environment/project/service/hosting CRUD
 - `src/server-paths.ts` / `src/server-registry.ts` — Unix socket path + daemon
   server row resolution
