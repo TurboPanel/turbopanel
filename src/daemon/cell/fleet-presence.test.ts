@@ -14,9 +14,7 @@ import {
   resolveFleetPresence,
   resolveOnlineFleetPresence,
 } from "./server-status.ts";
-import {
-  buildProjectionsFromDaemonRows,
-} from "./postgres-projection.ts";
+import { buildProjectionsFromDaemonRows } from "./postgres-projection.ts";
 
 const serverId = "srv-fleet-presence";
 
@@ -31,6 +29,16 @@ type MockRow = {
   metadata: ServerMetadata | null;
   hostname: string | null;
   machineKey: string | null;
+  osId: string | null;
+  osFamily: string | null;
+  osVersion: string | null;
+  osCodename: string | null;
+  osPrettyName: string | null;
+  osArchitecture: string | null;
+  timezone: string | null;
+  isTimeSyncEnabled: boolean | null;
+  ntpServers: unknown;
+  ntpLastSyncedAt: string | null;
   connected: boolean;
   statusChangedAt: string | null;
 };
@@ -40,6 +48,21 @@ function buildMockRow(
   statusOverrides: Partial<ServerDaemonStatus> = {},
   identity: { hostname?: string | null; machineKey?: string | null } = {},
   metadata: ServerMetadata | null = null,
+  columns: Partial<
+    Pick<
+      MockRow,
+      | "osId"
+      | "osFamily"
+      | "osVersion"
+      | "osCodename"
+      | "osPrettyName"
+      | "osArchitecture"
+      | "timezone"
+      | "isTimeSyncEnabled"
+      | "ntpServers"
+      | "ntpLastSyncedAt"
+    >
+  > = {},
 ): MockRow {
   const status = { ...buildDefaultDaemonStatus(), ...statusOverrides };
   return {
@@ -48,6 +71,16 @@ function buildMockRow(
     metadata,
     hostname: identity.hostname ?? "host-1",
     machineKey: identity.machineKey ?? null,
+    osId: columns.osId ?? null,
+    osFamily: columns.osFamily ?? null,
+    osVersion: columns.osVersion ?? null,
+    osCodename: columns.osCodename ?? null,
+    osPrettyName: columns.osPrettyName ?? null,
+    osArchitecture: columns.osArchitecture ?? null,
+    timezone: columns.timezone ?? null,
+    isTimeSyncEnabled: columns.isTimeSyncEnabled ?? null,
+    ntpServers: columns.ntpServers ?? null,
+    ntpLastSyncedAt: columns.ntpLastSyncedAt ?? null,
     connected: status.connected,
     statusChangedAt: status.statusChangedAt,
   };
@@ -127,7 +160,7 @@ const baseConnectedStatus: Partial<ServerDaemonStatus> = {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
 test("resolveFleetPresence default path is Postgres-only (never calls getSnapshots)", async () => {
   const projectedDaemon: ServerDaemonState = {
@@ -375,7 +408,10 @@ test("fleetPresenceToConnection maps presence to connection shape", () => {
   assertEquals(connection.authenticated, true);
   assertEquals(connection.connected, true);
   assertEquals(connection.remoteAddress, "203.0.113.1");
-  assertEquals(connection.lastInboundAt, Date.parse("2020-01-01T00:00:01.000Z"));
+  assertEquals(
+    connection.lastInboundAt,
+    Date.parse("2020-01-01T00:00:01.000Z"),
+  );
 });
 
 test("fleetPresenceToConnection uses zero lastInboundAt when absent", () => {
@@ -402,33 +438,31 @@ test("fleetPresenceToConnection uses zero lastInboundAt when absent", () => {
   assertEquals(connection.connectedAt, "");
 });
 
-test("resolveFleetPresence enriches os / resources / timeSync / ips / docker / geo from metadata", async () => {
+test("resolveFleetPresence enriches os / resources / timeSync / ips / docker / geo from columns and metadata", async () => {
   const metadata: ServerMetadata = {
-    os: {
-      family: "linux",
-      id: "debian",
-      version: "13.5",
-      codename: "trixie",
-      prettyName: "Debian GNU/Linux 13 (trixie)",
-    },
     resources: {
       cpu: { coreCount: 4, threadCount: 8 },
       memory: { totalBytes: 16_000_000_000 },
       swap: { totalBytes: 2_000_000_000 },
-    },
-    timeSync: {
-      timezone: "UTC",
-      ntpEnabled: true,
-      ntpSynced: true,
+      ips: [
+        {
+          address: "10.0.0.5",
+          version: 4,
+          scope: "private",
+          interface: "eth0",
+        },
+        {
+          address: "203.0.113.50",
+          version: 4,
+          scope: "public",
+          interface: "eth0",
+        },
+      ],
     },
     docker: {
       version: "28.3.3",
       composeVersion: "2.39.1",
     },
-    ips: [
-      { address: "10.0.0.5", version: 4, scope: "private" },
-      { address: "203.0.113.50", version: 4, scope: "public" },
-    ],
     geo: {
       country: "US",
       region: "TX",
@@ -439,18 +473,30 @@ test("resolveFleetPresence enriches os / resources / timeSync / ips / docker / g
     },
   };
   const db = createMockDb(
-    buildMockRow(baseDaemon, baseConnectedStatus, {}, metadata),
+    buildMockRow(baseDaemon, baseConnectedStatus, {}, metadata, {
+      osId: "debian",
+      osFamily: "linux",
+      osVersion: "13.5",
+      osCodename: "trixie",
+      osPrettyName: "Debian GNU/Linux 13 (trixie)",
+      timezone: "UTC",
+      isTimeSyncEnabled: true,
+      ntpLastSyncedAt: "2026-01-02T00:00:00.000Z",
+    }),
   );
   const registry = createThrowingSnapshotRegistry();
 
   const presence = await resolveFleetPresence(db, registry, [serverId]);
   const row = presence.get(serverId);
   assertEquals(row?.os?.id, "debian");
-  assertEquals(row?.resources?.cpu?.threadCount, 8);
+  assertEquals(row?.resources?.cpus?.[0]?.threads?.total, 8);
   assertEquals(row?.timeSync?.timezone, "UTC");
   assertEquals(row?.docker?.version, "28.3.3");
   assertEquals(row?.docker?.composeVersion, "2.39.1");
-  assertEquals(row?.ips?.find((ip) => ip.scope === "public")?.address, "203.0.113.50");
+  assertEquals(
+    row?.ips?.find((ip) => ip.scope === "public")?.address,
+    "203.0.113.50",
+  );
   assertEquals(row?.geo?.country, "US");
 });
 

@@ -8,7 +8,11 @@ import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
 import { getDb } from '../../db.ts'
 import { organization } from '../../lib/db/schema.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
-import { assertGatewayRelaysReady } from '../../lib/net/datacenter-networks.ts'
+import {
+  assertGatewayRelaysReady,
+  loadDatacenterSubnetsForServers,
+  resolveDerivedAdvertisedCidrsByRelay,
+} from '../../lib/net/datacenter-networks.ts'
 import {
   disableOrganizationFabric,
   enableOrganizationFabric,
@@ -62,11 +66,17 @@ async function loadFabricRelayApiRows(
   relays: RelayRecord[],
 ): Promise<FabricRelayApiRow[]> {
   const serverIds = relays.map((row) => row.serverId)
-  const [{ caches }, segmentsByServer, pskPresence] = await Promise.all([
-    loadEndpointCaches(db, serverIds),
-    listSegmentsForServers(db, serverIds),
-    loadRelayPresharedKeyPresence(db, relays.map((row) => row.id)),
-  ])
+  const [{ caches }, segmentsByServer, pskPresence, subnetsByServer] =
+    await Promise.all([
+      loadEndpointCaches(db, serverIds),
+      listSegmentsForServers(db, serverIds),
+      loadRelayPresharedKeyPresence(db, relays.map((row) => row.id)),
+      loadDatacenterSubnetsForServers(db, serverIds),
+    ])
+  const derivedByRelayId = resolveDerivedAdvertisedCidrsByRelay(
+    relays,
+    subnetsByServer,
+  )
   return relays.map((row) =>
     toFabricRelayApiRow({
       relay: row,
@@ -74,6 +84,7 @@ async function loadFabricRelayApiRows(
       segments: segmentsByServer.get(row.serverId) ?? [],
       caches,
       relays,
+      resolvedAdvertisedCidrs: derivedByRelayId.get(row.id) ?? [],
     })
   )
 }

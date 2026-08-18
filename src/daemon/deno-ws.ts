@@ -397,8 +397,9 @@ export function registerDaemonWebSocket(
         if (message.type === "heartbeat") {
           const presence = message as unknown as Record<string, unknown>;
           const ips = ipsFromDaemonPresence(presence);
-          if (message.timeSync || ips || message.docker) {
+          if (message.timeSync || ips !== undefined || message.docker) {
             await touchServerMetadata(db, payload.sub, {
+              resources,
               timeSync: message.timeSync,
               ips,
               docker: message.docker,

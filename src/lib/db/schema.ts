@@ -277,6 +277,30 @@ export const server = pgTable(
      */
     machineKey: text('machine_key'),
     /**
+     * Daemon-reported OS from `/etc/os-release`. Raspberry Pi OS (including
+     * 64-bit `ID=debian` + `/etc/rpi-issue`) is stored as
+     * `os_id = raspberry-pi-os`.
+     */
+    osId: varchar('os_id', { length: 255 }),
+    osFamily: varchar('os_family', { length: 32 }),
+    osVersion: varchar('os_version', { length: 64 }),
+    osCodename: varchar('os_codename', { length: 64 }),
+    osPrettyName: varchar('os_pretty_name', { length: 255 }),
+    osArchitecture: varchar('os_architecture', { length: 64 }),
+    /**
+     * Daemon-reported host timezone (IANA). Operator override lives on
+     * `server.options.timezone`.
+     */
+    timezone: varchar('timezone', { length: 64 }),
+    isTimeSyncEnabled: boolean('is_time_sync_enabled'),
+    /** jsonb array of `{ host, fallback? }`. */
+    ntpServers: jsonb('ntp_servers'),
+    ntpLastSyncedAt: timestamp('ntp_last_synced_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
      * Fleet liveness flag. Tri-state `online|offline|unknown` is derived from
      * `connected` + `status_changed_at` (never stored).
      */
@@ -403,9 +427,10 @@ export const command = pgTable(
   ]
 )
 /**
- * Org-owned network registry: datacenter site CIDRs (`kind = 'datacenter'`),
- * external Docker registrations (`kind = 'docker'`, optional `server_id`),
- * and TurboFabric logical spanning networks (`kind = 'compose'`).
+ * Org-owned network registry: datacenter site CIDRs (`kind = 'datacenter'`;
+ * a datacenter may own multiple CIDR rows), external Docker registrations
+ * (`kind = 'docker'`, optional `server_id`), and TurboFabric logical spanning
+ * networks (`kind = 'compose'`).
  */
 export const network = pgTable(
   'network',
@@ -476,10 +501,10 @@ export const network = pgTable(
         (${table.kind} = 'compose' AND ${table.datacenterId} IS NULL AND ${table.serverId} IS NULL)
       )`
     ),
-    /** One site CIDR network per datacenter — additional ranges are separate datacenters. */
-    uniqueIndex('uniq_network_datacenter_site')
-      .on(table.datacenterId)
-      .where(sql`${table.kind} = 'datacenter' AND ${table.datacenterId} IS NOT NULL`),
+    /** Unique CIDR per datacenter — a datacenter may own multiple CIDR rows. */
+    uniqueIndex('uniq_network_datacenter_cidr')
+      .on(table.datacenterId, table.cidr)
+      .where(sql`${table.kind} = 'datacenter'`),
     check(
       'network_name_format_check',
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
@@ -532,13 +557,15 @@ export const fabric = pgTable(
 /**
  * Single source of truth for every managed address. Two non-overlapping private
  * facts: **site CIDR** lives on `network(kind='datacenter', datacenter_id=…)`
- * (exactly one per datacenter); **a server's private pin into a datacenter** is
- * `ip WHERE server_id AND datacenter_id AND scope = 'datacenter'` (a server may
- * hold pins in many datacenters). Free-pool rows keep `datacenter_id` with null
- * `server_id`. Public VPS addresses carry no `network_id`. TurboFabric `tp0`
- * addresses live on `relay.address`, not here. Address family (`version`) is
- * derived from `address` in the API — not stored. Optional `description` is an
- * operator note (`varchar(255)`); IPs are not named.
+ * (a datacenter may own multiple CIDR rows); **a server's private pin into a
+ * datacenter** is `ip WHERE server_id AND datacenter_id AND scope = 'datacenter'`
+ * (a server may hold multiple pins per datacenter — multi-subnet, dual-stack,
+ * multi-NIC — and pins in many datacenters; each pin names its subnet via
+ * `network_id`). Free-pool rows keep `datacenter_id` with null `server_id`.
+ * Public VPS addresses carry no `network_id`. TurboFabric `tp0` addresses live
+ * on `relay.address`, not here. Address family (`version`) is derived from
+ * `address` in the API — not stored. Optional `description` is an operator
+ * note (`varchar(255)`); IPs are not named.
  */
 export const ip = pgTable(
   'ip',
@@ -576,6 +603,12 @@ export const ip = pgTable(
     ),
     index('idx_ip_network_id').using('btree', table.networkId.asc().nullsLast().op('uuid_ops')),
     index('idx_ip_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
+    index('idx_ip_scope_server_datacenter').using(
+      'btree',
+      table.scope.asc().nullsLast().op('text_ops'),
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+      table.datacenterId.asc().nullsLast().op('uuid_ops')
+    ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -604,7 +637,8 @@ export const ip = pgTable(
     ),
     /**
      * Free pool: datacenter_id only (no server / network). Membership pin:
-     * server_id + datacenter_id (optional network_id → site network).
+     * server_id + datacenter_id (network_id required via
+     * `ip_datacenter_member_network_check`).
      */
     check(
       'ip_datacenter_anchor_check',
@@ -614,12 +648,19 @@ export const ip = pgTable(
         ${table.serverId} IS NOT NULL
       )`
     ),
-    /** One pin per (server, datacenter) — multi-DC via multiple rows. */
-    uniqueIndex('uniq_ip_server_datacenter_member')
-      .on(table.serverId, table.datacenterId)
-      .where(
-        sql`${table.scope} = 'datacenter' AND ${table.serverId} IS NOT NULL AND ${table.datacenterId} IS NOT NULL`,
-      ),
+    /**
+     * A membership pin (`scope='datacenter'` + `server_id`) must name its
+     * owning subnet. Free-pool rows (`datacenter_id` only) stay unconstrained
+     * here.
+     */
+    check(
+      'ip_datacenter_member_network_check',
+      sql`(
+        ${table.scope} <> 'datacenter' OR
+        ${table.serverId} IS NULL OR
+        ${table.networkId} IS NOT NULL
+      )`
+    ),
     uniqueIndex('uniq_ip_org_address').on(table.organizationId, table.address),
   ]
 )

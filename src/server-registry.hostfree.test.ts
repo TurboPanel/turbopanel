@@ -36,7 +36,7 @@ function queryResult<T>(rows: T[]) {
 test('mergeServerMetadataIdentity ignores invalid timeSync and empty ips no-op', () => {
   assertEquals(
     mergeServerMetadataIdentity(
-      { timeSync: { timezone: 'UTC' } },
+      { resources: { cpu: { coreCount: 1 } } },
       { timeSync: { timezone: 1 } as never },
     ),
     null,
@@ -75,9 +75,19 @@ test('touchServerMetadata no-ops when identity facts are unchanged', async () =>
       from: () => ({
         where: () =>
           queryResult([{
-            metadata: { os },
+            metadata: {},
             hostname: 'host-1',
             machineKey: HEX64,
+            osId: 'debian',
+            osFamily: 'linux',
+            osVersion: '13',
+            osCodename: null,
+            osPrettyName: null,
+            osArchitecture: null,
+            timezone: null,
+            isTimeSyncEnabled: null,
+            ntpServers: null,
+            ntpLastSyncedAt: null,
           }]),
       }),
     }),
@@ -107,6 +117,16 @@ test('touchServerMetadata writes hostname and metadata deltas', async () => {
             metadata: null,
             hostname: null,
             machineKey: null,
+            osId: null,
+            osFamily: null,
+            osVersion: null,
+            osCodename: null,
+            osPrettyName: null,
+            osArchitecture: null,
+            timezone: null,
+            isTimeSyncEnabled: null,
+            ntpServers: null,
+            ntpLastSyncedAt: null,
           }]),
       }),
     }),
@@ -135,6 +155,11 @@ test('touchServerMetadata writes hostname and metadata deltas', async () => {
   assertEquals(patches.length, 1)
   assertEquals(patches[0]?.hostname, 'edge-1')
   assertEquals(patches[0]?.machineKey, HEX64)
+  assertEquals(patches[0]?.osId, 'debian')
+  assertEquals(patches[0]?.osFamily, 'linux')
+  assertEquals(patches[0]?.osVersion, '13')
+  assertEquals(patches[0]?.timezone, 'America/Chicago')
+  assertEquals(patches[0]?.isTimeSyncEnabled, true)
   assertEquals(typeof patches[0]?.metadata, 'object')
 })
 
@@ -148,6 +173,16 @@ test('touchServerMetadata ignores raw machine-id shaped machineKey', async () =>
             metadata: null,
             hostname: 'host-1',
             machineKey: null,
+            osId: null,
+            osFamily: null,
+            osVersion: null,
+            osCodename: null,
+            osPrettyName: null,
+            osArchitecture: null,
+            timezone: null,
+            isTimeSyncEnabled: null,
+            ntpServers: null,
+            ntpLastSyncedAt: null,
           }]),
       }),
     }),

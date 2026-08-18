@@ -192,6 +192,11 @@ CREATE TABLE "ip" (
         "ip"."datacenter_id" IS NULL OR
         ("ip"."server_id" IS NULL AND "ip"."network_id" IS NULL) OR
         "ip"."server_id" IS NOT NULL
+      )),
+	CONSTRAINT "ip_datacenter_member_network_check" CHECK ((
+        "ip"."scope" <> 'datacenter' OR
+        "ip"."server_id" IS NULL OR
+        "ip"."network_id" IS NOT NULL
       ))
 );
 --> statement-breakpoint
@@ -411,6 +416,16 @@ CREATE TABLE "server" (
 	"name" varchar(255),
 	"hostname" varchar(255),
 	"machine_key" text,
+	"os_id" varchar(255),
+	"os_family" varchar(32),
+	"os_version" varchar(64),
+	"os_codename" varchar(64),
+	"os_pretty_name" varchar(255),
+	"os_architecture" varchar(64),
+	"timezone" varchar(64),
+	"is_time_sync_enabled" boolean,
+	"ntp_servers" jsonb,
+	"ntp_last_synced_at" timestamp(3) with time zone,
 	"connected" boolean DEFAULT false NOT NULL,
 	"status_changed_at" timestamp(3) with time zone,
 	"daemon" jsonb
@@ -723,7 +738,7 @@ CREATE INDEX "idx_ip_organization_id" ON "ip" USING btree ("organization_id" uui
 CREATE INDEX "idx_ip_datacenter_id" ON "ip" USING btree ("datacenter_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_ip_network_id" ON "ip" USING btree ("network_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_ip_server_id" ON "ip" USING btree ("server_id" uuid_ops);--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_ip_server_datacenter_member" ON "ip" USING btree ("server_id","datacenter_id") WHERE "ip"."scope" = 'datacenter' AND "ip"."server_id" IS NOT NULL AND "ip"."datacenter_id" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_ip_scope_server_datacenter" ON "ip" USING btree ("scope" text_ops,"server_id" uuid_ops,"datacenter_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_ip_org_address" ON "ip" USING btree ("organization_id","address");--> statement-breakpoint
 CREATE INDEX "idx_label_server_id" ON "label" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_license_organization_id" ON "license" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
@@ -743,7 +758,7 @@ CREATE INDEX "idx_network_server_id" ON "network" USING btree ("server_id" uuid_
 CREATE INDEX "idx_network_organization_id" ON "network" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_network_datacenter_id" ON "network" USING btree ("datacenter_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_network_environment_id" ON "network" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_network_datacenter_site" ON "network" USING btree ("datacenter_id") WHERE "network"."kind" = 'datacenter' AND "network"."datacenter_id" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_network_datacenter_cidr" ON "network" USING btree ("datacenter_id","cidr") WHERE "network"."kind" = 'datacenter';--> statement-breakpoint
 CREATE INDEX "idx_node_managed_id" ON "node" USING btree ("managed_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_node_server_id" ON "node" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_node_primary" ON "node" USING btree ("managed_id") WHERE "node"."role" = 'primary';--> statement-breakpoint

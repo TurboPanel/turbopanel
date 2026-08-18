@@ -2035,16 +2035,16 @@ test('GET /servers/:id returns detail with effective timezone/addresses/timeSync
         },
         metadata: {
           ...(existing[0]?.metadata ?? {}),
-          ips: [
-            { address: '10.0.0.1', version: 4, scope: 'private' },
-            { address: '203.0.113.10', version: 4, scope: 'public' },
-          ],
-          timeSync: {
-            timezone: 'America/Chicago',
-            ntpEnabled: true,
-            ntpServers: ['time.cloudflare.com'],
+          resources: {
+            ips: [
+              { address: '10.0.0.1', version: 4, scope: 'private', interface: 'eth0' },
+              { address: '203.0.113.10', version: 4, scope: 'public', interface: 'eth0' },
+            ],
           },
         },
+        timezone: 'America/Chicago',
+        isTimeSyncEnabled: true,
+        ntpServers: [{ host: 'time.cloudflare.com' }],
         updatedAt: new Date().toISOString(),
       })
       .where(eq(server.id, serverId))
@@ -2172,22 +2172,12 @@ test('GET /servers/:id uses daemon timeSync when no configured timezone override
       })
       .where(eq(organization.id, organizationId))
 
-    const existing = await db
-      .select({ metadata: server.metadata, options: server.options })
-      .from(server)
-      .where(eq(server.id, serverId))
-      .limit(1)
     await db
       .update(server)
       .set({
         options: {},
-        metadata: {
-          ...(existing[0]?.metadata ?? {}),
-          timeSync: {
-            timezone: 'Europe/Berlin',
-            ntpEnabled: true,
-          },
-        },
+        timezone: 'Europe/Berlin',
+        isTimeSyncEnabled: true,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(server.id, serverId))

@@ -56,7 +56,7 @@ export const networkSchemas = {
         type: 'string',
         enum: ['datacenter', 'docker'],
         description:
-          'Scope pairing: datacenter requires datacenterId (no serverId); docker may optionally pin serverId for a host-local external network and must not set datacenterId (network_scope_required / network_single_scope_conflict on 400).',
+          'Scope pairing: datacenter requires datacenterId (no serverId) — a datacenter may own multiple CIDR rows (one `network(kind=\'datacenter\')` per subnet); docker may optionally pin serverId for a host-local external network and must not set datacenterId (network_scope_required / network_single_scope_conflict on 400).',
       },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       serverId: { type: ['string', 'null'], format: 'uuid' },

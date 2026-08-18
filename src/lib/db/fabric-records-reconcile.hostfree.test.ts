@@ -60,6 +60,7 @@ const COLUMN_TO_FIELD: Record<string, string> = {
   network_id: "networkId",
   organization_id: "organizationId",
   environment_id: "environmentId",
+  datacenter_id: "datacenterId",
   id: "id",
   kind: "kind",
 };
@@ -159,6 +160,7 @@ type NetworkRow = {
   kind: string;
   name: string;
   cidr: string | null;
+  datacenterId?: string | null;
   options: Record<string, unknown>;
 };
 type SegmentRow = {
@@ -169,10 +171,13 @@ type SegmentRow = {
   options: unknown;
 };
 type IpRow = {
+  ipId?: string;
   serverId: string;
   address: string;
   scope: string;
   createdAt: string;
+  datacenterId?: string | null;
+  networkId?: string | null;
 };
 
 type ReconcileDb = Db & {
@@ -261,6 +266,25 @@ function createReconcileDb(opts: {
         };
       }
 
+      if (keySet.has("ipId") && keySet.has("datacenterId")) {
+        return {
+          from: (table: unknown) => ({
+            where: (condition?: unknown) => {
+              if (table !== ip) return thenableRows([]);
+              return thenableRows(
+                filterRows(ips, condition).map((row) => ({
+                  ipId: row.ipId ?? `ip-${row.serverId}`,
+                  serverId: row.serverId,
+                  datacenterId: row.datacenterId ?? null,
+                  networkId: row.networkId ?? null,
+                  address: row.address,
+                })),
+              );
+            },
+          }),
+        };
+      }
+
       if (
         keySet.has("serverId") && keySet.has("address") &&
         keySet.has("scope") && keySet.has("createdAt")
@@ -273,10 +297,7 @@ function createReconcileDb(opts: {
               const sorted = [...filtered].sort((a, b) =>
                 a.createdAt.localeCompare(b.createdAt)
               );
-              return {
-                orderBy: () => thenableRows(sorted),
-                ...thenableRows(sorted),
-              };
+              return thenableRows(sorted);
             },
           }),
         };
@@ -469,6 +490,11 @@ test("loadFabricReconcileSnapshot batches relays PSK envelopes segments and cach
     snapshot.caches.reportedByServer.get("srv-1")?.map((ip) => ip.address),
     ["198.51.100.1"],
   );
+  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.get("r1"), []);
+  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.get("r2"), [
+    "10.200.0.0/16",
+  ]);
+  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.has("r3"), false);
 });
 
 test("loadFabricReconcileSnapshot returns empty maps when fabric has no relays", async () => {
@@ -477,6 +503,7 @@ test("loadFabricReconcileSnapshot returns empty maps when fabric has no relays",
   assertEquals(snapshot.relays, []);
   assertEquals(snapshot.sealedPresharedKeyByRelayId.size, 0);
   assertEquals(snapshot.segmentsByServer.size, 0);
+  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.size, 0);
 });
 
 test("buildFabricReconcilePayloadFromSnapshot returns null for unknown server", async () => {
@@ -490,6 +517,7 @@ test("buildFabricReconcilePayloadFromSnapshot returns null for unknown server", 
     },
     sealedPresharedKeyByRelayId: new Map(),
     segmentsByServer: new Map(),
+    derivedAdvertisedCidrsByRelayId: new Map(),
   };
   const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: "missing",
@@ -521,6 +549,7 @@ test("buildFabricReconcilePayloadFromSnapshot returns null when relay address is
     },
     sealedPresharedKeyByRelayId: new Map(),
     segmentsByServer: new Map([["srv-bad", []]]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
   };
   const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: "srv-bad",
@@ -558,6 +587,7 @@ test("buildFabricReconcilePayloadFromSnapshot includes compose networks and mtu 
         mtu: 1500,
       }]],
     ]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
   };
   const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: "srv-1",
@@ -612,6 +642,7 @@ test("buildFabricReconcilePayloadFromSnapshot omits networks and skips peers wit
     },
     sealedPresharedKeyByRelayId: new Map([["r1", null], ["r2", null]]),
     segmentsByServer: new Map([["srv-1", []], ["srv-2", []]]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
   };
   const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: "srv-1",
@@ -661,6 +692,7 @@ test("buildFabricReconcilePayloadFromSnapshot hash reflects peer keepalive", asy
     caches,
     sealedPresharedKeyByRelayId: new Map([["r1", null], ["r2", null]]),
     segmentsByServer: new Map([["srv-1", []], ["srv-2", []]]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
   }, { serverId: "srv-1" });
   const withoutKeepalive = await buildFabricReconcilePayloadFromSnapshot({
     fabric: FABRIC,
@@ -668,6 +700,7 @@ test("buildFabricReconcilePayloadFromSnapshot hash reflects peer keepalive", asy
     caches,
     sealedPresharedKeyByRelayId: new Map([["r1", null], ["r2", null]]),
     segmentsByServer: new Map([["srv-1", []], ["srv-2", []]]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
   }, { serverId: "srv-1" });
   if (!withKeepalive || !withoutKeepalive) {
     throw new TypeError("expected reconcile payloads");
@@ -691,6 +724,215 @@ test("buildFabricReconcilePayload loads snapshot from db", async () => {
   assertEquals(built.payload.peers.length, 1);
   assertEquals(built.payload.peers[0]?.publicKey, WG_KEY_B);
   assertEquals(built.payload.peers[0]?.presharedKeyEnvelope, "plain:seal-a");
+});
+
+test("loadFabricReconcileSnapshot derives gateway IPv4 subnets into peer allowedIPs", async () => {
+  const relays: RelayRow[] = [
+    {
+      id: "r1",
+      fabricId: FABRIC.id,
+      serverId: "srv-1",
+      address: "10.250.0.1",
+      role: "member",
+      keepalive: null,
+      endpointAddress: "203.0.113.10",
+      publicKey: WG_KEY_A,
+      prefix: "10.192.0.0/16",
+      advertisedCidrs: [],
+      metadata: {},
+    },
+    {
+      id: "r2",
+      fabricId: FABRIC.id,
+      serverId: "srv-2",
+      address: "10.250.0.2",
+      role: "gateway",
+      keepalive: null,
+      endpointAddress: "203.0.113.11",
+      publicKey: WG_KEY_B,
+      prefix: "10.193.0.0/16",
+      advertisedCidrs: [],
+      metadata: {},
+    },
+  ];
+  const db = createReconcileDb({
+    relays,
+    ips: [{
+      ipId: "ip-gw",
+      serverId: "srv-2",
+      address: "203.0.113.11",
+      scope: "datacenter",
+      createdAt: "2020-01-01T00:00:00.000Z",
+      datacenterId: "dc-a",
+      networkId: "net-v4-a",
+    }],
+    networks: [
+      {
+        id: "net-v4-a",
+        organizationId: ORG,
+        environmentId: ENV,
+        kind: "datacenter",
+        name: "site-a",
+        cidr: "203.0.113.0/24",
+        datacenterId: "dc-a",
+        options: {},
+      },
+      {
+        id: "net-v4-b",
+        organizationId: ORG,
+        environmentId: ENV,
+        kind: "datacenter",
+        name: "site-b",
+        cidr: "198.51.100.0/24",
+        datacenterId: "dc-a",
+        options: {},
+      },
+      {
+        id: "net-v6",
+        organizationId: ORG,
+        environmentId: ENV,
+        kind: "datacenter",
+        name: "site-v6",
+        cidr: "2001:db8::/32",
+        datacenterId: "dc-a",
+        options: {},
+      },
+    ],
+  });
+
+  const snapshot = await loadFabricReconcileSnapshot(db, FABRIC);
+  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.get("r1"), []);
+  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.get("r2"), [
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+  ]);
+
+  const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
+    serverId: "srv-1",
+  });
+  if (!built?.payload.enabled) throw new TypeError("expected enabled payload");
+  const allowedIPs = built.payload.peers[0]?.allowedIPs ?? [];
+  assertEquals(allowedIPs.includes("198.51.100.0/24"), true);
+  assertEquals(allowedIPs.includes("203.0.113.0/24"), true);
+  assertEquals(allowedIPs.includes("2001:db8::/32"), false);
+
+  db.networks.push({
+    id: "net-v4-c",
+    organizationId: ORG,
+    environmentId: ENV,
+    kind: "datacenter",
+    name: "site-c",
+    cidr: "192.0.2.0/24",
+    datacenterId: "dc-a",
+    options: {},
+  });
+  const nextSnapshot = await loadFabricReconcileSnapshot(db, FABRIC);
+  const nextBuilt = await buildFabricReconcilePayloadFromSnapshot(
+    nextSnapshot,
+    { serverId: "srv-1" },
+  );
+  if (!nextBuilt) throw new TypeError("expected reconcile payload after subnet add");
+  assertNotEquals(built.desiredHash, nextBuilt.desiredHash);
+  if (!nextBuilt.payload.enabled) {
+    throw new TypeError("expected enabled payload after subnet add");
+  }
+  assertEquals(
+    nextBuilt.payload.peers[0]?.allowedIPs.includes("192.0.2.0/24"),
+    true,
+  );
+});
+
+test("loadFabricReconcileSnapshot assigns a shared subnet to the public-keyed gateway when the smaller relay id has no publicKey", async () => {
+  const relays: RelayRow[] = [
+    {
+      id: "r-mem",
+      fabricId: FABRIC.id,
+      serverId: "srv-mem",
+      address: "10.250.0.1",
+      role: "member",
+      keepalive: null,
+      endpointAddress: "203.0.113.10",
+      publicKey: WG_KEY_A,
+      prefix: "10.192.0.0/16",
+      advertisedCidrs: [],
+      metadata: {},
+    },
+    {
+      id: "r-aaa",
+      fabricId: FABRIC.id,
+      serverId: "srv-aaa",
+      address: "10.250.0.2",
+      role: "gateway",
+      keepalive: null,
+      endpointAddress: "203.0.113.11",
+      publicKey: null,
+      prefix: "10.193.0.0/16",
+      advertisedCidrs: [],
+      metadata: {},
+    },
+    {
+      id: "r-zzz",
+      fabricId: FABRIC.id,
+      serverId: "srv-zzz",
+      address: "10.250.0.3",
+      role: "gateway",
+      keepalive: null,
+      endpointAddress: "203.0.113.12",
+      publicKey: WG_KEY_B,
+      prefix: "10.194.0.0/16",
+      advertisedCidrs: [],
+      metadata: {},
+    },
+  ];
+  const db = createReconcileDb({
+    relays,
+    ips: [
+      {
+        ipId: "ip-aaa",
+        serverId: "srv-aaa",
+        address: "203.0.113.11",
+        scope: "datacenter",
+        createdAt: "2020-01-01T00:00:00.000Z",
+        datacenterId: "dc-a",
+        networkId: "net-v4",
+      },
+      {
+        ipId: "ip-zzz",
+        serverId: "srv-zzz",
+        address: "203.0.113.12",
+        scope: "datacenter",
+        createdAt: "2020-01-01T00:00:00.000Z",
+        datacenterId: "dc-a",
+        networkId: "net-v4",
+      },
+    ],
+    networks: [{
+      id: "net-v4",
+      organizationId: ORG,
+      environmentId: ENV,
+      kind: "datacenter",
+      name: "site-a",
+      cidr: "203.0.113.0/24",
+      datacenterId: "dc-a",
+      options: {},
+    }],
+  });
+
+  const snapshot = await loadFabricReconcileSnapshot(db, FABRIC);
+  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.has("r-aaa"), false);
+  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.get("r-zzz"), [
+    "203.0.113.0/24",
+  ]);
+
+  const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, {
+    serverId: "srv-mem",
+  });
+  if (!built?.payload.enabled) throw new TypeError("expected enabled payload");
+  const keyedPeer = built.payload.peers.find((peer) =>
+    peer.publicKey === WG_KEY_B
+  );
+  if (!keyedPeer) throw new TypeError("expected public-keyed gateway peer");
+  assertEquals(keyedPeer.allowedIPs.includes("203.0.113.0/24"), true);
 });
 
 test("hashFabricReconcileDesired differs for distinct peer lists", async () => {

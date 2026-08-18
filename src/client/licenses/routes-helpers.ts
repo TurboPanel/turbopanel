@@ -1,6 +1,35 @@
+import {
+  isValidDisplayName,
+  normalizeDisplayName,
+  normalizeDisplayNameKey,
+} from '../../lib/display-name-format.ts'
+
 export type LicenseCreateFields = {
   name?: string
   installBaseUrl?: string
+}
+
+function optionalStringField(
+  value: unknown,
+): { ok: true; value?: string } | { ok: false } {
+  if (value === undefined) return { ok: true }
+  if (typeof value !== 'string') return { ok: false }
+  return { ok: true, value }
+}
+
+/**
+ * Optional license labels: blank/whitespace is omitted; non-empty values use
+ * the shared display-name contract (trim, NFC, apostrophe-fold, length, no
+ * control characters).
+ */
+function parseOptionalLicenseName(
+  value: string | undefined,
+): { ok: true; value?: string } | { ok: false } {
+  if (value === undefined) return { ok: true }
+  const name = normalizeDisplayName(value)
+  if (!name) return { ok: true }
+  if (!isValidDisplayName(name)) return { ok: false }
+  return { ok: true, value: name }
 }
 
 export function parseLicenseCreateFields(
@@ -22,19 +51,23 @@ export function parseLicenseCreateFields(
   }
 
   const record = body as Record<string, unknown>
-  const fields: LicenseCreateFields = {}
+  const displayName = optionalStringField(record.displayName)
+  if (!displayName.ok) return 'invalid'
+  const name = optionalStringField(record.name)
+  if (!name.ok) return 'invalid'
+  const installBaseUrl = optionalStringField(record.installBaseUrl)
+  if (!installBaseUrl.ok) return 'invalid'
 
-  if (record.name !== undefined) {
-    if (typeof record.name !== 'string') {
-      return 'invalid'
-    }
-    fields.name = record.name
+  const pickedName = displayName.value ?? name.value
+  const parsedName = parseOptionalLicenseName(pickedName)
+  if (!parsedName.ok) return 'invalid'
+
+  const fields: LicenseCreateFields = {}
+  if (parsedName.value !== undefined) {
+    fields.name = parsedName.value
   }
-  if (record.installBaseUrl !== undefined) {
-    if (typeof record.installBaseUrl !== 'string') {
-      return 'invalid'
-    }
-    fields.installBaseUrl = record.installBaseUrl
+  if (installBaseUrl.value !== undefined) {
+    fields.installBaseUrl = installBaseUrl.value
   }
 
   return fields
@@ -44,7 +77,8 @@ export function isReservedColocatedLicenseName(
   name: string | undefined,
   reservedName: string,
 ): boolean {
-  return name?.trim() === reservedName
+  if (name == null) return false
+  return normalizeDisplayNameKey(name) === normalizeDisplayNameKey(reservedName)
 }
 
 export function reservedColocatedLicenseNameError(reservedName: string): string {
@@ -78,13 +112,13 @@ export function serializeLicenseListEntry(params: {
 }) {
   return {
     id: params.id,
-    name: params.name,
+    displayName: params.name,
     createdAt: params.createdAt,
     revocable: params.revocable,
     boundServer: params.bound
       ? {
         id: params.bound.id,
-        name: params.bound.name,
+        displayName: params.bound.name,
         connected: params.status?.connected ?? false,
       }
       : null,

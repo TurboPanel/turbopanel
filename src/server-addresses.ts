@@ -9,6 +9,8 @@ export type ServerReportedIp = {
   scope: ServerReportedIpScope
   /** Aligned interface network CIDR when known. */
   cidr?: string
+  /** Host interface name (e.g. `eth0`, `enp1s0`). */
+  interface?: string
 }
 
 /** Workers-safe empty IP list for runtimes without host interface access. */
@@ -52,6 +54,10 @@ export function parseServerIps(value: unknown): ServerReportedIp[] | undefined {
       const cidr = alignedNetworkCidr(entry.cidr)
       if (cidr) row.cidr = cidr
     }
+    if (typeof entry.interface === 'string') {
+      const iface = entry.interface.trim()
+      if (iface.length > 0 && iface.length <= 64) row.interface = iface
+    }
     out.push(row)
   }
   return out.sort((a, b) => a.address.localeCompare(b.address))
@@ -93,16 +99,36 @@ export function parseLegacyServerAddresses(
 }
 
 /**
- * Prefer current `ips[]`; fall back to the pre-rename `addresses` object so
- * remotes that have not rebuilt yet still persist private IPs for datacenters.
+ * Prefer `resources.ips[]`, then top-level `ips[]`, then the pre-rename
+ * `addresses` object so remotes that have not rebuilt yet still persist
+ * private IPs for datacenters.
  */
 export function ipsFromDaemonPresence(
   payload: unknown,
 ): ServerReportedIp[] | undefined {
   if (!isRecord(payload)) return undefined
+  if (isRecord(payload.resources)) {
+    const nested = parseServerIps(payload.resources.ips)
+    if (nested !== undefined) return nested
+  }
   const fromIps = parseServerIps(payload.ips)
   if (fromIps !== undefined) return fromIps
   return parseLegacyServerAddresses(payload.addresses)
+}
+
+/**
+ * Reported addresses stored on `server.metadata` — `resources.ips` first,
+ * then the retired top-level `ips` key.
+ */
+export function reportedIpsFromServerMetadata(
+  metadata: unknown,
+): ServerReportedIp[] | undefined {
+  if (!isRecord(metadata)) return undefined
+  if (isRecord(metadata.resources)) {
+    const nested = parseServerIps(metadata.resources.ips)
+    if (nested !== undefined) return nested
+  }
+  return parseServerIps(metadata.ips)
 }
 
 export function serverIpsEquals(
@@ -123,7 +149,8 @@ export function serverIpsEquals(
       l.address !== r.address ||
       l.version !== r.version ||
       l.scope !== r.scope ||
-      l.cidr !== r.cidr
+      l.cidr !== r.cidr ||
+      l.interface !== r.interface
     ) {
       return false
     }

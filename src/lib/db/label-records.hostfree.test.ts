@@ -4,6 +4,7 @@
 
 import { assertEquals } from 'jsr:@std/assert'
 import type { Db } from '../../db.ts'
+import { DESCRIPTION_MAX_LENGTH } from '../display-name-format.ts'
 import { label } from './schema.ts'
 import {
   listServerLabels,
@@ -49,7 +50,27 @@ test('parseServerLabelInput rejects bad keys', () => {
 })
 
 test('parseServerLabelInput rejects oversized values', () => {
-  const parsed = parseServerLabelInput({ labels: { env: 'x'.repeat(256) } })
+  const parsed = parseServerLabelInput({
+    labels: { env: 'x'.repeat(DESCRIPTION_MAX_LENGTH + 1) },
+  })
+  if (parsed.ok !== false) throw new TypeError('expected parse to fail')
+  assertEquals(parsed.error.includes('exceeds'), true)
+})
+
+test('parseServerLabelInput accepts DESCRIPTION_MAX_LENGTH emoji code points', () => {
+  const parsed = parseServerLabelInput({
+    labels: { env: '😀'.repeat(DESCRIPTION_MAX_LENGTH) },
+  })
+  if (parsed.ok !== true) throw new TypeError('expected parse to succeed')
+  assertEquals(parsed.labels, [
+    { key: 'env', value: '😀'.repeat(DESCRIPTION_MAX_LENGTH) },
+  ])
+})
+
+test('parseServerLabelInput rejects DESCRIPTION_MAX_LENGTH + 1 emoji code points', () => {
+  const parsed = parseServerLabelInput({
+    labels: { env: '😀'.repeat(DESCRIPTION_MAX_LENGTH + 1) },
+  })
   if (parsed.ok !== false) throw new TypeError('expected parse to fail')
   assertEquals(parsed.error.includes('exceeds'), true)
 })

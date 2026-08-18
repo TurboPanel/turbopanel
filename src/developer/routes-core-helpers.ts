@@ -2,6 +2,12 @@ import { eq } from 'drizzle-orm'
 import type { Db } from '../db.ts'
 import type { ServerReportedIp } from '../server-addresses.ts'
 import { organization } from '../lib/db/schema.ts'
+import {
+  DISPLAY_NAME_MAX_LENGTH,
+  displayNameCodePointLength,
+  isValidDisplayName,
+  normalizeDisplayName,
+} from '../lib/display-name-format.ts'
 
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -26,11 +32,17 @@ export function parseDisplayNameInput(displayName: unknown): ParsedDisplayName {
   if (typeof displayName !== 'string') {
     return { ok: false, error: 'displayName must be a string or null' }
   }
-  const trimmed = displayName.trim()
-  if (trimmed.length > 255) {
-    return { ok: false, error: 'displayName must be at most 255 characters' }
+  const value = normalizeDisplayName(displayName)
+  if (displayNameCodePointLength(value) > DISPLAY_NAME_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `displayName must be at most ${String(DISPLAY_NAME_MAX_LENGTH)} characters`,
+    }
   }
-  return { ok: true, value: trimmed }
+  if (value.length > 0 && !isValidDisplayName(value)) {
+    return { ok: false, error: 'displayName must not contain control characters' }
+  }
+  return { ok: true, value }
 }
 
 export type ParsedOrganizationId =

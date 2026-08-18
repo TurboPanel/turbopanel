@@ -1,56 +1,58 @@
 import {
   parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
-} from '../../lib/organization-options.ts'
-import { isAllowedTimezone } from '../../lib/timezones.ts'
-import { BadRequestError, parseDisplayName } from '../shared.ts'
+} from "../../lib/organization-options.ts";
+import { DISPLAY_NAME_MAX_LENGTH } from "../../lib/display-name-format.ts";
+import { isAllowedTimezone } from "../../lib/timezones.ts";
+import type { OrganizationSummary } from "../org-context.ts";
+import { BadRequestError, parseDisplayName } from "../shared.ts";
 
 /** Matches {@link NEW_ORGANIZATION_NAME} in authn/install-state.ts. */
-const NEW_ORGANIZATION_DISPLAY_NAME = 'New Organization'
+const NEW_ORGANIZATION_DISPLAY_NAME = "New Organization";
 
 export type OrganizationRouteValidationError = {
-  ok: false
-  error: string
-  status: 400
-}
+  ok: false;
+  error: string;
+  status: 400;
+};
 
 export type DefaultTimezonePatch = {
-  defaultServerTimezone?: string | null
-  enforceServerTimezone?: boolean
-}
+  defaultServerTimezone?: string | null;
+  enforceServerTimezone?: boolean;
+};
 
 export function parseDefaultTimezonePatch(
   body: Record<string, unknown>,
 ):
   | { ok: true; patch: DefaultTimezonePatch }
   | OrganizationRouteValidationError {
-  const patch: DefaultTimezonePatch = {}
+  const patch: DefaultTimezonePatch = {};
 
-  if ('defaultServerTimezone' in body) {
+  if ("defaultServerTimezone" in body) {
     if (body.defaultServerTimezone === null) {
-      patch.defaultServerTimezone = null
+      patch.defaultServerTimezone = null;
     } else if (
-      typeof body.defaultServerTimezone === 'string' &&
+      typeof body.defaultServerTimezone === "string" &&
       isAllowedTimezone(body.defaultServerTimezone)
     ) {
-      patch.defaultServerTimezone = body.defaultServerTimezone
+      patch.defaultServerTimezone = body.defaultServerTimezone;
     } else {
-      return { ok: false, error: 'Invalid defaultServerTimezone', status: 400 }
+      return { ok: false, error: "Invalid defaultServerTimezone", status: 400 };
     }
   }
 
-  if ('enforceServerTimezone' in body) {
-    if (typeof body.enforceServerTimezone !== 'boolean') {
-      return { ok: false, error: 'Invalid enforceServerTimezone', status: 400 }
+  if ("enforceServerTimezone" in body) {
+    if (typeof body.enforceServerTimezone !== "boolean") {
+      return { ok: false, error: "Invalid enforceServerTimezone", status: 400 };
     }
-    patch.enforceServerTimezone = body.enforceServerTimezone
+    patch.enforceServerTimezone = body.enforceServerTimezone;
   }
 
   if (Object.keys(patch).length === 0) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+    return { ok: false, error: "Invalid request", status: 400 };
   }
 
-  return { ok: true, patch }
+  return { ok: true, patch };
 }
 
 export function parseDefaultEnvironmentPutBody(
@@ -58,21 +60,21 @@ export function parseDefaultEnvironmentPutBody(
 ):
   | { ok: true; defaultEnvironmentName: string | null }
   | OrganizationRouteValidationError {
-  if (!('defaultEnvironmentName' in body)) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  if (!("defaultEnvironmentName" in body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
 
-  const parsed = parseDefaultEnvironmentNameInput(body.defaultEnvironmentName)
+  const parsed = parseDefaultEnvironmentNameInput(body.defaultEnvironmentName);
   if (!parsed.ok) {
     return {
       ok: false,
       error:
-        'defaultEnvironmentName must be null or a non-empty name of at most 255 characters using letters, numbers, spaces, dots, underscores, or hyphens',
+        `defaultEnvironmentName must be null or a non-empty name of at most ${String(DISPLAY_NAME_MAX_LENGTH)} characters with no control characters`,
       status: 400,
-    }
+    };
   }
 
-  return { ok: true, defaultEnvironmentName: parsed.value }
+  return { ok: true, defaultEnvironmentName: parsed.value };
 }
 
 export function parseServerCapacityPutBody(
@@ -80,20 +82,20 @@ export function parseServerCapacityPutBody(
 ):
   | { ok: true; maxServers: number | null }
   | OrganizationRouteValidationError {
-  if (!('maxServers' in body)) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  if (!("maxServers" in body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
 
-  const parsed = parseMaxServersInput(body.maxServers)
+  const parsed = parseMaxServersInput(body.maxServers);
   if (!parsed.ok) {
     return {
       ok: false,
-      error: 'maxServers must be a non-negative integer or null',
+      error: "maxServers must be a non-negative integer or null",
       status: 400,
-    }
+    };
   }
 
-  return { ok: true, maxServers: parsed.value }
+  return { ok: true, maxServers: parsed.value };
 }
 
 export function parseOrganizationCreateDisplayName(
@@ -101,53 +103,85 @@ export function parseOrganizationCreateDisplayName(
 ): { ok: true; displayName: string } | OrganizationRouteValidationError {
   try {
     const parsed = parseDisplayName({
-      displayName:
-        typeof body.displayName === 'string'
-          ? body.displayName
-          : NEW_ORGANIZATION_DISPLAY_NAME,
-    })
-    return { ok: true, displayName: parsed ?? NEW_ORGANIZATION_DISPLAY_NAME }
+      displayName: typeof body.displayName === "string"
+        ? body.displayName
+        : NEW_ORGANIZATION_DISPLAY_NAME,
+    });
+    return { ok: true, displayName: parsed ?? NEW_ORGANIZATION_DISPLAY_NAME };
   } catch (error) {
     if (error instanceof BadRequestError) {
-      return { ok: false, error: 'Invalid request', status: 400 }
+      return { ok: false, error: "Invalid request", status: 400 };
     }
-    throw error
+    throw error;
   }
 }
 
+/** PATCH requires a non-empty display name; it cannot be cleared. */
+export function parseOrganizationPatchDisplayName(
+  body: Record<string, unknown>,
+): { ok: true; displayName: string } | OrganizationRouteValidationError {
+  if (!("displayName" in body) && !("name" in body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
+  }
+  try {
+    const parsed = parseDisplayName(body);
+    if (parsed === null) {
+      return { ok: false, error: "Invalid request", status: 400 };
+    }
+    return { ok: true, displayName: parsed };
+  } catch (error) {
+    if (error instanceof BadRequestError) {
+      return { ok: false, error: "Invalid request", status: 400 };
+    }
+    throw error;
+  }
+}
+
+export function toOrganizationRecord(row: {
+  id: string;
+  name: string | null;
+  createdAt: string;
+}): OrganizationSummary {
+  return {
+    id: row.id,
+    displayName: row.name,
+    createdAt: row.createdAt,
+  };
+}
+
 export function defaultTimezoneGetResponse(options: {
-  defaultServerTimezone?: string | null
-  enforceServerTimezone?: boolean | null
+  defaultServerTimezone?: string | null;
+  enforceServerTimezone?: boolean | null;
 }) {
   return {
     defaultServerTimezone: options.defaultServerTimezone ?? null,
     enforceServerTimezone: options.enforceServerTimezone ?? false,
-  }
+  };
 }
 
 export function defaultEnvironmentGetResponse(options: {
-  defaultEnvironmentName?: string | null
+  defaultEnvironmentName?: string | null;
 }) {
   return {
     defaultEnvironmentName: options.defaultEnvironmentName ?? null,
-  }
+  };
 }
 
 export function defaultTimezonePutResponse(options: {
-  defaultServerTimezone?: string | null
-  enforceServerTimezone?: boolean | null
+  defaultServerTimezone?: string | null;
+  enforceServerTimezone?: boolean | null;
 }) {
   return {
     ok: true as const,
     ...defaultTimezoneGetResponse(options),
-  }
+  };
 }
 
 export function defaultEnvironmentPutResponse(options: {
-  defaultEnvironmentName?: string | null
+  defaultEnvironmentName?: string | null;
 }) {
   return {
     ok: true as const,
     ...defaultEnvironmentGetResponse(options),
-  }
+  };
 }

@@ -387,7 +387,7 @@ async function applyTimeSyncSideEffect(
         timeSync: { timezone: timezoneResult.timezone },
       })
     } catch {
-      // Malformed success payload — leave metadata for the next heartbeat.
+      // Malformed success payload — leave columns for the next heartbeat.
     }
     return
   }
@@ -405,7 +405,7 @@ async function applyTimeSyncSideEffect(
       },
     })
   } catch {
-    // Malformed success payload — leave metadata for the next heartbeat.
+    // Malformed success payload — leave columns for the next heartbeat.
   }
 }
 

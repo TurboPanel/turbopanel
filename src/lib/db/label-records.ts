@@ -1,11 +1,14 @@
 import { and, eq, inArray, notInArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { nowIso } from '../commands/ids.ts'
+import {
+  DESCRIPTION_MAX_LENGTH,
+  displayNameCodePointLength,
+} from '../display-name-format.ts'
 import { label } from './schema.ts'
 
 const LABEL_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const MAX_LABEL_KEY_LENGTH = 255
-const MAX_LABEL_VALUE_LENGTH = 255
 const MAX_LABELS_PER_SERVER = 64
 
 type LabelDbRow = typeof label.$inferSelect
@@ -77,8 +80,8 @@ export function parseServerLabelInput(value: unknown): ParseServerLabelResult {
     if (seen.has(key)) {
       return { ok: false, error: `Duplicate label key "${key}"` }
     }
-    if (rawValue.length > MAX_LABEL_VALUE_LENGTH) {
-      return { ok: false, error: `Label value for "${key}" exceeds ${String(MAX_LABEL_VALUE_LENGTH)} characters` }
+    if (displayNameCodePointLength(rawValue) > DESCRIPTION_MAX_LENGTH) {
+      return { ok: false, error: `Label value for "${key}" exceeds ${String(DESCRIPTION_MAX_LENGTH)} characters` }
     }
     seen.add(key)
     labels.push({ key, value: rawValue })

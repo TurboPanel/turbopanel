@@ -1,24 +1,29 @@
 import { assertEquals } from 'jsr:@std/assert'
 import {
+  ipsFromDaemonPresence,
   parseServerIps,
   serverIpsEquals,
-  ipsFromDaemonPresence,
 } from '../../server-addresses.ts'
 import {
   formatServerOsDisplay,
+  osColumnsFromMetadata,
+  osMetadataFromColumns,
+  parseNtpServersColumn,
+  parseServerDockerMetadata,
+  parseServerHostResources,
   parseServerOptions,
   parseServerOsMetadata,
-  parseServerHostResources,
   parseServerTimeSync,
-  parseServerDockerMetadata,
   resolveEffectiveServerTimezone,
-  resolveServerResponseTimezone,
   resolveServerOsLogoKey,
-  serverOsMetadataEquals,
-  serverHostResourcesEquals,
-  serverTimeSyncEquals,
-  serverDockerMetadataEquals,
+  resolveServerResponseTimezone,
   resourcesFromDaemonPresence,
+  serverDockerMetadataEquals,
+  serverHostResourcesEquals,
+  serverOsMetadataEquals,
+  serverTimeSyncEquals,
+  timeSyncColumnPatch,
+  timeSyncFromColumns,
 } from './server-metadata.ts'
 
 /**
@@ -134,18 +139,41 @@ test('parseServerOsMetadata accepts daemon hello os blocks', () => {
 test('parseServerHostResources accepts capacity totals', () => {
   assertEquals(
     parseServerHostResources({
-      cpu: { coreCount: 4, threadCount: 8, socketCount: 1 },
+      cpus: [
+        {
+          vendorId: 'GenuineIntel',
+          cores: { total: 4 },
+          threads: { total: 8 },
+        },
+      ],
       memory: { totalBytes: 16_384_000_000 },
       swap: { totalBytes: 0 },
     }),
     {
-      cpu: { coreCount: 4, threadCount: 8, socketCount: 1 },
+      cpus: [
+        {
+          vendorId: 'GenuineIntel',
+          cores: { total: 4 },
+          threads: { total: 8 },
+        },
+      ],
       memory: { totalBytes: 16_384_000_000 },
       swap: { totalBytes: 0 },
     },
   )
+  assertEquals(
+    parseServerHostResources({
+      cpu: { coreCount: 4, threadCount: 8, socketCount: 1 },
+    }),
+    {
+      cpus: [{ cores: { total: 4 }, threads: { total: 8 } }],
+    },
+  )
   assertEquals(parseServerHostResources({ cpu: { coreCount: 0 } }), undefined)
-  assertEquals(parseServerHostResources({ cpu: { threadCount: 0 } }), undefined)
+  assertEquals(
+    parseServerHostResources({ cpu: { threadCount: 0 } }),
+    undefined,
+  )
   assertEquals(
     parseServerHostResources({ memory: { totalBytes: -1 } }),
     undefined,
@@ -153,24 +181,56 @@ test('parseServerHostResources accepts capacity totals', () => {
   assertEquals(parseServerHostResources(null), undefined)
 })
 
+test('parseServerHostResources accepts gpus', () => {
+  assertEquals(
+    parseServerHostResources({
+      gpus: [
+        {
+          vendorId: '0x10de',
+          name: 'NVIDIA GeForce RTX 5060 Ti',
+          memoryBytes: 16 * 1024 * 1024 * 1024,
+          driver: 'nvidia',
+          pciId: '10de:2d04',
+          pciSlot: '0000:01:00.0',
+        },
+      ],
+    }),
+    {
+      gpus: [
+        {
+          vendorId: '0x10de',
+          name: 'NVIDIA GeForce RTX 5060 Ti',
+          memoryBytes: 16 * 1024 * 1024 * 1024,
+          driver: 'nvidia',
+          pciId: '10de:2d04',
+          pciSlot: '0000:01:00.0',
+        },
+      ],
+    },
+  )
+})
+
 test('serverHostResourcesEquals compares field-wise', () => {
   const a = {
-    cpu: { coreCount: 4, threadCount: 8 },
+    cpus: [{ cores: { total: 4 }, threads: { total: 8 } }],
     memory: { totalBytes: 100 },
     swap: { totalBytes: 0 },
   }
-  assertEquals(serverHostResourcesEquals(a, { ...a, cpu: { ...a.cpu } }), true)
+  assertEquals(
+    serverHostResourcesEquals(a, { ...a, cpus: [{ ...a.cpus[0] }] }),
+    true,
+  )
   assertEquals(
     serverHostResourcesEquals(a, {
       ...a,
-      cpu: { ...a.cpu, coreCount: 8 },
+      cpus: [{ cores: { total: 8 }, threads: { total: 8 } }],
     }),
     false,
   )
   assertEquals(
     serverHostResourcesEquals(a, {
       ...a,
-      cpu: { ...a.cpu, threadCount: 4 },
+      cpus: [{ cores: { total: 4 }, threads: { total: 4 } }],
     }),
     false,
   )
@@ -249,7 +309,10 @@ test('parseServerDockerMetadata accepts daemon docker blocks', () => {
     { composeVersion: '2.39.1-desktop.1' },
   )
   assertEquals(parseServerDockerMetadata({}), undefined)
-  assertEquals(parseServerDockerMetadata({ version: 'not a version' }), undefined)
+  assertEquals(
+    parseServerDockerMetadata({ version: 'not a version' }),
+    undefined,
+  )
   assertEquals(parseServerDockerMetadata('nope'), undefined)
 })
 
@@ -299,9 +362,18 @@ test('parseServerOptions and resolveEffectiveServerTimezone', () => {
 test('resolveEffectiveServerTimezone datacenter precedence matrix', () => {
   const server = { timezone: 'America/Chicago' }
   const org = { defaultServerTimezone: 'UTC', enforceServerTimezone: false }
-  const orgEnforce = { defaultServerTimezone: 'UTC', enforceServerTimezone: true }
-  const dc = { defaultServerTimezone: 'Europe/Berlin', enforceServerTimezone: false }
-  const dcEnforce = { defaultServerTimezone: 'Europe/Berlin', enforceServerTimezone: true }
+  const orgEnforce = {
+    defaultServerTimezone: 'UTC',
+    enforceServerTimezone: true,
+  }
+  const dc = {
+    defaultServerTimezone: 'Europe/Berlin',
+    enforceServerTimezone: false,
+  }
+  const dcEnforce = {
+    defaultServerTimezone: 'Europe/Berlin',
+    enforceServerTimezone: true,
+  }
 
   assertEquals(resolveEffectiveServerTimezone(server, org, dcEnforce), {
     timezone: 'Europe/Berlin',
@@ -356,7 +428,10 @@ test('resolveServerResponseTimezone falls back to daemon-reported zone', () => {
       resolveEffectiveServerTimezone(
         {},
         { defaultServerTimezone: 'UTC', enforceServerTimezone: false },
-        { defaultServerTimezone: 'Europe/Berlin', enforceServerTimezone: false },
+        {
+          defaultServerTimezone: 'Europe/Berlin',
+          enforceServerTimezone: false,
+        },
       ),
       'Europe/Berlin',
     ),
@@ -380,7 +455,12 @@ test('parseServerIps and serverIpsEquals', () => {
   assertEquals(parseServerIps(undefined), undefined)
   assertEquals(
     parseServerIps([
-      { address: '10.0.0.5', version: 4, scope: 'private', cidr: '10.0.0.5/24' },
+      {
+        address: '10.0.0.5',
+        version: 4,
+        scope: 'private',
+        cidr: '10.0.0.5/24',
+      },
     ]),
     [
       {
@@ -401,7 +481,7 @@ test('parseServerIps and serverIpsEquals', () => {
   )
 })
 
-test('ipsFromDaemonPresence prefers ips[] and maps legacy addresses', () => {
+test('ipsFromDaemonPresence prefers resources.ips then ips[] and maps legacy addresses', () => {
   const current = ipsFromDaemonPresence({
     ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
     addresses: {
@@ -414,6 +494,22 @@ test('ipsFromDaemonPresence prefers ips[] and maps legacy addresses', () => {
   assertEquals(current, [
     { address: '10.0.0.8', version: 4, scope: 'private' },
   ])
+  assertEquals(
+    ipsFromDaemonPresence({
+      resources: {
+        ips: [{
+          address: '10.0.0.4',
+          version: 4,
+          scope: 'private',
+          interface: 'eth0',
+        }],
+      },
+      ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
+    }),
+    [
+      { address: '10.0.0.4', version: 4, scope: 'private', interface: 'eth0' },
+    ],
+  )
   assertEquals(
     ipsFromDaemonPresence({
       addresses: {
@@ -437,7 +533,7 @@ test('resourcesFromDaemonPresence prefers resources and maps inventory', () => {
       resources: { cpu: { coreCount: 8, threadCount: 16 } },
       inventory: { cpuCores: 2, cpuThreads: 4 },
     }),
-    { cpu: { coreCount: 8, threadCount: 16 } },
+    { cpus: [{ cores: { total: 8 }, threads: { total: 16 } }] },
   )
   assertEquals(
     resourcesFromDaemonPresence({
@@ -449,9 +545,135 @@ test('resourcesFromDaemonPresence prefers resources and maps inventory', () => {
       },
     }),
     {
-      cpu: { coreCount: 4, threadCount: 8 },
+      cpus: [{ cores: { total: 4 }, threads: { total: 8 } }],
       memory: { totalBytes: 1024 },
       swap: { totalBytes: 0 },
+    },
+  )
+  assertEquals(
+    resourcesFromDaemonPresence({
+      resources: { cpu: { coreCount: 2 } },
+      ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
+    }),
+    {
+      cpus: [{ cores: { total: 2 } }],
+      ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
+    },
+  )
+})
+
+test('os columns round-trip Raspberry Pi OS onto os_id', () => {
+  const columns = osColumnsFromMetadata({
+    family: 'linux',
+    id: 'debian',
+    variant: 'raspberry-pi-os',
+    version: '12.11',
+    architecture: 'aarch64',
+  })
+  assertEquals(columns.osId, 'raspberry-pi-os')
+  assertEquals(osMetadataFromColumns(columns), {
+    family: 'linux',
+    id: 'raspberry-pi-os',
+    variant: 'raspberry-pi-os',
+    version: '12.11',
+    architecture: 'aarch64',
+  })
+})
+
+test('os columns map raspbian ID onto os_id raspberry-pi-os', () => {
+  const columns = osColumnsFromMetadata({
+    family: 'linux',
+    id: 'raspbian',
+    version: '11',
+  })
+  assertEquals(columns.osId, 'raspberry-pi-os')
+  assertEquals(osMetadataFromColumns(columns)?.variant, 'raspberry-pi-os')
+})
+
+test('parseNtpServersColumn accepts object arrays and string arrays', () => {
+  assertEquals(
+    parseNtpServersColumn([
+      { host: 'time.cloudflare.com' },
+      { host: 'pool.ntp.org', fallback: true },
+    ]),
+    [
+      { host: 'time.cloudflare.com' },
+      { host: 'pool.ntp.org', fallback: true },
+    ],
+  )
+  assertEquals(parseNtpServersColumn(['a.example', 'b.example']), [
+    { host: 'a.example' },
+    { host: 'b.example' },
+  ])
+})
+
+test('timeSyncColumnPatch does not rewrite last-sync on every synced heartbeat', () => {
+  const current = {
+    timezone: 'UTC',
+    isTimeSyncEnabled: true,
+    ntpServers: [{ host: 'a.example' }],
+    ntpLastSyncedAt: '2026-01-01T00:00:00.000Z',
+  }
+  assertEquals(
+    timeSyncColumnPatch(
+      { timezone: 'UTC', ntpEnabled: true, ntpSynced: true },
+      current,
+      '2026-08-17T12:00:00.000Z',
+    ),
+    null,
+  )
+  assertEquals(
+    timeSyncColumnPatch(
+      { ntpSynced: false },
+      current,
+      '2026-08-17T12:00:00.000Z',
+    ),
+    { ntpLastSyncedAt: null },
+  )
+  assertEquals(
+    timeSyncFromColumns({
+      timezone: 'UTC',
+      isTimeSyncEnabled: true,
+      ntpServers: [{ host: 'a.example' }, {
+        host: 'b.example',
+        fallback: true,
+      }],
+      ntpLastSyncedAt: '2026-01-01T00:00:00.000Z',
+    }),
+    {
+      timezone: 'UTC',
+      ntpEnabled: true,
+      ntpSynced: true,
+      ntpServers: ['a.example'],
+      fallbackNtpServers: ['b.example'],
+      lastSyncedAt: '2026-01-01T00:00:00.000Z',
+    },
+  )
+})
+
+test('parseServerHostResources keeps ips including interface', () => {
+  assertEquals(
+    parseServerHostResources({
+      cpu: { coreCount: 2 },
+      ips: [
+        {
+          address: '10.0.0.5',
+          version: 4,
+          scope: 'private',
+          interface: 'enp1s0',
+        },
+      ],
+    }),
+    {
+      cpus: [{ cores: { total: 2 } }],
+      ips: [
+        {
+          address: '10.0.0.5',
+          version: 4,
+          scope: 'private',
+          interface: 'enp1s0',
+        },
+      ],
     },
   )
 })

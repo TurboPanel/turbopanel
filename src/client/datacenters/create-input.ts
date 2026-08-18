@@ -3,10 +3,16 @@ import { parseDatacenterOptions } from '../../lib/datacenter-options.ts'
 import { suggestDatacenterDisplayNameFromGeo } from '../../lib/datacenter-name-suggestions.ts'
 import { parseServerGeo } from '../../lib/geo/server-geo.ts'
 import {
+  alignedNetworkCidr,
   isValidCidr,
   isValidIpAddress,
   stripInetPrefixSuffix,
 } from '../../lib/ip-address.ts'
+import {
+  resolveSubnetForAddress,
+  siteCidrForAddress,
+  type MemberPinSubnet,
+} from '../../lib/net/datacenter-membership.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -44,7 +50,6 @@ export function parseMemberPins(value: unknown): ParseResult<ParsedMemberPin[]> 
     return { ok: false }
   }
   const pins: ParsedMemberPin[] = []
-  const seenServers = new Set<string>()
   const seenAddresses = new Set<string>()
   for (const entry of value) {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
@@ -57,14 +62,95 @@ export function parseMemberPins(value: unknown): ParseResult<ParsedMemberPin[]> 
     if (typeof record.address !== 'string') return { ok: false }
     const address = stripInetPrefixSuffix(record.address.trim())
     if (!address || !isValidIpAddress(address)) return { ok: false }
-    if (seenServers.has(record.serverId) || seenAddresses.has(address)) {
+    if (seenAddresses.has(address)) {
       return { ok: false }
     }
-    seenServers.add(record.serverId)
     seenAddresses.add(address)
     pins.push({ serverId: record.serverId, address })
   }
   return { ok: true, value: pins }
+}
+
+export type DerivedCidrGroup = {
+  cidr: string
+  members: ParsedMemberPin[]
+}
+
+export type MemberPinLookupError =
+  | { ok: false; status: 404 }
+  | {
+    ok: false
+    status: 400
+    error: 'address_cidr_unreported'
+    serverId: string
+  }
+
+/**
+ * Group create/add members by the aligned site CIDR derived from each
+ * address's daemon-reported prefix. Identical CIDRs collapse into one subnet.
+ */
+export function groupMembersByDerivedCidr(
+  members: readonly ParsedMemberPin[],
+  rows: readonly SelectedServerRow[],
+): { ok: true; groups: DerivedCidrGroup[] } | MemberPinLookupError {
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  const groups = new Map<string, ParsedMemberPin[]>()
+  for (const member of members) {
+    const row = byId.get(member.serverId)
+    if (!row) return { ok: false, status: 404 }
+    const derived = siteCidrForAddress(row.metadata, member.address)
+    const cidr = derived ? alignedNetworkCidr(derived) : null
+    if (!cidr) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'address_cidr_unreported',
+        serverId: member.serverId,
+      }
+    }
+    const list = groups.get(cidr) ?? []
+    list.push(member)
+    groups.set(cidr, list)
+  }
+  return {
+    ok: true,
+    groups: [...groups.entries()].map(([cidr, grouped]) => ({
+      cidr,
+      members: grouped,
+    })),
+  }
+}
+
+export type SubnetResolutionOutcome =
+  | { ok: true; networkId: string; created: false }
+  | { ok: true; created: true; cidr: string }
+  | { ok: false; error: 'address_not_reported' }
+
+/**
+ * Match `address` against already-known site subnets, or signal that a new
+ * subnet should be created from the host's reported prefix.
+ *
+ * A working list may include pending rows with an empty `networkId` so several
+ * members in the same request that share a fresh CIDR reuse one new row.
+ */
+export function resolveOrCreateSubnetForAddress(
+  address: string,
+  serverMetadata: unknown,
+  subnets: readonly MemberPinSubnet[],
+): SubnetResolutionOutcome {
+  const matched = resolveSubnetForAddress(subnets, address)
+  if (matched) {
+    if (matched.networkId) {
+      return { ok: true, networkId: matched.networkId, created: false }
+    }
+    return { ok: true, created: true, cidr: matched.cidr }
+  }
+  const derived = siteCidrForAddress(serverMetadata, address)
+  const cidr = derived ? alignedNetworkCidr(derived) : null
+  if (!cidr) {
+    return { ok: false, error: 'address_not_reported' }
+  }
+  return { ok: true, created: true, cidr }
 }
 
 export function mergeDatacenterMetadata(

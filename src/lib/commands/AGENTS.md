@@ -106,8 +106,8 @@ MVP, `daemon.ping`, `server.hostname.set`, `server.timezone.set`,
 `server.hostname.set` success, the consumer calls `touchServerMetadata` to
 update the `server.hostname` column — the instance never updates hostname
 speculatively. For `server.timezone.set` / `server.ntp.set` success, the
-consumer merges observed timezone/NTP state into `server.metadata.timeSync` so
-the read model refreshes before the next heartbeat. For
+consumer writes observed timezone/NTP state onto the dedicated
+`server.timezone` / NTP columns so the read model refreshes before the next heartbeat. For
 `server.fabric.reconcile` success with `enabled: true`, the consumer stamps
 `relay.public_key` from the result (private key never leaves the host), records
 `relay.metadata.appliedPayloadHash` / `appliedAt` / `observed` from the daemon
@@ -122,9 +122,12 @@ clear the applied hash so the next pass retries.
 
 **TurboFabric gateway/member model:** relays are `role = 'gateway' | 'member'`.
 Members always get a host `/32` route. Gateways also advertise `advertisedCidrs`
-(datacenter LAN CIDRs). Apply returns **422** `gateway_datacenter_required` /
+(datacenter LAN CIDRs); an empty gateway `advertisedCidrs` now resolves to the
+derived **IPv4** subnets of that relay's datacenters (operator-set list wins
+verbatim). Apply returns **422** `gateway_datacenter_required` /
 `gateway_datacenter_cidr_required` when a gateway lacks a datacenter or that
-datacenter has no CIDR network. `POST /organizations/:id/fabric/apply`
+datacenter has no subnet at all (`gateway_datacenter_cidr_required` now means
+"that datacenter has no subnet at all"). `POST /organizations/:id/fabric/apply`
 force-reconciles every relay; PUT disable tears down the mesh and reclaims
 `network(kind='compose')` / `segment` rows. Overlay addresses auto-allocate from
 `fabric.cidr`. For `environment.deploy` / `environment.stop` success, the

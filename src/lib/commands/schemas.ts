@@ -2853,7 +2853,7 @@ function parseManagedApplyExposure(value: unknown): ManagedApplyExposure {
   return exposure
 }
 
-/** Matches `service_name_format_check` / compose service-key charset. */
+/** Compose YAML service-key charset (`service.compose_service_name`). */
 function isValidComposeServiceName(value: string): boolean {
   return value.length > 0 && value.length <= 255 &&
     /^[A-Za-z0-9._-]+$/.test(value)

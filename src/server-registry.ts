@@ -3,21 +3,24 @@ import type { Db } from './db.ts'
 import { verifyDaemonLicense } from './daemon/authn/license.ts'
 import {
   parseServerIps,
-  serverIpsEquals,
   type ServerReportedIp,
 } from './server-addresses.ts'
 import {
+  mergeServerHostResources,
+  osColumnsEqual,
+  osColumnsFromMetadata,
   parseServerOsMetadata,
   parseServerTimeSync,
   parseServerHostResources,
   parseServerDockerMetadata,
-  serverOsMetadataEquals,
-  serverTimeSyncEquals,
   serverHostResourcesEquals,
   serverDockerMetadataEquals,
+  timeSyncColumnPatch,
   type ServerMetadata,
+  type ServerOsColumns,
   type ServerOsMetadata,
   type ServerTimeSync,
+  type ServerTimeSyncColumns,
   type ServerHostResources,
   type ServerDockerMetadata,
 } from './lib/db/server-metadata.ts'
@@ -82,20 +85,16 @@ export type ServerHelloIdentity = {
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   const patch: Partial<ServerMetadata> = {}
-  const os = parseServerOsMetadata(identity.os)
-  if (os) patch.os = os
   const resources = parseServerHostResources(identity.resources)
-  if (resources) patch.resources = resources
-  const timeSync = parseServerTimeSync(identity.timeSync)
-  if (timeSync) {
-    patch.timeSync = {
-      ...timeSync,
-      capturedAt: timeSync.capturedAt ?? new Date().toISOString(),
-    }
-  }
   const ips =
     identity.ips === undefined ? undefined : parseServerIps(identity.ips)
-  if (ips !== undefined) patch.ips = ips
+  let nextResources = resources
+  if (ips !== undefined) {
+    nextResources = mergeServerHostResources(resources, { ips })
+  }
+  if (nextResources && Object.keys(nextResources).length > 0) {
+    patch.resources = nextResources
+  }
   const docker = parseServerDockerMetadata(identity.docker)
   if (docker) patch.docker = docker
   return patch
@@ -113,10 +112,50 @@ function identityColumnPatch(identity: ServerHelloIdentity): {
   return patch
 }
 
+function emptyOsColumns(): ServerOsColumns {
+  return {
+    osId: null,
+    osFamily: null,
+    osVersion: null,
+    osCodename: null,
+    osPrettyName: null,
+    osArchitecture: null,
+  }
+}
+
+function emptyTimeSyncColumns(): ServerTimeSyncColumns {
+  return {
+    timezone: null,
+    isTimeSyncEnabled: null,
+    ntpServers: null,
+    ntpLastSyncedAt: null,
+  }
+}
+
+function identityOsColumnPatch(
+  identity: ServerHelloIdentity,
+  current: ServerOsColumns,
+): ServerOsColumns | null {
+  const os = parseServerOsMetadata(identity.os)
+  if (!os) return null
+  const next = osColumnsFromMetadata(os)
+  return osColumnsEqual(next, current) ? null : next
+}
+
+function identityTimeSyncColumnPatch(
+  identity: ServerHelloIdentity,
+  current: ServerTimeSyncColumns,
+  nowIso: string,
+): Partial<ServerTimeSyncColumns> | null {
+  const timeSync = parseServerTimeSync(identity.timeSync)
+  if (!timeSync) return null
+  return timeSyncColumnPatch(timeSync, current, nowIso)
+}
+
 /**
- * Pure merge of os/resources/timeSync/ips/docker into `server.metadata` — no DB I/O.
- * Hostname / machineKey are dedicated columns (see {@link touchServerMetadata}).
- * Returns null when nothing would change (idempotent skip).
+ * Pure merge of resources (incl. ips) / docker into `server.metadata` — no DB I/O.
+ * Hostname, machineKey, OS, and time-sync are dedicated columns
+ * (see {@link touchServerMetadata}). Returns null when nothing would change.
  */
 export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
@@ -132,27 +171,12 @@ export function mergeServerMetadataIdentity(
   const next: ServerMetadata = { ...base }
 
   let changed = false
-  if (patch.os !== undefined && !serverOsMetadataEquals(patch.os, base.os)) {
-    next.os = patch.os
-    changed = true
-  }
-  if (
-    patch.resources !== undefined &&
-    !serverHostResourcesEquals(patch.resources, base.resources)
-  ) {
-    next.resources = patch.resources
-    changed = true
-  }
-  if (patch.timeSync !== undefined) {
-    const mergedTimeSync = { ...base.timeSync, ...patch.timeSync }
-    if (!serverTimeSyncEquals(mergedTimeSync, base.timeSync)) {
-      next.timeSync = mergedTimeSync
+  if (patch.resources !== undefined) {
+    const merged = mergeServerHostResources(base.resources, patch.resources)
+    if (!serverHostResourcesEquals(merged, base.resources)) {
+      next.resources = merged
       changed = true
     }
-  }
-  if (patch.ips !== undefined && !serverIpsEquals(patch.ips, base.ips)) {
-    next.ips = patch.ips
-    changed = true
   }
   if (
     patch.docker !== undefined &&
@@ -189,28 +213,11 @@ function buildMetadataDelta(
 ): Partial<ServerMetadata> {
   const patch = metadataPatch(identity)
   const delta: Partial<ServerMetadata> = {}
-  if (
-    patch.os !== undefined &&
-    !serverOsMetadataEquals(patch.os, base?.os)
-  ) {
-    delta.os = patch.os
-  }
-  if (
-    patch.resources !== undefined &&
-    !serverHostResourcesEquals(patch.resources, base?.resources)
-  ) {
-    delta.resources = patch.resources
-  }
-  if (patch.timeSync !== undefined) {
-    const mergedTimeSync = { ...base?.timeSync, ...patch.timeSync }
-    if (!serverTimeSyncEquals(mergedTimeSync, base?.timeSync)) {
-      // Persist the deep-merged object so jsonb || replaces the key with the
-      // full fact set (partial command outcomes must not clobber NTP fields).
-      delta.timeSync = mergedTimeSync
+  if (patch.resources !== undefined) {
+    const merged = mergeServerHostResources(base?.resources, patch.resources)
+    if (!serverHostResourcesEquals(merged, base?.resources)) {
+      delta.resources = merged
     }
-  }
-  if (patch.ips !== undefined && !serverIpsEquals(patch.ips, base?.ips)) {
-    delta.ips = patch.ips
   }
   if (
     patch.docker !== undefined &&
@@ -231,6 +238,16 @@ export async function touchServerMetadata(
       metadata: server.metadata,
       hostname: server.hostname,
       machineKey: server.machineKey,
+      osId: server.osId,
+      osFamily: server.osFamily,
+      osVersion: server.osVersion,
+      osCodename: server.osCodename,
+      osPrettyName: server.osPrettyName,
+      osArchitecture: server.osArchitecture,
+      timezone: server.timezone,
+      isTimeSyncEnabled: server.isTimeSyncEnabled,
+      ntpServers: server.ntpServers,
+      ntpLastSyncedAt: server.ntpLastSyncedAt,
     })
     .from(server)
     .where(eq(server.id, serverId))
@@ -238,8 +255,27 @@ export async function touchServerMetadata(
   const row = rows[0]
   if (!row) return
 
+  const now = nowTs()
   const base = row.metadata as ServerMetadata | null | undefined
   const columns = identityColumnPatch(identity)
+  const osPatch = identityOsColumnPatch(identity, {
+    osId: row.osId ?? null,
+    osFamily: row.osFamily ?? null,
+    osVersion: row.osVersion ?? null,
+    osCodename: row.osCodename ?? null,
+    osPrettyName: row.osPrettyName ?? null,
+    osArchitecture: row.osArchitecture ?? null,
+  })
+  const timePatch = identityTimeSyncColumnPatch(
+    identity,
+    {
+      timezone: row.timezone ?? null,
+      isTimeSyncEnabled: row.isTimeSyncEnabled ?? null,
+      ntpServers: row.ntpServers,
+      ntpLastSyncedAt: row.ntpLastSyncedAt ?? null,
+    },
+    now,
+  )
   const metadataChanged = mergeServerMetadataIdentity(base, identity) !== null
   const hostnameChanged = Boolean(
     columns.hostname && columns.hostname !== row.hostname,
@@ -247,12 +283,22 @@ export async function touchServerMetadata(
   const machineKeyChanged = Boolean(
     columns.machineKey && columns.machineKey !== row.machineKey,
   )
-  if (!metadataChanged && !hostnameChanged && !machineKeyChanged) return
+  if (
+    !metadataChanged &&
+    !hostnameChanged &&
+    !machineKeyChanged &&
+    !osPatch &&
+    !timePatch
+  ) {
+    return
+  }
 
   const delta = buildMetadataDelta(base, identity)
-  const update: Record<string, unknown> = { updatedAt: nowTs() }
+  const update: Record<string, unknown> = { updatedAt: now }
   if (hostnameChanged) update.hostname = columns.hostname
   if (machineKeyChanged) update.machineKey = columns.machineKey
+  if (osPatch) Object.assign(update, osPatch)
+  if (timePatch) Object.assign(update, timePatch)
   if (Object.keys(delta).length > 0) {
     update.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
       JSON.stringify(delta)
@@ -457,9 +503,15 @@ async function insertLicensedServer(
   licenseId: string,
   organizationId: string,
 ): Promise<string> {
+  const now = nowTs()
   const patch = metadataPatch(identity)
   const columns = identityColumnPatch(identity)
-  const now = nowTs()
+  const osPatch = identityOsColumnPatch(identity, emptyOsColumns())
+  const timePatch = identityTimeSyncColumnPatch(
+    identity,
+    emptyTimeSyncColumns(),
+    now,
+  )
   const inserted = await db
     .insert(server)
     .values({
@@ -469,6 +521,8 @@ async function insertLicensedServer(
       updatedAt: now,
       ...(columns.hostname ? { hostname: columns.hostname } : {}),
       ...(columns.machineKey ? { machineKey: columns.machineKey } : {}),
+      ...(osPatch ?? {}),
+      ...(timePatch ?? {}),
       metadata: Object.keys(patch).length > 0 ? patch : null,
     })
     .returning({ id: server.id })

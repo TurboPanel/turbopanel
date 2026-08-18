@@ -87,7 +87,8 @@ test('parseCreateProjectNames validates display names', () => {
   assertEquals(ok.displayName, 'My Project')
   assertEquals(ok.description, 'Notes')
 
-  assertEquals(parseCreateProjectNames({ name: 'bad@name' }).ok, false)
+  assertEquals(parseCreateProjectNames({ name: 'bad@name' }).ok, true)
+  assertEquals(parseCreateProjectNames({ name: 'bad\nname' }).ok, false)
 })
 
 test('parseCreateProjectOptions accepts valid compose documents', () => {

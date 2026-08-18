@@ -21,7 +21,8 @@ test('parseWorkspaceCreateNames validates names', () => {
   if (!ok.ok) throw new TypeError('expected valid workspace names')
   assertEquals(ok.displayName, 'Team A')
   assertEquals(ok.description, 'Primary')
-  assertEquals(parseWorkspaceCreateNames({ name: 'bad/name' }).ok, false)
+  assertEquals(parseWorkspaceCreateNames({ name: 'bad/name' }).ok, true)
+  assertEquals(parseWorkspaceCreateNames({ name: 'bad\nname' }).ok, false)
 })
 
 test('parseWorkspacePatchNames accepts partial updates', () => {
@@ -38,7 +39,8 @@ test('parseWorkspacePatchNames rejects non-string description', () => {
 
 test('parseWorkspacePatchNames rejects non-string and invalid names', () => {
   assertEquals(parseWorkspacePatchNames({ name: 12 }).ok, false)
-  assertEquals(parseWorkspacePatchNames({ name: 'bad/name' }).ok, false)
+  assertEquals(parseWorkspacePatchNames({ name: 'bad/name' }).ok, true)
+  assertEquals(parseWorkspacePatchNames({ name: 'bad\nname' }).ok, false)
 })
 
 test('parseWorkspacePatchNames rejects oversized description', () => {

@@ -11,80 +11,49 @@ import type { ServerReportedIp } from './server-addresses.ts'
 const test = Deno.test.bind(Deno)
 
 // `mergeServerMetadataIdentity` is a pure merge over `server.metadata` jsonb
-// (os / resources / timeSync / ips / geo) — hostname and machineKey are dedicated
-// `server` columns now (see `identityColumnPatch` / `touchServerMetadata` in
-// server-registry.ts) and are never read or written by this function.
+// (resources including ips / docker / geo). Hostname, machineKey, OS, and
+// time-sync are dedicated `server` columns (see `touchServerMetadata`).
 
-test('mergeServerMetadataIdentity merges os and skips unchanged writes', () => {
+test('mergeServerMetadataIdentity ignores os (dedicated columns)', () => {
   const os = {
     family: 'linux' as const,
     id: 'debian',
     version: '13',
     codename: 'trixie',
   }
-  const merged = mergeServerMetadataIdentity(
-    {},
-    { os },
-  )
-  assertEquals(merged, { os })
-
+  assertEquals(mergeServerMetadataIdentity({}, { os }), null)
   assertEquals(
-    mergeServerMetadataIdentity(
-      { os },
-      { os },
-    ),
+    mergeServerMetadataIdentity({ geo: { country: 'US' } }, { os }),
     null,
   )
 })
 
-test('mergeServerMetadataIdentity merges timeSync/ips without clobbering os/geo', () => {
-  const os = {
-    family: 'linux' as const,
-    id: 'debian',
-    version: '13.5',
-  }
+test('mergeServerMetadataIdentity nests ips under resources without clobbering geo', () => {
   const geo = { country: 'US', city: 'Chicago' }
+  const cpu = { coreCount: 4, threadCount: 8 }
   const ips: ServerReportedIp[] = [
-    { address: '10.0.0.1', version: 4, scope: 'private' },
-    { address: '203.0.113.10', version: 4, scope: 'public' },
+    { address: '10.0.0.1', version: 4, scope: 'private', interface: 'eth0' },
+    { address: '203.0.113.10', version: 4, scope: 'public', interface: 'eth0' },
   ]
   const merged = mergeServerMetadataIdentity(
-    {
-      os,
-      geo,
-      timeSync: { timezone: 'UTC', ntpEnabled: true, ntpServers: ['a'] },
-    },
-    {
-      timeSync: { timezone: 'America/Chicago' },
-      ips,
-    },
+    { geo, resources: { cpu } },
+    { ips },
   )
-  assertEquals(merged?.os, os)
   assertEquals(merged?.geo, geo)
-  assertEquals(merged?.timeSync?.timezone, 'America/Chicago')
-  assertEquals(merged?.timeSync?.ntpEnabled, true)
-  assertEquals(merged?.timeSync?.ntpServers, ['a'])
-  assertEquals(merged?.ips, ips)
-  assertEquals(typeof merged?.timeSync?.capturedAt, 'string')
+  assertEquals(merged?.resources?.cpu, cpu)
+  assertEquals(merged?.resources?.ips, ips)
+
+  const heartbeatMerged = mergeServerMetadataIdentity(
+    { resources: { cpu } },
+    { resources: { ips } },
+  )
+  assertEquals(heartbeatMerged?.resources?.cpu, cpu)
+  assertEquals(heartbeatMerged?.resources?.ips, ips)
 
   assertEquals(
     mergeServerMetadataIdentity(
-      {
-        timeSync: {
-          timezone: 'America/Chicago',
-          ntpEnabled: true,
-          ntpServers: ['a'],
-        },
-        ips,
-      },
-      {
-        timeSync: {
-          timezone: 'America/Chicago',
-          ntpEnabled: true,
-          ntpServers: ['a'],
-        },
-        ips,
-      },
+      { resources: { cpu, ips } },
+      { ips },
     ),
     null,
   )
@@ -97,15 +66,14 @@ test('mergeServerMetadataIdentity replaces stale ips with empty daemon report', 
   ]
   const emptyReport: ServerReportedIp[] = []
   const merged = mergeServerMetadataIdentity(
-    { ips: prior },
+    { resources: { ips: prior, cpu: { coreCount: 2 } } },
     { ips: emptyReport },
   )
-  assertEquals(merged?.ips, emptyReport)
+  assertEquals(merged?.resources?.ips, emptyReport)
+  assertEquals(merged?.resources?.cpu, { coreCount: 2 })
 })
 
 test('mergeServerMetadataIdentity ignores hostname/machineKey on the identity payload', () => {
-  // Passing hostname/machineKey (dedicated columns) alongside no metadata-worthy
-  // change must not produce a patch — those fields never reach `server.metadata`.
   const merged = mergeServerMetadataIdentity(
     {},
     { hostname: 'new-host', machineKey: 'mid-1' },
@@ -113,62 +81,63 @@ test('mergeServerMetadataIdentity ignores hostname/machineKey on the identity pa
   assertEquals(merged, null)
 })
 
-test('mergeServerMetadataIdentity treats null/undefined current as empty base', () => {
-  const os = {
-    family: 'linux' as const,
-    id: 'debian',
-    version: '13',
-  }
-  assertEquals(mergeServerMetadataIdentity(null, { os }), { os })
-  assertEquals(mergeServerMetadataIdentity(undefined, { os }), { os })
+test('mergeServerMetadataIdentity replaces leftover cpu with cpus', () => {
+  const merged = mergeServerMetadataIdentity(
+    { resources: { cpu: { coreCount: 2 } } },
+    {
+      resources: {
+        cpus: [{ cores: { total: 8 }, threads: { total: 16 } }],
+      },
+    },
+  )
+  assertEquals(merged?.resources?.cpus, [
+    { cores: { total: 8 }, threads: { total: 16 } },
+  ])
+  assertEquals(merged?.resources?.cpu, undefined)
 })
 
-test('mergeServerMetadataIdentity ignores invalid os and empty patches', () => {
+test('mergeServerMetadataIdentity treats null/undefined current as empty base', () => {
+  const resources = {
+    cpus: [{ cores: { total: 4 }, threads: { total: 8 } }],
+  }
+  assertEquals(
+    mergeServerMetadataIdentity(null, { resources }),
+    { resources },
+  )
+  assertEquals(
+    mergeServerMetadataIdentity(undefined, { resources }),
+    { resources },
+  )
+})
+
+test('mergeServerMetadataIdentity ignores empty patches', () => {
+  assertEquals(
+    mergeServerMetadataIdentity({ geo: { country: 'US' } }, {}),
+    null,
+  )
+})
+
+test('mergeServerMetadataIdentity ignores timeSync (dedicated columns)', () => {
   assertEquals(
     mergeServerMetadataIdentity(
-      { os: { family: 'linux', id: 'debian', version: '13' } },
-      { os: { family: 'not-a-family' } as never },
+      { resources: { cpu: { coreCount: 1 } } },
+      {
+        timeSync: {
+          timezone: 'America/Chicago',
+          ntpEnabled: false,
+        },
+      },
     ),
     null,
   )
-  assertEquals(mergeServerMetadataIdentity({ geo: { country: 'US' } }, {}), null)
 })
 
-test('mergeServerMetadataIdentity deep-merges timeSync NTP fields', () => {
-  const merged = mergeServerMetadataIdentity(
-    {
-      timeSync: {
-        timezone: 'UTC',
-        ntpEnabled: true,
-        ntpServers: ['a.example'],
-        fallbackNtpServers: ['b.example'],
-      },
-    },
-    {
-      timeSync: {
-        timezone: 'America/Chicago',
-        ntpEnabled: false,
-      },
-    },
-  )
-  assertEquals(merged?.timeSync?.timezone, 'America/Chicago')
-  assertEquals(merged?.timeSync?.ntpEnabled, false)
-  assertEquals(merged?.timeSync?.ntpServers, ['a.example'])
-  assertEquals(merged?.timeSync?.fallbackNtpServers, ['b.example'])
-})
-
-test('mergeServerMetadataIdentity merges docker without clobbering os/geo', () => {
-  const os = {
-    family: 'linux' as const,
-    id: 'debian',
-    version: '13.5',
-  }
+test('mergeServerMetadataIdentity merges docker without clobbering geo', () => {
   const geo = { country: 'US', city: 'Chicago' }
   const merged = mergeServerMetadataIdentity(
-    { os, geo },
+    { geo },
     { docker: { version: '28.3.3', composeVersion: '2.39.1' } },
   )
-  assertEquals(merged?.os, os)
   assertEquals(merged?.geo, geo)
   assertEquals(merged?.docker, { version: '28.3.3', composeVersion: '2.39.1' })
 

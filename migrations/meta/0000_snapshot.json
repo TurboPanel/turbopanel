@@ -1,5 +1,5 @@
 {
-  "id": "49d532c6-b03e-4e00-851a-f970ee016d62",
+  "id": "184b2c9b-a8b3-4dac-a31a-46363f0db69d",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1923,24 +1923,32 @@
           "method": "btree",
           "with": {}
         },
-        "uniq_ip_server_datacenter_member": {
-          "name": "uniq_ip_server_datacenter_member",
+        "idx_ip_scope_server_datacenter": {
+          "name": "idx_ip_scope_server_datacenter",
           "columns": [
+            {
+              "expression": "scope",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            },
             {
               "expression": "server_id",
               "isExpression": false,
               "asc": true,
-              "nulls": "last"
+              "nulls": "last",
+              "opclass": "uuid_ops"
             },
             {
               "expression": "datacenter_id",
               "isExpression": false,
               "asc": true,
-              "nulls": "last"
+              "nulls": "last",
+              "opclass": "uuid_ops"
             }
           ],
-          "isUnique": true,
-          "where": "\"ip\".\"scope\" = 'datacenter' AND \"ip\".\"server_id\" IS NOT NULL AND \"ip\".\"datacenter_id\" IS NOT NULL",
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2040,6 +2048,10 @@
         "ip_datacenter_anchor_check": {
           "name": "ip_datacenter_anchor_check",
           "value": "(\n        \"ip\".\"datacenter_id\" IS NULL OR\n        (\"ip\".\"server_id\" IS NULL AND \"ip\".\"network_id\" IS NULL) OR\n        \"ip\".\"server_id\" IS NOT NULL\n      )"
+        },
+        "ip_datacenter_member_network_check": {
+          "name": "ip_datacenter_member_network_check",
+          "value": "(\n        \"ip\".\"scope\" <> 'datacenter' OR\n        \"ip\".\"server_id\" IS NULL OR\n        \"ip\".\"network_id\" IS NOT NULL\n      )"
         }
       },
       "isRLSEnabled": false
@@ -2982,18 +2994,24 @@
           "method": "btree",
           "with": {}
         },
-        "uniq_network_datacenter_site": {
-          "name": "uniq_network_datacenter_site",
+        "uniq_network_datacenter_cidr": {
+          "name": "uniq_network_datacenter_cidr",
           "columns": [
             {
               "expression": "datacenter_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
+            },
+            {
+              "expression": "cidr",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
             }
           ],
           "isUnique": true,
-          "where": "\"network\".\"kind\" = 'datacenter' AND \"network\".\"datacenter_id\" IS NOT NULL",
+          "where": "\"network\".\"kind\" = 'datacenter'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4162,6 +4180,66 @@
         "machine_key": {
           "name": "machine_key",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "os_id": {
+          "name": "os_id",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "os_family": {
+          "name": "os_family",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "os_version": {
+          "name": "os_version",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "os_codename": {
+          "name": "os_codename",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "os_pretty_name": {
+          "name": "os_pretty_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "os_architecture": {
+          "name": "os_architecture",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_time_sync_enabled": {
+          "name": "is_time_sync_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ntp_servers": {
+          "name": "ntp_servers",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ntp_last_synced_at": {
+          "name": "ntp_last_synced_at",
+          "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false
         },

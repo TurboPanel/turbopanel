@@ -1,79 +1,83 @@
-import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import type { DerivedSecretsConfig } from './secrets.ts'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
-import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import type { Db } from "../../db.ts";
+import type { DerivedSecretsConfig } from "./secrets.ts";
+import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
+import { resolveFleetPresence } from "../../daemon/cell/fleet-presence.ts";
 import {
-  grant,
   account,
-  teammate,
-  organization,
+  grant,
   license,
+  organization,
   server,
   setting,
   team,
+  teammate,
   user,
   workspace,
-} from '../../lib/db/schema.ts'
+} from "../../lib/db/schema.ts";
 import {
   createLicense,
   generateLicenseToken,
   invalidateLicense,
-} from './license.ts'
-import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
-import { hashPassword } from './password.ts'
-import { SUPERADMIN_ROLE } from './session-store.ts'
-import { compatLogInfo, compatLogWarn } from '../../log-compat.ts'
+} from "./license.ts";
+import { clearServerDaemonState } from "../../daemon/authn/server-identity-db.ts";
+import { hashPassword } from "./password.ts";
+import { SUPERADMIN_ROLE } from "./session-store.ts";
+import { compatLogInfo, compatLogWarn } from "../../log-compat.ts";
 import {
   isEmailActiveForRuntime,
   resolveEmailSettings,
-} from '../../lib/settings/email-settings.ts'
-import { deriveMachineKey } from '../../lib/machine-key.ts'
+} from "../../lib/settings/email-settings.ts";
+import { deriveMachineKey } from "../../lib/machine-key.ts";
 import {
   ensureSelfHostSystemHierarchy,
   ensureSystemWorkspace,
   findSystemEnvironmentForServer,
   SYSTEM_SELF_HOST_COMPONENT,
-} from '../system/hierarchy.ts'
-import { WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
-
-const ORG_NAME_RE = /^[A-Za-z0-9 ._-]+$/
+} from "../system/hierarchy.ts";
+import { WORKSPACE_KIND_USER } from "../../lib/db/workspace-kind.ts";
+import {
+  DISPLAY_NAME_MAX_LENGTH,
+  displayNameCodePointLength,
+  isValidDisplayName,
+  normalizeDisplayName,
+} from "../../lib/display-name-format.ts";
 
 /** Linear-time check matching `/^[^\s@]+@[^\s@]+\.[^\s@]+$/` without backtracking. */
 function isSimpleEmailShape(email: string): boolean {
-  const at = email.indexOf('@')
-  if (at <= 0 || email.includes('@', at + 1)) return false
-  const domain = email.slice(at + 1)
-  const dot = domain.indexOf('.')
-  if (dot <= 0 || dot === domain.length - 1) return false
+  const at = email.indexOf("@");
+  if (at <= 0 || email.includes("@", at + 1)) return false;
+  const domain = email.slice(at + 1);
+  const dot = domain.indexOf(".");
+  if (dot <= 0 || dot === domain.length - 1) return false;
   for (const ch of email) {
-    if (ch === '@') continue
+    if (ch === "@") continue;
     // `trim()` empty means whitespace — same intent as `[^\s@]` without a regex.
-    if (ch.trim() === '') return false
+    if (ch.trim() === "") return false;
   }
-  return true
+  return true;
 }
 
 /**
  * Self-hosted install creates exactly one org that owns the colocated control
  * plane server and TurboPanel Platform hierarchy.
  */
-export const ROOT_ORGANIZATION_NAME = 'Root Organization'
+export const ROOT_ORGANIZATION_NAME = "Root Organization";
 /** @deprecated Prefer {@link ROOT_ORGANIZATION_NAME} — kept as the install alias. */
-export const DEFAULT_ORGANIZATION_NAME = ROOT_ORGANIZATION_NAME
+export const DEFAULT_ORGANIZATION_NAME = ROOT_ORGANIZATION_NAME;
 /**
  * Default display name for the first org provisioned for a signed-up user
  * (Workers onboarding / `createOrganizationForUser` without an explicit name).
  * Explicit create (`POST /organizations`) defaults to {@link NEW_ORGANIZATION_NAME}.
  */
-export const MY_ORGANIZATION_NAME = 'My Organization'
+export const MY_ORGANIZATION_NAME = "My Organization";
 /** Default display name when creating an additional organization via the API. */
-export const NEW_ORGANIZATION_NAME = 'New Organization'
-export const DEFAULT_TEAM_NAME = 'Default Team'
-export const DEFAULT_WORKSPACE_NAME = 'Default Workspace'
-export const COLOCATED_SERVER_DISPLAY_NAME = 'this server'
+export const NEW_ORGANIZATION_NAME = "New Organization";
+export const DEFAULT_TEAM_NAME = "Default Team";
+export const DEFAULT_WORKSPACE_NAME = "Default Workspace";
+export const COLOCATED_SERVER_DISPLAY_NAME = "this server";
 
-export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
+export const IS_SIGNUP_ENABLED_CONFIG_KEY = "IS_SIGNUP_ENABLED";
 
 /**
  * Reserved `setting.key` used as a **unique install sentinel** so initial setup
@@ -84,29 +88,30 @@ export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
  * and aborts. No schema migration is required — the row lives in the existing
  * `setting` table. See `src/lib/db/AGENTS.md` (Install sentinel invariant).
  */
-export const INSTANCE_INSTALL_SENTINEL_KEY = 'INSTANCE_INSTALL_SENTINEL'
+export const INSTANCE_INSTALL_SENTINEL_KEY = "INSTANCE_INSTALL_SENTINEL";
 
 /** Thrown when initial install is attempted but the instance is already configured. */
-export const INSTANCE_ALREADY_CONFIGURED_ERROR = 'Instance is already configured'
+export const INSTANCE_ALREADY_CONFIGURED_ERROR =
+  "Instance is already configured";
 
 /** Wrangler / platform env bindings may arrive as strings, numbers, or booleans. */
-export type SignupEnvOverride = string | number | boolean | null
+export type SignupEnvOverride = string | number | boolean | null;
 
 /** Normalize signup env bindings to a trimmed string flag, or `undefined` when unset. */
 export function normalizeSignupEnvOverride(
   value: SignupEnvOverride | undefined,
 ): string | undefined {
-  if (value === undefined || value === null) return undefined
-  if (typeof value === 'boolean') return value ? '1' : '0'
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) return undefined
-    return String(Math.trunc(value))
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "boolean") return value ? "1" : "0";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return undefined;
+    return String(Math.trunc(value));
   }
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : undefined
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
   }
-  return undefined
+  return undefined;
 }
 
 /**
@@ -120,9 +125,9 @@ export function resolveSignupEnvOverrideFromContext(
 ): SignupEnvOverride | undefined {
   const fromPlatform = normalizeSignupEnvOverride(
     platformEnv?.TURBOPANEL_IS_SIGNUP_ENABLED,
-  )
-  if (fromPlatform !== undefined) return fromPlatform
-  return fallback
+  );
+  if (fromPlatform !== undefined) return fromPlatform;
+  return fallback;
 }
 
 /**
@@ -143,17 +148,17 @@ export function resolveSignupEnvOverrideFromContext(
 export function resolveIsSignupEnabled(
   dbValue: string | null | undefined,
   envOverride?: SignupEnvOverride,
-  _options?: { runtime?: 'deno' | 'workers' },
+  _options?: { runtime?: "deno" | "workers" },
 ): boolean {
-  const normalizedEnv = normalizeSignupEnvOverride(envOverride)
+  const normalizedEnv = normalizeSignupEnvOverride(envOverride);
   if (normalizedEnv !== undefined) {
-    const flag = normalizedEnv.toLowerCase()
-    if (flag === '1' || flag === 'true') return true
-    if (flag === '0' || flag === 'false') return false
+    const flag = normalizedEnv.toLowerCase();
+    if (flag === "1" || flag === "true") return true;
+    if (flag === "0" || flag === "false") return false;
   }
-  if (dbValue === '1') return true
-  if (dbValue === '0') return false
-  return false
+  if (dbValue === "1") return true;
+  if (dbValue === "0") return false;
+  return false;
 }
 
 /**
@@ -167,14 +172,14 @@ export function assertLiveSignupNotForceEnabled(
   liveSignupVar: SignupEnvOverride | undefined,
   options?: { allowForceEnable?: boolean },
 ): void {
-  if (options?.allowForceEnable) return
-  const normalized = normalizeSignupEnvOverride(liveSignupVar)
-  if (normalized === undefined) return
-  const flag = normalized.toLowerCase()
-  if (flag === '1' || flag === 'true') {
+  if (options?.allowForceEnable) return;
+  const normalized = normalizeSignupEnvOverride(liveSignupVar);
+  if (normalized === undefined) return;
+  const flag = normalized.toLowerCase();
+  if (flag === "1" || flag === "true") {
     throw new Error(
-      'env.live must not commit TURBOPANEL_IS_SIGNUP_ENABLED as a force-enable; leave it unset in wrangler.jsonc and open sign-up via the Cloudflare dashboard',
-    )
+      "env.live must not commit TURBOPANEL_IS_SIGNUP_ENABLED as a force-enable; leave it unset in wrangler.jsonc and open sign-up via the Cloudflare dashboard",
+    );
   }
 }
 
@@ -188,44 +193,45 @@ export function readLiveSignupEnvOverrideFromWranglerJsonc(
 ): string | undefined {
   // Local import avoids a hard dependency cycle with workers-bindings helpers.
   const withoutComments = wranglerText
-    .split('\n')
+    .split("\n")
     .map((line) => {
-      const commentAt = line.indexOf('//')
-      return commentAt < 0 ? line : line.slice(0, commentAt)
+      const commentAt = line.indexOf("//");
+      return commentAt < 0 ? line : line.slice(0, commentAt);
     })
-    .join('\n')
-  const liveMatch = /"live"\s*:\s*\{/.exec(withoutComments)
-  if (!liveMatch) return undefined
-  const liveBlock = withoutComments.slice(liveMatch.index)
-  const varsMatch = /"vars"\s*:\s*\{/.exec(liveBlock)
-  if (!varsMatch) return undefined
-  const varsStart = varsMatch.index + varsMatch[0].length
+    .join("\n");
+  const liveMatch = /"live"\s*:\s*\{/.exec(withoutComments);
+  if (!liveMatch) return undefined;
+  const liveBlock = withoutComments.slice(liveMatch.index);
+  const varsMatch = /"vars"\s*:\s*\{/.exec(liveBlock);
+  if (!varsMatch) return undefined;
+  const varsStart = varsMatch.index + varsMatch[0].length;
   // Find matching closing brace for the vars object.
-  let depth = 1
-  let i = varsStart
+  let depth = 1;
+  let i = varsStart;
   while (i < liveBlock.length && depth > 0) {
-    const ch = liveBlock[i]
-    if (ch === '{') depth += 1
-    else if (ch === '}') depth -= 1
-    i += 1
+    const ch = liveBlock[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") depth -= 1;
+    i += 1;
   }
-  const varsBody = liveBlock.slice(varsStart, i - 1)
-  const valueMatch =
-    /"TURBOPANEL_IS_SIGNUP_ENABLED"\s*:\s*"([^"]*)"/.exec(varsBody)
-  if (!valueMatch) return undefined
-  const trimmed = valueMatch[1].trim()
-  return trimmed.length > 0 ? trimmed : undefined
+  const varsBody = liveBlock.slice(varsStart, i - 1);
+  const valueMatch = /"TURBOPANEL_IS_SIGNUP_ENABLED"\s*:\s*"([^"]*)"/.exec(
+    varsBody,
+  );
+  if (!valueMatch) return undefined;
+  const trimmed = valueMatch[1].trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export type InstallStatus = {
-  needsInstall: boolean
-  isInstallMode: boolean
-  isSignupEnabled: boolean
-  isSignupEmailVerificationEnabled: boolean
-}
+  needsInstall: boolean;
+  isInstallMode: boolean;
+  isSignupEnabled: boolean;
+  isSignupEmailVerificationEnabled: boolean;
+};
 
 function nowTs(): string {
-  return new Date().toISOString()
+  return new Date().toISOString();
 }
 
 export async function insertOwnerGrants(
@@ -236,11 +242,11 @@ export async function insertOwnerGrants(
   await db
     .insert(grant)
     .values({
-      entityType: 'organization',
+      entityType: "organization",
       entityId: organizationId,
-      actorType: 'user',
+      actorType: "user",
       actorId: userId,
-      permission: 'organization:own',
+      permission: "organization:own",
     })
     .onConflictDoNothing({
       target: [
@@ -250,7 +256,7 @@ export async function insertOwnerGrants(
         grant.actorId,
         grant.permission,
       ],
-    })
+    });
 }
 
 /** Insert the org's initial user workspace. Call inside the same transaction as org create. */
@@ -265,24 +271,24 @@ export async function insertDefaultWorkspace(
       name: DEFAULT_WORKSPACE_NAME,
       kind: WORKSPACE_KIND_USER,
     })
-    .returning({ id: workspace.id })
+    .returning({ id: workspace.id });
 
-  const workspaceId = inserted[0]?.id
+  const workspaceId = inserted[0]?.id;
   if (!workspaceId) {
-    throw new Error('Default workspace creation failed')
+    throw new Error("Default workspace creation failed");
   }
-  return workspaceId
+  return workspaceId;
 }
 
 /** Production FHS state dir for persistent daemon identity (dev and managed). */
-const DEFAULT_DAEMON_STATE_DIR = '/var/lib/turbopanel'
+const DEFAULT_DAEMON_STATE_DIR = "/var/lib/turbopanel";
 
 function stripTrailingSlash(path: string): string {
-  let end = path.length
+  let end = path.length;
   while (end > 0 && (path.codePointAt(end - 1) ?? 0) === 47) {
-    end--
+    end--;
   }
-  return end === 0 ? '/' : path.slice(0, end)
+  return end === 0 ? "/" : path.slice(0, end);
 }
 
 /**
@@ -294,19 +300,19 @@ function stripTrailingSlash(path: string): string {
  * `TURBOPANEL_STATE_DIR`, else the FHS default (`/var/lib/turbopanel`).
  */
 const COLOCATED_DAEMON_IDENTITY_FILES = [
-  'server.id',
-  'server-key.json',
-  'server-key-id',
-] as const
+  "server.id",
+  "server-key.json",
+  "server-key-id",
+] as const;
 
 /** Drop stale on-disk daemon identity so a fresh install always re-enrolls. */
 export async function clearColocatedDaemonIdentityFiles(): Promise<void> {
-  if (typeof Deno === 'undefined') return
+  if (typeof Deno === "undefined") return;
 
-  const stateDir = resolveColocatedLicenseCredentialsDir()
+  const stateDir = resolveColocatedLicenseCredentialsDir();
   for (const file of COLOCATED_DAEMON_IDENTITY_FILES) {
     try {
-      await Deno.remove(`${stateDir}/${file}`)
+      await Deno.remove(`${stateDir}/${file}`);
     } catch {
       // Missing files are fine.
     }
@@ -314,14 +320,15 @@ export async function clearColocatedDaemonIdentityFiles(): Promise<void> {
 }
 
 function resolveColocatedLicenseCredentialsDir(): string {
-  if (typeof Deno !== 'undefined') {
-    const daemonStateOverride = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')?.trim()
-    if (daemonStateOverride) return stripTrailingSlash(daemonStateOverride)
+  if (typeof Deno !== "undefined") {
+    const daemonStateOverride = Deno.env.get("TURBOPANEL_DAEMON_STATE_DIR")
+      ?.trim();
+    if (daemonStateOverride) return stripTrailingSlash(daemonStateOverride);
 
-    const stateOverride = Deno.env.get('TURBOPANEL_STATE_DIR')?.trim()
-    if (stateOverride) return stripTrailingSlash(stateOverride)
+    const stateOverride = Deno.env.get("TURBOPANEL_STATE_DIR")?.trim();
+    if (stateOverride) return stripTrailingSlash(stateOverride);
   }
-  return DEFAULT_DAEMON_STATE_DIR
+  return DEFAULT_DAEMON_STATE_DIR;
 }
 
 /** True once an org has a name and at least one superadmin account exists. */
@@ -330,19 +337,19 @@ export async function isInstanceInstalled(db: Db): Promise<boolean> {
     .select({ id: organization.id })
     .from(organization)
     .where(isNotNull(organization.name))
-    .limit(1)
+    .limit(1);
 
-  if (orgRows.length === 0) return false
+  if (orgRows.length === 0) return false;
 
   const adminRows = await db
     .select({ id: user.id, role: user.role })
     .from(user)
     .where(eq(user.role, SUPERADMIN_ROLE))
-    .limit(1)
+    .limit(1);
 
-  if (adminRows.length === 0) return false
+  if (adminRows.length === 0) return false;
 
-  return true
+  return true;
 }
 
 /**
@@ -350,29 +357,32 @@ export async function isInstanceInstalled(db: Db): Promise<boolean> {
  * `'0'`/`'1'`; ignore objects/arrays so they never become `'[object Object]'`.
  */
 function readSignupSettingString(raw: unknown): string | null {
-  if (typeof raw === 'string') return raw
-  if (typeof raw === 'number' || typeof raw === 'boolean' || typeof raw === 'bigint') {
-    return `${raw}`
+  if (typeof raw === "string") return raw;
+  if (
+    typeof raw === "number" || typeof raw === "boolean" ||
+    typeof raw === "bigint"
+  ) {
+    return `${raw}`;
   }
-  return null
+  return null;
 }
 
 export async function isSignupEnabled(
   db: Db,
   envOverride?: SignupEnvOverride,
-  runtime: 'deno' | 'workers' = 'deno',
+  runtime: "deno" | "workers" = "deno",
 ): Promise<boolean> {
   const rows = await db
     .select({ value: setting.value })
     .from(setting)
     .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
-    .limit(1)
+    .limit(1);
 
   return resolveIsSignupEnabled(
     readSignupSettingString(rows[0]?.value),
     envOverride,
     { runtime },
-  )
+  );
 }
 
 /**
@@ -385,47 +395,48 @@ export async function isSignupEnabled(
  */
 export async function resolveEffectiveSignupEnabled(
   db: Db | undefined,
-  runtime: 'deno' | 'workers',
+  runtime: "deno" | "workers",
   envOverride?: SignupEnvOverride,
 ): Promise<boolean> {
   if (db === undefined) {
-    return resolveIsSignupEnabled(undefined, envOverride, { runtime })
+    return resolveIsSignupEnabled(undefined, envOverride, { runtime });
   }
-  return isSignupEnabled(db, envOverride, runtime)
+  return isSignupEnabled(db, envOverride, runtime);
 }
 
 export type SignupSettingMeta = {
   /** Effective flag after env force + DB resolution. */
-  enabled: boolean
+  enabled: boolean;
   /** Raw DB value (`'1'` / `'0'`), or null when unset. */
-  dbValue: '0' | '1' | null
+  dbValue: "0" | "1" | null;
   /** True when `TURBOPANEL_IS_SIGNUP_ENABLED` is a recognized force override. */
-  isEnvForced: boolean
-  envOverride: string | null
-}
+  isEnvForced: boolean;
+  envOverride: string | null;
+};
 
 /** Read signup setting metadata for the admin panel. */
 export async function getSignupSettingMeta(
   db: Db,
-  runtime: 'deno' | 'workers',
+  runtime: "deno" | "workers",
   envOverride?: SignupEnvOverride,
 ): Promise<SignupSettingMeta> {
-  const normalizedEnv = normalizeSignupEnvOverride(envOverride)
-  let isEnvForced = false
+  const normalizedEnv = normalizeSignupEnvOverride(envOverride);
+  let isEnvForced = false;
   if (normalizedEnv !== undefined) {
-    const flag = normalizedEnv.toLowerCase()
-    isEnvForced = flag === '1' || flag === 'true' || flag === '0' || flag === 'false'
+    const flag = normalizedEnv.toLowerCase();
+    isEnvForced = flag === "1" || flag === "true" || flag === "0" ||
+      flag === "false";
   }
 
-  let dbValue: '0' | '1' | null = null
+  let dbValue: "0" | "1" | null = null;
   const rows = await db
     .select({ value: setting.value })
     .from(setting)
     .where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
-    .limit(1)
-  const asString = readSignupSettingString(rows[0]?.value)
-  if (asString === '0' || asString === '1') {
-    dbValue = asString
+    .limit(1);
+  const asString = readSignupSettingString(rows[0]?.value);
+  if (asString === "0" || asString === "1") {
+    dbValue = asString;
   }
 
   return {
@@ -433,7 +444,7 @@ export async function getSignupSettingMeta(
     dbValue,
     isEnvForced,
     envOverride: normalizedEnv ?? null,
-  }
+  };
 }
 
 /**
@@ -444,7 +455,7 @@ export async function setSignupEnabledSetting(
   db: Db,
   enabled: boolean,
 ): Promise<void> {
-  const value = enabled ? '1' : '0'
+  const value = enabled ? "1" : "0";
   await db
     .insert(setting)
     .values({ key: IS_SIGNUP_ENABLED_CONFIG_KEY, value })
@@ -454,7 +465,7 @@ export async function setSignupEnabledSetting(
         value,
         updatedAt: nowTs(),
       },
-    })
+    });
 }
 
 export async function getInstallStatus(
@@ -464,95 +475,118 @@ export async function getInstallStatus(
   dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<InstallStatus> {
   // Sequential: parallel drizzle queries on postgres.js can wedge the pool (Deno dev).
-  const installed = await isInstanceInstalled(db)
-  const signupEnabled = await resolveEffectiveSignupEnabled(db, 'deno', envOverride)
-  const emailSettings = await resolveEmailSettings(db, platformEnv, dataEncryptionSecrets)
-  const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, 'deno')
-  const needsInstall = !installed
+  const installed = await isInstanceInstalled(db);
+  const signupEnabled = await resolveEffectiveSignupEnabled(
+    db,
+    "deno",
+    envOverride,
+  );
+  const emailSettings = await resolveEmailSettings(
+    db,
+    platformEnv,
+    dataEncryptionSecrets,
+  );
+  const emailVerificationEnabled = isEmailActiveForRuntime(
+    emailSettings,
+    "deno",
+  );
+  const needsInstall = !installed;
   return {
     needsInstall,
     isInstallMode: needsInstall,
     isSignupEnabled: signupEnabled,
     isSignupEmailVerificationEnabled: emailVerificationEnabled,
-  }
+  };
 }
 
 export type DenoClientPublicStatus = InstallStatus & {
-  ok: true
+  ok: true;
   /** Control-plane runtime — UI uses this for self-hosted (green) vs HA (blue) auth chrome. */
-  runtime: 'deno'
-}
+  runtime: "deno";
+};
 
 export type WorkersClientPublicStatus = {
-  ok: true
-  runtime: 'workers'
-  isSignupEnabled: boolean
-  isSignupEmailVerificationEnabled: boolean
-}
+  ok: true;
+  runtime: "workers";
+  isSignupEnabled: boolean;
+  isSignupEmailVerificationEnabled: boolean;
+};
 
-export type ClientPublicStatus = DenoClientPublicStatus | WorkersClientPublicStatus
+export type ClientPublicStatus =
+  | DenoClientPublicStatus
+  | WorkersClientPublicStatus;
 
 /** Public client status for GET /api/client/v1/status (both runtimes). */
 export async function getClientPublicStatus(
   db: Db | undefined,
-  runtime: 'deno' | 'workers',
+  runtime: "deno" | "workers",
   envOverride?: SignupEnvOverride,
   platformEnv: Record<string, string | undefined> = {},
   dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<ClientPublicStatus | null> {
-  if (runtime === 'workers') {
+  if (runtime === "workers") {
     const emailSettings = await resolveEmailSettings(
       db,
       platformEnv,
       dataEncryptionSecrets,
-    )
+    );
     return {
       ok: true,
-      runtime: 'workers',
-      isSignupEnabled: await resolveEffectiveSignupEnabled(db, runtime, envOverride),
+      runtime: "workers",
+      isSignupEnabled: await resolveEffectiveSignupEnabled(
+        db,
+        runtime,
+        envOverride,
+      ),
       isSignupEmailVerificationEnabled: isEmailActiveForRuntime(
         emailSettings,
         runtime,
       ),
-    }
+    };
   }
 
   if (db === undefined) {
-    return null
+    return null;
   }
 
-  const status = await getInstallStatus(db, envOverride, platformEnv, dataEncryptionSecrets)
-  return { ok: true, runtime: 'deno', ...status }
+  const status = await getInstallStatus(
+    db,
+    envOverride,
+    platformEnv,
+    dataEncryptionSecrets,
+  );
+  return { ok: true, runtime: "deno", ...status };
 }
 
 export function validateOrganizationName(name: string): string | null {
-  const trimmed = name.trim()
-  if (trimmed.length < 1 || trimmed.length > 255) {
-    return 'Organization name must be 1–255 characters'
+  const normalized = normalizeDisplayName(name);
+  const length = displayNameCodePointLength(normalized);
+  if (length < 1 || length > DISPLAY_NAME_MAX_LENGTH) {
+    return `Organization name must be 1–${String(DISPLAY_NAME_MAX_LENGTH)} characters`;
   }
-  if (!ORG_NAME_RE.test(trimmed)) {
-    return 'Organization name may only contain letters, numbers, spaces, and . _ -'
+  if (!isValidDisplayName(normalized)) {
+    return "Organization name cannot contain control characters";
   }
-  return null
+  return null;
 }
 
 export function validateTeamName(name: string): string | null {
-  const trimmed = name.trim()
+  const trimmed = name.trim();
   if (trimmed.length < 1 || trimmed.length > 255) {
-    return 'Team name must be 1–255 characters'
+    return "Team name must be 1–255 characters";
   }
-  return null
+  return null;
 }
 
 export function validateSuperadminEmail(email: string): string | null {
-  const trimmed = email.trim().toLowerCase()
+  const trimmed = email.trim().toLowerCase();
   if (trimmed.length < 3 || trimmed.length > 255) {
-    return 'Email must be 3–255 characters'
+    return "Email must be 3–255 characters";
   }
   if (!isSimpleEmailShape(trimmed)) {
-    return 'Enter a valid email address'
+    return "Enter a valid email address";
   }
-  return null
+  return null;
 }
 
 /**
@@ -561,9 +595,9 @@ export function validateSuperadminEmail(email: string): string | null {
  * `ui/src/components/auth/sign-up-screen.tsx` — keep the two in lockstep so the
  * UI and API cannot drift.
  */
-export const PASSWORD_SPECIAL_CHARS_PATTERN = /[$!@%&*#^()_+=-]/
-const PASSWORD_DIGIT_PATTERN = /\d/
-export const PASSWORD_MIN_LENGTH = 8
+export const PASSWORD_SPECIAL_CHARS_PATTERN = /[$!@%&*#^()_+=-]/;
+const PASSWORD_DIGIT_PATTERN = /\d/;
+export const PASSWORD_MIN_LENGTH = 8;
 
 /**
  * Canonical server-side password policy, enforced on every password-setting
@@ -578,27 +612,27 @@ export const PASSWORD_MIN_LENGTH = 8
  */
 export function validateSuperadminPassword(password: string): string | null {
   if (password !== password.trim()) {
-    return 'Password must not have leading or trailing whitespace'
+    return "Password must not have leading or trailing whitespace";
   }
   if (password.length < PASSWORD_MIN_LENGTH) {
-    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`;
   }
   if (!PASSWORD_DIGIT_PATTERN.test(password)) {
-    return 'Password must include at least one number'
+    return "Password must include at least one number";
   }
   if (!PASSWORD_SPECIAL_CHARS_PATTERN.test(password)) {
-    return 'Password must include at least one special character'
+    return "Password must include at least one special character";
   }
-  return null
+  return null;
 }
 
 export async function readLocalMachineKey(): Promise<string | undefined> {
-  if (typeof Deno === 'undefined') return undefined
+  if (typeof Deno === "undefined") return undefined;
   try {
-    const id = await Deno.readTextFile('/etc/machine-id')
-    return await deriveMachineKey(id)
+    const id = await Deno.readTextFile("/etc/machine-id");
+    return await deriveMachineKey(id);
   } catch {
-    return undefined
+    return undefined;
   }
 }
 
@@ -610,16 +644,16 @@ export async function findDefaultInstalledOrganizationId(
     .select({ id: organization.id })
     .from(organization)
     .where(eq(organization.name, ROOT_ORGANIZATION_NAME))
-    .limit(1)
-  if (byName[0]?.id) return byName[0].id
+    .limit(1);
+  if (byName[0]?.id) return byName[0].id;
 
   // Legacy installs named the root org "Default Organization".
   const byLegacyName = await db
     .select({ id: organization.id })
     .from(organization)
-    .where(eq(organization.name, 'Default Organization'))
-    .limit(1)
-  if (byLegacyName[0]?.id) return byLegacyName[0].id
+    .where(eq(organization.name, "Default Organization"))
+    .limit(1);
+  if (byLegacyName[0]?.id) return byLegacyName[0].id;
 
   const withSuperadmin = await db
     .select({ organizationId: team.organizationId })
@@ -627,32 +661,34 @@ export async function findDefaultInstalledOrganizationId(
     .innerJoin(team, eq(teammate.teamId, team.id))
     .innerJoin(user, eq(teammate.userId, user.id))
     .where(eq(user.role, SUPERADMIN_ROLE))
-    .limit(1)
-  if (withSuperadmin[0]?.organizationId) return withSuperadmin[0].organizationId
+    .limit(1);
+  if (withSuperadmin[0]?.organizationId) {
+    return withSuperadmin[0].organizationId;
+  }
 
   const rows = await db
     .select({ id: organization.id })
     .from(organization)
     .where(isNotNull(organization.name))
-    .limit(1)
+    .limit(1);
 
-  return rows[0]?.id ?? null
+  return rows[0]?.id ?? null;
 }
 
 async function findColocatedServerIdFromRegistry(
   db: Db,
   registry: DaemonCellRegistry,
 ): Promise<string | null> {
-  const onlineIds = await registry.listOnlineServerIds()
-  if (onlineIds.length === 0) return null
-  const presence = await resolveFleetPresence(db, registry, onlineIds)
+  const onlineIds = await registry.listOnlineServerIds();
+  if (onlineIds.length === 0) return null;
+  const presence = await resolveFleetPresence(db, registry, onlineIds);
   for (const id of onlineIds) {
-    const live = presence.get(id)
+    const live = presence.get(id);
     if (live?.directAttach && live.connected) {
-      return id
+      return id;
     }
   }
-  return null
+  return null;
 }
 
 /**
@@ -666,32 +702,32 @@ export async function resolveColocatedServerId(
 ): Promise<string | null> {
   return (
     (await resolveColocatedServerIdFromRegistry(db, registry)) ??
-    (await resolveColocatedServerIdByMachineKey(db)) ??
-    (await resolveColocatedServerIdByHostname(db)) ??
-    (await resolveColocatedServerIdFromSingleUnassigned(db))
-  )
+      (await resolveColocatedServerIdByMachineKey(db)) ??
+      (await resolveColocatedServerIdByHostname(db)) ??
+      (await resolveColocatedServerIdFromSingleUnassigned(db))
+  );
 }
 
 async function resolveColocatedServerIdFromRegistry(
   db: Db,
   registry?: DaemonCellRegistry,
 ): Promise<string | null> {
-  if (!registry) return null
-  const fromRegistry = await findColocatedServerIdFromRegistry(db, registry)
-  if (!fromRegistry) return null
+  if (!registry) return null;
+  const fromRegistry = await findColocatedServerIdFromRegistry(db, registry);
+  if (!fromRegistry) return null;
   const rows = await db
     .select({ id: server.id })
     .from(server)
     .where(eq(server.id, fromRegistry))
-    .limit(1)
-  return rows[0]?.id ?? null
+    .limit(1);
+  return rows[0]?.id ?? null;
 }
 
 async function resolveColocatedServerIdByMachineKey(
   db: Db,
 ): Promise<string | null> {
-  const machineKey = await readLocalMachineKey()
-  if (!machineKey) return null
+  const machineKey = await readLocalMachineKey();
+  if (!machineKey) return null;
   const byMachine = await db
     .select({ id: server.id })
     .from(server)
@@ -699,25 +735,25 @@ async function resolveColocatedServerIdByMachineKey(
       isNull(server.organizationId),
       eq(server.machineKey, machineKey),
     ))
-    .limit(1)
-  return byMachine[0]?.id ?? null
+    .limit(1);
+  return byMachine[0]?.id ?? null;
 }
 
 function readLocalHostname(): string | null {
-  if (typeof Deno === 'undefined') return null
+  if (typeof Deno === "undefined") return null;
   try {
-    return Deno.hostname()
+    return Deno.hostname();
   } catch {
     // hostname unavailable without --allow-sys=hostname
-    return null
+    return null;
   }
 }
 
 async function resolveColocatedServerIdByHostname(
   db: Db,
 ): Promise<string | null> {
-  const hostname = readLocalHostname()
-  if (!hostname) return null
+  const hostname = readLocalHostname();
+  if (!hostname) return null;
   const byHostname = await db
     .select({ id: server.id })
     .from(server)
@@ -725,43 +761,43 @@ async function resolveColocatedServerIdByHostname(
       isNull(server.organizationId),
       eq(server.hostname, hostname),
     ))
-    .limit(1)
-  return byHostname[0]?.id ?? null
+    .limit(1);
+  return byHostname[0]?.id ?? null;
 }
 
 async function resolveColocatedServerIdFromSingleUnassigned(
   db: Db,
 ): Promise<string | null> {
   // Self-hosted Deno co-located dev: a single unassigned row is this host.
-  if (typeof Deno === 'undefined') return null
+  if (typeof Deno === "undefined") return null;
   const unassigned = await db
     .select({ id: server.id })
     .from(server)
-    .where(isNull(server.organizationId))
+    .where(isNull(server.organizationId));
   if (unassigned.length === 1 && unassigned[0]?.id) {
-    return unassigned[0].id
+    return unassigned[0].id;
   }
-  return null
+  return null;
 }
 
 const COLOCATED_LICENSE_REVOKE_ERROR =
-  'The license for the co-located control plane daemon cannot be revoked'
+  "The license for the co-located control plane daemon cannot be revoked";
 
 async function readColocatedDiskLicenseId(): Promise<string | null> {
-  if (typeof Deno === 'undefined') return null
+  if (typeof Deno === "undefined") return null;
 
-  const candidates = [resolveColocatedLicenseCredentialsDir()]
+  const candidates = [resolveColocatedLicenseCredentialsDir()];
 
   for (const dir of new Set(candidates)) {
     try {
-      const id = (await Deno.readTextFile(`${dir}/license.id`)).trim()
-      if (id.length > 0) return id
+      const id = (await Deno.readTextFile(`${dir}/license.id`)).trim();
+      if (id.length > 0) return id;
     } catch {
       // try next candidate path
     }
   }
 
-  return null
+  return null;
 }
 
 /** Live registry: active license latched to the Unix-socket co-located server, if any. */
@@ -770,21 +806,24 @@ async function resolveLicenseIdFromColocatedRegistry(
   registry: DaemonCellRegistry,
   organizationId?: string,
 ): Promise<string | null> {
-  const colocatedServerId = await findColocatedServerIdFromRegistry(db, registry)
-  if (!colocatedServerId) return null
+  const colocatedServerId = await findColocatedServerIdFromRegistry(
+    db,
+    registry,
+  );
+  if (!colocatedServerId) return null;
   const filter = organizationId
     ? and(
       eq(license.serverId, colocatedServerId),
       eq(license.organizationId, organizationId),
       isNull(license.revokedAt),
     )
-    : and(eq(license.serverId, colocatedServerId), isNull(license.revokedAt))
+    : and(eq(license.serverId, colocatedServerId), isNull(license.revokedAt));
   const rows = await db
     .select({ id: license.id })
     .from(license)
     .where(filter)
-    .limit(1)
-  return rows[0]?.id ?? null
+    .limit(1);
+  return rows[0]?.id ?? null;
 }
 
 /** Install-wizard license named {@link COLOCATED_SERVER_DISPLAY_NAME}, if still active. */
@@ -800,8 +839,8 @@ async function resolveInstallDisplayNameLicenseId(
       eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
       isNull(license.revokedAt),
     ))
-    .limit(1)
-  return installLicense[0]?.id ?? null
+    .limit(1);
+  return installLicense[0]?.id ?? null;
 }
 
 /**
@@ -814,20 +853,23 @@ async function addSelfHostBoundLicenseIds(
   organizationId?: string,
 ): Promise<void> {
   const boundFilter = organizationId
-    ? and(eq(license.organizationId, organizationId), isNotNull(license.serverId))
-    : isNotNull(license.serverId)
+    ? and(
+      eq(license.organizationId, organizationId),
+      isNotNull(license.serverId),
+    )
+    : isNotNull(license.serverId);
   const boundRows = await db
     .select({ id: license.id, serverId: license.serverId })
     .from(license)
-    .where(boundFilter)
+    .where(boundFilter);
   for (const row of boundRows) {
-    if (!row.serverId || ids.has(row.id)) continue
+    if (!row.serverId || ids.has(row.id)) continue;
     const envId = await findSystemEnvironmentForServer(
       db,
       row.serverId,
       SYSTEM_SELF_HOST_COMPONENT,
-    )
-    if (envId) ids.add(row.id)
+    );
+    if (envId) ids.add(row.id);
   }
 }
 
@@ -846,8 +888,8 @@ export async function resolveProtectedColocatedLicenseIds(
   registry?: DaemonCellRegistry,
   organizationId?: string,
 ): Promise<Set<string>> {
-  const ids = new Set<string>()
-  if (typeof Deno === 'undefined') return ids
+  const ids = new Set<string>();
+  if (typeof Deno === "undefined") return ids;
 
   // Accumulate every protection source — a registry hit must not skip disk,
   // reserved display-name, or durable self-host pin fallbacks.
@@ -856,20 +898,23 @@ export async function resolveProtectedColocatedLicenseIds(
       db,
       registry,
       organizationId,
-    )
-    if (registryLicenseId != null) ids.add(registryLicenseId)
+    );
+    if (registryLicenseId != null) ids.add(registryLicenseId);
   }
 
-  const diskId = await readColocatedDiskLicenseId()
-  if (diskId) ids.add(diskId)
+  const diskId = await readColocatedDiskLicenseId();
+  if (diskId) ids.add(diskId);
 
   if (organizationId) {
-    const installId = await resolveInstallDisplayNameLicenseId(db, organizationId)
-    if (installId) ids.add(installId)
+    const installId = await resolveInstallDisplayNameLicenseId(
+      db,
+      organizationId,
+    );
+    if (installId) ids.add(installId);
   }
 
-  await addSelfHostBoundLicenseIds(db, ids, organizationId)
-  return ids
+  await addSelfHostBoundLicenseIds(db, ids, organizationId);
+  return ids;
 }
 
 export async function isProtectedColocatedLicenseId(
@@ -882,12 +927,12 @@ export async function isProtectedColocatedLicenseId(
     db,
     registry,
     organizationId,
-  )
-  return protectedIds.has(licenseId)
+  );
+  return protectedIds.has(licenseId);
 }
 
 export function colocatedLicenseRevokeError(): string {
-  return COLOCATED_LICENSE_REVOKE_ERROR
+  return COLOCATED_LICENSE_REVOKE_ERROR;
 }
 
 /** Assign the co-located daemon to the default installed organization when possible. */
@@ -895,26 +940,26 @@ export async function tryAssignColocatedDaemonToInstalledOrganization(
   db: Db,
   registry?: DaemonCellRegistry,
 ): Promise<void> {
-  const organizationId = await findDefaultInstalledOrganizationId(db)
-  if (!organizationId) return
+  const organizationId = await findDefaultInstalledOrganizationId(db);
+  if (!organizationId) return;
 
   const serverId = await assignColocatedDaemonToOrganization(
     db,
     organizationId,
     registry,
-  )
-  if (!serverId) return
+  );
+  if (!serverId) return;
 
   try {
     await ensureSelfHostSystemHierarchy(db, {
       organizationId,
       serverId,
-    })
+    });
   } catch (err) {
     compatLogWarn(
-      'install',
+      "install",
       `failed to ensure self-host system hierarchy on daemon assign: ${err}`,
-    )
+    );
   }
 }
 
@@ -934,54 +979,53 @@ export async function assignColocatedDaemonToOrganization(
   organizationId: string,
   registry?: DaemonCellRegistry,
 ): Promise<string | null> {
-  const serverId = await resolveColocatedServerId(db, registry)
+  const serverId = await resolveColocatedServerId(db, registry);
   if (!serverId) {
     compatLogInfo(
-      'install',
-      'colocated server not found yet — will assign on daemon connect',
-    )
-    return null
+      "install",
+      "colocated server not found yet — will assign on daemon connect",
+    );
+    return null;
   }
 
-  const now = nowTs()
+  const now = nowTs();
   await db
     .update(server)
     .set({
       name: sql`coalesce(${server.name}, ${COLOCATED_SERVER_DISPLAY_NAME})`,
       updatedAt: now,
     })
-    .where(eq(server.id, serverId))
+    .where(eq(server.id, serverId));
 
   const updated = await db
     .update(server)
     .set({ organizationId, updatedAt: now })
     .where(and(eq(server.id, serverId), isNull(server.organizationId)))
-    .returning({ id: server.id })
+    .returning({ id: server.id });
 
   const assignedRows = await db
     .select({ organizationId: server.organizationId })
     .from(server)
     .where(eq(server.id, serverId))
-    .limit(1)
+    .limit(1);
 
-  const assignedOrgId = assignedRows[0]?.organizationId
+  const assignedOrgId = assignedRows[0]?.organizationId;
 
   if (updated.length > 0) {
     compatLogInfo(
-      'install',
+      "install",
       `assigned colocated server ${serverId} to organization ${organizationId}`,
-    )
-    return serverId
+    );
+    return serverId;
   }
 
-  return assignedOrgId != null ? serverId : null
+  return assignedOrgId != null ? serverId : null;
 }
-
 
 export type CompleteInstallInput = {
-  superadminEmail: string
-  superadminPassword: string
-}
+  superadminEmail: string;
+  superadminPassword: string;
+};
 
 /**
  * Write colocated daemon license (+ optional pre-provisioned `server.id`) for
@@ -996,32 +1040,32 @@ export async function persistColocatedLicenseCredentials(
   licenseToken: string,
   serverId?: string,
 ): Promise<boolean> {
-  if (typeof Deno === 'undefined') return false
+  if (typeof Deno === "undefined") return false;
 
   try {
-    const stateDir = resolveColocatedLicenseCredentialsDir()
-    await Deno.mkdir(stateDir, { recursive: true })
+    const stateDir = resolveColocatedLicenseCredentialsDir();
+    await Deno.mkdir(stateDir, { recursive: true });
     // Write server.id before license credentials so a racing enroll always sees
     // the pre-provisioned seat (fresh license + missing serverId would be
     // rejected as already consumed).
     if (serverId) {
       await Deno.writeTextFile(`${stateDir}/server.id`, `${serverId}\n`, {
         create: true,
-      })
+      });
     }
     await Deno.writeTextFile(`${stateDir}/license.id`, licenseId, {
       create: true,
-    })
+    });
     await Deno.writeTextFile(`${stateDir}/license.token`, licenseToken, {
       create: true,
-    })
-    return true
+    });
+    return true;
   } catch (err) {
     compatLogWarn(
-      'install',
+      "install",
       `failed to write license credentials to disk: ${err}`,
-    )
-    return false
+    );
+    return false;
   }
 }
 
@@ -1035,13 +1079,13 @@ export async function persistColocatedLicenseCredentials(
 export async function ensureColocatedServerSeat(
   db: Db,
   opts: {
-    organizationId: string
-    licenseId: string
-    registry?: DaemonCellRegistry
+    organizationId: string;
+    licenseId: string;
+    registry?: DaemonCellRegistry;
   },
 ): Promise<string> {
-  const { organizationId, licenseId, registry } = opts
-  const now = nowTs()
+  const { organizationId, licenseId, registry } = opts;
+  const now = nowTs();
 
   const bound = await db
     .select({ serverId: license.serverId })
@@ -1051,17 +1095,17 @@ export async function ensureColocatedServerSeat(
       isNull(license.revokedAt),
       isNotNull(license.serverId),
     ))
-    .limit(1)
+    .limit(1);
   if (bound[0]?.serverId) {
-    await assignColocatedDaemonToOrganization(db, organizationId, registry)
-    return bound[0].serverId
+    await assignColocatedDaemonToOrganization(db, organizationId, registry);
+    return bound[0].serverId;
   }
 
   const existingServerId = await assignColocatedDaemonToOrganization(
     db,
     organizationId,
     registry,
-  )
+  );
   if (existingServerId) {
     await db
       .update(license)
@@ -1070,8 +1114,8 @@ export async function ensureColocatedServerSeat(
         eq(license.id, licenseId),
         isNull(license.serverId),
         isNull(license.revokedAt),
-      ))
-    return existingServerId
+      ));
+    return existingServerId;
   }
 
   const inserted = await db
@@ -1083,11 +1127,11 @@ export async function ensureColocatedServerSeat(
       createdAt: now,
       updatedAt: now,
     })
-    .returning({ id: server.id })
+    .returning({ id: server.id });
 
-  const serverId = inserted[0]?.id
+  const serverId = inserted[0]?.id;
   if (!serverId) {
-    throw new Error('Colocated server seat creation failed')
+    throw new Error("Colocated server seat creation failed");
   }
 
   const latched = await db
@@ -1098,30 +1142,29 @@ export async function ensureColocatedServerSeat(
       isNull(license.serverId),
       isNull(license.revokedAt),
     ))
-    .returning({ id: license.id })
+    .returning({ id: license.id });
 
   if (latched.length === 0) {
     // Concurrent latch won — prefer the winner's server and drop the orphan.
-    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(server).where(eq(server.id, serverId));
     const raced = await db
       .select({ serverId: license.serverId })
       .from(license)
       .where(eq(license.id, licenseId))
-      .limit(1)
-    const racedServerId = raced[0]?.serverId
+      .limit(1);
+    const racedServerId = raced[0]?.serverId;
     if (!racedServerId) {
-      throw new Error('Colocated license latch race left no server')
+      throw new Error("Colocated license latch race left no server");
     }
-    return racedServerId
+    return racedServerId;
   }
 
   compatLogInfo(
-    'install',
+    "install",
     `provisioned colocated server seat ${serverId} for organization ${organizationId}`,
-  )
-  return serverId
+  );
+  return serverId;
 }
-
 
 /**
  * Restore colocated disk credentials for an org.
@@ -1134,34 +1177,34 @@ export async function rotateColocatedLicenseCredentials(
   db: Db,
   organizationId: string,
 ): Promise<{ licenseId: string; licenseToken: string }> {
-  const boundActive = await findActiveBoundColocatedLicense(db, organizationId)
+  const boundActive = await findActiveBoundColocatedLicense(db, organizationId);
   if (boundActive) {
-    return rotateLicenseTokenInPlace(db, boundActive.id)
+    return rotateLicenseTokenInPlace(db, boundActive.id);
   }
 
   return db.transaction(async (tx) => {
-    const priorServerId = await findColocatedBoundServerId(tx, organizationId)
-    await revokeActiveColocatedLicenses(tx, organizationId)
+    const priorServerId = await findColocatedBoundServerId(tx, organizationId);
+    await revokeActiveColocatedLicenses(tx, organizationId);
     const created = await createLicense(tx, {
       organizationId,
       name: COLOCATED_SERVER_DISPLAY_NAME,
-    })
+    });
 
     if (priorServerId) {
       // Free the unique-index slot held by revoked rows, then latch the new seat.
       await tx
         .update(license)
         .set({ serverId: null, updatedAt: nowTs() })
-        .where(eq(license.serverId, priorServerId))
+        .where(eq(license.serverId, priorServerId));
       await tx
         .update(license)
         .set({ serverId: priorServerId, updatedAt: nowTs() })
-        .where(eq(license.id, created.licenseId))
-      await clearServerDaemonState(tx, priorServerId)
+        .where(eq(license.id, created.licenseId));
+      await clearServerDaemonState(tx, priorServerId);
     }
 
-    return created
-  })
+    return created;
+  });
 }
 
 /** Active colocated license already latched to a server, if any. */
@@ -1178,10 +1221,10 @@ async function findActiveBoundColocatedLicense(
       isNull(license.revokedAt),
       isNotNull(license.serverId),
     ))
-    .limit(1)
-  const row = rows[0]
-  if (!row?.serverId) return null
-  return { id: row.id, serverId: row.serverId }
+    .limit(1);
+  const row = rows[0];
+  if (!row?.serverId) return null;
+  return { id: row.id, serverId: row.serverId };
 }
 
 /**
@@ -1200,8 +1243,8 @@ async function findColocatedBoundServerId(
       eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
       isNotNull(license.serverId),
     ))
-    .limit(1)
-  return rows[0]?.serverId ?? null
+    .limit(1);
+  return rows[0]?.serverId ?? null;
 }
 
 /** Mint a new plaintext token on an existing active license row. */
@@ -1209,16 +1252,16 @@ async function rotateLicenseTokenInPlace(
   db: Db,
   licenseId: string,
 ): Promise<{ licenseId: string; licenseToken: string }> {
-  const { plaintext, hashed } = await generateLicenseToken()
+  const { plaintext, hashed } = await generateLicenseToken();
   const updated = await db
     .update(license)
     .set({ token: hashed, updatedAt: nowTs() })
     .where(and(eq(license.id, licenseId), isNull(license.revokedAt)))
-    .returning({ id: license.id })
+    .returning({ id: license.id });
   if (!updated[0]?.id) {
-    throw new Error('Colocated license token rotation failed')
+    throw new Error("Colocated license token rotation failed");
   }
-  return { licenseId, licenseToken: plaintext }
+  return { licenseId, licenseToken: plaintext };
 }
 
 /** Soft-invalidate every active colocated (`this server`) license for an org. */
@@ -1233,10 +1276,10 @@ async function revokeActiveColocatedLicenses(
       eq(license.organizationId, organizationId),
       eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
       isNull(license.revokedAt),
-    ))
+    ));
 
   for (const row of active) {
-    await invalidateLicense(db, row.id, organizationId)
+    await invalidateLicense(db, row.id, organizationId);
   }
 }
 
@@ -1245,7 +1288,7 @@ export async function createOrganizationForUser(
   userId: string,
   orgName?: string,
 ): Promise<{ organizationId: string; teamId: string }> {
-  const displayName = orgName?.trim() || MY_ORGANIZATION_NAME
+  const displayName = orgName?.trim() || MY_ORGANIZATION_NAME;
 
   return await db.transaction(async (tx) => {
     const insertedOrg = await tx
@@ -1253,11 +1296,11 @@ export async function createOrganizationForUser(
       .values({
         name: displayName,
       })
-      .returning({ id: organization.id })
+      .returning({ id: organization.id });
 
-    const organizationId = insertedOrg[0]?.id
+    const organizationId = insertedOrg[0]?.id;
     if (!organizationId) {
-      throw new Error('Organization creation failed')
+      throw new Error("Organization creation failed");
     }
 
     const insertedTeam = await tx
@@ -1266,28 +1309,28 @@ export async function createOrganizationForUser(
         organizationId,
         name: DEFAULT_TEAM_NAME,
       })
-      .returning({ id: team.id })
+      .returning({ id: team.id });
 
-    const teamId = insertedTeam[0]?.id
+    const teamId = insertedTeam[0]?.id;
     if (!teamId) {
-      throw new Error('Team creation failed')
+      throw new Error("Team creation failed");
     }
 
     await tx.insert(teammate).values({
       teamId,
       userId,
-    })
+    });
 
-    await insertOwnerGrants(tx, userId, organizationId)
+    await insertOwnerGrants(tx, userId, organizationId);
 
     await tx
       .insert(grant)
       .values({
-        entityType: 'team',
+        entityType: "team",
         entityId: teamId,
-        actorType: 'user',
+        actorType: "user",
         actorId: userId,
-        permission: 'team:own',
+        permission: "team:own",
       })
       .onConflictDoNothing({
         target: [
@@ -1297,12 +1340,12 @@ export async function createOrganizationForUser(
           grant.actorId,
           grant.permission,
         ],
-      })
+      });
 
-    await insertDefaultWorkspace(tx, organizationId)
+    await insertDefaultWorkspace(tx, organizationId);
 
-    return { organizationId, teamId }
-  })
+    return { organizationId, teamId };
+  });
 }
 
 export async function completeInstanceInstall(
@@ -1312,28 +1355,28 @@ export async function completeInstanceInstall(
   // Preflight only — friendly fast-fail. The authoritative guard is the unique
   // install sentinel acquired inside the transaction below.
   if (await isInstanceInstalled(db)) {
-    throw new Error(INSTANCE_ALREADY_CONFIGURED_ERROR)
+    throw new Error(INSTANCE_ALREADY_CONFIGURED_ERROR);
   }
 
-  const emailError = validateSuperadminEmail(input.superadminEmail)
-  if (emailError) throw new Error(emailError)
+  const emailError = validateSuperadminEmail(input.superadminEmail);
+  if (emailError) throw new Error(emailError);
 
-  const passwordError = validateSuperadminPassword(input.superadminPassword)
-  if (passwordError) throw new Error(passwordError)
+  const passwordError = validateSuperadminPassword(input.superadminPassword);
+  if (passwordError) throw new Error(passwordError);
 
-  const trimmedOrgName = ROOT_ORGANIZATION_NAME
-  const trimmedTeamName = DEFAULT_TEAM_NAME
-  const trimmedEmail = input.superadminEmail.trim().toLowerCase()
-  const hashedPassword = await hashPassword(input.superadminPassword)
+  const trimmedOrgName = ROOT_ORGANIZATION_NAME;
+  const trimmedTeamName = DEFAULT_TEAM_NAME;
+  const trimmedEmail = input.superadminEmail.trim().toLowerCase();
+  const hashedPassword = await hashPassword(input.superadminPassword);
 
   const existingUser = await db
     .select({ id: user.id })
     .from(user)
     .where(eq(user.email, trimmedEmail))
-    .limit(1)
+    .limit(1);
 
   if (existingUser.length > 0) {
-    throw new Error('Email is already registered')
+    throw new Error("Email is already registered");
   }
 
   const result = await db.transaction(async (tx) => {
@@ -1349,17 +1392,17 @@ export async function completeInstanceInstall(
         value: { installedAt: nowTs() },
       })
       .onConflictDoNothing({ target: setting.key })
-      .returning({ id: setting.id })
+      .returning({ id: setting.id });
 
     if (sentinel.length === 0) {
-      throw new Error(INSTANCE_ALREADY_CONFIGURED_ERROR)
+      throw new Error(INSTANCE_ALREADY_CONFIGURED_ERROR);
     }
 
     // Re-check while holding the sentinel. Guards installs that predate the
     // sentinel row (org + superadmin already exist without a sentinel): the
     // sentinel insert would otherwise succeed and create a second superadmin.
     if (await isInstanceInstalled(tx)) {
-      throw new Error(INSTANCE_ALREADY_CONFIGURED_ERROR)
+      throw new Error(INSTANCE_ALREADY_CONFIGURED_ERROR);
     }
 
     const insertedOrg = await tx
@@ -1367,16 +1410,16 @@ export async function completeInstanceInstall(
       .values({
         name: trimmedOrgName,
       })
-      .returning({ id: organization.id })
+      .returning({ id: organization.id });
 
-    const organizationId = insertedOrg[0]?.id
+    const organizationId = insertedOrg[0]?.id;
     if (!organizationId) {
-      throw new Error('Organization creation failed')
+      throw new Error("Organization creation failed");
     }
 
     // System workspace first so uuidv7 / created_at ordering puts it ahead of
     // Default Workspace in GET /workspaces.
-    await ensureSystemWorkspace(tx, organizationId)
+    await ensureSystemWorkspace(tx, organizationId);
 
     const insertedTeam = await tx
       .insert(team)
@@ -1384,11 +1427,11 @@ export async function completeInstanceInstall(
         organizationId,
         name: trimmedTeamName,
       })
-      .returning({ id: team.id })
+      .returning({ id: team.id });
 
-    const teamId = insertedTeam[0]?.id
+    const teamId = insertedTeam[0]?.id;
     if (!teamId) {
-      throw new Error('Team creation failed')
+      throw new Error("Team creation failed");
     }
 
     const insertedUser = await tx
@@ -1398,35 +1441,35 @@ export async function completeInstanceInstall(
         isEmailVerified: true,
         role: SUPERADMIN_ROLE,
       })
-      .returning({ id: user.id })
+      .returning({ id: user.id });
 
-    const userId = insertedUser[0]?.id
+    const userId = insertedUser[0]?.id;
     if (!userId) {
-      throw new Error('Superadmin creation failed')
+      throw new Error("Superadmin creation failed");
     }
 
     await tx.insert(account).values({
       userId,
-      providerId: 'credential',
+      providerId: "credential",
       providerUserId: userId,
       password: hashedPassword,
-    })
+    });
 
     await tx.insert(teammate).values({
       teamId,
       userId,
-    })
+    });
 
-    await insertOwnerGrants(tx, userId, organizationId)
+    await insertOwnerGrants(tx, userId, organizationId);
 
     await tx
       .insert(grant)
       .values({
-        entityType: 'team',
+        entityType: "team",
         entityId: teamId,
-        actorType: 'user',
+        actorType: "user",
         actorId: userId,
-        permission: 'team:own',
+        permission: "team:own",
       })
       .onConflictDoNothing({
         target: [
@@ -1436,19 +1479,19 @@ export async function completeInstanceInstall(
           grant.actorId,
           grant.permission,
         ],
-      })
+      });
 
-    await insertDefaultWorkspace(tx, organizationId)
+    await insertDefaultWorkspace(tx, organizationId);
 
     const { licenseId, licenseToken } = await createLicense(tx, {
       organizationId,
       name: COLOCATED_SERVER_DISPLAY_NAME,
-    })
+    });
 
-    return { organizationId, userId, licenseId, licenseToken }
-  })
+    return { organizationId, userId, licenseId, licenseToken };
+  });
 
-  await clearColocatedDaemonIdentityFiles()
+  await clearColocatedDaemonIdentityFiles();
 
   // Always leave the root org with a latched colocated server seat so the
   // servers list is never empty after install. Prefer an already-enrolled
@@ -1457,29 +1500,29 @@ export async function completeInstanceInstall(
   const colocatedServerId = await ensureColocatedServerSeat(db, {
     organizationId: result.organizationId,
     licenseId: result.licenseId,
-  })
+  });
 
   await persistColocatedLicenseCredentials(
     result.licenseId,
     result.licenseToken,
     colocatedServerId,
-  )
+  );
 
   try {
     await ensureSelfHostSystemHierarchy(db, {
       organizationId: result.organizationId,
       serverId: colocatedServerId,
-    })
+    });
   } catch (err) {
     compatLogWarn(
-      'install',
+      "install",
       `failed to ensure self-host system hierarchy: ${err}`,
-    )
+    );
   }
 
   return {
     organizationId: result.organizationId,
     userId: result.userId,
     licenseId: result.licenseId,
-  }
+  };
 }

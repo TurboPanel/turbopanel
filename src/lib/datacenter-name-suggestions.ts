@@ -20,7 +20,7 @@ function sanitizeName(value: string): string {
   return value
     .normalize("NFKD")
     .replaceAll(/[\u0300-\u036f]/g, "")
-    .replaceAll(/[^A-Za-z0-9 ._-]+/g, " ")
+    .replaceAll(/[^A-Za-z0-9 .'_-]+/g, " ")
     .replaceAll(/\s+/g, " ")
     .trim()
     .slice(0, 255)

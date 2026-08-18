@@ -17,13 +17,15 @@ import type {
   ServerHostResources,
 } from "../../lib/db/server-metadata.ts";
 import {
+  osMetadataFromColumns,
   parseServerOsMetadata,
-  parseServerTimeSync,
   parseServerHostResources,
   parseServerDockerMetadata,
+  timeSyncFromColumns,
+  parseServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
 import type { ServerReportedIp } from "../../server-addresses.ts";
-import { parseServerIps } from "../../server-addresses.ts";
+import { reportedIpsFromServerMetadata } from "../../server-addresses.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import { parseServerGeo } from "../../lib/geo/server-geo.ts";
 import { server } from "../../lib/db/schema.ts";
@@ -55,13 +57,13 @@ export type ServerFleetPresence = {
     channel?: string;
   };
   geo: ServerGeo | null;
-  /** From `server.metadata.os` (daemon hello); null until reported. */
+  /** From `server.os_*` columns (daemon hello); leftover `metadata.os` is a fallback. */
   os: ServerOsMetadata | null;
-  /** From `server.metadata.resources` (daemon hello capacity totals). */
+  /** From `server.metadata.resources` (cpu/RAM/swap + ips). */
   resources: ServerHostResources | null;
-  /** From `server.metadata.timeSync` (hello / change-detected heartbeat). */
+  /** From timezone / NTP columns (hello / change-detected heartbeat). */
   timeSync: ServerTimeSync | null;
-  /** From `server.metadata.ips` (hello / change-detected heartbeat). */
+  /** From `metadata.resources.ips` (hello / change-detected heartbeat). */
   ips: ServerReportedIp[] | null;
   /**
    * From `server.metadata.docker` (hello / change-detected heartbeat).
@@ -142,6 +144,16 @@ export async function resolveFleetPresence(
           metadata: server.metadata,
           hostname: server.hostname,
           machineKey: server.machineKey,
+          osId: server.osId,
+          osFamily: server.osFamily,
+          osVersion: server.osVersion,
+          osCodename: server.osCodename,
+          osPrettyName: server.osPrettyName,
+          osArchitecture: server.osArchitecture,
+          timezone: server.timezone,
+          isTimeSyncEnabled: server.isTimeSyncEnabled,
+          ntpServers: server.ntpServers,
+          ntpLastSyncedAt: server.ntpLastSyncedAt,
           connected: server.connected,
           statusChangedAt: server.statusChangedAt,
         })
@@ -159,6 +171,22 @@ export async function resolveFleetPresence(
   for (const row of rows) {
     const projection = projections.get(row.id);
     const metadata = (row.metadata ?? {}) as ServerMetadata;
+    const resources = parseServerHostResources(metadata.resources) ?? null;
+    const os = osMetadataFromColumns({
+      osId: row.osId ?? null,
+      osFamily: row.osFamily ?? null,
+      osVersion: row.osVersion ?? null,
+      osCodename: row.osCodename ?? null,
+      osPrettyName: row.osPrettyName ?? null,
+      osArchitecture: row.osArchitecture ?? null,
+    }) ?? parseServerOsMetadata(metadata.os) ?? null;
+    const timeSync = timeSyncFromColumns({
+      timezone: row.timezone ?? null,
+      isTimeSyncEnabled: row.isTimeSyncEnabled ?? null,
+      ntpServers: row.ntpServers,
+      ntpLastSyncedAt: row.ntpLastSyncedAt ?? null,
+    }) ?? parseServerTimeSync(metadata.timeSync) ?? null;
+    const ips = reportedIpsFromServerMetadata(metadata) ?? null;
     const state = parseServerDaemonState(row.daemon);
     const rawRemote = projection?.remoteAddress ?? null;
     const snapshot = snapshots.get(row.id);
@@ -183,10 +211,10 @@ export async function resolveFleetPresence(
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       daemonBuild: projection?.daemonBuild ?? snapshot?.daemonBuild ?? undefined,
       geo: parseServerGeo(metadata.geo),
-      os: parseServerOsMetadata(metadata.os) ?? null,
-      resources: parseServerHostResources(metadata.resources) ?? null,
-      timeSync: parseServerTimeSync(metadata.timeSync) ?? null,
-      ips: parseServerIps(metadata.ips) ?? null,
+      os,
+      resources,
+      timeSync,
+      ips,
       docker: parseServerDockerMetadata(metadata.docker) ?? null,
     });
   }

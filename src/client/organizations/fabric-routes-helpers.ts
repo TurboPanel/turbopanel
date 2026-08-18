@@ -274,6 +274,7 @@ export type FabricRelayApiRow = {
   address: string
   role: RelayRole
   advertisedCidrs: string[]
+  resolvedAdvertisedCidrs: string[]
   keepalive: number | null
   endpointAddress: string | null
   resolvedEndpoint: string | null
@@ -332,12 +333,14 @@ export function toFabricRelayApiRow(params: {
   segments: FabricSegmentMaterial[]
   caches: EndpointAddressCaches
   relays: readonly RelayRecord[]
+  resolvedAdvertisedCidrs: string[]
 }): FabricRelayApiRow {
   return {
     serverId: params.relay.serverId,
     address: params.relay.address,
     role: params.relay.role,
     advertisedCidrs: params.relay.advertisedCidrs,
+    resolvedAdvertisedCidrs: params.resolvedAdvertisedCidrs,
     keepalive: params.relay.keepalive,
     endpointAddress: params.relay.endpointAddress,
     resolvedEndpoint: resolveRelayEndpointOrNull(params.relay, params.caches),

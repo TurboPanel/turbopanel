@@ -36,10 +36,14 @@ import type {
 } from "../commands/schemas.ts";
 import { sha256HexUtf8 } from "../compose/desired-hash.ts";
 import {
-  parseServerIps,
+  reportedIpsFromServerMetadata,
   preferredIpv4FromIps,
   type ServerReportedIp,
 } from "../../server-addresses.ts";
+import {
+  loadDatacenterSubnetsForServers,
+  resolveDerivedAdvertisedCidrsByRelay,
+} from "../net/datacenter-networks.ts";
 
 export type FabricRecord = {
   id: string;
@@ -920,12 +924,7 @@ export function selectPairPresharedEnvelope(
 function reportedIpsFromMetadata(
   metadata: unknown,
 ): ServerReportedIp[] | undefined {
-  if (
-    typeof metadata !== "object" || metadata === null || Array.isArray(metadata)
-  ) {
-    return undefined;
-  }
-  return parseServerIps((metadata as Record<string, unknown>).ips);
+  return reportedIpsFromServerMetadata(metadata);
 }
 
 /**
@@ -1026,6 +1025,7 @@ export async function buildPeerMaterial(
     caches: EndpointAddressCaches;
     sealedPresharedKey: string | null;
     resealPresharedKey?: (sealed: string) => Promise<string | null>;
+    advertisedCidrs?: readonly string[];
   },
 ): Promise<RelayPeerMaterial> {
   const host32 = hostRoute32(params.other.address);
@@ -1033,7 +1033,8 @@ export async function buildPeerMaterial(
     (value): value is string => typeof value === "string",
   );
   if (params.other.role === "gateway") {
-    for (const cidrValue of params.other.advertisedCidrs) {
+    const advertised = params.advertisedCidrs ?? params.other.advertisedCidrs;
+    for (const cidrValue of advertised) {
       if (!allowedIPs.includes(cidrValue)) allowedIPs.push(cidrValue);
     }
   }
@@ -1160,6 +1161,7 @@ export type FabricReconcileSnapshot = {
   caches: EndpointAddressCaches;
   sealedPresharedKeyByRelayId: Map<string, string | null>;
   segmentsByServer: Map<string, FabricSegmentMaterial[]>;
+  derivedAdvertisedCidrsByRelayId: Map<string, string[]>;
 };
 
 type EnabledFabricReconcilePayload = Extract<
@@ -1169,8 +1171,20 @@ type EnabledFabricReconcilePayload = Extract<
 type FabricReconcilePeer = EnabledFabricReconcilePayload["peers"][number];
 
 /**
+ * Relays that can appear in `buildReconcilePeerLists` (non-empty WireGuard
+ * public key). Derived CIDR ownership must use this same set so a keyless
+ * co-sited gateway cannot win a shared subnet that never lands in a peer
+ * stanza. The GET fabric path still derives planned defaults for gateways
+ * without keys.
+ */
+function publicKeyedRelays(relays: readonly RelayRecord[]): RelayRecord[] {
+  return relays.filter((row) => row.publicKey);
+}
+
+/**
  * One batched read of everything needed to build every relay's reconcile
- * payload: relays, endpoint caches, PSK envelopes, and segments.
+ * payload: relays, endpoint caches, PSK envelopes, segments, and derived
+ * gateway advertised CIDRs (owned among public-keyed relays only).
  */
 export async function loadFabricReconcileSnapshot(
   db: Db,
@@ -1179,11 +1193,13 @@ export async function loadFabricReconcileSnapshot(
   const relays = await listFabricRelays(db, fabric.id);
   const serverIds = relays.map((row) => row.serverId);
   const relayIds = relays.map((row) => row.id);
-  const [{ caches }, sealedRows, segmentsByServer] = await Promise.all([
-    loadEndpointCaches(db, serverIds),
-    loadRelayPresharedKeyRows(db, relayIds),
-    listSegmentsForServers(db, serverIds),
-  ]);
+  const [{ caches }, sealedRows, segmentsByServer, subnetsByServer] =
+    await Promise.all([
+      loadEndpointCaches(db, serverIds),
+      loadRelayPresharedKeyRows(db, relayIds),
+      listSegmentsForServers(db, serverIds),
+      loadDatacenterSubnetsForServers(db, serverIds),
+    ]);
   const sealedPresharedKeyByRelayId = new Map<string, string | null>();
   for (const row of sealedRows) {
     sealedPresharedKeyByRelayId.set(row.id, row.presharedKey);
@@ -1194,6 +1210,10 @@ export async function loadFabricReconcileSnapshot(
     caches,
     sealedPresharedKeyByRelayId,
     segmentsByServer,
+    derivedAdvertisedCidrsByRelayId: resolveDerivedAdvertisedCidrsByRelay(
+      publicKeyedRelays(relays),
+      subnetsByServer,
+    ),
   };
 }
 
@@ -1251,11 +1271,16 @@ async function buildReconcilePeerLists(
       other.id,
       snapshot.sealedPresharedKeyByRelayId,
     );
+    // Derived advertised CIDRs land in allowedIPs, which hashPeer already
+    // includes in desiredHash, so adding/removing a datacenter subnet makes
+    // relayNeedsFabricEnqueue return true on the next apply.
     const material = await buildPeerMaterial({
       other,
       listenPort,
       caches: snapshot.caches,
       sealedPresharedKey,
+      advertisedCidrs: snapshot.derivedAdvertisedCidrsByRelayId.get(other.id) ??
+        other.advertisedCidrs,
       ...(params.resealPresharedKey
         ? { resealPresharedKey: params.resealPresharedKey }
         : {}),

@@ -4,6 +4,10 @@ import type { Db } from '../../db.ts'
 import { fabric, ip, relay } from '../db/schema.ts'
 import { inetAddressToString } from '../ip-address.ts'
 import {
+  loadDatacenterAddressPreferences,
+  type DatacenterAddressPreference,
+} from './datacenter-networks.ts'
+import {
   loadDatacenterMembershipsForServers,
   sharedDatacenterIds,
   type DatacenterMembershipRow,
@@ -26,6 +30,12 @@ export type PrivateEndpointError =
     kind: 'private_path_unavailable'
     fromServerId: string
     toServerId: string
+  }
+  | {
+    kind: 'private_family_mismatch'
+    fromServerId: string
+    toServerId: string
+    datacenterId: string
   }
 
 export function isPrivateEndpointError(
@@ -120,11 +130,44 @@ async function loadFabricRelayRows(
   return out
 }
 
-function pinAddressForDatacenter(
+function familiesInDatacenter(
   pins: readonly DatacenterMembershipRow[],
   datacenterId: string,
+): Set<4 | 6> {
+  const families = new Set<4 | 6>()
+  for (const pin of pins) {
+    if (pin.datacenterId === datacenterId) families.add(pin.family)
+  }
+  return families
+}
+
+function preferredFamilyOrder(
+  preference: DatacenterAddressPreference,
+): Array<4 | 6> {
+  if (preference === 'ipv4') return [4, 6]
+  return [6, 4]
+}
+
+function pinAddressForDatacenter(
+  fromPins: readonly DatacenterMembershipRow[],
+  toPins: readonly DatacenterMembershipRow[],
+  datacenterId: string,
+  preference: DatacenterAddressPreference,
 ): string | null {
-  return pins.find((row) => row.datacenterId === datacenterId)?.address ?? null
+  const fromFamilies = familiesInDatacenter(fromPins, datacenterId)
+  const toFamilies = familiesInDatacenter(toPins, datacenterId)
+  const intersection = new Set<4 | 6>()
+  for (const family of fromFamilies) {
+    if (toFamilies.has(family)) intersection.add(family)
+  }
+  for (const family of preferredFamilyOrder(preference)) {
+    if (!intersection.has(family)) continue
+    const address = toPins.find(
+      (row) => row.datacenterId === datacenterId && row.family === family,
+    )?.address
+    if (address) return address
+  }
+  return null
 }
 
 /**
@@ -137,6 +180,7 @@ function resolveOneFromCaches(params: {
   toServerId: string
   membershipsByServer: Map<string, DatacenterMembershipRow[]>
   relays: RelayJoinRow[]
+  preferencesByDatacenter: Map<string, DatacenterAddressPreference>
 }): ResolvedPrivateEndpoint | PrivateEndpointError {
   if (params.fromServerId === params.toServerId) {
     return { address: '127.0.0.1', transport: 'local' }
@@ -166,16 +210,30 @@ function resolveOneFromCaches(params: {
   const fromPins = params.membershipsByServer.get(params.fromServerId) ?? []
   const toPins = params.membershipsByServer.get(params.toServerId) ?? []
   const shared = sharedDatacenterIds(fromPins, toPins)
-  const sharedDc = shared[0]
-  if (sharedDc) {
-    const address = pinAddressForDatacenter(toPins, sharedDc)
-    if (!address) {
-      return { kind: 'datacenter_ip_required', serverId: params.toServerId }
+  let mismatchDatacenterId: string | undefined
+  for (const sharedDc of shared) {
+    const preference = params.preferencesByDatacenter.get(sharedDc) ?? 'ipv6'
+    const address = pinAddressForDatacenter(
+      fromPins,
+      toPins,
+      sharedDc,
+      preference,
+    )
+    if (address) {
+      return {
+        address,
+        transport: 'datacenter',
+        datacenterId: sharedDc,
+      }
     }
+    mismatchDatacenterId ??= sharedDc
+  }
+  if (mismatchDatacenterId) {
     return {
-      address,
-      transport: 'datacenter',
-      datacenterId: sharedDc,
+      kind: 'private_family_mismatch',
+      fromServerId: params.fromServerId,
+      toServerId: params.toServerId,
+      datacenterId: mismatchDatacenterId,
     }
   }
 
@@ -228,6 +286,15 @@ export async function resolvePrivateEndpoints(
     loadFabricRelayRows(db, allServerIds),
   ])
 
+  const datacenterIds = new Set<string>()
+  for (const pins of membershipsByServer.values()) {
+    for (const pin of pins) datacenterIds.add(pin.datacenterId)
+  }
+  const preferencesByDatacenter = await loadDatacenterAddressPreferences(
+    db,
+    [...datacenterIds],
+  )
+
   for (const toServerId of uniqueTargets) {
     out.set(
       toServerId,
@@ -236,6 +303,7 @@ export async function resolvePrivateEndpoints(
         toServerId,
         membershipsByServer,
         relays,
+        preferencesByDatacenter,
       }),
     )
   }

@@ -119,6 +119,7 @@ test('fabricSettingsResponse includes relay rows without presharedKey', () => {
       address: '10.250.0.1',
       role: 'member' as const,
       advertisedCidrs: [],
+      resolvedAdvertisedCidrs: [],
       keepalive: null,
       endpointAddress: null,
       resolvedEndpoint: '203.0.113.10',
@@ -133,6 +134,7 @@ test('fabricSettingsResponse includes relay rows without presharedKey', () => {
       address: '10.250.0.2',
       role: 'member' as const,
       advertisedCidrs: [],
+      resolvedAdvertisedCidrs: [],
       keepalive: 25,
       endpointAddress: '203.0.113.11',
       resolvedEndpoint: '203.0.113.11',
@@ -467,12 +469,36 @@ test('toFabricRelayApiRow maps relay fields and omits presharedKey on the wire',
     segments: [{ name: 'tpn_test', subnet: '10.192.0.0/24' }],
     caches,
     relays: [relay],
+    resolvedAdvertisedCidrs: ['10.0.0.0/24'],
   })
   assertEquals(row.serverId, 'srv-1')
   assertEquals(row.role, 'gateway')
   assertEquals(row.advertisedCidrs, ['10.0.0.0/24'])
+  assertEquals(row.resolvedAdvertisedCidrs, ['10.0.0.0/24'])
   assertEquals(row.resolvedEndpoint, '203.0.113.10')
   assertEquals(row.hasPresharedKey, true)
   assertEquals(row.observed?.lastHandshakeAt, '2020-01-01T00:05:00.000Z')
+  assertEquals('presharedKey' in row, false)
+})
+
+test('toFabricRelayApiRow emits derived resolvedAdvertisedCidrs when stored list is empty', () => {
+  const relay = relayRow({
+    serverId: 'srv-1',
+    role: 'gateway',
+    advertisedCidrs: [],
+  })
+  const row = toFabricRelayApiRow({
+    relay,
+    hasPresharedKey: false,
+    segments: [],
+    caches: emptyEndpointCaches(),
+    relays: [relay],
+    resolvedAdvertisedCidrs: ['198.51.100.0/24', '203.0.113.0/24'],
+  })
+  assertEquals(row.advertisedCidrs, [])
+  assertEquals(row.resolvedAdvertisedCidrs, [
+    '198.51.100.0/24',
+    '203.0.113.0/24',
+  ])
   assertEquals('presharedKey' in row, false)
 })

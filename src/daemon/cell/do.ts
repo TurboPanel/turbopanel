@@ -1107,12 +1107,12 @@ export class DaemonCellObject {
   }
 
   // COST RULE: #projectInbound for heartbeats runs only on daemon-build change,
-  // timeSync/ips/docker presence facts, or runtime/offline repair evidence —
-  // never because INBOUND_PROJECTION_COALESCE_MS elapsed alone. Hello keeps
-  // identity/geo handling. Steady-state idle traffic performs no SQLite cell
-  // writes and never opens a Hyperdrive connection. Every #withProjectionDb
-  // call closes the connection in its finally block — no outbound socket
-  // lingers.
+  // timeSync / resources.ips / docker presence facts, or runtime/offline
+  // repair evidence — never because INBOUND_PROJECTION_COALESCE_MS elapsed
+  // alone. Hello keeps identity/geo handling. Steady-state idle traffic
+  // performs no SQLite cell writes and never opens a Hyperdrive connection.
+  // Every #withProjectionDb call closes the connection in its finally block —
+  // no outbound socket lingers.
   async #projectInbound(
     serverId: string,
     at?: string,
@@ -1675,8 +1675,8 @@ export class DaemonCellObject {
     const hasPresenceFacts = Boolean(
       presenceFacts.timeSync || presenceFacts.ips || presenceFacts.docker,
     );
-    // hostname/os/resources stay hello-only; timeSync/ips/docker project on both
-    // hello and change-detected heartbeats.
+    // hostname/os stay hello-only; timeSync / resources.ips / docker project
+    // on both hello and change-detected heartbeats.
     let hostIdentity:
       | {
         hostname?: string;
@@ -1697,7 +1697,10 @@ export class DaemonCellObject {
         ...presenceFacts,
       };
     } else if (hasPresenceFacts) {
-      hostIdentity = presenceFacts;
+      hostIdentity = {
+        ...presenceFacts,
+        resources: resourcesFromDaemonPresence(parsed),
+      };
     }
     const hasHostIdentity = Boolean(
       hostIdentity?.hostname ||

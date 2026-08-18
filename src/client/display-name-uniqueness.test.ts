@@ -31,9 +31,17 @@ const dbUrl = getDatabaseUrl()
  */
 const test = Deno.test.bind(Deno)
 
-test('normalizeDisplayNameKey trims and lowercases', () => {
+test('normalizeDisplayNameKey trims, folds, NFC-normalizes, and lowercases', () => {
   assertEquals(normalizeDisplayNameKey('  My Project  '), 'my project')
   assertEquals(normalizeDisplayNameKey('DEFAULT Workspace'), 'default workspace')
+  assertEquals(
+    normalizeDisplayNameKey('Cafe\u0301'),
+    normalizeDisplayNameKey('Café'),
+  )
+  assertEquals(
+    normalizeDisplayNameKey('O\u2019Reilly'),
+    normalizeDisplayNameKey("O'Reilly"),
+  )
 })
 
 test('name-in-use error codes stay stable for API clients', () => {

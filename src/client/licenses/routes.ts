@@ -108,6 +108,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
     if (parsedFields === 'invalid') {
       return c.json({ error: 'Invalid request' }, 400)
     }
+    // `name` is already normalized (or omitted when blank) by the parser.
     const { name, installBaseUrl } = parsedFields
 
     const orgResult = await getOrgId(c, session.userId)

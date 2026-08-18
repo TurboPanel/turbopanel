@@ -46,7 +46,8 @@ test('parseCreateEnvironmentNames validates names', () => {
   const ok = parseCreateEnvironmentNames({ name: 'Staging' })
   if (!ok.ok) throw new TypeError('expected valid environment names')
   assertEquals(ok.displayName, 'Staging')
-  assertEquals(parseCreateEnvironmentNames({ name: 'bad/name' }).ok, false)
+  assertEquals(parseCreateEnvironmentNames({ name: 'bad/name' }).ok, true)
+  assertEquals(parseCreateEnvironmentNames({ name: 'bad\nname' }).ok, false)
 })
 
 test('stripEnvironmentPromotedMetadata removes serverId and component', () => {

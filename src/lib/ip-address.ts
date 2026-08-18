@@ -121,6 +121,11 @@ export function parseCidr(value: string): ParsedCidr | null {
   return { version, base: aligned, prefix }
 }
 
+/** Address family of a CIDR, or null when the value is not a valid CIDR. */
+export function cidrVersion(cidr: string): 4 | 6 | null {
+  return parseCidr(cidr)?.version ?? null
+}
+
 /** Render an aligned network CIDR (`10.0.0.5/24` → `10.0.0.0/24`). */
 export function formatCidr(parsed: ParsedCidr): string {
   return `${bigIntToIp(parsed.base, parsed.version)}/${parsed.prefix}`
@@ -274,6 +279,26 @@ export function addressInCidr(address: string, cidr: string): boolean {
   if (hostBits === 0) return value === parsed.base
   const hostMask = (1n << BigInt(hostBits)) - 1n
   return (value & ~hostMask) === parsed.base
+}
+
+function cidrInclusiveLast(parsed: ParsedCidr): bigint {
+  const bitWidth = parsed.version === 4 ? 32 : 128
+  const hostBits = bitWidth - parsed.prefix
+  const size = 1n << BigInt(hostBits)
+  return parsed.base + size - 1n
+}
+
+/**
+ * True when two CIDRs share any address. Same family is required; invalid or
+ * mixed-family inputs do not overlap.
+ */
+export function cidrsOverlap(a: string, b: string): boolean {
+  const left = parseCidr(a)
+  const right = parseCidr(b)
+  if (!left || !right) return false
+  if (left.version !== right.version) return false
+  return left.base <= cidrInclusiveLast(right) &&
+    right.base <= cidrInclusiveLast(left)
 }
 
 export type CidrHostRange = {

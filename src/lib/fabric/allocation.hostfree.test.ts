@@ -295,6 +295,37 @@ test("buildPeerMaterial forwards keepalive and reseals pair PSK when provided", 
   assertEquals(material.presharedKey, "plain:sealed-psk");
 });
 
+test("buildPeerMaterial honors advertisedCidrs override and falls back when omitted", async () => {
+  const gateway = relayFixture({
+    role: "gateway",
+    advertisedCidrs: ["203.0.113.0/24"],
+  });
+  const overridden = await buildPeerMaterial({
+    other: gateway,
+    listenPort: 51821,
+    caches: emptyCaches(),
+    sealedPresharedKey: null,
+    advertisedCidrs: ["198.51.100.0/24"],
+  });
+  assertEquals(overridden.allowedIPs, [
+    "10.250.0.1/32",
+    "10.192.0.0/16",
+    "198.51.100.0/24",
+  ]);
+
+  const fallback = await buildPeerMaterial({
+    other: gateway,
+    listenPort: 51821,
+    caches: emptyCaches(),
+    sealedPresharedKey: null,
+  });
+  assertEquals(fallback.allowedIPs, [
+    "10.250.0.1/32",
+    "10.192.0.0/16",
+    "203.0.113.0/24",
+  ]);
+});
+
 test("buildPeerMaterial keeps member advertised CIDRs out of allowedIPs", async () => {
   const material = await buildPeerMaterial({
     other: relayFixture({
@@ -426,6 +457,7 @@ test("both relay payloads use the same canonical pair PSK when stored envelopes 
       ["srv-1", []],
       ["srv-2", []],
     ]),
+    derivedAdvertisedCidrsByRelayId: new Map(),
   };
   const reseal = (sealed: string) => Promise.resolve(sealed);
   const built1 = await buildFabricReconcilePayloadFromSnapshot(snapshot, {

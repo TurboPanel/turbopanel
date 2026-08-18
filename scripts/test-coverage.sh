@@ -367,6 +367,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/net/datacenter-networks.pure.test.ts \
   src/lib/net/private-endpoint.pure.test.ts \
   src/lib/naming.test.ts \
+  src/lib/display-name-format.test.ts \
   src/lib/organization-options.test.ts \
   src/lib/principal-options.test.ts \
   src/lib/project-options.test.ts \

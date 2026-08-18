@@ -37,3 +37,23 @@ test('parseDatacenterOptions keeps trimmed timezone and boolean enforce', () => 
     },
   )
 })
+
+test('parseDatacenterOptions keeps explicit ipv6 and ipv4 addressPreference', () => {
+  assertEquals(parseDatacenterOptions({ addressPreference: 'ipv6' }), {
+    addressPreference: 'ipv6',
+  })
+  assertEquals(parseDatacenterOptions({ addressPreference: 'ipv4' }), {
+    addressPreference: 'ipv4',
+  })
+})
+
+test('parseDatacenterOptions drops invalid addressPreference', () => {
+  assertEquals(parseDatacenterOptions({ addressPreference: 'dual' }), {})
+})
+
+test('parseDatacenterOptions omits addressPreference when absent', () => {
+  assertEquals(
+    parseDatacenterOptions({ enforceServerTimezone: false }),
+    { enforceServerTimezone: false },
+  )
+})

@@ -37,29 +37,116 @@ export const serverSchemas = {
       },
     },
   },
+  ServerCpuSocket: {
+    type: 'object',
+    description:
+      'One physical CPU socket. resources.cpus is ordered 0, 1, … by physical id.',
+    properties: {
+      vendorId: {
+        type: 'string',
+        description:
+          'cpuinfo vendor_id (e.g. GenuineIntel) or ARM CPU implementer (e.g. 0x41).',
+      },
+      name: {
+        type: 'string',
+        description: 'cpuinfo model name (or ARM Hardware / Processor).',
+      },
+      architecture: { type: 'string' },
+      cores: {
+        type: 'object',
+        required: ['total'],
+        properties: {
+          total: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Physical cores on this socket.',
+          },
+          p: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Performance / P-cores (Intel) or big cores.',
+          },
+          e: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Efficiency / E-cores (Intel) or little cores.',
+          },
+        },
+      },
+      threads: {
+        type: 'object',
+        required: ['total'],
+        properties: {
+          total: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Logical CPUs / threads on this socket (load bars).',
+          },
+          p: { type: 'integer', minimum: 1 },
+          e: { type: 'integer', minimum: 1 },
+        },
+      },
+      cache: {
+        type: 'object',
+        description:
+          'Cache sizes in bytes (per-core L1/L2; shared L3 when present).',
+        properties: {
+          l1: { type: 'integer', minimum: 1 },
+          l1d: { type: 'integer', minimum: 1 },
+          l1i: { type: 'integer', minimum: 1 },
+          l2: { type: 'integer', minimum: 1 },
+          l3: { type: 'integer', minimum: 1 },
+          l4: { type: 'integer', minimum: 1 },
+        },
+      },
+      speedMhz: {
+        type: 'integer',
+        minimum: 1,
+        description:
+          'Advertised base clock (base_frequency or model-name @ GHz).',
+      },
+      turboMhz: {
+        type: 'integer',
+        minimum: 1,
+        description: 'Max turbo (cpuinfo_max_freq).',
+      },
+    },
+  },
+  ServerGpu: {
+    type: 'object',
+    description: 'One GPU from DRM cardN (ordered 0, 1, …).',
+    properties: {
+      vendorId: {
+        type: 'string',
+        description: 'PCI vendor id from sysfs (e.g. 0x10de).',
+      },
+      name: { type: 'string' },
+      memoryBytes: { type: 'integer', minimum: 1 },
+      driver: { type: 'string' },
+      pciId: {
+        type: 'string',
+        description: 'vendor:device without 0x (e.g. 10de:2d04).',
+      },
+      pciSlot: {
+        type: 'string',
+        description: 'sysfs PCI_SLOT_NAME (e.g. 0000:01:00.0).',
+      },
+    },
+  },
   ServerHostResources: {
     type: 'object',
     description:
-      'Static host capacity from daemon hello (/proc/cpuinfo, /proc/stat, /proc/meminfo).',
+      'Static host capacity from daemon hello (/proc/cpuinfo, /proc/stat, /proc/meminfo, DRM).',
     properties: {
-      cpu: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          architecture: { type: 'string' },
-          socketCount: { type: 'integer', minimum: 1 },
-          coreCount: {
-            type: 'integer',
-            minimum: 1,
-            description: 'Physical core count from /proc/cpuinfo topology.',
-          },
-          threadCount: {
-            type: 'integer',
-            minimum: 1,
-            description:
-              'Online logical CPU / thread count (cpuN lines in /proc/stat). Used for load bars.',
-          },
-        },
+      cpus: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerCpuSocket' },
+        description:
+          'Physical CPU sockets in physical-id order. Leftover resources.cpu is lifted into a single entry on read.',
+      },
+      gpus: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerGpu' },
       },
       memory: {
         type: 'object',
@@ -82,19 +169,25 @@ export const serverSchemas = {
           },
         },
       },
+      ips: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerReportedIp' },
+        description:
+          'Host interface addresses nested on resources (hello / change-detected heartbeat).',
+      },
     },
   },
   ServerTimeSync: {
     type: 'object',
     description:
-      'Host timezone + NTP state from daemon hello / change-detected heartbeat.',
+      'Host timezone + NTP state composed from server.timezone / is_time_sync_enabled / ntp_servers / ntp_last_synced_at.',
     properties: {
       timezone: { type: 'string' },
       ntpEnabled: { type: 'boolean' },
       ntpSynced: { type: 'boolean' },
       ntpServers: { type: 'array', items: { type: 'string' } },
       fallbackNtpServers: { type: 'array', items: { type: 'string' } },
-      capturedAt: { type: 'string', format: 'date-time' },
+      lastSyncedAt: { type: 'string', format: 'date-time' },
     },
   },
   ServerDockerMetadata: {
@@ -125,6 +218,10 @@ export const serverSchemas = {
         type: 'string',
         description:
           'Aligned interface network CIDR when known. Required to create a datacenter from a private address.',
+      },
+      interface: {
+        type: 'string',
+        description: 'Host interface name (e.g. eth0, enp1s0).',
       },
     },
   },
@@ -182,7 +279,7 @@ export const serverSchemas = {
           { type: 'null' },
         ],
         description:
-          'Host OS from server.metadata.os (daemon hello). Null until the daemon has reported it.',
+          'Host OS from server.os_* columns (daemon hello). Null until the daemon has reported it.',
       },
       osDisplay: {
         type: ['string', 'null'],
@@ -200,7 +297,7 @@ export const serverSchemas = {
           { type: 'null' },
         ],
         description:
-          'Host capacity (cpu / RAM / swap totals) from server.metadata.resources. Null until the daemon hello reports it.',
+          'Host capacity (cpu / RAM / swap totals) plus ips from server.metadata.resources. Null until the daemon hello reports it.',
       },
       ips: {
         oneOf: [
@@ -211,7 +308,7 @@ export const serverSchemas = {
           { type: 'null' },
         ],
         description:
-          'Host addresses from server.metadata.ips. Null until reported.',
+          'Host addresses from server.metadata.resources.ips (also nested on resources). Null until reported.',
       },
       timeSync: {
         oneOf: [
@@ -219,7 +316,7 @@ export const serverSchemas = {
           { type: 'null' },
         ],
         description:
-          'Host time-sync from server.metadata.timeSync. Null until reported.',
+          'Host time-sync composed from server timezone / NTP columns. Null until reported.',
       },
       docker: {
         oneOf: [
@@ -232,7 +329,7 @@ export const serverSchemas = {
       timezone: {
         type: ['string', 'null'],
         description:
-          'Effective timezone: datacenter enforce, else org enforce, else server.options.timezone, else daemon-reported timeSync.timezone.',
+          'Effective timezone: datacenter enforce, else org enforce, else server.options.timezone, else daemon-reported server.timezone.',
       },
       timezoneSource: {
         type: ['string', 'null'],
@@ -271,7 +368,8 @@ export const serverSchemas = {
       },
       value: {
         type: 'string',
-        description: 'Label value, at most 255 characters (empty string allowed).',
+        description:
+          'Label value, at most 255 characters (empty string allowed).',
       },
     },
   },
@@ -491,7 +589,8 @@ export const serverSchemas = {
       deleted: { type: 'boolean', const: true },
       error: {
         type: 'string',
-        description: 'The Postgres row was deleted but daemon cell purge did not complete.',
+        description:
+          'The Postgres row was deleted but daemon cell purge did not complete.',
       },
     },
   },
@@ -511,7 +610,8 @@ export const serverSchemas = {
     properties: {
       error: {
         type: 'string',
-        const: 'Cannot delete this server while dependent resources still exist',
+        const:
+          'Cannot delete this server while dependent resources still exist',
       },
       code: { type: 'string', const: 'server_has_blockers' },
       blockers: {
@@ -702,7 +802,9 @@ export const serverPaths: Record<string, unknown> = {
           description: 'Current daemon build vs trunk manifest target',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/ServerUpdateStatusResponse' },
+              schema: {
+                $ref: '#/components/schemas/ServerUpdateStatusResponse',
+              },
             },
           },
         },
@@ -761,7 +863,9 @@ export const serverPaths: Record<string, unknown> = {
           description: 'Update queued on the daemon',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/TriggerServerUpdateResponse' },
+              schema: {
+                $ref: '#/components/schemas/TriggerServerUpdateResponse',
+              },
             },
           },
         },
@@ -1151,7 +1255,9 @@ export const serverPaths: Record<string, unknown> = {
             'Server row deleted but daemon cell purge failed; cleanup is incomplete',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/DeleteServerPartialFailure' },
+              schema: {
+                $ref: '#/components/schemas/DeleteServerPartialFailure',
+              },
             },
           },
         },

@@ -44,16 +44,16 @@ export type DaemonMessage =
     daemonBuild: DaemonBuildInfo;
     hostname?: string;
     machineKey?: string;
-    /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.metadata.os`. */
+    /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.os_*` columns. */
     os?: ServerOsMetadata;
     /**
-     * Host capacity (cpu / RAM / swap totals) from `/proc`;
-     * persisted to `server.metadata.resources`.
+     * Host capacity (cpu / RAM / swap totals) plus `ips` from `/proc` /
+     * `Deno.networkInterfaces`; persisted to `server.metadata.resources`.
      */
     resources?: ServerHostResources;
-    /** Host timezone + NTP state; persisted to `server.metadata.timeSync`. */
+    /** Host timezone + NTP state; persisted to timezone / NTP columns. */
     timeSync?: ServerTimeSync;
-    /** Host interface addresses; persisted to `server.metadata.ips`. */
+    /** Legacy top-level addresses; prefer `resources.ips`. */
     ips?: ServerReportedIp[];
     /**
      * Docker CLI / Compose plugin versions; persisted to `server.metadata.docker`.
@@ -65,9 +65,14 @@ export type DaemonMessage =
     type: "heartbeat";
     at: string;
     daemonBuild?: DaemonBuildInfo;
-    /** Change-detected time-sync facts; persisted to `server.metadata.timeSync`. */
+    /** Change-detected time-sync facts; persisted to timezone / NTP columns. */
     timeSync?: ServerTimeSync;
-    /** Change-detected addresses; persisted to `server.metadata.ips`. */
+    /**
+     * Change-detected host resources (typically `{ ips }`); persisted to
+     * `server.metadata.resources`.
+     */
+    resources?: ServerHostResources;
+    /** Legacy top-level addresses; prefer `resources.ips`. */
     ips?: ServerReportedIp[];
     /**
      * Change-detected Docker facts; persisted to `server.metadata.docker`.

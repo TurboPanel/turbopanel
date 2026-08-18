@@ -1,19 +1,25 @@
-import type { Context } from 'hono'
-import { getDb } from '../db.ts'
-import { can } from './authz/index.ts'
-import { resolveOrgId } from './org-context.ts'
+import type { Context } from "hono";
+import { getDb } from "../db.ts";
+import {
+  isValidDescription,
+  isValidDisplayName,
+  normalizeDisplayName,
+} from "../lib/display-name-format.ts";
+import { can } from "./authz/index.ts";
+import { resolveOrgId } from "./org-context.ts";
 
 export {
   assertNotSystemOwnedOr403,
   SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-} from './authz/http.ts'
-
-export const DISPLAY_NAME_RE = /^[A-Za-z0-9 ._-]+$/
+} from "./authz/http.ts";
 
 export class BadRequestError extends Error {}
 
-export async function getOrgId(c: Context, userId: string): Promise<string | Response> {
-  return resolveOrgId(c, userId)
+export async function getOrgId(
+  c: Context,
+  userId: string,
+): Promise<string | Response> {
+  return resolveOrgId(c, userId);
 }
 
 /**
@@ -21,12 +27,12 @@ export async function getOrgId(c: Context, userId: string): Promise<string | Res
  */
 function pickDisplayNameRaw(body: Record<string, unknown>): unknown {
   if (body.displayName !== undefined) {
-    return body.displayName
+    return body.displayName;
   }
   if (body.name !== undefined) {
-    return body.name
+    return body.name;
   }
-  return undefined
+  return undefined;
 }
 
 /**
@@ -36,32 +42,32 @@ function pickDisplayNameRaw(body: Record<string, unknown>): unknown {
  * callers and tests. (`parseDisplayName` is the historical export name.)
  */
 export function parseDisplayName(body: Record<string, unknown>): string | null {
-  const raw = pickDisplayNameRaw(body)
+  const raw = pickDisplayNameRaw(body);
   if (raw === undefined) {
-    return null
+    return null;
   }
-  if (typeof raw !== 'string') {
-    throw new BadRequestError('Invalid request')
+  if (typeof raw !== "string") {
+    throw new BadRequestError("Invalid request");
   }
-  const name = raw.trim()
-  if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
-    throw new BadRequestError('Invalid request')
+  const name = normalizeDisplayName(raw);
+  if (!isValidDisplayName(name)) {
+    throw new BadRequestError("Invalid request");
   }
-  return name
+  return name;
 }
 
 export function parseDescription(body: Record<string, unknown>): string | null {
   if (body.description === undefined) {
-    return null
+    return null;
   }
-  if (typeof body.description !== 'string') {
-    throw new BadRequestError('Invalid request')
+  if (typeof body.description !== "string") {
+    throw new BadRequestError("Invalid request");
   }
-  const description = body.description.trim()
-  if (description.length > 255) {
-    throw new BadRequestError('Invalid request')
+  const description = normalizeDisplayName(body.description);
+  if (!isValidDescription(description)) {
+    throw new BadRequestError("Invalid request");
   }
-  return description.length === 0 ? null : description
+  return description.length === 0 ? null : description;
 }
 
 export function parseJsonbObject(
@@ -70,13 +76,13 @@ export function parseJsonbObject(
   field: string,
 ): Record<string, unknown> | null | Response {
   if (body[field] === undefined) {
-    return null
+    return null;
   }
-  const value = body[field]
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return c.json({ error: 'Invalid request' }, 400)
+  const value = body[field];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return c.json({ error: "Invalid request" }, 400);
   }
-  return value as Record<string, unknown>
+  return value as Record<string, unknown>;
 }
 
 /**
@@ -88,48 +94,48 @@ export function stripPromotedMetadataKeys(
   metadata: Record<string, unknown>,
   keys: readonly string[],
 ): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...metadata }
+  const next: Record<string, unknown> = { ...metadata };
   for (const key of keys) {
-    delete next[key]
+    delete next[key];
   }
-  return next
+  return next;
 }
 
 /** PATCH payload: omit `name` when absent so partial updates do not clear it. */
 export function buildPatchUpdateFields(
   body: Record<string, unknown>,
 ): { name?: string | null; description?: string | null; updatedAt: string } {
-  const updatedAt = new Date().toISOString()
+  const updatedAt = new Date().toISOString();
   const result: {
-    name?: string | null
-    description?: string | null
-    updatedAt: string
-  } = { updatedAt }
+    name?: string | null;
+    description?: string | null;
+    updatedAt: string;
+  } = { updatedAt };
 
-  const rawName = pickDisplayNameRaw(body)
+  const rawName = pickDisplayNameRaw(body);
   if (rawName !== undefined) {
-    if (typeof rawName !== 'string') {
-      throw new BadRequestError('Invalid request')
+    if (typeof rawName !== "string") {
+      throw new BadRequestError("Invalid request");
     }
-    const name = rawName.trim()
-    if (name.length < 1 || name.length > 255 || !DISPLAY_NAME_RE.test(name)) {
-      throw new BadRequestError('Invalid request')
+    const name = normalizeDisplayName(rawName);
+    if (!isValidDisplayName(name)) {
+      throw new BadRequestError("Invalid request");
     }
-    result.name = name
+    result.name = name;
   }
 
   if (body.description !== undefined) {
-    if (typeof body.description !== 'string') {
-      throw new BadRequestError('Invalid request')
+    if (typeof body.description !== "string") {
+      throw new BadRequestError("Invalid request");
     }
-    const description = body.description.trim()
-    if (description.length > 255) {
-      throw new BadRequestError('Invalid request')
+    const description = normalizeDisplayName(body.description);
+    if (!isValidDescription(description)) {
+      throw new BadRequestError("Invalid request");
     }
-    result.description = description.length === 0 ? null : description
+    result.description = description.length === 0 ? null : description;
   }
 
-  return result
+  return result;
 }
 
 /**
@@ -144,18 +150,24 @@ export async function assertCanManageOr403(
   kind: string,
   entityId: string,
 ): Promise<Response | null> {
-  const db = getDb(c)
-  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  const db = getDb(c);
+  if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-  const session = c.get('session')
-  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-  const allowed = await can(db, session.userId, 'organization:manage', kind, entityId)
+  const allowed = await can(
+    db,
+    session.userId,
+    "organization:manage",
+    kind,
+    entityId,
+  );
 
   if (!allowed) {
-    return c.json({ error: 'Forbidden' }, 403)
+    return c.json({ error: "Forbidden" }, 403);
   }
-  return null
+  return null;
 }
 
 /**
@@ -169,7 +181,7 @@ export async function assertCanReadOr403(
   kind: string,
   entityId: string,
 ): Promise<Response | null> {
-  return assertCanManageOr403(c, kind, entityId)
+  return assertCanManageOr403(c, kind, entityId);
 }
 
 /**
@@ -183,26 +195,26 @@ export async function assertCanCreateOr403(
   parentKind: string,
   parentId: string,
 ): Promise<Response | null> {
-  return assertCanManageOr403(c, parentKind, parentId)
+  return assertCanManageOr403(c, parentKind, parentId);
 }
 
 export async function parseJsonBody(
   c: Context,
 ): Promise<Record<string, unknown> | Response> {
-  const rawBody = await c.req.text().catch(() => '')
+  const rawBody = await c.req.text().catch(() => "");
   if (!rawBody.trim()) {
-    return {}
+    return {};
   }
-  let body: unknown
+  let body: unknown;
   try {
-    body = JSON.parse(rawBody)
+    body = JSON.parse(rawBody);
   } catch {
-    return c.json({ error: 'Invalid request' }, 400)
+    return c.json({ error: "Invalid request" }, 400);
   }
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return c.json({ error: 'Invalid request' }, 400)
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return c.json({ error: "Invalid request" }, 400);
   }
-  return body as Record<string, unknown>
+  return body as Record<string, unknown>;
 }
 
 export function requireStringField(
@@ -210,9 +222,9 @@ export function requireStringField(
   body: Record<string, unknown>,
   field: string,
 ): string | Response {
-  const value = body[field]
-  if (typeof value !== 'string' || !value) {
-    return c.json({ error: 'Invalid request' }, 400)
+  const value = body[field];
+  if (typeof value !== "string" || !value) {
+    return c.json({ error: "Invalid request" }, 400);
   }
-  return value
+  return value;
 }

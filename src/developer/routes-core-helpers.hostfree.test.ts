@@ -37,6 +37,11 @@ test('parseDisplayNameInput trims and validates length', () => {
     ok: false,
     error: 'displayName must be at most 255 characters',
   })
+  assertEquals(parseDisplayNameInput('bad\nname'), {
+    ok: false,
+    error: 'displayName must not contain control characters',
+  })
+  assertEquals(parseDisplayNameInput('Café 东京'), { ok: true, value: 'Café 东京' })
 })
 
 test('parseOrganizationIdInput validates UUID and org existence', async () => {

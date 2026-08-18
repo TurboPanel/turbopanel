@@ -22,16 +22,8 @@ import {
 import { server } from "../../lib/db/schema.ts";
 import { normalizeMachineKey } from "../../lib/machine-key.ts";
 import {
-  parseServerTimeSync,
-  serverTimeSyncEquals,
   type ServerMetadata,
-  type ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
-import {
-  parseServerIps,
-  serverIpsEquals,
-  type ServerReportedIp,
-} from "../../server-addresses.ts";
 import {
   geoEquals,
   parseServerGeo,
@@ -50,8 +42,6 @@ export type ProjectionIdentity = {
   remoteAddress?: string;
   keyId?: string;
   geo?: ServerGeo;
-  timeSync?: ServerTimeSync;
-  ips?: ServerReportedIp[];
 };
 
 export type ProjectionDaemonBuild = {
@@ -235,34 +225,10 @@ function geoRefreshDue(
 
 /** jsonb `||` delta — only keys that are actually changing (never stale nested facts). */
 function buildMetadataPatch(
-  existingMetadata: ServerMetadata | null | undefined,
   incomingGeo?: ServerGeo,
-  identity?: ProjectionIdentity,
 ): Partial<ServerMetadata> | null {
-  const delta: Partial<ServerMetadata> = {};
-
-  if (incomingGeo !== undefined) {
-    delta.geo = incomingGeo;
-  }
-
-  const timeSync = parseServerTimeSync(identity?.timeSync);
-  if (timeSync) {
-    const merged = { ...existingMetadata?.timeSync, ...timeSync };
-    if (!serverTimeSyncEquals(merged, existingMetadata?.timeSync)) {
-      delta.timeSync = merged;
-    }
-  }
-  const ips = identity?.ips !== undefined
-    ? parseServerIps(identity.ips)
-    : undefined;
-  if (
-    ips !== undefined &&
-    !serverIpsEquals(ips, existingMetadata?.ips)
-  ) {
-    delta.ips = ips;
-  }
-
-  return Object.keys(delta).length > 0 ? delta : null;
+  if (incomingGeo === undefined) return null;
+  return { geo: incomingGeo };
 }
 
 /** Dedicated identity columns — hostname / machine_key (not metadata jsonb). */
@@ -694,7 +660,6 @@ function buildDaemonAndStatusColumnPatch(
 
 /** Dedicated identity columns + metadata jsonb delta — the `touchMetadata` half of the patch. */
 function buildIdentityAndMetadataPatch(
-  trigger: ProjectionTrigger,
   existing: ServerDaemonStateWithMetadata,
   nextProjection: ServerDaemonProjection | undefined,
   geoDue: boolean,
@@ -702,10 +667,6 @@ function buildIdentityAndMetadataPatch(
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
 
-  const projectionIdentity =
-    trigger.kind === "online" || trigger.kind === "identity"
-      ? trigger.identity
-      : undefined;
   const identityColumns = buildIdentityColumnPatch(
     { hostname: existing.hostname, machineKey: existing.machineKey },
     nextProjection,
@@ -715,13 +676,12 @@ function buildIdentityAndMetadataPatch(
   }
 
   const mergedMetadata = buildMetadataPatch(
-    existing.metadata,
     geoDue ? incomingGeo : undefined,
-    projectionIdentity,
   );
   if (mergedMetadata) {
-    // jsonb || keeps keys that exist only in the live column (e.g. os written
-    // by a concurrent hello) so a stale full-object replace cannot wipe them.
+    // jsonb || keeps keys that exist only in the live column (e.g. docker /
+    // resources written by a concurrent hello) so a stale full-object replace
+    // cannot wipe them.
     patch.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
       JSON.stringify(mergedMetadata)
     }::jsonb`;
@@ -781,7 +741,7 @@ export async function projectServerDaemon(
   if (touchMetadata) {
     Object.assign(
       patch,
-      buildIdentityAndMetadataPatch(trigger, existing, nextProjection, geoDue, incomingGeo),
+      buildIdentityAndMetadataPatch(existing, nextProjection, geoDue, incomingGeo),
     );
   }
 
@@ -968,6 +928,16 @@ export type ServerFleetPresenceRow = {
   metadata: unknown;
   hostname: string | null;
   machineKey: string | null;
+  osId: string | null;
+  osFamily: string | null;
+  osVersion: string | null;
+  osCodename: string | null;
+  osPrettyName: string | null;
+  osArchitecture: string | null;
+  timezone: string | null;
+  isTimeSyncEnabled: boolean | null;
+  ntpServers: unknown;
+  ntpLastSyncedAt: string | null;
   connected: boolean;
   statusChangedAt: string | null;
 };
@@ -986,6 +956,16 @@ export async function loadServerRowsForFleetPresence(
       metadata: server.metadata,
       hostname: server.hostname,
       machineKey: server.machineKey,
+      osId: server.osId,
+      osFamily: server.osFamily,
+      osVersion: server.osVersion,
+      osCodename: server.osCodename,
+      osPrettyName: server.osPrettyName,
+      osArchitecture: server.osArchitecture,
+      timezone: server.timezone,
+      isTimeSyncEnabled: server.isTimeSyncEnabled,
+      ntpServers: server.ntpServers,
+      ntpLastSyncedAt: server.ntpLastSyncedAt,
       connected: server.connected,
       statusChangedAt: server.statusChangedAt,
     })

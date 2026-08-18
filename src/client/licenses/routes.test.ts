@@ -27,6 +27,7 @@ import {
   user,
   workspace,
 } from '../../lib/db/schema.ts'
+import { DISPLAY_NAME_MAX_LENGTH } from '../../lib/display-name-format.ts'
 import { ensureSelfHostSystemHierarchy } from '../system/hierarchy.ts'
 import { registerLicenseRoutes } from './routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -80,6 +81,22 @@ function orgRequestHeaders(
     Cookie: cookie,
     [ORG_ID_HEADER]: organizationId,
   }
+}
+
+async function postLicense(
+  app: Hono<AppEnv>,
+  cookie: string,
+  organizationId: string,
+  body: unknown,
+) {
+  return app.request('/licenses', {
+    method: 'POST',
+    headers: {
+      ...orgRequestHeaders(cookie, organizationId),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
 }
 
 async function withTestFixtures(
@@ -578,6 +595,59 @@ test('POST /licenses rejects reserved colocated displayName', async () => {
     if (rows.length !== 0) {
       throw new Error('reserved displayName must not create a license row')
     }
+  })
+})
+
+test('POST /licenses normalizes Unicode, smart quotes, and trimming', async () => {
+  await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, ownerId)
+    const res = await postLicense(app, cookie, organizationId, {
+      displayName: '  O\u2019Reilly Café 东京  ',
+    })
+    assertEquals(res.status, 200)
+
+    const rows = await db
+      .select({ name: license.name })
+      .from(license)
+      .where(eq(license.organizationId, organizationId))
+    assertEquals(rows.map((row) => row.name), ["O'Reilly Café 东京"])
+  })
+})
+
+test('POST /licenses omits whitespace-only optional names', async () => {
+  await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, ownerId)
+    const res = await postLicense(app, cookie, organizationId, {
+      displayName: '   ',
+    })
+    assertEquals(res.status, 200)
+
+    const rows = await db
+      .select({ name: license.name })
+      .from(license)
+      .where(eq(license.organizationId, organizationId))
+    assertEquals(rows.map((row) => row.name), [null])
+  })
+})
+
+test('POST /licenses rejects control characters and over-length displayName', async () => {
+  await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, ownerId)
+    const control = await postLicense(app, cookie, organizationId, {
+      displayName: 'bad\nname',
+    })
+    assertEquals(control.status, 400)
+
+    const overLength = await postLicense(app, cookie, organizationId, {
+      displayName: 'a'.repeat(DISPLAY_NAME_MAX_LENGTH + 1),
+    })
+    assertEquals(overLength.status, 400)
+
+    const rows = await db
+      .select({ id: license.id })
+      .from(license)
+      .where(eq(license.organizationId, organizationId))
+    assertEquals(rows.length, 0)
   })
 })
 

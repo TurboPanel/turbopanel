@@ -508,29 +508,24 @@ test("stale identity projection does not clobber fresh timeSync, ips, os, or geo
   assertEquals(metadata?.geo, testGeoUpdated);
 });
 
-test("identity projection replaces stored ips when daemon reports empty lists", async () => {
+test("identity projection does not write ips (resources.ips is owned by touchServerMetadata)", async () => {
   const priorIps = [
     { address: "10.0.0.1", version: 4 as const, scope: "private" as const },
     { address: "203.0.113.10", version: 4 as const, scope: "public" as const },
   ];
-  const emptyReport: [] = [];
   const { db, updateCalls } = createMockDb(
     { key: baseKey },
     {},
-    { ips: priorIps },
+    { resources: { ips: priorIps } },
   );
 
-  // `identity` triggers only touch metadata when identity/geo actually changed
-  // (applyIdentityTrigger gates on identityDue/geoDue) — pair the ips
-  // report with a remoteAddress change so the metadata delta is computed.
   await projectServerDaemon(db, serverId, {
     kind: "identity",
-    identity: { remoteAddress: "203.0.113.10", ips: emptyReport },
+    identity: { remoteAddress: "203.0.113.10" },
   });
 
   assertEquals(updateCalls.length, 1);
-  const patch = unwrapMetadataPatch(updateCalls[0]?.metadata);
-  assertEquals(patch?.ips, emptyReport);
+  assertEquals(updateCalls[0]?.metadata, undefined);
 });
 
 test("projectServerDaemon online sets status columns and identity columns", async () => {

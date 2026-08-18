@@ -398,17 +398,13 @@ test('processCommandEnvelope persists server.options.timezone only after success
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
 
     const [row] = await db
-      .select({ options: server.options, metadata: server.metadata })
+      .select({ options: server.options, timezone: server.timezone })
       .from(server)
       .where(eq(server.id, serverId))
       .limit(1)
     const options = row?.options as { timezone?: string } | null
     assertEquals(options?.timezone, 'America/Chicago')
-    const timeSync = (row?.metadata as Record<string, unknown>).timeSync as
-      | Record<string, unknown>
-      | undefined
-    assertEquals(timeSync?.timezone, 'America/Chicago')
-    assertEquals(typeof timeSync?.capturedAt, 'string')
+    assertEquals(row?.timezone, 'America/Chicago')
   })
 })
 
@@ -531,18 +527,17 @@ test('processCommandEnvelope maps failed and timed out pending requests', async 
   })
 })
 
-test('processCommandEnvelope leaves metadata.timeSync unchanged on malformed ntp success', async () => {
+test('processCommandEnvelope leaves NTP columns unchanged on malformed ntp success', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
-    const priorTimeSync = {
-      timezone: 'UTC',
-      ntpEnabled: true,
-      ntpServers: ['pool.ntp.org'],
-      capturedAt: new Date().toISOString(),
-    }
+    const priorNtpServers = [{ host: 'pool.ntp.org' }]
+    const priorStamp = '2026-01-01T00:00:00.000Z'
     const now = new Date().toISOString()
     await db.update(server).set({
-      metadata: { timeSync: priorTimeSync },
+      timezone: 'UTC',
+      isTimeSyncEnabled: true,
+      ntpServers: priorNtpServers,
+      ntpLastSyncedAt: priorStamp,
       updatedAt: now,
     }).where(eq(server.id, serverId))
 
@@ -572,14 +567,21 @@ test('processCommandEnvelope leaves metadata.timeSync unchanged on malformed ntp
     assertEquals(updated?.status, 'succeeded')
 
     const [row] = await db
-      .select({ metadata: server.metadata })
+      .select({
+        timezone: server.timezone,
+        isTimeSyncEnabled: server.isTimeSyncEnabled,
+        ntpServers: server.ntpServers,
+        ntpLastSyncedAt: server.ntpLastSyncedAt,
+      })
       .from(server)
       .where(eq(server.id, serverId))
       .limit(1)
-    assertEquals(
-      (row?.metadata as Record<string, unknown>).timeSync,
-      priorTimeSync,
-    )
+    assertEquals(row, {
+      timezone: 'UTC',
+      isTimeSyncEnabled: true,
+      ntpServers: priorNtpServers,
+      ntpLastSyncedAt: priorStamp,
+    })
   })
 })
 
@@ -1836,7 +1838,7 @@ test('processCommandEnvelope no-ops when envelope serverId mismatches record', a
   })
 })
 
-test('processCommandEnvelope merges NTP facts into server.metadata.timeSync on success', async () => {
+test('processCommandEnvelope merges NTP facts into server NTP columns on success', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
     const record = await createCommandRecord(db, {
@@ -1870,18 +1872,20 @@ test('processCommandEnvelope merges NTP facts into server.metadata.timeSync on s
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
 
     const [row] = await db
-      .select({ metadata: server.metadata })
+      .select({
+        isTimeSyncEnabled: server.isTimeSyncEnabled,
+        ntpServers: server.ntpServers,
+        ntpLastSyncedAt: server.ntpLastSyncedAt,
+      })
       .from(server)
       .where(eq(server.id, serverId))
       .limit(1)
-    const timeSync = (row?.metadata as Record<string, unknown>).timeSync as
-      | Record<string, unknown>
-      | undefined
-    assertEquals(timeSync?.ntpEnabled, true)
-    assertEquals(timeSync?.ntpSynced, true)
-    assertEquals(timeSync?.ntpServers, ['time.cloudflare.com'])
-    assertEquals(timeSync?.fallbackNtpServers, ['pool.ntp.org'])
-    assertEquals(typeof timeSync?.capturedAt, 'string')
+    assertEquals(row?.isTimeSyncEnabled, true)
+    assertEquals(row?.ntpServers, [
+      { host: 'time.cloudflare.com' },
+      { host: 'pool.ntp.org', fallback: true },
+    ])
+    assertEquals(typeof row?.ntpLastSyncedAt, 'string')
   })
 })
 

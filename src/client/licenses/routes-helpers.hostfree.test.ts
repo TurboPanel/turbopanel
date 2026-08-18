@@ -3,6 +3,7 @@
  */
 
 import { assertEquals } from 'jsr:@std/assert'
+import { DISPLAY_NAME_MAX_LENGTH } from '../../lib/display-name-format.ts'
 import {
   installBaseUrlValidationError,
   isReservedColocatedLicenseName,
@@ -26,6 +27,22 @@ test('parseLicenseCreateFields accepts partial string fields and ignores extras'
     { name: 'Edge node' },
   )
   assertEquals(
+    parseLicenseCreateFields(JSON.stringify({ displayName: 'Rack 2' })),
+    { name: 'Rack 2' },
+  )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({
+      displayName: 'Preferred',
+      name: 'Legacy',
+      installBaseUrl: 'https://panel.example.com',
+      extra: 'ignored',
+    })),
+    {
+      name: 'Preferred',
+      installBaseUrl: 'https://panel.example.com',
+    },
+  )
+  assertEquals(
     parseLicenseCreateFields(JSON.stringify({
       installBaseUrl: 'https://panel.example.com',
       extra: 'ignored',
@@ -34,10 +51,62 @@ test('parseLicenseCreateFields accepts partial string fields and ignores extras'
   )
 })
 
-test('parseLicenseCreateFields accepts empty string name values', () => {
+test('parseLicenseCreateFields normalizes Unicode, smart quotes, and trimming', () => {
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({ displayName: 'Café 东京' })),
+    { name: 'Café 东京' },
+  )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({ displayName: '  O\u2019Reilly  ' })),
+    { name: "O'Reilly" },
+  )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({ name: '  Edge node  ' })),
+    { name: 'Edge node' },
+  )
+})
+
+test('parseLicenseCreateFields omits absent and whitespace-only optional names', () => {
   assertEquals(
     parseLicenseCreateFields(JSON.stringify({ name: '' })),
-    { name: '' },
+    {},
+  )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({ displayName: '   ' })),
+    {},
+  )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({
+      displayName: '  ',
+      name: 'Legacy',
+      installBaseUrl: 'https://panel.example.com',
+    })),
+    { installBaseUrl: 'https://panel.example.com' },
+  )
+})
+
+test('parseLicenseCreateFields rejects control characters and over-length names', () => {
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({ displayName: 'bad\nname' })),
+    'invalid',
+  )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({
+      name: 'a'.repeat(DISPLAY_NAME_MAX_LENGTH + 1),
+    })),
+    'invalid',
+  )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({
+      displayName: '😀'.repeat(DISPLAY_NAME_MAX_LENGTH),
+    })),
+    { name: '😀'.repeat(DISPLAY_NAME_MAX_LENGTH) },
+  )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({
+      displayName: '😀'.repeat(DISPLAY_NAME_MAX_LENGTH + 1),
+    })),
+    'invalid',
   )
 })
 
@@ -46,11 +115,16 @@ test('parseLicenseCreateFields rejects numeric field types', () => {
     parseLicenseCreateFields(JSON.stringify({ installBaseUrl: 8443 })),
     'invalid',
   )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({ displayName: 2 })),
+    'invalid',
+  )
 })
 
 test('reserved colocated license name helpers', () => {
   assertEquals(isReservedColocatedLicenseName('this server', 'this server'), true)
   assertEquals(isReservedColocatedLicenseName('  this server  ', 'this server'), true)
+  assertEquals(isReservedColocatedLicenseName('THIS SERVER', 'this server'), true)
   assertEquals(isReservedColocatedLicenseName('edge', 'this server'), false)
   assertEquals(
     reservedColocatedLicenseNameError('this server'),
@@ -81,7 +155,7 @@ test('serializeLicenseListEntry shapes bound and unbound rows', () => {
     }),
     {
       id: 'l1',
-      name: 'Edge',
+      displayName: 'Edge',
       createdAt: '2026-01-01T00:00:00.000Z',
       revocable: true,
       boundServer: null,
@@ -96,7 +170,7 @@ test('serializeLicenseListEntry shapes bound and unbound rows', () => {
       bound: { id: 's1', name: 'node' },
       status: { serverId: 's1', connected: true },
     }).boundServer,
-    { id: 's1', name: 'node', connected: true },
+    { id: 's1', displayName: 'node', connected: true },
   )
 })
 

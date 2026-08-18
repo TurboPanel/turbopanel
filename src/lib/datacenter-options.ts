@@ -11,6 +11,13 @@ export type DatacenterOptions = {
    * (unless another tier also enforces — datacenter is most specific).
    */
   enforceServerTimezone?: boolean
+  /**
+   * Preferred address family when choosing among a server's pins in this
+   * datacenter. Absence implies default `'ipv6'` (RFC 6724 / RFC 8305). The
+   * parser only returns the field when it was explicitly set to `'ipv6'` or
+   * `'ipv4'`.
+   */
+  addressPreference?: 'ipv6' | 'ipv4'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -27,6 +34,9 @@ export function parseDatacenterOptions(value: unknown): DatacenterOptions {
   }
   if (typeof value.enforceServerTimezone === 'boolean') {
     options.enforceServerTimezone = value.enforceServerTimezone
+  }
+  if (value.addressPreference === 'ipv6' || value.addressPreference === 'ipv4') {
+    options.addressPreference = value.addressPreference
   }
   return options
 }

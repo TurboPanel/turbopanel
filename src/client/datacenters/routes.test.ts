@@ -42,11 +42,11 @@ function reportedPrivateAddress(
       {
         address,
         version: 4,
-        scope: 'private',
+        scope: "private",
         cidr,
       },
     ],
-  }
+  };
 }
 
 async function sessionCookie(
@@ -59,7 +59,9 @@ async function sessionCookie(
   return `${HTTP_SESSION_COOKIE_NAME}=${signed}`;
 }
 
-async function createDatacenterRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
+async function createDatacenterRoutesTestApp(
+  db: ReturnType<typeof createDenoDb>,
+) {
   const secretsConfig = parseSecretsEnv(
     TEST_ONLY_TURBOPANEL_SECRET,
     undefined,
@@ -122,7 +124,9 @@ async function withDatacenterFixtures(
   } finally {
     await db.delete(server).where(eq(server.organizationId, organizationId));
     await db.delete(network).where(eq(network.organizationId, organizationId));
-    await db.delete(datacenter).where(eq(datacenter.organizationId, organizationId));
+    await db.delete(datacenter).where(
+      eq(datacenter.organizationId, organizationId),
+    );
     await db.delete(grant).where(and(
       eq(grant.actorId, userId),
       eq(grant.entityId, organizationId),
@@ -179,6 +183,16 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
     .insert(datacenter)
     .values({ organizationId, name: "Existing DC" })
     .returning({ id: datacenter.id });
+  const [assignedSiteNet] = await db
+    .insert(network)
+    .values({
+      organizationId,
+      datacenterId: assignedDatacenter!.id,
+      kind: "datacenter",
+      cidr: "10.0.0.0/24",
+      name: "Existing LAN",
+    })
+    .returning({ id: network.id });
   const [unassignedServer] = await db
     .insert(server)
     .values({
@@ -203,6 +217,7 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
   await db.insert(ip).values({
     organizationId,
     datacenterId: assignedDatacenter!.id,
+    networkId: assignedSiteNet!.id,
     serverId: assignedServer!.id,
     address: "10.0.0.10",
     allocation: "dedicated",
@@ -233,6 +248,7 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
   await db.delete(ip).where(eq(ip.serverId, assignedServer!.id));
   await db.delete(server).where(eq(server.id, unassignedServer!.id));
   await db.delete(server).where(eq(server.id, assignedServer!.id));
+  await db.delete(network).where(eq(network.id, assignedSiteNet!.id));
   await db.delete(datacenter).where(eq(datacenter.id, assignedDatacenter!.id));
   await db.delete(grant).where(eq(grant.actorId, userId));
   await db.delete(user).where(eq(user.id, userId));
@@ -351,7 +367,6 @@ test("GET /datacenters returns 403 for org member without organization:manage", 
     })
     .returning({ id: user.id });
   const userId = u!.id;
-
 
   const cookie = await sessionCookie(db, secrets, userId);
   const res = await app.request("/datacenters", {
@@ -599,7 +614,9 @@ test("GET /datacenters lists datacenters with privateCidrs", async () => {
 
     assertEquals(res.status, 200);
     const body = await res.json() as {
-      datacenters: Array<{ id: string; displayName: string; privateCidrs: string[] }>;
+      datacenters: Array<
+        { id: string; displayName: string; privateCidrs: string[] }
+      >;
     };
     assertEquals(body.datacenters.length, 1);
     assertEquals(body.datacenters[0]?.id, dc!.id);
@@ -843,7 +860,7 @@ test("POST /datacenters infers a typical LAN CIDR when the seed IP has no prefix
         metadata: {
           ips: [
             { address: "10.0.0.10", version: 4, scope: "private" },
-          },
+          ],
         },
         createdAt: now,
         updatedAt: now,
@@ -922,7 +939,7 @@ test("DELETE /datacenters/:id removes an empty datacenter including its site net
   });
 });
 
-test("POST /datacenters/:id/members returns 409 when already a member", async () => {
+test("POST /datacenters/:id/members allows a second address and rejects duplicates", async () => {
   await withDatacenterFixtures(async ({
     db,
     app,
@@ -940,23 +957,37 @@ test("POST /datacenters/:id/members returns 409 when already a member", async ()
         updatedAt: now,
       })
       .returning({ id: datacenter.id });
-    await db.insert(network).values({
-      organizationId,
-      datacenterId: existingDc!.id,
-      kind: "datacenter",
-      cidr: "10.0.0.0/24",
-      name: "Existing LAN",
-      createdAt: now,
-      updatedAt: now,
-    });
+    const [siteNet] = await db
+      .insert(network)
+      .values({
+        organizationId,
+        datacenterId: existingDc!.id,
+        kind: "datacenter",
+        cidr: "10.0.0.0/24",
+        name: "Existing LAN",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: network.id });
     const [srv] = await db
       .insert(server)
       .values({
         organizationId,
         metadata: {
           ips: [
-            { address: "10.0.0.10", version: 4, scope: "private" },
-          },
+            {
+              address: "10.0.0.10",
+              version: 4,
+              scope: "private",
+              cidr: "10.0.0.0/24",
+            },
+            {
+              address: "2001:db8::10",
+              version: 6,
+              scope: "private",
+              cidr: "2001:db8::/64",
+            },
+          ],
         },
         createdAt: now,
         updatedAt: now,
@@ -965,6 +996,7 @@ test("POST /datacenters/:id/members returns 409 when already a member", async ()
     await db.insert(ip).values({
       organizationId,
       datacenterId: existingDc!.id,
+      networkId: siteNet!.id,
       serverId: srv!.id,
       address: "10.0.0.10",
       allocation: "dedicated",
@@ -972,7 +1004,135 @@ test("POST /datacenters/:id/members returns 409 when already a member", async ()
     });
 
     const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/datacenters/${existingDc!.id}/members`, {
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      "content-type": "application/json",
+    };
+    const secondFamily = await app.request(
+      `/datacenters/${existingDc!.id}/members`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          members: [{ serverId: srv!.id, address: "2001:db8::10" }],
+        }),
+      },
+    );
+    assertEquals(secondFamily.status, 200);
+    const secondBody = await secondFamily.json() as { ok: true };
+    assertEquals(secondBody.ok, true);
+
+    const pinsAfterSecond = await db
+      .select({ address: ip.address })
+      .from(ip)
+      .where(
+        and(
+          eq(ip.datacenterId, existingDc!.id),
+          eq(ip.serverId, srv!.id),
+          eq(ip.scope, "datacenter"),
+        ),
+      );
+    assertEquals(pinsAfterSecond.length, 2);
+
+    const duplicate = await app.request(
+      `/datacenters/${existingDc!.id}/members`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          members: [{ serverId: srv!.id, address: "10.0.0.10" }],
+        }),
+      },
+    );
+    assertEquals(duplicate.status, 409);
+    const duplicateBody = await duplicate.json() as { error: string };
+    assertEquals(duplicateBody.error, "address_in_use");
+
+    const removed = await app.request(
+      `/datacenters/${existingDc!.id}/members/${srv!.id}`,
+      {
+        method: "DELETE",
+        headers: { cookie, [ORG_ID_HEADER]: organizationId },
+      },
+    );
+    assertEquals(removed.status, 200);
+    const removedBody = await removed.json() as { ok: true; removed: number };
+    assertEquals(removedBody.ok, true);
+    assertEquals(removedBody.removed, 2);
+
+    const leftover = await db
+      .select({ id: ip.id })
+      .from(ip)
+      .where(
+        and(
+          eq(ip.datacenterId, existingDc!.id),
+          eq(ip.serverId, srv!.id),
+        ),
+      );
+    assertEquals(leftover.length, 0);
+  });
+});
+
+test("POST /datacenters/:id/members returns 409 when a derived CIDR overlaps another datacenter", async () => {
+  await withDatacenterFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const now = new Date().toISOString();
+    const [otherDc] = await db
+      .insert(datacenter)
+      .values({
+        organizationId,
+        name: "Other DC",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: datacenter.id });
+    await db.insert(network).values({
+      organizationId,
+      datacenterId: otherDc!.id,
+      kind: "datacenter",
+      cidr: "10.0.0.0/24",
+      name: "Other LAN",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const [targetDc] = await db
+      .insert(datacenter)
+      .values({
+        organizationId,
+        name: "Target DC",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: datacenter.id });
+    await db.insert(network).values({
+      organizationId,
+      datacenterId: targetDc!.id,
+      kind: "datacenter",
+      cidr: "192.168.1.0/24",
+      name: "Target LAN",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const [srv] = await db
+      .insert(server)
+      .values({
+        organizationId,
+        metadata: reportedPrivateAddress("10.0.0.50", "10.0.0.0/16"),
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id });
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request(`/datacenters/${targetDc!.id}/members`, {
       method: "POST",
       headers: {
         cookie,
@@ -980,18 +1140,143 @@ test("POST /datacenters/:id/members returns 409 when already a member", async ()
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        members: [{ serverId: srv!.id, address: "10.0.0.10" }],
+        members: [{ serverId: srv!.id, address: "10.0.0.50" }],
       }),
     });
 
     assertEquals(res.status, 409);
-    const body = await res.json() as { error: string; serverId: string };
-    assertEquals(body.error, "server_already_member");
-    assertEquals(body.serverId, srv!.id);
+    const body = await res.json() as { error: string };
+    assertEquals(body.error, "subnet_overlaps");
   });
 });
 
-test("DELETE /datacenters/:id/members/:serverId removes the pin", async () => {
+test("POST /datacenters returns 409 when a derived CIDR overlaps another datacenter", async () => {
+  await withDatacenterFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const now = new Date().toISOString();
+    const [otherDc] = await db
+      .insert(datacenter)
+      .values({
+        organizationId,
+        name: "Existing LAN DC",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: datacenter.id });
+    await db.insert(network).values({
+      organizationId,
+      datacenterId: otherDc!.id,
+      kind: "datacenter",
+      cidr: "10.0.0.0/24",
+      name: "Existing LAN",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const [srv] = await db
+      .insert(server)
+      .values({
+        organizationId,
+        metadata: reportedPrivateAddress("10.0.0.50", "10.0.0.0/24"),
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id });
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request("/datacenters", {
+      method: "POST",
+      headers: {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        members: [{ serverId: srv!.id, address: "10.0.0.50" }],
+      }),
+    });
+
+    assertEquals(res.status, 409);
+    const body = await res.json() as { error: string };
+    assertEquals(body.error, "subnet_overlaps");
+  });
+});
+
+test("POST /datacenters/:id/members returns 409 when auto-derived prefixes in one request overlap", async () => {
+  await withDatacenterFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const now = new Date().toISOString();
+    const [targetDc] = await db
+      .insert(datacenter)
+      .values({
+        organizationId,
+        name: "Target DC",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: datacenter.id });
+    await db.insert(network).values({
+      organizationId,
+      datacenterId: targetDc!.id,
+      kind: "datacenter",
+      cidr: "192.168.1.0/24",
+      name: "Target LAN",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const [srvSlash24] = await db
+      .insert(server)
+      .values({
+        organizationId,
+        metadata: reportedPrivateAddress("10.0.0.10", "10.0.0.0/24"),
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id });
+    const [srvSlash16] = await db
+      .insert(server)
+      .values({
+        organizationId,
+        metadata: reportedPrivateAddress("10.0.1.20", "10.0.0.0/16"),
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id });
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request(`/datacenters/${targetDc!.id}/members`, {
+      method: "POST",
+      headers: {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        members: [
+          { serverId: srvSlash24!.id, address: "10.0.0.10" },
+          { serverId: srvSlash16!.id, address: "10.0.1.20" },
+        ],
+      }),
+    });
+
+    assertEquals(res.status, 409);
+    const body = await res.json() as { error: string };
+    assertEquals(body.error, "subnet_overlaps");
+  });
+});
+
+test("DELETE /datacenters/:id/members/:serverId removes every pin for that server", async () => {
   await withDatacenterFixtures(async ({
     db,
     app,
@@ -1009,15 +1294,30 @@ test("DELETE /datacenters/:id/members/:serverId removes the pin", async () => {
         updatedAt: now,
       })
       .returning({ id: datacenter.id });
-    await db.insert(network).values({
-      organizationId,
-      datacenterId: dc!.id,
-      kind: "datacenter",
-      cidr: "10.0.0.0/24",
-      name: "Unpin LAN",
-      createdAt: now,
-      updatedAt: now,
-    });
+    const [v4Net] = await db
+      .insert(network)
+      .values({
+        organizationId,
+        datacenterId: dc!.id,
+        kind: "datacenter",
+        cidr: "10.0.0.0/24",
+        name: "Unpin LAN",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: network.id });
+    const [v6Net] = await db
+      .insert(network)
+      .values({
+        organizationId,
+        datacenterId: dc!.id,
+        kind: "datacenter",
+        cidr: "2001:db8::/64",
+        name: "Unpin v6",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: network.id });
     const [srv] = await db
       .insert(server)
       .values({
@@ -1026,14 +1326,26 @@ test("DELETE /datacenters/:id/members/:serverId removes the pin", async () => {
         updatedAt: now,
       })
       .returning({ id: server.id });
-    await db.insert(ip).values({
-      organizationId,
-      datacenterId: dc!.id,
-      serverId: srv!.id,
-      address: "10.0.0.11",
-      allocation: "dedicated",
-      scope: "datacenter",
-    });
+    await db.insert(ip).values([
+      {
+        organizationId,
+        datacenterId: dc!.id,
+        networkId: v4Net!.id,
+        serverId: srv!.id,
+        address: "10.0.0.11",
+        allocation: "dedicated",
+        scope: "datacenter",
+      },
+      {
+        organizationId,
+        datacenterId: dc!.id,
+        networkId: v6Net!.id,
+        serverId: srv!.id,
+        address: "2001:db8::11",
+        allocation: "dedicated",
+        scope: "datacenter",
+      },
+    ]);
 
     const cookie = await sessionCookie(db, secrets, userId);
     const res = await app.request(
@@ -1044,6 +1356,9 @@ test("DELETE /datacenters/:id/members/:serverId removes the pin", async () => {
       },
     );
     assertEquals(res.status, 200);
+    const body = await res.json() as { ok: true; removed: number };
+    assertEquals(body.ok, true);
+    assertEquals(body.removed, 2);
 
     const leftover = await db
       .select({ id: ip.id })
@@ -1078,7 +1393,7 @@ test("POST /datacenters returns 404 for server in another org", async () => {
         metadata: {
           ips: [
             { address: "10.0.0.10", version: 4, scope: "private" },
-          },
+          ],
         },
         createdAt: now,
         updatedAt: now,

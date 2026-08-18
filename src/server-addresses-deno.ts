@@ -161,6 +161,8 @@ function buildReportedIp(
   const entry: ServerReportedIp = { address, version, scope }
   const cidr = cidrForAddress(address, addr)
   if (cidr) entry.cidr = cidr
+  const iface = addr.name.trim()
+  if (iface.length > 0 && iface.length <= 64) entry.interface = iface
   return entry
 }
 

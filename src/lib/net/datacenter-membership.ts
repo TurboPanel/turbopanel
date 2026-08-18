@@ -14,10 +14,11 @@ import {
   inetAddressToString,
   isValidCidr,
   isValidIpAddress,
+  parseIpVersion,
   stripInetPrefixSuffix,
 } from '../ip-address.ts'
 import {
-  parseServerIps,
+  reportedIpsFromServerMetadata,
   privateAddressesFromIps,
   type ServerReportedIp,
 } from '../../server-addresses.ts'
@@ -33,6 +34,46 @@ export type DatacenterMembershipRow = {
   datacenterId: string
   networkId: string | null
   address: string
+  family: 4 | 6
+}
+
+export type MemberPinSubnet = {
+  networkId: string
+  cidr: string
+}
+
+export function resolveSubnetForAddress<T extends MemberPinSubnet>(
+  subnets: readonly T[],
+  address: string,
+): T | null {
+  const normalized = stripInetPrefixSuffix(address.trim())
+  if (!normalized) return null
+  for (const subnet of subnets) {
+    if (addressInCidr(normalized, subnet.cidr)) return subnet
+  }
+  return null
+}
+
+function toMembershipRow(row: {
+  ipId: string
+  serverId: string | null
+  datacenterId: string | null
+  networkId: string | null
+  address: unknown
+}): DatacenterMembershipRow | null {
+  if (!row.serverId || !row.datacenterId) return null
+  const address = inetAddressToString(row.address)
+  if (!address) return null
+  const family = parseIpVersion(address)
+  if (!family) return null
+  return {
+    ipId: row.ipId,
+    serverId: row.serverId,
+    datacenterId: row.datacenterId,
+    networkId: row.networkId,
+    address,
+    family,
+  }
 }
 
 export function normalizeReportedPrivateAddresses(
@@ -47,7 +88,7 @@ export function reportedAddressesFromServerMetadata(
   metadata: unknown,
 ): string[] {
   return normalizeReportedPrivateAddresses(
-    parseIpsFromServerMetadata(metadata),
+    reportedIpsFromServerMetadata(metadata),
   )
 }
 
@@ -59,20 +100,11 @@ export function isReportedPrivateAddress(
   return reportedAddressesFromServerMetadata(metadata).includes(normalized)
 }
 
-function parseIpsFromServerMetadata(
-  metadata: unknown,
-): ServerReportedIp[] | undefined {
-  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
-    return undefined
-  }
-  return parseServerIps((metadata as Record<string, unknown>).ips)
-}
-
 function findReportedPrivateIp(
   metadata: unknown,
   address: string,
 ): ServerReportedIp | null {
-  const ips = parseIpsFromServerMetadata(metadata)
+  const ips = reportedIpsFromServerMetadata(metadata)
   if (!ips) return null
   const normalized = stripInetPrefixSuffix(address.trim())
   return ips.find(
@@ -105,34 +137,86 @@ export function siteCidrForAddress(
   return match.cidr ?? inferSiteCidrFromAddress(match.address)
 }
 
+type MemberPinSuccess = { ok: true; address: string; networkId: string }
+type MemberPinFailure<E extends string> = { ok: false; error: E }
+
+export function validateMemberPinAddress(
+  address: string,
+  subnets: readonly MemberPinSubnet[],
+  serverMetadata: unknown,
+):
+  | MemberPinSuccess
+  | MemberPinFailure<
+    'invalid_address' | 'address_not_in_any_subnet' | 'address_not_reported'
+  >
 export function validateMemberPinAddress(
   address: string,
   cidr: string,
   serverMetadata: unknown,
 ):
   | { ok: true; address: string }
-  | {
-    ok: false
-    error:
-      | 'invalid_address'
-      | 'invalid_cidr'
-      | 'address_not_in_cidr'
-      | 'address_not_reported'
-  } {
-  if (!isValidCidr(cidr.trim())) {
-    return { ok: false, error: 'invalid_cidr' }
+  | MemberPinFailure<
+    | 'invalid_address'
+    | 'invalid_cidr'
+    | 'address_not_in_cidr'
+    | 'address_not_reported'
+  >
+export function validateMemberPinAddress(
+  address: string,
+  cidrOrSubnets: string | readonly MemberPinSubnet[],
+  serverMetadata: unknown,
+):
+  | MemberPinSuccess
+  | { ok: true; address: string }
+  | MemberPinFailure<
+    | 'invalid_address'
+    | 'invalid_cidr'
+    | 'address_not_in_cidr'
+    | 'address_not_in_any_subnet'
+    | 'address_not_reported'
+  > {
+  if (typeof cidrOrSubnets === 'string') {
+    const cidr = cidrOrSubnets.trim()
+    if (!isValidCidr(cidr)) {
+      return { ok: false, error: 'invalid_cidr' }
+    }
+    const result = validateMemberPinAgainstSubnets(
+      address,
+      [{ networkId: '', cidr }],
+      serverMetadata,
+    )
+    if (!result.ok && result.error === 'address_not_in_any_subnet') {
+      return { ok: false, error: 'address_not_in_cidr' }
+    }
+    if (result.ok) {
+      return { ok: true, address: result.address }
+    }
+    return result
   }
+  return validateMemberPinAgainstSubnets(address, cidrOrSubnets, serverMetadata)
+}
+
+function validateMemberPinAgainstSubnets(
+  address: string,
+  subnets: readonly MemberPinSubnet[],
+  serverMetadata: unknown,
+):
+  | MemberPinSuccess
+  | MemberPinFailure<
+    'invalid_address' | 'address_not_in_any_subnet' | 'address_not_reported'
+  > {
   const normalized = stripInetPrefixSuffix(address.trim())
   if (!normalized || !isValidIpAddress(normalized)) {
     return { ok: false, error: 'invalid_address' }
   }
-  if (!addressInCidr(normalized, cidr.trim())) {
-    return { ok: false, error: 'address_not_in_cidr' }
+  const matched = resolveSubnetForAddress(subnets, normalized)
+  if (!matched) {
+    return { ok: false, error: 'address_not_in_any_subnet' }
   }
   if (!isReportedPrivateAddress(serverMetadata, normalized)) {
     return { ok: false, error: 'address_not_reported' }
   }
-  return { ok: true, address: normalized }
+  return { ok: true, address: normalized, networkId: matched.networkId }
 }
 
 export async function loadDatacenterMembershipsForServers(
@@ -161,18 +245,11 @@ export async function loadDatacenterMembershipsForServers(
     )
 
   for (const row of rows) {
-    if (!row.serverId || !row.datacenterId) continue
-    const address = inetAddressToString(row.address)
-    if (!address) continue
-    const list = byServer.get(row.serverId) ?? []
-    list.push({
-      ipId: row.ipId,
-      serverId: row.serverId,
-      datacenterId: row.datacenterId,
-      networkId: row.networkId,
-      address,
-    })
-    byServer.set(row.serverId, list)
+    const pin = toMembershipRow(row)
+    if (!pin) continue
+    const list = byServer.get(pin.serverId) ?? []
+    list.push(pin)
+    byServer.set(pin.serverId, list)
   }
   return byServer
 }
@@ -200,16 +277,9 @@ export async function loadDatacenterMembershipsForDatacenter(
 
   const out: DatacenterMembershipRow[] = []
   for (const row of rows) {
-    if (!row.serverId || !row.datacenterId) continue
-    const address = inetAddressToString(row.address)
-    if (!address) continue
-    out.push({
-      ipId: row.ipId,
-      serverId: row.serverId,
-      datacenterId: row.datacenterId,
-      networkId: row.networkId,
-      address,
-    })
+    const pin = toMembershipRow(row)
+    if (!pin) continue
+    out.push(pin)
   }
   return out
 }

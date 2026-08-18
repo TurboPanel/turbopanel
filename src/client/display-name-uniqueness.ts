@@ -1,11 +1,9 @@
 import { and, eq, ne, sql } from 'drizzle-orm'
 import type { Db } from '../db.ts'
+import { normalizeDisplayNameKey } from '../lib/display-name-format.ts'
 import { project, workspace } from '../lib/db/schema.ts'
 
-/** Trim + lowercase key used for org-scoped display-name uniqueness. */
-export function normalizeDisplayNameKey(name: string): string {
-  return name.trim().toLowerCase()
-}
+export { normalizeDisplayNameKey }
 
 export const PROJECT_NAME_IN_USE_ERROR = 'project_name_in_use'
 export const WORKSPACE_NAME_IN_USE_ERROR = 'workspace_name_in_use'

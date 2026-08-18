@@ -679,7 +679,7 @@ deliberately-unversioned probe.
 
 | Surface                      | REST                  | WS                        | Notes                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------- | --------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ ips/timeSync/docker/effective timezone, labels), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org default-timezone + default-environment + server-capacity + TurboFabric (`GET`/`PUT /organizations/:id/fabric`, `PATCH /organizations/:id/fabric/relays/:serverId`, `POST /organizations/:id/fabric/apply`) + `/timezones` |
+| Client (end-user UI)         | `/api/client/v1/*`    | `/ws/client/v1`           | servers list/detail (+ ips/timeSync/docker/effective timezone, labels), timezone/NTP commands, server labels (`GET`/`PUT /servers/:id/labels`), org record (`GET`/`PATCH /organizations/:id`), org default-timezone + default-environment + server-capacity + TurboFabric (`GET`/`PUT /organizations/:id/fabric`, `PATCH /organizations/:id/fabric/relays/:serverId`, `POST /organizations/:id/fabric/apply`) + `/timezones` |
 | Install (self-hosted wizard) | `/api/install/v1/*`   | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                                                                                                                                                                                                                                      |
 | Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                                                                                                                                                                                                                                     |
 | Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only                                                                                                                                                                                                                   |
@@ -704,16 +704,27 @@ deliberately-unversioned probe.
   (`wrangler.jsonc`) moved together. The external CDN node installer must fetch
   the CA from the new `/api/daemon/v1/instance/ca` path.
 - **Server timezone / NTP (client surface):** daemon hello + change-detected
-  heartbeats project `timeSync`/`ips` onto `server.metadata` (jsonb
-  merge). Docker CLI / Compose plugin versions project onto
+  heartbeats persist `timeSync` onto `server.timezone` /
+  `is_time_sync_enabled` / `ntp_servers` / `ntp_last_synced_at`, and nest
+  addresses on `server.metadata.resources.ips` (legacy top-level `ips` still
+  accepted). Hello-only host inventory is `server.metadata.resources.cpus[]`
+  (per-socket `vendorId` / `cores` / `threads` / `cache` / clocks) and
+  `gpus[]`; leftover `resources.cpu` is lifted on read. Docker CLI / Compose plugin versions project onto
   `server.metadata.docker` the same way, but **only when Docker is installed**
   (the key is omitted otherwise). `GET /api/client/v1/servers` and
   `GET /servers/:id` return those facts plus an **effective timezone** =
   `server.options.timezone` unless
   `organization.options.enforceServerTimezone` is true (then org
-  `defaultServerTimezone` wins). Commands: `POST /servers/:id/timezone`
+  `defaultServerTimezone` wins; otherwise the daemon-reported `server.timezone`
+  column). Commands: `POST /servers/:id/timezone`
   (`server.timezone.set`, also persists the server override) and
   `POST /servers/:id/ntp` (`server.ntp.set`) — manage-gated, create-then-poll.
+  Org record: `GET`/`PATCH /organizations/:id` — GET is access-gated (same
+  visibility as the org list: team membership, owner/manager grant, or
+  platform admin; missing or inaccessible → **404**); PATCH is manage-gated
+  (`{ displayName }` required, any characters except control characters,
+  ≤255, cannot clear;
+  names are not unique). Returns `{ organization }` / `{ ok, organization }`.
   Org defaults: `GET`/`PUT /organizations/:id/default-timezone`. Picker source:
   `GET /timezones` (`listTimezones()` / `isAllowedTimezone()`). Detail rows use
   the `server-detail` cached read model (mirrors `servers-list`).
@@ -727,8 +738,10 @@ deliberately-unversioned probe.
   manage-gated opt-in, plus `PATCH /organizations/:id/fabric/relays/:serverId`
   and `POST /organizations/:id/fabric/apply`. TurboFabric **is** the org
   WireGuard mesh (one per org, interface `tp0`); `relay` carries the mesh
-  identity (address, gateway/member role, advertised LAN CIDRs, keepalive,
-  endpoint override, write-only PSK). Default off (capable single-engine Docker
+  identity (address, gateway/member role, advertised LAN CIDRs plus
+  `resolvedAdvertisedCidrs` for the effective IPv4 list, keepalive,
+  endpoint override, write-only PSK). Reconcile assigns derived CIDR
+  ownership among public-keyed relays only. Default off (capable single-engine Docker
   standalone; no `tp0`). Enabling creates the org `fabric` row plus per-server
   `relay` rows and reconciles host interface `tp0` on enrolled servers. Spanning
   compose networks persist per-host `segment` rows (local bridge subnet). A
@@ -754,7 +767,12 @@ deliberately-unversioned probe.
 - **Org server seat capacity:** `organization.options.maxServers`
   (`null`/omitted = unlimited). `GET`/`PUT /organizations/:id/server-capacity`;
   `POST /licenses` returns **409** `server_capacity_exceeded` when enrolled
-  servers + unconsumed keys fill the cap. Self-hosted operators set the cap;
+  servers + unconsumed keys fill the cap. Optional create `displayName` (legacy
+  `name`) is omitted when blank and otherwise uses `normalizeDisplayName` /
+  `isValidDisplayName` (**400** for control characters or over-length).
+  `GET`/`DELETE /licenses` are
+  owner-only; the UI **Pending keys** page lists unbound keys (OpenAPI
+  `displayName`). Self-hosted operators set the cap;
   Workers/Stripe billing will write the same field later.
 - **Org default environment name:**
   `organization.options.defaultEnvironmentName` (unset = `Production`).
@@ -773,34 +791,56 @@ deliberately-unversioned probe.
   narrows already-visible rows to containers whose `service.environmentId`
   matches (AND with `serviceId` / `serverId` / `status`); does not widen
   `listVisible`.
-- **Datacenters (equal memberships, one CIDR):** There is no singular
-  `server.datacenter_id`. Membership is an `ip` pin
-  (`scope='datacenter'` + `serverId` + `datacenterId`, optional `networkId` →
-  site network). A server may hold pins in many datacenters. Each datacenter has
-  exactly one site `network(kind='datacenter')` with a required CIDR (another
-  range → another datacenter). `POST /datacenters` body is
+- **Datacenters (routing domains, many subnets):** There is no singular
+  `server.datacenter_id`. Membership is an `ip` pin (`scope='datacenter'` +
+  `serverId` + `datacenterId` + **required** `networkId`), unrestricted count
+  per `(server, datacenter)`, deduped by address (`uniq_ip_org_address`;
+  `ip_datacenter_member_network_check`). A server may hold pins in many
+  datacenters. A datacenter owns **many** `network(kind='datacenter')` subnets
+  (v4 and/or v6), unique per `(datacenter_id, cidr)` via
+  **`uniq_network_datacenter_cidr`**; **all subnets in a datacenter are assumed
+  mutually routable** — the datacenter *is* the routing domain, there are no
+  per-pair adjacency records. `POST /datacenters` body is
   `{ displayName?, description?, members: [{ serverId, address }],
   sourceServerId? }` — at least one member is required; addresses must be
-  daemon-reported private IPs; the site CIDR is **derived** from that seed
-  member’s reported interface prefix (`ips[].cidr` where `scope='private'`, aligned
-  network form) when present — operator `cidr` is ignored. Hello ingest maps
-  current `ips[]` and the pre-rename `addresses` object (`privateIpv4` / …) so
-  remotes that have not rebuilt yet still appear as members. When the daemon still
-  reports `{ address, version, scope }` without a prefix, create infers a typical
-  LAN (`/24` IPv4, `/64` IPv6). Missing reported private IP → **400**
-  `address_cidr_unreported`. Extra members must already have a reported private
-  IP inside that CIDR. Create writes the site network + member pins in one txn.
-  `POST|DELETE /datacenters/:id/members` add/remove pins (delete removes the IP
-  row). Name suggestions (`GET /datacenters/name-suggestions`) group geo/ASN from
-  servers with zero memberships. List/detail expose `privateCidrs` (usually one
-  entry). Server list/detail expose `datacenters: { id, displayName }[]`.
-  `DELETE /datacenters/:id` returns **409** `datacenter_has_members` while any
-  membership pin remains; otherwise the site network is deleted with the
-  datacenter (**409** `datacenter_has_networks` only for leftover non-site
-  networks). `src/lib/net/private-endpoint.ts` resolves reachability
-  (`local` → `fabric` → `datacenter`); fabric dials over `tp0`. Shared
-  membership + site CIDR gate managed-cluster private placement
-  (`src/lib/net/datacenter-networks.ts`).
+  daemon-reported private IPs; the first subnet is **derived** from that seed
+  member’s reported interface prefix (`ips[].cidr` where `scope='private'`,
+  aligned network form) when present — operator `cidr` is ignored. Hello ingest
+  maps current `resources.ips` (and legacy top-level `ips[]` / the pre-rename
+  `addresses` object (`privateIpv4` / …)) so remotes that have not rebuilt yet
+  still appear as members. When the daemon still reports
+  `{ address, version, scope }` without a prefix, create infers a typical LAN
+  (`/24` IPv4, `/64` IPv6). Missing reported private IP → **400**
+  `address_cidr_unreported`. Extra members no longer have to fall inside one
+  CIDR — a non-matching reported prefix **auto-creates** another subnet in the
+  same txn (**409** `subnet_overlaps` when that range collides org-wide, including
+  among auto-derived CIDRs in the same create or member-add request). Create
+  writes site subnet(s) + member pins in one txn.
+  `POST|DELETE /datacenters/:id/members` add/remove pins (member add auto-derives
+  the same way; member delete removes **every** pin for that server in the
+  datacenter). Manual subnet CRUD:
+  `POST|PATCH|DELETE /datacenters/:id/subnets[/:networkId]` (manage-gated;
+  `cidr` immutable on PATCH). Name suggestions
+  (`GET /datacenters/name-suggestions`) group geo/ASN from servers with zero
+  memberships. List/detail expose `privateCidrs` (one entry per subnet) plus
+  detail `subnets[]` and `options.addressPreference`. Server list/detail expose
+  `datacenters: { id, displayName }[]`. `DELETE /datacenters/:id` returns
+  **409** `datacenter_has_members` while any membership pin remains; otherwise
+  **every** `kind='datacenter'` network is deleted with the datacenter
+  (**409** `datacenter_has_networks` only for leftover non-site / docker rows).
+  `src/lib/net/private-endpoint.ts` resolves reachability
+  (`local` → `fabric` → `datacenter`) in an **address-family aware** way: it
+  intersects the source and target pin families in the shared datacenter and
+  orders candidates by `datacenter.options.addressPreference` (default **IPv6**,
+  RFC 6724), never returning a family the source does not hold; a shared
+  datacenter with no common family is **422** `private_family_mismatch`. Fabric
+  dials over `tp0`. Shared membership + **at least one** subnet gate
+  managed-cluster private placement (`assertDatacenterHasCidr` /
+  `assertServerDatacenterReady` in `src/lib/net/datacenter-networks.ts`). New
+  error codes: **400** `invalid_cidr` / `address_not_in_any_subnet`, **409**
+  `address_in_use` / `subnet_overlaps` / `subnet_has_members`, **422**
+  `private_family_mismatch` (alongside existing `datacenter_has_members` /
+  `datacenter_has_networks`).
 
 ## Subsystem docs (nested `AGENTS.md`)
 

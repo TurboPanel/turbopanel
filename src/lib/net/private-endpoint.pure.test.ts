@@ -39,7 +39,7 @@ function membershipPin(
   address: string,
 ): MembershipPinRow {
   return {
-    ipId: `ip-${serverId}-${datacenterId}`,
+    ipId: `ip-${serverId}-${datacenterId}-${address}`,
     serverId,
     datacenterId,
     networkId: null,
@@ -52,6 +52,7 @@ type Fixture = {
   relays?: RelayRow[]
   /** Single-row result for loadServerDatacenterAddress. */
   singleAddress?: string | null
+  datacenterOptions?: Array<{ id: string; options: unknown }>
 }
 
 function thenable<T>(value: T) {
@@ -150,6 +151,19 @@ function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndp
         }
       }
 
+      // loadDatacenterAddressPreferences: { id, options }
+      if (keys.length === 2 && keySet.has('id') && keySet.has('options')) {
+        return {
+          from() {
+            return {
+              where() {
+                return thenable(fixture.datacenterOptions ?? [])
+              },
+            }
+          },
+        }
+      }
+
       throw new TypeError(`unexpected select keys: ${keys.join(',')}`)
     },
   } as unknown as Parameters<typeof resolvePrivateEndpoint>[0]
@@ -180,6 +194,12 @@ test('privateEndpointErrorResponse returns 422 with error-only body', async () =
       kind: 'private_path_unavailable',
       fromServerId: 'a',
       toServerId: 'b',
+    },
+    {
+      kind: 'private_family_mismatch',
+      fromServerId: 'a',
+      toServerId: 'b',
+      datacenterId: 'dc-a',
     },
   ]
   for (const error of errors) {
@@ -447,6 +467,102 @@ test('resolvePrivateEndpoint uses a shared membership when servers pin into many
     toServerId: 's2',
   }), {
     address: '10.1.0.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-b',
+  })
+})
+
+test('resolvePrivateEndpoint prefers ipv6 when both families share a datacenter', async () => {
+  const db = createFixtureDb({
+    memberships: [
+      membershipPin('s1', 'dc-a', '203.0.113.1'),
+      membershipPin('s1', 'dc-a', '2001:db8::1'),
+      membershipPin('s2', 'dc-a', '203.0.113.2'),
+      membershipPin('s2', 'dc-a', '2001:db8::2'),
+    ],
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    toServerId: 's2',
+  }), {
+    address: '2001:db8::2',
+    transport: 'datacenter',
+    datacenterId: 'dc-a',
+  })
+})
+
+test('resolvePrivateEndpoint honors datacenter ipv4 addressPreference', async () => {
+  const db = createFixtureDb({
+    memberships: [
+      membershipPin('s1', 'dc-a', '203.0.113.1'),
+      membershipPin('s1', 'dc-a', '2001:db8::1'),
+      membershipPin('s2', 'dc-a', '203.0.113.2'),
+      membershipPin('s2', 'dc-a', '2001:db8::2'),
+    ],
+    datacenterOptions: [
+      { id: 'dc-a', options: { addressPreference: 'ipv4' } },
+    ],
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    toServerId: 's2',
+  }), {
+    address: '203.0.113.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-a',
+  })
+})
+
+test('resolvePrivateEndpoint falls back to the only shared family', async () => {
+  const db = createFixtureDb({
+    memberships: [
+      membershipPin('s1', 'dc-a', '203.0.113.1'),
+      membershipPin('s2', 'dc-a', '203.0.113.2'),
+      membershipPin('s2', 'dc-a', '2001:db8::2'),
+    ],
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    toServerId: 's2',
+  }), {
+    address: '203.0.113.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-a',
+  })
+})
+
+test('resolvePrivateEndpoint returns private_family_mismatch when shared pins have no common family', async () => {
+  const db = createFixtureDb({
+    memberships: [
+      membershipPin('s1', 'dc-a', '2001:db8::1'),
+      membershipPin('s2', 'dc-a', '203.0.113.2'),
+    ],
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    toServerId: 's2',
+  }), {
+    kind: 'private_family_mismatch',
+    fromServerId: 's1',
+    toServerId: 's2',
+    datacenterId: 'dc-a',
+  })
+})
+
+test('resolvePrivateEndpoint skips a family-mismatched datacenter for a compatible shared one', async () => {
+  const db = createFixtureDb({
+    memberships: [
+      membershipPin('s1', 'dc-a', '2001:db8::1'),
+      membershipPin('s1', 'dc-b', '198.51.100.1'),
+      membershipPin('s2', 'dc-a', '203.0.113.2'),
+      membershipPin('s2', 'dc-b', '198.51.100.2'),
+    ],
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    toServerId: 's2',
+  }), {
+    address: '198.51.100.2',
     transport: 'datacenter',
     datacenterId: 'dc-b',
   })

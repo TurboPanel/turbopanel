@@ -1407,7 +1407,7 @@ it("cell ping re-projects online when Redis snapshot is disconnected", async () 
   ws.close(1000, "done");
 });
 
-it("heartbeat with timeSync touches metadata without requiring daemonBuild", async () => {
+it("heartbeat with timeSync writes timezone columns without requiring daemonBuild", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-heartbeat-timesync";
   const { db, getUpdateCallCount } = createProjectionTrackingDb(serverId, {
