@@ -189,7 +189,8 @@ async function loadUpdateRequests(params: {
     )
     return synthesized ? [synthesized] : []
   }
-  return await (params.listUpdateRequests ?? (async () => []))()
+  if (!params.listUpdateRequests) return []
+  return await params.listUpdateRequests()
 }
 
 function statusFromFailedOrExpired(
@@ -362,7 +363,7 @@ export async function readDaemonStatusesForServers(
   const rows = await db
     .select({
       id: server.id,
-      connected: server.connected,
+      connected: server.isConnected,
       statusChangedAt: server.statusChangedAt,
     })
     .from(server)

@@ -298,11 +298,12 @@ export const server = pgTable(
     }),
     /**
      * Fleet liveness flag. Tri-state `online|offline|unknown` is derived from
-     * `connected` + `status_changed_at` (never stored).
+     * `is_connected` + `status_changed_at` (never stored). API JSON still
+     * serializes as `connected`.
      */
-    connected: boolean().default(false).notNull(),
+    isConnected: boolean('is_connected').default(false).notNull(),
     /**
-     * Last status transition (`connected` flip). Feeds derived `connectedAt`
+     * Last status transition (`is_connected` flip). Feeds derived `connectedAt`
      * (when connected) / `offlineAt` (when not). `online|offline|unknown` is
      * derived, never stored.
      */
@@ -329,7 +330,7 @@ export const server = pgTable(
     ),
     index('idx_server_connected')
       .on(table.id)
-      .where(sql`${table.connected}`),
+      .where(sql`${table.isConnected}`),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -1003,7 +1004,8 @@ export const node = pgTable(
     serverId: uuid('server_id').notNull(),
     /** `primary` | `replica` */
     role: text().default('primary').notNull(),
-    readEligible: boolean('read_eligible').default(false).notNull(),
+    /** API JSON still serializes as `readEligible`. */
+    isReadEligible: boolean('is_read_eligible').default(false).notNull(),
     /** 1-based member ordinal — mirrors the service-role container ordinal. */
     ordinal: integer().default(1).notNull(),
     /**
@@ -1094,8 +1096,10 @@ export const variable = pgTable(
     value: text().default('').notNull(),
     isSecret: boolean('is_secret').default(false).notNull(),
     isLiteral: boolean('is_literal').default(false).notNull(),
-    forBuild: boolean('for_build').default(false).notNull(),
-    forRuntime: boolean('for_runtime').default(true).notNull(),
+    /** API JSON still serializes as `forBuild`. */
+    isForBuild: boolean('is_for_build').default(false).notNull(),
+    /** API JSON still serializes as `forRuntime`. */
+    isForRuntime: boolean('is_for_runtime').default(true).notNull(),
     description: varchar('description', { length: 255 }),
   },
   (table) => [
@@ -1704,8 +1708,8 @@ export const binding = pgTable(
     serviceId: uuid('service_id').notNull(),
     databaseName: varchar('database_name', { length: 255 }).notNull(),
     keyPrefix: varchar('key_prefix', { length: 64 }).default('DATABASE').notNull(),
-    /** When true, also emit the unprefixed conventional engine keys (PG* / MYSQL_*). */
-    emitEngineDefaults: boolean('emit_engine_defaults').default(true).notNull(),
+    /** When true, also emit the unprefixed conventional engine keys (PG* / MYSQL_*). API JSON still serializes as `emitEngineDefaults`. */
+    isEmitEngineDefaults: boolean('is_emit_engine_defaults').default(true).notNull(),
   },
   (table) => [
     index('idx_binding_principal_id').using(
@@ -1729,7 +1733,7 @@ export const binding = pgTable(
     unique('uniq_binding_service_prefix').on(table.serviceId, table.keyPrefix),
     uniqueIndex('uniq_binding_service_engine_defaults')
       .on(table.serviceId)
-      .where(sql`${table.emitEngineDefaults}`),
+      .where(sql`${table.isEmitEngineDefaults}`),
     check(
       'binding_key_prefix_format_check',
       sql`(char_length((key_prefix)::text) >= 1) AND (char_length((key_prefix)::text) <= 64) AND ((key_prefix)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)`,
@@ -2016,7 +2020,8 @@ export const mount = pgTable(
     serviceId: uuid('service_id').notNull(),
     destinationPath: text('destination_path').notNull(),
     subpath: text(),
-    readOnly: boolean('read_only').default(false).notNull(),
+    /** API JSON still serializes as `readOnly`. */
+    isReadOnly: boolean('is_read_only').default(false).notNull(),
   },
   (table) => [
     index('idx_mount_storage_id').using(

@@ -1,5 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono, type Context } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
@@ -52,9 +53,14 @@ function buildServicePatchFields(
   return parsed.patch
 }
 
-export function registerServiceRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/services', createSessionMiddleware(opts.secrets))
-  router.use('/services/:id', createSessionMiddleware(opts.secrets))
+export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for service routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/services', createSessionMiddleware(secrets))
+  router.use('/services/:id', createSessionMiddleware(secrets))
 
   router.get('/services', async (c) => {
     const db = getDb(c)

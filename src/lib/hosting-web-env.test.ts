@@ -1,8 +1,16 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
+import type { Db } from '../db.ts'
+import { encryptSecret } from '../client/authn/data-encryption.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  parseSecretsEnv,
+} from '../client/authn/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import {
   attachWebMetadataToTraditionalSites,
   formatHostingEnvFile,
   parseHostingEnvFile,
+  resolveHostingDeployWeb,
   sanitizeHostingWebEnv,
 } from './hosting-web-env.ts'
 
@@ -13,6 +21,89 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+function thenableRows(rows: unknown[]) {
+  const promise = Promise.resolve(rows)
+  return {
+    limit: () => promise,
+    then: promise.then.bind(promise),
+    catch: promise.catch.bind(promise),
+    finally: promise.finally.bind(promise),
+  }
+}
+
+async function dataSecrets() {
+  const config = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  return await deriveEncryptionSecretsConfig(config, 'data-encryption')
+}
+
+/** Empty inheritance chain (hosting exists, no variables at any scope). */
+function emptyHostingVarsDb(): Db {
+  return {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => ({
+                  limit: () =>
+                    Promise.resolve([
+                      {
+                        organizationId: 'org',
+                        workspaceId: 'ws',
+                        projectId: 'proj',
+                        environmentId: 'env',
+                        serviceId: 'svc',
+                      },
+                    ]),
+                }),
+              }),
+            }),
+          }),
+        }),
+        where: () => thenableRows([]),
+      }),
+    }),
+  } as unknown as Db
+}
+
+/** Hosting chain with a single hosting-scoped variable pack on the last load. */
+function hostingVarsDb(hostingRows: unknown[]): Db {
+  let varLoads = 0
+  return {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => ({
+                  limit: () =>
+                    Promise.resolve([
+                      {
+                        organizationId: 'org',
+                        workspaceId: 'ws',
+                        projectId: 'proj',
+                        environmentId: 'env',
+                        serviceId: 'svc',
+                      },
+                    ]),
+                }),
+              }),
+            }),
+          }),
+        }),
+        where: () => {
+          varLoads += 1
+          // org, workspace, project, environment, service, hosting
+          if (varLoads < 6) return thenableRows([])
+          return thenableRows(hostingRows)
+        },
+      }),
+    }),
+  } as unknown as Db
+}
 
 test('sanitizeHostingWebEnv drops invalid keys and empty values', () => {
   assertEquals(sanitizeHostingWebEnv(undefined), undefined)
@@ -25,6 +116,23 @@ test('sanitizeHostingWebEnv drops invalid keys and empty values', () => {
     }),
     { APP_ENV: 'prod' },
   )
+})
+
+test('sanitizeHostingWebEnv returns undefined when every entry is dropped', () => {
+  assertEquals(
+    sanitizeHostingWebEnv({
+      'bad-key': 'x',
+      EMPTY: '   ',
+      TOO_LONG: 'x'.repeat(5000),
+    }),
+    undefined,
+  )
+})
+
+test('sanitizeHostingWebEnv trims usable values', () => {
+  assertEquals(sanitizeHostingWebEnv({ APP_ENV: '  prod  ' }), {
+    APP_ENV: 'prod',
+  })
 })
 
 test('sanitizeHostingWebEnv caps entries at 64 keys', () => {
@@ -136,4 +244,168 @@ test('attachWebMetadataToTraditionalSites attaches php-only metadata', () => {
   ])
   assertEquals(out[0]?.php, { version: '8.3' })
   assertEquals(out[0]?.webEnv, undefined)
+})
+
+test('attachWebMetadataToTraditionalSites attaches env-only metadata', () => {
+  const sites = [
+    {
+      composeServiceName: 'web',
+      engine: 'nginx' as const,
+      root: 'public',
+      listenPort: 18080,
+    },
+  ]
+  const out = attachWebMetadataToTraditionalSites(sites, [
+    { composeServiceName: 'web', web: { env: { APP_ENV: 'prod' } } },
+  ])
+  assertEquals(out[0]?.webEnv, { APP_ENV: 'prod' })
+  assertEquals(out[0]?.php, undefined)
+})
+
+test('attachWebMetadataToTraditionalSites skips hostings without web and unmatched sites', () => {
+  const sites = [
+    {
+      composeServiceName: 'web',
+      engine: 'nginx' as const,
+      root: 'public',
+      listenPort: 18080,
+    },
+    {
+      composeServiceName: 'other',
+      engine: 'nginx' as const,
+      root: 'public',
+      listenPort: 18081,
+    },
+  ]
+  const out = attachWebMetadataToTraditionalSites(sites, [
+    { composeServiceName: 'web' },
+    {
+      composeServiceName: 'unrelated',
+      web: { env: { IGNORED: '1' } },
+    },
+  ])
+  assertEquals(out[0], sites[0])
+  assertEquals(out[1], sites[1])
+})
+
+test('resolveHostingDeployWeb returns undefined for non-object options', async () => {
+  const secrets = await dataSecrets()
+  assertEquals(
+    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', 'nope'),
+    undefined,
+  )
+})
+
+test('resolveHostingDeployWeb returns undefined when options have no web payload', async () => {
+  const secrets = await dataSecrets()
+  assertEquals(
+    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', {}),
+    undefined,
+  )
+  assertEquals(
+    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', null),
+    undefined,
+  )
+})
+
+test('resolveHostingDeployWeb builds php-only and env+php deploy web', async () => {
+  const secrets = await dataSecrets()
+  assertEquals(
+    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', {
+      web: {
+        php: {
+          version: '8.3',
+          memoryLimit: '256M',
+          maxExecutionTime: 30,
+        },
+      },
+    }),
+    {
+      php: {
+        version: '8.3',
+        memoryLimit: '256M',
+        maxExecutionTime: 30,
+      },
+    },
+  )
+  assertEquals(
+    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', {
+      web: {
+        env: { APP_ENV: 'prod' },
+        php: { version: '8.4' },
+      },
+    }),
+    {
+      env: { APP_ENV: 'prod' },
+      php: { version: '8.4' },
+    },
+  )
+})
+
+test('resolveHostingDeployWeb merges runtime variables; static env wins collisions', async () => {
+  const secrets = await dataSecrets()
+  const sealed = await encryptSecret(secrets, 'from-secret')
+  const db = hostingVarsDb([
+    {
+      key: 'RUNTIME_PLAIN',
+      value: 'runtime',
+      isSecret: false,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+    {
+      key: 'SECRET_KEY',
+      value: sealed,
+      isSecret: true,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+    {
+      key: 'BUILD_ONLY',
+      value: 'nope',
+      isSecret: false,
+      isLiteral: false,
+      forBuild: true,
+      forRuntime: false,
+    },
+    {
+      key: 'bad-key',
+      value: 'nope',
+      isSecret: false,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+    {
+      key: 'EMPTY_RUNTIME',
+      value: '   ',
+      isSecret: false,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+    {
+      key: 'COLLIDE',
+      value: 'from-var',
+      isSecret: false,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+  ])
+  const web = await resolveHostingDeployWeb(db, secrets, 'h1', {
+    web: {
+      env: { COLLIDE: 'from-static', STATIC_ONLY: 'yes' },
+    },
+  })
+  assertEquals(web, {
+    env: {
+      RUNTIME_PLAIN: 'runtime',
+      SECRET_KEY: 'from-secret',
+      COLLIDE: 'from-static',
+      STATIC_ONLY: 'yes',
+    },
+  })
 })

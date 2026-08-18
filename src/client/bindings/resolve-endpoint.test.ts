@@ -7,7 +7,7 @@
  * own network namespace, regardless of the cluster's public exposure setting.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
@@ -199,7 +199,7 @@ async function withBindingReachabilityFixture(
         name,
         createdAt: now,
         updatedAt: now,
-        connected: true,
+        isConnected: true,
         statusChangedAt: now,
       })
       .returning({ id: server.id })
@@ -246,7 +246,7 @@ async function withBindingReachabilityFixture(
     managedId,
     serverId: clusterServerId,
     role: 'primary',
-    readEligible: false,
+    isReadEligible: false,
     ordinal: 1,
   })
 

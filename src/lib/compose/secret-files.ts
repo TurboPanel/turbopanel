@@ -21,7 +21,7 @@ export type DeploySecretPlanEntry = {
 }
 
 function slugToken(value: string): string {
-  const slug = value.replaceAll(/[^A-Za-z0-9_]+/g, '_').replaceAll(/^_+|_+$/g, '')
+  const slug = value.replaceAll(/\W+/g, '_').replace(/^_+/, '').replace(/_+$/, '')
   return slug.length > 0 ? slug : 'x'
 }
 
@@ -49,7 +49,7 @@ export function secretHostDirectory(
   environmentId: string,
   runDir: string = DEFAULT_DEPLOY_RUN_DIR,
 ): string {
-  return `${runDir.replaceAll(/\/+$/g, '')}/deployments/${projectId}/${environmentId}/secrets`
+  return `${runDir.replace(/\/+$/, '')}/deployments/${projectId}/${environmentId}/secrets`
 }
 
 export function secretHostPath(

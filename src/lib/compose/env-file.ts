@@ -19,7 +19,7 @@ function needsQuotes(value: string): boolean {
 }
 
 function quoteEnvValue(value: string): string {
-  const escaped = value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
+  const escaped = value.replaceAll('\\', String.raw`\\`).replaceAll('"', String.raw`\"`)
   return `"${escaped}"`
 }
 
@@ -31,7 +31,7 @@ export function serviceEnvInterpolationKey(
   composeServiceName: string,
   key: string,
 ): string {
-  const slug = composeServiceName.replaceAll(/[^A-Za-z0-9_]+/g, '_')
+  const slug = composeServiceName.replaceAll(/\W+/g, '_')
   const prefix = slug.length > 0 ? slug : 'svc'
   return `${prefix}__${key}`
 }

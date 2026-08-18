@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -41,9 +41,9 @@ function createOnlineRegistry(serverIds: string[]): DaemonCellRegistry {
     getCell: () => {
       throw new Error('getCell must not be called from license revoke tests')
     },
-    listOnlineServerIds: async () => serverIds,
-    getSnapshots: async () => new Map(),
-    purge: async () => {},
+    listOnlineServerIds: () => Promise.resolve(serverIds),
+    getSnapshots: () => Promise.resolve(new Map()),
+    purge: () => Promise.resolve(),
   }
 }
 
@@ -59,7 +59,7 @@ async function createLicenseTestApp(
     if (registry) c.set('daemonCellRegistry', registry)
     return next()
   })
-  registerLicenseRoutes(app, { secrets, runtime: 'deno' })
+  registerLicenseRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets }
 }
 
@@ -83,7 +83,7 @@ function orgRequestHeaders(
   }
 }
 
-async function postLicense(
+function postLicense(
   app: Hono<AppEnv>,
   cookie: string,
   organizationId: string,
@@ -373,7 +373,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
       updatedAt: now,
       organizationId,
       name: 'Colocated via registry',
-      connected: true,
+      isConnected: true,
       statusChangedAt: now,
       daemon: {
         key: {
@@ -482,7 +482,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
       updatedAt: now,
       organizationId,
       name: 'Colocated stale registry',
-      connected: true,
+      isConnected: true,
       statusChangedAt: now,
       daemon: {
         key: {

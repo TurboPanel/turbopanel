@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
@@ -104,7 +104,7 @@ function applyPatchToRow(row: MockRow, patch: Record<string, unknown>) {
   }
   if ("hostname" in patch) row.hostname = patch.hostname as string | null;
   if ("machineKey" in patch) row.machineKey = patch.machineKey as string | null;
-  if ("connected" in patch) row.connected = patch.connected as boolean;
+  if ("isConnected" in patch) row.connected = patch.isConnected as boolean;
   if ("statusChangedAt" in patch) {
     row.statusChangedAt = patch.statusChangedAt as string | null;
   }
@@ -542,7 +542,7 @@ test("projectServerDaemon online sets status columns and identity columns", asyn
   assertEquals(status.connected, true);
   assertEquals(status.daemonStatus, "online");
   assertEquals(status.statusChangedAt, "2020-01-01T00:00:00.000Z");
-  assertEquals(updateCalls[0]?.connected, true);
+  assertEquals(updateCalls[0]?.isConnected, true);
   assertEquals(updateCalls[0]?.statusChangedAt, "2020-01-01T00:00:00.000Z");
   assertEquals(updateCalls[0]?.hostname, "host-1");
   assertEquals(updateCalls[0]?.machineKey, TEST_MACHINE_KEY);
@@ -621,7 +621,7 @@ test("projectServerDaemon offline writes connected false and statusChangedAt", a
   assertEquals(status.connected, false);
   assertEquals(status.daemonStatus, "offline");
   assertEquals(typeof status.statusChangedAt, "string");
-  assertEquals(updateCalls[0]?.connected, false);
+  assertEquals(updateCalls[0]?.isConnected, false);
   assertEquals(typeof updateCalls[0]?.statusChangedAt, "string");
   assertEquals("disconnectedAt" in updateCalls[0]!, false);
   assertEquals("lastSeenAt" in updateCalls[0]!, false);
@@ -646,7 +646,7 @@ test("onDaemonDisconnected projects disconnected status via columns", async () =
   assertEquals(status.connected, false);
   assertEquals(status.daemonStatus, "offline");
   assertEquals(typeof status.statusChangedAt, "string");
-  assertEquals(updateCalls[0]?.connected, false);
+  assertEquals(updateCalls[0]?.isConnected, false);
   assertEquals(typeof updateCalls[0]?.statusChangedAt, "string");
 });
 
@@ -716,7 +716,7 @@ test("projectServerDaemon heartbeat with changed daemonBuild updates projection 
 
   assertEquals(wrote, true);
   assertEquals(updateCalls.length, 1);
-  assertEquals("connected" in updateCalls[0]!, false);
+  assertEquals("isConnected" in updateCalls[0]!, false);
   assertEquals("statusChangedAt" in updateCalls[0]!, false);
   const status = getStatus();
   assertEquals(status.connected, true);
@@ -760,7 +760,7 @@ test("projectServerDaemon daemonBuild trigger updates jsonb only", async () => {
 
   assertEquals(updateCalls.length, 1);
   // No status columns were part of this patch — status stays at its prior value.
-  assertEquals("connected" in updateCalls[0]!, false);
+  assertEquals("isConnected" in updateCalls[0]!, false);
   assertEquals("statusChangedAt" in updateCalls[0]!, false);
   const status = getStatus();
   assertEquals(status.connected, false);
@@ -784,7 +784,7 @@ test("projectServerDaemon identity trigger updates jsonb only", async () => {
 
   assert(updateCalls.length >= 1);
   const projectionUpdate = updateCalls.find((call) => call.daemon != null);
-  assertEquals("connected" in (projectionUpdate ?? {}), false);
+  assertEquals("isConnected" in (projectionUpdate ?? {}), false);
   const status = getStatus();
   assertEquals(status.connected, false);
   assertEquals(status.statusChangedAt, null);

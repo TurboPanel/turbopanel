@@ -2,7 +2,7 @@
  * Real-DB route coverage for `registerBindingRoutes`.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -70,7 +70,7 @@ async function createBindingRoutesTestApp(
     }
     return next()
   })
-  registerBindingRoutes(app, { secrets, runtime: 'deno' })
+  registerBindingRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets, dataEncryptionSecrets }
 }
 
@@ -218,7 +218,7 @@ async function withBindingFixtures(
       name: 'Binding Route Server',
       createdAt: now,
       updatedAt: now,
-      connected: true,
+      isConnected: true,
       statusChangedAt: now,
     })
     .returning({ id: server.id })
@@ -261,7 +261,7 @@ async function withBindingFixtures(
     managedId,
     serverId,
     role: 'primary',
-    readEligible: false,
+    isReadEligible: false,
     ordinal: 1,
   })
 
@@ -716,7 +716,7 @@ test('PATCH /bindings/:id returns 503 when encryption secrets are missing', asyn
         serviceId: consumerServiceId,
         databaseName: 'postgres',
         keyPrefix: 'PATCHENC',
-        emitEngineDefaults: false,
+        isEmitEngineDefaults: false,
       })
       .returning({ id: binding.id })
 

@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
@@ -44,8 +44,9 @@ function createRecordingCommandQueue(): CommandQueue & {
   const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
-    enqueue: async (envelope) => {
+    enqueue: (envelope) => {
       envelopes.push(envelope)
+      return Promise.resolve()
     },
   }
 }
@@ -140,7 +141,7 @@ async function withReconcileFixtures(
     .values({
       organizationId,
       name: 'System Reconcile Sweep Server',
-      connected,
+      isConnected: connected,
       statusChangedAt: options.statusChangedAt ?? now,
       options: { hosting: { enabled: hostingEnabled } },
       createdAt: now,
@@ -459,7 +460,7 @@ test('buildSystemReconcilePayload returns empty when no system hierarchy exists'
     .values({
       organizationId,
       name: 'Reconcile Empty Server',
-      connected: true,
+      isConnected: true,
       statusChangedAt: now,
       createdAt: now,
       updatedAt: now,
@@ -496,7 +497,7 @@ test('enqueueSystemReconcile returns not_provisioned without hierarchy', async (
     .values({
       organizationId,
       name: 'Reconcile Not Provisioned Server',
-      connected: true,
+      isConnected: true,
       statusChangedAt: now,
       createdAt: now,
       updatedAt: now,

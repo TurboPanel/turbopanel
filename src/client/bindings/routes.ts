@@ -5,9 +5,8 @@
  * no new authz entity kind.
  */
 
-import type { Context } from 'hono'
+import type { Context, Hono } from 'hono'
 import { eq, inArray } from 'drizzle-orm'
-import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -66,7 +65,7 @@ const BINDING_SELECT = {
   serviceId: binding.serviceId,
   databaseName: binding.databaseName,
   keyPrefix: binding.keyPrefix,
-  emitEngineDefaults: binding.emitEngineDefaults,
+  emitEngineDefaults: binding.isEmitEngineDefaults,
   createdAt: binding.createdAt,
   updatedAt: binding.updatedAt,
 }
@@ -352,15 +351,21 @@ async function loadManagedForBindingOrg(
   return managedRow
 }
 
-/** Validate the engine supports bindings and the target database name/existence. */
-function validateBindingDatabaseTarget(
+/**
+ * Validate the engine supports bindings and the target database exists.
+ * Returns the catalog engine code, or an HTTP error response.
+ */
+function requireBindingEngineCode(
   c: Context<AppEnv>,
   managedRow: { engine: string | null; options: unknown },
   databaseName: string,
-): Response | null {
+): string | Response {
   const error = checkBindingDatabaseTarget(managedRow, databaseName)
-  if (!error) return null
-  return c.json({ error }, bindingDatabaseTargetHttpStatus(error))
+  if (error || !managedRow.engine) {
+    const denied = error ?? 'binding_engine_unsupported'
+    return c.json({ error: denied }, bindingDatabaseTargetHttpStatus(denied))
+  }
+  return managedRow.engine
 }
 
 async function assertBindingCreateConflicts(
@@ -404,7 +409,7 @@ async function insertAndMaterializeBinding(
           serviceId: params.serviceId,
           databaseName: params.databaseName,
           keyPrefix: params.keyPrefix,
-          emitEngineDefaults: params.emitEngineDefaults,
+          isEmitEngineDefaults: params.emitEngineDefaults,
         })
         .returning({ id: binding.id })
       return inserted.id
@@ -572,8 +577,8 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (managedResult instanceof Response) return managedResult
 
-    const targetDenied = validateBindingDatabaseTarget(c, managedResult, input.databaseName)
-    if (targetDenied) return targetDenied
+    const engineCode = requireBindingEngineCode(c, managedResult, input.databaseName)
+    if (engineCode instanceof Response) return engineCode
 
     const conflictDenied = await assertBindingCreateConflicts(
       db,
@@ -581,7 +586,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         serviceId: input.serviceId,
         keyPrefix: input.keyPrefix,
         emitEngineDefaults: input.emitEngineDefaults,
-        engineCode: managedResult.engine,
+        engineCode,
       },
       c,
     )
@@ -655,7 +660,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .update(binding)
       .set({
         keyPrefix: nextPrefix,
-        emitEngineDefaults: nextEmit,
+        isEmitEngineDefaults: nextEmit,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(binding.id, id))

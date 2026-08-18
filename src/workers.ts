@@ -7,12 +7,11 @@ import {
   parseSecretsEnv,
   type DerivedSecretsConfig,
 } from './client/authn/secrets.ts'
-import { createApp, type AppEnv } from './app'
+import { createApp, type AppEnv } from './app.ts'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
 import { runOfflineSweep } from './daemon/cell/offline-sweep.ts'
 import { registerAdminRoutes } from './admin/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
-import { createWorkersDb } from './db'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
@@ -43,7 +42,7 @@ import {
   warnIfClientAuthRateLimiterMissing,
   warnIfDaemonRateLimitersMissing,
 } from './workers-bindings.ts'
-import { endDbConnection } from './db.ts'
+import { endDbConnection, type createWorkersDb } from './db.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 
@@ -65,6 +64,21 @@ let cachedDaemonCellRegistryFactory:
     ReturnType<typeof createDurableObjectDaemonCellRegistry>)
   | null = null
 
+/** @internal Clears per-isolate Worker caches so entry tests can re-init. */
+export function resetWorkerAppCachesForTests(): void {
+  initPromise = null
+  cachedApp = null
+  cachedSessionSecrets = null
+  cachedOtpVerifierSecrets = null
+  cachedDaemonJwtKeyring = null
+  cachedChallengeSigningSecrets = null
+  cachedDataEncryptionSecrets = null
+  cachedSecretsConfig = null
+  cachedCommandQueue = null
+  cachedServerMetricsStore = null
+  cachedAuthRateLimiter = null
+  cachedDaemonCellRegistryFactory = null
+}
 async function initWorkerApp(env: CloudflareBindings) {
   const secretsConfig = parseSecretsEnv(
     env.TURBOPANEL_SECRET,
@@ -114,14 +128,16 @@ async function initWorkerApp(env: CloudflareBindings) {
   warnIfClientAuthRateLimiterMissing(env)
   cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env)
   const rateLimiters = resolveWorkersDaemonRateLimiters(env)
-  registerDaemonApiRoutes(cachedApp, {
+  // Daemon registrars still take untyped Hono (same as deno-server.ts).
+  const daemonRoutes = cachedApp as unknown as Hono
+  registerDaemonApiRoutes(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     challengeSigningSecrets: cachedChallengeSigningSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
     restLimiter: rateLimiters.rest,
     metricsLimiter: rateLimiters.metrics,
   })
-  registerWorkersDaemonWebSocket(cachedApp, {
+  registerWorkersDaemonWebSocket(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     connectLimiter: rateLimiters.connect,
   })
@@ -212,7 +228,7 @@ export default {
   },
 
   async scheduled(
-    controller: ScheduledController,
+    _controller: ScheduledController,
     env: CloudflareBindings,
     ctx: ExecutionContext,
   ) {

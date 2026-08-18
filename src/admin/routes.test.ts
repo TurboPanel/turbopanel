@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app.ts'
 import { createBrowserWriteProtectionMiddleware } from '../browser-write-protection.ts'
@@ -25,64 +25,74 @@ import { registerAdminRoutes } from './routes.ts'
 const dbUrl = getDatabaseUrl()
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 
+type WaitOverride = (
+  outbound: { requestId: string; at: string; kind: string },
+) => Promise<{
+  serverId: string
+  requestId: string
+  requestKind: string
+  status: 'done' | 'failed' | 'expired' | 'queued'
+  createdAt: string
+  expiresAt: string
+  error?: string
+  result?: unknown
+}>
+
+function jsonBody<T>(res: Response): Promise<T> {
+  return res.json() as Promise<T>
+}
+
 function createMockCell(
   serverId: string,
   purgedIds: string[],
   failIds: Set<string>,
-  waitOverride?: (
-    outbound: { requestId: string; at: string; kind: string },
-  ) => Promise<{
-    serverId: string
-    requestId: string
-    requestKind: string
-    status: 'done' | 'failed' | 'expired' | 'queued'
-    createdAt: string
-    expiresAt: string
-    error?: string
-    result?: unknown
-  }>,
+  waitOverride?: WaitOverride,
 ): DaemonCell {
-  const noopAsync = async () => {}
+  const noopAsync = () => Promise.resolve()
   return {
-    attachDaemonSocket: async () => ({
-      connectionId: 'conn',
-      lease: {
-        holder: 'conn',
-        token: 'conn',
-        expiresAt: new Date(Date.now() + 45_000).toISOString(),
-      },
-    }),
+    attachDaemonSocket: () =>
+      Promise.resolve({
+        connectionId: 'conn',
+        lease: {
+          holder: 'conn',
+          token: 'conn',
+          expiresAt: new Date(Date.now() + 45_000).toISOString(),
+        },
+      }),
     detachDaemonSocket: noopAsync,
     recordInbound: noopAsync,
-    getSnapshot: async () => ({
-      serverId,
-      version: 0,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-    }),
-    putSnapshot: async (patch) => ({
-      serverId,
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-      ...patch,
-    }),
-    enqueue: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'queued' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId,
+        version: 0,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+      }),
+    putSnapshot: (patch) =>
+      Promise.resolve({
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+        ...patch,
+      }),
+    enqueue: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'queued' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
     markSent: noopAsync,
-    handleInbound: async () => null,
-    getRequest: async () => null,
-    listRequests: async () => [],
-    waitForRequest: async () => null,
-    createRequestAndWait: async (outbound) => {
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve([]),
+    waitForRequest: () => Promise.resolve(null),
+    createRequestAndWait: (outbound) => {
       if (waitOverride) return waitOverride(outbound)
-      return {
+      return Promise.resolve({
         serverId,
         requestId: outbound.requestId,
         requestKind: outbound.kind,
@@ -92,20 +102,21 @@ function createMockCell(
         result: {
           ips: [],
         },
-      }
+      })
     },
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
     releaseDeliveryLease: noopAsync,
-    readOutboxBatch: async () => [],
+    readOutboxBatch: () => Promise.resolve([]),
     ackOutbox: noopAsync,
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
-    purge: async () => {
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
+    purge: () => {
       if (failIds.has(serverId)) {
-        throw new Error(`purge failed for ${serverId}`)
+        return Promise.reject(new Error(`purge failed for ${serverId}`))
       }
       purgedIds.push(serverId)
+      return Promise.resolve()
     },
   }
 }
@@ -115,18 +126,7 @@ function createTrackingRegistry(
   opts: Readonly<{
     onlineIds?: string[]
     connectedSnapshots?: boolean
-    waitOverride?: (
-      outbound: { requestId: string; at: string; kind: string },
-    ) => Promise<{
-      serverId: string
-      requestId: string
-      requestKind: string
-      status: 'done' | 'failed' | 'expired' | 'queued'
-      createdAt: string
-      expiresAt: string
-      error?: string
-      result?: unknown
-    }>
+    waitOverride?: WaitOverride
   }> = {},
 ): {
   registry: DaemonCellRegistry
@@ -144,11 +144,11 @@ function createTrackingRegistry(
       }
       return cell
     },
-    listOnlineServerIds: async () => opts.onlineIds ?? [],
+    listOnlineServerIds: () => Promise.resolve(opts.onlineIds ?? []),
     // Admin diagnostics (`GET /servers/:id/cell`) legitimately reads live snapshots.
-    getSnapshots: async (ids) => {
+    getSnapshots: (ids) => {
       const out = new Map()
-      if (!opts.connectedSnapshots) return out
+      if (!opts.connectedSnapshots) return Promise.resolve(out)
       for (const id of ids) {
         out.set(id, {
           serverId: id,
@@ -158,7 +158,7 @@ function createTrackingRegistry(
           lastInboundAt: new Date().toISOString(),
         })
       }
-      return out
+      return Promise.resolve(out)
     },
     purge: async (serverId: string) => {
       await registry.getCell(serverId).purge()
@@ -303,7 +303,7 @@ test('POST /api/admin/v1/cells/purge-batch returns 403 for admin role', async ()
 })
 
 test('POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin', async () => {
-  await withRoleUser('superadmin', async ({ app, cookie }) => {
+  await withRoleUser('superadmin', async ({ app: _app, cookie }) => {
     const okId = crypto.randomUUID()
     const failId = crypto.randomUUID()
     const failIds = new Set([failId])
@@ -338,7 +338,10 @@ test('POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await jsonBody<{
+      ok: boolean
+      results: Array<{ serverId: string; ok: boolean; error?: string }>
+    }>(res)
     assertEquals(body.ok, true)
     assertEquals(body.results.length, 2)
     assertEquals(body.results[0], { serverId: okId, ok: true })
@@ -372,7 +375,15 @@ test('POST /api/admin/v1/secrets/reencrypt returns summary for superadmin', asyn
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await jsonBody<{
+      ok: boolean
+      scanned: number
+      reencrypted: number
+      skipped: number
+      failed: number
+      completed: boolean
+      cursor: string | null
+    }>(res)
     assertEquals(body.ok, true)
     assertEquals(typeof body.scanned, 'number')
     assertEquals(typeof body.reencrypted, 'number')
@@ -394,7 +405,7 @@ test('POST /api/admin/v1/secrets/reencrypt returns 503 when encryption key is mi
       })
 
       assertEquals(res.status, 503)
-      const body = await res.json()
+      const body = await jsonBody<{ ok: boolean; error: string }>(res)
       assertEquals(body.ok, false)
       assertEquals(
         body.error,
@@ -427,7 +438,7 @@ test('POST /api/admin/v1/secrets/reencrypt rejects cross-origin browser writes',
       )
 
       assertEquals(res.status, 403)
-      const body = await res.json()
+      const body = await jsonBody<{ ok: boolean; error: string }>(res)
       assertEquals(body.ok, false)
       assertEquals(body.error, 'Forbidden')
     },
@@ -456,7 +467,7 @@ test('POST /api/admin/v1/secrets/reencrypt allows same-origin browser writes', a
       )
 
       assertEquals(res.status, 200)
-      const body = await res.json()
+      const body = await jsonBody<{ ok: boolean; completed: boolean }>(res)
       assertEquals(body.ok, true)
       assertEquals(body.completed, true)
     },
@@ -512,7 +523,7 @@ test('POST /api/admin/v1/secrets/reencrypt returns 409 when a sweep is already r
         body: JSON.stringify({}),
       })
       assertEquals(res.status, 409)
-      const body = await res.json()
+      const body = await jsonBody<{ error: string }>(res)
       assertEquals(body.error, 'reencrypt_in_progress')
     } finally {
       endReencryptSweep()
@@ -537,7 +548,9 @@ test('GET and PUT /api/admin/v1/settings/signup round-trip panel toggle', async 
         headers: { Cookie: cookie },
       })
       assertEquals(initial.status, 200)
-      const initialBody = await initial.json()
+      const initialBody = await jsonBody<{ enabled: boolean; isEnvForced: boolean }>(
+        initial,
+      )
       assertEquals(initialBody.enabled, false)
       assertEquals(initialBody.isEnvForced, false)
 
@@ -550,7 +563,9 @@ test('GET and PUT /api/admin/v1/settings/signup round-trip panel toggle', async 
         body: JSON.stringify({ enabled: true }),
       })
       assertEquals(enable.status, 200)
-      const enabledBody = await enable.json()
+      const enabledBody = await jsonBody<{ enabled: boolean; dbValue: string }>(
+        enable,
+      )
       assertEquals(enabledBody.enabled, true)
       assertEquals(enabledBody.dbValue, '1')
 
@@ -563,7 +578,9 @@ test('GET and PUT /api/admin/v1/settings/signup round-trip panel toggle', async 
         body: JSON.stringify({ enabled: false }),
       })
       assertEquals(disable.status, 200)
-      const disabledBody = await disable.json()
+      const disabledBody = await jsonBody<{ enabled: boolean; dbValue: string }>(
+        disable,
+      )
       assertEquals(disabledBody.enabled, false)
       assertEquals(disabledBody.dbValue, '0')
     } finally {
@@ -591,7 +608,7 @@ test('PUT /api/admin/v1/settings/signup returns 409 when env force override is s
         body: JSON.stringify({ enabled: false }),
       })
       assertEquals(res.status, 409)
-      const body = await res.json()
+      const body = await jsonBody<{ isEnvForced: boolean; enabled: boolean }>(res)
       assertEquals(body.isEnvForced, true)
       assertEquals(body.enabled, true)
     },
@@ -672,7 +689,7 @@ test('GET and PUT /api/admin/v1/settings/email round-trip non-secret settings', 
       headers: { Cookie: cookie },
     })
     assertEquals(get.status, 200)
-    const before = await get.json()
+    const before = await jsonBody<{ settings: unknown }>(get)
     assertEquals(typeof before.settings, 'object')
 
     const put = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
@@ -684,7 +701,7 @@ test('GET and PUT /api/admin/v1/settings/email round-trip non-secret settings', 
       body: JSON.stringify({ FROM: 'coverage-admin@example.com' }),
     })
     assertEquals(put.status, 200)
-    const after = await put.json()
+    const after = await jsonBody<{ settings: unknown }>(put)
     assertEquals(typeof after.settings, 'object')
   })
 })
@@ -709,7 +726,7 @@ test('daemon fleet diagnostics and address request success paths', async () => {
     .values({
       name: `admin-fleet-${crypto.randomUUID()}`,
       hostname: `admin-fleet-${crypto.randomUUID()}.example`,
-      connected: true,
+      isConnected: true,
       statusChangedAt: new Date().toISOString(),
       daemon: {
         key: {
@@ -740,7 +757,7 @@ test('daemon fleet diagnostics and address request success paths', async () => {
       headers: { Cookie: cookie },
     })
     assertEquals(connections.status, 200)
-    const connectionsBody = await connections.json()
+    const connectionsBody = await jsonBody<{ connections: unknown[] }>(connections)
     assertEquals(Array.isArray(connectionsBody.connections), true)
 
     const send = await app.request(`${ADMIN_API_PREFIX}/daemon/${serverId}/send`, {
@@ -763,7 +780,7 @@ test('daemon fleet diagnostics and address request success paths', async () => {
       headers: { Cookie: cookie },
     })
     assertEquals(fleetAddresses.status, 200)
-    const fleetBody = await fleetAddresses.json()
+    const fleetBody = await jsonBody<{ servers: unknown[] }>(fleetAddresses)
     assertEquals(Array.isArray(fleetBody.servers), true)
     assertEquals(fleetBody.servers.length >= 1, true)
 
@@ -772,7 +789,7 @@ test('daemon fleet diagnostics and address request success paths', async () => {
       { headers: { Cookie: cookie } },
     )
     assertEquals(oneAddresses.status, 200)
-    const oneBody = await oneAddresses.json()
+    const oneBody = await jsonBody<{ ok: boolean; daemonId: string }>(oneAddresses)
     assertEquals(oneBody.ok, true)
     assertEquals(oneBody.daemonId, serverId)
 
@@ -811,7 +828,7 @@ test('daemon address request failed/expired/error branches', async () => {
     .insert(server)
     .values({
       name: `admin-addr-${crypto.randomUUID()}`,
-      connected: true,
+      isConnected: true,
       statusChangedAt: new Date().toISOString(),
       daemon: {
         key: {
@@ -830,14 +847,15 @@ test('daemon address request failed/expired/error branches', async () => {
   try {
     const failedRegistry = createTrackingRegistry(new Set(), {
       onlineIds: [serverId],
-      waitOverride: async (outbound) => ({
-        serverId,
-        requestId: outbound.requestId,
-        requestKind: outbound.kind,
-        status: 'failed',
-        createdAt: outbound.at,
-        expiresAt: outbound.at,
-      }),
+      waitOverride: (outbound) =>
+        Promise.resolve({
+          serverId,
+          requestId: outbound.requestId,
+          requestKind: outbound.kind,
+          status: 'failed' as const,
+          createdAt: outbound.at,
+          expiresAt: outbound.at,
+        }),
     }).registry
     const failedApp = await createAdminTestApp(failedRegistry)
     const cookie = await adminSessionCookie(db, failedApp.secrets, userId)
@@ -846,7 +864,9 @@ test('daemon address request failed/expired/error branches', async () => {
       headers: { Cookie: cookie },
     })
     assertEquals(failedFleet.status, 200)
-    const failedFleetBody = await failedFleet.json()
+    const failedFleetBody = await jsonBody<{ servers: Array<{ error?: string }> }>(
+      failedFleet,
+    )
     assertEquals(failedFleetBody.servers[0]?.error, 'failed to fetch addresses')
 
     const failedOne = await failedApp.app.request(
@@ -857,14 +877,15 @@ test('daemon address request failed/expired/error branches', async () => {
 
     const expiredRegistry = createTrackingRegistry(new Set(), {
       onlineIds: [serverId],
-      waitOverride: async (outbound) => ({
-        serverId,
-        requestId: outbound.requestId,
-        requestKind: outbound.kind,
-        status: 'expired',
-        createdAt: outbound.at,
-        expiresAt: outbound.at,
-      }),
+      waitOverride: (outbound) =>
+        Promise.resolve({
+          serverId,
+          requestId: outbound.requestId,
+          requestKind: outbound.kind,
+          status: 'expired' as const,
+          createdAt: outbound.at,
+          expiresAt: outbound.at,
+        }),
     }).registry
     const expiredApp = await createAdminTestApp(expiredRegistry)
     const expiredCookie = await adminSessionCookie(db, expiredApp.secrets, userId)
@@ -873,7 +894,9 @@ test('daemon address request failed/expired/error branches', async () => {
       headers: { Cookie: expiredCookie },
     })
     assertEquals(expiredFleet.status, 200)
-    const expiredFleetBody = await expiredFleet.json()
+    const expiredFleetBody = await jsonBody<{ servers: Array<{ error?: string }> }>(
+      expiredFleet,
+    )
     assertEquals(expiredFleetBody.servers[0]?.error, 'timeout waiting for addresses')
 
     const expiredOne = await expiredApp.app.request(
@@ -884,9 +907,7 @@ test('daemon address request failed/expired/error branches', async () => {
 
     const throwRegistry = createTrackingRegistry(new Set(), {
       onlineIds: [serverId],
-      waitOverride: async () => {
-        throw new Error('daemon not connected')
-      },
+      waitOverride: () => Promise.reject(new Error('daemon not connected')),
     }).registry
     const throwApp = await createAdminTestApp(throwRegistry)
     const throwCookie = await adminSessionCookie(db, throwApp.secrets, userId)
@@ -895,7 +916,9 @@ test('daemon address request failed/expired/error branches', async () => {
       headers: { Cookie: throwCookie },
     })
     assertEquals(throwFleet.status, 200)
-    const throwFleetBody = await throwFleet.json()
+    const throwFleetBody = await jsonBody<{ servers: Array<{ error?: string }> }>(
+      throwFleet,
+    )
     assertEquals(throwFleetBody.servers[0]?.error, 'daemon not connected')
 
     const throwOne = await throwApp.app.request(
@@ -906,9 +929,7 @@ test('daemon address request failed/expired/error branches', async () => {
 
     const throw500Registry = createTrackingRegistry(new Set(), {
       onlineIds: [serverId],
-      waitOverride: async () => {
-        throw 'raw-fail'
-      },
+      waitOverride: () => Promise.reject('raw-fail'),
     }).registry
     const throw500App = await createAdminTestApp(throw500Registry)
     const throw500Cookie = await adminSessionCookie(db, throw500App.secrets, userId)
@@ -941,7 +962,7 @@ test('POST /instance/public-urls/apply returns 503 when colocated snapshot is di
     .insert(server)
     .values({
       name: `admin-apply-${crypto.randomUUID()}`,
-      connected: true,
+      isConnected: true,
       statusChangedAt: new Date().toISOString(),
       daemon: {
         key: {
@@ -974,7 +995,7 @@ test('POST /instance/public-urls/apply returns 503 when colocated snapshot is di
       body: '{}',
     })
     assertEquals(res.status, 503)
-    const body = await res.json()
+    const body = await jsonBody<{ error: string }>(res)
     assertEquals(body.error, 'co-located daemon disconnected')
   } finally {
     await db.delete(server).where(eq(server.id, serverId))

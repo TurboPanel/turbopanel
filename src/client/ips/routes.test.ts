@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -61,7 +61,11 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
     c.set('db', db)
     return next()
   })
-  registerIpRoutes(app, { secrets, runtime: 'deno' })
+  registerIpRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
 
   const [orgA] = await db
     .insert(organization)
@@ -140,8 +144,7 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
   })
 
   assertEquals(res.status, 409)
-  const body = await res.json()
-  assertEquals(body.error, 'ip_in_use')
+  assertEquals(await res.json(), { error: 'ip_in_use' })
 
   await db.delete(hosting).where(eq(hosting.id, host!.id))
   await db.delete(ip).where(eq(ip.id, ipRow!.id))
@@ -168,7 +171,11 @@ test('GET /ips returns 403 for org member without organization:manage', async ()
     c.set('db', db)
     return next()
   })
-  registerIpRoutes(app, { secrets, runtime: 'deno' })
+  registerIpRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
 
   const [orgA] = await db
     .insert(organization)
@@ -211,7 +218,11 @@ test('POST /ips derives version from address', async () => {
     c.set('db', db)
     return next()
   })
-  registerIpRoutes(app, { secrets, runtime: 'deno' })
+  registerIpRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
 
   const [orgA] = await db
     .insert(organization)
@@ -294,7 +305,11 @@ test('POST /ips rejects datacenterId together with networkId', async () => {
     c.set('db', db)
     return next()
   })
-  registerIpRoutes(app, { secrets, runtime: 'deno' })
+  registerIpRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
 
   const [orgA] = await db
     .insert(organization)
@@ -373,7 +388,11 @@ test('PATCH /ips/:id rejects datacenterId when the row already has networkId', a
     c.set('db', db)
     return next()
   })
-  registerIpRoutes(app, { secrets, runtime: 'deno' })
+  registerIpRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
 
   const [orgA] = await db
     .insert(organization)

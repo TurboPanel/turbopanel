@@ -54,12 +54,14 @@ export type MountSelectRow = Pick<
   | 'serviceId'
   | 'destinationPath'
   | 'subpath'
-  | 'readOnly'
   | 'metadata'
   | 'options'
   | 'createdAt'
   | 'updatedAt'
->
+> & {
+  /** Explicit API mapping from `mount.is_read_only`. */
+  readOnly: boolean
+}
 
 export type SerializedLocation = LocationSelectRow & {
   /**
@@ -70,7 +72,7 @@ export type SerializedLocation = LocationSelectRow & {
   resolvedSourcePath: string | null
 }
 
-export type SerializedMount = MountSelectRow
+export type SerializedMount = MountSelectRow // NOSONAR typescript:S6564 — public API alias parallel to SerializedLocation
 
 export type SerializedStorage = Omit<StorageSelectRow, 'principalUsername'> & {
   locations: SerializedLocation[]

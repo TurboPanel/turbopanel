@@ -81,7 +81,7 @@ async function attachConnectedDaemonStatus(
   // Fleet status lives on dedicated `server` columns now — never on
   // `server.daemon` jsonb (see `mapServerDaemonStatusFromColumns`).
   await db.update(server).set({
-    connected: true,
+    isConnected: true,
     statusChangedAt: now,
     updatedAt: now,
   }).where(eq(server.id, serverId))
@@ -2528,7 +2528,7 @@ test('processCommandEnvelope marks managed failed when managed.apply times out',
       managedId,
       serverId,
       role: 'primary',
-      readEligible: true,
+      isReadEligible: true,
       ordinal: 1,
       status: 'provisioning',
     })
@@ -3525,7 +3525,7 @@ test('processCommandEnvelope deletes member only after destroy success with dele
         role: 'replica',
         ordinal: 2,
         status: 'applying',
-        readEligible: true,
+        isReadEligible: true,
       })
       .returning({ id: node.id })
     const memberId = memberRow!.id
@@ -3584,7 +3584,7 @@ test('processCommandEnvelope keeps member row failed/retryable when destroy fail
         role: 'replica',
         ordinal: 2,
         status: 'applying',
-        readEligible: true,
+        isReadEligible: true,
       })
       .returning({ id: node.id })
     const memberId = memberRow!.id

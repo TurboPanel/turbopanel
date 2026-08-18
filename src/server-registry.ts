@@ -521,8 +521,8 @@ async function insertLicensedServer(
       updatedAt: now,
       ...(columns.hostname ? { hostname: columns.hostname } : {}),
       ...(columns.machineKey ? { machineKey: columns.machineKey } : {}),
-      ...(osPatch ?? {}),
-      ...(timePatch ?? {}),
+      ...osPatch,
+      ...timePatch,
       metadata: Object.keys(patch).length > 0 ? patch : null,
     })
     .returning({ id: server.id })

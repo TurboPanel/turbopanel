@@ -5,6 +5,10 @@ import {
   encryptSecretForDaemon,
   isSealedEnvelope,
 } from '../client/authn/data-encryption.ts'
+import type {
+  DerivedSecretsConfig,
+  SecretsConfig,
+} from '../client/authn/secrets.ts'
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
@@ -131,69 +135,108 @@ export async function buildDeploymentSecretsRehydrate(
 
   const results: RehydrateDeploymentResult[] = []
   for (const item of requested) {
-    const [envRow] = await db
-      .select({ id: environment.id, projectId: environment.projectId })
-      .from(environment)
-      .where(eq(environment.id, item.environmentId))
-      .limit(1)
-    if (!envRow || envRow.projectId !== item.projectId) continue
-
-    const [deployRow] = await db
-      .select()
-      .from(deployment)
-      .where(
-        and(
-          eq(deployment.environmentId, item.environmentId),
-          eq(deployment.serverId, daemonServerId),
-        ),
-      )
-      .limit(1)
-    if (!deployRow) continue
-
-    const secretPlan = secretPlanFromOptions(deployRow.options)
-    const variableMaterial: EnvironmentDeployVariableMaterial[] = []
-    const maps = new Map<string, ResolvedVariableMap>()
-
-    for (const plan of secretPlan) {
-      let varMap = maps.get(plan.composeServiceName)
-      if (!varMap) {
-        varMap = await resolveServiceVariableMap(
-          db,
-          item.environmentId,
-          plan.composeServiceName,
-          daemonServerId,
-        )
-        maps.set(plan.composeServiceName, varMap)
-      }
-      const entry = varMap.get(plan.key)
-      if (!entry?.isSecret) continue
-      let plaintext = entry.value
-      if (isSealedEnvelope(entry.value)) {
-        plaintext = await decryptSecret(dataEncryptionSecrets, entry.value)
-      }
-      const valueEnvelope = await encryptSecretForDaemon(
-        secretsConfig,
-        { serverId: daemonServerId, keyId },
-        plaintext,
-      )
-      variableMaterial.push({
-        key: plan.key,
-        composeServiceName: plan.composeServiceName,
-        forBuild: plan.forBuild,
-        forRuntime: plan.forRuntime,
-        isLiteral: entry.isLiteral,
-        valueEnvelope,
-      })
-    }
-
-    results.push({
-      projectId: item.projectId,
-      environmentId: item.environmentId,
-      generation: deployRow.desiredGeneration,
-      secretPlan,
-      variableMaterial,
-    })
+    const result = await rehydrateOneDeployment(
+      db,
+      item,
+      daemonServerId,
+      keyId,
+      dataEncryptionSecrets,
+      secretsConfig,
+    )
+    if (result) results.push(result)
   }
 
   return { deployments: results }
+}
+
+async function collectRehydrateVariableMaterial(
+  db: Db,
+  item: RehydrateDeploymentRequest,
+  daemonServerId: string,
+  keyId: string,
+  secretPlan: EnvironmentDeploySecretPlanEntry[],
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  secretsConfig: SecretsConfig,
+): Promise<EnvironmentDeployVariableMaterial[]> {
+  const variableMaterial: EnvironmentDeployVariableMaterial[] = []
+  const maps = new Map<string, ResolvedVariableMap>()
+
+  for (const plan of secretPlan) {
+    let varMap = maps.get(plan.composeServiceName)
+    if (!varMap) {
+      varMap = await resolveServiceVariableMap(
+        db,
+        item.environmentId,
+        plan.composeServiceName,
+        daemonServerId,
+      )
+      maps.set(plan.composeServiceName, varMap)
+    }
+    const entry = varMap.get(plan.key)
+    if (!entry?.isSecret) continue
+    let plaintext = entry.value
+    if (isSealedEnvelope(entry.value)) {
+      plaintext = await decryptSecret(dataEncryptionSecrets, entry.value)
+    }
+    const valueEnvelope = await encryptSecretForDaemon(
+      secretsConfig,
+      { serverId: daemonServerId, keyId },
+      plaintext,
+    )
+    variableMaterial.push({
+      key: plan.key,
+      composeServiceName: plan.composeServiceName,
+      forBuild: plan.forBuild,
+      forRuntime: plan.forRuntime,
+      isLiteral: entry.isLiteral,
+      valueEnvelope,
+    })
+  }
+  return variableMaterial
+}
+
+async function rehydrateOneDeployment(
+  db: Db,
+  item: RehydrateDeploymentRequest,
+  daemonServerId: string,
+  keyId: string,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  secretsConfig: SecretsConfig,
+): Promise<RehydrateDeploymentResult | null> {
+  const [envRow] = await db
+    .select({ id: environment.id, projectId: environment.projectId })
+    .from(environment)
+    .where(eq(environment.id, item.environmentId))
+    .limit(1)
+  if (envRow?.projectId !== item.projectId) return null
+
+  const [deployRow] = await db
+    .select()
+    .from(deployment)
+    .where(
+      and(
+        eq(deployment.environmentId, item.environmentId),
+        eq(deployment.serverId, daemonServerId),
+      ),
+    )
+    .limit(1)
+  if (!deployRow) return null
+
+  const secretPlan = secretPlanFromOptions(deployRow.options)
+  const variableMaterial = await collectRehydrateVariableMaterial(
+    db,
+    item,
+    daemonServerId,
+    keyId,
+    secretPlan,
+    dataEncryptionSecrets,
+    secretsConfig,
+  )
+  return {
+    projectId: item.projectId,
+    environmentId: item.environmentId,
+    generation: deployRow.desiredGeneration,
+    secretPlan,
+    variableMaterial,
+  }
 }

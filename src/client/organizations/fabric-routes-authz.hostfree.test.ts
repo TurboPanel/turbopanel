@@ -2,7 +2,7 @@
  * Host-free coverage for TurboFabric route authz short-circuits (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
@@ -74,7 +74,11 @@ async function buildSessionApp(opts: {
     }
     return next()
   })
-  registerOrganizationFabricRoutes(app, { secrets, runtime: 'deno' })
+  registerOrganizationFabricRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   return { app, cookie }
 }
 
@@ -86,7 +90,11 @@ test('TurboFabric routes return 401 without a session cookie', async () => {
     c.set('db', {} as Db)
     return next()
   })
-  registerOrganizationFabricRoutes(app, { secrets, runtime: 'deno' })
+  registerOrganizationFabricRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
 
   for (const [method, path] of FABRIC_PATHS) {
     const res = await app.request(path, {
@@ -317,7 +325,11 @@ async function buildFabricEnableApp(opts: {
     c.set('commandQueue', { enqueue: () => Promise.resolve() })
     return next()
   })
-  registerOrganizationFabricRoutes(app, { secrets, runtime: 'deno' })
+  registerOrganizationFabricRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   return { app, cookie }
 }
 
@@ -356,4 +368,172 @@ test('PUT /fabric enabled:true returns settings for an org with no servers', asy
   assertEquals(body.fabric.mtu, 1420)
   assertEquals(typeof body.fabric.id, 'string')
   assertEquals(body.relays, [])
+})
+
+test('GET /fabric returns 404 when the organization row is missing', async () => {
+  const { app, cookie } = await buildSessionApp({ manageAllowed: true })
+  const res = await app.request(`/organizations/${orgId}/fabric`, {
+    headers: { Cookie: cookie },
+  })
+  assertEquals(res.status, 404)
+  assertEquals(await res.json(), { error: 'Not found' })
+})
+
+test('GET /fabric returns disabled settings when TurboFabric is off', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    seedOrg: true,
+  })
+  const res = await app.request(`/organizations/${orgId}/fabric`, {
+    headers: { Cookie: cookie },
+  })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { enabled: false, relays: [] })
+})
+
+test('POST /fabric/apply returns 503 when command dispatch is unavailable', async () => {
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const token = crypto.randomUUID()
+  const state = createEmptyMockAuthState()
+  seedMockSession(state, token, {
+    sessionId: crypto.randomUUID(),
+    userId: crypto.randomUUID(),
+    email: `fabric-apply-${crypto.randomUUID()}@example.com`,
+    role: 'user',
+  })
+  state.organizations.push({ id: orgId, name: 'Fabric Org' })
+  const fabricId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const authDb = createMockAuthDb(state)
+  const origSelect = (
+    authDb as unknown as {
+      select: (fields?: unknown) => { from: (table: unknown) => unknown }
+    }
+  ).select.bind(authDb)
+  const db = Object.assign(authDb, {
+    execute: () => Promise.resolve([{ allowed: true }]),
+    select: (fields?: unknown) => ({
+      from: (table: unknown) => {
+        if (table === fabric) {
+          return {
+            where: () =>
+              thenableRows([{
+                id: fabricId,
+                organizationId: orgId,
+                cidr: '10.250.0.0/16',
+                options: null,
+              }]),
+          }
+        }
+        return origSelect(fields).from(table)
+      },
+    }),
+  }) as unknown as Db
+  const signed = await buildSignedCookie(token, secrets)
+  const cookie = `${HTTP_SESSION_COOKIE_NAME}=${signed}`
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    return next()
+  })
+  registerOrganizationFabricRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
+
+  const res = await app.request(`/organizations/${orgId}/fabric/apply`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Cookie: cookie,
+    },
+    body: JSON.stringify({}),
+  })
+  assertEquals(res.status, 503)
+})
+
+test('PUT /fabric returns 503 when command dispatch is unavailable', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    seedOrg: true,
+  })
+  const res = await app.request(`/organizations/${orgId}/fabric`, {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+      Cookie: cookie,
+    },
+    body: JSON.stringify({ enabled: true }),
+  })
+  assertEquals(res.status, 503)
+})
+
+test('PATCH /fabric/relays/:serverId returns 404 when the relay is missing', async () => {
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const token = crypto.randomUUID()
+  const state = createEmptyMockAuthState()
+  seedMockSession(state, token, {
+    sessionId: crypto.randomUUID(),
+    userId: crypto.randomUUID(),
+    email: `fabric-relay-${crypto.randomUUID()}@example.com`,
+    role: 'user',
+  })
+  state.organizations.push({ id: orgId, name: 'Fabric Org' })
+  const fabricId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  const authDb = createMockAuthDb(state)
+  const origSelect = (
+    authDb as unknown as {
+      select: (fields?: unknown) => { from: (table: unknown) => unknown }
+    }
+  ).select.bind(authDb)
+  const db = Object.assign(authDb, {
+    execute: () => Promise.resolve([{ allowed: true }]),
+    select: (fields?: unknown) => ({
+      from: (table: unknown) => {
+        if (table === fabric) {
+          return {
+            where: () =>
+              thenableRows([{
+                id: fabricId,
+                organizationId: orgId,
+                cidr: '10.250.0.0/16',
+                options: null,
+              }]),
+          }
+        }
+        if (table === relay) {
+          return { where: () => thenableRows([]) }
+        }
+        return origSelect(fields).from(table)
+      },
+    }),
+  }) as unknown as Db
+  const signed = await buildSignedCookie(token, secrets)
+  const cookie = `${HTTP_SESSION_COOKIE_NAME}=${signed}`
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    return next()
+  })
+  registerOrganizationFabricRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
+
+  const res = await app.request(
+    `/organizations/${orgId}/fabric/relays/${serverId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        Cookie: cookie,
+      },
+      body: JSON.stringify({ role: 'member' }),
+    },
+  )
+  assertEquals(res.status, 404)
+  assertEquals(await res.json(), { error: 'Not found' })
 })

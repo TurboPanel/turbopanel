@@ -1489,7 +1489,7 @@ async function attachConnectedDaemonStatus(
   // Fleet status lives on dedicated `server` columns now — never on
   // `server.daemon` jsonb (see `mapServerDaemonStatusFromColumns`).
   await db.update(server).set({
-    connected: true,
+    isConnected: true,
     statusChangedAt: now,
     updatedAt: now,
   }).where(eq(server.id, serverId))
@@ -2144,7 +2144,7 @@ test('GET /servers/:id returns statusChangedAt for offline servers', async () =>
     await db
       .update(server)
       .set({
-        connected: false,
+        isConnected: false,
         statusChangedAt: offlineAt,
         updatedAt: new Date().toISOString(),
       })

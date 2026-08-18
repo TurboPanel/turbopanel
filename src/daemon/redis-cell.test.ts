@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { Db } from "../db.ts";
 import {
   buildDefaultDaemonStatus,
@@ -586,7 +586,7 @@ test(
 
 test(
   "clearUpdateStatus removes terminal update request rows",
-  withRedisCell(async ({ cell, serverId }) => {
+  withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
     const at = new Date().toISOString();
     await cell.enqueue({
@@ -729,8 +729,8 @@ function createSweepMockDb(init: {
         }
         if ("hostname" in patch) hostname = patch.hostname as string | null;
         if ("machineKey" in patch) machineKey = patch.machineKey as string | null;
-        if ("connected" in patch) {
-          columns.connected = patch.connected as boolean;
+        if ("isConnected" in patch) {
+          columns.connected = patch.isConnected as boolean;
         }
         if ("statusChangedAt" in patch) {
           columns.statusChangedAt = patch.statusChangedAt as string | null;
@@ -786,7 +786,7 @@ test(
 
 test(
   "clearUpdateStatus expires stale in-flight update when allowStale is set",
-  withRedisCell(async ({ cell, serverId }) => {
+  withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
     const at = new Date().toISOString();
     await cell.enqueue({
@@ -1101,7 +1101,7 @@ test(
     await onDaemonConnected(db, serverId, cell, connectedAt);
 
     assertEquals(updateCalls.length, 1);
-    assertEquals(updateCalls[0]?.connected, true);
+    assertEquals(updateCalls[0]?.isConnected, true);
     assertEquals(updateCalls[0]?.statusChangedAt, connectedAt);
   }),
 );
@@ -1182,7 +1182,7 @@ test(
     await sweepStalePresence(db, registry);
 
     assertEquals(updateCalls.length, 1);
-    assertEquals(updateCalls[0]?.connected, false);
+    assertEquals(updateCalls[0]?.isConnected, false);
   }),
 );
 
@@ -1262,7 +1262,7 @@ test(
 
     assertEquals(updateCalls.length, 2);
     const last = updateCalls.at(-1);
-    assertEquals(last?.connected, true);
+    assertEquals(last?.isConnected, true);
     assertEquals(typeof last?.statusChangedAt, "string");
   }),
 );
@@ -1723,7 +1723,7 @@ test(
 
 test(
   "clearUpdateStatus removes terminal update request rows",
-  withRedisCell(async ({ cell, serverId }) => {
+  withRedisCell(async ({ cell }) => {
     const requestId = generateRequestId();
     const at = new Date().toISOString();
     await cell.enqueue({

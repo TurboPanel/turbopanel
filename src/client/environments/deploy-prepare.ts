@@ -424,14 +424,14 @@ async function sealVariableMaterialForDaemon(
   if (!dataEncryptionSecrets || !secretsConfig) {
     return Response.json({
       error: "Encryption unavailable — no encryption key configured",
-    }, 503);
+    }, { status: 503 });
   }
 
   const daemonState = await getServerDaemonStateByServerId(db, serverId);
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
     return Response.json({
       error: "No encryption-capable daemon key on target server",
-    }, 422);
+    }, { status: 422 });
   }
   const keyId = daemonState.key.id;
 
@@ -694,7 +694,7 @@ export async function loadStorageMaterial(
         composeServiceName: service.composeServiceName,
         destinationPath: mount.destinationPath,
         subpath: mount.subpath,
-        readOnly: mount.readOnly,
+        readOnly: mount.isReadOnly,
       })
       .from(mount)
       .innerJoin(service, eq(mount.serviceId, service.id))
@@ -837,14 +837,14 @@ async function sealStorageMaterialForDaemon(
   if (!dataEncryptionSecrets || !secretsConfig) {
     return Response.json({
       error: "Encryption unavailable — no encryption key configured",
-    }, 503);
+    }, { status: 503 });
   }
 
   const daemonState = await getServerDaemonStateByServerId(db, serverId);
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
     return Response.json({
       error: "No encryption-capable daemon key on target server",
-    }, 422);
+    }, { status: 422 });
   }
   const keyId = daemonState.key.id;
 

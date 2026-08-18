@@ -237,7 +237,7 @@ export const serverSchemas = {
       connected: {
         type: 'boolean',
         description:
-          'Live presence from the promoted `server.connected` column (not `daemon.status`).',
+          'Live presence from the promoted `server.is_connected` column (not `daemon.status`).',
       },
       hostname: {
         type: ['string', 'null'],

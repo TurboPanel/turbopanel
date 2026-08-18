@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
 import { it } from "@std/testing/bdd";
 import {
@@ -69,7 +69,7 @@ import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
  */
 const test = Deno.test.bind(Deno);
 
-async function createDaemonJwtSecrets() {
+function createDaemonJwtSecrets() {
   const parsed = parseSecretsEnv(generateSecret(), undefined, "deno");
   return deriveDaemonJwtKeyring(parsed);
 }
@@ -149,8 +149,8 @@ function createProjectionTrackingDb(
         if (patch.daemon !== undefined) {
           daemon = patch.daemon as ServerDaemonState;
         }
-        if ("connected" in patch) {
-          columns.connected = patch.connected as boolean;
+        if ("isConnected" in patch) {
+          columns.connected = patch.isConnected as boolean;
         }
         if ("statusChangedAt" in patch) {
           columns.statusChangedAt = patch.statusChangedAt as string | null;
@@ -187,7 +187,7 @@ function createTrackingDaemonCell(serverId: string) {
   };
 
   const cell: DaemonCell = {
-    attachDaemonSocket: async (meta) => {
+    attachDaemonSocket: (meta) => {
       calls.attach += 1;
       snapshot = {
         ...snapshot,
@@ -196,27 +196,29 @@ function createTrackingDaemonCell(serverId: string) {
         connectedAt: meta.connectedAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      return {
+      return Promise.resolve({
         connectionId: "track-conn",
         lease: {
           holder: "track-conn",
           expiresAt: new Date(Date.now() + 45_000).toISOString(),
         },
-      };
+      });
     },
-    detachDaemonSocket: async () => {
+    detachDaemonSocket: () => {
       calls.detach += 1;
       snapshot = {
         ...snapshot,
         connected: false,
         updatedAt: new Date().toISOString(),
       };
+      return Promise.resolve();
     },
-    recordInbound: async () => {
+    recordInbound: () => {
       calls.recordInbound += 1;
+      return Promise.resolve();
     },
-    getSnapshot: async () => snapshot,
-    putSnapshot: async (patch) => {
+    getSnapshot: () => Promise.resolve(snapshot),
+    putSnapshot: (patch) => {
       calls.putSnapshot += 1;
       snapshot = {
         ...snapshot,
@@ -225,37 +227,38 @@ function createTrackingDaemonCell(serverId: string) {
         version: snapshot.version + 1,
         updatedAt: new Date().toISOString(),
       };
-      return snapshot;
+      return Promise.resolve(snapshot);
     },
-    enqueue: async (outbound: DaemonOutboundEnvelope) => {
-      return {
+    enqueue: (outbound: DaemonOutboundEnvelope) => {
+      return Promise.resolve({
         serverId,
         requestId: outbound.requestId,
         requestKind: outbound.kind,
         status: "queued" as const,
         createdAt: outbound.at,
         expiresAt: outbound.at,
-      };
+      });
     },
-    markSent: async () => {},
-    handleInbound: async (_inbound: DaemonInboundEnvelope) => {
+    markSent: () => Promise.resolve(),
+    handleInbound: (_inbound: DaemonInboundEnvelope) => {
       calls.handleInbound += 1;
-      return null;
+      return Promise.resolve(null);
     },
-    getRequest: async () => null,
-    listRequests: async () => [],
-    waitForRequest: async () => null,
-    createRequestAndWait: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: "expired" as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
-    releaseDeliveryLease: async () => {},
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve([]),
+    waitForRequest: () => Promise.resolve(null),
+    createRequestAndWait: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: "expired" as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
+    releaseDeliveryLease: () => Promise.resolve(),
     readOutboxBatch: async (args?: { blockMs?: number }) => {
       calls.readOutboxBatch += 1;
       // Honour blockMs so the outbox pump cannot busy-loop under Deno.serve.
@@ -267,10 +270,10 @@ function createTrackingDaemonCell(serverId: string) {
       }
       return [];
     },
-    ackOutbox: async () => {},
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
-    purge: async () => {},
+    ackOutbox: () => Promise.resolve(),
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
+    purge: () => Promise.resolve(),
   };
 
   return {
@@ -283,9 +286,9 @@ function createTrackingDaemonCell(serverId: string) {
 function createTrackingRegistry(cell: DaemonCell): DaemonCellRegistry {
   return {
     getCell: () => cell,
-    listOnlineServerIds: async () => [],
-    getSnapshots: async () => new Map(),
-    purge: async () => {},
+    listOnlineServerIds: () => Promise.resolve([]),
+    getSnapshots: () => Promise.resolve(new Map()),
+    purge: () => Promise.resolve(),
   };
 }
 
@@ -365,7 +368,7 @@ it("WS upgrade rejects HTTP 401 when JWT is invalid", async () => {
   assertEquals(response.status, 401);
 });
 
-async function createSessionSecrets() {
+function createSessionSecrets() {
   return deriveSecretsConfig(
     parseSecretsEnv(generateSecret(), undefined, "deno"),
     "session-signing",
@@ -810,14 +813,15 @@ it("cell ping over WS sends pong, refreshes cell liveness, skips Postgres", asyn
     statusChangedAt: recentAt,
   });
   const tracking = createTrackingDaemonCell(serverId);
-  tracking.cell.getSnapshot = async () => ({
-    serverId,
-    version: 1,
-    updatedAt: recentAt,
-    connected: true,
-    lastSeenAt: recentAt,
-    lastInboundAt: recentAt,
-  });
+  tracking.cell.getSnapshot = () =>
+    Promise.resolve({
+      serverId,
+      version: 1,
+      updatedAt: recentAt,
+      connected: true,
+      lastSeenAt: recentAt,
+      lastInboundAt: recentAt,
+    });
   const app = new Hono();
   registerTestDaemonWebSocket(app, secrets, {
     db,
@@ -983,14 +987,15 @@ it("coalesced heartbeat over WS performs no Postgres update", async () => {
     statusChangedAt: recentAt,
   });
   const tracking = createTrackingDaemonCell(serverId);
-  tracking.cell.getSnapshot = async () => ({
-    serverId,
-    version: 1,
-    updatedAt: recentAt,
-    connected: true,
-    lastSeenAt: recentAt,
-    lastInboundAt: recentAt,
-  });
+  tracking.cell.getSnapshot = () =>
+    Promise.resolve({
+      serverId,
+      version: 1,
+      updatedAt: recentAt,
+      connected: true,
+      lastSeenAt: recentAt,
+      lastInboundAt: recentAt,
+    });
   const app = new Hono();
   registerTestDaemonWebSocket(app, secrets, {
     db,
@@ -1095,15 +1100,16 @@ it("update-result over WS projects update summary to Postgres", async () => {
     statusChangedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
-  tracking.cell.handleInbound = async () => ({
-    serverId,
-    requestId: "req-update-1",
-    requestKind: "update",
-    status: "done" as const,
-    createdAt: "2020-01-01T00:00:00.000Z",
-    expiresAt: "2020-01-01T00:05:00.000Z",
-    finishedAt: "2020-01-01T00:01:00.000Z",
-  });
+  tracking.cell.handleInbound = () =>
+    Promise.resolve({
+      serverId,
+      requestId: "req-update-1",
+      requestKind: "update",
+      status: "done" as const,
+      createdAt: "2020-01-01T00:00:00.000Z",
+      expiresAt: "2020-01-01T00:05:00.000Z",
+      finishedAt: "2020-01-01T00:01:00.000Z",
+    });
   const app = new Hono();
   registerTestDaemonWebSocket(app, secrets, {
     db,
@@ -1180,17 +1186,18 @@ it("hello over WS clears stale updating when daemonBuild matches trunk", async (
     statusChangedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
-  tracking.cell.getSnapshot = async () => ({
-    serverId,
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    connected: true,
-    daemonBuild: {
-      commit: "target-commit",
-      buildId: "b1",
-      channel: "trunk",
-    },
-  });
+  tracking.cell.getSnapshot = () =>
+    Promise.resolve({
+      serverId,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      connected: true,
+      daemonBuild: {
+        commit: "target-commit",
+        buildId: "b1",
+        channel: "trunk",
+      },
+    });
   const app = new Hono();
   registerTestDaemonWebSocket(app, secrets, {
     db,
@@ -1365,12 +1372,13 @@ it("cell ping re-projects online when Redis snapshot is disconnected", async () 
     statusChangedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
-  tracking.cell.getSnapshot = async () => ({
-    serverId,
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    connected: false,
-  });
+  tracking.cell.getSnapshot = () =>
+    Promise.resolve({
+      serverId,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      connected: false,
+    });
   const app = new Hono();
   registerTestDaemonWebSocket(app, secrets, {
     db,
@@ -1664,11 +1672,13 @@ test("live WS attaches, pumps outbox, handles hello/ping, and detaches", async (
   };
   let markSent = 0;
   let ackOutbox = 0;
-  tracking.cell.markSent = async () => {
+  tracking.cell.markSent = () => {
     markSent += 1;
+    return Promise.resolve();
   };
-  tracking.cell.ackOutbox = async () => {
+  tracking.cell.ackOutbox = () => {
     ackOutbox += 1;
+    return Promise.resolve();
   };
 
   await withLiveDaemonServer({
@@ -1918,9 +1928,8 @@ test("live WS attach failure closes with 1013", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-live-attach-fail";
   const tracking = createTrackingDaemonCell(serverId);
-  tracking.cell.attachDaemonSocket = async () => {
-    throw new Error("attach boom");
-  };
+  tracking.cell.attachDaemonSocket = () =>
+    Promise.reject(new Error("attach boom"));
 
   await withLiveDaemonServer({
     secrets,
@@ -1993,13 +2002,14 @@ test("live WS ping repairs Postgres-only false offline", async () => {
   });
   const tracking = createTrackingDaemonCell(serverId);
   // Redis already connected — exercise the Postgres-only repair branch.
-  tracking.cell.getSnapshot = async () => ({
-    serverId,
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    connected: true,
-    connectedAt: "2020-01-01T00:00:00.000Z",
-  });
+  tracking.cell.getSnapshot = () =>
+    Promise.resolve({
+      serverId,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      connected: true,
+      connectedAt: "2020-01-01T00:00:00.000Z",
+    });
 
   await withLiveDaemonServer({
     secrets,
@@ -2043,9 +2053,9 @@ test("live WS update-result and heartbeat with addresses cover inbound dispatch"
     statusChangedAt: "2020-01-01T00:00:00.000Z",
   });
   const tracking = createTrackingDaemonCell(serverId);
-  tracking.cell.handleInbound = async () => {
+  tracking.cell.handleInbound = () => {
     tracking.calls.handleInbound += 1;
-    return {
+    return Promise.resolve({
       serverId,
       requestId: "req-u1",
       requestKind: "update",
@@ -2053,7 +2063,7 @@ test("live WS update-result and heartbeat with addresses cover inbound dispatch"
       createdAt: "2020-01-01T00:00:00.000Z",
       expiresAt: "2020-01-01T00:05:00.000Z",
       finishedAt: "2020-01-01T00:01:00.000Z",
-    };
+    });
   };
   await withLiveDaemonServer({
     secrets,
@@ -2099,9 +2109,9 @@ test("live WS swallows inbound handler errors without tearing down the socket", 
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-live-inbound-err";
   const tracking = createTrackingDaemonCell(serverId);
-  tracking.cell.recordInbound = async () => {
+  tracking.cell.recordInbound = () => {
     tracking.calls.recordInbound += 1;
-    throw new Error("recordInbound boom");
+    return Promise.reject(new Error("recordInbound boom"));
   };
 
   await withLiveDaemonServer({
@@ -2214,9 +2224,9 @@ test("live WS detach ignores closed-connection errors from detachDaemonSocket", 
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-live-detach-closed";
   const tracking = createTrackingDaemonCell(serverId);
-  tracking.cell.detachDaemonSocket = async () => {
+  tracking.cell.detachDaemonSocket = () => {
     tracking.calls.detach += 1;
-    throw new Error("Connection is closed");
+    return Promise.reject(new Error("Connection is closed"));
   };
 
   await withLiveDaemonServer({

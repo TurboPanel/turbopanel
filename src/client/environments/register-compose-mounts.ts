@@ -168,7 +168,7 @@ export async function registerComposeMounts(
           storageId,
           serviceId: svc.id,
           destinationPath: spec.destinationPath,
-          readOnly: spec.readOnly,
+          isReadOnly: spec.readOnly,
         })
       }
     }

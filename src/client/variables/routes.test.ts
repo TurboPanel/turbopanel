@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -62,7 +62,7 @@ async function createVariableTestApp(db: ReturnType<typeof createDenoDb>) {
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     return next()
   })
-  registerVariableRoutes(app, { secrets, runtime: 'deno' })
+  registerVariableRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets, secretsConfig, dataEncryptionSecrets }
 }
 
@@ -345,7 +345,7 @@ test('PATCH /variables/:id rejects secret to non-secret without replacement valu
   })
 })
 
-async function postVariable(
+function postVariable(
   app: Hono<AppEnv>,
   cookie: string,
   organizationId: string,
@@ -735,7 +735,7 @@ test('binding-owned variables reject PATCH/DELETE and conflict on POST', async (
         serviceId,
         databaseName: 'appdb',
         keyPrefix: 'DATABASE',
-        emitEngineDefaults: false,
+        isEmitEngineDefaults: false,
       })
       .returning({ id: binding.id })
     const bindingId = insertedBinding!.id
@@ -749,8 +749,8 @@ test('binding-owned variables reject PATCH/DELETE and conflict on POST', async (
         value: 'tpsecret.fake-envelope',
         isSecret: true,
         isLiteral: true,
-        forRuntime: true,
-        forBuild: false,
+        isForRuntime: true,
+        isForBuild: false,
       })
       .returning({ id: variable.id })
 

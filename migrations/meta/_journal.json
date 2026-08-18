@@ -8,6 +8,13 @@
       "when": 1787000237329,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787068800000,
+      "tag": "0001_rename_boolean_is_prefix",
+      "breakpoints": true
     }
   ]
 }

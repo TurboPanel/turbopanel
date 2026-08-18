@@ -2,7 +2,7 @@
  * Host-free coverage for storage route short-circuits (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
@@ -30,7 +30,7 @@ async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
     if (db) c.set('db', db)
     return next()
   })
-  registerStorageRoutes(app, { secrets, runtime: 'deno' })
+  registerStorageRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return app
 }
 

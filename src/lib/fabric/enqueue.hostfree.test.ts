@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "jsr:@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { CommandQueue } from "../commands/queue.ts";
 import { buildFabricReconcilePayload } from "../db/fabric-records.ts";
@@ -6,6 +6,7 @@ import {
   awaitParticipatingFabricConvergence,
   enqueueFabricReconcileForServers,
   fabricEnqueueTypedError,
+  isFabricEnqueueTypedError,
   isFabricMembershipConverged,
   reconcileFabricMembership,
   relayNeedsFabricEnqueue,
@@ -236,6 +237,30 @@ test("fabricEnqueueTypedError surfaces relay_endpoint_unavailable", () => {
   );
 });
 
+test("isFabricEnqueueTypedError recognizes allocation codes only", () => {
+  assertEquals(isFabricEnqueueTypedError("relay_endpoint_unavailable"), true);
+  assertEquals(isFabricEnqueueTypedError("fabric_segment_pool_exhausted"), true);
+  assertEquals(isFabricEnqueueTypedError("relay_missing"), true);
+  assertEquals(isFabricEnqueueTypedError("enqueue_failed"), false);
+  assertEquals(isFabricEnqueueTypedError("Command queue unavailable"), false);
+});
+
+test("enqueueFabricReconcileForServers skips when enabled without fabric snapshot", async () => {
+  const results = await enqueueFabricReconcileForServers({
+    db: createEndpointlessFabricDb([]),
+    commandQueue: throwingQueue(),
+    actorType: "user",
+    actorId: "user-1",
+    fabric: null,
+    serverIds: ["srv-1", "srv-2"],
+    enabled: true,
+  });
+  assertEquals(results, [
+    { serverId: "srv-1", status: "skipped" },
+    { serverId: "srv-2", status: "skipped" },
+  ]);
+});
+
 test("enqueueFabricReconcileForServers returns typed relay_endpoint_unavailable without throwing", async () => {
   const results = await enqueueFabricReconcileForServers({
     db: createEndpointlessFabricDb(ENDPOINTLESS_RELAYS),
@@ -383,6 +408,117 @@ function recordingQueue(enqueued: string[]): CommandQueue {
     },
   } as unknown as CommandQueue;
 }
+
+test("enqueueFabricReconcileForServers enqueues disable payloads when fabric is off", async () => {
+  const enqueued: string[] = [];
+  const results = await enqueueFabricReconcileForServers({
+    db: createMembershipFabricDb([]),
+    commandQueue: recordingQueue(enqueued),
+    actorType: "user",
+    actorId: "user-1",
+    fabric: FABRIC,
+    serverIds: ["srv-1"],
+    enabled: false,
+  });
+  assertEquals(enqueued, ["srv-1"]);
+  assertEquals(results, [
+    { serverId: "srv-1", commandId: "cmd-1", status: "queued" },
+  ]);
+});
+
+test("enqueueFabricReconcileForServers reports queue unavailable after create", async () => {
+  const base = createMembershipFabricDb(hashGateRelays());
+  const db = {
+    select: (base as unknown as { select: (f: Record<string, unknown>) => unknown })
+      .select.bind(base),
+    insert: (base as unknown as { insert: () => unknown }).insert.bind(base),
+    update() {
+      return {
+        set() {
+          return {
+            where() {
+              return {
+                returning() {
+                  return thenable([
+                    {
+                      id: "cmd-1",
+                      serverId: "srv-1",
+                      actorType: "user",
+                      actorId: "user-1",
+                      name: "server.fabric.reconcile",
+                      status: "failed",
+                      attempts: 0,
+                      payload: { enabled: true },
+                      metadata: { error: "Command queue unavailable" },
+                      result: null,
+                      createdAt: "2020-01-01T00:00:00.000Z",
+                      updatedAt: "2020-01-01T00:00:00.000Z",
+                    },
+                  ]);
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  } as unknown as Db;
+  const results = await enqueueFabricReconcileForServers({
+    db,
+    commandQueue: {
+      enqueue() {
+        return Promise.reject(new Error("amqp down"));
+      },
+    } as unknown as CommandQueue,
+    actorType: "user",
+    actorId: "user-1",
+    fabric: FABRIC,
+    serverIds: ["srv-1"],
+    enabled: true,
+  });
+  assertEquals(results, [
+    {
+      serverId: "srv-1",
+      commandId: "cmd-1",
+      status: "failed",
+      error: "Command queue unavailable",
+    },
+  ]);
+});
+
+test("enqueueFabricReconcileForServers reports enqueue_failed when create throws", async () => {
+  const base = createMembershipFabricDb(hashGateRelays());
+  const db = {
+    select: (base as unknown as { select: (f: Record<string, unknown>) => unknown })
+      .select.bind(base),
+    insert() {
+      throw new Error("insert exploded");
+    },
+    update() {
+      return {
+        set() {
+          return {
+            where() {
+              return thenable([]);
+            },
+          };
+        },
+      };
+    },
+  } as unknown as Db;
+  const results = await enqueueFabricReconcileForServers({
+    db,
+    commandQueue: recordingQueue([]),
+    actorType: "user",
+    actorId: "user-1",
+    fabric: FABRIC,
+    serverIds: ["srv-1"],
+    enabled: true,
+  });
+  assertEquals(results, [
+    { serverId: "srv-1", status: "failed", error: "enqueue_failed" },
+  ]);
+});
 
 function hashGateRelays(): RelayRow[] {
   return [

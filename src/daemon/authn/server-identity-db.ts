@@ -32,7 +32,7 @@ export type ServerDaemonStateWithMetadata = ServerDaemonState & {
 };
 
 const STATUS_COLUMNS = {
-  connected: server.connected,
+  connected: server.isConnected,
   statusChangedAt: server.statusChangedAt,
 } as const;
 
@@ -111,7 +111,7 @@ export async function attachDaemonStateToServer(
       daemon: daemonState,
       ...(hostname ? { hostname } : {}),
       ...(machineKey ? { machineKey } : {}),
-      connected: defaultStatus.connected,
+      isConnected: defaultStatus.connected,
       statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,
     })
@@ -186,7 +186,7 @@ export async function clearServerDaemonState(
     .update(server)
     .set({
       daemon: null,
-      connected: defaultStatus.connected,
+      isConnected: defaultStatus.connected,
       statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,
     })

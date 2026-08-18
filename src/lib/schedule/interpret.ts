@@ -46,7 +46,7 @@ function parsePositiveInt(value: unknown): number | null {
 }
 
 const NODE_LABEL_CONSTRAINT_RE =
-  /^node\.labels\.([A-Za-z0-9][A-Za-z0-9._-]*)\s*(==|!=)\s*(.+)$/
+  /^node\.labels\.([A-Za-z0-9][A-Za-z0-9._-]*)\s*(==|!=)\s*(\S.*)$/
 
 function parseConstraint(raw: string): PlacementConstraint | null {
   const trimmed = raw.trim()
@@ -159,7 +159,7 @@ export function resolveReplicaPolicy(
   if (mode === 'global') return { mode, replicas: 1 }
   const fromDeploy = parseDeployReplicas(deploy)
   if (fromDeploy !== null) return { mode, replicas: fromDeploy }
-  const fallback = fallbackInstances >= 1 ? fallbackInstances : 1
+  const fallback = Math.max(1, fallbackInstances)
   return { mode, replicas: fallback }
 }
 

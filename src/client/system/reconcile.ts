@@ -34,7 +34,7 @@ import {
   ingressContainerNameFromService,
   managedIngressContainerNameFromService,
 } from '../../lib/naming.ts'
-import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
 import {
   isSystemSelfHostComposeServiceName,
   SYSTEM_HOSTING_INGRESS_COMPONENT,
@@ -236,7 +236,7 @@ export async function buildSystemReconcilePayload(
         OR (p.metadata->>'component' = ${SYSTEM_SELF_HOST_COMPONENT} AND c.role = 'turbopanel')
       )
     WHERE e.server_id = ${params.serverId}::uuid
-      AND w.kind = ${WORKSPACE_KIND_SYSTEM}
+      AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
     ORDER BY e.id, s.name
   `)
 
@@ -381,7 +381,7 @@ export async function enqueueSystemReconcile(
  *   (or the row was already observed — crash recovery)
  * - recently reconnected servers (`status_changed_at` within the throttle
  *   window) whose ingress was already observed, even when the row still
- *   says `running` — disconnect only flips `server.connected`, so inventory
+ *   says `running` — disconnect only flips `server.is_connected`, so inventory
  *   can be stale after reconnect
  * - self-host (`turbopanel`) database/queue/analytics containers not running
  *   or missing a Docker id
@@ -416,8 +416,8 @@ export async function runSystemReconcileSweep(
     JOIN workspace w ON w.id = p.workspace_id
     JOIN service s ON s.environment_id = e.id
     JOIN container c ON c.service_id = s.id AND c.ordinal = 1
-    WHERE w.kind = ${WORKSPACE_KIND_SYSTEM}
-      AND srv.connected = true
+    WHERE w.kind = ${WORKSPACE_KIND_TURBOPANEL}
+      AND srv.is_connected = true
       AND (
         (
           p.metadata->>'component' = ${SYSTEM_HOSTING_INGRESS_COMPONENT}

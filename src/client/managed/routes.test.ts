@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -19,6 +19,7 @@ import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type { DaemonOutboundEnvelope } from '../../daemon/cell/protocol.ts'
 import { emptyComposeDocument } from '../../lib/compose/index.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
 import { getManagedEngineSpec } from '../../lib/managed/index.ts'
@@ -56,8 +57,9 @@ function createRecordingCommandQueue(): CommandQueue & { envelopes: CommandEnvel
   const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
-    enqueue: async (envelope) => {
+    enqueue: (envelope: CommandEnvelope) => {
       envelopes.push(envelope)
+      return Promise.resolve()
     },
   }
 }
@@ -65,15 +67,16 @@ function createRecordingCommandQueue(): CommandQueue & { envelopes: CommandEnvel
 function createStubRegistry(): DaemonCellRegistry {
   return {
     getCell: () => ({
-      createRequestAndWait: async (outbound) => ({
-        serverId: 'stub',
-        requestId: outbound.requestId,
-        requestKind: outbound.kind,
-        status: 'done' as const,
-        createdAt: outbound.at,
-        expiresAt: outbound.at,
-        result: { logs: 'stub-logs\n' },
-      }),
+      createRequestAndWait: (outbound: DaemonOutboundEnvelope) =>
+        Promise.resolve({
+          serverId: 'stub',
+          requestId: outbound.requestId,
+          requestKind: outbound.kind,
+          status: 'done' as const,
+          createdAt: outbound.at,
+          expiresAt: outbound.at,
+          result: { logs: 'stub-logs\n' },
+        }),
     }),
   } as unknown as DaemonCellRegistry
 }
@@ -101,7 +104,7 @@ async function withDriftedPlacement(
       name: 'Drifted Placement Server',
       createdAt: now,
       updatedAt: now,
-      connected: false,
+      isConnected: false,
       statusChangedAt: now,
     })
     .returning({ id: server.id })
@@ -165,7 +168,11 @@ async function createManagedRoutesTestApp(
     c.set('commandQueue', commandQueue)
     return next()
   })
-  registerManagedRoutes(app, { secrets, runtime: 'deno' })
+  registerManagedRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   return { app, secrets, commandQueue, dataEncryptionSecrets }
 }
 
@@ -297,7 +304,7 @@ async function withManagedFixturesBody(
       name: 'Managed Route Server',
       createdAt: now,
       updatedAt: now,
-      connected: online,
+      isConnected: online,
       statusChangedAt: now,
     })
     .returning({ id: server.id })
@@ -310,7 +317,7 @@ async function withManagedFixturesBody(
     })
     if (online) {
       await db.update(server).set({
-        connected: true,
+        isConnected: true,
         statusChangedAt: now,
         updatedAt: now,
       }).where(eq(server.id, serverId))
@@ -530,7 +537,7 @@ test('create enqueue failure compensation clears pending null-id containers', as
     organizationId,
     environmentId,
   }) => {
-    commandQueue.enqueue = async () => {
+    commandQueue.enqueue = () => {
       throw new Error('queue unavailable')
     }
 
@@ -1265,7 +1272,7 @@ test('backup create/delete/restore target managed.server_id when environment pla
         name: 'Drifted Placement Server',
         createdAt: now,
         updatedAt: now,
-        connected: false,
+        isConnected: false,
         statusChangedAt: now,
       })
       .returning({ id: server.id })
@@ -1689,7 +1696,7 @@ test('POST root-password includes redeployRequired when bindings exist; DELETE u
       serviceId: consumerServiceId,
       databaseName: 'postgres',
       keyPrefix: 'DATABASE',
-      emitEngineDefaults: true,
+      isEmitEngineDefaults: true,
     })
 
     const rotate = await app.request(
@@ -1732,7 +1739,7 @@ test('POST root-password includes redeployRequired when bindings exist; DELETE u
       serviceId: consumerServiceId,
       databaseName: 'postgres',
       keyPrefix: 'APP',
-      emitEngineDefaults: false,
+      isEmitEngineDefaults: false,
     })
 
     await db.update(managed).set({ status: 'ready' }).where(
@@ -1767,7 +1774,7 @@ test('POST root-password includes redeployRequired when bindings exist; DELETE u
         serviceId: consumerServiceId,
         databaseName: 'app_extra',
         keyPrefix: 'EXTRA',
-        emitEngineDefaults: false,
+        isEmitEngineDefaults: false,
       })
       const deleteDb = await app.request(
         `/environments/${environmentId}/managed/databases/app_extra`,
@@ -2277,7 +2284,10 @@ test('registerManagedRoutes requires session secrets', () => {
   const app = new Hono<AppEnv>()
   let threw = false
   try {
-    registerManagedRoutes(app, { runtime: 'deno' })
+    registerManagedRoutes(app, {
+      runtime: 'deno',
+      signupEnvOverride: undefined,
+    })
   } catch (error) {
     threw = true
     assertEquals(error instanceof TypeError, true)

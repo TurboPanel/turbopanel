@@ -41,7 +41,7 @@ async function createServiceRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
     c.set('db', db)
     return next()
   })
-  registerServiceRoutes(app, { secrets, runtime: 'deno' })
+  registerServiceRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets }
 }
 

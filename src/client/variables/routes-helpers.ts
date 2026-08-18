@@ -194,8 +194,8 @@ export function buildInsertValues(
     value: fields.value,
     isSecret: fields.isSecret,
     isLiteral: fields.isLiteral,
-    forBuild: fields.forBuild,
-    forRuntime: fields.forRuntime,
+    isForBuild: fields.forBuild,
+    isForRuntime: fields.forRuntime,
     description: fields.description,
     [parent.column]: parent.id,
   }

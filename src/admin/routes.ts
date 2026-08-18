@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { AppEnv } from '../app.ts'
 import { createAdminAccessMiddleware, createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import {
   getSignupSettingMeta,
@@ -68,13 +69,13 @@ function nowTs(): string {
 /**
  * Admin UI surface: fleet diagnostics, public URL management, and (dev-only) shell.
  */
-export function registerAdminRoutes(app: Hono, opts: {
+export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
   secrets: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
   devSurface: boolean
   getEnv?: () => Record<string, string | undefined>
 }) {
-  const admin = new Hono()
+  const admin = new Hono<AppEnv>()
   admin.use('*', createAdminAccessMiddleware(opts.secrets))
 
   admin.get('/daemon/connections', async (c) => {
@@ -86,7 +87,7 @@ export function registerAdminRoutes(app: Hono, opts: {
     return c.json({ connections })
   })
 
-  admin.get('/daemon/events', async (c) => {
+  admin.get('/daemon/events', (c) => {
     return c.json({ events: [] })
   })
 

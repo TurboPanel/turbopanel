@@ -161,7 +161,7 @@ const MEMBER_SELECT = {
   managedId: node.managedId,
   serverId: node.serverId,
   role: node.role,
-  readEligible: node.readEligible,
+  readEligible: node.isReadEligible,
   ordinal: node.ordinal,
   privatePort: node.privatePort,
   engine: managed.engine,

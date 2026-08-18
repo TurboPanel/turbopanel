@@ -21,9 +21,7 @@ import {
 } from "../authn/server-identity-db.ts";
 import { server } from "../../lib/db/schema.ts";
 import { normalizeMachineKey } from "../../lib/machine-key.ts";
-import {
-  type ServerMetadata,
-} from "../../lib/db/server-metadata.ts";
+import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import {
   geoEquals,
   parseServerGeo,
@@ -322,11 +320,11 @@ function buildMergedDaemonState(
 }
 
 function statusColumnPatch(status: ServerDaemonStatus): {
-  connected: boolean;
+  isConnected: boolean;
   statusChangedAt: string | null;
 } {
   return {
-    connected: status.connected,
+    isConnected: status.connected,
     statusChangedAt: status.statusChangedAt,
   };
 }
@@ -796,7 +794,7 @@ export async function listConnectedServerIdsFromProjection(
   const rows = await db
     .select({ id: server.id })
     .from(server)
-    .where(eq(server.connected, true));
+    .where(eq(server.isConnected, true));
 
   return rows.map((row) => row.id);
 }
@@ -821,7 +819,7 @@ export async function listConnectedServersForSweep(
       connectedAt: server.statusChangedAt,
     })
     .from(server)
-    .where(eq(server.connected, true))
+    .where(eq(server.isConnected, true))
     .orderBy(server.id);
 
   return rows.map((row) => ({
@@ -863,7 +861,7 @@ export async function listRecentlyOfflineServersForSweep(
     })
     .from(server)
     .where(sql`(
-      ${server.connected} = false
+      ${server.isConnected} = false
       AND ${server.statusChangedAt} >= ${cutoffIso}
     )`)
     .orderBy(
@@ -943,11 +941,11 @@ export type ServerFleetPresenceRow = {
 };
 
 /** Single SELECT for fleet presence + colocated enrichment on a fixed server id set. */
-export async function loadServerRowsForFleetPresence(
+export function loadServerRowsForFleetPresence(
   db: Db,
   serverIds: string[],
 ): Promise<ServerFleetPresenceRow[]> {
-  if (serverIds.length === 0) return [];
+  if (serverIds.length === 0) return Promise.resolve([]);
 
   return db
     .select({
@@ -966,7 +964,7 @@ export async function loadServerRowsForFleetPresence(
       isTimeSyncEnabled: server.isTimeSyncEnabled,
       ntpServers: server.ntpServers,
       ntpLastSyncedAt: server.ntpLastSyncedAt,
-      connected: server.connected,
+      connected: server.isConnected,
       statusChangedAt: server.statusChangedAt,
     })
     .from(server)
@@ -1027,7 +1025,7 @@ export async function readProjectionsForServers(
     .select({
       id: server.id,
       daemon: server.daemon,
-      connected: server.connected,
+      connected: server.isConnected,
       statusChangedAt: server.statusChangedAt,
     })
     .from(server)

@@ -53,6 +53,7 @@ export default defineConfig({
       // Hyperdrive fresh-per-request / close guards (Istanbul covers workers-bindings.ts).
       // Keep out of scripts/test-coverage.sh Deno LCOV — Workers-pool only.
       'src/workers-bindings.test.ts',
+      'src/workers.entry.test.ts',
       'src/wrangler-hyperdrive-bindings.test.ts',
       'src/lib/machine-key.workers.test.ts',
     ],

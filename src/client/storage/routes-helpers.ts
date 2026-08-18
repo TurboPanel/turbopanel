@@ -448,7 +448,7 @@ export function parseMountPatchFields(
   }
   const readOnly = parseOptionalBoolean(c, body.readOnly, false)
   if (readOnly instanceof Response) return readOnly
-  if (body.readOnly !== undefined) updateFields.readOnly = readOnly
+  if (body.readOnly !== undefined) updateFields.isReadOnly = readOnly
   const metadata = parseJsonbObject(c, body, 'metadata')
   if (metadata instanceof Response) return metadata
   if (metadata !== null) updateFields.metadata = metadata

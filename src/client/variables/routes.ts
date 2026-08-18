@@ -1,6 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import type { Context } from 'hono'
-import { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { encryptSecret } from '../authn/data-encryption.ts'
@@ -64,8 +63,8 @@ const VARIABLE_SELECT_FIELDS = {
   value: variable.value,
   isSecret: variable.isSecret,
   isLiteral: variable.isLiteral,
-  forBuild: variable.forBuild,
-  forRuntime: variable.forRuntime,
+  forBuild: variable.isForBuild,
+  forRuntime: variable.isForRuntime,
   description: variable.description,
   createdAt: variable.createdAt,
   updatedAt: variable.updatedAt,
@@ -102,7 +101,7 @@ async function sealVariableValue(
     return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
   }
 
-  return encryptSecret(dataEncryptionSecrets, value)
+  return await encryptSecret(dataEncryptionSecrets, value)
 }
 
 type ExistingVariableForPatch = {
@@ -115,8 +114,8 @@ type VariablePatchFields = {
   value?: string
   isSecret?: boolean
   isLiteral?: boolean
-  forBuild?: boolean
-  forRuntime?: boolean
+  isForBuild?: boolean
+  isForRuntime?: boolean
   description?: string | null
   updatedAt: string
 }
@@ -149,7 +148,7 @@ async function sealOrPlainValue(
   asSecret: boolean,
 ): Promise<string | Response> {
   if (!asSecret) return plaintext
-  return sealVariableValue(c, plaintext)
+  return await sealVariableValue(c, plaintext)
 }
 
 async function applyValueAndSecretPatch(
@@ -197,7 +196,15 @@ function applyOptionalBooleanPatch(
   if (body[field] === undefined) return
   const parsed = parseOptionalBoolean(c, body[field])
   if (parsed instanceof Response) return parsed
-  updateFields[field] = parsed
+  if (field === 'forBuild') {
+    updateFields.isForBuild = parsed
+    return
+  }
+  if (field === 'forRuntime') {
+    updateFields.isForRuntime = parsed
+    return
+  }
+  updateFields.isLiteral = parsed
 }
 
 async function buildVariablePatchFields(

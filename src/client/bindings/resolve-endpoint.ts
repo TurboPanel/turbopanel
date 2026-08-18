@@ -89,7 +89,7 @@ async function loadClusterMembers(
       serverId: node.serverId,
       role: node.role,
       ordinal: node.ordinal,
-      readEligible: node.readEligible,
+      readEligible: node.isReadEligible,
     })
     .from(node)
     .where(eq(node.managedId, managedId))

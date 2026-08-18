@@ -6,6 +6,7 @@ import {
   type Node,
   type Scalar,
   type YAMLMap,
+  type YAMLSeq,
 } from 'yaml'
 import { COMPOSE_YAML_OPTIONS } from './tags.ts'
 import { TURBOPANEL_SERVICE_EXTENSION_KEY } from './service-kind.ts'
@@ -359,6 +360,54 @@ function lintVariableRefScalar(
   })
 }
 
+function envSeqValueAfterSeparator(raw: string): string {
+  const eq = raw.indexOf('=')
+  const colon = raw.indexOf(':')
+  if (eq < 0 && colon < 0) return ''
+  if (eq < 0) return raw.slice(colon + 1)
+  if (colon < 0) return raw.slice(eq + 1)
+  return raw.slice(Math.min(eq, colon) + 1)
+}
+
+function lintEnvOrArgsMap(
+  fieldPath: string,
+  valueNode: YAMLMap,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  for (const item of valueNode.items) {
+    const key = stringKey(item.key)
+    const raw = scalarString(item.value as Node)
+    if (key === null || raw === null) continue
+    lintVariableRefScalar(
+      raw,
+      `${fieldPath}.${key}`,
+      item.value as Node,
+      lineCounter,
+      issues,
+    )
+  }
+}
+
+function lintEnvOrArgsSeq(
+  fieldPath: string,
+  valueNode: YAMLSeq,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  for (const [index, item] of valueNode.items.entries()) {
+    const raw = scalarString(item as Node)
+    if (raw === null) continue
+    lintVariableRefScalar(
+      envSeqValueAfterSeparator(raw),
+      `${fieldPath}[${index}]`,
+      item as Node,
+      lineCounter,
+      issues,
+    )
+  }
+}
+
 function lintEnvOrArgsCollection(
   fieldPath: string,
   valueNode: Node | null | undefined,
@@ -367,38 +416,11 @@ function lintEnvOrArgsCollection(
 ): void {
   if (!valueNode || typeof valueNode !== 'object') return
   if (isMap(valueNode)) {
-    for (const item of valueNode.items) {
-      const key = stringKey(item.key)
-      const raw = scalarString(item.value as Node)
-      if (key === null || raw === null) continue
-      lintVariableRefScalar(
-        raw,
-        `${fieldPath}.${key}`,
-        item.value as Node,
-        lineCounter,
-        issues,
-      )
-    }
+    lintEnvOrArgsMap(fieldPath, valueNode, lineCounter, issues)
     return
   }
-  if (!isSeq(valueNode)) return
-  for (const [index, item] of valueNode.items.entries()) {
-    const raw = scalarString(item as Node)
-    if (raw === null) continue
-    const eq = raw.indexOf('=')
-    const colon = raw.indexOf(':')
-    let sep = -1
-    if (eq >= 0 && colon >= 0) sep = Math.min(eq, colon)
-    else if (eq >= 0) sep = eq
-    else if (colon >= 0) sep = colon
-    const value = sep < 0 ? '' : raw.slice(sep + 1)
-    lintVariableRefScalar(
-      value,
-      `${fieldPath}[${index}]`,
-      item as Node,
-      lineCounter,
-      issues,
-    )
+  if (isSeq(valueNode)) {
+    lintEnvOrArgsSeq(fieldPath, valueNode, lineCounter, issues)
   }
 }
 

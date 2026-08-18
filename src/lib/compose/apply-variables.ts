@@ -381,6 +381,46 @@ function unresolvedError(
   }
 }
 
+function secretInterpolationError(
+  state: ApplyServiceState,
+  envKey: string,
+  raw: string,
+): ApplyVariablesError | null {
+  for (const key of collectComposeInterpolationKeys(raw)) {
+    if (!state.secretKeys.has(key)) continue
+    return {
+      kind: 'variable_secret_interpolation',
+      message:
+        `Secret ${key} cannot use Compose \${${key}} interpolation; use {$${key}} so it becomes a file`,
+      composeServiceName: state.composeServiceName,
+      envKey,
+    }
+  }
+  return null
+}
+
+function applySecretRefValue(
+  state: ApplyServiceState,
+  envKey: string,
+  entry: DeployVariableEntry,
+  target: 'runtime' | 'build',
+  runtimeEnv: Record<string, string>,
+  buildArgs: Record<string, string>,
+): void {
+  if (target === 'runtime') delete runtimeEnv[envKey]
+  else delete buildArgs[envKey]
+  applySecretAssignment(
+    state,
+    {
+      ...entry,
+      forRuntime: target === 'runtime' ? true : entry.forRuntime,
+      forBuild: target === 'build' ? true : entry.forBuild,
+    },
+    runtimeEnv,
+    envKey,
+  )
+}
+
 function applyRefValue(
   state: ApplyServiceState,
   envKey: string,
@@ -391,18 +431,7 @@ function applyRefValue(
 ): ApplyVariablesError | null {
   const parsed = parseExactVariableRef(raw)
   if (!parsed.ok && parsed.error === 'not_a_ref') {
-    const interpolated = collectComposeInterpolationKeys(raw)
-    for (const key of interpolated) {
-      if (!state.secretKeys.has(key)) continue
-      return {
-        kind: 'variable_secret_interpolation',
-        message:
-          `Secret ${key} cannot use Compose \${${key}} interpolation; use {$${key}} so it becomes a file`,
-        composeServiceName: state.composeServiceName,
-        envKey,
-      }
-    }
-    return null
+    return secretInterpolationError(state, envKey, raw)
   }
   if (!parsed.ok) {
     return {
@@ -417,18 +446,7 @@ function applyRefValue(
   if (!entry) return unresolvedError(state, parsed.ref, envKey)
 
   if (entry.isSecret) {
-    if (target === 'runtime') delete runtimeEnv[envKey]
-    else delete buildArgs[envKey]
-    applySecretAssignment(
-      state,
-      {
-        ...entry,
-        forRuntime: target === 'runtime' ? true : entry.forRuntime,
-        forBuild: target === 'build' ? true : entry.forBuild,
-      },
-      runtimeEnv,
-      envKey,
-    )
+    applySecretRefValue(state, envKey, entry, target, runtimeEnv, buildArgs)
     return null
   }
 

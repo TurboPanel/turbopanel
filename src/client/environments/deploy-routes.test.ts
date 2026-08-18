@@ -1511,14 +1511,14 @@ async function prepareMultiServerFabricDeploy(
   const now = new Date().toISOString();
   await db
     .update(server)
-    .set({ connected: true, updatedAt: now })
+    .set({ isConnected: true, updatedAt: now })
     .where(eq(server.id, params.serverId));
   const [extraServer] = await db
     .insert(server)
     .values({
       organizationId: params.organizationId,
       name: "Deploy Route Fabric Peer",
-      connected: true,
+      isConnected: true,
       createdAt: now,
       updatedAt: now,
     })

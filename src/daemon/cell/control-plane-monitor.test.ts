@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
@@ -116,7 +116,7 @@ function applyPatchToRow(row: MockRow, patch: Record<string, unknown>): void {
   }
   if ("hostname" in patch) row.hostname = patch.hostname as string | null;
   if ("machineKey" in patch) row.machineKey = patch.machineKey as string | null;
-  if ("connected" in patch) row.connected = patch.connected as boolean;
+  if ("isConnected" in patch) row.connected = patch.isConnected as boolean;
   if ("statusChangedAt" in patch) {
     row.statusChangedAt = patch.statusChangedAt as string | null;
   }
@@ -189,25 +189,26 @@ function createEmptyRegistry(): DaemonCellRegistry {
     getCell: () => {
       throw new Error("not used");
     },
-    listOnlineServerIds: async () => [],
-    getSnapshots: async () => {
+    listOnlineServerIds: () => Promise.resolve([]),
+    getSnapshots: () => {
       throw new Error("getSnapshots must not be called");
     },
-    purge: async () => {},
+    purge: () => Promise.resolve(),
   };
 }
 
 function createMockCell(snapshot: Record<string, unknown> = {}) {
   return {
-    getSnapshot: async () => ({
-      serverId,
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      connected: true,
-      hostname: "host-1",
-      machineKey: TEST_MACHINE_KEY,
-      ...snapshot,
-    }),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: true,
+        hostname: "host-1",
+        machineKey: TEST_MACHINE_KEY,
+        ...snapshot,
+      }),
   };
 }
 
@@ -338,7 +339,7 @@ test("onDaemonConnected sets status on dedicated columns", async () => {
   );
 
   assertEquals(updateCalls.length, 1);
-  assertEquals(updateCalls[0]?.connected, true);
+  assertEquals(updateCalls[0]?.isConnected, true);
   assertEquals(updateCalls[0]?.statusChangedAt, "2020-01-01T00:00:00.000Z");
   // status never lives in the daemon jsonb patch.
   const daemonPatch = updateCalls[0]?.daemon as Record<string, unknown> | undefined;
@@ -346,7 +347,6 @@ test("onDaemonConnected sets status on dedicated columns", async () => {
 });
 
 test("onDaemonConnected repeated within 60s skips write when already online", async () => {
-  const connectedAt = "2020-01-01T00:00:00.000Z";
   const recent = new Date().toISOString();
   const { db, updateCalls } = createTrackingDb(
     {
@@ -382,7 +382,7 @@ test("onDaemonDisconnected sets offline status on columns", async () => {
   await onDaemonDisconnected(db, serverId);
 
   assertEquals(updateCalls.length, 1);
-  assertEquals(updateCalls[0]?.connected, false);
+  assertEquals(updateCalls[0]?.isConnected, false);
   assertEquals(typeof updateCalls[0]?.statusChangedAt, "string");
 });
 
@@ -408,7 +408,7 @@ test("onDaemonConnected self-heals Postgres offline when cell is live", async ()
   );
 
   assertEquals(updateCalls.length, 1);
-  assertEquals(updateCalls[0]?.connected, true);
+  assertEquals(updateCalls[0]?.isConnected, true);
 });
 
 test("onDaemonConnectedFromEvidence marks online without a cell", async () => {
@@ -426,7 +426,7 @@ test("onDaemonConnectedFromEvidence marks online without a cell", async () => {
   await onDaemonConnectedFromEvidence(db, serverId, connectedAt);
 
   assertEquals(updateCalls.length, 1);
-  assertEquals(updateCalls[0]?.connected, true);
+  assertEquals(updateCalls[0]?.isConnected, true);
   assertEquals(updateCalls[0]?.statusChangedAt, connectedAt);
   const daemon = parseServerDaemonState(updateCalls[0]?.daemon);
   assertEquals(daemon?.projection?.hostname, "host-1");
@@ -675,9 +675,9 @@ test("onDaemonInbound restores online projection after stale sweep", async () =>
   );
 
   assertEquals(updateCalls.length, 2);
-  const onlinePatch = updateCalls.find((patch) => patch.connected === true);
+  const onlinePatch = updateCalls.find((patch) => patch.isConnected === true);
   assert(onlinePatch);
-  assertEquals(onlinePatch?.connected, true);
+  assertEquals(onlinePatch?.isConnected, true);
   assertEquals(typeof onlinePatch?.statusChangedAt, "string");
 });
 

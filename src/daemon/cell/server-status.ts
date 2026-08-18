@@ -154,7 +154,7 @@ export async function resolveFleetPresence(
           isTimeSyncEnabled: server.isTimeSyncEnabled,
           ntpServers: server.ntpServers,
           ntpLastSyncedAt: server.ntpLastSyncedAt,
-          connected: server.connected,
+          connected: server.isConnected,
           statusChangedAt: server.statusChangedAt,
         })
         .from(server)

@@ -269,14 +269,15 @@ export async function startDenoServer(
     // registerClientRoutes (see createApp authRateLimiter middleware).
     authRateLimiter,
   })
-  const routes = app as unknown as Hono
-  routes.use('*', (c, next) => {
+  app.use('*', (c, next) => {
     // Deno serves behind the local Caddy → Unix socket, so session-cookie TLS
     // uses the trusted-proxy path that honors X-Forwarded-Proto.
     c.set('runtime', 'deno')
     c.set('platformEnv', Deno.env.toObject())
     return next()
   })
+  // Install / daemon registrars still take untyped Hono.
+  const routes = app as unknown as Hono
   registerInstallRoutes(routes, {
     secrets: sessionSecrets,
     otpVerifierSecrets,
@@ -303,7 +304,7 @@ export async function startDenoServer(
     inboundMessageLimit: inboundLimits.limit,
     inboundMessageWindowMs: inboundLimits.windowMs,
   })
-  registerAdminRoutes(routes, {
+  registerAdminRoutes(app, {
     secrets: sessionSecrets,
     runtime: 'deno',
     devSurface: developerSurface,
@@ -347,7 +348,8 @@ export async function startDenoServer(
   Deno.serve({
     path: socketPath,
     signal: abort.signal,
-    async onListen({ path }) {
+    async onListen(addr) {
+      const path = 'path' in addr ? addr.path : socketPath
       await hardenInstanceSocket(path)
       logInfo(
         'instance',

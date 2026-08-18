@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq, inArray, ne } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
@@ -167,7 +167,7 @@ async function withManagedApplyPrepareFixtures(
       name: 'Managed Apply Prepare Server',
       createdAt: now,
       updatedAt: now,
-      connected: true,
+      isConnected: true,
       statusChangedAt: now,
     })
     .returning({ id: server.id })

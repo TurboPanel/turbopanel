@@ -1,6 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import type { Context } from 'hono'
-import { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { encryptSecret } from '../authn/data-encryption.ts'
@@ -55,7 +54,7 @@ async function sealStorageContent(
     return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
   }
 
-  return encryptSecret(dataEncryptionSecrets, content)
+  return await encryptSecret(dataEncryptionSecrets, content)
 }
 
 async function resolveSealedStorageContent(
@@ -65,7 +64,7 @@ async function resolveSealedStorageContent(
   const contentResult = parseOptionalStorageContent(c, value)
   if (contentResult instanceof Response) return contentResult
   if (contentResult === undefined) return undefined
-  return sealStorageContent(c, contentResult)
+  return await sealStorageContent(c, contentResult)
 }
 
 const STORAGE_SELECT = {
@@ -111,7 +110,7 @@ const MOUNT_SELECT = {
   serviceId: mount.serviceId,
   destinationPath: mount.destinationPath,
   subpath: mount.subpath,
-  readOnly: mount.readOnly,
+  readOnly: mount.isReadOnly,
   metadata: mount.metadata,
   options: mount.options,
   createdAt: mount.createdAt,
@@ -335,7 +334,7 @@ async function insertMountRow(
       serviceId: fields.serviceId,
       destinationPath: fields.destinationPath,
       subpath: fields.subpath,
-      readOnly: fields.readOnly,
+      isReadOnly: fields.readOnly,
     })
     .returning({ id: mount.id })
   return inserted.id
@@ -474,12 +473,17 @@ async function requireStorageForNested(
 }
 
 export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
-  router.use('/storage', createSessionMiddleware(opts.secrets))
-  router.use('/storage/:id', createSessionMiddleware(opts.secrets))
-  router.use('/storage/:id/locations', createSessionMiddleware(opts.secrets))
-  router.use('/storage/:id/locations/:locationId', createSessionMiddleware(opts.secrets))
-  router.use('/storage/:id/mounts', createSessionMiddleware(opts.secrets))
-  router.use('/storage/:id/mounts/:mountId', createSessionMiddleware(opts.secrets))
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for storage routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/storage', createSessionMiddleware(secrets))
+  router.use('/storage/:id', createSessionMiddleware(secrets))
+  router.use('/storage/:id/locations', createSessionMiddleware(secrets))
+  router.use('/storage/:id/locations/:locationId', createSessionMiddleware(secrets))
+  router.use('/storage/:id/mounts', createSessionMiddleware(secrets))
+  router.use('/storage/:id/mounts/:mountId', createSessionMiddleware(secrets))
 
   router.get('/storage', async (c) => {
     const db = getDb(c)

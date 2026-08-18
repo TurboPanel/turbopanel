@@ -46,7 +46,7 @@ import {
   service,
   workspace,
 } from '../../lib/db/schema.ts'
-import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
 import {
   allocateEnvironmentContainers,
   type ContainerServiceSpec,
@@ -137,7 +137,7 @@ export async function findSystemEnvironmentForServer(
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE e.server_id = ${serverId}::uuid
-          AND w.kind = ${WORKSPACE_KIND_SYSTEM}
+          AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
         LIMIT 1
       `)
     : db.execute<{ id: string }>(sql`
@@ -146,7 +146,7 @@ export async function findSystemEnvironmentForServer(
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE e.server_id = ${serverId}::uuid
-          AND w.kind = ${WORKSPACE_KIND_SYSTEM}
+          AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
           AND p.metadata->>'component' = ${component}
         LIMIT 1
       `))
@@ -168,7 +168,7 @@ export async function ensureSystemWorkspace(
     VALUES (
       ${organizationId}::uuid,
       ${SYSTEM_WORKSPACE_DISPLAY_NAME},
-      ${WORKSPACE_KIND_SYSTEM}
+      ${WORKSPACE_KIND_TURBOPANEL}
     )
     ON CONFLICT (organization_id) WHERE kind = 'turbopanel' DO NOTHING
     RETURNING id
@@ -181,7 +181,7 @@ export async function ensureSystemWorkspace(
     .where(
       and(
         eq(workspace.organizationId, organizationId),
-        eq(workspace.kind, WORKSPACE_KIND_SYSTEM),
+        eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
       ),
     )
     .limit(1)

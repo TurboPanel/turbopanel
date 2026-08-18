@@ -1,5 +1,6 @@
 import { and, eq, gt } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import {
   InvitationGrantValidationError,
@@ -89,15 +90,20 @@ async function parseCreateAccessBody(
   }
 
   const parsed = parseCreateAccessBodyRecord(body)
-  if ('ok' in parsed && parsed.ok === false) {
+  if ('ok' in parsed) {
     return { response: c.json({ error: parsed.error }, parsed.status) }
   }
 
   return parsed
 }
 
-export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/invitations/:id/accept', createSessionMiddleware(opts.secrets))
+export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for access routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/invitations/:id/accept', createSessionMiddleware(secrets))
 
   router.post('/invitations/:id/accept', async (c) => {
     const db = getDb(c)
@@ -197,13 +203,13 @@ export function registerAccessRoutes(router: Hono, opts: AuthRouteOpts) {
     return c.json({ ok: true as const, organizationId: result.organizationId })
   })
 
-  router.use('/permissions', createSessionMiddleware(opts.secrets))
-  router.use('/access/check', createSessionMiddleware(opts.secrets))
-  router.use('/access/resource-id', createSessionMiddleware(opts.secrets))
-  router.use('/access', createSessionMiddleware(opts.secrets))
-  router.use('/access/:id', createSessionMiddleware(opts.secrets))
+  router.use('/permissions', createSessionMiddleware(secrets))
+  router.use('/access/check', createSessionMiddleware(secrets))
+  router.use('/access/resource-id', createSessionMiddleware(secrets))
+  router.use('/access', createSessionMiddleware(secrets))
+  router.use('/access/:id', createSessionMiddleware(secrets))
 
-  router.get('/permissions', async (c) => {
+  router.get('/permissions', (c) => {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 

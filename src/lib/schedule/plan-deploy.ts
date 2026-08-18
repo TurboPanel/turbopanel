@@ -140,7 +140,7 @@ async function loadFleet(
   const rows = await db
     .select({
       id: server.id,
-      connected: server.connected,
+      connected: server.isConnected,
     })
     .from(server)
     .where(eq(server.organizationId, organizationId))

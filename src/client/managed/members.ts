@@ -75,7 +75,7 @@ const MEMBER_RETURNING = {
   managedId: node.managedId,
   serverId: node.serverId,
   role: node.role,
-  readEligible: node.readEligible,
+  readEligible: node.isReadEligible,
   ordinal: node.ordinal,
   replicationTransport: node.replicationTransport,
   privatePort: node.privatePort,
@@ -146,7 +146,7 @@ export async function ensureManagedPrimaryMember(
       managedId,
       serverId,
       role: 'primary',
-      readEligible: true,
+      isReadEligible: true,
       ordinal: 1,
       status: 'provisioning',
     })
@@ -547,7 +547,7 @@ export async function insertManagedReplicaMember(
       managedId: params.managedId,
       serverId: params.serverId,
       role: 'replica',
-      readEligible: params.readEligible,
+      isReadEligible: params.readEligible,
       ordinal: params.ordinal,
       replicationTransport: params.replicationTransport,
       status: 'provisioning',
@@ -567,7 +567,7 @@ export async function updateManagedMemberReadEligible(
   const [updated] = await db
     .update(node)
     .set({
-      readEligible,
+      isReadEligible: readEligible,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(node.id, memberId))

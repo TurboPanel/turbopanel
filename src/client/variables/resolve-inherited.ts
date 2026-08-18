@@ -73,7 +73,7 @@ function mapFromRows(rows: VariableRow[]): ResolvedVariableMap {
   return map
 }
 
-async function loadVariablesForParent(
+function loadVariablesForParent(
   db: Db,
   column: VariableParentColumn,
   id: string,
@@ -85,8 +85,8 @@ async function loadVariablesForParent(
       value: variable.value,
       isSecret: variable.isSecret,
       isLiteral: variable.isLiteral,
-      forBuild: variable.forBuild,
-      forRuntime: variable.forRuntime,
+      forBuild: variable.isForBuild,
+      forRuntime: variable.isForRuntime,
       bindingId: variable.bindingId,
     })
     .from(variable)
@@ -295,8 +295,8 @@ export async function resolveServerScopedVariables(
       value: variable.value,
       isSecret: variable.isSecret,
       isLiteral: variable.isLiteral,
-      forBuild: variable.forBuild,
-      forRuntime: variable.forRuntime,
+      forBuild: variable.isForBuild,
+      forRuntime: variable.isForRuntime,
       bindingId: variable.bindingId,
     })
     .from(variable)

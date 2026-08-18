@@ -142,7 +142,7 @@ async function sealIfNeeded(
   isSecret: boolean,
 ): Promise<string> {
   if (!isSecret) return value
-  return encryptSecret(dataEncryptionSecrets, value)
+  return await encryptSecret(dataEncryptionSecrets, value)
 }
 
 /**
@@ -185,8 +185,8 @@ export async function upsertBindingOwnedVariables(
             value: sealed,
             isSecret: entry.isSecret,
             isLiteral: true,
-            forBuild: false,
-            forRuntime: true,
+            isForBuild: false,
+            isForRuntime: true,
             serviceId: params.serviceId,
             updatedAt: new Date().toISOString(),
           })
@@ -200,8 +200,8 @@ export async function upsertBindingOwnedVariables(
           value: sealed,
           isSecret: entry.isSecret,
           isLiteral: true,
-          forBuild: false,
-          forRuntime: true,
+          isForBuild: false,
+          isForRuntime: true,
         })
       }
     }
@@ -228,7 +228,7 @@ export async function materializeBinding(
       serviceId: binding.serviceId,
       databaseName: binding.databaseName,
       keyPrefix: binding.keyPrefix,
-      emitEngineDefaults: binding.emitEngineDefaults,
+      emitEngineDefaults: binding.isEmitEngineDefaults,
       principalKind: principal.kind,
       principalUsername: principal.username,
       principalPassword: principal.password,
@@ -374,8 +374,8 @@ export async function reapplyBindingOwnedVariables(
       value: variable.value,
       isSecret: variable.isSecret,
       isLiteral: variable.isLiteral,
-      forBuild: variable.forBuild,
-      forRuntime: variable.forRuntime,
+      forBuild: variable.isForBuild,
+      forRuntime: variable.isForRuntime,
       bindingId: variable.bindingId,
     })
     .from(variable)

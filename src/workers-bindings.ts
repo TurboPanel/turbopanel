@@ -35,7 +35,7 @@ export type WorkersRequestDbHandles = {
   queryCache: QueryCache | undefined
 }
 
-type WorkersDbFactory = (binding: HyperdriveBinding) => Db
+type WorkersDbFactory = (binding: HyperdriveBinding) => Db | undefined
 
 let workersDbFactory: WorkersDbFactory = createWorkersDb
 
@@ -69,11 +69,11 @@ export function resolveWorkersDb(
   env: CloudflareBindings,
 ): ReturnType<typeof createWorkersDb> | undefined {
   if (env.HYPERDRIVE) {
-    return workersDbFactory(env.HYPERDRIVE)
+    return workersDbFactory(env.HYPERDRIVE) ?? undefined
   }
   const databaseUrl = env.TURBOPANEL_DATABASE_URL?.trim()
   if (databaseUrl) {
-    return workersDbFactory({ connectionString: databaseUrl })
+    return workersDbFactory({ connectionString: databaseUrl }) ?? undefined
   }
   return undefined
 }
@@ -86,7 +86,7 @@ export function resolveWorkersCachedDb(
   env: CloudflareBindings,
 ): ReturnType<typeof createWorkersDb> | undefined {
   if (env.HYPERDRIVE_CACHED) {
-    return workersDbFactory(env.HYPERDRIVE_CACHED)
+    return workersDbFactory(env.HYPERDRIVE_CACHED) ?? undefined
   }
   return undefined
 }

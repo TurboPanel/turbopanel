@@ -2,7 +2,7 @@
  * Host-free coverage for binding route short-circuits (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
@@ -26,7 +26,7 @@ async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
     if (db) c.set('db', db)
     return next()
   })
-  registerBindingRoutes(app, { secrets, runtime: 'deno' })
+  registerBindingRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return app
 }
 
@@ -34,7 +34,7 @@ test('registerBindingRoutes requires session secrets', () => {
   const app = new Hono<AppEnv>()
   let threw = false
   try {
-    registerBindingRoutes(app, { runtime: 'deno' })
+    registerBindingRoutes(app, { runtime: 'deno', signupEnvOverride: undefined })
   } catch (error) {
     threw = true
     assertEquals(error instanceof TypeError, true)

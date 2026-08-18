@@ -35,7 +35,11 @@ async function createAccessTestApp(db: ReturnType<typeof createDenoDb>) {
     c.set('db', db)
     return next()
   })
-  registerAccessRoutes(app, { secrets, runtime: 'deno' })
+  registerAccessRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   return { app, secrets }
 }
 

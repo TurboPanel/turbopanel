@@ -77,6 +77,9 @@ export function checkBindingDatabaseTarget(
   managedRow: Readonly<{ engine: string | null; options: unknown }>,
   databaseName: string,
 ): string | null {
+  if (!managedRow.engine) {
+    return 'binding_engine_unsupported'
+  }
   const spec = getManagedEngineSpec(managedRow.engine)
   if (!spec?.binding) {
     return 'binding_engine_unsupported'
@@ -231,7 +234,7 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
     .limit(1)
 
   let engine: string | null = null
-  let managedId: string | null = principalRow?.managedId ?? null
+  const managedId: string | null = principalRow?.managedId ?? null
   let managedEnvironmentId: string | null = null
   let endpoint: { host: string; port: number } | null = null
   let readSplit: boolean | null = null
@@ -459,7 +462,7 @@ export async function isEngineDefaultsInUse(
 ): Promise<boolean> {
   const conds = [
     eq(binding.serviceId, serviceId),
-    eq(binding.emitEngineDefaults, true),
+    eq(binding.isEmitEngineDefaults, true),
   ]
   if (excludeBindingId) {
     conds.push(sql`${binding.id} != ${excludeBindingId}`)

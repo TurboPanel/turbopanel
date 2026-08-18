@@ -2,7 +2,7 @@
  * Host-free coverage for server daemon identity DB helpers (no Postgres).
  */
 
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
 import type { ServerDaemonState } from './daemon-state.ts'
 import {
@@ -83,8 +83,8 @@ function createIdentityFakeDb(
         if ('daemon' in patch) {
           daemon = patch.daemon as ServerDaemonState | null
         }
-        if ('connected' in patch) {
-          connected = Boolean(patch.connected)
+        if ('isConnected' in patch) {
+          connected = Boolean(patch.isConnected)
         }
         if ('statusChangedAt' in patch) {
           statusChangedAt = patch.statusChangedAt as string | null
@@ -173,7 +173,7 @@ test('attachDaemonStateToServer writes daemon + default status columns', async (
   const patch = fake.getUpdates()[0]!
   assertEquals(typeof patch.daemon, 'object')
   assertEquals(patch.hostname, 'edge-1')
-  assertEquals(patch.connected, false)
+  assertEquals(patch.isConnected, false)
 })
 
 test('attachDaemonStateToServer throws when the server row is missing', async () => {
@@ -221,5 +221,5 @@ test('clearServerDaemonState nulls daemon and resets status columns', async () =
   assertEquals(fake.getDaemon(), null)
   const patch = fake.getUpdates().at(-1)
   assertEquals(patch?.daemon, null)
-  assertEquals(patch?.connected, false)
+  assertEquals(patch?.isConnected, false)
 })

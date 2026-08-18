@@ -165,6 +165,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/ingress-desired.test.ts \
   src/client/managed/ingress-desired.hostfree.test.ts \
   src/client/managed/ingress-desired-pure.hostfree.test.ts \
+  src/client/managed/ingress-attachments.hostfree.test.ts \
   src/client/managed/routes-helpers.hostfree.test.ts \
   src/client/managed/routes.hostfree.test.ts \
   src/client/managed/backups.test.ts \
@@ -341,6 +342,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/server-metadata.test.ts \
   src/lib/db/storage-records.hostfree.test.ts \
   src/lib/db/table-naming.test.ts \
+  src/lib/db/boolean-column-naming.test.ts \
   src/lib/db/task-records.hostfree.test.ts \
   src/lib/db/workspace-kind.test.ts \
   src/lib/docker-network-name.test.ts \
@@ -422,6 +424,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/networks/routes-pure.test.ts \
   src/client/networks/routes.hostfree.test.ts \
   src/client/organizations/routes.test.ts \
+  src/client/organizations/routes.hostfree.test.ts \
   src/client/organizations/routes-helpers.hostfree.test.ts \
   src/client/organizations/fabric-routes.hostfree.test.ts \
   src/client/organizations/fabric-routes-authz.hostfree.test.ts \

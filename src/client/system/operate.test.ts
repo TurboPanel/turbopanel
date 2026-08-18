@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
@@ -34,8 +34,9 @@ function createRecordingCommandQueue(): CommandQueue & {
   const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
-    enqueue: async (envelope) => {
+    enqueue: (envelope) => {
       envelopes.push(envelope)
+      return Promise.resolve()
     },
   }
 }
@@ -67,7 +68,7 @@ async function withOperateFixtures(
     .values({
       organizationId,
       name: 'System Operate Server',
-      connected: true,
+      isConnected: true,
       statusChangedAt: now,
       options: { hosting: { enabled: true } },
       createdAt: now,

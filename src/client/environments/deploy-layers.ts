@@ -58,7 +58,8 @@ export function environmentComposeFilename(params: Readonly<{
     .toLowerCase()
     .replaceAll(/[^a-z0-9._-]+/g, '-')
     .replaceAll(/[-._]{2,}/g, (match) => match[0]!)
-    .replaceAll(/^[-._]+|[-._]+$/g, '')
+    .replace(/^[-._]+/, '')
+    .replace(/[-._]+$/, '')
 
   const tryFilename = (base: string): string | null => {
     if (base.length === 0) return null

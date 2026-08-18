@@ -1,5 +1,5 @@
-import type { Context } from 'hono'
-import { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
@@ -14,6 +14,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { compatLogInfo } from '../../log-compat.ts'
 import { getDb, getDaemonCellRegistry } from '../../db.ts'
+import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import { isDeveloperSurfaceEnabled } from '../../dev-mode.ts'
 import { buildLicenseInstallCommand } from '../../lib/daemon-install-command.ts'
 import { installOriginNeedsInsecureTls } from '../../lib/install-tls.ts'
@@ -38,16 +39,38 @@ import {
 
 // License create/list/revoke are owner-only. Use the exact owner-only guard so
 // an organization manager cannot mint or revoke registration keys.
-async function assertBillingOrOrgMember(
-  c: Context,
+function assertBillingOrOrgMember(
+  c: Context<AppEnv>,
   organizationId: string,
 ): Promise<Response | null> {
   return assertOrgOwnerOr403(c, 'organization', organizationId)
 }
 
-export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/licenses', createSessionMiddleware(opts.secrets))
-  router.use('/licenses/:id', createSessionMiddleware(opts.secrets))
+async function purgeInvalidatedDaemonCells(
+  registry: DaemonCellRegistry | undefined,
+  serverIds: string[],
+): Promise<void> {
+  if (!registry) return
+  for (const serverId of serverIds) {
+    try {
+      await registry.getCell(serverId).purge()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(
+        `Failed to purge daemon cell after license invalidate for server ${serverId}: ${message}`,
+      )
+    }
+  }
+}
+
+export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for license routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/licenses', createSessionMiddleware(secrets))
+  router.use('/licenses/:id', createSessionMiddleware(secrets))
 
   router.get('/licenses', async (c) => {
     const db = getDb(c)
@@ -218,16 +241,7 @@ export function registerLicenseRoutes(router: Hono, opts: AuthRouteOpts) {
 
     // Actively disconnect bound daemons — revoke alone leaves live sockets and
     // unexpired JWTs usable until they naturally expire.
-    for (const serverId of invalidated.serverIds) {
-      try {
-        await registry.getCell(serverId).purge()
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        console.error(
-          `Failed to purge daemon cell after license invalidate for server ${serverId}: ${message}`,
-        )
-      }
-    }
+    await purgeInvalidatedDaemonCells(registry, invalidated.serverIds)
 
     return c.json({ ok: true as const })
   })

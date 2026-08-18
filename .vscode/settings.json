@@ -1,6 +1,15 @@
 {
   // Standalone-only: ignored while Connected Mode is bound (see AGENTS.md).
   // Migrations must also be excluded in SonarCloud Analysis Scope.
+  // Workers Vitest files import the virtual `cloudflare:test` module; Deno
+  // treats `cloudflare:` as a remote URL scheme (`no-cache`). Leave them to
+  // tsc / vitest-pool-workers (triple-slash refs in those files).
+  "deno.disablePaths": [
+    "./src/daemon/durable-object.test.ts",
+    "./src/daemon/cell/do-registry.test.ts",
+    "./src/workers.entry.test.ts",
+    "./vitest.config.ts"
+  ],
   "files.associations": {
     ".secretscan-allowlist": "plaintext"
   },

@@ -401,7 +401,7 @@ export async function resolveEffectiveSignupEnabled(
   if (db === undefined) {
     return resolveIsSignupEnabled(undefined, envOverride, { runtime });
   }
-  return isSignupEnabled(db, envOverride, runtime);
+  return await isSignupEnabled(db, envOverride, runtime);
 }
 
 export type SignupSettingMeta = {
@@ -1123,7 +1123,7 @@ export async function ensureColocatedServerSeat(
     .values({
       organizationId,
       name: COLOCATED_SERVER_DISPLAY_NAME,
-      connected: false,
+      isConnected: false,
       createdAt: now,
       updatedAt: now,
     })

@@ -32,6 +32,37 @@ function parseIpScope(value: unknown): ServerReportedIpScope | undefined {
   return undefined
 }
 
+function parseOptionalCidr(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  return alignedNetworkCidr(value) ?? undefined
+}
+
+function parseOptionalInterface(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const iface = value.trim()
+  if (iface.length === 0 || iface.length > 64) return undefined
+  return iface
+}
+
+function parseServerIpEntry(
+  entry: unknown,
+  seen: Set<string>,
+): ServerReportedIp | undefined {
+  if (!isRecord(entry) || typeof entry.address !== 'string') return undefined
+  const address = stripInetPrefixSuffix(entry.address.trim())
+  const version = parseIpVersion(entry.version)
+  const scope = parseIpScope(entry.scope)
+  if (!address || version === undefined || scope === undefined) return undefined
+  if (seen.has(address)) return undefined
+  seen.add(address)
+  const row: ServerReportedIp = { address, version, scope }
+  const cidr = parseOptionalCidr(entry.cidr)
+  if (cidr) row.cidr = cidr
+  const iface = parseOptionalInterface(entry.interface)
+  if (iface) row.interface = iface
+  return row
+}
+
 /**
  * Parse daemon/stored IP facts. Returns `undefined` when the value is not an
  * array; returns `[]` when a valid array has no usable entries.
@@ -41,24 +72,8 @@ export function parseServerIps(value: unknown): ServerReportedIp[] | undefined {
   const out: ServerReportedIp[] = []
   const seen = new Set<string>()
   for (const entry of value) {
-    if (!isRecord(entry)) continue
-    if (typeof entry.address !== 'string') continue
-    const address = stripInetPrefixSuffix(entry.address.trim())
-    const version = parseIpVersion(entry.version)
-    const scope = parseIpScope(entry.scope)
-    if (!address || version === undefined || scope === undefined) continue
-    if (seen.has(address)) continue
-    seen.add(address)
-    const row: ServerReportedIp = { address, version, scope }
-    if (typeof entry.cidr === 'string') {
-      const cidr = alignedNetworkCidr(entry.cidr)
-      if (cidr) row.cidr = cidr
-    }
-    if (typeof entry.interface === 'string') {
-      const iface = entry.interface.trim()
-      if (iface.length > 0 && iface.length <= 64) row.interface = iface
-    }
-    out.push(row)
+    const row = parseServerIpEntry(entry, seen)
+    if (row) out.push(row)
   }
   return out.sort((a, b) => a.address.localeCompare(b.address))
 }

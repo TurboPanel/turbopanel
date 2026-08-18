@@ -8,7 +8,7 @@ import {
   resolveColocatedServerId,
   readLocalMachineKey,
 } from '../authn/install-state.ts'
-import { WORKSPACE_KIND_SYSTEM } from '../../lib/db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
 import { license, server } from '../../lib/db/schema.ts'
 
 /** Matches `SYSTEM_SELF_HOST_COMPONENT` in `system/hierarchy.ts` (literal to avoid importing that module). */
@@ -116,7 +116,7 @@ async function addSelfHostPinnedIds(
       candidates.map((id) => sql`${id}::uuid`),
       sql`, `,
     )})
-      AND w.kind = ${WORKSPACE_KIND_SYSTEM}
+      AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
       AND p.metadata->>'component' = ${SELF_HOST_COMPONENT}
   `)
   for (const row of pinned) {

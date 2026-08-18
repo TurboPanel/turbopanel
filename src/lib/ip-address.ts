@@ -56,7 +56,9 @@ export function stripInetPrefixSuffix(value: string): string {
   return trimmed.slice(0, slash)
 }
 
-export function parseIpVersion(address: string): 4 | 6 | null {
+export type IpAddressVersion = 4 | 6
+
+export function parseIpVersion(address: string): IpAddressVersion | null {
   const trimmed = address.trim()
   if (trimmed.length === 0) return null
   if (IPV4_ADDRESS_RE.test(trimmed)) return 4

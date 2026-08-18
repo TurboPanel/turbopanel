@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -55,7 +55,7 @@ async function createStorageRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     return next()
   })
-  registerStorageRoutes(app, { secrets, runtime: 'deno' })
+  registerStorageRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets }
 }
 
@@ -346,7 +346,7 @@ test('POST /storage rejects invalid kinds', async () => {
       }),
     })
     assertEquals(res.status, 400)
-    const body = await res.json()
+    const body = await res.json() as { error?: string }
     assertEquals(body.error, 'Invalid request')
   })
 })
@@ -379,7 +379,7 @@ test('POST /storage rejects ambiguous parent selection', async () => {
       }),
     })
     assertEquals(res.status, 400)
-    const body = await res.json()
+    const body = await res.json() as { error?: string }
     assertEquals(body.error, 'At most one parent resource may be specified')
   })
 })
@@ -649,7 +649,7 @@ test('nested location and mount routes create, list, patch, and delete', async (
     const { id: mountId } = await addMount.json() as { ok: true; id: string }
 
     const [mountRow] = await db
-      .select({ destinationPath: mount.destinationPath, readOnly: mount.readOnly })
+      .select({ destinationPath: mount.destinationPath, readOnly: mount.isReadOnly })
       .from(mount)
       .where(eq(mount.id, mountId))
       .limit(1)

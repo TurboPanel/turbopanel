@@ -55,6 +55,7 @@ import type {
 import type {
   DaemonBuildInfo,
   DaemonInboundEnvelope,
+  DaemonMessage,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
 } from "./protocol.ts";
@@ -64,7 +65,6 @@ import {
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_WS_POLICY_VIOLATION_CLOSE,
   outboundEnvelopeToWireMessage,
-  parseDaemonMessage,
   validateDaemonInboundEnvelope,
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
@@ -168,6 +168,9 @@ type DaemonJwtKeyringFactory = () => Promise<DaemonJwtKeyring>;
 let projectionDbFactoryForTests: ProjectionDbFactory | null = null;
 let daemonJwtKeyringFactoryForTests: DaemonJwtKeyringFactory | null = null;
 let forceOutboxSendErrorForTests: Error | null = null;
+let forceAlarmErrorForTests: Error | null = null;
+/** When set, `#collectStaleDemotions` treats auto-response age as this many ms. */
+let forceAutoResponseAgeMsForTests: number | null = null;
 
 /** Test-only seam: override Postgres client used by DO→Postgres projection writes. */
 export function setDaemonCellProjectionDbFactoryForTests(
@@ -189,6 +192,20 @@ export function setDaemonJwtKeyringFactoryForTests(
  */
 export function setForceOutboxSendErrorForTests(error: Error | null): void {
   forceOutboxSendErrorForTests = error;
+}
+
+/** Test-only seam: force `alarm()` into its catch / rethrow path. */
+export function setForceAlarmErrorForTests(error: Error | null): void {
+  forceAlarmErrorForTests = error;
+}
+
+/**
+ * Test-only seam: pretend the hibernation auto-response timestamp is this many
+ * ms old so `#collectStaleDemotions` can run without waiting
+ * `DAEMON_OFFLINE_SWEEP_MS`.
+ */
+export function setForceAutoResponseAgeMsForTests(ageMs: number | null): void {
+  forceAutoResponseAgeMsForTests = ageMs;
 }
 
 function nowIso(now = Date.now()): string {
@@ -1453,7 +1470,7 @@ export class DaemonCellObject {
 
     this.#requeueExpiredInflightOutbox();
 
-    const batch = await this.#readOutboxBatch(serverId, {
+    const batch = this.#readOutboxBatch(serverId, {
       consumer: "do-ws",
       count: 50,
     });
@@ -1480,7 +1497,7 @@ export class DaemonCellObject {
             throw forceOutboxSendErrorForTests;
           }
           ws.send(JSON.stringify(wireMsg));
-          await this.#markSent(
+          this.#markSent(
             serverId,
             envelope.deliveryId,
             attachment.connectionId,
@@ -1600,7 +1617,7 @@ export class DaemonCellObject {
 
   #recordInbound(
     serverId: string,
-    at: string,
+    _at: string,
     daemonBuild?: DaemonBuildInfo,
     connectionId?: string,
   ): void {
@@ -1946,7 +1963,9 @@ export class DaemonCellObject {
         continue;
       }
 
-      const autoTs = this.#ctx.getWebSocketAutoResponseTimestamp(ws);
+      const autoTs = forceAutoResponseAgeMsForTests !== null
+        ? new Date(Date.now() - forceAutoResponseAgeMsForTests)
+        : this.#ctx.getWebSocketAutoResponseTimestamp(ws);
       if (!autoTs) continue;
 
       if (autoTs.getTime() > staleCutoffMs) continue;
@@ -1966,6 +1985,9 @@ export class DaemonCellObject {
     this.#bumpDiag("alarmInvocations");
     let alarmServerId = "unknown";
     try {
+      if (forceAlarmErrorForTests) {
+        throw forceAlarmErrorForTests;
+      }
       this.#ensureSchema();
       const nowMs = Date.now();
       const now = nowIso(nowMs);
@@ -2091,7 +2113,7 @@ export class DaemonCellObject {
 
       case "/rpc/enqueue":
         return jsonResponse(
-          await this.#enqueue(
+          this.#enqueue(
             this.#requireServerId(request, body),
             body?.outbound as DaemonOutboundEnvelope,
             body?.opts as { ttlSeconds?: number } | undefined,
@@ -2099,7 +2121,7 @@ export class DaemonCellObject {
         );
 
       case "/rpc/mark-sent":
-        await this.#markSent(
+        this.#markSent(
           this.#requireServerId(request, body),
           rpcString(body?.deliveryId),
           rpcString(body?.connectionId),
@@ -2118,7 +2140,7 @@ export class DaemonCellObject {
       case "/rpc/request":
         if (method !== "GET") return errorResponse("method not allowed", 405);
         return jsonResponse({
-          record: await this.#getRequest(
+          record: this.#getRequest(
             this.#resolveServerId(request),
             url.searchParams.get("requestId") ?? rpcString(body?.requestId),
           ),
@@ -2127,7 +2149,7 @@ export class DaemonCellObject {
       case "/rpc/requests":
         if (method !== "GET") return errorResponse("method not allowed", 405);
         return jsonResponse({
-          records: await this.#listRequests(
+          records: this.#listRequests(
             this.#resolveServerId(request),
             Number(url.searchParams.get("limit") ?? 50),
             url.searchParams.get("requestKind") ?? undefined,
@@ -2136,7 +2158,7 @@ export class DaemonCellObject {
 
       case "/rpc/wait-request":
         return jsonResponse({
-          record: await this.#waitForRequest(
+          record: this.#waitForRequest(
             this.#requireServerId(request, body),
             rpcString(body?.requestId),
             Number(body?.timeoutMs ?? 0),
@@ -2162,7 +2184,7 @@ export class DaemonCellObject {
 
       case "/rpc/attach":
         return jsonResponse(
-          await this.#attachDaemonSocket(
+          this.#attachDaemonSocket(
             this.#requireServerId(request, body),
             body?.meta as {
               keyId: string;
@@ -2194,7 +2216,7 @@ export class DaemonCellObject {
 
       case "/rpc/lease/claim":
         return jsonResponse({
-          lease: await this.#claimDeliveryLease(
+          lease: this.#claimDeliveryLease(
             this.#requireServerId(request, body),
             rpcString(body?.holder),
             Number(body?.ttlMs ?? 0),
@@ -2203,7 +2225,7 @@ export class DaemonCellObject {
 
       case "/rpc/lease/renew":
         return jsonResponse({
-          lease: await this.#renewDeliveryLease(
+          lease: this.#renewDeliveryLease(
             this.#requireServerId(request, body),
             rpcString(body?.holder),
             Number(body?.ttlMs ?? 0),
@@ -2211,7 +2233,7 @@ export class DaemonCellObject {
         });
 
       case "/rpc/lease/release":
-        await this.#releaseDeliveryLease(
+        this.#releaseDeliveryLease(
           this.#requireServerId(request, body),
           rpcString(body?.holder),
         );
@@ -2219,7 +2241,7 @@ export class DaemonCellObject {
 
       case "/rpc/outbox/read":
         return jsonResponse({
-          envelopes: await this.#readOutboxBatch(
+          envelopes: this.#readOutboxBatch(
             this.#requireServerId(request, body),
             body?.params as {
               consumer: string;
@@ -2365,11 +2387,11 @@ export class DaemonCellObject {
     return await this.#getSnapshot(serverId);
   }
 
-  async #enqueue(
+  #enqueue(
     serverId: string,
     outbound: DaemonOutboundEnvelope,
     opts?: { ttlSeconds?: number },
-  ): Promise<PendingRequestRecord> {
+  ): PendingRequestRecord {
     if (outbound.kind === "command-dispatch") {
       this.#bumpDiag("commandDispatchCount");
     }
@@ -2482,12 +2504,12 @@ export class DaemonCellObject {
     };
   }
 
-  async #markSent(
+  #markSent(
     serverId: string,
     deliveryId: string,
     _connectionId: string,
     sentAt?: string,
-  ): Promise<void> {
+  ): void {
     const at = sentAt ?? nowIso();
     this.#sql(
       "mark-sent",
@@ -2514,7 +2536,7 @@ export class DaemonCellObject {
 
   async #handleInboundMessage(
     serverId: string,
-    msg: ReturnType<typeof parseDaemonMessage>,
+    msg: DaemonMessage | null,
   ): Promise<void> {
     if (!msg) return;
     const inbound = wireMessageToInboundEnvelope(msg);
@@ -2571,11 +2593,11 @@ export class DaemonCellObject {
     return this.#readRequestRow(serverId, inbound.requestId);
   }
 
-  async #applyCommandAckInbound(
+  #applyCommandAckInbound(
     serverId: string,
     inbound: Extract<DaemonInboundEnvelope, { kind: "command-ack" }>,
     existing: PendingRequestRecord,
-  ): Promise<PendingRequestRecord> {
+  ): PendingRequestRecord {
     if (existing.status === "acked") return existing;
     const ackAt = inbound.at;
     this.#sql(
@@ -2776,7 +2798,7 @@ export class DaemonCellObject {
     const completion = this.#resolveInboundCompletion(inbound, row);
     if (!completion) return existing;
 
-    return this.#applyInboundCompletion(
+    return await this.#applyInboundCompletion(
       serverId,
       inbound,
       existing,
@@ -2793,19 +2815,19 @@ export class DaemonCellObject {
     );
   }
 
-  async #getRequest(
+  #getRequest(
     serverId: string | null,
     requestId: string,
-  ): Promise<PendingRequestRecord | null> {
+  ): PendingRequestRecord | null {
     if (!serverId || !requestId) return null;
     return this.#readRequestRow(serverId, requestId);
   }
 
-  async #listRequests(
+  #listRequests(
     serverId: string | null,
     limit: number,
     requestKind?: string,
-  ): Promise<PendingRequestRecord[]> {
+  ): PendingRequestRecord[] {
     if (!serverId) return [];
     const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 50;
     const cursor = requestKind
@@ -2829,12 +2851,12 @@ export class DaemonCellObject {
     return records;
   }
 
-  async #waitForRequest(
+  #waitForRequest(
     serverId: string,
     requestId: string,
     _timeoutMs: number,
-  ): Promise<PendingRequestRecord | null> {
-    return await this.#getRequest(serverId, requestId);
+  ): PendingRequestRecord | null {
+    return this.#getRequest(serverId, requestId);
   }
 
   /**
@@ -2847,7 +2869,7 @@ export class DaemonCellObject {
     requestId: string,
   ): Promise<PendingRequestRecord> {
     const finishedAt = nowIso();
-    const existing = await this.#getRequest(serverId, requestId);
+    const existing = this.#getRequest(serverId, requestId);
 
     if (existing && isTerminalStatus(existing.status)) {
       return existing;
@@ -3020,19 +3042,19 @@ export class DaemonCellObject {
     timeoutMs: number,
   ): Promise<PendingRequestRecord> {
     const ttlSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
-    const record = await this.#enqueue(serverId, outbound, { ttlSeconds });
+    const record = this.#enqueue(serverId, outbound, { ttlSeconds });
     await this.#scheduleNearestAlarm();
     return record;
   }
 
-  async #attachDaemonSocket(
+  #attachDaemonSocket(
     serverId: string,
     meta: {
       keyId: string;
       remoteAddress?: string;
       connectedAt?: string;
     },
-  ): Promise<{ connectionId: string; lease: DaemonCellLease }> {
+  ): { connectionId: string; lease: DaemonCellLease } {
     const connectionId = crypto.randomUUID();
 
     const existingHolder = this.#existingDaemonSocketHolder();
@@ -3071,11 +3093,11 @@ export class DaemonCellObject {
   }
 
   /** Reserved for outbox in-flight ownership; no production caller today. */
-  async #claimDeliveryLease(
+  #claimDeliveryLease(
     serverId: string,
     holder: string,
     ttlMs: number,
-  ): Promise<DaemonCellLease | null> {
+  ): DaemonCellLease | null {
     this.#ensureServerId(serverId);
     const expiresAt = new Date(Date.now() + ttlMs).toISOString();
     if (
@@ -3103,12 +3125,12 @@ export class DaemonCellObject {
     return { holder, expiresAt };
   }
 
-  async #renewDeliveryLease(
+  #renewDeliveryLease(
     _serverId: string,
     holder: string,
     ttlMs: number,
-  ): Promise<DaemonCellLease | null> {
-    const renewed = await this.#renewLease(
+  ): DaemonCellLease | null {
+    const renewed = this.#renewLease(
       DELIVERY_LEASE_NAME,
       holder,
       ttlMs,
@@ -3121,11 +3143,11 @@ export class DaemonCellObject {
     };
   }
 
-  async #renewLease(
+  #renewLease(
     leaseName: string,
     holder: string,
     ttlMs: number,
-  ): Promise<boolean> {
+  ): boolean {
     const expiresAt = new Date(Date.now() + ttlMs).toISOString();
     this.#sql(
       "lease",
@@ -3138,10 +3160,10 @@ export class DaemonCellObject {
     return readSqlChanges(this.#sql("lease", "SELECT changes() AS c")) > 0;
   }
 
-  async #releaseDeliveryLease(
+  #releaseDeliveryLease(
     serverId: string,
     holder: string,
-  ): Promise<void> {
+  ): void {
     this.#sql(
       "lease",
       "DELETE FROM lease WHERE lease_name = ? AND holder = ?",
@@ -3152,10 +3174,10 @@ export class DaemonCellObject {
     this.#trace("lease-release", { serverId, holder, ok });
   }
 
-  async #readOutboxBatch(
+  #readOutboxBatch(
     _serverId: string,
     params: { consumer: string; count: number; blockMs?: number },
-  ): Promise<DaemonOutboundEnvelope[]> {
+  ): DaemonOutboundEnvelope[] {
     this.#requeueExpiredInflightOutbox();
 
     const now = nowIso();

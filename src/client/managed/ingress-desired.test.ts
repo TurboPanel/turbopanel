@@ -6,7 +6,7 @@
  * must publish only the intended address).
  */
 
-import { assertEquals, assertThrows } from "jsr:@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { eq, inArray } from "drizzle-orm";
 import { getDatabaseUrl } from "../../db-url.ts";
 import { createDenoDb } from "../../db.ts";
@@ -128,7 +128,7 @@ async function withSingleClusterIngressFixture(
       name: "Ingress Desired Server",
       createdAt: now,
       updatedAt: now,
-      connected: true,
+      isConnected: true,
       statusChangedAt: now,
     })
     .returning({ id: server.id });
@@ -181,7 +181,7 @@ async function withSingleClusterIngressFixture(
     managedId,
     serverId,
     role: "primary",
-    readEligible: false,
+    isReadEligible: false,
     ordinal: 1,
   });
 
@@ -527,7 +527,7 @@ async function insertBoundConsumer(
     serviceId: serviceRow!.id,
     databaseName: "appdb",
     keyPrefix: params.keyPrefix,
-    emitEngineDefaults: false,
+    isEmitEngineDefaults: false,
   });
   if (params.taskServerId) {
     await db.insert(task).values({

@@ -1,4 +1,6 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
+/// <reference path="./vitest-env.d.ts" />
+/// <reference path="../../worker-configuration.d.ts" />
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -19,11 +21,19 @@ import {
   DaemonCellObject,
   setDaemonCellProjectionDbFactoryForTests,
   setDaemonJwtKeyringFactoryForTests,
+  setForceAlarmErrorForTests,
+  setForceAutoResponseAgeMsForTests,
   setForceOutboxSendErrorForTests,
 } from "./cell/do.ts";
 import { createDurableObjectDaemonCellRegistry } from "./cell/do-registry.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../lib/update/constants.ts";
-import { generateDeliveryId, generateRequestId, DAEMON_CELL_PING, DAEMON_CELL_PONG } from "./cell/protocol.ts";
+import {
+  generateDeliveryId,
+  generateRequestId,
+  DAEMON_CELL_PING,
+  DAEMON_CELL_PONG,
+  DAEMON_OFFLINE_SWEEP_MS,
+} from "./cell/protocol.ts";
 
 const INBOUND_PROJECTION_COALESCE_MS = 60_000;
 
@@ -226,8 +236,8 @@ function createProjectionRecordingDb(
         if ("machineKey" in patch) {
           machineKey = patch.machineKey as string | null;
         }
-        if ("connected" in patch) {
-          columns.connected = patch.connected as boolean;
+        if ("isConnected" in patch) {
+          columns.connected = patch.isConnected as boolean;
         }
         if ("statusChangedAt" in patch) {
           columns.statusChangedAt = patch.statusChangedAt as string | null;
@@ -243,8 +253,9 @@ function createProjectionRecordingDb(
       },
     }),
     $client: {
-      end: async () => {
+      end: () => {
         endCalls += 1;
+        return Promise.resolve();
       },
     },
   } as unknown as Db;
@@ -274,11 +285,15 @@ beforeEach(() => {
   useNoopProjectionDb();
   setDaemonJwtKeyringFactoryForTests(null);
   setForceOutboxSendErrorForTests(null);
+  setForceAlarmErrorForTests(null);
+  setForceAutoResponseAgeMsForTests(null);
 });
 
 afterEach(async () => {
   setDaemonJwtKeyringFactoryForTests(null);
   setForceOutboxSendErrorForTests(null);
+  setForceAlarmErrorForTests(null);
+  setForceAutoResponseAgeMsForTests(null);
   // Attach/disconnect projections run in ctx.waitUntil — give them a tick to
   // finish on the noop client before the next test reuses the DO isolate.
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -645,7 +660,7 @@ describe("DaemonCellObject diagnostics", () => {
       const stub = env.DAEMON_CELL.getByName(serverId);
       const { ws } = await openDaemonWebSocket(stub, serverId);
 
-      await runInDurableObject(stub, async (_instance, state) => {
+      await runInDurableObject(stub, (_instance, state) => {
         const row = [...state.storage.sql.exec(
           "SELECT version FROM _cell_schema WHERE id = 1",
         )][0] as { version?: number } | undefined;
@@ -734,7 +749,7 @@ describe("DaemonCellObject diagnostics", () => {
       const { ws } = await openDaemonWebSocket(stub, serverId);
       ws.close(1000, "seed done");
       await waitFor(async () => {
-        await runInDurableObject(stub, async (_instance, state) => {
+        await runInDurableObject(stub, (_instance, state) => {
           expect([...state.storage.sql.exec(
             "SELECT version FROM _cell_schema WHERE id = 1",
           )]).toHaveLength(1);
@@ -946,7 +961,6 @@ describe("DaemonCellObject", () => {
 
   it("steady-state heartbeat performs no DB write or connection open", async () => {
     const serverId = "test-srv-proj-heartbeat-idle";
-    const recentAt = new Date().toISOString();
     const {
       db,
       updateCalls,
@@ -974,6 +988,7 @@ describe("DaemonCellObject", () => {
     const updatesAfterConnect = updateCalls.length;
     const endAfterConnect = getEndCallCount();
     const selectsAfterConnect = getSelectCallCount();
+    const recentAt = new Date().toISOString();
 
     setDaemonStatus({
       connected: true,
@@ -1014,7 +1029,6 @@ describe("DaemonCellObject", () => {
 
   it("steady-state heartbeat skips DB open", async () => {
     const serverId = "test-srv-heartbeat-skip-db-open";
-    const recentAt = new Date().toISOString();
     const { db, updateCalls } = createProjectionRecordingDb({
       connected: false,
     });
@@ -1223,9 +1237,9 @@ describe("DaemonCellObject", () => {
   it("rejects WS upgrade with 503 when JWT keyring derivation fails", async () => {
     const serverId = "test-srv-ws-auth-keyring-fail";
     const stub = env.DAEMON_CELL.getByName(serverId);
-    setDaemonJwtKeyringFactoryForTests(async () => {
-      throw new Error("forced keyring failure");
-    });
+    setDaemonJwtKeyringFactoryForTests(() =>
+      Promise.reject(new Error("forced keyring failure"))
+    );
 
     const response = await stub.fetch("https://do.internal/ws/daemon/v1", {
       headers: {
@@ -1554,7 +1568,7 @@ describe("DaemonCellObject", () => {
     expect(afterBody.record).toBeNull();
   });
 
-  it("getByName accepts location hints", async () => {
+  it("getByName accepts location hints", () => {
     const stubWithHint = env.DAEMON_CELL.getByName("test-srv-3", {
       locationHint: "wnam",
     });
@@ -1905,7 +1919,7 @@ describe("DaemonCellObject", () => {
       wsSendCommandOutcome(second.ws, requestId);
 
       await waitFor(async () => {
-        await runInDurableObject(stub, async (_instance, state) => {
+        await runInDurableObject(stub, (_instance, state) => {
           const deliveryCursor = state.storage.sql.exec(
             "SELECT delivery_status FROM request WHERE delivery_id = ?",
             deliveryId,
@@ -1942,7 +1956,7 @@ describe("DaemonCellObject", () => {
     const snapshot = await snapshotResponse.json() as { connected: boolean };
     expect(snapshot.connected).toBe(false);
 
-    await runInDurableObject(stub, async (_instance, state) => {
+    await runInDurableObject(stub, (_instance, state) => {
       const cursor = state.storage.sql.exec("SELECT server_id FROM cell");
       if ([...cursor].length > 0) {
         throw new Error("expected snapshot read to not create cell");
@@ -1968,7 +1982,7 @@ describe("DaemonCellObject", () => {
     const snapshot = await snapshotResponse.json() as { connected: boolean };
     expect(snapshot.connected).toBe(false);
 
-    await runInDurableObject(stub, async (_instance, state) => {
+    await runInDurableObject(stub, (_instance, state) => {
       const cursor = state.storage.sql.exec("SELECT server_id FROM cell");
       if ([...cursor].length > 0) {
         throw new Error("expected snapshot read to not recreate cell");
@@ -2087,7 +2101,7 @@ describe("createRequestAndWait expiry parity", () => {
     expect(expired.requestId).toBe(requestId);
     expect(await cell.getRequest(requestId)).toBeNull();
 
-    await runInDurableObject(stub, async (_instance, state) => {
+    await runInDurableObject(stub, (_instance, state) => {
       const cursor = state.storage.sql.exec(
         "SELECT seq FROM request WHERE request_id = ?",
         requestId,
@@ -2289,7 +2303,7 @@ describe("command-dispatch correlation", () => {
 
       const cellUpdatedAtBefore = await runInDurableObject(
         stub,
-        async (_instance, state) => {
+        (_instance, state) => {
           const cursor = state.storage.sql.exec(
             "SELECT updated_at FROM cell WHERE server_id = ?",
             serverId,
@@ -2360,7 +2374,7 @@ describe("command-dispatch correlation", () => {
 
       const cellUpdatedAtAfter = await runInDurableObject(
         stub,
-        async (_instance, state) => {
+        (_instance, state) => {
           const cursor = state.storage.sql.exec(
             "SELECT updated_at FROM cell WHERE server_id = ?",
             serverId,
@@ -2639,7 +2653,7 @@ describe("command-dispatch correlation", () => {
     });
 
     // One retry short of poison so the next failed send marks the row dead.
-    await runInDurableObject(stub, async (_instance, state) => {
+    await runInDurableObject(stub, (_instance, state) => {
       state.storage.sql.exec(
         `UPDATE request
          SET delivery_status = 'queued', retry_count = 9, retry_at = NULL, sent_at = NULL
@@ -2656,7 +2670,7 @@ describe("command-dispatch correlation", () => {
     const { ws } = await openDaemonWebSocket(stub, serverId);
 
     await waitFor(async () => {
-      await runInDurableObject(stub, async (_instance, state) => {
+      await runInDurableObject(stub, (_instance, state) => {
         const [row] = [...state.storage.sql.exec(
           "SELECT delivery_status, retry_count FROM request WHERE delivery_id = ?",
           deliveryId,
@@ -2705,7 +2719,7 @@ describe("command-dispatch correlation", () => {
 
     const updatedAtBefore = await runInDurableObject(
       stub,
-      async (_instance, state) => {
+      (_instance, state) => {
         const cursor = state.storage.sql.exec(
           "SELECT updated_at FROM cell WHERE server_id = ?",
           serverId,
@@ -2725,7 +2739,7 @@ describe("command-dispatch correlation", () => {
 
     const updatedAtAfter = await runInDurableObject(
       stub,
-      async (_instance, state) => {
+      (_instance, state) => {
         const cursor = state.storage.sql.exec(
           "SELECT updated_at FROM cell WHERE server_id = ?",
           serverId,
@@ -3165,7 +3179,7 @@ describe("DaemonCellObject storageByCallSite attribution", () => {
     });
 
     // Mark the update terminal via SQL so clearUpdateStatus can purge it.
-    await runInDurableObject(stub, async (_instance, state) => {
+    await runInDurableObject(stub, (_instance, state) => {
       state.storage.sql.exec(
         `UPDATE request SET status = 'done', finished_at = ?, updated_at = ?
          WHERE request_id = ?`,
@@ -3227,7 +3241,7 @@ describe("DaemonCellObject storageByCallSite attribution", () => {
     const stub = env.DAEMON_CELL.getByName(serverId);
     const { ws } = await openDaemonWebSocket(stub, serverId);
 
-    await runInDurableObject(stub, async (_instance, state) => {
+    await runInDurableObject(stub, (_instance, state) => {
       state.storage.sql.exec(
         "UPDATE _cell_schema SET version = 1 WHERE id = 1",
       );
@@ -3264,7 +3278,7 @@ describe("DaemonCellObject storageByCallSite attribution", () => {
     expect(ensureCounts.writes).toBeGreaterThan(0);
     expect(ensureCounts.reads).toBeGreaterThan(0);
 
-    await runInDurableObject(stub, async (_instance, state) => {
+    await runInDurableObject(stub, (_instance, state) => {
       const row = [...state.storage.sql.exec(
         "SELECT version FROM _cell_schema WHERE id = 1",
       )][0] as { version?: number } | undefined;
@@ -3295,7 +3309,7 @@ describe("DaemonCellObject storageByCallSite attribution", () => {
       }),
     });
 
-    await runInDurableObject(stub, async (_instance, state) => {
+    await runInDurableObject(stub, (_instance, state) => {
       // Force the row past expires_at so #runAlarmCleanup deletes it.
       state.storage.sql.exec(
         `UPDATE request SET expires_at = ?, status = 'queued'
@@ -3435,7 +3449,7 @@ describe("DaemonCellObject storageByCallSite attribution", () => {
     ).toBeGreaterThan(0);
     assertNoMisattributedStorage(diagAfter.storageByCallSite);
 
-    await runInDurableObject(stub, async (_instance, state) => {
+    await runInDurableObject(stub, (_instance, state) => {
       const row = [...state.storage.sql.exec(
         "SELECT delivery_id FROM request WHERE request_id = ?",
         requestId,
@@ -3443,6 +3457,293 @@ describe("DaemonCellObject storageByCallSite attribution", () => {
       expect(String(row?.delivery_id ?? "")).toBe(secondDeliveryId);
     });
   }, 10_000);
+});
+
+describe("DaemonCellObject alarm / outbox / RPC branch coverage", () => {
+  it("alarm logs and rethrows when forced error is set", async () => {
+    const serverId = "test-srv-alarm-error-path";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    setForceAlarmErrorForTests(new Error("forced alarm failure"));
+
+    await expect(
+      runInDurableObject(stub, async (instance: DaemonCellObject) => {
+        await instance.alarm();
+      }),
+    ).rejects.toThrow("forced alarm failure");
+  });
+
+  it("alarm demotes stale sockets when auto-response age exceeds sweep window", async () => {
+    const serverId = "test-srv-alarm-stale-demote";
+    const { db, updateCalls } = createProjectionRecordingDb({
+      connected: true,
+      statusChangedAt: new Date().toISOString(),
+    });
+    setDaemonCellProjectionDbFactoryForTests(() => db);
+
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    setForceAutoResponseAgeMsForTests(DAEMON_OFFLINE_SWEEP_MS + 5_000);
+
+    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+      await instance.alarm();
+    });
+
+    await waitFor(() => {
+      const offlinePatch = updateCalls.find((patch) =>
+        statusFromPatch(patch)?.connected === false
+      );
+      expect(offlinePatch).toBeDefined();
+    });
+
+    ws.close(1000, "test done");
+  }, 10_000);
+
+  it("outbox send failure requeues with retry_at before poison threshold", async () => {
+    const serverId = "test-srv-outbox-retry-delay";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const deliveryId = generateDeliveryId();
+    const requestId = generateRequestId();
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "command-dispatch",
+          deliveryId,
+          requestId,
+          at: new Date().toISOString(),
+          commandId: "cmd-retry-delay",
+          commandType: "daemon.ping",
+          payload: {},
+        },
+      }),
+    });
+
+    setForceOutboxSendErrorForTests(new Error("transient send failure"));
+    const { ws } = await openDaemonWebSocket(stub, serverId);
+
+    await waitFor(async () => {
+      await runInDurableObject(stub, (_instance, state) => {
+        const [row] = [...state.storage.sql.exec(
+          "SELECT delivery_status, retry_count, retry_at FROM request WHERE delivery_id = ?",
+          deliveryId,
+        )];
+        expect(String(row?.delivery_status ?? "")).toBe("queued");
+        expect(Number(row?.retry_count ?? 0)).toBeGreaterThanOrEqual(1);
+        expect(String(row?.retry_at ?? "")).toBeTruthy();
+      });
+    });
+
+    setForceOutboxSendErrorForTests(null);
+    ws.close(1000, "test done");
+  }, 15_000);
+
+  it("/rpc/create-and-wait enqueues and returns the pending record", async () => {
+    const serverId = "test-srv-create-and-wait-rpc";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const requestId = generateRequestId();
+    const deliveryId = generateDeliveryId();
+
+    const response = await cellRpc(stub, serverId, "/rpc/create-and-wait", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "command-dispatch",
+          deliveryId,
+          requestId,
+          at: new Date().toISOString(),
+          commandId: "cmd-create-wait",
+          commandType: "daemon.ping",
+          payload: {},
+        },
+        timeoutMs: 5_000,
+      }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      record: { requestId: string; status: string };
+    };
+    expect(body.record.requestId).toBe(requestId);
+    expect(body.record.status).toBe("queued");
+  });
+
+  it("clear-update-status expires stale in-flight updates via allowStale + ttl", async () => {
+    const serverId = "test-srv-clear-update-stale";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const requestId = generateRequestId();
+    const deliveryId = generateDeliveryId();
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "update",
+          deliveryId,
+          requestId,
+          at: new Date().toISOString(),
+          channel: "trunk",
+        },
+      }),
+    });
+
+    const staleQueuedAt = new Date(Date.now() - 60_000).toISOString();
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE request SET created_at = ?, updated_at = ? WHERE request_id = ?`,
+        staleQueuedAt,
+        staleQueuedAt,
+        requestId,
+      );
+    });
+
+    const clearResponse = await cellRpc(stub, serverId, "/rpc/clear-update-status", {
+      method: "POST",
+      body: JSON.stringify({
+        allowStale: true,
+        updateTtlMs: 1_000,
+        queuedAt: staleQueuedAt,
+      }),
+    });
+    expect(clearResponse.status).toBe(200);
+    const clearBody = await clearResponse.json() as { cleared: number };
+    expect(clearBody.cleared).toBeGreaterThanOrEqual(1);
+
+    await runInDurableObject(stub, (_instance, state) => {
+      const [row] = [...state.storage.sql.exec(
+        "SELECT status FROM request WHERE request_id = ?",
+        requestId,
+      )];
+      expect(row).toBeUndefined();
+    });
+  });
+
+  it("applies late command-ack after terminal outcome and addresses-result inbound", async () => {
+    const serverId = "test-srv-late-ack-addresses";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const requestId = generateRequestId();
+    const deliveryId = generateDeliveryId();
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "command-dispatch",
+          deliveryId,
+          requestId,
+          at: new Date().toISOString(),
+          commandId: "cmd-late-ack",
+          commandType: "daemon.ping",
+          payload: {},
+        },
+      }),
+    });
+
+    const at = new Date().toISOString();
+    await cellRpc(stub, serverId, "/rpc/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        inbound: {
+          kind: "command-outcome",
+          requestId,
+          at,
+          ok: true,
+          result: { pong: true },
+          daemonReceivedAt: at,
+          daemonRespondedAt: at,
+        },
+      }),
+    });
+
+    // Mark ack_at null so late-ack path can fill it after terminal status.
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE request SET ack_at = NULL WHERE request_id = ?`,
+        requestId,
+      );
+    });
+
+    const lateAck = await cellRpc(stub, serverId, "/rpc/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        inbound: {
+          kind: "command-ack",
+          requestId,
+          at: new Date().toISOString(),
+          daemonReceivedAt: new Date().toISOString(),
+        },
+      }),
+    });
+    expect(lateAck.status).toBe(200);
+
+    const addressesRequestId = generateRequestId();
+    const addressesDeliveryId = generateDeliveryId();
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "addresses-request",
+          deliveryId: addressesDeliveryId,
+          requestId: addressesRequestId,
+          at: new Date().toISOString(),
+        },
+      }),
+    });
+
+    const addressesResult = await cellRpc(stub, serverId, "/rpc/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        inbound: {
+          kind: "addresses-result",
+          requestId: addressesRequestId,
+          at: new Date().toISOString(),
+          ips: [{ address: "203.0.113.10", version: 4, scope: "public" }],
+        },
+      }),
+    });
+    expect(addressesResult.status).toBe(200);
+    const addressesBody = await addressesResult.json() as {
+      record: { status: string };
+    };
+    expect(addressesBody.record.status).toBe("done");
+  });
+
+  it("managed-logs-result marks failed when error is present", async () => {
+    const serverId = "test-srv-managed-logs-fail";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const requestId = generateRequestId();
+    const deliveryId = generateDeliveryId();
+
+    await cellRpc(stub, serverId, "/rpc/enqueue", {
+      method: "POST",
+      body: JSON.stringify({
+        outbound: {
+          kind: "managed-logs-request",
+          deliveryId,
+          requestId,
+          at: new Date().toISOString(),
+          managedId: crypto.randomUUID(),
+          tail: 100,
+        },
+      }),
+    });
+
+    const response = await cellRpc(stub, serverId, "/rpc/inbound", {
+      method: "POST",
+      body: JSON.stringify({
+        inbound: {
+          kind: "managed-logs-result",
+          requestId,
+          at: new Date().toISOString(),
+          logs: "",
+          error: "engine unreachable",
+        },
+      }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { record: { status: string } };
+    expect(body.record.status).toBe("failed");
+  });
 });
 
 function wsSendCommandOutcome(ws: WebSocket, requestId: string): void {
