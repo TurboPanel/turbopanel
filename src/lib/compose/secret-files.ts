@@ -20,8 +20,34 @@ export type DeploySecretPlanEntry = {
   forRuntime: boolean
 }
 
+function isWordChar(ch: string): boolean {
+  return (ch >= 'a' && ch <= 'z')
+    || (ch >= 'A' && ch <= 'Z')
+    || (ch >= '0' && ch <= '9')
+    || ch === '_'
+}
+
+function trimCharRun(value: string, ch: string): string {
+  let start = 0
+  let end = value.length
+  while (start < end && value[start] === ch) start++
+  while (end > start && value[end - 1] === ch) end--
+  return value.slice(start, end)
+}
+
+function trimTrailingSlashes(path: string): string {
+  let end = path.length
+  while (end > 0 && path[end - 1] === '/') end--
+  return path.slice(0, end)
+}
+
+/** Linear-time slug (Sonar typescript:S8786 — no `\W+` / anchor trims). */
 function slugToken(value: string): string {
-  const slug = value.replaceAll(/\W+/g, '_').replace(/^_+/, '').replace(/_+$/, '')
+  let slug = ''
+  for (const ch of value) {
+    slug += isWordChar(ch) ? ch : '_'
+  }
+  slug = trimCharRun(slug, '_')
   return slug.length > 0 ? slug : 'x'
 }
 
@@ -32,8 +58,19 @@ export function composeSecretSourceName(
   return `${slugToken(composeServiceName)}_${slugToken(key)}`.toLowerCase()
 }
 
+function isSafeSecretTargetKey(key: string): boolean {
+  if (key.length === 0) return false
+  for (const ch of key) {
+    const isAlnum = (ch >= 'A' && ch <= 'Z')
+      || (ch >= 'a' && ch <= 'z')
+      || (ch >= '0' && ch <= '9')
+    if (!isAlnum && ch !== '.' && ch !== '_' && ch !== '-') return false
+  }
+  return true
+}
+
 export function composeSecretTargetName(key: string): string {
-  if (/^[A-Za-z0-9._-]+$/.test(key)) return key
+  if (isSafeSecretTargetKey(key)) return key
   return slugToken(key)
 }
 
@@ -49,7 +86,7 @@ export function secretHostDirectory(
   environmentId: string,
   runDir: string = DEFAULT_DEPLOY_RUN_DIR,
 ): string {
-  return `${runDir.replace(/\/+$/, '')}/deployments/${projectId}/${environmentId}/secrets`
+  return `${trimTrailingSlashes(runDir)}/deployments/${projectId}/${environmentId}/secrets`
 }
 
 export function secretHostPath(

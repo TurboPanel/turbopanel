@@ -44,6 +44,55 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+const COMPOSE_SLUG_SEPARATORS = new Set(['-', '.', '_'])
+
+function isComposeSlugChar(ch: string): boolean {
+  return (ch >= 'a' && ch <= 'z')
+    || (ch >= '0' && ch <= '9')
+    || ch === '.' || ch === '_' || ch === '-'
+}
+
+function isComposeSlugSeparator(ch: string): boolean {
+  return COMPOSE_SLUG_SEPARATORS.has(ch)
+}
+
+/** Linear-time slug for `docker-compose.<basename>.yml` (Sonar typescript:S8786). */
+function slugComposeBasename(raw: string): string {
+  let slug = ''
+  for (const ch of raw.toLowerCase()) {
+    slug += isComposeSlugChar(ch) ? ch : '-'
+  }
+  let collapsed = ''
+  let inSep = false
+  for (const ch of slug) {
+    if (isComposeSlugSeparator(ch)) {
+      if (!inSep) {
+        collapsed += ch
+        inSep = true
+      }
+    } else {
+      inSep = false
+      collapsed += ch
+    }
+  }
+  let start = 0
+  let end = collapsed.length
+  while (start < end && isComposeSlugSeparator(collapsed[start])) start++
+  while (end > start && isComposeSlugSeparator(collapsed[end - 1])) end--
+  return collapsed.slice(start, end)
+}
+
+function sanitizeComposeIdSegment(id: string): string {
+  let out = ''
+  for (const ch of id) {
+    const isAlnum = (ch >= 'A' && ch <= 'Z')
+      || (ch >= 'a' && ch <= 'z')
+      || (ch >= '0' && ch <= '9')
+    out += (isAlnum || ch === '.' || ch === '_' || ch === '-') ? ch : '-'
+  }
+  return out
+}
+
 /**
  * Environment overlay filename: `docker-compose.<slug>.yml`.
  * Falls back to the environment id when the name is blank/unusable or the
@@ -54,12 +103,7 @@ export function environmentComposeFilename(params: Readonly<{
   name: string | null | undefined
 }>): string {
   const raw = typeof params.name === 'string' ? params.name.trim() : ''
-  const slug = raw
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9._-]+/g, '-')
-    .replaceAll(/[-._]{2,}/g, (match) => match[0]!)
-    .replace(/^[-._]+/, '')
-    .replace(/[-._]+$/, '')
+  const slug = slugComposeBasename(raw)
 
   const tryFilename = (base: string): string | null => {
     if (base.length === 0) return null
@@ -77,7 +121,7 @@ export function environmentComposeFilename(params: Readonly<{
   if (fromId) return fromId
 
   // UUID/id should always satisfy the regex; last-resort basename.
-  return `docker-compose.${params.id.replaceAll(/[^A-Za-z0-9._-]/g, '-')}.yml`
+  return `docker-compose.${sanitizeComposeIdSegment(params.id)}.yml`
 }
 
 /**
