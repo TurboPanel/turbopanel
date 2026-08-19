@@ -38,6 +38,10 @@ import {
   user,
   workspace,
 } from '../../lib/db/schema.ts'
+import {
+  createCommandRecord,
+  transitionCommand,
+} from '../../lib/db/command-records.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { getCatalogEntry, readManagedEngineOptions } from '../projects/catalog/index.ts'
 import { registerManagedRoutes } from './routes.ts'
@@ -861,11 +865,13 @@ test('GET /environments/:id/managed/status returns status host port containers',
       status: string | null
       host: string | null
       port: number | null
+      error: string | null
       containers: Array<{ role: string }>
     }
     assertEquals(body.status, 'ready')
     assertEquals(body.host, '127.0.0.1')
     assertEquals(body.port, 15432)
+    assertEquals(body.error, null)
     assertEquals(Array.isArray(body.containers), true)
     for (const row of body.containers) {
       assertEquals(typeof row.role, 'string')
@@ -874,6 +880,72 @@ test('GET /environments/:id/managed/status returns status host port containers',
         true,
       )
     }
+  })
+})
+
+test('GET /environments/:id/managed/status returns last apply and ingress errors', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    environmentId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+    const created = await create.json() as { managed: { id: string } }
+    const managedId = created.managed.id
+
+    await db.update(managed).set({ status: 'failed' }).where(eq(managed.id, managedId))
+
+    const apply = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: userId,
+      type: 'managed.apply',
+      payload: { managedId, environmentId },
+    })
+    await transitionCommand(db, apply.id, {
+      status: 'failed',
+      error: 'permission denied while trying to connect to the docker API',
+    })
+
+    const ingress = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: userId,
+      type: 'managed.ingress.reconcile',
+      payload: {},
+    })
+    await transitionCommand(db, ingress.id, {
+      status: 'failed',
+      error: 'proxysql admin.cnf is missing',
+    })
+
+    const statusRes = await app.request(
+      `/environments/${environmentId}/managed/status`,
+      { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
+    )
+    assertEquals(statusRes.status, 200)
+    const body = await statusRes.json() as { status: string | null; error: string | null }
+    assertEquals(body.status, 'failed')
+    assertEquals(
+      body.error,
+      'permission denied while trying to connect to the docker API\nproxysql admin.cnf is missing',
+    )
   })
 })
 

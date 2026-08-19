@@ -1,3 +1,10 @@
+/**
+ * Org TLS library routes (`/api/client/v1/tls` and `/tls/ca`).
+ *
+ * Organization CA material is for hosting/managed-DB leaves only. These
+ * handlers must never write the instance-wide platform CA paths
+ * (`<stateDir>/tls/ca.crt|ca.key|ca-bundle.pem`) used for daemon trust.
+ */
 import { and, eq, inArray, ne } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { Context } from 'hono'

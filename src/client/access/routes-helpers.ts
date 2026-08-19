@@ -1,7 +1,9 @@
 import {
   isPermissionKey,
+  isSubjectType,
   PERMISSIONS,
   type PermissionKey,
+  type SubjectType,
 } from '../authz/catalog.ts'
 
 export const UUID_RE =
@@ -29,7 +31,7 @@ export type AccessRouteValidationError = {
 }
 
 export type CreateAccessInput = {
-  subjectKind: 'user' | 'team' | 'organization'
+  subjectKind: SubjectType
   subjectId: string
   resourceId: string
   permissionKey: PermissionKey
@@ -45,11 +47,7 @@ export function parseCreateAccessBody(
   const record = body as Record<string, unknown>
   const { subjectKind, subjectId, resourceId, effect, permissionKey } = record
 
-  if (
-    subjectKind !== 'user' &&
-    subjectKind !== 'team' &&
-    subjectKind !== 'organization'
-  ) {
+  if (typeof subjectKind !== 'string' || !isSubjectType(subjectKind)) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
   if (typeof subjectId !== 'string' || typeof resourceId !== 'string') {

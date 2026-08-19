@@ -1,3 +1,9 @@
+/**
+ * Org-scoped TLS library OpenAPI schemas (`/api/client/v1/tls`).
+ *
+ * Distinct from the instance-wide platform CA under `<stateDir>/tls/` — these
+ * documents must never describe or write platform CA paths used for daemon trust.
+ */
 export const tlsSchemas = {
   TlsMetadata: {
     type: 'object',

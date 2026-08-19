@@ -176,9 +176,11 @@ test('GET /permissions returns the catalog for a signed-in session', async () =>
     headers: { Cookie: cookie },
   })
   assertEquals(res.status, 200)
-  const body = await res.json() as { permissions: unknown[] }
+  const body = await res.json() as { permissions: Array<{ key: string }> }
   assertEquals(Array.isArray(body.permissions), true)
   assertEquals(body.permissions.length > 0, true)
+  assertEquals(body.permissions.some((entry) => entry.key === 'system:manage'), false)
+  assertEquals(body.permissions.some((entry) => entry.key === 'system:operate'), true)
 })
 
 test('POST /invitations/:id/accept returns 404 when the invitation is missing', async () => {

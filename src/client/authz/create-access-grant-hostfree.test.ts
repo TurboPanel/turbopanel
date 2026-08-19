@@ -170,6 +170,21 @@ test('createAccessGrant rejects unknown permission keys before database access',
   assertEquals(result.error, 'Invalid permission key')
 })
 
+test('createAccessGrant rejects system:manage before database access', async () => {
+  const result = await createAccessGrant(neverCalledDb, {
+    entityType: 'organization',
+    entityId: validUuid,
+    actorType: 'user',
+    actorId: otherUuid,
+    permissionKey: 'system:manage',
+  })
+
+  if (result.ok || result.status !== 400) {
+    throw new TypeError('system:manage should return 400')
+  }
+  assertEquals(result.error, 'system:manage cannot be granted')
+})
+
 test('verifyEntityExists returns false for unknown entity kinds', async () => {
   const exists = await verifyEntityExists(neverCalledDb, 'not-an-entity', validUuid)
   assertEquals(exists, false)

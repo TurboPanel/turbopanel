@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm'
+import { assertEquals } from 'jsr:@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
@@ -649,6 +650,99 @@ test('GET /access/resource-id allows admin session for team kind', async () => {
       }
     } finally {
       await db.delete(user).where(eq(user.id, adminId))
+    }
+  })
+})
+
+test('POST /access rejects system:manage; system:operate grants remain usable', async () => {
+  await withTestFixtures(async ({
+    db,
+    app,
+    secrets,
+    actorId,
+    targetId,
+    organizationId,
+  }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: actorId,
+      permission: 'organization:own',
+    })
+
+    const actorCookie = await sessionCookie(db, secrets, actorId)
+    const targetCookie = await sessionCookie(db, secrets, targetId)
+    const manageRes = await app.request('/access', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(actorCookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subjectKind: 'user',
+        subjectId: targetId,
+        resourceId: organizationId,
+        effect: 'allow',
+        permissionKey: 'system:manage',
+      }),
+    })
+
+    if (manageRes.status !== 400) {
+      throw new TypeError(`expected 400 creating system:manage grant, got ${manageRes.status}`)
+    }
+    const manageBody = await manageRes.json() as { error: string }
+    assertEquals(manageBody.error, 'system:manage cannot be granted')
+
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: targetId,
+      permission: 'system:manage',
+    })
+
+    const leftoverCheck = await app.request(
+      `/access/check?resourceId=${organizationId}&permissionKey=system:manage`,
+      { headers: orgRequestHeaders(targetCookie, organizationId) },
+    )
+    if (leftoverCheck.status !== 200) {
+      throw new TypeError(`expected 200 from access/check for leftover system:manage, got ${leftoverCheck.status}`)
+    }
+    const leftoverBody = await leftoverCheck.json() as { allowed: boolean }
+    if (leftoverBody.allowed) {
+      throw new TypeError('regular user with explicit system:manage grant must still be denied')
+    }
+
+    const operateRes = await app.request('/access', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(actorCookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subjectKind: 'user',
+        subjectId: targetId,
+        resourceId: organizationId,
+        effect: 'allow',
+        permissionKey: 'system:operate',
+      }),
+    })
+
+    if (operateRes.status !== 200) {
+      throw new TypeError(`expected 200 creating system:operate grant, got ${operateRes.status}`)
+    }
+
+    const operateCheck = await app.request(
+      `/access/check?resourceId=${organizationId}&permissionKey=system:operate`,
+      { headers: orgRequestHeaders(targetCookie, organizationId) },
+    )
+    if (operateCheck.status !== 200) {
+      throw new TypeError(`expected 200 from access/check for system:operate, got ${operateCheck.status}`)
+    }
+    const operateBody = await operateCheck.json() as { allowed: boolean }
+    if (!operateBody.allowed) {
+      throw new TypeError('system:operate grant should satisfy access/check for restart flows')
     }
   })
 })

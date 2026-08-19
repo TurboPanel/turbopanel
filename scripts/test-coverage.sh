@@ -168,6 +168,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/ingress-desired.hostfree.test.ts \
   src/client/managed/ingress-desired-pure.hostfree.test.ts \
   src/client/managed/ingress-attachments.hostfree.test.ts \
+  src/client/managed/last-error.hostfree.test.ts \
   src/client/managed/routes-helpers.hostfree.test.ts \
   src/client/managed/routes.hostfree.test.ts \
   src/client/managed/backups.test.ts \

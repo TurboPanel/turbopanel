@@ -3,14 +3,15 @@
  * Generate the TurboPanel platform TLS certificate chain (self-hosted).
  *
  * Produces:
- *   certs/ca.crt + certs/ca.key     — platform CA (distribute to daemon nodes / browsers)
- *   certs/self-signed.crt + .key    — server leaf cert presented by Caddy
+ *   <stateDir>/tls/ca.crt + ca.key + ca-bundle.pem  — durable platform CA
+ *   certs/self-signed.crt + .key                    — server leaf presented by Caddy
  *
+ * The platform CA lives in the state tree (not the replaceable instance checkout).
  * Regenerates the server cert when interface addresses or DNS names change.
  */
 
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -44,10 +45,28 @@ function loadEnvFile() {
 }
 
 loadEnvFile()
-const certsDir = path.join(repoRoot, 'certs')
-const caCrtPath = path.join(certsDir, 'ca.crt')
-const caKeyPath = path.join(certsDir, 'ca.key')
-const caSrlPath = path.join(certsDir, 'ca.srl')
+
+const DEFAULT_STATE_DIR = '/var/lib/turbopanel'
+
+function envTrim(name) {
+  const value = process.env[name]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function resolveStateDir() {
+  return envTrim('TURBOPANEL_STATE_DIR') || DEFAULT_STATE_DIR
+}
+
+const certsDir = envTrim('TURBOPANEL_TLS_CERTS_DIR') || path.join(repoRoot, 'certs')
+const caDir = path.join(resolveStateDir(), 'tls')
+const caCrtPath = envTrim('TURBOPANEL_TLS_CA') || path.join(caDir, 'ca.crt')
+const caKeyPath = envTrim('TURBOPANEL_TLS_CA_KEY') || path.join(caDir, 'ca.key')
+const caBundlePath = envTrim('TURBOPANEL_TLS_CA_BUNDLE') || path.join(caDir, 'ca-bundle.pem')
+const caRetiredPath = path.join(path.dirname(caCrtPath), 'ca-retired.pem')
+const caSrlPath = path.join(path.dirname(caCrtPath), 'ca.srl')
+const legacyCaCrtPath = path.join(certsDir, 'ca.crt')
+const legacyCaKeyPath = path.join(certsDir, 'ca.key')
+const legacyCaSrlPath = path.join(certsDir, 'ca.srl')
 const crtPath = path.join(certsDir, 'self-signed.crt')
 const keyPath = path.join(certsDir, 'self-signed.key')
 const csrPath = path.join(certsDir, 'server.csr')
@@ -236,9 +255,89 @@ function normalizeTlsKeyPermissions() {
   }
 }
 
-function ensureCa() {
-  if (existsSync(caCrtPath) && existsSync(caKeyPath)) return
+function inspectReadable(filePath) {
+  try {
+    accessSync(filePath, constants.R_OK)
+    return 'ok'
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return 'absent'
+    return 'unreadable'
+  }
+}
 
+function opensslEnv() {
+  return { ...process.env, PATH: '/usr/bin:/bin' }
+}
+
+function decodeCertOrThrow(filePath) {
+  try {
+    execFileSync('/usr/bin/openssl', ['x509', '-in', filePath, '-noout'], {
+      stdio: 'pipe',
+      env: opensslEnv(),
+    })
+  } catch {
+    console.error(
+      `generate-self-signed-cert: existing platform CA at ${filePath} is unreadable or undecodable; refusing to mint a replacement root`,
+    )
+    process.exit(1)
+  }
+}
+
+function decodeKeyOrThrow(filePath) {
+  try {
+    execFileSync('/usr/bin/openssl', ['pkey', '-in', filePath, '-noout'], {
+      stdio: 'pipe',
+      env: opensslEnv(),
+    })
+  } catch {
+    console.error(
+      `generate-self-signed-cert: existing platform CA key at ${filePath} is unreadable or undecodable; refusing to mint a replacement root`,
+    )
+    process.exit(1)
+  }
+}
+
+function isCaRotateRequested() {
+  return envTrim('TURBOPANEL_TLS_CA_ROTATE') === '1'
+}
+
+function writeCaBundle() {
+  const current = readFileSync(caCrtPath, 'utf8').trim()
+  let retired = ''
+  if (existsSync(caRetiredPath)) {
+    retired = readFileSync(caRetiredPath, 'utf8').trim()
+  }
+  const parts = [current]
+  if (retired) parts.push(retired)
+  mkdirSync(path.dirname(caBundlePath), { recursive: true })
+  writeFileSync(caBundlePath, `${parts.join('\n')}\n`)
+}
+
+function migrateLegacyCaIfNeeded() {
+  const durableCrt = inspectReadable(caCrtPath)
+  const durableKey = inspectReadable(caKeyPath)
+  if (durableCrt === 'ok' || durableKey === 'ok') return
+  if (durableCrt === 'unreadable' || durableKey === 'unreadable') {
+    console.error(
+      'generate-self-signed-cert: durable platform CA is present but unreadable; refusing to mint a replacement root',
+    )
+    process.exit(1)
+  }
+  if (!existsSync(legacyCaCrtPath) || !existsSync(legacyCaKeyPath)) return
+
+  mkdirSync(path.dirname(caCrtPath), { recursive: true })
+  renameSync(legacyCaCrtPath, caCrtPath)
+  renameSync(legacyCaKeyPath, caKeyPath)
+  if (existsSync(legacyCaSrlPath)) {
+    renameSync(legacyCaSrlPath, caSrlPath)
+  }
+  console.log(
+    `generate-self-signed-cert: migrated platform CA from ${certsDir} to ${path.dirname(caCrtPath)}`,
+  )
+}
+
+function mintPlatformCa() {
+  mkdirSync(path.dirname(caCrtPath), { recursive: true })
   console.log('generate-self-signed-cert: creating platform CA')
   execFileSync(
     '/usr/bin/openssl',
@@ -256,10 +355,57 @@ function ensureCa() {
     ],
     {
       stdio: ['ignore', 'inherit', 'inherit'],
-      env: { ...process.env, PATH: '/usr/bin:/bin' },
+      env: opensslEnv(),
     },
   )
   normalizeTlsKeyPermissions()
+}
+
+function rotatePlatformCa() {
+  const outgoing = readFileSync(caCrtPath, 'utf8').trim()
+  const existingRetired = existsSync(caRetiredPath)
+    ? readFileSync(caRetiredPath, 'utf8').trim()
+    : ''
+  const retiredParts = [outgoing]
+  if (existingRetired) retiredParts.push(existingRetired)
+  writeFileSync(caRetiredPath, `${retiredParts.join('\n')}\n`)
+  mintPlatformCa()
+  writeCaBundle()
+  console.log(
+    'generate-self-signed-cert: rotated platform CA; outgoing root appended to the retired list (bundle rewritten, current first)',
+  )
+}
+
+function ensureCa() {
+  migrateLegacyCaIfNeeded()
+
+  const crtState = inspectReadable(caCrtPath)
+  const keyState = inspectReadable(caKeyPath)
+  if (crtState === 'unreadable' || keyState === 'unreadable') {
+    console.error(
+      'generate-self-signed-cert: existing platform CA is present but unreadable; refusing to mint a replacement root',
+    )
+    process.exit(1)
+  }
+  if (crtState !== keyState) {
+    console.error(
+      'generate-self-signed-cert: incomplete platform CA pair (crt vs key); refusing to mint a replacement root',
+    )
+    process.exit(1)
+  }
+  if (crtState === 'ok') {
+    decodeCertOrThrow(caCrtPath)
+    decodeKeyOrThrow(caKeyPath)
+    if (isCaRotateRequested()) {
+      rotatePlatformCa()
+      return
+    }
+    writeCaBundle()
+    return
+  }
+
+  mintPlatformCa()
+  writeCaBundle()
 }
 
 function generateServerCert(expectedSans) {
@@ -328,26 +474,35 @@ function generateServerCert(expectedSans) {
 
 const expectedSans = subjectAltNames()
 const existingSans = readCertSubjectAltNames()
+migrateLegacyCaIfNeeded()
 const caReady = existsSync(caCrtPath) && existsSync(caKeyPath)
+const rotateRequested = isCaRotateRequested()
 
 if (
   caReady &&
+  !rotateRequested &&
   existsSync(crtPath) &&
   existsSync(keyPath) &&
   expectedSans.join(',') === existingSans.join(',') &&
   !serverCertMarkedAsCa()
 ) {
+  // Validate the existing CA (readable + decodable) before treating the leaf
+  // as healthy — otherwise a corrupt root is served as ca-bundle.pem.
+  ensureCa()
   normalizeTlsKeyPermissions()
   console.log(`generate-self-signed-cert: certificate already up to date at ${certsDir}`)
   process.exit(0)
 }
 
 mkdirSync(certsDir, { recursive: true })
+mkdirSync(path.dirname(caCrtPath), { recursive: true })
 
 if (existsSync(crtPath) || existsSync(keyPath)) {
   let reason = 'interface addresses or DNS names changed'
   if (serverCertMarkedAsCa()) {
     reason = 'server certificate was marked as a CA'
+  } else if (rotateRequested) {
+    reason = 'platform CA rotation requested'
   } else if (!caReady) {
     reason = 'local CA is missing'
   }

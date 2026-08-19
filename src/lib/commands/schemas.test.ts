@@ -165,6 +165,7 @@ const DAEMON_COMMAND_TYPES = [
   'server.reboot',
   'server.timezone.set',
   'server.fabric.reconcile',
+  'server.tls.trust.reconcile',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',
@@ -824,6 +825,23 @@ test('parseCommandPayload and parseCommandResult dispatch by type', () => {
     { enabled: true },
   )
   assertEquals(parseCommandPayload('server.reboot' as CommandType, {}), {})
+  assertEquals(
+    parseCommandPayload('server.tls.trust.reconcile' as CommandType, {
+      bundlePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+      fingerprint: 'a'.repeat(64),
+    }),
+    {
+      bundlePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+      fingerprint: 'a'.repeat(64),
+    },
+  )
+  assertEquals(
+    parseCommandResult('server.tls.trust.reconcile' as CommandType, {
+      applied: true,
+      fingerprint: 'a'.repeat(64),
+    }),
+    { applied: true, fingerprint: 'a'.repeat(64) },
+  )
   assertEquals(
     parseCommandPayload('environment.deploy' as CommandType, {
       environmentId: 'env-1',

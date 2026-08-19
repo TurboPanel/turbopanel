@@ -91,6 +91,7 @@ import {
   mapManagedBackupApiError,
   resolveBackupDatabase,
 } from './backups.ts'
+import { loadManagedStatusError } from './last-error.ts'
 import { fetchManagedLogs, parseLogsTailQuery } from './logs.ts'
 import {
   deleteManagedMember,
@@ -2390,6 +2391,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       ? await listManagedMembers(db, row.id)
       : []
 
+    const lastError = row
+      ? await loadManagedStatusError(db, {
+          managedId: row.id,
+          status: row.status,
+          residualError: residual.error ?? null,
+          serverIds: [row.serverId, ...memberRows.map((entry) => entry.serverId)],
+        })
+      : null
+
     let listener: { host: string; port: number } | null = null
     if (row?.serverId) {
       const engineCode = row.engine && isManagedEngineCode(row.engine)
@@ -2413,6 +2423,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       status: row?.status ?? null,
       host: listener?.host ?? residual.host ?? null,
       port: listener?.port ?? residual.port ?? null,
+      error: lastError,
       containers: rows.map(serializeContainerRow),
       members: memberRows.map((m) => {
         const serialized = serializeManagedMember(m, null)

@@ -10,7 +10,21 @@ export const accessSchemas = {
       'system:operate',
       'system:manage',
     ],
-    description: 'Atomic permission key from the fixed catalog.',
+    description:
+      'Atomic permission key from the fixed catalog. `system:manage` is superadmin-only and is not grantable.',
+  },
+  GrantablePermissionKey: {
+    type: 'string',
+    enum: [
+      'organization:own',
+      'organization:manage',
+      'team:own',
+      'team:manage',
+      'system:read',
+      'system:operate',
+    ],
+    description:
+      'Permission keys that may be written as access grants. Excludes `system:manage`.',
   },
   InvitationGrantSpec: {
     type: 'object',
@@ -33,9 +47,9 @@ export const accessSchemas = {
         description: 'Only allow grants are supported; deny grants are rejected.',
       },
       permissionKey: {
-        $ref: '#/components/schemas/PermissionKey',
+        $ref: '#/components/schemas/GrantablePermissionKey',
         description:
-          'Atomic permission key. Organization permissions require entityType organization; team permissions require entityType team.',
+          'Grantable permission key. Organization permissions require entityType organization; team permissions require entityType team. `system:manage` is not grantable.',
       },
     },
     description:
@@ -57,7 +71,7 @@ export const accessSchemas = {
     type: 'object',
     required: ['key', 'displayName'],
     properties: {
-      key: { $ref: '#/components/schemas/PermissionKey' },
+      key: { $ref: '#/components/schemas/GrantablePermissionKey' },
       displayName: { type: 'string' },
     },
   },
@@ -135,9 +149,9 @@ export const accessSchemas = {
         description: 'Only allow grants are supported; deny grants are rejected with 400.',
       },
       permissionKey: {
-        $ref: '#/components/schemas/PermissionKey',
+        $ref: '#/components/schemas/GrantablePermissionKey',
         description:
-          'Atomic permission key. Organization keys require an organization resourceId; team keys require a team resourceId.',
+          'Grantable permission key. Organization keys require an organization resourceId; team keys require a team resourceId. `system:manage` is not grantable.',
       },
     },
   },
@@ -265,7 +279,9 @@ export const accessPaths: Record<string, unknown> = {
   '/api/client/v1/permissions': {
     get: {
       tags: ['Authorization'],
-      summary: 'List authorization permissions',
+      summary: 'List grantable authorization permissions',
+      description:
+        'Returns the grantable permission catalog. `system:manage` is superadmin-only and is not listed.',
       security: [{ cookieAuth: [] }],
       responses: {
         '200': {
@@ -557,7 +573,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Create an access grant on an organization or team',
       description:
-        'Requires `organization:own` on the target resource (checked via `getAccessManagementPermission`). The resourceId must resolve to an organization or team entity; permission keys must match the entity kind.',
+        'Requires `organization:own` on the target resource (checked via `getAccessManagementPermission`). The resourceId must resolve to an organization or team entity; permission keys must match the entity kind. `system:manage` cannot be granted.',
       security: [{ cookieAuth: [] }],
       requestBody: {
         required: true,

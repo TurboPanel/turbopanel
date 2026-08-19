@@ -98,7 +98,8 @@ into these session-authenticated routes.
 that writes terminal `command` rows. The WS inbound path (`command-ack`,
 `command-outcome`) only updates the hot `PendingRequestRecord` in the cell. For
 MVP, `daemon.ping`, `server.hostname.set`, `server.timezone.set`,
-`server.ntp.set`, `server.fabric.reconcile`, `server.reboot`,
+`server.ntp.set`, `server.fabric.reconcile`, `server.tls.trust.reconcile`,
+`server.reboot`,
 `environment.deploy`, `environment.lifecycle`, `environment.stop`,
 `managed.apply`, `managed.lifecycle`, `managed.destroy`, `managed.backup`,
 `managed.restore`, `managed.promote`, `managed.ingress.reconcile`,
@@ -335,8 +336,11 @@ nothing beyond the terminal `command` row on failure (same resiliency contract
 as deploy/stop — never revert an already-succeeded command).
 
 **Org TLS library (`tls` table):** organization-scoped certificates (`upload` /
-`lets_encrypt` / `self_signed` / `organization_ca`) in `src/lib/tls/`. At most
-one **active** `organization_ca` per org (partial unique
+`lets_encrypt` / `self_signed` / `organization_ca`) in `src/lib/tls/`. This
+store is **not** the instance-wide platform CA under `/var/lib/turbopanel/tls/`
+— org library routes must never write those paths (daemon trust is unaffected
+by an admin uploading certs in any organization). At most one **active**
+`organization_ca` per org (partial unique
 `uniq_tls_organization_active_ca` where `status != 'revoked'`; rotate marks the
 prior row revoked). Hosting may pin `hosting.tls_id` to a library cert, or leave
 null for **basic self-signed** (Caddy `tls internal`). Library certs — including
@@ -355,7 +359,10 @@ selectable until ready). CRUD: `/api/client/v1/tls`; org CA ensure-or-create
 **`GET /tls/ca`**, rotate **`POST /tls/ca/rotate`**, PEM-only download
 **`GET /tls/ca/download`**. **TurboFabric apply** ships via
 `POST /organizations/:id/fabric/apply` → `server.fabric.reconcile` (see consumer
-paragraph above). **Traditional-web deploy:** compose
+paragraph above). **Platform CA rotation** ships via admin public-URL apply /
+explicit rotate → `server.tls.trust.reconcile` (`{ bundlePem, fingerprint,
+allowRemoval? }`) to every connected server over the existing WSS session.
+**Traditional-web deploy:** compose
 `serviceKind: traditional-web` services are stripped into
 `traditionalWebSites[]` (nginx, Apache, and OpenLiteSpeed all supported) —
 hosting `options.web.php` (`version` / `memoryLimit` / `maxExecutionTime`) and

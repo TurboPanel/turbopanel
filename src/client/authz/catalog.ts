@@ -17,6 +17,12 @@ export const PERMISSIONS = [
 
 export type PermissionKey = (typeof PERMISSIONS)[number]
 
+/** Permissions that may appear on `grant` rows. `system:manage` is superadmin-only. */
+export type GrantablePermissionKey = Exclude<PermissionKey, 'system:manage'>
+
+export const GRANTABLE_PERMISSIONS: readonly GrantablePermissionKey[] =
+  PERMISSIONS.filter((key): key is GrantablePermissionKey => key !== 'system:manage')
+
 export const RESOURCE_KINDS = [
   'organization',
   'workspace',
@@ -65,7 +71,7 @@ export const ENTITY_TYPES = [
 export type EntityType = (typeof ENTITY_TYPES)[number]
 
 // Future: 'apikey' will be added here when API key auth is implemented
-export const SUBJECT_TYPES = ['user', 'team', 'member'] as const
+export const SUBJECT_TYPES = ['user', 'team', 'organization'] as const
 export type SubjectType = (typeof SUBJECT_TYPES)[number]
 
 export const PERMISSION_DISPLAY_NAMES: Record<PermissionKey, string> = {
@@ -85,6 +91,13 @@ const SUBJECT_TYPE_SET = new Set<string>(SUBJECT_TYPES)
 
 export function isPermissionKey(value: string): value is PermissionKey {
   return PERMISSION_KEY_SET.has(value)
+}
+
+/** True when the key may be written as an access grant (excludes `system:manage`). */
+export function isGrantablePermissionKey(
+  value: string,
+): value is GrantablePermissionKey {
+  return isPermissionKey(value) && value !== 'system:manage'
 }
 
 /** True when the key is a platform `system:*` permission (exact-match grants). */
@@ -107,10 +120,10 @@ export function isSubjectType(value: string): value is SubjectType {
 }
 
 export function getPermissionCatalog(): Array<{
-  key: PermissionKey
+  key: GrantablePermissionKey
   displayName: string
 }> {
-  return [...PERMISSIONS]
+  return [...GRANTABLE_PERMISSIONS]
     .toSorted((a, b) => a.localeCompare(b))
     .map((key) => ({
       key,

@@ -39,6 +39,7 @@ import {
 } from '../db/fabric-records.ts'
 import { processCommandEnvelope, isTransientError } from './consumer.ts'
 import type { CommandEnvelope } from './envelope.ts'
+import { parseManagedResidual } from '../../client/managed/serialize.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -2803,11 +2804,12 @@ test('processCommandEnvelope marks managed failed when managed.apply times out',
     assertEquals(updated?.status, 'timed_out')
 
     const [afterManaged] = await db
-      .select({ status: managed.status })
+      .select({ status: managed.status, metadata: managed.metadata })
       .from(managed)
       .where(eq(managed.id, managedId))
       .limit(1)
     assertEquals(afterManaged?.status, 'failed')
+    assertEquals(parseManagedResidual(afterManaged?.metadata).error, 'Command timed out')
 
     // Member must not stay stuck on provisioning after the apply command fails.
     const [afterMember] = await db
@@ -3079,11 +3081,12 @@ test('processCommandEnvelope marks managed failed when lifecycle pending expires
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'timed_out')
     const [managedRow] = await db
-      .select({ status: managed.status })
+      .select({ status: managed.status, metadata: managed.metadata })
       .from(managed)
       .where(eq(managed.id, managedId))
       .limit(1)
     assertEquals(managedRow?.status, 'failed')
+    assertEquals(parseManagedResidual(managedRow?.metadata).error, 'Command timed out')
   })
 })
 
@@ -3117,11 +3120,12 @@ test('processCommandEnvelope marks managed failed when lifecycle command fails',
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
     const [managedRow] = await db
-      .select({ status: managed.status })
+      .select({ status: managed.status, metadata: managed.metadata })
       .from(managed)
       .where(eq(managed.id, managedId))
       .limit(1)
     assertEquals(managedRow?.status, 'failed')
+    assertEquals(parseManagedResidual(managedRow?.metadata).error, 'compose stop failed')
   })
 })
 

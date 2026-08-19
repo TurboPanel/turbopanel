@@ -7,6 +7,8 @@ import {
   DEFAULT_SOCKET_DIR,
   DEFAULT_STATE_DIR,
   DEFAULT_TLS_CA,
+  DEFAULT_TLS_CA_BUNDLE,
+  DEFAULT_TLS_CA_KEY,
   DEFAULT_TLS_CERT,
   DEFAULT_UI_ROOT,
   INSTANCE_SOCKET_MODE,
@@ -16,6 +18,8 @@ import {
   resolveInstanceConfigDir,
   resolveInstanceRuntimeConfigPaths,
   resolveInstanceSocket,
+  resolveInstanceTlsCaBundlePath,
+  resolveInstanceTlsCaKeyPath,
   resolveInstanceTlsCaPath,
   resolveInstanceTlsCertPath,
   resolveLogDir,
@@ -153,6 +157,11 @@ test('caddyUnixDialPath strips the leading slash for unix// dialing', () => {
 test('TLS cert/CA paths honor overrides and fall back to defaults', () => {
   assertEquals(resolveInstanceTlsCertPath({}), DEFAULT_TLS_CERT)
   assertEquals(resolveInstanceTlsCaPath({}), DEFAULT_TLS_CA)
+  assertEquals(resolveInstanceTlsCaBundlePath({}), DEFAULT_TLS_CA_BUNDLE)
+  assertEquals(resolveInstanceTlsCaKeyPath({}), DEFAULT_TLS_CA_KEY)
+  assertEquals(DEFAULT_TLS_CA, '/var/lib/turbopanel/tls/ca.crt')
+  assertEquals(DEFAULT_TLS_CA_BUNDLE, '/var/lib/turbopanel/tls/ca-bundle.pem')
+  assertEquals(DEFAULT_TLS_CA_KEY, '/var/lib/turbopanel/tls/ca.key')
   assertEquals(
     resolveInstanceTlsCertPath({ CADDY_TLS_CERT: ' /tmp/leaf.crt ' }),
     '/tmp/leaf.crt',
@@ -160,6 +169,26 @@ test('TLS cert/CA paths honor overrides and fall back to defaults', () => {
   assertEquals(
     resolveInstanceTlsCaPath({ TURBOPANEL_TLS_CA: ' /tmp/ca.crt ' }),
     '/tmp/ca.crt',
+  )
+  assertEquals(
+    resolveInstanceTlsCaBundlePath({ TURBOPANEL_TLS_CA_BUNDLE: ' /tmp/ca-bundle.pem ' }),
+    '/tmp/ca-bundle.pem',
+  )
+  assertEquals(
+    resolveInstanceTlsCaKeyPath({ TURBOPANEL_TLS_CA_KEY: ' /tmp/ca.key ' }),
+    '/tmp/ca.key',
+  )
+  assertEquals(
+    resolveInstanceTlsCaPath({ TURBOPANEL_STATE_DIR: '/var/custom' }),
+    '/var/custom/tls/ca.crt',
+  )
+  assertEquals(
+    resolveInstanceTlsCaBundlePath({ TURBOPANEL_STATE_DIR: '/var/custom' }),
+    '/var/custom/tls/ca-bundle.pem',
+  )
+  assertEquals(
+    resolveInstanceTlsCaKeyPath({ TURBOPANEL_STATE_DIR: '/var/custom' }),
+    '/var/custom/tls/ca.key',
   )
 })
 

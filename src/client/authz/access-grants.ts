@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { grant } from '../../lib/db/schema.ts'
+import type { SubjectType } from './catalog.ts'
 
 /**
  * Every persisted grant is allow-only. Authorization evaluation treats each
@@ -10,7 +11,7 @@ import { grant } from '../../lib/db/schema.ts'
  */
 export type AccessRecord = {
   id: string
-  subjectKind: 'user' | 'team' | 'organization'
+  subjectKind: SubjectType
   subjectId: string
   resourceId: string
   effect: 'allow'

@@ -28,7 +28,7 @@ import {
 import { getDaemonOpenApiSpec } from "./openapi/index.ts";
 import { buildDeploymentSecretsRehydrate } from "./rehydrate-secrets.ts";
 import { buildDaemonScalarHtml } from "../scalar-html.ts";
-import { resolveInstanceTlsCaPath } from "../server-paths.ts";
+import { resolveInstanceTlsCaServePath } from "../server-paths.ts";
 import { DAEMON_API_PREFIX } from "../surfaces.ts";
 import { normalizeMachineKey } from "../lib/machine-key.ts";
 import {
@@ -614,7 +614,7 @@ export function registerDaemonApiRoutes(
       }
     }
     try {
-      const cert = await Deno.readTextFile(resolveInstanceTlsCaPath());
+      const cert = await Deno.readTextFile(resolveInstanceTlsCaServePath());
       return c.body(cert, 200, { "content-type": "application/x-pem-file" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

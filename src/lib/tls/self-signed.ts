@@ -1,6 +1,10 @@
 /**
  * Mint short-lived self-signed RSA leaves and organization CA material for the
  * org TLS library. Workers + Deno safe (Web Crypto only).
+ *
+ * This module must never write the instance-wide platform CA
+ * (`<stateDir>/tls/ca.crt|ca.key|ca-bundle.pem`). Org TLS library material is
+ * scoped to hosting/managed-DB leaves and cannot affect daemon trust.
  */
 
 import {

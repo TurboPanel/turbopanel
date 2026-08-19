@@ -113,6 +113,16 @@ test('parseCreateAccessBody accepts allow-only grants for all subject kinds', ()
     assertEquals(parsed.permissionKey, 'team:manage')
   }
 
+  const memberKind = parseCreateAccessBody({
+    subjectKind: 'member',
+    subjectId: validUuid,
+    resourceId: otherUuid,
+    permissionKey: 'organization:manage',
+  })
+  if (!('ok' in memberKind) || memberKind.ok !== false) {
+    throw new TypeError('expected member subjectKind rejection')
+  }
+
   const omittedEffect = parseCreateAccessBody({
     subjectKind: 'user',
     subjectId: validUuid,

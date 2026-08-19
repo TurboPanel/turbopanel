@@ -109,6 +109,7 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.reboot': 120_000,
   'server.timezone.set': 300_000,
   'server.fabric.reconcile': 300_000,
+  'server.tls.trust.reconcile': 300_000,
   'environment.deploy': 600_000,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
@@ -135,6 +136,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.reboot' ||
     type === 'server.timezone.set' ||
     type === 'server.fabric.reconcile' ||
+    type === 'server.tls.trust.reconcile' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
@@ -357,7 +359,7 @@ async function enqueueAndAwaitOutcome(
       serverId: envelope.serverId,
       resultStatus: 'timed_out',
     })
-    await applyManagedFailedSideEffect(db, record, deps)
+    await applyManagedFailedSideEffect(db, record, deps, 'Command timed out')
     await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
     await applyFabricFailedSideEffect(db, record, envelope)
   }
@@ -855,6 +857,28 @@ async function applyManagedApplySideEffect(
     const payload = parseManagedApplyPayload(record.payload)
     const applyResult = parseManagedApplyResult(result)
     const updatedAt = nowIso()
+    // #region agent log
+    fetch('http://localhost:7928/ingest/ca9ed83a-836b-44e5-96a8-2a946923e182', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Debug-Session-Id': '323212',
+      },
+      body: JSON.stringify({
+        sessionId: '323212',
+        runId: 'monitor-fix',
+        hypothesisId: 'M1',
+        location: 'consumer.ts:applyManagedApplySideEffect',
+        message: 'managed.apply succeeded after monitor ensure',
+        data: {
+          commandId: record.id,
+          managedId: payload.managedId,
+          appliedUserCount: applyResult.appliedUsers?.length ?? 0,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {})
+    // #endregion
     // `managed.server_id` is the primary placement pin. Fan-out apply sends one
     // command per member — only the primary member may update the pin / host /
     // port so a late replica success cannot re-home the cluster.
@@ -867,6 +891,7 @@ async function applyManagedApplySideEffect(
           metadata: sql`COALESCE(${managed.metadata}, '{}'::jsonb) || ${JSON.stringify({
             host: applyResult.host,
             port: applyResult.port,
+            error: null,
           })}::jsonb`,
           updatedAt,
         })
@@ -876,6 +901,9 @@ async function applyManagedApplySideEffect(
         .update(managed)
         .set({
           status: 'ready',
+          metadata: sql`COALESCE(${managed.metadata}, '{}'::jsonb) || ${JSON.stringify({
+            error: null,
+          })}::jsonb`,
           updatedAt,
         })
         .where(eq(managed.id, payload.managedId))
@@ -1461,16 +1489,25 @@ function shouldMarkManagedFailedOnCommandType(type: string): boolean {
 async function markManagedRowsFailedFromCommand(
   db: Db,
   record: CommandRecord,
+  error?: string,
 ): Promise<void> {
   try {
     const managedId = resolveManagedIdFromPayload(record.type, record.payload)
     if (!managedId) return
     const updatedAt = nowIso()
+    const trimmed = error?.trim()
     await db
       .update(managed)
       .set({
         status: 'failed',
         updatedAt,
+        ...(trimmed
+          ? {
+              metadata: sql`COALESCE(${managed.metadata}, '{}'::jsonb) || ${JSON.stringify({
+                error: trimmed,
+              })}::jsonb`,
+            }
+          : {}),
       })
       .where(eq(managed.id, managedId))
 
@@ -1508,13 +1545,15 @@ async function applyManagedFailedSideEffect(
   db: Db,
   record: CommandRecord,
   deps?: CommandConsumerDeps,
+  error?: string,
 ): Promise<void> {
   const meta = await getCommandMetadata(db, record.id)
   if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps)) {
     return
   }
   if (!shouldMarkManagedFailedOnCommandType(record.type)) return
-  await markManagedRowsFailedFromCommand(db, record)
+  const fromMeta = typeof meta?.error === 'string' ? meta.error : undefined
+  await markManagedRowsFailedFromCommand(db, record, error ?? fromMeta ?? record.error ?? undefined)
 }
 
 async function applySucceededSideEffects(
@@ -1833,7 +1872,7 @@ async function handlePendingFailed(
     resultStatus: 'failed',
     error,
   })
-  await applyManagedFailedSideEffect(db, record, deps)
+  await applyManagedFailedSideEffect(db, record, deps, error)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
   await applyFabricFailedSideEffect(db, record, envelope)
 }
@@ -1853,7 +1892,7 @@ async function handlePendingExpired(
     pendingStatus: pending.status,
     resultStatus: 'timed_out',
   })
-  await applyManagedFailedSideEffect(db, record, deps)
+  await applyManagedFailedSideEffect(db, record, deps, pending.error ?? 'Command timed out')
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
   await applyFabricFailedSideEffect(db, record, envelope)
 }

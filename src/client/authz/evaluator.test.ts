@@ -75,6 +75,7 @@ async function withTestFixtures(
     })
   } finally {
     await db.delete(grant).where(eq(grant.actorId, userId))
+    await db.delete(grant).where(eq(grant.entityId, organizationId))
     await db.delete(teammate).where(eq(teammate.userId, userId))
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
     await db.delete(team).where(eq(team.organizationId, organizationId))
@@ -572,6 +573,99 @@ test('organization:manage grant does not satisfy system permissions; explicit an
     } finally {
       await db.delete(user).where(eq(user.id, adminId))
       await db.delete(user).where(eq(user.id, superId))
+    }
+  })
+})
+
+test('explicit system:manage grants do not satisfy can(); system:operate grants do', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permission: 'system:manage',
+    })
+
+    const manageAllowed = await can(
+      db,
+      userId,
+      'system:manage',
+      'organization',
+      organizationId,
+    )
+    if (manageAllowed) {
+      throw new TypeError('regular user with explicit system:manage grant must still be denied')
+    }
+
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permission: 'system:operate',
+    })
+
+    const operateAllowed = await can(
+      db,
+      userId,
+      'system:operate',
+      'organization',
+      organizationId,
+    )
+    if (!operateAllowed) {
+      throw new TypeError('explicit system:operate grant should still satisfy')
+    }
+  })
+})
+
+test('organization-wide subject grants apply to team members', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId, teamId, workspaceId }) => {
+    await db.insert(teammate).values({ teamId, userId })
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'organization',
+      actorId: organizationId,
+      permission: 'organization:manage',
+    })
+
+    const memberAllowed = await can(
+      db,
+      userId,
+      'organization:manage',
+      'workspace',
+      workspaceId,
+    )
+    if (!memberAllowed) {
+      throw new TypeError('team members should inherit organization-subject grants')
+    }
+
+    const [outsider] = await db
+      .insert(user)
+      .values({
+        email: `evaluator-outsider-${crypto.randomUUID()}@example.com`,
+        isEmailVerified: true,
+        role: 'user',
+      })
+      .returning({ id: user.id })
+    const outsiderId = outsider!.id
+
+    try {
+      const outsiderAllowed = await can(
+        db,
+        outsiderId,
+        'organization:manage',
+        'workspace',
+        workspaceId,
+      )
+      if (outsiderAllowed) {
+        throw new TypeError(
+          'users outside the organization must not inherit organization-subject grants',
+        )
+      }
+    } finally {
+      await db.delete(user).where(eq(user.id, outsiderId))
     }
   })
 })

@@ -1,11 +1,15 @@
 import { eq, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { grant, team, teammate } from '../../lib/db/schema.ts'
-import { type PermissionKey, isSystemPermissionKey } from './catalog.ts'
+import {
+  type PermissionKey,
+  type SubjectType,
+  isSystemPermissionKey,
+} from './catalog.ts'
 
 export type { PermissionKey }
 
-export type SubjectKind = 'user' | 'team' | 'organization'
+export type SubjectKind = SubjectType
 
 export type Subject = {
   subjectKind: SubjectKind
@@ -687,6 +691,8 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
  * organization apply to all entities in that org. For team-scoped checks on a
  * team entity, direct `team:own` / `team:manage` grants on the team are also
  * honored (`team:own` requires an owner grant; `team:manage` accepts either).
+ * `system:manage` is satisfied only by `user.role === 'superadmin'` —
+ * organization grant rows never satisfy it.
  */
 export async function can(
   db: Db,
@@ -726,11 +732,17 @@ export async function can(
         : sql`ag.permission IN ('team:own', 'team:manage')`
   }
 
-  // `system:manage` is superadmin-only; other keys (including system:read /
-  // system:operate) keep the broad platform-admin bypass.
+  // `system:manage` is superadmin-only: the role bypass is superadmin, and
+  // organization grant rows never satisfy it (even an explicit leftover grant).
+  // Other keys (including system:read / system:operate) keep org grant hits
+  // plus the broad platform-admin bypass.
   const platformAdminRoleFilter = permissionKey === 'system:manage'
     ? sql`role = 'superadmin'`
     : sql`role IN ('superadmin', 'admin')`
+
+  const orgGrantHitsSatisfy = permissionKey === 'system:manage'
+    ? sql`false`
+    : sql`EXISTS(SELECT 1 FROM org_hits)`
 
   const rows = (await db.execute(sql`
     WITH
@@ -765,7 +777,7 @@ export async function can(
     )
     SELECT (
       EXISTS(SELECT 1 FROM "user" WHERE id = ${userId}::uuid AND ${platformAdminRoleFilter})
-      OR EXISTS(SELECT 1 FROM org_hits)
+      OR ${orgGrantHitsSatisfy}
       OR EXISTS(SELECT 1 FROM team_hits)
     ) AS allowed
   `)) as unknown as Array<{ allowed: boolean | null }>

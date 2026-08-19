@@ -475,6 +475,12 @@ export const managedSchemas = {
       status: { type: 'string', nullable: true },
       host: { type: 'string', nullable: true },
       port: { type: 'number', nullable: true },
+      error: {
+        type: 'string',
+        nullable: true,
+        description:
+          'Latest apply-family and/or ingress reconcile failure when status is failed; otherwise null.',
+      },
       containers: {
         type: 'array',
         items: { $ref: '#/components/schemas/ContainerRow' },

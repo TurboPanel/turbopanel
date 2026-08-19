@@ -214,6 +214,19 @@ export type NtpSetCommandResult = {
   summary?: string
 }
 
+/** Must stay in sync with the daemon `server.tls.trust.reconcile` shape. */
+export type TlsTrustReconcileCommandPayload = {
+  bundlePem: string
+  fingerprint: string
+  allowRemoval?: boolean
+}
+
+/** Must stay in sync with the daemon `server.tls.trust.reconcile` shape. */
+export type TlsTrustReconcileCommandResult = {
+  applied: boolean
+  fingerprint: string
+}
+
 export function parseTimezoneSetPayload(
   value: unknown,
 ): TimezoneSetCommandPayload {
@@ -334,6 +347,52 @@ export function parseNtpSetResult(value: unknown): NtpSetCommandResult {
   if (fallback !== undefined) result.fallbackNtpServers = fallback
   if (isString(value.summary)) result.summary = value.summary
   return result
+}
+
+export function parseTlsTrustReconcilePayload(
+  value: unknown,
+): TlsTrustReconcileCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid tls trust reconcile payload')
+  }
+  const bundlePem = value.bundlePem
+  const fingerprint = value.fingerprint
+  if (!isString(bundlePem) || bundlePem.trim().length === 0) {
+    throw new Error('bundlePem must be a non-empty PEM string')
+  }
+  if (!isString(fingerprint) || fingerprint.trim().length === 0) {
+    throw new Error('fingerprint must be a non-empty string')
+  }
+  if (!bundlePem.includes('BEGIN CERTIFICATE')) {
+    throw new Error('bundlePem must contain at least one certificate')
+  }
+  const payload: TlsTrustReconcileCommandPayload = {
+    bundlePem,
+    fingerprint,
+  }
+  if (value.allowRemoval !== undefined) {
+    if (typeof value.allowRemoval !== 'boolean') {
+      throw new TypeError('allowRemoval must be a boolean')
+    }
+    payload.allowRemoval = value.allowRemoval
+  }
+  return payload
+}
+
+export function parseTlsTrustReconcileResult(
+  value: unknown,
+): TlsTrustReconcileCommandResult {
+  if (!isRecord(value)) {
+    throw new Error('Invalid tls trust reconcile result')
+  }
+  if (typeof value.applied !== 'boolean') {
+    throw new TypeError('applied must be a boolean')
+  }
+  const fingerprint = value.fingerprint
+  if (!isString(fingerprint) || fingerprint.trim().length === 0) {
+    throw new Error('fingerprint must be a non-empty string')
+  }
+  return { applied: value.applied, fingerprint }
 }
 
 function parseDaemonBuild(value: unknown): PingCommandResult['daemonBuild'] {
@@ -4670,6 +4729,7 @@ export function parseCommandPayload(
   | NtpSetCommandPayload
   | RebootCommandPayload
   | FabricReconcileCommandPayload
+  | TlsTrustReconcileCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -4696,6 +4756,8 @@ export function parseCommandPayload(
       return parseRebootPayload(value)
     case 'server.fabric.reconcile':
       return parseFabricReconcilePayload(value)
+    case 'server.tls.trust.reconcile':
+      return parseTlsTrustReconcilePayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.lifecycle':
@@ -4735,6 +4797,7 @@ export function parseCommandResult(
   | NtpSetCommandResult
   | RebootCommandResult
   | FabricReconcileCommandResult
+  | TlsTrustReconcileCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -4761,6 +4824,8 @@ export function parseCommandResult(
       return parseRebootResult(value)
     case 'server.fabric.reconcile':
       return parseFabricReconcileResult(value)
+    case 'server.tls.trust.reconcile':
+      return parseTlsTrustReconcileResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.lifecycle':

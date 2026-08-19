@@ -28,6 +28,7 @@ import {
   generateRequestId,
 } from "../daemon/cell/protocol.ts";
 import { getDaemonCellRegistry, getDb } from "../db.ts";
+import { getCommandQueue } from "../lib/commands/queue.ts";
 import { cellTrace } from "../logger.ts";
 import { emptyServerIps } from "../server-addresses.ts";
 import { buildAdminScalarHtml } from "../scalar-html.ts";
@@ -62,6 +63,7 @@ import {
   resolvePublicUrlsForApply,
   waitForPublicUrlsApply,
 } from "./routes-helpers.ts";
+import { enqueuePlatformCaTrustReconcileBestEffort } from "./tls-trust-reconcile.ts";
 
 const ADDRESSES_TIMEOUT_MS = 10_000;
 
@@ -356,6 +358,17 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
       urlsResult.urls,
     );
     const response = publicUrlsApplyWaitToResponse(result);
+    if (response.status === 200) {
+      const commandQueue = getCommandQueue(c);
+      const actorId = c.get("session")?.userId;
+      if (commandQueue && actorId) {
+        await enqueuePlatformCaTrustReconcileBestEffort({
+          db,
+          commandQueue,
+          actorId,
+        });
+      }
+    }
     return c.json(response.body, response.status);
   });
 

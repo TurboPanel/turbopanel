@@ -131,6 +131,27 @@ test('validatePermissionEntityCompatibility rejects system permissions on non-or
   }
 })
 
+test('validatePermissionEntityCompatibility rejects system:manage even on organization entities', () => {
+  const onOrg = validatePermissionEntityCompatibility('system:manage', 'organization')
+  if (onOrg.ok) {
+    throw new TypeError('system:manage on organization should be rejected')
+  }
+  assertEquals(onOrg.error, 'system:manage cannot be granted')
+
+  const onTeam = validatePermissionEntityCompatibility('system:manage', 'team')
+  if (onTeam.ok) {
+    throw new TypeError('system:manage on team should be rejected')
+  }
+  assertEquals(onTeam.error, 'system:manage cannot be granted')
+})
+
+test('validatePermissionEntityCompatibility still allows system:operate on organization entities', () => {
+  const operateOnOrg = validatePermissionEntityCompatibility('system:operate', 'organization')
+  if (!operateOnOrg.ok) {
+    throw new TypeError('system:operate on organization should be allowed')
+  }
+})
+
 it('validatePermissionEntityCompatibility rejects team permissions on non-team entities', () => {
   const teamOwn = validatePermissionEntityCompatibility('team:own', 'organization')
   if (teamOwn.ok) {
@@ -187,6 +208,29 @@ it('createAccessGrant rejects invalid permission and entity combinations', async
     })
     if (!validTeam.ok) {
       throw new Error(`valid team grant should succeed: ${validTeam.error}`)
+    }
+
+    const systemManage = await createAccessGrant(db, {
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permissionKey: 'system:manage',
+    })
+    if (systemManage.ok || systemManage.status !== 400) {
+      throw new TypeError('system:manage grant should return 400')
+    }
+    assertEquals(systemManage.error, 'system:manage cannot be granted')
+
+    const systemOperate = await createAccessGrant(db, {
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permissionKey: 'system:operate',
+    })
+    if (!systemOperate.ok) {
+      throw new TypeError(`system:operate grant should succeed: ${systemOperate.error}`)
     }
   })
 })

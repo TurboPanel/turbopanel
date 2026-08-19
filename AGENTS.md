@@ -365,8 +365,11 @@ dev user. In **production** it is **`2770 tp:tp`** (setgid) so the
 | `TURBOPANEL_UI_ROOT`        | `/opt/turbopanel/share/ui`     | Directory of `expo export --platform web` output (local manual dev typically sets `../ui/dist`)                                                                                                                                                                                                                                 |
 | `TURBOPANEL_UI_SERVICE`     | `turbopanel-ui`                | Name of the Expo systemd unit on managed hosts (injected for orchestration; no instance API surface today)                                                                                                                                                                                                                      |
 | `CADDY_PORT`                | `8443`                         | HTTPS listen port                                                                                                                                                                                                                                                                                                               |
-| `CADDY_TLS_CERT`            | `./certs/self-signed.crt`      | Server leaf certificate (signed by platform CA)                                                                                                                                                                                                                                                                                 |
+| `CADDY_TLS_CERT`            | `./certs/self-signed.crt`      | Server leaf certificate (signed by the platform CA; stays under the instance `certs/` dir)                                                                                                                                                                      |
 | `CADDY_TLS_KEY`             | `./certs/self-signed.key`      | Server leaf private key                                                                                                                                                                                                                                                                                                         |
+| `TURBOPANEL_TLS_CA`         | `/var/lib/turbopanel/tls/ca.crt` | Durable platform CA (override; default is `${TURBOPANEL_STATE_DIR}/tls/ca.crt`)                                                                                                                                                                               |
+| `TURBOPANEL_TLS_CA_KEY`     | `/var/lib/turbopanel/tls/ca.key` | Durable platform CA private key                                                                                                                                                                                                                               |
+| `TURBOPANEL_TLS_CA_BUNDLE`  | `/var/lib/turbopanel/tls/ca-bundle.pem` | Current+retired PEM bundle served at `GET /api/daemon/v1/instance/ca`                                                                                                                                                                                      |
 | `TURBOPANEL_TLS_EXTRA_SANS` | —                              | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`)                                                                                                                                                                                                                                                           |
 | `TURBOPANEL_PUBLIC_URLS`    | —                              | Comma-separated list of URLs/hosts this control plane is reachable at (e.g. `https://panel.example.com,https://huey.lan:8443`). Persisted in the `setting` table by the admin API; read by `generate-self-signed-cert.mjs` to derive cert SANs. Also consulted by `resolvePublicBaseUrl` as the preferred install-command host. |
 
@@ -375,7 +378,8 @@ config `/etc/turbopanel`, state `/var/lib/turbopanel`, logs
 `/var/log/turbopanel`, runtime `/run/turbopanel`, static UI
 `/opt/turbopanel/share/ui` — and every path is env-overridable
 (`TURBOPANEL_CONFIG_DIR`, `TURBOPANEL_STATE_DIR`, `TURBOPANEL_LOG_DIR`,
-`TURBOPANEL_RUN_DIR`, `TURBOPANEL_UI_ROOT`, `TURBOPANEL_SOCKET(_DIR)`).
+`TURBOPANEL_RUN_DIR`, `TURBOPANEL_UI_ROOT`, `TURBOPANEL_SOCKET(_DIR)`,
+`TURBOPANEL_TLS_CA`, `TURBOPANEL_TLS_CA_KEY`, `TURBOPANEL_TLS_CA_BUNDLE`).
 Co-located dev uses the same FHS mutable paths by default, all
 **dev-user-owned**; source repos live under `$HOME` (`~/turbopaneld`, `~/turbopanel`,
 `~/ui`, `~/website`). The module has no separate dev-mode branch — Ansible
@@ -589,17 +593,24 @@ Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp` in production.
 
 - Entrypoint: `https://<host>:8443` (this `Caddyfile`) — binds all interfaces;
   use `localhost` or the machine's LAN IP.
-- Self-hosted TLS uses a **platform CA** (`certs/ca.crt` + `certs/ca.key`) that
-  signs a **server leaf cert** (`certs/self-signed.crt` + `.key`) presented by
-  Caddy (`auto_https off`, no Let's Encrypt). **`auto_https off` is mandatory
+- Self-hosted TLS uses a **platform CA** stored in the durable state tree
+  (`/var/lib/turbopanel/tls/ca.crt` + `ca.key`, plus `ca-bundle.pem` for
+  current+retired overlap). The Caddy **leaf** stays under the instance
+  `certs/` dir (`self-signed.crt` + `.key`). **`auto_https off` is mandatory
   and must never be removed.** Caddy must never auto-provision certs via ACME or
   on-demand TLS. All cert issuance goes through
   `scripts/generate-self-signed-cert.mjs` (self-hosted, platform CA) or an
   explicitly-configured publicly-trusted cert. The `instance-certs-apply.yml`
-  playbook is the runtime cert-regen path triggered by the admin public-URL
-  apply action. The CA is long-lived and can issue additional certificates
-  later; daemons fetch it from `GET /api/daemon/v1/instance/ca`. Trust
-  `certs/ca.crt` in browsers/OS to avoid warnings.
+  playbook is the runtime **leaf-only** cert-regen path triggered by the admin
+  public-URL apply action — it never passes `TURBOPANEL_TLS_CA_ROTATE`.
+  `ensureCa()` migrates legacy checkout `certs/ca.*` once and refuses to mint
+  over an unreadable existing CA. Rotation is opt-in
+  (`TURBOPANEL_TLS_CA_ROTATE=1`) and keeps the outgoing root in the bundle until
+  daemons ack `server.tls.trust.reconcile`. Daemons fetch the bundle from
+  `GET /api/daemon/v1/instance/ca`. Trust the platform CA in browsers/OS to
+  avoid warnings. The **org TLS library** (`/api/client/v1/tls`, `/tls/ca`) is a
+  separate per-organization store for hosting/managed-DB leaves and must never
+  write platform CA paths.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO`
   for Deno).
 
@@ -616,13 +627,17 @@ valid configurations:
 
 | Path                          | CA trust                                                                                                           | SAN requirement                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Self-signed (self-hosted)** | Daemon trusts the downloaded platform CA (`TURBOPANEL_INSTANCE_CA`, fetched from `GET /api/daemon/v1/instance/ca`) | The leaf cert **must** include the hostname the daemon dials. SANs are derived from the configured public URL(s) — `TURBOPANEL_PUBLIC_URL` / `TURBOPANEL_BASE_URL` / `TURBOPANEL_INSTANCE_URL` and `TURBOPANEL_TLS_EXTRA_SANS` (see `scripts/generate-self-signed-cert.mjs`). Never hardcode the hostname.                                                                                                                    |
+| **Self-signed (self-hosted)** | Daemon trusts the downloaded **platform CA bundle** (`TURBOPANEL_INSTANCE_CA` → `/etc/turbopanel/instance-ca.pem`, fetched from `GET /api/daemon/v1/instance/ca`). Instance material lives under `/var/lib/turbopanel/tls/` (`ca.crt` / `ca.key` / `ca-bundle.pem`) — not the replaceable checkout. Distinct from the org TLS library. | The leaf cert **must** include the hostname the daemon dials. SANs are derived from the configured public URL(s) — `TURBOPANEL_PUBLIC_URL` / `TURBOPANEL_BASE_URL` / `TURBOPANEL_INSTANCE_URL` and `TURBOPANEL_TLS_EXTRA_SANS` (see `scripts/generate-self-signed-cert.mjs`). Never hardcode the hostname.                                                                                                                    |
 | **Let's Encrypt**             | Publicly-valid → daemon uses the **system trust store** (ship **no** `TURBOPANEL_INSTANCE_CA`)                     | The real cert already covers the public hostname.                                                                                                                                                                                                                                                                                                                                                                             |
 | **Cloudflare tunnel / proxy** | Cloudflare's edge cert is publicly-valid → **system trust**                                                        | Daemon dials the public Cloudflare hostname, which the edge cert already covers. **Caveat:** behind a tunnel the instance cannot auto-discover its own public hostname (cloudflared dials out), so the reachable URL(s) must be **declared by the operator** (admin surface / `TURBOPANEL_PUBLIC_URL`), not auto-detected. The self-signed origin leg (cloudflared → local Caddy) is separate from what the daemon validates. |
 
 Note: `Deno.createHttpClient({ caCerts })` **adds** to the system roots (does
 not replace them), so configuring the platform CA does not break validation of
-publicly-trusted certs.
+publicly-trusted certs. The daemon re-reads `instance-ca.pem` on each reconnect
+(mtime+size cache) and parks TLS chain/SAN/expiry failures as `tls-trust`
+instead of looping every 30 s. Control-plane rotation appends the outgoing CA
+to the bundle, then fans `server.tls.trust.reconcile` over the existing WSS
+session so the new anchor lands **before** the old one is retired.
 
 **Install command TLS** follows the selected origin (`src/lib/install-tls.ts`),
 not “we are in development”:
@@ -895,7 +910,7 @@ orientation; the detail moved to:
 | **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                                                                                                                                                                                                |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                                                                                                                                                                                              |
 | **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/lib/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                                                                                                          |
-| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL and `managed.ha.reconcile` for per-org Orchestrator (lazy: HA only on servers that host a primary or `failover` replica). Promote / DR / auto-failover journal in `recovery`; detection is unsolicited `managed-ha-event`. All status reads are Postgres-backed; logs use cell `managed-logs-request` |
+| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL and `managed.ha.reconcile` for per-org Orchestrator (lazy: HA only on servers that host a primary or `failover` replica). Promote / DR / auto-failover journal in `recovery`; detection is unsolicited `managed-ha-event`. All status reads are Postgres-backed (`GET …/managed/status` includes `error` when status is `failed`); logs use cell `managed-logs-request` |
 | **Bindings**                      | `src/client/bindings/`                              | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                                                                                                     |
 | **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                                                                                                                                                                                              |
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                             |
@@ -1059,10 +1074,13 @@ sequenceDiagram
   `organization:manage`, `team:own` / `team:manage`, `system:read` /
   `system:operate` / `system:manage`), `can`/`listVisible`, grant management.
   Org owner/manager grants never satisfy `system:*`; platform-admin bypass
-  covers read/operate but `system:manage` is superadmin-only. Mutation routes on
-  workspace-tree entities call `assertNotSystemOwnedOr403` after the org check
-  (`403` `system_resource_immutable`). Client workspace responses include
-  `workspace.kind` (`user` \| `system`).
+  covers read/operate but `system:manage` is superadmin-only. Explicit
+  `system:manage` grants are rejected at create time and ignored by `can()`.
+  `GET /permissions` lists grantable keys only. Organization-wide subject
+  grants (`actor_type=organization`) apply to every teammate in that org.
+  Mutation routes on workspace-tree entities call `assertNotSystemOwnedOr403`
+  after the org check (`403` `system_resource_immutable`). Client workspace
+  responses include `workspace.kind` (`user` \| `system`).
 - `src/daemon/api-routes.ts` / `src/daemon/deno-ws.ts` /
   `src/daemon/workers-ws.ts` — daemon REST + WS (cell-backed)
 - `src/daemon/cell/contracts.ts` — `DaemonCell` interface, `DaemonCellRegistry`,

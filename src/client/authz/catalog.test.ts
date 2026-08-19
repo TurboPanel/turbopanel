@@ -3,7 +3,9 @@ import {
   ENTITY_TYPES,
   getPermissionCatalog,
   GRANT_ENTITY_TYPES,
+  GRANTABLE_PERMISSIONS,
   isEntityType,
+  isGrantablePermissionKey,
   isGrantEntityType,
   isPermissionKey,
   isSubjectType,
@@ -52,21 +54,32 @@ test('isEntityType and isGrantEntityType enforce their respective catalogs', () 
   assertEquals(isGrantEntityType('fabric'), false)
 })
 
-test('isSubjectType accepts user, team, and member only', () => {
+test('isGrantablePermissionKey excludes system:manage', () => {
+  for (const key of GRANTABLE_PERMISSIONS) {
+    assertEquals(isGrantablePermissionKey(key), true)
+  }
+  assertEquals(isGrantablePermissionKey('system:manage'), false)
+  assertEquals(isGrantablePermissionKey('organization:read'), false)
+})
+
+test('isSubjectType accepts user, team, and organization', () => {
   for (const subject of SUBJECT_TYPES) {
     assertEquals(isSubjectType(subject), true)
   }
-  assertEquals(isSubjectType('organization'), false)
+  assertEquals(isSubjectType('organization'), true)
+  assertEquals(isSubjectType('member'), false)
   assertEquals(isSubjectType('apikey'), false)
 })
 
-test('getPermissionCatalog returns sorted keys with display names', () => {
+test('getPermissionCatalog returns sorted grantable keys with display names', () => {
   const catalog = getPermissionCatalog()
-  assertEquals(catalog.length, PERMISSIONS.length)
+  assertEquals(catalog.length, GRANTABLE_PERMISSIONS.length)
 
-  const keys = catalog.map((entry) => entry.key)
+  const keys: string[] = catalog.map((entry) => entry.key)
   const sorted = [...keys].sort((a, b) => a.localeCompare(b))
   assertEquals(keys, sorted)
+  assertEquals(keys.includes('system:manage'), false)
+  assertEquals(keys.includes('system:operate'), true)
 
   for (const entry of catalog) {
     assertEquals(entry.displayName, PERMISSION_DISPLAY_NAMES[entry.key])

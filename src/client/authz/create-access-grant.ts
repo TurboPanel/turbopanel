@@ -22,17 +22,20 @@ import {
   ip,
 } from '../../lib/db/schema.ts'
 import {
+  isGrantablePermissionKey,
   isGrantEntityType,
   isPermissionKey,
+  isSubjectType,
   isSystemPermissionKey,
   type PermissionKey,
+  type SubjectType,
 } from './catalog.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type CreateAccessGrantInput = {
-  actorType: 'user' | 'team' | 'organization'
+  actorType: SubjectType
   actorId: string
   entityType: string
   entityId: string
@@ -59,6 +62,13 @@ export function validatePermissionEntityCompatibility(
   permissionKey: PermissionKey,
   entityType: string,
 ): { ok: true } | { ok: false; error: string } {
+  if (!isGrantablePermissionKey(permissionKey)) {
+    return {
+      ok: false,
+      error: `${permissionKey} cannot be granted`,
+    }
+  }
+
   if (
     (permissionKey === 'organization:own' || permissionKey === 'organization:manage') &&
     entityType !== 'organization'
@@ -555,11 +565,7 @@ export async function createAccessGrant(
 
   const grantEntityType = input.entityType
 
-  if (
-    input.actorType !== 'user' &&
-    input.actorType !== 'team' &&
-    input.actorType !== 'organization'
-  ) {
+  if (!isSubjectType(input.actorType)) {
     return { ok: false, status: 400, error: 'Invalid request' }
   }
 

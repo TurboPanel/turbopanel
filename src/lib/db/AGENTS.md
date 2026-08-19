@@ -578,10 +578,13 @@ team membership). License endpoints (`GET`/`POST` `/licenses`, `DELETE`
 Permissions are **static code constants** in `../../client/authz/catalog.ts` —
 there is nothing to seed. Seven permissions exist: `organization:own`,
 `organization:manage`, `team:own`, `team:manage`, `system:read`,
-`system:operate`, and `system:manage`. Never edit permissions in Studio — they
-do not exist as DB rows. **`ENTITY_TYPES`** and **`SUBJECT_TYPES`** are also
+`system:operate`, and `system:manage`. `system:manage` is **not grantable**
+(superadmin-only). Never edit permissions in Studio — they
+do not exist as DB rows. **`ENTITY_TYPES`** and **`SUBJECT_TYPES`** (`user`,
+`team`, `organization`) are also
 exported from `catalog.ts` for route/body validation (`isEntityType`,
-`isSubjectType`).
+`isSubjectType`). Organization-wide subject grants apply to every teammate of
+a team in that organization.
 
 ### `license` table
 
@@ -878,7 +881,7 @@ against `grant`.
 
 | File                              | Purpose                                                                                                                                                                                                                                           |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `../../client/authz/catalog.ts`   | Static `PERMISSIONS`, `ENTITY_TYPES`, `SUBJECT_TYPES`, `isPermissionKey`, `isEntityType`, `isSubjectType`, `getPermissionCatalog` — no DB access                                                                                                  |
+| `../../client/authz/catalog.ts`   | Static `PERMISSIONS`, `GRANTABLE_PERMISSIONS` (excludes `system:manage`), `ENTITY_TYPES`, `SUBJECT_TYPES` (`user` / `team` / `organization`), `isPermissionKey`, `isGrantablePermissionKey`, `isEntityType`, `isSubjectType`, `getPermissionCatalog` — no DB access |
 | `../../client/authz/service.ts`   | `isPlatformAdmin`, `isSuperAdmin`, `canManageOrganization`, `canOwnOrganization`, `canManageTeam`, `canOwnTeam`, `canInviteToOrganization`, `canInviteToTeam`, `assertNotLastOrgOwner` — higher-level org/team management checks built on `can()` |
 | `../../client/authz/evaluator.ts` | `getSubjects`, `can`, `assertCan`, `listVisible`, `ForbiddenError` — org-level grant checks via domain-FK ancestry; superadmin and admin bypass in SQL                                                                                            |
 | `../../client/authz/http.ts`      | `assertCanOr403` / `assertOrgOwnerOr403` Hono helpers; `assertNotSystemOwnedOr403` secondary guard (`403` `system_resource_immutable`) via `resolveWorkspaceKindForEntity`                                                                        |

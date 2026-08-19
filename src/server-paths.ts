@@ -6,12 +6,21 @@ export const INSTANCE_SOCKET = 'instance.sock'
 
 /**
  * Default server leaf cert path (Caddy TLS).
- * Signed by the platform CA in `certs/ca.crt`.
+ * Signed by the platform CA under the state tree (`tls/ca.crt`), not this file.
  */
 export const DEFAULT_TLS_CERT = './certs/self-signed.crt'
 
-/** Platform CA PEM — trust anchor for daemons, browsers, and future issued certs. */
-export const DEFAULT_TLS_CA = './certs/ca.crt'
+/** Default mutable state directory (`/var/lib/turbopanel`). */
+export const DEFAULT_STATE_DIR = '/var/lib/turbopanel'
+
+/** Platform CA PEM — current root under the durable state tree. */
+export const DEFAULT_TLS_CA = `${DEFAULT_STATE_DIR}/tls/ca.crt`
+
+/** Platform CA bundle (current first, then retired roots for overlap). */
+export const DEFAULT_TLS_CA_BUNDLE = `${DEFAULT_STATE_DIR}/tls/ca-bundle.pem`
+
+/** Platform CA private key — durable identity, never in a replaceable checkout. */
+export const DEFAULT_TLS_CA_KEY = `${DEFAULT_STATE_DIR}/tls/ca.key`
 
 /**
  * Resolve the instance TLS certificate PEM path.
@@ -24,11 +33,45 @@ export function resolveInstanceTlsCertPath(
   return env.CADDY_TLS_CERT?.trim() || DEFAULT_TLS_CERT
 }
 
-/** PEM path of the local CA to distribute to remote daemons. */
+function tlsCaDir(env: Record<string, string | undefined>): string {
+  return `${resolveStateDir(env)}/tls`
+}
+
+/** PEM path of the current platform CA (single root). */
 export function resolveInstanceTlsCaPath(
   env: Record<string, string | undefined> = Deno.env.toObject(),
 ): string {
-  return env.TURBOPANEL_TLS_CA?.trim() || DEFAULT_TLS_CA
+  return env.TURBOPANEL_TLS_CA?.trim() || `${tlsCaDir(env)}/ca.crt`
+}
+
+/** PEM path of the platform CA bundle (current + retired overlap). */
+export function resolveInstanceTlsCaBundlePath(
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string {
+  return env.TURBOPANEL_TLS_CA_BUNDLE?.trim() || `${tlsCaDir(env)}/ca-bundle.pem`
+}
+
+/** PEM path of the platform CA private key. */
+export function resolveInstanceTlsCaKeyPath(
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string {
+  return env.TURBOPANEL_TLS_CA_KEY?.trim() || `${tlsCaDir(env)}/ca.key`
+}
+
+/**
+ * Path to serve at `GET /instance/ca`: the bundle when present, else the
+ * single current CA file.
+ */
+export function resolveInstanceTlsCaServePath(
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string {
+  const bundle = resolveInstanceTlsCaBundlePath(env)
+  try {
+    Deno.statSync(bundle)
+    return bundle
+  } catch {
+    return resolveInstanceTlsCaPath(env)
+  }
 }
 
 /** Instance socket file mode: owner+group read/write only (no world access). */
@@ -64,9 +107,6 @@ export function resolveInstanceSocket(
 
 /** Default config directory (`/etc/turbopanel`). */
 export const DEFAULT_CONFIG_DIR = '/etc/turbopanel'
-
-/** Default mutable state directory (`/var/lib/turbopanel`). */
-export const DEFAULT_STATE_DIR = '/var/lib/turbopanel'
 
 /** Default log directory (`/var/log/turbopanel`). */
 export const DEFAULT_LOG_DIR = '/var/log/turbopanel'
