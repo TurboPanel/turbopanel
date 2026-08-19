@@ -621,12 +621,13 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
     assertEquals(typeof firstBody.commandId, 'string')
     assertEquals(firstBody.managed.engine, 'postgres')
     assertEquals(firstBody.managed.serverId, serverId)
-    // A successful apply also self-heals the ProxySQL ingress reconcile
-    // (Comment 2) for the same server, so both a managed.apply and a
-    // managed.ingress.reconcile get enqueued.
-    assertEquals(commandQueue.envelopes.length, 2)
+    // A successful apply also self-heals ProxySQL ingress and Orchestrator HA
+    // reconcile for the same server, so managed.apply plus both whole-server
+    // reconciles get enqueued.
+    assertEquals(commandQueue.envelopes.length, 3)
     assertEquals(commandQueue.envelopes[0]?.type, 'managed.apply')
     assertEquals(commandQueue.envelopes[1]?.type, 'managed.ingress.reconcile')
+    assertEquals(commandQueue.envelopes[2]?.type, 'managed.ha.reconcile')
     assertEquals(
       commandQueue.envelopes.every((envelope) => envelope.serverId === serverId),
       true,
@@ -663,7 +664,7 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
     assertEquals(secondBody.alreadyProvisioned, true)
     assertEquals(secondBody.rootPassword, undefined)
     assertEquals(secondBody.commandId, undefined)
-    assertEquals(commandQueue.envelopes.length, 2)
+    assertEquals(commandQueue.envelopes.length, 3)
 
     const getRes = await app.request(`/environments/${environmentId}/managed`, {
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
@@ -1388,11 +1389,11 @@ test('POST /environments/:id/managed/apply targets managed.server_id when enviro
       assertEquals(apply.status, 200)
       const applyBody = await apply.json() as { serverId: string }
       assertEquals(applyBody.serverId, serverId)
-      // A successful apply also self-heals the ProxySQL ingress reconcile
-      // (Comment 2) for the same server — both envelopes must target
+      // A successful apply also self-heals ProxySQL ingress and Orchestrator HA
+      // reconcile for the same server — all envelopes must target
       // `managed.server_id`, never the drifted environment placement.
       const newEnvelopes = commandQueue.envelopes.slice(beforeCount)
-      assertEquals(newEnvelopes.length, 2)
+      assertEquals(newEnvelopes.length, 3)
       assertEquals(
         newEnvelopes.every((envelope) => envelope.serverId === serverId),
         true,
@@ -1403,6 +1404,10 @@ test('POST /environments/:id/managed/apply targets managed.server_id when enviro
       )
       assertEquals(
         newEnvelopes.some((envelope) => envelope.type === 'managed.ingress.reconcile'),
+        true,
+      )
+      assertEquals(
+        newEnvelopes.some((envelope) => envelope.type === 'managed.ha.reconcile'),
         true,
       )
     })
@@ -1615,11 +1620,11 @@ test('POST /environments/:id/managed/root-password targets managed.server_id whe
       assertEquals((rotateBody.rootPassword.length ?? 0) > 0, true)
       assertEquals(rotateBody.redeployRequired.count, 0)
       assertEquals(rotateBody.redeployRequired.services, [])
-      // A successful re-apply also self-heals the ProxySQL ingress reconcile
-      // (Comment 2) for the same server — both envelopes must target
+      // A successful re-apply also self-heals ProxySQL ingress and Orchestrator HA
+      // reconcile for the same server — all envelopes must target
       // `managed.server_id`, never the drifted environment placement.
       const newEnvelopes = commandQueue.envelopes.slice(beforeCount)
-      assertEquals(newEnvelopes.length, 2)
+      assertEquals(newEnvelopes.length, 3)
       assertEquals(
         newEnvelopes.every((envelope) => envelope.serverId === serverId),
         true,
@@ -1630,6 +1635,10 @@ test('POST /environments/:id/managed/root-password targets managed.server_id whe
       )
       assertEquals(
         newEnvelopes.some((envelope) => envelope.type === 'managed.ingress.reconcile'),
+        true,
+      )
+      assertEquals(
+        newEnvelopes.some((envelope) => envelope.type === 'managed.ha.reconcile'),
         true,
       )
     })
@@ -1832,11 +1841,11 @@ test('managed user create/delete target managed.server_id when environment place
         user: { id: string }
       }
       assertEquals(createBody.serverId, serverId)
-      // Each apply also self-heals the ProxySQL ingress reconcile
-      // (Comment 2) for the same server — both envelopes must target
+      // Each apply also self-heals ProxySQL ingress and Orchestrator HA
+      // reconcile for the same server — all envelopes must target
       // `managed.server_id`, never the drifted environment placement.
       const afterCreateEnvelopes = commandQueue.envelopes.slice(beforeCount)
-      assertEquals(afterCreateEnvelopes.length, 2)
+      assertEquals(afterCreateEnvelopes.length, 3)
       assertEquals(
         afterCreateEnvelopes.every((envelope) => envelope.serverId === serverId),
         true,
@@ -1855,8 +1864,8 @@ test('managed user create/delete target managed.server_id when environment place
       assertEquals(deleteUser.status, 200)
       const deleteBody = await deleteUser.json() as { serverId: string }
       assertEquals(deleteBody.serverId, serverId)
-      const afterDeleteEnvelopes = commandQueue.envelopes.slice(beforeCount + 2)
-      assertEquals(afterDeleteEnvelopes.length, 2)
+      const afterDeleteEnvelopes = commandQueue.envelopes.slice(beforeCount + 3)
+      assertEquals(afterDeleteEnvelopes.length, 3)
       assertEquals(
         afterDeleteEnvelopes.every((envelope) => envelope.serverId === serverId),
         true,
@@ -1907,11 +1916,11 @@ test('managed database create/delete target managed.server_id when environment p
       }
       assertEquals(createBody.serverId, serverId)
       assertEquals(createBody.databases.includes('drift_db'), true)
-      // Each apply also self-heals the ProxySQL ingress reconcile
-      // (Comment 2) for the same server — both envelopes must target
+      // Each apply also self-heals ProxySQL ingress and Orchestrator HA
+      // reconcile for the same server — all envelopes must target
       // `managed.server_id`, never the drifted environment placement.
       const afterCreateEnvelopes = commandQueue.envelopes.slice(beforeCount)
-      assertEquals(afterCreateEnvelopes.length, 2)
+      assertEquals(afterCreateEnvelopes.length, 3)
       assertEquals(
         afterCreateEnvelopes.every((envelope) => envelope.serverId === serverId),
         true,
@@ -1934,8 +1943,8 @@ test('managed database create/delete target managed.server_id when environment p
       }
       assertEquals(deleteBody.serverId, serverId)
       assertEquals(deleteBody.databases.includes('drift_db'), false)
-      const afterDeleteEnvelopes = commandQueue.envelopes.slice(beforeCount + 2)
-      assertEquals(afterDeleteEnvelopes.length, 2)
+      const afterDeleteEnvelopes = commandQueue.envelopes.slice(beforeCount + 3)
+      assertEquals(afterDeleteEnvelopes.length, 3)
       assertEquals(
         afterDeleteEnvelopes.every((envelope) => envelope.serverId === serverId),
         true,

@@ -1194,14 +1194,15 @@ test('parseManagedApplyPayload enforces the engine image allowlist', () => {
     VALID_MANAGED_APPLY.image,
   )
 
-  // An old/EOL major version is syntactically a valid image ref but must still
-  // be rejected — mirrors the settings-parser allowlist in `../managed/settings.ts`
-  // so a replayed or forged command payload cannot bypass it.
+  // An EOL major absent from the release catalog is syntactically a valid image
+  // ref but must still be rejected — mirrors the settings-parser allowlist in
+  // `../managed/settings.ts` so a replayed or forged command payload cannot
+  // bypass it.
   assertThrows(
     () =>
       parseManagedApplyPayload({
         ...VALID_MANAGED_APPLY,
-        image: 'docker.io/library/postgres:17',
+        image: 'docker.io/library/postgres:14',
       }),
     Error,
     'Invalid managed.apply payload',
@@ -2681,7 +2682,7 @@ test('parseManagedIngressReconcilePayload rejects incomplete or hostile input', 
         clusters: [
           {
             ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
-            protocolPort: 9999,
+            protocolPort: 6032,
           },
         ],
       }),
