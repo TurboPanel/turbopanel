@@ -5,30 +5,37 @@
  * cover protocol/SAN/bind/backend decision logic without Postgres.
  */
 
-import type { HostingBindScope } from '../../lib/hosting-options.ts'
 import type { ManagedIngressReconcileBackend } from '../../lib/commands/schemas.ts'
 import {
+  collapseManagedSqlAccessScopes,
+  type ManagedSqlAccessScope,
+  unionManagedSqlAccessScopes,
+} from '../../lib/managed/access-scope.ts'
+import {
+  DEFAULT_MANAGED_INGRESS_PORTS,
+  type ManagedIngressFamily,
+  managedIngressFamilyForEngine,
   managedIngressPortForEngine,
-  type ManagedIngressListenerPort,
+  type ManagedIngressPorts,
 } from '../../lib/managed/ingress-ports.ts'
+import {
+  type ManagedSslMode,
+  managedSslRequiresTls,
+  resolveManagedSslMode,
+} from '../../lib/managed/ssl.ts'
 
 export {
-  MANAGED_INGRESS_LISTENER_PORTS,
+  DEFAULT_MANAGED_INGRESS_PORTS,
   MANAGED_INGRESS_MYSQL_PORT,
   MANAGED_INGRESS_PGSQL_PORT,
-  managedIngressFamilyForPort,
+  managedIngressFamilyForEngine,
   managedIngressPortForEngine,
+  resolveManagedIngressPorts,
 } from '../../lib/managed/ingress-ports.ts'
 
 // Wildcard "any interface" bind markers — listen-address sentinels, never
 // real endpoints to advertise as a SAN.
 export const WILDCARD_BIND_ADDRESSES = new Set(['0.0.0.0', '::', '::0']) // NOSONAR typescript:S1313 — wildcard bind sentinel, not a routable address
-
-const BIND_RANK: Record<HostingBindScope, number> = {
-  local: 1,
-  datacenter: 2,
-  public: 3,
-}
 
 /** Hostgroup pair for cluster index `i` (stable writer = 2i, reader = 2i+1). */
 export function hostgroupsForClusterIndex(index: number): {
@@ -45,24 +52,18 @@ export function hostgroupsForClusterIndex(index: number): {
 }
 
 /**
- * Union of enabled exposure binds to the most permissive scope
- * (public > datacenter > local). Returns `undefined` when every cluster has
- * exposure disabled.
+ * Every distinct scope the clusters on one host ask for, widest first, with
+ * `public` collapsing the rest (it already listens on all interfaces).
+ *
+ * This is a **union, not a maximum**: one ProxySQL frontend can publish the
+ * same port on several host addresses, and `datacenter` + `turbofabric` are two
+ * different addresses. Keeping only the widest would silently unpublish the
+ * other scope's clients. Empty means no cluster wants a host publish.
  */
-export function unionExposureBind(
-  binds: readonly (HostingBindScope | undefined)[],
-): HostingBindScope | undefined {
-  let best: HostingBindScope | undefined
-  let bestRank = 0
-  for (const bind of binds) {
-    if (bind === undefined) continue
-    const rank = BIND_RANK[bind] ?? 0
-    if (rank > bestRank) {
-      best = bind
-      bestRank = rank
-    }
-  }
-  return best
+export function unionExposureScopes(
+  scopes: readonly (ManagedSqlAccessScope | undefined)[],
+): ManagedSqlAccessScope[] {
+  return collapseManagedSqlAccessScopes(unionManagedSqlAccessScopes(scopes))
 }
 
 export function isIngressRecord(
@@ -71,11 +72,22 @@ export function isIngressRecord(
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-export function protocolPortForEngine(
+/**
+ * Wire `protocolPort` + `family` for a cluster.
+ *
+ * Both travel together because the daemon must not re-derive a protocol family
+ * from a number an operator chose: with configurable listeners, `16306` is only
+ * MySQL by convention.
+ */
+export function protocolListenerForEngine(
   engine: string,
   defaultPort: number,
-): ManagedIngressListenerPort {
-  return managedIngressPortForEngine(engine, defaultPort)
+  ports: ManagedIngressPorts = DEFAULT_MANAGED_INGRESS_PORTS,
+): { protocolPort: number; family: ManagedIngressFamily } {
+  return {
+    protocolPort: managedIngressPortForEngine(engine, defaultPort, ports),
+    family: managedIngressFamilyForEngine(engine, defaultPort),
+  }
 }
 
 export function isManagedRootPrincipal(metadata: unknown): boolean {
@@ -88,7 +100,9 @@ export function isManagedReplicationPrincipal(metadata: unknown): boolean {
   return metadata.managedReplication === true
 }
 
-export function principalDefaultDatabase(metadata: unknown): string | undefined {
+export function principalDefaultDatabase(
+  metadata: unknown,
+): string | undefined {
   if (!isIngressRecord(metadata)) return undefined
   if (!Array.isArray(metadata.databases)) return undefined
   const first = metadata.databases.find(
@@ -149,14 +163,21 @@ export function addBackendAddressSan(
  */
 export function collectProxySqlListenerSans(params: {
   hostname: string | null | undefined
-  bindAddress: string | undefined
+  /**
+   * Every address the frontend publishes on. All of them are dial targets, so
+   * all of them need a SAN or `verify-full` fails on whichever one the client
+   * happened to pick.
+   */
+  bindAddresses: readonly string[]
   backendAddresses: readonly string[]
 }): { dnsNames: string[]; ipAddresses: string[] } {
   const dnsNames = new Set<string>()
   const ipAddresses = new Set<string>()
   const hostname = params.hostname?.trim()
   if (hostname) addSanValue(hostname, dnsNames, ipAddresses)
-  addBindAddressSan(params.bindAddress, dnsNames, ipAddresses)
+  for (const address of params.bindAddresses) {
+    addBindAddressSan(address, dnsNames, ipAddresses)
+  }
   for (const address of params.backendAddresses) {
     addBackendAddressSan(address, dnsNames, ipAddresses)
   }
@@ -167,27 +188,36 @@ export function collectProxySqlListenerSans(params: {
 }
 
 /**
- * Pure bind-scope decision for shared ProxySQL publish — never let an
- * ambiguous `undefined` mean two different things.
+ * Pure bind decision for shared ProxySQL publish — never let an ambiguous
+ * `undefined` mean two different things.
  *
- * - No enabled exposure → omit bindAddress (daemon publishes nothing)
- * - `public` → explicit all-interfaces (`0.0.0.0`) without hosting IP-pin lookup
- * - `local` / `datacenter` → caller must resolve via hosting-bind helper
+ * - No enabled exposure → omit every published port (daemon publishes nothing)
+ * - `public` → explicit all-interfaces (`0.0.0.0`), no per-scope lookup
+ * - anything else → caller resolves one host address per scope
  */
 export type IngressBindScopeDecision =
   | { kind: 'omit' }
-  | { kind: 'public_all_interfaces'; address: '0.0.0.0' }
-  | { kind: 'resolve'; bind: Exclude<HostingBindScope, 'public'> }
-
-export function decideIngressBindScope(
-  enabledBinds: readonly (HostingBindScope | undefined)[],
-): IngressBindScopeDecision {
-  const bindScope = unionExposureBind(enabledBinds)
-  if (bindScope === undefined) return { kind: 'omit' }
-  if (bindScope === 'public') {
-    return { kind: 'public_all_interfaces', address: '0.0.0.0' } // NOSONAR typescript:S1313 — explicit all-interfaces publish
+  | { kind: 'public_all_interfaces'; addresses: readonly ['0.0.0.0'] }
+  | {
+    kind: 'resolve'
+    scopes: ReadonlyArray<Exclude<ManagedSqlAccessScope, 'public'>>
   }
-  return { kind: 'resolve', bind: bindScope }
+
+export function decideIngressBindScopes(
+  enabledScopes: readonly (ManagedSqlAccessScope | undefined)[],
+): IngressBindScopeDecision {
+  const scopes = unionExposureScopes(enabledScopes)
+  if (scopes.length === 0) return { kind: 'omit' }
+  if (scopes[0] === 'public') {
+    return {
+      kind: 'public_all_interfaces',
+      addresses: ['0.0.0.0'], // NOSONAR typescript:S1313 — explicit all-interfaces publish
+    }
+  }
+  return {
+    kind: 'resolve',
+    scopes: scopes as ReadonlyArray<Exclude<ManagedSqlAccessScope, 'public'>>,
+  }
 }
 
 export type LocalBackendMember = {
@@ -216,8 +246,7 @@ export function buildLocalOrMissingPortBackend(
   member: LocalBackendMember,
   enginePort: number,
 ): IngressBackendBuildResult | { kind: 'remote'; role: 'primary' | 'replica' } {
-  const role: 'primary' | 'replica' =
-    member.role === 'replica' ? 'replica' : 'primary'
+  const role: 'primary' | 'replica' = member.role === 'replica' ? 'replica' : 'primary'
 
   if (member.serverId === fromServerId) {
     const address = member.containerName
@@ -288,6 +317,45 @@ export function sortManagedIds(ids: Iterable<string>): string[] {
 
 export function buildIngressUserRole(metadata: unknown): 'root' | 'user' {
   return isManagedRootPrincipal(metadata) ? 'root' : 'user'
+}
+
+/**
+ * Frontend hostgroup default for a managed login.
+ *
+ * Returns `undefined` for the implicit `read-write` default so the wire payload
+ * stays minimal. Only an explicit `connectionRole: 'read-only'` on the
+ * principal metadata moves a login to the reader hostgroup — read eligibility
+ * of a member never rewrites where an existing login sends its traffic.
+ */
+export function principalConnectionRole(
+  metadata: unknown,
+): 'read-only' | undefined {
+  if (!isIngressRecord(metadata)) return undefined
+  return metadata.connectionRole === 'read-only' ? 'read-only' : undefined
+}
+
+/** Cluster-level `^SELECT` split policy; absent/false keeps reads on the primary. */
+export function clusterAutoReadSplit(
+  routing: { autoReadSplit?: boolean } | undefined,
+): boolean {
+  return routing?.autoReadSplit === true
+}
+
+/**
+ * Whether ProxySQL must refuse unencrypted client sessions for this cluster.
+ *
+ * Frontend TLS is a cluster policy even though ProxySQL spells it per user row
+ * (`use_ssl`), so it is resolved once here — service override → org default →
+ * platform `require` — and the daemon applies it to every login of the cluster.
+ * Backend (ProxySQL → engine) TLS is unconditional and unaffected.
+ */
+export function clusterRequireTls(
+  configured: ManagedSslMode | undefined,
+  organizationDefault: ManagedSslMode | undefined,
+): boolean {
+  return managedSslRequiresTls(
+    resolveManagedSslMode(configured, organizationDefault),
+  )
 }
 
 export function shouldSkipIngressFrontendUser(

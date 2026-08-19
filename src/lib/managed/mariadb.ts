@@ -4,8 +4,8 @@
  * Own SQL dialect module on the daemon side — never an alias of MySQL.
  * Spec shares only pure helpers (`mysql-family.ts`) with the MySQL engine.
  *
- * **Image:** MariaDB 12.3 LTS (approved — see `MARIADB_ALLOWED_IMAGES` in
- * `./settings.ts`). MariaDB has never published an official Alpine-based
+ * **Image:** the default MariaDB LTS series from the release catalog
+ * (`./releases.ts`). MariaDB has never published an official Alpine-based
  * image, so the default stays on the upstream Debian-based tag; the
  * vendor-published UBI (Red Hat Universal Base Image) variant is the
  * documented alternative for hosts standardizing on an RPM-based/UBI-compatible
@@ -20,24 +20,26 @@ import {
   MYSQL_ACCOUNT_MAX_LENGTH,
   MYSQL_IDENTIFIER_PATTERN,
 } from './mysql-family.ts'
+import { requireDefaultManagedImage } from './releases.ts'
+import { mysqlFamilySslMode } from './ssl.ts'
 import {
   DEFAULT_MANAGED_SETTINGS,
+  type ManagedSettings,
   MARIADB_RESERVED_ENV_KEYS,
   parseManagedSettingsBase,
-  type ManagedSettings,
 } from './settings.ts'
 import {
-  ManagedSecretPlaceholder,
   type BuildConnectionInfoInput,
   type BuildRuntimeSpecInput,
   type ManagedConnectionInfo,
   type ManagedEngineSpec,
   type ManagedRuntimeHealthcheck,
   type ManagedRuntimeSpec,
+  ManagedSecretPlaceholder,
   type ManagedUserOperations,
 } from './types.ts'
 
-const DEFAULT_IMAGE = 'docker.io/library/mariadb:12.3'
+const DEFAULT_IMAGE = requireDefaultManagedImage('mariadb')
 const DEFAULT_PORT = 3306
 const ROOT_USERNAME = 'root'
 const DEFAULT_DATABASE = 'appdb'
@@ -101,7 +103,11 @@ function asSettingsRecord(
 }
 
 function parseMariadbSettings(value: unknown): MariadbManagedSettings | null {
-  const base = parseManagedSettingsBase(value, MARIADB_RESERVED_ENV_KEYS, 'mariadb')
+  const base = parseManagedSettingsBase(
+    value,
+    MARIADB_RESERVED_ENV_KEYS,
+    'mariadb',
+  )
   if (base === null) return null
 
   const record = asSettingsRecord(value)
@@ -152,14 +158,15 @@ function buildPlatformMycnf(
     )
   }
 
-  if (settings.ssl.enabled || input.useOrgTls || input.member?.privateListener) {
-    lines.push(
-      `ssl_ca=${TLS_CA_PATH}`,
-      `ssl_cert=${TLS_CERT_PATH}`,
-      `ssl_key=${TLS_KEY_PATH}`,
-      'require_secure_transport=ON',
-    )
-  }
+  // Engine TLS is unconditional — ProxySQL dials backends with `use_ssl=1`,
+  // so the engine leg always requires an encrypted transport. Client-facing
+  // policy (`ManagedSslMode`) is enforced at the ProxySQL frontend.
+  lines.push(
+    `ssl_ca=${TLS_CA_PATH}`,
+    `ssl_cert=${TLS_CERT_PATH}`,
+    `ssl_key=${TLS_KEY_PATH}`,
+    'require_secure_transport=ON',
+  )
 
   if (input.member?.role === 'standby') {
     lines.push('read_only=ON', 'super_read_only=ON')
@@ -242,8 +249,7 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   const settings = input.settings as MariadbManagedSettings
   const initialDatabase = settings.initialDatabase ?? DEFAULT_DATABASE
   const image = settings.image ?? DEFAULT_IMAGE
-  const volumeName =
-    `managed_${input.managedId.replaceAll('-', '_')}_data`
+  const volumeName = `managed_${input.managedId.replaceAll('-', '_')}_data`
 
   const env: Record<string, string> = {
     MARIADB_ROOT_PASSWORD: ManagedSecretPlaceholder,
@@ -270,14 +276,8 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     },
   }
 
-  const needTls =
-    settings.ssl.enabled ||
-    input.useOrgTls === true ||
-    input.member?.privateListener !== undefined
-  if (needTls) {
-    const volumes = service.volumes as string[]
-    volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
-  }
+  const volumes = service.volumes as string[]
+  volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
 
   if (input.member?.privateListener) {
     const { address, port } = input.member.privateListener
@@ -313,13 +313,11 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
       enabled: settings.exposure.enabled,
       protocol: 'tcp',
       containerPort: DEFAULT_PORT,
-      ...(settings.exposure.bind !== undefined
-        ? { bind: settings.exposure.bind }
-        : {}),
+      ...(settings.exposure.scope !== undefined ? { scope: settings.exposure.scope } : {}),
     },
   }
 
-  if (needTls && !input.useOrgTls) {
+  if (!input.useOrgTls) {
     spec.tlsMaterial = {
       selfSigned: true,
       commonName: 'managed-mariadb',
@@ -334,11 +332,9 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
 function buildConnectionInfo(
   input: BuildConnectionInfoInput,
 ): ManagedConnectionInfo {
-  const sslmode = input.settings.ssl.enabled ? 'VERIFY_IDENTITY' : 'PREFERRED'
-  const dsn =
-    `mysql://${encodeURIComponent(input.username)}:***@` +
+  const dsn = `mysql://${encodeURIComponent(input.username)}:***@` +
     `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
-    `?ssl-mode=${sslmode}`
+    `?ssl-mode=${mysqlFamilySslMode(input.sslMode)}`
   return {
     dsn,
     host: input.host,
@@ -355,7 +351,7 @@ function buildBindingDsn(
     `mysql://${encodeURIComponent(input.username)}:` +
     `${encodeURIComponent(input.password)}@` +
     `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
-    `?ssl-mode=VERIFY_IDENTITY`
+    `?ssl-mode=${mysqlFamilySslMode(input.sslMode)}`
   )
 }
 
@@ -374,6 +370,7 @@ export const mariadbEngineSpec: ManagedEngineSpec = {
   parseSettings: parseMariadbSettings,
   buildRuntimeSpec,
   buildConnectionInfo,
+  formatSslMode: mysqlFamilySslMode,
   userOperations: USER_OPERATIONS,
   binding: {
     scheme: 'mysql',

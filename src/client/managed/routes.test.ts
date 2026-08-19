@@ -719,7 +719,7 @@ test('PATCH rejects denylisted dockerOptions and does not enqueue', async () => 
       method: 'PATCH',
       headers,
       body: JSON.stringify({
-        settings: { exposure: { enabled: true, bind: 'internet' } },
+        settings: { exposure: { enabled: true, scope: 'internet' } },
       }),
     })
     assertEquals(badBind.status, 400)
@@ -2003,7 +2003,7 @@ test('PATCH /environments/:id/managed persists clamped settings', async () => {
       method: 'PATCH',
       headers,
       body: JSON.stringify({
-        settings: { exposure: { enabled: false, bind: 'local' } },
+        settings: { exposure: { enabled: false, scope: 'local' } },
       }),
     })
     assertEquals(patch.status, 200)

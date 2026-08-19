@@ -16,19 +16,24 @@ import { parseOrganizationOptions } from "../../lib/organization-options.ts";
 import { loadOrgServerCapacity } from "../../lib/server-capacity.ts";
 import { listTimezones } from "../../lib/timezones.ts";
 import {
+  applyManagedDefaultsPatch,
   defaultEnvironmentGetResponse,
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
   defaultTimezonePutResponse,
   hostDefaultsGetResponse,
   hostDefaultsPutResponse,
+  managedDefaultsGetResponse,
+  managedDefaultsPutResponse,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
   parseHostDefaultsPatch,
+  parseManagedDefaultsPatch,
   parseOrganizationCreateDisplayName,
   parseOrganizationPatchDisplayName,
   parseServerCapacityPutBody,
   toOrganizationRecord,
+  validateManagedDefaults,
 } from "./routes-helpers.ts";
 import { registerOrganizationFabricRoutes } from "./fabric-routes.ts";
 
@@ -70,6 +75,10 @@ export function registerOrganizationRoutes(
   );
   router.use(
     "/organizations/:id/server-capacity",
+    createSessionMiddleware(secrets),
+  );
+  router.use(
+    "/organizations/:id/managed-defaults",
     createSessionMiddleware(secrets),
   );
   router.use("/timezones", createSessionMiddleware(secrets));
@@ -392,6 +401,70 @@ export function registerOrganizationRoutes(
     if (!capacity) return c.json({ error: "Not found" }, 404);
 
     return c.json({ ok: true as const, ...capacity });
+  });
+
+  router.get("/organizations/:id/managed-defaults", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    const options = parseOrganizationOptions(orgRow.options);
+    return c.json(managedDefaultsGetResponse(options.managedDatabase ?? {}));
+  });
+
+  router.put("/organizations/:id/managed-defaults", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
+
+    const parsedPatch = parseManagedDefaultsPatch(body);
+    if (!parsedPatch.ok) {
+      return c.json({ error: parsedPatch.error }, parsedPatch.status);
+    }
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    // Nested object: merge in app code, then write the whole `managedDatabase`
+    // value — jsonb `||` is shallow and would drop sibling keys.
+    const next = applyManagedDefaultsPatch(
+      parseOrganizationOptions(orgRow.options).managedDatabase ?? {},
+      parsedPatch.patch,
+    );
+
+    // Collisions only exist post-merge: one family's override can land on the
+    // other family's still-inherited default.
+    const invalid = validateManagedDefaults(next);
+    if (invalid) return c.json({ error: invalid.error }, invalid.status);
+
+    await db.update(organization).set({
+      options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+        JSON.stringify({ managedDatabase: next })
+      }::jsonb`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id));
+
+    return c.json(managedDefaultsPutResponse(next));
   });
 
   router.get("/timezones", (c) => {

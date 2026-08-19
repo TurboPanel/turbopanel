@@ -54,6 +54,10 @@ import {
   parseManagedBackupResult,
   parseManagedDestroyPayload,
   parseManagedDestroyResult,
+  parseManagedHaFailoverPayload,
+  parseManagedHaFailoverResult,
+  parseManagedHaReconcilePayload,
+  parseManagedHaReconcileResult,
   parseManagedIngressReconcilePayload,
   parseManagedIngressReconcileResult,
   parseManagedLifecyclePayload,
@@ -69,7 +73,16 @@ import {
   parseTimezoneSetResult,
 } from './schemas.ts'
 import { updateManagedMemberObservedReplication } from '../../client/managed/members.ts'
-import { findManagedIngressHierarchy } from '../../client/system/hierarchy.ts'
+import { findManagedHaHierarchy, findManagedIngressHierarchy } from '../../client/system/hierarchy.ts'
+import {
+  fencePhaseFromCommandMetadata,
+  onFenceCommandFailed,
+  onFenceCommandSucceeded,
+  onPromoteSucceeded,
+  onRecoveryCommandFailed,
+  recoveryIdFromCommandMetadata,
+} from '../../client/managed/ha-recovery.ts'
+import { isManagedEngineCode, type ManagedEngineCode } from '../managed/types.ts'
 import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
@@ -106,6 +119,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'managed.restore': 1_800_000,
   'managed.promote': 600_000,
   'managed.ingress.reconcile': 300_000,
+  'managed.ha.reconcile': 300_000,
+  'managed.ha.failover': 600_000,
   'system.reconcile': 300_000,
 }
 
@@ -130,11 +145,29 @@ export function commandTimeoutMs(type: string): number {
     type === 'managed.restore' ||
     type === 'managed.promote' ||
     type === 'managed.ingress.reconcile' ||
+    type === 'managed.ha.reconcile' ||
+    type === 'managed.ha.failover' ||
     type === 'system.reconcile'
   ) {
     return COMMAND_TIMEOUT_MS[type]
   }
   return DEFAULT_COMMAND_TIMEOUT_MS
+}
+
+function recoveryEngine(engine: unknown): ManagedEngineCode {
+  return typeof engine === 'string' && isManagedEngineCode(engine)
+    ? engine
+    : 'postgres'
+}
+
+function recoveryActor(record: CommandRecord): {
+  actorType: 'user' | 'system'
+  actorId: string
+} {
+  return {
+    actorType: record.actorEntityType === 'user' ? 'user' : 'system',
+    actorId: record.actorEntityId,
+  }
 }
 
 export function isTransientError(err: unknown): boolean {
@@ -285,7 +318,8 @@ async function enqueueAndAwaitOutcome(
   db: Db,
   registry: DaemonCellRegistry,
   record: CommandRecord,
-  envelope: CommandEnvelope
+  envelope: CommandEnvelope,
+  deps?: CommandConsumerDeps,
 ): Promise<PendingRequestRecord | null> {
   const outbound = {
     kind: 'command-dispatch' as const,
@@ -323,7 +357,7 @@ async function enqueueAndAwaitOutcome(
       serverId: envelope.serverId,
       resultStatus: 'timed_out',
     })
-    await applyManagedFailedSideEffect(db, record)
+    await applyManagedFailedSideEffect(db, record, deps)
     await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
     await applyFabricFailedSideEffect(db, record, envelope)
   }
@@ -763,6 +797,52 @@ async function applyManagedIngressReconcileSideEffect(
   }
 }
 
+async function applyManagedHaReconcileSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+): Promise<void> {
+  if (record.type !== 'managed.ha.reconcile') return
+  try {
+    const payload = parseManagedHaReconcilePayload(record.payload)
+    const reconcileResult = parseManagedHaReconcileResult(result)
+    if (reconcileResult.containers === undefined) return
+    const hierarchy = await findManagedHaHierarchy(db, {
+      serverId: payload.serverId,
+    })
+    if (!hierarchy) return
+    const expectedAllocations = [
+      {
+        serviceId: hierarchy.serviceId,
+        role: 'turbopanel' as const,
+        ordinal: 1,
+      },
+    ]
+    await reconcileContainersSafely(
+      db,
+      record,
+      envelope,
+      hierarchy.environmentId,
+      reconcileResult.containers,
+      expectedAllocations,
+    )
+  } catch (err) {
+    const message = errorMessage(err)
+    commandConsumerTrace('dispatch-result', {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      resultStatus: 'succeeded',
+      containerReconcileError: message,
+    })
+    compatLogWarn(
+      'command-consumer',
+      `container reconcile failed for command ${record.id}: ${message}`,
+    )
+  }
+}
+
 async function applyManagedApplySideEffect(
   db: Db,
   record: CommandRecord,
@@ -983,9 +1063,21 @@ async function applyManagedLifecycleSideEffect(
     )
     await projectManagedMemberObservedStatus(db, lifecycleResult.member, record.id, record.type)
 
-    // Fence-then-promote: only enqueue promote after a successful fence stop.
+    const meta = await getCommandMetadata(db, record.id)
+    const recoveryId = recoveryIdFromCommandMetadata(meta)
+    if (recoveryId && payload.action === 'stop') {
+      await onFenceCommandSucceeded(db, deps?.commandQueue, {
+        recoveryId,
+        commandId: record.id,
+        fencePhase: 'stop',
+        engine: recoveryEngine(payload.engine),
+        actor: recoveryActor(record),
+      })
+      return
+    }
+
+    // Legacy fence-then-promote: only enqueue promote after a successful fence stop.
     if (payload.action === 'stop' && deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)) {
-      const meta = await getCommandMetadata(db, record.id)
       const followUp = meta?.followUpPromote as { serverId: string; payload: unknown } | undefined
       if (followUp && typeof followUp.serverId === 'string') {
         try {
@@ -1275,6 +1367,9 @@ export function resolveManagedIdFromPayload(type: string, payload: unknown): str
     if (type === 'managed.promote') {
       return parseManagedPromotePayload(payload).managedId
     }
+    if (type === 'managed.ha.failover') {
+      return parseManagedHaFailoverPayload(payload).managedId
+    }
   } catch {
     return null
   }
@@ -1303,33 +1398,70 @@ export function resolveManagedMemberIdFromFailedPayload(
     if (type === 'managed.promote') {
       return parseManagedPromotePayload(payload).memberId
     }
+    if (type === 'managed.ha.failover') {
+      return parseManagedHaFailoverPayload(payload).targetMemberId
+    }
   } catch {
     return null
   }
   return null
 }
 
+function payloadEngine(payload: unknown): unknown {
+  if (typeof payload !== 'object' || payload === null) return undefined
+  return (payload as { engine?: unknown }).engine
+}
+
 /**
- * Mark the managed row failed when apply/lifecycle/destroy/restore/promote fail
- * or time out. `managed.backup` is deliberately excluded — a read-only backup
- * failure must never mark an otherwise-healthy engine `failed`.
- *
- * Also marks the targeted `node` failed when the payload names a member —
- * otherwise UI cluster rows stay stuck on `provisioning` after a failed apply
- * while only `managed.status` flipped to `failed`.
- *
- * Does not alter terminal command-row semantics.
+ * Advance / fail the HA recovery journal when a fenced or promote/failover
+ * command fails. Returns true when the fence path already handled the failure
+ * (caller must not also flip `managed.status`).
  */
-async function applyManagedFailedSideEffect(db: Db, record: CommandRecord): Promise<void> {
-  if (
-    record.type !== 'managed.apply' &&
-    record.type !== 'managed.lifecycle' &&
-    record.type !== 'managed.destroy' &&
-    record.type !== 'managed.restore' &&
-    record.type !== 'managed.promote'
-  ) {
-    return
+async function applyManagedRecoveryFailedSideEffect(
+  db: Db,
+  record: CommandRecord,
+  meta: Record<string, unknown> | null | undefined,
+  deps?: CommandConsumerDeps,
+): Promise<boolean> {
+  const recoveryId = recoveryIdFromCommandMetadata(meta)
+  if (!recoveryId) return false
+
+  const fencePhase = fencePhaseFromCommandMetadata(meta) ??
+    (record.type === 'managed.lifecycle' ? 'stop' : null)
+  if (fencePhase) {
+    await onFenceCommandFailed(db, deps?.commandQueue, {
+      recoveryId,
+      commandId: record.id,
+      engine: recoveryEngine(payloadEngine(record.payload)),
+      actor: recoveryActor(record),
+    })
+    return true
   }
+
+  if (
+    record.type === 'managed.promote' ||
+    record.type === 'managed.ha.failover'
+  ) {
+    await onRecoveryCommandFailed(db, recoveryId)
+  }
+  return false
+}
+
+function shouldMarkManagedFailedOnCommandType(type: string): boolean {
+  return (
+    type === 'managed.apply' ||
+    type === 'managed.lifecycle' ||
+    type === 'managed.destroy' ||
+    type === 'managed.restore' ||
+    type === 'managed.promote' ||
+    type === 'managed.ha.failover'
+  )
+}
+
+async function markManagedRowsFailedFromCommand(
+  db: Db,
+  record: CommandRecord,
+): Promise<void> {
   try {
     const managedId = resolveManagedIdFromPayload(record.type, record.payload)
     if (!managedId) return
@@ -1361,6 +1493,30 @@ async function applyManagedFailedSideEffect(db: Db, record: CommandRecord): Prom
   }
 }
 
+/**
+ * Mark the managed row failed when apply/lifecycle/destroy/restore/promote fail
+ * or time out. `managed.backup` is deliberately excluded — a read-only backup
+ * failure must never mark an otherwise-healthy engine `failed`.
+ *
+ * Also marks the targeted `node` failed when the payload names a member —
+ * otherwise UI cluster rows stay stuck on `provisioning` after a failed apply
+ * while only `managed.status` flipped to `failed`.
+ *
+ * Does not alter terminal command-row semantics.
+ */
+async function applyManagedFailedSideEffect(
+  db: Db,
+  record: CommandRecord,
+  deps?: CommandConsumerDeps,
+): Promise<void> {
+  const meta = await getCommandMetadata(db, record.id)
+  if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps)) {
+    return
+  }
+  if (!shouldMarkManagedFailedOnCommandType(record.type)) return
+  await markManagedRowsFailedFromCommand(db, record)
+}
+
 async function applySucceededSideEffects(
   db: Db,
   record: CommandRecord,
@@ -1376,10 +1532,12 @@ async function applySucceededSideEffects(
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)
   await applyManagedIngressReconcileSideEffect(db, record, envelope, result)
+  await applyManagedHaReconcileSideEffect(db, record, envelope, result)
   await applyManagedApplySideEffect(db, record, envelope, result, deps)
   await applyManagedLifecycleSideEffect(db, record, envelope, result, deps)
   await applyManagedDestroySideEffect(db, record, envelope, result, deps)
   await applyManagedPromoteSideEffect(db, record, envelope, result, deps)
+  await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
 }
@@ -1461,7 +1619,14 @@ async function applyManagedPromoteSideEffect(
       })
     }
 
-    if (!hasManagedFollowUpDeps(deps)) return
+    if (!hasManagedFollowUpDeps(deps)) {
+      const meta = await getCommandMetadata(db, record.id)
+      const recoveryId = recoveryIdFromCommandMetadata(meta)
+      if (recoveryId) {
+        await onPromoteSucceeded(db, deps?.commandQueue, {}, recoveryId, envelope.serverId)
+      }
+      return
+    }
 
     // Consumer-aware tail: recompute member replication transports relative to
     // the new primary, re-materialize binding-owned HOST/PORT/URL variables,
@@ -1470,9 +1635,29 @@ async function applyManagedPromoteSideEffect(
     // demoted primary. The fence-then-promote path enqueues a real
     // `managed.promote` command (see `applyManagedLifecycleSideEffect`), so it
     // lands here too once that promote succeeds.
+    const meta = await getCommandMetadata(db, record.id)
+    const recoveryId = recoveryIdFromCommandMetadata(meta)
+    if (recoveryId) {
+      await onPromoteSucceeded(db, deps.commandQueue, {
+        secretsConfig: deps.secretsConfig,
+        dataEncryptionSecrets: deps.dataEncryptionSecrets,
+      }, recoveryId, envelope.serverId)
+      return
+    }
+
     const { fanOutManagedIngressReconcile } =
       await import('../../client/managed/ingress-desired.ts')
     await fanOutManagedIngressReconcile(db, deps.commandQueue, {
+      managedId,
+      actorType: 'system',
+      actorId: envelope.serverId,
+      secretsConfig: deps.secretsConfig,
+      dataEncryptionSecrets: deps.dataEncryptionSecrets,
+      extraServerIds: [envelope.serverId],
+    })
+    const { fanOutManagedHaReconcile } =
+      await import('../../client/managed/ha-desired.ts')
+    await fanOutManagedHaReconcile(db, deps.commandQueue, {
       managedId,
       actorType: 'system',
       actorId: envelope.serverId,
@@ -1485,6 +1670,121 @@ async function applyManagedPromoteSideEffect(
     compatLogWarn(
       'command-consumer',
       `managed.promote side effect failed for command ${record.id}: ${message}`
+    )
+  }
+}
+
+async function applyManagedRoleFlip(
+  db: Db,
+  params: {
+    managedId: string
+    promotedMemberId: string
+    demotedMemberId?: string
+    status: string
+    updatedAt: string
+  },
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    if (params.demotedMemberId) {
+      await tx
+        .update(node)
+        .set({
+          role: 'replica',
+          status: 'needs_resync',
+          updatedAt: params.updatedAt,
+        })
+        .where(and(
+          eq(node.id, params.demotedMemberId),
+          eq(node.managedId, params.managedId),
+        ))
+    }
+
+    await tx
+      .update(node)
+      .set({
+        role: 'primary',
+        status: params.status,
+        updatedAt: params.updatedAt,
+      })
+      .where(and(
+        eq(node.id, params.promotedMemberId),
+        eq(node.managedId, params.managedId),
+      ))
+
+    const [promoted] = await tx
+      .select({ serverId: node.serverId })
+      .from(node)
+      .where(eq(node.id, params.promotedMemberId))
+      .limit(1)
+
+    if (promoted) {
+      await tx
+        .update(managed)
+        .set({
+          status: 'ready',
+          serverId: promoted.serverId,
+          updatedAt: params.updatedAt,
+        })
+        .where(eq(managed.id, params.managedId))
+    } else {
+      await tx
+        .update(managed)
+        .set({ status: 'ready', updatedAt: params.updatedAt })
+        .where(eq(managed.id, params.managedId))
+    }
+  })
+}
+
+async function applyManagedHaFailoverSideEffect(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+  deps?: CommandConsumerDeps,
+): Promise<void> {
+  if (record.type !== 'managed.ha.failover') return
+  try {
+    const payload = parseManagedHaFailoverPayload(record.payload)
+    parseManagedHaFailoverResult(result)
+    const meta = await getCommandMetadata(db, record.id)
+    const recoveryId = recoveryIdFromCommandMetadata(meta)
+    if (payload.phase === 'drain') {
+      if (!recoveryId) return
+      await onFenceCommandSucceeded(db, deps?.commandQueue, {
+        recoveryId,
+        commandId: record.id,
+        fencePhase: 'drain',
+        engine: recoveryEngine(payload.engine),
+        actor: recoveryActor(record),
+      })
+      return
+    }
+
+    await applyManagedRoleFlip(db, {
+      managedId: payload.managedId,
+      promotedMemberId: payload.targetMemberId,
+      demotedMemberId: payload.sourceMemberId,
+      status: 'ready',
+      updatedAt: nowIso(),
+    })
+
+    if (recoveryId) {
+      await onPromoteSucceeded(
+        db,
+        deps?.commandQueue,
+        {
+          secretsConfig: deps?.secretsConfig,
+          dataEncryptionSecrets: deps?.dataEncryptionSecrets,
+        },
+        recoveryId,
+        envelope.serverId,
+      )
+    }
+  } catch (err) {
+    const message = errorMessage(err)
+    compatLogWarn(
+      'command-consumer',
+      `managed.ha.failover side effect failed for command ${record.id}: ${message}`,
     )
   }
 }
@@ -1517,7 +1817,8 @@ async function handlePendingFailed(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  pending: PendingRequestRecord
+  pending: PendingRequestRecord,
+  deps?: CommandConsumerDeps,
 ): Promise<void> {
   const error = pending.error ?? 'Command failed'
   await transitionCommand(db, record.id, {
@@ -1532,7 +1833,7 @@ async function handlePendingFailed(
     resultStatus: 'failed',
     error,
   })
-  await applyManagedFailedSideEffect(db, record)
+  await applyManagedFailedSideEffect(db, record, deps)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
   await applyFabricFailedSideEffect(db, record, envelope)
 }
@@ -1541,7 +1842,8 @@ async function handlePendingExpired(
   db: Db,
   record: CommandRecord,
   envelope: CommandEnvelope,
-  pending: PendingRequestRecord
+  pending: PendingRequestRecord,
+  deps?: CommandConsumerDeps,
 ): Promise<void> {
   await transitionCommand(db, record.id, { status: 'timed_out' })
   commandConsumerTrace('dispatch-result', {
@@ -1551,7 +1853,7 @@ async function handlePendingExpired(
     pendingStatus: pending.status,
     resultStatus: 'timed_out',
   })
-  await applyManagedFailedSideEffect(db, record)
+  await applyManagedFailedSideEffect(db, record, deps)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
   await applyFabricFailedSideEffect(db, record, envelope)
 }
@@ -1590,10 +1892,10 @@ async function applyPendingOutcome(
       await handlePendingDone(db, record, envelope, pending, deps)
       return
     case 'failed':
-      await handlePendingFailed(db, record, envelope, pending)
+      await handlePendingFailed(db, record, envelope, pending, deps)
       return
     case 'expired':
-      await handlePendingExpired(db, record, envelope, pending)
+      await handlePendingExpired(db, record, envelope, pending, deps)
       return
     default:
       await handlePendingUnexpected(db, record, envelope, pending)
@@ -1617,7 +1919,7 @@ export async function processCommandEnvelope(
     return
   }
 
-  const pending = await enqueueAndAwaitOutcome(db, registry, record, envelope)
+  const pending = await enqueueAndAwaitOutcome(db, registry, record, envelope, deps)
   if (!pending) return
 
   await applyPendingOutcome(db, record, envelope, pending, deps)

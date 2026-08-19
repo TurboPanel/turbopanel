@@ -1076,6 +1076,64 @@ export const node = pgTable(
     ),
   ],
 )
+/**
+ * Durable HA journal for one managed cluster. At most one in-flight recovery
+ * per `managed_id` (partial unique on non-terminal states). Member ids are
+ * stored without a node FK so deleting a member cannot block the journal.
+ */
+export const recovery = pgTable(
+  'recovery',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    managedId: uuid('managed_id').notNull(),
+    /** `automatic-failover` | `switchover` | `disaster-recovery` */
+    kind: text().notNull(),
+    sourcePrimaryMemberId: uuid('source_primary_member_id').notNull(),
+    targetMemberId: uuid('target_member_id'),
+    /**
+     * `detecting` | `fencing` | `promoting` | `repointing` |
+     * `reconciling-ingress` | `verifying` | `completed` | `failed` | `blocked`
+     */
+    state: text().notNull(),
+    startedAt: timestamp('started_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    completedAt: timestamp('completed_at', { precision: 3, withTimezone: true, mode: 'string' }),
+  },
+  (table) => [
+    index('idx_recovery_managed_id').using(
+      'btree',
+      table.managedId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'recovery_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    uniqueIndex('uniq_recovery_inflight_managed')
+      .on(table.managedId)
+      .where(sql`${table.state} NOT IN ('completed','failed','blocked')`),
+    check(
+      'recovery_kind_check',
+      sql`${table.kind} IN ('automatic-failover','switchover','disaster-recovery')`,
+    ),
+    check(
+      'recovery_state_check',
+      sql`${table.state} IN ('detecting','fencing','promoting','repointing','reconciling-ingress','verifying','completed','failed','blocked')`,
+    ),
+  ],
+)
 export const variable = pgTable(
   'variable',
   {

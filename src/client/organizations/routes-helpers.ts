@@ -7,11 +7,26 @@ import { isAllowedTimezone } from "../../lib/timezones.ts";
 import type { OrganizationSummary } from "../org-context.ts";
 import { BadRequestError, parseDisplayName } from "../shared.ts";
 import {
+  type NtpDefaults,
   parseDefaultFabricEnabledInput,
   parseNtpDefaultsInput,
   parseSshPortInput,
-  type NtpDefaults,
 } from "../../lib/host-defaults.ts";
+import {
+  type ManagedIngressPortsPatch,
+  type ManagedOrganizationDefaults,
+  parseManagedIngressPortsInput,
+  parseManagedSslModeInput,
+  validateManagedOrganizationDefaults,
+} from "../../lib/managed/org-defaults.ts";
+import {
+  type ManagedIngressPortRejection,
+  resolveManagedIngressPorts,
+} from "../../lib/managed/ingress-ports.ts";
+import {
+  type ManagedSslMode,
+  resolveManagedSslMode,
+} from "../../lib/managed/ssl.ts";
 
 /** Matches {@link NEW_ORGANIZATION_NAME} in authn/install-state.ts. */
 const NEW_ORGANIZATION_DISPLAY_NAME = "New Organization";
@@ -32,6 +47,137 @@ export type HostDefaultsPatch = {
   ntp?: NtpDefaults | null;
   defaultFabricEnabled?: boolean | null;
 };
+
+/** `null` clears a key so inheriting services fall back to the platform value. */
+export type ManagedDefaultsPatch = {
+  sslMode?: ManagedSslMode | null;
+  ports?: ManagedIngressPortsPatch | null;
+};
+
+const PORT_REJECTION_MESSAGE: Record<ManagedIngressPortRejection, string> = {
+  out_of_range: "must be an integer between 1024 and 65535",
+  reserved_admin: "is reserved for the ProxySQL admin interface",
+  reserved_private_range:
+    "is reserved for managed member private listeners (45000-45999)",
+  collision: "must differ from the other protocol family's listener port",
+};
+
+export function parseManagedDefaultsPatch(
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: ManagedDefaultsPatch }
+  | OrganizationRouteValidationError {
+  const patch: ManagedDefaultsPatch = {};
+
+  if ("sslMode" in body) {
+    const parsed = parseManagedSslModeInput(body.sslMode);
+    if (!parsed.ok) {
+      return { ok: false, error: "Invalid sslMode", status: 400 };
+    }
+    patch.sslMode = parsed.value;
+  }
+
+  if ("ports" in body) {
+    const parsed = parseManagedIngressPortsInput(body.ports);
+    if (!parsed.ok) {
+      const detail = parsed.field && parsed.reason
+        ? `ports.${parsed.field} ${PORT_REJECTION_MESSAGE[parsed.reason]}`
+        : "Invalid ports";
+      return { ok: false, error: detail, status: 400 };
+    }
+    patch.ports = parsed.value;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return { ok: false, error: "Invalid request", status: 400 };
+  }
+
+  return { ok: true, patch };
+}
+
+/**
+ * Merge a patch into the stored defaults **in application code**: the jsonb
+ * `||` operator is a shallow merge, so writing `{ managedDatabase: patch }`
+ * would drop sibling keys an operator did not touch.
+ */
+export function applyManagedDefaultsPatch(
+  current: ManagedOrganizationDefaults,
+  patch: ManagedDefaultsPatch,
+): ManagedOrganizationDefaults {
+  const next: ManagedOrganizationDefaults = { ...current };
+  if ("sslMode" in patch) {
+    if (patch.sslMode === null || patch.sslMode === undefined) {
+      delete next.sslMode;
+    } else {
+      next.sslMode = patch.sslMode;
+    }
+  }
+  if ("ports" in patch) {
+    const merged = mergeIngressPortsPatch(current.ports, patch.ports);
+    if (merged) next.ports = merged;
+    else delete next.ports;
+  }
+  return next;
+}
+
+/** Per-family merge; a family set to `null` (or the whole object) is cleared. */
+function mergeIngressPortsPatch(
+  current: ManagedOrganizationDefaults["ports"],
+  patch: ManagedIngressPortsPatch | null | undefined,
+): ManagedOrganizationDefaults["ports"] {
+  if (patch === null || patch === undefined) return undefined;
+  const next = { ...current };
+  for (const field of ["postgres", "mysqlFamily"] as const) {
+    if (!(field in patch)) continue;
+    const value = patch[field];
+    if (value === null) delete next[field];
+    else next[field] = value;
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+/**
+ * Reject a merged defaults object the individual field parsers cannot judge —
+ * today only a listener-port collision between the two protocol families.
+ */
+export function validateManagedDefaults(
+  defaults: ManagedOrganizationDefaults,
+): OrganizationRouteValidationError | null {
+  const check = validateManagedOrganizationDefaults(defaults);
+  if (check.ok) return null;
+  return {
+    ok: false,
+    error: `${check.field} ${PORT_REJECTION_MESSAGE[check.reason]}`,
+    status: 400,
+  };
+}
+
+export function managedDefaultsGetResponse(
+  defaults: ManagedOrganizationDefaults,
+) {
+  return {
+    /** Configured org default; `null` = inheriting the platform value. */
+    sslMode: defaults.sslMode ?? null,
+    /** What an inheriting managed service resolves to today. */
+    effectiveSslMode: resolveManagedSslMode(undefined, defaults.sslMode),
+    /** Configured overrides only; `null` per family = inheriting. */
+    ports: {
+      postgres: defaults.ports?.postgres ?? null,
+      mysqlFamily: defaults.ports?.mysqlFamily ?? null,
+    },
+    /** Ports clients actually dial today, after platform fallback. */
+    effectivePorts: resolveManagedIngressPorts(defaults.ports),
+  };
+}
+
+export function managedDefaultsPutResponse(
+  defaults: ManagedOrganizationDefaults,
+) {
+  return {
+    ok: true as const,
+    ...managedDefaultsGetResponse(defaults),
+  };
+}
 
 export function parseDefaultTimezonePatch(
   body: Record<string, unknown>,
@@ -119,7 +265,9 @@ export function parseDefaultEnvironmentPutBody(
     return {
       ok: false,
       error:
-        `defaultEnvironmentName must be null or a non-empty name of at most ${String(DISPLAY_NAME_MAX_LENGTH)} characters with no control characters`,
+        `defaultEnvironmentName must be null or a non-empty name of at most ${
+          String(DISPLAY_NAME_MAX_LENGTH)
+        } characters with no control characters`,
       status: 400,
     };
   }

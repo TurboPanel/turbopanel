@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
+import { resolveManagedSslMode } from '../../lib/managed/ssl.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
@@ -19,7 +20,6 @@ import {
   workspace,
 } from '../../lib/db/schema.ts'
 import { getManagedEngineSpec } from '../../lib/managed/index.ts'
-import { managedIngressPortForEngine } from '../../lib/managed/ingress-ports.ts'
 import {
   clampManagedResources,
   type ManagedSettings,
@@ -115,12 +115,15 @@ import {
 } from './options.ts'
 import {
   buildEmptyManagedDetailResponse,
-  buildFencePromotePendingResponse,
+  buildManagedReleaseView,
+  buildManagedSslView,
+  resolveManagedAccessEndpoints,
   buildManagedDeleteHardResponse,
   buildManagedDeleteQueuedResponse,
   buildManagedDestroyQueuedResponse,
   buildOrgManagedListEntry,
   buildPromoteQueuedResponse,
+  buildDisasterRecoveryQueuedResponse,
   buildQueuedFanoutResponse,
   buildStatusMemberView,
   canHardDeleteManaged,
@@ -144,6 +147,7 @@ import {
   mergeManagedPatchSettings,
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
+  operatorPromoteHttpResult,
   parseManagedCreateDisplayName,
   parseManagedLifecycleAction,
   parseManagedUserCreateFields,
@@ -151,6 +155,7 @@ import {
   parseMemberPatch,
   type MemberPatchFields,
   parsePromoteForce,
+  parseDisasterRecoveryPromoteBody,
   parseReplicaClassCreate,
   pickPrimaryCommandResult,
   readInitialDatabase,
@@ -166,6 +171,14 @@ import {
   parseManagedResidual,
   serializeManagedRow,
 } from './serialize.ts'
+import { findLatestRecovery } from '../../lib/db/recovery-records.ts'
+import { serializeRecovery } from '../../lib/managed/recovery.ts'
+import {
+  beginDisasterRecovery,
+  beginOperatorSwitchover,
+  firstDatacenterId,
+  loadDatacenterSets,
+} from './ha-recovery.ts'
 
 async function findManagedForEnvironment(db: NonNullable<ReturnType<typeof getDb>>, environmentId: string) {
   const [row] = await db
@@ -243,65 +256,35 @@ function assertManagedPromoteLagAllowed(
   return gate !== null ? c.json({ error: gate }, 409) : null
 }
 
-/**
- * Before promoting a replica, fence an online primary (stop it and queue a
- * follow-up promote once that fence lands) or, when the primary is already
- * offline, mark it `needs_resync` and let the caller proceed to promote
- * immediately. Returns a Response when the caller should return it as-is
- * (the fence was queued), or null to continue with the promote.
- */
-async function fenceOrResyncPrimaryForPromote(options: {
-  c: Context<AppEnv>
-  db: NonNullable<ReturnType<typeof getDb>>
-  commandQueue: CommandQueue
-  auth: { userId: string }
-  ctx: ManagedContext
-  row: { id: string }
-  member: ManagedMemberRow
-  primary: ManagedMemberRow | undefined
-}): Promise<Response | null> {
-  const { c, db, commandQueue, auth, ctx, row, member, primary } = options
-  if (!primary) return null
-
-  const primaryOnline = await assertTargetServerOnline(c, db, primary.serverId)
-  if (primaryOnline instanceof Response) {
-    await db
-      .update(node)
-      .set({ status: 'needs_resync', updatedAt: new Date().toISOString() })
-      .where(eq(node.id, primary.id))
-    return null
-  }
-
-  const fence = await enqueueTypedCommand(c, db, commandQueue, {
-    userId: auth.userId,
-    serverId: primary.serverId,
-    type: 'managed.lifecycle',
+/** Promote when the cluster has no primary row (orphan replica). */
+async function enqueueOrphanManagedPromote(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  commandQueue: CommandQueue,
+  params: {
+    userId: string
+    managedId: string
+    member: ManagedMemberRow
+    engine: string
+  },
+): Promise<Response> {
+  const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
+    userId: params.userId,
+    serverId: params.member.serverId,
+    type: 'managed.promote',
     payload: {
-      managedId: row.id,
-      action: 'stop',
-      memberId: primary.id,
-      engine: ctx.spec.engine,
+      managedId: params.managedId,
+      memberId: params.member.id,
+      engine: params.engine,
     },
     expiresAtMs: 600_000,
-    managedId: row.id,
+    managedId: params.managedId,
     setApplying: true,
-    metadata: {
-      followUpPromote: {
-        serverId: member.serverId,
-        payload: {
-          managedId: row.id,
-          memberId: member.id,
-          engine: ctx.spec.engine,
-          demoteMemberId: primary.id,
-        },
-      },
-    },
   })
-  if (fence instanceof Response) return fence
-
-  return c.json(buildFencePromotePendingResponse({
-    commandId: fence.commandId,
-    serverId: fence.serverId,
+  if (enqueued instanceof Response) return enqueued
+  return c.json(buildPromoteQueuedResponse({
+    commandId: enqueued.commandId,
+    serverId: enqueued.serverId,
   }))
 }
 
@@ -418,7 +401,7 @@ async function resolveManagedCreatePlan(
 
   const infra = await preflightManagedApplyInfrastructure(c, db, {
     serverId,
-    bind: settings.exposure.bind,
+    scope: settings.exposure.scope,
   })
   if (infra) return mapManagedApplyPrepareError(c, infra)
 
@@ -574,7 +557,7 @@ async function assertManagedApplyReady(
 
   const infra = await preflightManagedApplyInfrastructure(c, db, {
     serverId: targetServerId,
-    bind: options.settings.exposure.bind,
+    scope: options.settings.exposure.scope,
   })
   if (infra) return mapManagedApplyPrepareError(c, infra)
 
@@ -979,7 +962,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) {
-      return c.json(buildEmptyManagedDetailResponse(ctx.spec.rootUsername))
+      return c.json(
+        buildEmptyManagedDetailResponse(
+          ctx.spec.rootUsername,
+          ctx.orgDefaults.sslMode,
+        ),
+      )
     }
 
     const serverId = resolveManagedServerId(row, ctx.serverId)
@@ -994,7 +982,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const listener = serverId
       ? await resolveManagedConnectionListener(db, {
         serverId,
-        protocolPort: managedIngressPortForEngine(ctx.spec.engine, ctx.spec.defaultPort),
+        engineCode: ctx.spec.engine,
+        engineDefaultPort: ctx.spec.defaultPort,
         exposure: parsed.settings.exposure,
       })
       : null
@@ -1004,9 +993,20 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         port: listener.port,
         database,
         username: rootUsername,
-        settings: parsed.settings,
+        sslMode: resolveManagedSslMode(
+          parsed.settings.ssl.mode,
+          ctx.orgDefaults.sslMode,
+        ),
       })
       : null
+    const endpoints = serverId
+      ? await resolveManagedAccessEndpoints(db, {
+        serverId,
+        engineCode: ctx.spec.engine,
+        engineDefaultPort: ctx.spec.defaultPort,
+        exposure: parsed.settings.exposure,
+      })
+      : []
 
     const serverRows = serverId
       ? await db
@@ -1021,6 +1021,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       : []
     const serverRow = serverRows[0]
     const members = await listSerializedManagedMembers(db, row.id)
+    const recoveryRow = await findLatestRecovery(db, row.id)
 
     return c.json({
       managed: serializeManagedRow(row, serverId, {
@@ -1028,10 +1029,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         port: listener?.port ?? null,
       }),
       connection,
+      endpoints,
       settings: parsed.settings,
+      ssl: buildManagedSslView(
+        parsed.settings.ssl.mode,
+        ctx.orgDefaults.sslMode,
+      ),
+      release: buildManagedReleaseView(ctx.spec, parsed.settings),
       server: serverRow ?? null,
       rootUsername,
       members,
+      recovery: recoveryRow ? serializeRecovery(recoveryRow) : null,
     })
   })
 
@@ -2224,7 +2232,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (body instanceof Response) return body
     const force = parsePromoteForce(body)
 
-    const classError = evaluatePromoteReplicaClass(member.replicaClass, force)
+    const classError = evaluatePromoteReplicaClass(member.replicaClass)
     if (classError) {
       return c.json({ error: classError.error }, classError.status)
     }
@@ -2240,39 +2248,110 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const members = await listManagedMembers(db, row.id)
     const primary = members.find((m) => m.role === 'primary')
+    if (!primary) {
+      return enqueueOrphanManagedPromote(c, db, commandQueue, {
+        userId: auth.userId,
+        managedId: row.id,
+        member,
+        engine: ctx.spec.engine,
+      })
+    }
 
-    // Fence online primary then enqueue promote from the command consumer.
-    // HTTP returns immediately with the fence (or promote) command id.
-    const fenceResult = await fenceOrResyncPrimaryForPromote({
-      c,
+    const recovery = await beginOperatorSwitchover({
       db,
       commandQueue,
-      auth,
-      ctx,
-      row,
-      member,
-      primary,
-    })
-    if (fenceResult) return fenceResult
-
-    const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
-      userId: auth.userId,
-      serverId: member.serverId,
-      type: 'managed.promote',
-      payload: {
-        managedId: row.id,
-        memberId: member.id,
-        engine: ctx.spec.engine,
-        ...(primary ? { demoteMemberId: primary.id } : {}),
-      },
-      expiresAtMs: 600_000,
       managedId: row.id,
-      setApplying: true,
+      engine: ctx.spec.engine,
+      source: primary,
+      target: member,
+      members,
+      actor: { actorType: 'user', actorId: auth.userId },
     })
-    if (enqueued instanceof Response) return enqueued
-    return c.json(buildPromoteQueuedResponse({
-      commandId: enqueued.commandId,
-      serverId: enqueued.serverId,
+    const http = operatorPromoteHttpResult(recovery)
+    return c.json(http.body, http.status)
+  })
+
+  router.post('/environments/:id/managed/disaster-recovery/promote', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    if (auth instanceof Response) return auth
+
+    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
+    if (ctx instanceof Response) return ctx
+
+    const row = await findManagedForEnvironment(db, environmentId)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    const busy = assertManagedNotBusy(c, row.status)
+    if (busy) return busy
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const parsed = parseDisasterRecoveryPromoteBody(body)
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, parsed.status)
+    }
+
+    const member = await findManagedMember(db, parsed.memberId)
+    if (member?.managedId !== row.id) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    const roleError = evaluatePromoteMemberRole(member.role)
+    if (roleError) {
+      return c.json({ error: roleError.error }, roleError.status)
+    }
+    if (member.replicaClass !== 'read') {
+      return c.json({ error: 'managed_replica_not_promotable' }, 422)
+    }
+
+    const offline = await assertTargetServerOnline(c, db, member.serverId)
+    if (offline) return offline
+
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
+
+    const members = await listManagedMembers(db, row.id)
+    const primary = members.find((m) => m.role === 'primary')
+    if (!primary) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const dcSets = await loadDatacenterSets(db, members)
+    const serialized = serializeManagedMember(member, null)
+    const recovery = await beginDisasterRecovery({
+      db,
+      commandQueue,
+      managedId: row.id,
+      engine: ctx.spec.engine,
+      source: primary,
+      target: member,
+      members,
+      actor: { actorType: 'user', actorId: auth.userId },
+      extraMetadata: {
+        lagBytes: serialized.replication?.lagBytes ?? null,
+        sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
+        targetDatacenterId: firstDatacenterId(dcSets, member.serverId),
+        sourceServerId: primary.serverId,
+        targetServerId: member.serverId,
+      },
+    })
+    if (!recovery.ok) {
+      return c.json({ error: recovery.error }, recovery.status)
+    }
+    return c.json(buildDisasterRecoveryQueuedResponse({
+      commandId: recovery.commandId,
+      serverId: recovery.serverId,
+      fencePending: recovery.fencePending,
+      lagBytes: serialized.replication?.lagBytes ?? null,
+      sourceMemberId: primary.id,
+      sourceServerId: primary.serverId,
+      sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
+      targetMemberId: member.id,
+      targetServerId: member.serverId,
+      targetDatacenterId: firstDatacenterId(dcSets, member.serverId),
     }))
   })
 
@@ -2322,7 +2401,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         if (parsed) {
           listener = await resolveManagedConnectionListener(db, {
             serverId: row.serverId,
-            protocolPort: managedIngressPortForEngine(spec.engine, spec.defaultPort),
+            engineCode: spec.engine,
+            engineDefaultPort: spec.defaultPort,
             exposure: parsed.settings.exposure,
           })
         }

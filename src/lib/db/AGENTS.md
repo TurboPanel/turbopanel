@@ -177,7 +177,7 @@ must have both, and both are always nullable.
 | **Identity**      | `user`, `account`, `session`, `verification`, `passkey`, `2fa`                                                                                                                      |
 | **Organizations** | `organization`, `team`, `teammate` (org membership SoT), `invitation` (no `organization_id`; `team_id NOT NULL`), `license`, `tls`                                                  |
 | **Networking**    | `datacenter`, `network` (kinds `datacenter` / `docker` / `compose`), `ip` (scopes `public` / `datacenter`), `fabric` (0–1 per org; TurboFabric on when present), `relay`, `segment` |
-| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `container`, `managed`, `node`, `variable`, `principal`, `steward`, `binding`                                          |
+| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `container`, `managed`, `node`, `recovery`, `variable`, `principal`, `steward`, `binding`                                          |
 | **Storage**       | `storage`, `location`, `mount`, `credential`                                                                                                                                        |
 | **Authorization** | `grant`                                                                                                                                                                             |
 | **Config**        | `setting` (`value` is `jsonb`)                                                                                                                                                      |
@@ -194,6 +194,7 @@ letter-first alphanumeric token, **no underscores**. Guarded by
 | `teammate`    | `teammate`     | User ↔ team; org membership is derived through `team.organization_id`                                 |
 | `managed`     | `managed`      | Environment-scoped managed engine cluster                                                             |
 | `node`        | `node`         | One server’s participation in a managed cluster (primary / replica)                                   |
+| `recovery`    | `recovery`     | Managed HA journal (automatic failover / switchover / disaster recovery)                              |
 | `relay`       | `relay`        | One server in the org TurboFabric mesh — `tp0` address, role, container prefix, advertised CIDRs, PSK |
 | `segment`     | `segment`      | Server-local Docker bridge for a `kind='compose'` spanning network                                    |
 | `storage`     | `storage`      | Logical dataset identity (volume / directory / file / object)                                         |

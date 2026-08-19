@@ -22,13 +22,17 @@ import {
   service,
   workspace,
 } from '../../lib/db/schema.ts'
+import {
+  MANAGED_INGRESS_MYSQL_PORT,
+  MANAGED_INGRESS_PGSQL_PORT,
+} from '../../lib/managed/ingress-ports.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
 import type { ManagedSettings } from '../../lib/managed/settings.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
+  type BindingEndpointError,
   isBindingEndpointError,
   resolveBindingEndpoint,
-  type BindingEndpointError,
   type ResolvedBindingEndpoint,
 } from './resolve-endpoint.ts'
 
@@ -136,11 +140,15 @@ async function cleanupBindingEndpointOrg(
         const serviceIds = serviceRows.map((row) => row.id)
 
         if (serviceIds.length > 0) {
-          await db.delete(container).where(inArray(container.serviceId, serviceIds))
+          await db.delete(container).where(
+            inArray(container.serviceId, serviceIds),
+          )
           await db.delete(service).where(inArray(service.id, serviceIds))
         }
         // `managed` + `node` cascade-delete via the environment FK.
-        await db.delete(environment).where(inArray(environment.id, environmentIds))
+        await db.delete(environment).where(
+          inArray(environment.id, environmentIds),
+        )
       }
       await db.delete(project).where(inArray(project.id, projectIds))
     }
@@ -296,19 +304,24 @@ async function withBindingReachabilityFixture(
   }
 }
 
-test('same-host container reachability — consumer on the cluster server dials that server\'s ProxySQL container, never loopback', async () => {
+test("same-host container reachability — consumer on the cluster server dials that server's ProxySQL container, never loopback", async () => {
   await withBindingReachabilityFixture(
-    { enabled: true, bind: 'local' },
-    async ({ db, organizationId, clusterServerId, managedId, createConsumerService }) => {
+    { enabled: true, scope: 'local' },
+    async (
+      { db, organizationId, clusterServerId, managedId, createConsumerService },
+    ) => {
       const serviceId = await createConsumerService(clusterServerId)
 
       const resolved = await resolveBindingEndpoint(db, {
         serviceId,
         managedId,
-        protocolPort: 5432,
+        engineCode: 'postgres',
+        engineDefaultPort: 5432,
       })
       if (isBindingEndpointError(resolved)) {
-        throw new TypeError(`expected a resolved endpoint, got ${JSON.stringify(resolved)}`)
+        throw new TypeError(
+          `expected a resolved endpoint, got ${JSON.stringify(resolved)}`,
+        )
       }
 
       const hierarchy = await ensureManagedIngressHierarchy(db, {
@@ -317,26 +330,41 @@ test('same-host container reachability — consumer on the cluster server dials 
       })
       assertEquals(resolved.host, hierarchy.containerName)
       assertEquals(resolved.host === '127.0.0.1', false)
-      assertEquals(resolved.port, 5432)
+      // The shared client listener, not the engine-native backend port.
+      assertEquals(resolved.port, MANAGED_INGRESS_PGSQL_PORT)
       assertEquals(resolved.listenerServerId, clusterServerId)
     },
   )
 })
 
-test('cross-host binding reachability — consumer on a different server dials its OWN ProxySQL, never the cluster member\'s host', async () => {
+test("cross-host binding reachability — consumer on a different server dials its OWN ProxySQL, never the cluster member's host", async () => {
   await withBindingReachabilityFixture(
     { enabled: false },
-    async ({ db, organizationId, clusterServerId, managedId, createServer, createConsumerService }) => {
-      const consumerServerId = await createServer('Binding Endpoint Consumer Server')
+    async (
+      {
+        db,
+        organizationId,
+        clusterServerId,
+        managedId,
+        createServer,
+        createConsumerService,
+      },
+    ) => {
+      const consumerServerId = await createServer(
+        'Binding Endpoint Consumer Server',
+      )
       const serviceId = await createConsumerService(consumerServerId)
 
       const resolved = await resolveBindingEndpoint(db, {
         serviceId,
         managedId,
-        protocolPort: 3306,
+        engineCode: 'mysql',
+        engineDefaultPort: 3306,
       })
       if (isBindingEndpointError(resolved)) {
-        throw new TypeError(`expected a resolved endpoint, got ${JSON.stringify(resolved)}`)
+        throw new TypeError(
+          `expected a resolved endpoint, got ${JSON.stringify(resolved)}`,
+        )
       }
 
       const consumerHierarchy = await ensureManagedIngressHierarchy(db, {
@@ -352,6 +380,54 @@ test('cross-host binding reachability — consumer on a different server dials i
       assertEquals(resolved.host, consumerHierarchy.containerName)
       assertEquals(resolved.host === clusterHierarchy.containerName, false)
       assertEquals(resolved.host === '127.0.0.1', false)
+      // MariaDB and MySQL share this listener; neither uses 3306.
+      assertEquals(resolved.port, MANAGED_INGRESS_MYSQL_PORT)
+    },
+  )
+})
+
+test('listener port follows the server-owner organization override, not the engine-native port', async () => {
+  await withBindingReachabilityFixture(
+    { enabled: false },
+    async (
+      { db, organizationId, clusterServerId, managedId, createConsumerService },
+    ) => {
+      const serviceId = await createConsumerService(clusterServerId)
+
+      // `managed.ingress.reconcile` is a whole-server command, so the port the
+      // frontend binds is whatever the server's owner org configured. A binding
+      // DSN that ignored that would point at a port nothing listens on.
+      await db
+        .update(organization)
+        .set({ options: { managedDatabase: { ports: { postgres: 18432 } } } })
+        .where(eq(organization.id, organizationId))
+
+      const resolved = await resolveBindingEndpoint(db, {
+        serviceId,
+        managedId,
+        engineCode: 'postgres',
+        engineDefaultPort: 5432,
+      })
+      if (isBindingEndpointError(resolved)) {
+        throw new TypeError(
+          `expected a resolved endpoint, got ${JSON.stringify(resolved)}`,
+        )
+      }
+      assertEquals(resolved.port, 18432)
+
+      // The other family keeps inheriting the platform listener.
+      const mysqlResolved = await resolveBindingEndpoint(db, {
+        serviceId,
+        managedId,
+        engineCode: 'mariadb',
+        engineDefaultPort: 3306,
+      })
+      if (isBindingEndpointError(mysqlResolved)) {
+        throw new TypeError(
+          `expected a resolved endpoint, got ${JSON.stringify(mysqlResolved)}`,
+        )
+      }
+      assertEquals(mysqlResolved.port, MANAGED_INGRESS_MYSQL_PORT)
     },
   )
 })
@@ -365,7 +441,8 @@ test('exposure disabled cluster still resolves a reachable internal endpoint for
       const resolved = await resolveBindingEndpoint(db, {
         serviceId,
         managedId,
-        protocolPort: 5432,
+        engineCode: 'postgres',
+        engineDefaultPort: 5432,
       })
       if (isBindingEndpointError(resolved)) {
         throw new TypeError(

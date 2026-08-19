@@ -3,57 +3,149 @@ import { eq } from 'drizzle-orm'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
 import type { ManagedSettings } from '../../lib/managed/settings.ts'
-import { server } from '../../lib/db/schema.ts'
+import {
+  defaultManagedRelease,
+  describeManagedImage,
+  isSameManagedSeries,
+  resolveManagedImage,
+} from '../../lib/managed/releases.ts'
+import type { ManagedConnectionRole } from '../../lib/commands/schemas.ts'
+import {
+  managedIngressPortForEngine,
+  resolveManagedIngressPorts,
+} from '../../lib/managed/ingress-ports.ts'
+import { type ManagedSslMode, resolveManagedSslMode } from '../../lib/managed/ssl.ts'
+import {
+  DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
+  isManagedSqlAccessScope,
+  type ManagedSqlAccessScope,
+} from '../../lib/managed/access-scope.ts'
+import { organization, server } from '../../lib/db/schema.ts'
+import { parseOrganizationOptions } from '../../lib/organization-options.ts'
 import { BadRequestError, parseDisplayName, requireStringField } from '../shared.ts'
 import { USERNAME_RE } from '../principals/store.ts'
-import { resolveHostingBindAddress } from '../environments/deploy-prepare.ts'
+import { LOOPBACK_BIND, resolveManagedDialHost } from './access-address.ts'
 import type { ManagedContext } from './context.ts'
 import type { ManagedRowOptions } from './options.ts'
+import { evaluateManagedPromoteLagGate } from '../../lib/managed/promote-lag.ts'
+
+export { evaluateManagedPromoteLagGate }
+
+/** One reachable client endpoint on the shared ProxySQL frontend. */
+export type ManagedAccessEndpoint = {
+  scope: ManagedSqlAccessScope
+  host: string
+  port: number
+}
 
 /**
- * Client connection endpoint for managed engines goes through the shared
- * ProxySQL listener (protocol port 15432/16306), not a per-service published port.
+ * Scopes a client can actually dial, given what the frontend publishes.
+ *
+ * `public` publishes on all interfaces, so every narrower address is reachable
+ * too and is worth showing an operator; a narrower scope publishes exactly one
+ * address and must not imply the others exist.
+ */
+function dialScopesForExposure(
+  exposure: ManagedSettings['exposure'],
+): ManagedSqlAccessScope[] {
+  if (!exposure.enabled) return []
+  const scope = exposure.scope ?? DEFAULT_MANAGED_SQL_ACCESS_SCOPE
+  if (scope !== 'public') return [scope]
+  return ['public', 'turbofabric', 'datacenter', 'local']
+}
+
+/**
+ * Shared-ProxySQL client listener port for `serverId`.
+ *
+ * Read from the **server-owner** organization: the listener is configured by
+ * whichever org owns the host, which is not necessarily the org of the project
+ * asking for the endpoint (grant-placed cross-org projects).
+ */
+async function resolveListenerPortForServer(
+  db: Db,
+  params: Readonly<{
+    serverId: string
+    engineCode: string
+    engineDefaultPort: number
+  }>,
+): Promise<number> {
+  const [row] = await db
+    .select({ organizationOptions: organization.options })
+    .from(server)
+    .innerJoin(organization, eq(server.organizationId, organization.id))
+    .where(eq(server.id, params.serverId))
+    .limit(1)
+  return managedIngressPortForEngine(
+    params.engineCode,
+    params.engineDefaultPort,
+    resolveManagedIngressPorts(
+      parseOrganizationOptions(row?.organizationOptions).managedDatabase?.ports,
+    ),
+  )
+}
+
+/**
+ * Every endpoint this cluster is reachable at, widest scope first.
+ *
+ * Empty when exposure is disabled: nothing is published to the host at all, and
+ * co-located consumers dial the ProxySQL container over `turbopanel-managed`
+ * (see `resolveBindingEndpoint`) rather than any host address.
+ */
+export async function resolveManagedAccessEndpoints(
+  db: Db,
+  params: Readonly<{
+    serverId: string
+    engineCode: string
+    engineDefaultPort: number
+    exposure: ManagedSettings['exposure']
+  }>,
+): Promise<ManagedAccessEndpoint[]> {
+  const scopes = dialScopesForExposure(params.exposure)
+  if (scopes.length === 0) return []
+
+  const port = await resolveListenerPortForServer(db, params)
+  const endpoints: ManagedAccessEndpoint[] = []
+  const seenHosts = new Set<string>()
+  for (const scope of scopes) {
+    const host = await resolveManagedDialHost(db, { serverId: params.serverId, scope })
+    if (host === null || seenHosts.has(host)) continue
+    seenHosts.add(host)
+    endpoints.push({ scope, host, port })
+  }
+  return endpoints
+}
+
+/**
+ * The single endpoint used for the primary DSN and the listener TLS SANs.
+ *
+ * Widest scope wins so the advertised host is the one an operator outside the
+ * host can actually reach. Unexposed clusters keep reporting loopback: the DSN
+ * shape stays useful, and the connection surface separately reports that no host
+ * endpoint is published.
  */
 export async function resolveManagedConnectionListener(
   db: Db,
   params: Readonly<{
     serverId: string
-    protocolPort: number
+    engineCode: string
+    engineDefaultPort: number
     exposure: ManagedSettings['exposure']
   }>,
 ): Promise<{ host: string; port: number } | null> {
-  const bindScope = params.exposure.enabled
-    ? (params.exposure.bind ?? 'public')
-    : 'local'
+  const endpoints = await resolveManagedAccessEndpoints(db, params)
+  const primary = endpoints[0]
+  if (primary) return { host: primary.host, port: primary.port }
+  if (params.exposure.enabled) return null
 
-  const bindResolved = await resolveHostingBindAddress(db, {
-    serverId: params.serverId,
-    options: { bind: bindScope },
-    ipId: null,
-  })
-  if (
-    typeof bindResolved === 'object' &&
-    bindResolved?.kind === 'datacenter_ip_required'
-  ) {
-    return null
+  return {
+    host: LOOPBACK_BIND,
+    port: await resolveListenerPortForServer(db, params),
   }
-
-  if (typeof bindResolved === 'string') {
-    return { host: bindResolved, port: params.protocolPort }
-  }
-
-  // Public bind with no pin — prefer the server hostname as a stable operator dial.
-  const [row] = await db
-    .select({ hostname: server.hostname })
-    .from(server)
-    .where(eq(server.id, params.serverId))
-    .limit(1)
-  const hostname = row?.hostname?.trim()
-  if (!hostname) return null
-  return { host: hostname, port: params.protocolPort }
 }
 
-export function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(
+  value: unknown,
+): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
@@ -80,36 +172,122 @@ export function managedSessionPaths(): string[] {
   ]
 }
 
+/**
+ * Prefer `scope`; fall back to legacy `bind`. Invalid tokens reject the create.
+ */
+function parseCreateExposureScope(
+  exposureRaw: Record<string, unknown>,
+): ManagedSqlAccessScope | undefined | null {
+  let raw: unknown = exposureRaw.bind
+  if (exposureRaw.scope !== undefined) raw = exposureRaw.scope
+  if (raw === undefined) return undefined
+  if (!isManagedSqlAccessScope(raw)) return null
+  return raw
+}
+
+function mergeCreateExposure(
+  base: ManagedSettings['exposure'],
+  exposureRaw: unknown,
+): ManagedSettings['exposure'] | null | undefined {
+  if (!isPlainObject(exposureRaw)) return undefined
+  const scope = parseCreateExposureScope(exposureRaw)
+  if (scope === null) return null
+  const next = { ...base }
+  if (typeof exposureRaw.enabled === 'boolean') {
+    next.enabled = exposureRaw.enabled
+  }
+  if (scope !== undefined) next.scope = scope
+  return next
+}
+
 export function mergeCreateSettings(
   spec: {
     defaultSettings: ManagedSettings
     parseSettings: (v: unknown) => ManagedSettings | null
   },
   body: Record<string, unknown>,
+  /** Resolved catalog image from {@link parseManagedVersionSelection}. */
+  image?: string,
 ): ManagedSettings | null {
   const base = spec.parseSettings(spec.defaultSettings)
   if (!base) return null
 
-  const exposureRaw = body.exposure
-  if (!isPlainObject(exposureRaw)) {
-    return base
+  const overrides: Record<string, unknown> = {}
+  if (image !== undefined) overrides.image = image
+
+  const exposure = mergeCreateExposure(base.exposure, body.exposure)
+  if (exposure === null) return null
+  if (exposure !== undefined) overrides.exposure = exposure
+
+  if (Object.keys(overrides).length === 0) return base
+  return spec.parseSettings({ ...base, ...overrides })
+}
+
+/** Requested engine series or image variant is not in the release catalog. */
+export const MANAGED_VERSION_UNSUPPORTED_ERROR = 'managed_version_unsupported'
+
+/** A cluster's engine series cannot change after create. */
+export const MANAGED_SERIES_IMMUTABLE_ERROR = 'managed_series_immutable'
+
+/**
+ * Resolve create-time `engineSeries` / `imageVariant` to a catalog image.
+ *
+ * Both fields are optional — omitting them keeps the engine spec's default
+ * image, which is how every existing client creates a cluster. `imageVariant`
+ * alone selects that variant of the default series. An unknown series or
+ * variant is a **422** rather than a generic settings rejection so the UI can
+ * say which version was refused (an EOL or never-supported major must not be
+ * creatable).
+ */
+export function parseManagedVersionSelection(
+  engine: string,
+  body: Record<string, unknown>,
+):
+  | { ok: true; image?: string }
+  | { ok: false; error: string; status: 400 | 422 } {
+  const seriesRaw = body.engineSeries
+  const variantRaw = body.imageVariant
+  if (seriesRaw === undefined && variantRaw === undefined) return { ok: true }
+
+  if (seriesRaw !== undefined && typeof seriesRaw !== 'string') {
+    return { ok: false, error: 'Invalid engineSeries', status: 400 }
+  }
+  if (variantRaw !== undefined && typeof variantRaw !== 'string') {
+    return { ok: false, error: 'Invalid imageVariant', status: 400 }
   }
 
-  const merged = {
-    ...base,
-    exposure: {
-      ...base.exposure,
-      ...(typeof exposureRaw.enabled === 'boolean'
-        ? { enabled: exposureRaw.enabled }
-        : {}),
-      ...(exposureRaw.bind === 'public' ||
-          exposureRaw.bind === 'datacenter' ||
-          exposureRaw.bind === 'local'
-        ? { bind: exposureRaw.bind }
-        : {}),
-    },
+  const series = seriesRaw ?? defaultManagedRelease(engine)?.series
+  if (series === undefined) {
+    return { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 }
   }
-  return spec.parseSettings(merged)
+
+  const image = resolveManagedImage(engine, series, variantRaw)
+  if (image === undefined) {
+    return { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 }
+  }
+  return { ok: true, image }
+}
+
+/**
+ * Refuse a settings patch that moves an existing cluster to another engine
+ * series.
+ *
+ * An engine refuses to start on a data directory written by a different major,
+ * and cross-major replication is not a supported topology, so an in-place
+ * series change would break the cluster rather than upgrade it. Changing the
+ * base-OS variant within one series (`alpine` ↔ `debian`) is allowed. Series
+ * migration is a separate managed service plus a data move, not a settings
+ * edit.
+ */
+export function assertManagedSeriesUnchanged(
+  spec: { defaultImage: string },
+  currentSettings: ManagedSettings,
+  nextSettings: ManagedSettings,
+): { ok: false; error: string; status: 409 } | null {
+  const current = currentSettings.image ?? spec.defaultImage
+  const next = nextSettings.image ?? spec.defaultImage
+  if (isSameManagedSeries(current, next)) return null
+  return { ok: false, error: MANAGED_SERIES_IMMUTABLE_ERROR, status: 409 }
 }
 
 export function readInitialDatabase(spec: {
@@ -138,7 +316,10 @@ export function resolveManagedServerId(
 }
 
 export function principalMetadata(metadata: unknown): Record<string, unknown> {
-  if (typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)) {
+  if (
+    typeof metadata === 'object' && metadata !== null &&
+    !Array.isArray(metadata)
+  ) {
     return metadata as Record<string, unknown>
   }
   return {}
@@ -151,68 +332,6 @@ export function isManagedRootPrincipal(metadata: unknown): boolean {
 /** Replication principal is platform-managed — never listed as a client login. */
 export function isManagedReplicationPrincipal(metadata: unknown): boolean {
   return principalMetadata(metadata).managedReplication === true
-}
-
-/**
- * Lag gate for promote. Returns null when healthy enough to promote, or a
- * typed 409 error code when the operator should not promote without `force`.
- */
-export function evaluateManagedPromoteLagGate(
-  replication: unknown,
-  nowMs: number = Date.now(),
-  options?: {
-    /** Max age of the observation (default 120s). */
-    staleMs?: number
-    /** Max replay lag in bytes (default 64 MiB). */
-    maxLagBytes?: number
-    /** Max replay lag in seconds (default 30). */
-    maxLagSeconds?: number
-  },
-):
-  | null
-  | 'managed_replica_not_streaming'
-  | 'managed_replica_lagging'
-  | 'managed_replica_health_stale' {
-  const staleMs = options?.staleMs ?? 120_000
-  const maxLagBytes = options?.maxLagBytes ?? 64 * 1024 * 1024
-  const maxLagSeconds = options?.maxLagSeconds ?? 30
-
-  if (
-    typeof replication !== 'object' ||
-    replication === null ||
-    Array.isArray(replication)
-  ) {
-    return 'managed_replica_not_streaming'
-  }
-  const r = replication as Record<string, unknown>
-  if (typeof r.state !== 'string' || r.state.length === 0) {
-    return 'managed_replica_not_streaming'
-  }
-  if (r.state !== 'streaming') {
-    return 'managed_replica_not_streaming'
-  }
-  if (typeof r.observedAt !== 'string' || r.observedAt.length === 0) {
-    return 'managed_replica_health_stale'
-  }
-  const observedMs = Date.parse(r.observedAt)
-  if (!Number.isFinite(observedMs) || nowMs - observedMs > staleMs) {
-    return 'managed_replica_health_stale'
-  }
-  if (
-    typeof r.lagBytes === 'number' &&
-    Number.isFinite(r.lagBytes) &&
-    r.lagBytes > maxLagBytes
-  ) {
-    return 'managed_replica_lagging'
-  }
-  if (
-    typeof r.lagSeconds === 'number' &&
-    Number.isFinite(r.lagSeconds) &&
-    r.lagSeconds > maxLagSeconds
-  ) {
-    return 'managed_replica_lagging'
-  }
-  return null
 }
 
 export function serializeManagedUser(
@@ -235,6 +354,9 @@ export function serializeManagedUser(
     username: row.username,
     databases,
     privileges,
+    connectionRole: meta.connectionRole === 'read-only'
+      ? ('read-only' as const)
+      : ('read-write' as const),
     createdAt: row.createdAt,
   }
 }
@@ -276,7 +398,14 @@ export function parseManagedUserCreateFields(
   options: ManagedRowOptions,
   /** Persisted cluster root username when known; falls back to spec preference. */
   rootUsername?: string,
-): { username: string; databases: string[]; privileges: string[] } | Response {
+):
+  | {
+    username: string
+    databases: string[]
+    privileges: string[]
+    connectionRole: ManagedConnectionRole
+  }
+  | Response {
   const username = requireStringField(c, body, 'username')
   if (username instanceof Response) return username
 
@@ -319,7 +448,65 @@ export function parseManagedUserCreateFields(
     return c.json({ error: 'Invalid request' }, 400)
   }
 
-  return { username, databases, privileges }
+  const connectionRole = parseManagedConnectionRole(body.connectionRole)
+  if (connectionRole === null) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+
+  return { username, databases, privileges, connectionRole }
+}
+
+/** A `read-only` login was requested for a cluster with no read-eligible replica. */
+export const MANAGED_NO_READ_TARGETS_ERROR = 'managed_no_read_targets'
+
+export type ManagedReadOnlyLoginGuardError = {
+  ok: false
+  error: typeof MANAGED_NO_READ_TARGETS_ERROR
+  status: 422
+}
+
+/**
+ * Refuse a `read-only` login when the cluster has no read-eligible replica.
+ * `read-write` is always allowed here.
+ */
+export function evaluateReadOnlyLoginTargets(
+  connectionRole: ManagedConnectionRole,
+  members: ReadonlyArray<{ role: string; readEligible: boolean }>,
+): ManagedReadOnlyLoginGuardError | null {
+  if (connectionRole !== 'read-only') return null
+  const hasReadTarget = members.some(
+    (member) => member.role === 'replica' && member.readEligible,
+  )
+  if (hasReadTarget) return null
+  return { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
+}
+
+/**
+ * Same guard as {@link evaluateReadOnlyLoginTargets}, but loads members only
+ * when a `read-only` login was requested.
+ */
+export async function evaluateReadOnlyLoginTargetsLazy(
+  connectionRole: ManagedConnectionRole,
+  loadMembers: () => Promise<
+    ReadonlyArray<{ role: string; readEligible: boolean }>
+  >,
+): Promise<ManagedReadOnlyLoginGuardError | null> {
+  if (connectionRole !== 'read-only') return null
+  return evaluateReadOnlyLoginTargets(connectionRole, await loadMembers())
+}
+
+/**
+ * Frontend hostgroup a login defaults to. Absent means `read-write` — the
+ * historical behavior and the only safe default, since a `read-only` login is
+ * useless (and provisioning is refused) when the cluster has no read-eligible
+ * replica.
+ */
+export function parseManagedConnectionRole(
+  value: unknown,
+): ManagedConnectionRole | null {
+  if (value === undefined || value === null) return 'read-write'
+  if (value === 'read-write' || value === 'read-only') return value
+  return null
 }
 
 export type ManagedRouteValidationError = {
@@ -429,6 +616,20 @@ export function parsePromoteForce(body: Record<string, unknown>): boolean {
   return body.force === true
 }
 
+export function parseDisasterRecoveryPromoteBody(
+  body: Record<string, unknown>,
+):
+  | { ok: true; memberId: string }
+  | { ok: false; error: 'Invalid request'; status: 400 } {
+  if (body.confirm !== true) {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  if (typeof body.memberId !== 'string' || body.memberId.length === 0) {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  return { ok: true, memberId: body.memberId }
+}
+
 export function parseMemberReadEligibleCreate(
   body: Record<string, unknown>,
 ): boolean {
@@ -437,7 +638,9 @@ export function parseMemberReadEligibleCreate(
 
 export function parseReplicaClassCreate(
   body: Record<string, unknown>,
-): { ok: true; replicaClass: 'failover' | 'read' } | ManagedRouteValidationError {
+):
+  | { ok: true; replicaClass: 'failover' | 'read' }
+  | ManagedRouteValidationError {
   if (body.replicaClass === undefined) {
     return { ok: true, replicaClass: 'failover' }
   }
@@ -500,8 +703,11 @@ export function canHardDeleteManaged(
     !serverId
 }
 
-export type ReplicaPlacementPrecheckError =
-  | { ok: false; error: 'managed_member_exists'; status: 409 }
+export type ReplicaPlacementPrecheckError = {
+  ok: false
+  error: 'managed_member_exists'
+  status: 409
+}
 
 /**
  * Pure prechecks before datacenter / private-endpoint / online probes.
@@ -562,9 +768,7 @@ export function evaluatePromoteMemberRole(
 
 export function evaluatePromoteReplicaClass(
   replicaClass: string | null,
-  force: boolean,
 ): { ok: false; error: 'managed_replica_not_promotable'; status: 422 } | null {
-  if (force) return null
   if (replicaClass !== 'failover') {
     return { ok: false, error: 'managed_replica_not_promotable', status: 422 }
   }
@@ -573,7 +777,11 @@ export function evaluatePromoteReplicaClass(
 
 export type ReplicaClassConversionError =
   | { ok: false; error: 'Invalid request'; status: 400 }
-  | { ok: false; error: 'failover_replica_requires_datacenter_transport'; status: 422 }
+  | {
+    ok: false
+    error: 'failover_replica_requires_datacenter_transport'
+    status: 422
+  }
 
 /**
  * Class conversion: failover → read always allowed; read → failover requires
@@ -675,14 +883,72 @@ export function buildQueuedFanoutResponse<T extends QueuedCommandFanoutRow>(
   }
 }
 
-export function buildEmptyManagedDetailResponse(rootUsername: string) {
+/**
+ * Detail shape for an environment whose managed row does not exist yet. `ssl`
+ * is still resolved so the create surface can state the TLS policy a new
+ * cluster will inherit instead of leaving it blank until after provisioning.
+ */
+export function buildEmptyManagedDetailResponse(
+  rootUsername: string,
+  organizationSslMode?: ManagedSslMode | undefined,
+) {
   return {
     managed: null,
     connection: null,
+    endpoints: [] as const,
     settings: null,
+    ssl: buildManagedSslView(undefined, organizationSslMode),
+    release: null,
     server: null,
     rootUsername,
     members: [] as const,
+    recovery: null,
+  }
+}
+
+/**
+ * `configured` is the service override (`null` = inheriting); `effective` is
+ * what ProxySQL enforces and DSNs render, so the UI can label the inherit
+ * option with what it resolves to without recomputing the hierarchy.
+ */
+export function buildManagedSslView(
+  configured: ManagedSslMode | undefined,
+  organizationDefault: ManagedSslMode | undefined,
+) {
+  return {
+    configured: configured ?? null,
+    effective: resolveManagedSslMode(configured, organizationDefault),
+    organizationDefault: organizationDefault ?? null,
+  }
+}
+
+export type ManagedReleaseView = {
+  /** Operator-facing version (`18`, `9.7`, `12.3`). */
+  series: string
+  variantId: string
+  lifecycle: string
+  image: string
+}
+
+/**
+ * Catalog identity of the image this cluster runs, derived rather than stored
+ * so `settings.image` stays the single persisted source of truth. `null` when
+ * the resolved image is outside the catalog (an engine with no catalog, or a
+ * series retired after the row was written) — the UI then falls back to showing
+ * the raw image.
+ */
+export function buildManagedReleaseView(
+  spec: { defaultImage: string },
+  settings: ManagedSettings,
+): ManagedReleaseView | null {
+  const image = settings.image ?? spec.defaultImage
+  const descriptor = describeManagedImage(image)
+  if (!descriptor) return null
+  return {
+    series: descriptor.series,
+    variantId: descriptor.variantId,
+    lifecycle: descriptor.lifecycle,
+    image,
   }
 }
 
@@ -722,9 +988,7 @@ export function buildStatusMemberView(serialized: {
     status: serialized.status,
     replicationTransport: serialized.replicationTransport,
     privatePort: serialized.privatePort,
-    ...(serialized.replication !== undefined
-      ? { replication: serialized.replication }
-      : {}),
+    ...(serialized.replication !== undefined ? { replication: serialized.replication } : {}),
   }
 }
 
@@ -745,7 +1009,9 @@ export function buildManagedDeleteHardResponse() {
   return { ok: true as const, deleted: true as const }
 }
 
-export function buildManagedDeleteQueuedResponse<T extends QueuedCommandFanoutRow>(
+export function buildManagedDeleteQueuedResponse<
+  T extends QueuedCommandFanoutRow,
+>(
   enqueued: readonly T[],
   fallbackServerId: string,
 ) {
@@ -782,6 +1048,73 @@ export function buildPromoteQueuedResponse(params: {
     commandId: params.commandId,
     status: 'queued' as const,
     serverId: params.serverId,
+  }
+}
+
+export type OperatorPromoteRecoveryInput =
+  | { ok: false; error: string; status: 409 | 422 | 503 }
+  | { ok: true; commandId: string; serverId: string; fencePending: boolean }
+
+export type OperatorPromoteHttpResult =
+  | { status: 409 | 422 | 503; body: { error: string } }
+  | {
+    status: 200
+    body:
+      | ReturnType<typeof buildFencePromotePendingResponse>
+      | ReturnType<typeof buildPromoteQueuedResponse>
+  }
+
+/**
+ * Map a switchover enqueue result onto the promote HTTP body. Extracted so
+ * POST …/members/:memberId/promote stays under the route-handler complexity
+ * budget.
+ */
+export function operatorPromoteHttpResult(
+  recovery: OperatorPromoteRecoveryInput,
+): OperatorPromoteHttpResult {
+  if (!recovery.ok) {
+    return { status: recovery.status, body: { error: recovery.error } }
+  }
+  const queued = {
+    commandId: recovery.commandId,
+    serverId: recovery.serverId,
+  }
+  if (recovery.fencePending) {
+    return { status: 200, body: buildFencePromotePendingResponse(queued) }
+  }
+  return { status: 200, body: buildPromoteQueuedResponse(queued) }
+}
+
+export function buildDisasterRecoveryQueuedResponse(params: {
+  commandId: string
+  serverId: string
+  fencePending: boolean
+  lagBytes: number | null
+  sourceMemberId: string
+  sourceServerId: string
+  sourceDatacenterId: string | null
+  targetMemberId: string
+  targetServerId: string
+  targetDatacenterId: string | null
+}) {
+  return {
+    ok: true as const,
+    commandId: params.commandId,
+    status: 'queued' as const,
+    serverId: params.serverId,
+    fencePending: params.fencePending,
+    kind: 'disaster-recovery' as const,
+    lagBytes: params.lagBytes,
+    source: {
+      memberId: params.sourceMemberId,
+      serverId: params.sourceServerId,
+      datacenterId: params.sourceDatacenterId,
+    },
+    target: {
+      memberId: params.targetMemberId,
+      serverId: params.targetServerId,
+      datacenterId: params.targetDatacenterId,
+    },
   }
 }
 

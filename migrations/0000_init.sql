@@ -371,6 +371,23 @@ CREATE TABLE "project" (
 	CONSTRAINT "project_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
+CREATE TABLE "recovery" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
+	"managed_id" uuid NOT NULL,
+	"kind" text NOT NULL,
+	"source_primary_member_id" uuid NOT NULL,
+	"target_member_id" uuid,
+	"state" text NOT NULL,
+	"started_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"completed_at" timestamp(3) with time zone,
+	CONSTRAINT "recovery_kind_check" CHECK ("recovery"."kind" IN ('automatic-failover','switchover','disaster-recovery')),
+	CONSTRAINT "recovery_state_check" CHECK ("recovery"."state" IN ('detecting','fencing','promoting','repointing','reconciling-ingress','verifying','completed','failed','blocked'))
+);
+--> statement-breakpoint
 CREATE TABLE "relay" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -675,6 +692,7 @@ ALTER TABLE "passkey" ADD CONSTRAINT "passkey_user_id_user_id_fk" FOREIGN KEY ("
 ALTER TABLE "principal" ADD CONSTRAINT "principal_project_id_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."project"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "principal" ADD CONSTRAINT "principal_managed_id_managed_id_fk" FOREIGN KEY ("managed_id") REFERENCES "public"."managed"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project" ADD CONSTRAINT "project_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "recovery" ADD CONSTRAINT "recovery_managed_id_managed_id_fk" FOREIGN KEY ("managed_id") REFERENCES "public"."managed"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "relay" ADD CONSTRAINT "relay_fabric_id_fabric_id_fk" FOREIGN KEY ("fabric_id") REFERENCES "public"."fabric"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "relay" ADD CONSTRAINT "relay_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "segment" ADD CONSTRAINT "segment_network_id_network_id_fk" FOREIGN KEY ("network_id") REFERENCES "public"."network"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -770,6 +788,8 @@ CREATE INDEX "idx_principal_project_id" ON "principal" USING btree ("project_id"
 CREATE INDEX "idx_principal_managed_id" ON "principal" USING btree ("managed_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_project_workspace_id" ON "project" USING btree ("workspace_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_project_workspace_system_component" ON "project" USING btree ("workspace_id",(metadata->>'component')) WHERE (metadata->>'component') IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_recovery_managed_id" ON "recovery" USING btree ("managed_id" uuid_ops);--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_recovery_inflight_managed" ON "recovery" USING btree ("managed_id") WHERE "recovery"."state" NOT IN ('completed','failed','blocked');--> statement-breakpoint
 CREATE INDEX "idx_relay_fabric_id" ON "relay" USING btree ("fabric_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_relay_server_id" ON "relay" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_segment_network_id" ON "segment" USING btree ("network_id" uuid_ops);--> statement-breakpoint

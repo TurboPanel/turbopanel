@@ -163,6 +163,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/apply-prepare-pure.test.ts \
   src/client/managed/apply-prepare-bind.hostfree.test.ts \
   src/client/managed/apply-prepare.test.ts \
+  src/client/managed/ha-recovery-pure.test.ts \
   src/client/managed/ingress-desired.test.ts \
   src/client/managed/ingress-desired.hostfree.test.ts \
   src/client/managed/ingress-desired-pure.hostfree.test.ts \

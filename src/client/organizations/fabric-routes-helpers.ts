@@ -1,8 +1,8 @@
 import type { Db } from '../../db.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import {
-  fabricEnqueueTypedError,
   type FabricEnqueueResult,
+  fabricEnqueueTypedError,
   type reconcileFabricMembership,
 } from '../../lib/fabric/enqueue.ts'
 import {
@@ -15,10 +15,7 @@ import {
   resolveRelayGlobalEndpointAddress,
 } from '../../lib/db/fabric-records.ts'
 import { parseFabricOptions } from '../../lib/fabric/cidr.ts'
-import {
-  PREFERRED_GATEWAY_IDS_MAX,
-  resolveEffectiveAllowRelay,
-} from '../../lib/fabric/policy.ts'
+import { PREFERRED_GATEWAY_IDS_MAX, resolveEffectiveAllowRelay } from '../../lib/fabric/policy.ts'
 import { isValidCidr, isValidIpAddress } from '../../lib/ip-address.ts'
 import { isValidWireguardPublicKey } from '../../lib/fabric/wg.ts'
 import type { GatewayRelayReadyError } from '../../lib/net/datacenter-networks.ts'
@@ -33,8 +30,7 @@ export type RelayPatchReconcileFn = typeof reconcileFabricMembership
 export type { RelayMetadata } from '../../lib/db/fabric-records.ts'
 
 const ADVERTISED_CIDRS_MAX = 32
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 type FieldResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -44,7 +40,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 export function parseFabricPutBody(
   body: unknown,
-): { ok: true; enabled: boolean; allowRelay?: boolean } | { ok: false; error: string } {
+): { ok: true; enabled: boolean; allowRelay?: boolean } | {
+  ok: false
+  error: string
+} {
   if (!isPlainObject(body) || typeof body.enabled !== 'boolean') {
     return { ok: false, error: 'Invalid request' }
   }
@@ -115,7 +114,9 @@ function parseEndpointAddressField(value: unknown): FieldResult<string | null> {
 
 function parseAllowRelayField(value: unknown): FieldResult<boolean | null> {
   if (value === null) return { ok: true, value: null }
-  if (typeof value !== 'boolean') return { ok: false, error: 'Invalid allowRelay' }
+  if (typeof value !== 'boolean') {
+    return { ok: false, error: 'Invalid allowRelay' }
+  }
   return { ok: true, value }
 }
 
@@ -325,7 +326,9 @@ export function preferredGatewayIdsErrorResponse(
     if (role === 'gateway') gatewayServerIds.add(row.serverId)
   }
   for (const id of preferredGatewayIds) {
-    if (!gatewayServerIds.has(id)) return preferredGatewayInvalidErrorResponse()
+    if (!gatewayServerIds.has(id)) {
+      return preferredGatewayInvalidErrorResponse()
+    }
   }
   return null
 }
@@ -345,14 +348,18 @@ export function fabricEnableErrorResponse(err: unknown): Response {
     return Response.json({ error: 'fabric_cidr_unavailable' }, { status: 409 })
   }
   if (message.includes('address pool exhausted')) {
-    return Response.json({ error: 'fabric_address_pool_exhausted' }, { status: 409 })
+    return Response.json({ error: 'fabric_address_pool_exhausted' }, {
+      status: 409,
+    })
   }
   return Response.json({ error: 'TurboFabric update failed' }, { status: 500 })
 }
 
 /** Stable 409 when TurboFabric is off but a relay/apply route requires it. */
 export function fabricNotEnabledErrorResponse(): Response {
-  return Response.json({ error: 'TurboFabric is not enabled' }, { status: 409 })
+  return Response.json({ error: 'TurboFabric is not enabled' }, {
+    status: 409,
+  })
 }
 
 export async function enqueueRelayPatchReconcile(params: {
@@ -419,9 +426,7 @@ export function observedForRelay(
     if (latestAt && observed.at <= latestAt) continue
     latestAt = observed.at
     match = {
-      ...(peer.lastHandshakeAt
-        ? { lastHandshakeAt: peer.lastHandshakeAt }
-        : {}),
+      ...(peer.lastHandshakeAt ? { lastHandshakeAt: peer.lastHandshakeAt } : {}),
       ...(peer.transferRx !== undefined ? { transferRx: peer.transferRx } : {}),
       ...(peer.transferTx !== undefined ? { transferTx: peer.transferTx } : {}),
     }

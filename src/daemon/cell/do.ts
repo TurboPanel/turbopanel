@@ -25,6 +25,7 @@ import {
   type ServerReportedIp,
 } from "../../server-addresses.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
+import { handleManagedHaEvent } from "../../client/managed/ha-event.ts";
 import { touchServerMetadata } from "../../server-registry.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
@@ -1792,6 +1793,29 @@ export class DaemonCellObject {
 
       if (parsed.type === "hello" || parsed.type === "heartbeat") {
         await this.#handlePresenceMessage(attachment, parsed);
+        return;
+      }
+
+      if (parsed.type === "managed-ha-event") {
+        this.#recordInbound(
+          attachment.serverId,
+          parsed.at,
+          undefined,
+          attachment.connectionId,
+        );
+        await this.#withProjectionDb(
+          "managed-ha-event",
+          attachment.serverId,
+          async (db) => {
+            await handleManagedHaEvent(db, {
+              managedId: parsed.managedId,
+              ...(parsed.sourceMemberId
+                ? { sourceMemberId: parsed.sourceMemberId }
+                : {}),
+              at: parsed.at,
+            }, { reporterServerId: attachment.serverId });
+          },
+        );
         return;
       }
 

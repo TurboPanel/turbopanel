@@ -1,13 +1,15 @@
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
-import { getDaemonCellRegistry, type Db } from '../../db.ts'
+import { type Db, getDaemonCellRegistry } from '../../db.ts'
 import {
   getManagedEngineSpec,
   MANAGED_ENGINE_STATUS,
   type ManagedEngineSpec,
 } from '../../lib/managed/index.ts'
 import { environment, project } from '../../lib/db/schema.ts'
+import type { ManagedOrganizationDefaults } from '../../lib/managed/org-defaults.ts'
+import { loadManagedOrgDefaults } from './org-defaults.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
   assertCanManageOr403,
@@ -32,7 +34,11 @@ export async function authorizeManagedRequest(
   const orgResult = await getOrgId(c, session.userId)
   if (orgResult instanceof Response) return orgResult
 
-  const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
+  const entityOrgId = await resolveEntityOrganizationId(
+    db,
+    'environment',
+    environmentId,
+  )
   if (!entityOrgId || entityOrgId !== orgResult) {
     return c.json({ error: 'Not found' }, 404)
   }
@@ -43,7 +49,11 @@ export async function authorizeManagedRequest(
   if (denied) return denied
 
   if (mode === 'manage') {
-    const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
+    const immutable = await assertNotSystemOwnedOr403(
+      c,
+      'environment',
+      environmentId,
+    )
     if (immutable) return immutable
   }
 
@@ -51,7 +61,9 @@ export async function authorizeManagedRequest(
 }
 
 function readProjectCatalogCode(metadata: unknown): string | null {
-  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+  if (
+    typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)
+  ) {
     return null
   }
   const code = (metadata as Record<string, unknown>).code
@@ -78,6 +90,13 @@ export type ManagedContext = {
    */
   serverId: string | null
   organizationId: string
+  /**
+   * Org-wide managed defaults inherited by services with no override
+   * (`organization.options.managedDatabase`). Resolve an effective value with
+   * the matching `resolveManaged*` helper rather than reading a service field
+   * directly.
+   */
+  orgDefaults: ManagedOrganizationDefaults
 }
 
 export async function loadManagedContext(
@@ -142,6 +161,7 @@ export async function loadManagedContext(
     spec,
     serverId,
     organizationId,
+    orgDefaults: await loadManagedOrgDefaults(db, organizationId),
   }
 }
 

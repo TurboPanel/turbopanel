@@ -4,20 +4,26 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  applyManagedDefaultsPatch,
   defaultEnvironmentGetResponse,
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
   defaultTimezonePutResponse,
   hostDefaultsGetResponse,
   hostDefaultsPutResponse,
+  managedDefaultsGetResponse,
+  managedDefaultsPutResponse,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
   parseHostDefaultsPatch,
+  parseManagedDefaultsPatch,
   parseOrganizationCreateDisplayName,
   parseOrganizationPatchDisplayName,
   parseServerCapacityPutBody,
   toOrganizationRecord,
+  validateManagedDefaults,
 } from "./routes-helpers.ts";
+import type { ManagedOrganizationDefaults } from "../../lib/managed/org-defaults.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -26,6 +32,165 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno);
+
+test("parseManagedDefaultsPatch accepts a mode or an explicit clear", () => {
+  assertEquals(
+    parseManagedDefaultsPatch({ sslMode: "verify-full" }),
+    { ok: true, patch: { sslMode: "verify-full" } },
+  );
+  // `null` is how an operator returns the org to the platform default; it is
+  // not the same as omitting the key, which is an empty patch.
+  assertEquals(
+    parseManagedDefaultsPatch({ sslMode: null }),
+    { ok: true, patch: { sslMode: null } },
+  );
+  assertEquals(parseManagedDefaultsPatch({}).ok, false);
+  // A typo must 400 rather than silently downgrade every inheriting service.
+  assertEquals(
+    parseManagedDefaultsPatch({ sslMode: "requrie" }),
+    { ok: false, error: "Invalid sslMode", status: 400 },
+  );
+  assertEquals(parseManagedDefaultsPatch({ sslMode: true }).ok, false);
+});
+
+test("applyManagedDefaultsPatch preserves untouched sibling keys", () => {
+  // The route writes the whole `managedDatabase` object back, so this merge is
+  // the only thing keeping a future sibling key (ports) alive across a PUT that
+  // only names sslMode.
+  // `unrelated` stands in for a sibling key this helper does not know about,
+  // so it has to be smuggled past the declared type on both sides.
+  const current = {
+    sslMode: "require" as const,
+    unrelated: "keep-me",
+  } as ManagedOrganizationDefaults;
+  assertEquals(
+    applyManagedDefaultsPatch(current, { sslMode: "verify-ca" }),
+    {
+      sslMode: "verify-ca",
+      unrelated: "keep-me",
+    } as ManagedOrganizationDefaults,
+  );
+  assertEquals(
+    applyManagedDefaultsPatch(current, { sslMode: null }),
+    { unrelated: "keep-me" } as ManagedOrganizationDefaults,
+  );
+  assertEquals(applyManagedDefaultsPatch({}, {}), {});
+});
+
+test("managed defaults responses separate configured from effective", () => {
+  assertEquals(managedDefaultsGetResponse({}), {
+    sslMode: null,
+    effectiveSslMode: "require",
+    ports: { postgres: null, mysqlFamily: null },
+    effectivePorts: { postgres: 15432, mysqlFamily: 16306 },
+  });
+  assertEquals(managedDefaultsGetResponse({ sslMode: "prefer" }), {
+    sslMode: "prefer",
+    effectiveSslMode: "prefer",
+    ports: { postgres: null, mysqlFamily: null },
+    effectivePorts: { postgres: 15432, mysqlFamily: 16306 },
+  });
+  // One overridden family must not drag the other off its platform listener.
+  assertEquals(managedDefaultsGetResponse({ ports: { postgres: 18432 } }), {
+    sslMode: null,
+    effectiveSslMode: "require",
+    ports: { postgres: 18432, mysqlFamily: null },
+    effectivePorts: { postgres: 18432, mysqlFamily: 16306 },
+  });
+  assertEquals(managedDefaultsPutResponse({ sslMode: "disable" }), {
+    ok: true,
+    sslMode: "disable",
+    effectiveSslMode: "disable",
+    ports: { postgres: null, mysqlFamily: null },
+    effectivePorts: { postgres: 15432, mysqlFamily: 16306 },
+  });
+});
+
+test("parseManagedDefaultsPatch names the offending listener port field", () => {
+  assertEquals(
+    parseManagedDefaultsPatch({ ports: { postgres: 18432 } }),
+    { ok: true, patch: { ports: { postgres: 18432 } } },
+  );
+  // Clearing one family versus clearing the whole object are different edits.
+  assertEquals(
+    parseManagedDefaultsPatch({ ports: { mysqlFamily: null } }),
+    { ok: true, patch: { ports: { mysqlFamily: null } } },
+  );
+  assertEquals(
+    parseManagedDefaultsPatch({ ports: null }),
+    { ok: true, patch: { ports: null } },
+  );
+  // The message has to say which family and why, or an operator cannot tell a
+  // privileged port from a platform-reserved one.
+  assertEquals(parseManagedDefaultsPatch({ ports: { postgres: 443 } }), {
+    ok: false,
+    error: "ports.postgres must be an integer between 1024 and 65535",
+    status: 400,
+  });
+  assertEquals(parseManagedDefaultsPatch({ ports: { mysqlFamily: 6032 } }), {
+    ok: false,
+    error: "ports.mysqlFamily is reserved for the ProxySQL admin interface",
+    status: 400,
+  });
+  assertEquals(parseManagedDefaultsPatch({ ports: { postgres: 45100 } }), {
+    ok: false,
+    error:
+      "ports.postgres is reserved for managed member private listeners (45000-45999)",
+    status: 400,
+  });
+  assertEquals(parseManagedDefaultsPatch({ ports: 15432 }).ok, false);
+});
+
+test("applyManagedDefaultsPatch merges listener ports per family", () => {
+  const current: ManagedOrganizationDefaults = {
+    ports: { postgres: 18432, mysqlFamily: 18306 },
+  };
+  assertEquals(
+    applyManagedDefaultsPatch(current, { ports: { postgres: 19432 } }),
+    { ports: { postgres: 19432, mysqlFamily: 18306 } },
+  );
+  assertEquals(
+    applyManagedDefaultsPatch(current, { ports: { postgres: null } }),
+    { ports: { mysqlFamily: 18306 } },
+  );
+  // Clearing the last family drops the whole object rather than persisting an
+  // empty one, so the stored jsonb stays readable.
+  assertEquals(
+    applyManagedDefaultsPatch({ ports: { postgres: 18432 } }, {
+      ports: { postgres: null },
+    }),
+    {},
+  );
+  assertEquals(applyManagedDefaultsPatch(current, { ports: null }), {});
+  // sslMode and ports are independent keys on one object; editing one must not
+  // disturb the other.
+  assertEquals(
+    applyManagedDefaultsPatch({ sslMode: "verify-full", ...current }, {
+      sslMode: "prefer",
+    }),
+    { sslMode: "prefer", ports: { postgres: 18432, mysqlFamily: 18306 } },
+  );
+});
+
+test("validateManagedDefaults catches a collision only visible after merge", () => {
+  assertEquals(validateManagedDefaults({}), null);
+  assertEquals(
+    validateManagedDefaults({ ports: { postgres: 18432, mysqlFamily: 18306 } }),
+    null,
+  );
+  // Two protocol modules on one port would leave ProxySQL half-bound. This is
+  // reachable by overriding one family onto the other's inherited default, so
+  // the per-field parser cannot see it.
+  assertEquals(
+    validateManagedDefaults({ ports: { postgres: 16306 } }),
+    {
+      ok: false,
+      error:
+        "ports.mysqlFamily must differ from the other protocol family's listener port",
+      status: 400,
+    },
+  );
+});
 
 test("parseHostDefaultsPatch rejects empty and invalid patches", () => {
   assertEquals(parseHostDefaultsPatch({}).ok, false);

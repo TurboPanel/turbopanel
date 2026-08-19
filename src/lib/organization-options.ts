@@ -12,6 +12,10 @@ import {
   parseSshPort,
   type NtpDefaults,
 } from "./host-defaults.ts";
+import {
+  parseManagedOrganizationDefaults,
+  type ManagedOrganizationDefaults,
+} from "./managed/org-defaults.ts";
 
 /** Platform fallback when `defaultEnvironmentName` is unset. */
 export const DEFAULT_ENVIRONMENT_NAME = "Production";
@@ -48,6 +52,11 @@ export type OrganizationOptions = {
    * down the mesh — `PUT /organizations/:id/fabric` remains the enable path.
    */
   defaultFabricEnabled?: boolean;
+  /**
+   * Org-wide managed-database defaults inherited by services that set no
+   * override. See `managed/org-defaults.ts`.
+   */
+  managedDatabase?: ManagedOrganizationDefaults;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -101,25 +110,56 @@ export function resolveDefaultEnvironmentName(
   return options.defaultEnvironmentName ?? DEFAULT_ENVIRONMENT_NAME;
 }
 
+function assignTrimmedOption(
+  options: OrganizationOptions,
+  key: "defaultServerTimezone" | "defaultEnvironmentName",
+  value: unknown,
+): void {
+  if (typeof value !== "string") return;
+  const trimmed = value.trim();
+  if (trimmed.length > 0) options[key] = trimmed;
+}
+
+function assignMaxServers(
+  options: OrganizationOptions,
+  value: Record<string, unknown>,
+): void {
+  if (!("maxServers" in value)) return;
+  const parsed = parseMaxServersInput(value.maxServers);
+  if (parsed.ok) options.maxServers = parsed.value;
+}
+
+function assignManagedDatabase(
+  options: OrganizationOptions,
+  value: Record<string, unknown>,
+): void {
+  if (!("managedDatabase" in value)) return;
+  const managedDatabase = parseManagedOrganizationDefaults(
+    value.managedDatabase,
+  );
+  if (Object.keys(managedDatabase).length > 0) {
+    options.managedDatabase = managedDatabase;
+  }
+}
+
 /** Parse organization.options jsonb (missing/invalid keys → omitted). */
 export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (!isRecord(value)) return {};
   const options: OrganizationOptions = {};
-  if (typeof value.defaultServerTimezone === "string") {
-    const trimmed = value.defaultServerTimezone.trim();
-    if (trimmed.length > 0) options.defaultServerTimezone = trimmed;
-  }
+  assignTrimmedOption(
+    options,
+    "defaultServerTimezone",
+    value.defaultServerTimezone,
+  );
   if (typeof value.enforceServerTimezone === "boolean") {
     options.enforceServerTimezone = value.enforceServerTimezone;
   }
-  if ("maxServers" in value) {
-    const parsed = parseMaxServersInput(value.maxServers);
-    if (parsed.ok) options.maxServers = parsed.value;
-  }
-  if (typeof value.defaultEnvironmentName === "string") {
-    const trimmed = value.defaultEnvironmentName.trim();
-    if (trimmed.length > 0) options.defaultEnvironmentName = trimmed;
-  }
+  assignMaxServers(options, value);
+  assignTrimmedOption(
+    options,
+    "defaultEnvironmentName",
+    value.defaultEnvironmentName,
+  );
   const sshPort = parseSshPort(value.sshPort);
   if (sshPort !== undefined) options.sshPort = sshPort;
   const ntp = parseNtpDefaults(value.ntp);
@@ -127,5 +167,6 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.defaultFabricEnabled === "boolean") {
     options.defaultFabricEnabled = value.defaultFabricEnabled;
   }
+  assignManagedDatabase(options, value);
   return options;
 }

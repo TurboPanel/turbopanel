@@ -1,10 +1,10 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
 import {
-  parseManagedRowOptions,
-  writeManagedRowOptions,
   type ManagedBackupRecord,
   type ManagedRowOptions,
+  parseManagedRowOptions,
+  writeManagedRowOptions,
 } from './options.ts'
 
 /**
@@ -16,12 +16,18 @@ import {
 const test = Deno.test.bind(Deno)
 
 function defaultSettings(): ManagedRowOptions['settings'] {
-  const settings = postgresEngineSpec.parseSettings(postgresEngineSpec.defaultSettings)
-  if (!settings) throw new TypeError('failed to parse default postgres settings')
+  const settings = postgresEngineSpec.parseSettings(
+    postgresEngineSpec.defaultSettings,
+  )
+  if (!settings) {
+    throw new TypeError('failed to parse default postgres settings')
+  }
   return settings
 }
 
-function validBackup(overrides?: Partial<ManagedBackupRecord>): ManagedBackupRecord {
+function validBackup(
+  overrides?: Partial<ManagedBackupRecord>,
+): ManagedBackupRecord {
   return {
     id: 'bk_abc123',
     createdAt: '2024-01-01T00:00:00.000Z',
@@ -172,8 +178,9 @@ test('parseManagedRowOptions rejects malformed backups', () => {
 
 test('parseManagedRowOptions rejects more than 200 backup records', () => {
   const settings = defaultSettings()
-  const backups = Array.from({ length: 201 }, (_, i) =>
-    validBackup({ id: `bk_${String(i).padStart(3, '0')}` }),
+  const backups = Array.from(
+    { length: 201 },
+    (_, i) => validBackup({ id: `bk_${String(i).padStart(3, '0')}` }),
   )
   assertEquals(
     parseManagedRowOptions(postgresEngineSpec, {

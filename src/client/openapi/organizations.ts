@@ -212,6 +212,52 @@ export const organizationSchemas = {
       },
     },
   },
+  ManagedSslMode: {
+    type: "string",
+    enum: [
+      "disable",
+      "allow",
+      "prefer",
+      "require",
+      "verify-ca",
+      "verify-full",
+    ],
+    description:
+      "Client TLS policy at the shared managed-SQL (ProxySQL) listener, ordered weakest to strongest. require/verify-ca/verify-full refuse a plaintext client session; verify-ca/verify-full additionally ask the driver to validate the server certificate against the organization CA. The listener-to-engine leg is always encrypted regardless of this value.",
+  },
+  OrganizationManagedDefaults: {
+    type: "object",
+    required: ["sslMode", "effectiveSslMode"],
+    properties: {
+      sslMode: {
+        oneOf: [
+          { $ref: "#/components/schemas/ManagedSslMode" },
+          { type: "null" },
+        ],
+        description:
+          "Stored organization default, or null when none is configured.",
+      },
+      effectiveSslMode: {
+        $ref: "#/components/schemas/ManagedSslMode",
+        description:
+          "What an inheriting managed service resolves to today: the org default, else the platform fallback (require).",
+      },
+    },
+  },
+  OrganizationManagedDefaultsUpdate: {
+    type: "object",
+    required: ["sslMode"],
+    properties: {
+      sslMode: {
+        oneOf: [
+          { $ref: "#/components/schemas/ManagedSslMode" },
+          { type: "null" },
+        ],
+        description:
+          "One of the six modes, or null to clear the org default so inheriting services fall back to require. An unrecognized mode is rejected rather than downgraded.",
+      },
+    },
+  },
   TimezonesResponse: {
     type: "object",
     required: ["timezones"],
@@ -1024,6 +1070,121 @@ export const organizationPaths: Record<string, unknown> = {
         },
         "403": {
           description: "Forbidden",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/organizations/{id}/managed-defaults": {
+    get: {
+      tags: ["Organizations"],
+      summary: "Get organization managed-database defaults",
+      description:
+        "Manage-gated. Returns the org-wide managed-database inheritance sources — today the default client TLS mode — plus what an inheriting service resolves to. These are defaults only: a managed service that configured its own mode keeps it.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Managed-database defaults",
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/OrganizationManagedDefaults",
+              },
+            },
+          },
+        },
+        "403": {
+          description: "Forbidden",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Organization not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ["Organizations"],
+      summary: "Update organization managed-database defaults",
+      description:
+        "Manage-gated. Sets organization.options.managedDatabase.sslMode. Only moves managed services that never set their own mode; a service-level override always wins. Pass null to clear the default so inheriting services fall back to the platform require.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              $ref: "#/components/schemas/OrganizationManagedDefaultsUpdate",
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Updated managed-database defaults",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  {
+                    $ref: "#/components/schemas/OrganizationManagedDefaults",
+                  },
+                  {
+                    type: "object",
+                    required: ["ok"],
+                    properties: { ok: { type: "boolean", const: true } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Invalid sslMode or body",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Forbidden",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Organization not found",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ErrorResponse" },

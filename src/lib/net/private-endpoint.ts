@@ -81,6 +81,30 @@ export async function loadServerDatacenterAddress(
 }
 
 /**
+ * This server's own TurboFabric (`tp0`) address, from its relay row.
+ *
+ * A server may be enrolled in more than one fabric; the oldest fabric wins,
+ * matching how {@link resolvePrivateEndpoints} orders relay candidates. Returns
+ * `null` when the server is not enrolled, which callers must treat as "the
+ * fabric path is unavailable" rather than falling back to a wider address.
+ */
+export async function loadServerFabricAddress(
+  db: Db,
+  serverId: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ address: relay.address })
+    .from(relay)
+    .innerJoin(fabric, eq(relay.fabricId, fabric.id))
+    .where(eq(relay.serverId, serverId))
+    .orderBy(asc(fabric.createdAt))
+    .limit(1)
+  if (row === undefined) return null
+  return inetAddressToString(row.address) ??
+    (typeof row.address === 'string' ? row.address : null)
+}
+
+/**
  * Newest/oldest `ip.scope='public'` address for a server (oldest first).
  *
  * Future: when no public `ip` row exists, a later phase may fall back to

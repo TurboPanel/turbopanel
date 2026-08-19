@@ -43,7 +43,7 @@ import {
   collectProxySqlListenerSans,
   hostgroupsForClusterIndex,
   loadBoundManagedIdsForServer,
-  unionExposureBind,
+  unionExposureScopes,
 } from "./ingress-desired.ts";
 import { ensureManagedIngressHierarchy } from "../system/hierarchy.ts";
 
@@ -57,9 +57,15 @@ const test = Deno.test.bind(Deno);
 
 const dbUrl = getDatabaseUrl();
 
-function exposureSettings(
-  exposure: ManagedSettings["exposure"],
-): ManagedSettings {
+/**
+ * Parsed exposure, plus the retired `bind` field still accepted by the
+ * settings parser (migrated onto `scope`).
+ */
+type ExposureInput =
+  | ManagedSettings["exposure"]
+  | { enabled: boolean; bind: string };
+
+function exposureSettings(exposure: ExposureInput): ManagedSettings {
   const parsed = postgresEngineSpec.parseSettings({ exposure });
   if (!parsed) throw new TypeError("expected valid managed settings");
   return parsed;
@@ -85,7 +91,7 @@ async function testEncryptionContext() {
  * so `unionExposureBind` never mixes exposure across unrelated clusters.
  */
 async function withSingleClusterIngressFixture(
-  exposure: ManagedSettings["exposure"],
+  exposure: ExposureInput,
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>;
     serverId: string;
@@ -403,25 +409,28 @@ test("hostgroupsForClusterIndex rejects non-integer and negative indices", () =>
   );
 });
 
-test("unionExposureBind picks the most permissive scope", () => {
-  assertEquals(unionExposureBind([]), undefined);
-  assertEquals(unionExposureBind([undefined, undefined]), undefined);
-  assertEquals(unionExposureBind(["local"]), "local");
-  assertEquals(unionExposureBind(["local", "datacenter"]), "datacenter");
+test("unionExposureScopes deduplicates and collapses public", () => {
+  assertEquals(unionExposureScopes([]), []);
+  assertEquals(unionExposureScopes([undefined, undefined]), []);
+  assertEquals(unionExposureScopes(["local"]), ["local"]);
   assertEquals(
-    unionExposureBind(["local", "public", "datacenter"]),
-    "public",
+    unionExposureScopes(["local", "datacenter"]),
+    ["datacenter", "local"],
   );
   assertEquals(
-    unionExposureBind(["datacenter", undefined, "local"]),
-    "datacenter",
+    unionExposureScopes(["local", "public", "datacenter"]),
+    ["public"],
+  );
+  assertEquals(
+    unionExposureScopes(["datacenter", undefined, "local"]),
+    ["datacenter", "local"],
   );
 });
 
 test("collectProxySqlListenerSans covers connection/bind host and peer IPs", () => {
   const sans = collectProxySqlListenerSans({
     hostname: "pg-primary.example",
-    bindAddress: "203.0.113.10",
+    bindAddresses: ["203.0.113.10"],
     backendAddresses: [
       "managed-abc",
       "203.0.113.50",
@@ -438,7 +447,7 @@ test("collectProxySqlListenerSans covers connection/bind host and peer IPs", () 
 test("collectProxySqlListenerSans skips wildcard binds and bare container names", () => {
   const sans = collectProxySqlListenerSans({
     hostname: null,
-    bindAddress: "0.0.0.0",
+    bindAddresses: ["0.0.0.0"],
     backendAddresses: ["engine-1", "local-name"],
   });
   assertEquals(sans.dnsNames, []);
@@ -478,13 +487,13 @@ test("empty managedIdSet with prior hierarchy returns teardown payload", async (
       }
       assertEquals(built.serverId, serverId);
       assertEquals(built.clusters, []);
-      assertEquals("bindAddress" in built, false);
+      assertEquals("bindAddresses" in built, false);
       assertEquals(built.orgTlsMaterial, undefined);
     },
   );
 });
 
-test("exposure disabled omits bindAddress — no public ProxySQL publish", async () => {
+test("exposure disabled omits bindAddresses — no public ProxySQL publish", async () => {
   await withSingleClusterIngressFixture(
     { enabled: false },
     async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
@@ -496,13 +505,35 @@ test("exposure disabled omits bindAddress — no public ProxySQL publish", async
       if (built === null || "kind" in built) {
         throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`);
       }
-      assertEquals("bindAddress" in built, false);
+      assertEquals("bindAddresses" in built, false);
       assertEquals(built.clusters.length, 1);
     },
   );
 });
 
-test("exposure enabled + bind public resolves bindAddress to all-interfaces", async () => {
+test("legacy exposure.bind migrates to scope during settings parse", () => {
+  const settings = exposureSettings({ enabled: true, bind: "public" });
+  assertEquals(settings.exposure.scope, "public");
+});
+
+test("exposure enabled + scope public resolves bindAddresses to all-interfaces", async () => {
+  await withSingleClusterIngressFixture(
+    { enabled: true, scope: "public" },
+    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+      const built = await buildManagedIngressReconcilePayload(db, {
+        serverId,
+        secretsConfig,
+        dataEncryptionSecrets,
+      });
+      if (built === null || "kind" in built) {
+        throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`);
+      }
+      assertEquals(built.bindAddresses, ["0.0.0.0"]);
+    },
+  );
+});
+
+test("exposure enabled + legacy bind public resolves bindAddresses to all-interfaces", async () => {
   await withSingleClusterIngressFixture(
     { enabled: true, bind: "public" },
     async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
@@ -514,14 +545,14 @@ test("exposure enabled + bind public resolves bindAddress to all-interfaces", as
       if (built === null || "kind" in built) {
         throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`);
       }
-      assertEquals(built.bindAddress, "0.0.0.0");
+      assertEquals(built.bindAddresses, ["0.0.0.0"]);
     },
   );
 });
 
-test("exposure enabled + bind local resolves bindAddress to loopback only", async () => {
+test("exposure enabled + scope local resolves bindAddresses to loopback only", async () => {
   await withSingleClusterIngressFixture(
-    { enabled: true, bind: "local" },
+    { enabled: true, scope: "local" },
     async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
       const built = await buildManagedIngressReconcilePayload(db, {
         serverId,
@@ -531,14 +562,14 @@ test("exposure enabled + bind local resolves bindAddress to loopback only", asyn
       if (built === null || "kind" in built) {
         throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`);
       }
-      assertEquals(built.bindAddress, "127.0.0.1");
+      assertEquals(built.bindAddresses, ["127.0.0.1"]);
     },
   );
 });
 
-test("exposure enabled + bind datacenter publishes only the pinned datacenter address", async () => {
+test("exposure enabled + scope datacenter publishes only the pinned datacenter address", async () => {
   await withSingleClusterIngressFixture(
-    { enabled: true, bind: "datacenter" },
+    { enabled: true, scope: "datacenter" },
     async (
       { db, serverId, organizationId, secretsConfig, dataEncryptionSecrets },
     ) => {
@@ -578,9 +609,9 @@ test("exposure enabled + bind datacenter publishes only the pinned datacenter ad
       if (built === null || "kind" in built) {
         throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`);
       }
-      assertEquals(built.bindAddress, "10.20.30.40");
+      assertEquals(built.bindAddresses, ["10.20.30.40"]);
       // Never widens to all-interfaces just because exposure is enabled.
-      assertEquals(built.bindAddress === "0.0.0.0", false);
+      assertEquals(built.bindAddresses?.includes("0.0.0.0"), false);
 
       await db.delete(ip).where(eq(ip.serverId, serverId));
       await db.delete(network).where(eq(network.id, siteNet!.id));
@@ -589,9 +620,9 @@ test("exposure enabled + bind datacenter publishes only the pinned datacenter ad
   );
 });
 
-test("exposure enabled + bind datacenter without a pinned IP is a typed prepare error, never a silent public publish", async () => {
+test("exposure enabled + scope datacenter without a pinned IP is a typed prepare error, never a silent public publish", async () => {
   await withSingleClusterIngressFixture(
-    { enabled: true, bind: "datacenter" },
+    { enabled: true, scope: "datacenter" },
     async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
       const built = await buildManagedIngressReconcilePayload(db, {
         serverId,

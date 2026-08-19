@@ -32,13 +32,16 @@ import {
 import { parseServerOptions } from '../../lib/db/server-metadata.ts'
 import {
   ingressContainerNameFromService,
+  managedHaContainerNameFromService,
   managedIngressContainerNameFromService,
 } from '../../lib/naming.ts'
 import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
 import {
   isSystemSelfHostComposeServiceName,
   SYSTEM_HOSTING_INGRESS_COMPONENT,
+  SYSTEM_MANAGED_HA_COMPONENT,
   SYSTEM_MANAGED_INGRESS_COMPONENT,
+  SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
   SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
   SYSTEM_SELF_HOST_COMPONENT,
   SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
@@ -58,6 +61,16 @@ type SystemReconcileEnvironmentRow = {
   project_component: string | null
   service_id: string
   name: string
+}
+
+type SystemReconcileQueryRow = SystemReconcileEnvironmentRow & {
+  server_options: unknown
+  has_http_ingress_demand: boolean
+  has_managed_members: boolean
+  has_ha_members: boolean
+  has_bound_managed_consumers: boolean
+  ingress_container_id: string | null
+  ingress_status: string | null
 }
 
 type SystemReconcileEnvironmentEntry = {
@@ -84,6 +97,10 @@ type SystemReconcileEnvironmentEntry = {
    * even with no local members.
    */
   hasBoundManagedConsumers: boolean
+  /**
+   * True when this server hosts a primary or failover replica (Orchestrator Raft).
+   */
+  hasHaMembers: boolean
   services: Array<{ serviceId: string; composeServiceName: string }>
 }
 
@@ -117,6 +134,13 @@ export function resolveManagedIngressDesired(params: Readonly<{
     return 'present'
   }
   return 'absent'
+}
+
+/** Orchestrator is desired only on servers that host a primary or failover replica. */
+export function resolveManagedHaDesired(params: Readonly<{
+  hasHaMembers: boolean
+}>): 'present' | 'absent' {
+  return params.hasHaMembers ? 'present' : 'absent'
 }
 
 /** Build the per-environment component list from its identity + service rows. */
@@ -164,6 +188,25 @@ function buildSystemReconcileComponents(
     ]
   }
 
+  if (entry.component === SYSTEM_MANAGED_HA_COMPONENT) {
+    const orchestrator = entry.services.find(
+      (svc) => svc.composeServiceName === SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
+    )
+    if (!orchestrator) return []
+    return [
+      {
+        component: SYSTEM_MANAGED_HA_COMPONENT,
+        serviceId: orchestrator.serviceId,
+        composeServiceName: SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
+        containerName: managedHaContainerNameFromService(orchestrator.serviceId),
+        role: 'turbopanel',
+        desired: resolveManagedHaDesired({
+          hasHaMembers: entry.hasHaMembers,
+        }),
+      },
+    ]
+  }
+
   if (entry.component === SYSTEM_SELF_HOST_COMPONENT) {
     const components: SystemReconcileComponent[] = []
     for (const svc of entry.services) {
@@ -185,6 +228,68 @@ function buildSystemReconcileComponents(
   return []
 }
 
+function rowShowsIngressObserved(row: SystemReconcileQueryRow): boolean {
+  return row.ingress_container_id != null || row.ingress_status === 'running'
+}
+
+function newEnvironmentEntry(
+  row: SystemReconcileQueryRow,
+): SystemReconcileEnvironmentEntry {
+  return {
+    component: row.project_component,
+    hostingEnabled:
+      parseServerOptions(row.server_options)?.hosting?.enabled === true,
+    hasHttpIngressDemand: row.has_http_ingress_demand === true,
+    hasManagedMembers: row.has_managed_members === true,
+    hasHaMembers: row.has_ha_members === true,
+    hasBoundManagedConsumers: row.has_bound_managed_consumers === true,
+    ingressObserved: rowShowsIngressObserved(row),
+    services: [],
+  }
+}
+
+function mergeEnvironmentRowFlags(
+  entry: SystemReconcileEnvironmentEntry,
+  row: SystemReconcileQueryRow,
+): void {
+  entry.hasHttpIngressDemand ||= row.has_http_ingress_demand === true
+  entry.hasManagedMembers ||= row.has_managed_members === true
+  entry.hasHaMembers ||= row.has_ha_members === true
+  entry.hasBoundManagedConsumers ||= row.has_bound_managed_consumers === true
+  entry.ingressObserved ||= rowShowsIngressObserved(row)
+}
+
+function groupSystemReconcileRows(
+  rows: readonly SystemReconcileQueryRow[],
+): Map<string, SystemReconcileEnvironmentEntry> {
+  const byEnvironment = new Map<string, SystemReconcileEnvironmentEntry>()
+  for (const row of rows) {
+    let entry = byEnvironment.get(row.environment_id)
+    if (!entry) {
+      entry = newEnvironmentEntry(row)
+      byEnvironment.set(row.environment_id, entry)
+    }
+    mergeEnvironmentRowFlags(entry, row)
+    entry.services.push({
+      serviceId: row.service_id,
+      composeServiceName: row.name,
+    })
+  }
+  return byEnvironment
+}
+
+function payloadsFromEnvironmentEntries(
+  byEnvironment: Map<string, SystemReconcileEnvironmentEntry>,
+): SystemReconcileCommandPayload[] {
+  const payloads: SystemReconcileCommandPayload[] = []
+  for (const [environmentId, entry] of byEnvironment) {
+    const components = buildSystemReconcileComponents(entry)
+    if (components.length === 0) continue
+    payloads.push({ environmentId, action: 'reconcile', components })
+  }
+  return payloads
+}
+
 /**
  * Resolve every system-workspace environment pinned to this server (join
  * `project.metadata->>'component'` under a `workspace.kind='turbopanel'`
@@ -204,16 +309,7 @@ export async function buildSystemReconcilePayload(
   db: Db,
   params: Readonly<{ serverId: string }>,
 ): Promise<SystemReconcileCommandPayload[]> {
-  const rows = await db.execute<
-    SystemReconcileEnvironmentRow & {
-      server_options: unknown
-      has_http_ingress_demand: boolean
-      has_managed_members: boolean
-      has_bound_managed_consumers: boolean
-      ingress_container_id: string | null
-      ingress_status: string | null
-    }
-  >(sql`
+  const rows = await db.execute<SystemReconcileQueryRow>(sql`
     SELECT
       e.id AS environment_id,
       p.metadata->>'component' AS project_component,
@@ -235,6 +331,12 @@ export async function buildSystemReconcilePayload(
         FROM node mm
         WHERE mm.server_id = ${params.serverId}::uuid
       ) AS has_managed_members,
+      EXISTS (
+        SELECT 1
+        FROM node hm
+        WHERE hm.server_id = ${params.serverId}::uuid
+          AND (hm.role = 'primary' OR hm.replica_class = 'failover')
+      ) AS has_ha_members,
       EXISTS (
         SELECT 1
         FROM binding b
@@ -268,6 +370,7 @@ export async function buildSystemReconcilePayload(
       AND (
         (p.metadata->>'component' = ${SYSTEM_HOSTING_INGRESS_COMPONENT} AND c.role = 'ingress')
         OR (p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT} AND c.role = 'turbopanel')
+        OR (p.metadata->>'component' = ${SYSTEM_MANAGED_HA_COMPONENT} AND c.role = 'turbopanel')
         OR (p.metadata->>'component' = ${SYSTEM_SELF_HOST_COMPONENT} AND c.role = 'turbopanel')
       )
     WHERE e.server_id = ${params.serverId}::uuid
@@ -275,48 +378,7 @@ export async function buildSystemReconcilePayload(
     ORDER BY e.id, s.name
   `)
 
-  const byEnvironment = new Map<string, SystemReconcileEnvironmentEntry>()
-  for (const row of rows) {
-    let entry = byEnvironment.get(row.environment_id)
-    if (!entry) {
-      entry = {
-        component: row.project_component,
-        hostingEnabled:
-          parseServerOptions(row.server_options)?.hosting?.enabled === true,
-        hasHttpIngressDemand: row.has_http_ingress_demand === true,
-        hasManagedMembers: row.has_managed_members === true,
-        hasBoundManagedConsumers: row.has_bound_managed_consumers === true,
-        ingressObserved:
-          row.ingress_container_id != null || row.ingress_status === 'running',
-        services: [],
-      }
-      byEnvironment.set(row.environment_id, entry)
-    }
-    if (row.has_http_ingress_demand === true) {
-      entry.hasHttpIngressDemand = true
-    }
-    if (row.has_managed_members === true) {
-      entry.hasManagedMembers = true
-    }
-    if (row.has_bound_managed_consumers === true) {
-      entry.hasBoundManagedConsumers = true
-    }
-    if (row.ingress_container_id != null || row.ingress_status === 'running') {
-      entry.ingressObserved = true
-    }
-    entry.services.push({
-      serviceId: row.service_id,
-      composeServiceName: row.name,
-    })
-  }
-
-  const payloads: SystemReconcileCommandPayload[] = []
-  for (const [environmentId, entry] of byEnvironment) {
-    const components = buildSystemReconcileComponents(entry)
-    if (components.length === 0) continue
-    payloads.push({ environmentId, action: 'reconcile', components })
-  }
-  return payloads
+  return payloadsFromEnvironmentEntries(groupSystemReconcileRows(rows))
 }
 
 export type EnqueueSystemReconcileParams = Readonly<{

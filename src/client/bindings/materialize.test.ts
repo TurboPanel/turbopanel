@@ -2,12 +2,8 @@
  * Host-free tests for binding materialization key sets.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
-import { DEFAULT_MANAGED_SETTINGS } from '../../lib/managed/settings.ts'
-import {
-  computeBindingVariableSet,
-  listBindingEmittedKeys,
-} from './materialize.ts'
+import { assertEquals } from '@std/assert'
+import { computeBindingVariableSet, listBindingEmittedKeys } from './materialize.ts'
 import { bindingPrefixedKeys } from '../../lib/naming.ts'
 
 /**
@@ -17,12 +13,6 @@ import { bindingPrefixedKeys } from '../../lib/naming.ts'
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
-
-const SETTINGS = {
-  ...DEFAULT_MANAGED_SETTINGS,
-  ssl: { enabled: true },
-  exposure: { enabled: true, bind: 'public' as const },
-}
 
 test('computeBindingVariableSet emits prefixed keys for postgres', () => {
   const result = computeBindingVariableSet({
@@ -36,7 +26,7 @@ test('computeBindingVariableSet emits prefixed keys for postgres', () => {
     caCertPem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----',
     readSplit: true,
     engineCode: 'postgres',
-    settings: SETTINGS,
+    sslMode: 'verify-full',
   })
   if ('kind' in result) throw new TypeError(result.kind)
 
@@ -44,7 +34,10 @@ test('computeBindingVariableSet emits prefixed keys for postgres', () => {
   const keys = bindingPrefixedKeys('DATABASE')
   assertEquals(byKey.get(keys.url)?.isSecret, true)
   assertEquals(byKey.get(keys.url)?.value.includes('s3cret'), true)
-  assertEquals(byKey.get(keys.url)?.value.includes('sslmode=verify-full'), true)
+  assertEquals(
+    byKey.get(keys.url)?.value.includes('sslmode=verify-full'),
+    true,
+  )
   assertEquals(byKey.get(keys.caCert)?.isSecret, true)
   assertEquals(byKey.get(keys.readSplit)?.value, 'true')
   assertEquals(byKey.get(keys.host)?.value, 'db.example')
@@ -67,7 +60,7 @@ test('computeBindingVariableSet gates unprefixed engine defaults', () => {
     caCertPem: 'CA',
     readSplit: false,
     engineCode: 'postgres',
-    settings: SETTINGS,
+    sslMode: 'verify-full',
   })
   if ('kind' in result) throw new TypeError(result.kind)
 
@@ -93,7 +86,7 @@ test('computeBindingVariableSet emits mysql-family unprefixed keys', () => {
     caCertPem: 'CA',
     readSplit: false,
     engineCode: 'mysql',
-    settings: SETTINGS,
+    sslMode: 'verify-full',
   })
   if ('kind' in result) throw new TypeError(result.kind)
 
@@ -101,7 +94,39 @@ test('computeBindingVariableSet emits mysql-family unprefixed keys', () => {
   assertEquals(byKey.get('MYSQL_HOST')?.value, 'db.example')
   assertEquals(byKey.get('MYSQL_PORT')?.value, '3306')
   assertEquals(byKey.has('PGHOST'), false)
-  assertEquals(byKey.get('DATABASE_URL')?.value.includes('ssl-mode=VERIFY_IDENTITY'), true)
+  assertEquals(
+    byKey.get('DATABASE_URL')?.value.includes('ssl-mode=VERIFY_IDENTITY'),
+    true,
+  )
+})
+
+test('the effective ssl mode reaches both the DSN and the engine default key', () => {
+  // Bindings used to hardcode `verify-full`; the cluster's effective mode now
+  // decides, so a `require` cluster must not hand the app a DSN that fails
+  // chain validation against a platform-CA certificate it does not trust.
+  const result = computeBindingVariableSet({
+    keyPrefix: 'DATABASE',
+    emitEngineDefaults: true,
+    databaseName: 'appdb',
+    username: 'appuser',
+    password: 's3cret',
+    host: 'db.example',
+    port: 5432,
+    caCertPem: 'CA',
+    readSplit: false,
+    engineCode: 'postgres',
+    sslMode: 'require',
+  })
+  if ('kind' in result) throw new TypeError(result.kind)
+
+  const byKey = new Map(result.map((r) => [r.key, r]))
+  assertEquals(byKey.get('PGSSLMODE')?.value, 'require')
+  assertEquals(
+    byKey.get(bindingPrefixedKeys('DATABASE').url)?.value.includes(
+      'sslmode=require',
+    ),
+    true,
+  )
 })
 
 test('listBindingEmittedKeys drops stale unprefixed keys when gated off', () => {

@@ -175,6 +175,8 @@ const DAEMON_COMMAND_TYPES = [
   'managed.restore',
   'managed.promote',
   'managed.ingress.reconcile',
+  'managed.ha.reconcile',
+  'managed.ha.failover',
   'system.reconcile',
 ] as const
 
@@ -2528,7 +2530,7 @@ test('isSystemComponentKey accepts only system component keys', () => {
 
 const VALID_MANAGED_INGRESS_RECONCILE = {
   serverId: '00000000-0000-4000-8000-0000000000ab',
-  bindAddress: '203.0.113.10',
+  bindAddresses: ['203.0.113.10'],
   orgTlsMaterial: {
     certificatePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
     privateKeyEnvelope: 'tpdaemon.v1.server.key.payload',
@@ -2539,6 +2541,7 @@ const VALID_MANAGED_INGRESS_RECONCILE = {
       managedId: '00000000-0000-4000-8000-000000000001',
       engine: 'postgres',
       protocolPort: 5432,
+      family: 'pgsql',
       writerHostgroup: 0,
       readerHostgroup: 1,
       backends: [
@@ -2568,7 +2571,7 @@ test('parseManagedIngressReconcilePayload accepts a valid fixture', () => {
     VALID_MANAGED_INGRESS_RECONCILE,
   )
   assertEquals(payload.serverId, VALID_MANAGED_INGRESS_RECONCILE.serverId)
-  assertEquals(payload.bindAddress, '203.0.113.10')
+  assertEquals(payload.bindAddresses, ['203.0.113.10'])
   assertEquals(payload.clusters.length, 1)
   assertEquals(payload.clusters[0]?.protocolPort, 5432)
   assertEquals(

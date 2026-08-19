@@ -7,15 +7,13 @@
 
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
-import {
-  decryptSecret,
-  encryptSecret,
-} from '../authn/data-encryption.ts'
+import { decryptSecret, encryptSecret } from '../authn/data-encryption.ts'
 import type { Db } from '../../db.ts'
 import {
   binding,
   environment,
   managed,
+  organization,
   principal,
   project,
   service,
@@ -23,18 +21,16 @@ import {
   workspace,
 } from '../../lib/db/schema.ts'
 import { getManagedEngineSpec } from '../../lib/managed/index.ts'
-import { managedIngressPortForEngine } from '../../lib/managed/ingress-ports.ts'
+import { type ManagedSslMode, resolveManagedSslMode } from '../../lib/managed/ssl.ts'
+import { parseOrganizationOptions } from '../../lib/organization-options.ts'
 import { bindingPrefixedKeys } from '../../lib/naming.ts'
-import type {
-  ResolvedVariableEntry,
-  ResolvedVariableMap,
-} from '../variables/resolve-inherited.ts'
+import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { ensureActiveOrganizationCa } from '../managed/apply-prepare.ts'
 import { parseManagedRowOptions } from '../managed/options.ts'
 import {
+  type BindingEndpointError,
   isBindingEndpointError,
   resolveBindingEndpoint,
-  type BindingEndpointError,
 } from './resolve-endpoint.ts'
 
 export type MaterializeBindingError =
@@ -57,21 +53,25 @@ export type DesiredBindingVariable = {
  * materialization. Secret values are still plaintext here — the materialize
  * path seals them before write.
  */
-export function computeBindingVariableSet(params: Readonly<{
-  keyPrefix: string
-  emitEngineDefaults: boolean
-  databaseName: string
-  username: string
-  password: string
-  host: string
-  port: number
-  caCertPem: string
-  readSplit: boolean
-  engineCode: string
-  settings: Parameters<
-    NonNullable<ReturnType<typeof getManagedEngineSpec>>['buildConnectionInfo']
-  >[0]['settings']
-}>): DesiredBindingVariable[] | { kind: 'binding_engine_unsupported' } {
+export function computeBindingVariableSet(
+  params: Readonly<{
+    keyPrefix: string
+    emitEngineDefaults: boolean
+    databaseName: string
+    username: string
+    password: string
+    host: string
+    port: number
+    caCertPem: string
+    readSplit: boolean
+    engineCode: string
+    /**
+     * **Effective** client TLS mode for the cluster (service override → org
+     * default → platform), already resolved by the caller.
+     */
+    sslMode: ManagedSslMode
+  }>,
+): DesiredBindingVariable[] | { kind: 'binding_engine_unsupported' } {
   const spec = getManagedEngineSpec(params.engineCode)
   if (!spec?.binding) {
     return { kind: 'binding_engine_unsupported' }
@@ -84,7 +84,7 @@ export function computeBindingVariableSet(params: Readonly<{
     database: params.databaseName,
     username: params.username,
     password: params.password,
-    settings: params.settings,
+    sslMode: params.sslMode,
   })
 
   const rows: DesiredBindingVariable[] = [
@@ -112,7 +112,11 @@ export function computeBindingVariableSet(params: Readonly<{
       { key: u.password, value: params.password, isSecret: true },
     )
     if (u.sslMode) {
-      rows.push({ key: u.sslMode, value: 'verify-full', isSecret: false })
+      rows.push({
+        key: u.sslMode,
+        value: spec.formatSslMode(params.sslMode),
+        isSecret: false,
+      })
     }
   }
 
@@ -120,11 +124,13 @@ export function computeBindingVariableSet(params: Readonly<{
 }
 
 /** Keys a binding emits for a given prefix/flags/engine (no values). */
-export function listBindingEmittedKeys(params: Readonly<{
-  keyPrefix: string
-  emitEngineDefaults: boolean
-  engineCode: string
-}>): string[] | null {
+export function listBindingEmittedKeys(
+  params: Readonly<{
+    keyPrefix: string
+    emitEngineDefaults: boolean
+    engineCode: string
+  }>,
+): string[] | null {
   const spec = getManagedEngineSpec(params.engineCode)
   if (!spec?.binding) return null
   const prefixed = bindingPrefixedKeys(params.keyPrefix)
@@ -238,6 +244,7 @@ export async function materializeBinding(
       managedEngine: managed.engine,
       managedOptions: managed.options,
       organizationId: workspace.organizationId,
+      organizationOptions: organization.options,
     })
     .from(binding)
     .innerJoin(principal, eq(binding.principalId, principal.id))
@@ -246,6 +253,7 @@ export async function materializeBinding(
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
     .innerJoin(workspace, eq(project.workspaceId, workspace.id))
+    .innerJoin(organization, eq(workspace.organizationId, organization.id))
     .where(eq(binding.id, bindingId))
     .limit(1)
 
@@ -294,10 +302,16 @@ export async function materializeBinding(
     return { kind: 'binding_ca_unavailable' }
   }
 
+  const orgManagedDefaults = parseOrganizationOptions(row.organizationOptions)
+    .managedDatabase
+
+  // The listener port is resolved from the server-owner org inside
+  // `resolveBindingEndpoint`, not from this consuming project's org.
   const endpoint = await resolveBindingEndpoint(db, {
     serviceId: row.serviceId,
     managedId: row.managedId,
-    protocolPort: managedIngressPortForEngine(row.managedEngine, spec.defaultPort),
+    engineCode: row.managedEngine,
+    engineDefaultPort: spec.defaultPort,
   })
   if (isBindingEndpointError(endpoint)) {
     return endpoint
@@ -314,7 +328,10 @@ export async function materializeBinding(
     caCertPem: ca.certificatePem,
     readSplit: endpoint.readSplit,
     engineCode: row.managedEngine,
-    settings: options.settings,
+    sslMode: resolveManagedSslMode(
+      options.settings.ssl.mode,
+      orgManagedDefaults?.sslMode,
+    ),
   })
   if ('kind' in desired) return desired
 

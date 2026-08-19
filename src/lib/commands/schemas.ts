@@ -2,7 +2,10 @@ import { HOSTNAME_MAX_LENGTH, isValidHostname } from './hostname.ts'
 import { isValidCidr, isValidIpAddress } from '../ip-address.ts'
 import {
   isManagedIngressProtocolPort,
+  type ManagedIngressFamily,
+  type ManagedIngressPorts,
   type ManagedIngressProtocolPort,
+  validateManagedIngressPorts,
 } from '../managed/ingress-ports.ts'
 import {
   isManagedBackupArtifactExtension,
@@ -20,8 +23,14 @@ import {
   ingressContainerNameFromService,
   isValidDockerResourceName,
   managedContainerName,
+  managedHaContainerNameFromService,
   managedIngressContainerNameFromService,
 } from '../naming.ts'
+import {
+  HA_PROMOTION_RULE_MUST_NOT,
+  HA_PROMOTION_RULE_PREFER,
+  type HaPromotionRule,
+} from '../managed/ha-policy.ts'
 import type { ServiceOptions } from '../service-options.ts'
 import { isValidTimezone } from '../timezones.ts'
 import {
@@ -1010,6 +1019,12 @@ export type EnvironmentDeployCommandPayload = {
   storageMaterial?: EnvironmentDeployStorageMaterial[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
+  /**
+   * Server-owner org effective ProxySQL client listener ports. When present,
+   * the daemon also reserves these alongside platform defaults `15432` /
+   * `16306` for tenant raw tcp/udp ingress.
+   */
+  listenerPorts?: ManagedIngressPorts
 }
 
 export type EnvironmentDeployHostingPort = {
@@ -1990,6 +2005,9 @@ export function parseEnvironmentDeployPayload(
       storageMaterial: parseDeployStorageMaterial(value.storageMaterial),
       principalMaterial: parseDeployPrincipalMaterial(value.principalMaterial),
       serviceHooks: parseDeployServiceHooks(value.serviceHooks),
+      listenerPorts: value.listenerPorts === undefined
+        ? undefined
+        : parseManagedIngressListenerPorts(value.listenerPorts),
       generation: parseOptionalGeneration(value.generation),
       desiredHash: parseOptionalDesiredHash(value.desiredHash),
       serverId: parseOptionalDeployServerId(value.serverId),
@@ -2199,6 +2217,7 @@ export function parseEnvironmentLifecycleResult(
 export type SystemComponentKey =
   | 'hosting-ingress'
   | 'managed-ingress'
+  | 'managed-ha'
   | 'database'
   | 'queue'
   | 'analytics'
@@ -2209,7 +2228,7 @@ export type SystemReconcileAction = 'reconcile' | 'restart' | 'stop'
  * Role per system component — never a free-form wire value.
  * Container naming is resolved separately via
  * {@link expectedSystemComponentContainerName} (`hosting-ingress` → `-in`,
- * `managed-ingress` → `-sql`, self-host stack → bare serviceId).
+ * `managed-ingress` → `-sql`, `managed-ha` → `-ha`, self-host stack → bare serviceId).
  * Keep in parity with daemon `contracts.ts` system-reconcile component roles.
  */
 export const SYSTEM_COMPONENT_ROLES: Record<
@@ -2218,6 +2237,7 @@ export const SYSTEM_COMPONENT_ROLES: Record<
 > = {
   'hosting-ingress': 'ingress',
   'managed-ingress': 'turbopanel',
+  'managed-ha': 'turbopanel',
   database: 'turbopanel',
   queue: 'turbopanel',
   analytics: 'turbopanel',
@@ -2233,6 +2253,8 @@ function expectedSystemComponentContainerName(
       return ingressContainerNameFromService(serviceId)
     case 'managed-ingress':
       return managedIngressContainerNameFromService(serviceId)
+    case 'managed-ha':
+      return managedHaContainerNameFromService(serviceId)
     case 'database':
     case 'queue':
     case 'analytics':
@@ -2271,6 +2293,7 @@ export type SystemReconcileCommandResult = {
 const SYSTEM_COMPONENT_KEYS = new Set<string>([
   'hosting-ingress',
   'managed-ingress',
+  'managed-ha',
   'database',
   'queue',
   'analytics',
@@ -2772,26 +2795,73 @@ export type ManagedIngressReconcileUser = {
   /** Daemon-recipient sealed password (`tpdaemon.…`) for ProxySQL frontend auth. */
   password: string
   defaultDatabase?: string
+  /** Absent means `read-write`, so a skewed daemon keeps writer routing. */
+  connectionRole?: ManagedConnectionRole
+}
+
+/**
+ * Which ProxySQL hostgroup a frontend login defaults to. `read-only` is the
+ * opt-in read path — it never implies rewriting a `read-write` login's queries.
+ */
+export type ManagedConnectionRole = 'read-write' | 'read-only'
+
+export const MANAGED_CONNECTION_ROLES: readonly ManagedConnectionRole[] = [
+  'read-write',
+  'read-only',
+]
+
+export const DEFAULT_MANAGED_CONNECTION_ROLE: ManagedConnectionRole = 'read-write'
+
+export function isManagedConnectionRole(
+  value: unknown,
+): value is ManagedConnectionRole {
+  return value === 'read-write' || value === 'read-only'
 }
 
 /** Must stay in sync with the daemon `managed.ingress.reconcile` shape. */
 export type ManagedIngressReconcileCluster = {
   managedId: string
   engine: ManagedEngineCode
-  /** New listeners 15432/16306; legacy 5432/3306 accepted for daemon skew. */
+  /**
+   * Organization-resolved client listener port. Platform defaults are
+   * 15432 / 16306; legacy 5432/3306 stay accepted for daemon skew.
+   */
   protocolPort: ManagedIngressProtocolPort
+  /**
+   * Protocol module serving this cluster. Sent explicitly because a
+   * configurable port no longer identifies a family.
+   */
+  family: ManagedIngressFamily
   writerHostgroup: number
   readerHostgroup: number
   backends: ManagedIngressReconcileBackend[]
   users: ManagedIngressReconcileUser[]
+  /** Opt-in `^SELECT` splitting for read-write logins; absent means off. */
+  autoReadSplit?: boolean
+  /**
+   * Refuse plaintext client sessions for every login of this cluster (effective
+   * SSL mode `require` / `verify-ca` / `verify-full`). Absent means TLS stays
+   * available but optional; backend TLS is unconditional either way.
+   */
+  requireTls?: boolean
 }
 
 /** Must stay in sync with the daemon `managed.ingress.reconcile` shape. */
 export type ManagedIngressReconcileCommandPayload = {
   serverId: string
-  bindAddress?: string
+  /**
+   * Every host address the client listeners publish on. More than one entry
+   * when an access scope resolves to distinct interfaces (datacenter private IP
+   * plus TurboFabric `tp0`); empty/absent means no host publish at all.
+   */
+  bindAddresses?: string[]
   /** Omitted on empty-cluster teardown so it does not need a CA round trip. */
   orgTlsMaterial?: ManagedApplyOrgTlsMaterial
+  /**
+   * Organization-resolved listener ports for both protocol modules. Absent
+   * means the platform defaults (control-plane skew).
+   */
+  listenerPorts?: ManagedIngressPorts
   clusters: ManagedIngressReconcileCluster[]
   segments?: Array<{ name: string; subnet: string }>
 }
@@ -2803,6 +2873,83 @@ export type ManagedIngressReconcileCommandResult = {
   appliedBackends: string[]
   restarted: boolean
   containers?: EnvironmentDeployContainer[]
+}
+
+export type ManagedHaReconcileDesired = 'present' | 'absent'
+
+export type ManagedHaRaftPeer = {
+  nodeId: string
+  address: string
+  raftPort: number
+  httpPort: number
+}
+
+export type ManagedHaRaftConfig = {
+  nodeId: string
+  httpPort: number
+  raftPort: number
+  advertiseAddress: string
+  peers: ManagedHaRaftPeer[]
+}
+
+export type ManagedHaClusterMember = {
+  memberId: string
+  role: 'primary' | 'replica'
+  replicaClass: 'failover' | 'read' | null
+  promotionRule: HaPromotionRule
+  host: string
+  port: number
+  containerName?: string
+}
+
+export type ManagedHaCluster = {
+  managedId: string
+  engine: ManagedEngineCode
+  clusterAlias: string
+  members: ManagedHaClusterMember[]
+  replicationUsername: string
+  replicationPasswordEnvelope: string
+}
+
+/** Must stay in sync with the daemon `managed.ha.reconcile` shape. */
+export type ManagedHaReconcileCommandPayload = {
+  serverId: string
+  desired: ManagedHaReconcileDesired
+  raft: ManagedHaRaftConfig | null
+  clusters: ManagedHaCluster[]
+  identity: {
+    serviceId: string
+    composeServiceName: string
+    containerName: string
+  }
+  orgTlsMaterial?: ManagedApplyOrgTlsMaterial
+}
+
+export type ManagedHaReconcileCommandResult = {
+  summary: string
+  registeredClusters: string[]
+  restarted: boolean
+  containers?: EnvironmentDeployContainer[]
+}
+
+export type ManagedHaFailoverPhase = 'drain' | 'recover'
+
+/** Must stay in sync with the daemon `managed.ha.failover` shape. */
+export type ManagedHaFailoverCommandPayload = {
+  managedId: string
+  sourceMemberId: string
+  targetMemberId: string
+  engine?: ManagedEngineCode
+  phase: ManagedHaFailoverPhase
+  sourceHost?: string
+  sourcePort?: number
+  targetHost?: string
+  targetPort?: number
+}
+
+export type ManagedHaFailoverCommandResult = {
+  summary: string
+  phase: ManagedHaFailoverPhase
 }
 
 function parseManagedApplyConfigFiles(
@@ -3992,6 +4139,14 @@ function parseManagedIngressReconcileUser(
     }
     user.defaultDatabase = value.defaultDatabase
   }
+  if (value.connectionRole !== undefined) {
+    if (!isManagedConnectionRole(value.connectionRole)) {
+      throw new TypeError(
+        'Invalid managed.ingress.reconcile user connectionRole',
+      )
+    }
+    user.connectionRole = value.connectionRole
+  }
   return user
 }
 
@@ -4007,6 +4162,7 @@ function parseManagedIngressReconcileCluster(
     !isString(value.engine) ||
     !isManagedEngineCode(value.engine) ||
     !isManagedIngressProtocolPort(value.protocolPort) ||
+    !isManagedIngressFamily(value.family) ||
     !isValidHostgroupId(value.writerHostgroup) ||
     !isValidHostgroupId(value.readerHostgroup) ||
     !Array.isArray(value.backends) ||
@@ -4014,15 +4170,70 @@ function parseManagedIngressReconcileCluster(
   ) {
     throw new TypeError('Invalid managed.ingress.reconcile cluster')
   }
-  return {
+  if (
+    value.autoReadSplit !== undefined &&
+    typeof value.autoReadSplit !== 'boolean'
+  ) {
+    throw new TypeError(
+      'Invalid managed.ingress.reconcile cluster autoReadSplit',
+    )
+  }
+  if (value.requireTls !== undefined && typeof value.requireTls !== 'boolean') {
+    throw new TypeError('Invalid managed.ingress.reconcile cluster requireTls')
+  }
+  const cluster: ManagedIngressReconcileCluster = {
     managedId: value.managedId,
     engine: value.engine,
     protocolPort: value.protocolPort,
+    family: value.family,
     writerHostgroup: value.writerHostgroup,
     readerHostgroup: value.readerHostgroup,
     backends: value.backends.map(parseManagedIngressReconcileBackend),
     users: value.users.map(parseManagedIngressReconcileUser),
   }
+  if (value.autoReadSplit !== undefined) {
+    cluster.autoReadSplit = value.autoReadSplit
+  }
+  if (value.requireTls !== undefined) cluster.requireTls = value.requireTls
+  return cluster
+}
+
+function isManagedIngressFamily(
+  value: unknown,
+): value is ManagedIngressFamily {
+  return value === 'pgsql' || value === 'mysql'
+}
+
+function parseManagedIngressListenerPorts(value: unknown): ManagedIngressPorts {
+  if (
+    !isRecord(value) ||
+    !isManagedIngressProtocolPort(value.postgres) ||
+    !isManagedIngressProtocolPort(value.mysqlFamily)
+  ) {
+    throw new TypeError('Invalid managed.ingress.reconcile listenerPorts')
+  }
+  const ports: ManagedIngressPorts = {
+    postgres: value.postgres,
+    mysqlFamily: value.mysqlFamily,
+  }
+  // Both families are validated together: a colliding pair would let ProxySQL
+  // bind one listener and leave the other protocol silently unreachable.
+  if (!validateManagedIngressPorts(ports).ok) {
+    throw new TypeError('Invalid managed.ingress.reconcile listenerPorts')
+  }
+  return ports
+}
+
+function parseManagedIngressBindAddresses(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError('Invalid managed.ingress.reconcile bindAddresses')
+  }
+  const addresses: string[] = []
+  for (const entry of value) {
+    const address = parseManagedIngressBindAddress(entry)
+    if (!addresses.includes(address)) addresses.push(address)
+  }
+  return addresses
 }
 
 function parseManagedIngressBindAddress(value: unknown): string {
@@ -4096,8 +4307,15 @@ export function parseManagedIngressReconcilePayload(
   if (orgTlsMaterial !== undefined) {
     payload.orgTlsMaterial = orgTlsMaterial
   }
-  if (value.bindAddress !== undefined) {
-    payload.bindAddress = parseManagedIngressBindAddress(value.bindAddress)
+  if (value.bindAddresses !== undefined) {
+    payload.bindAddresses = parseManagedIngressBindAddresses(
+      value.bindAddresses,
+    )
+  }
+  if (value.listenerPorts !== undefined) {
+    payload.listenerPorts = parseManagedIngressListenerPorts(
+      value.listenerPorts,
+    )
   }
   if (value.segments !== undefined) {
     payload.segments = parseManagedIngressSegments(value.segments)
@@ -4145,6 +4363,303 @@ export function parseManagedIngressReconcileResult(
   return result
 }
 
+const HA_PROMOTION_RULES = new Set<string>([
+  HA_PROMOTION_RULE_PREFER,
+  HA_PROMOTION_RULE_MUST_NOT,
+])
+const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover'])
+const MAX_HA_CLUSTERS = 64
+const MAX_HA_MEMBERS = 32
+const MAX_HA_PEERS = 32
+
+function parseManagedHaIdentity(
+  value: unknown,
+): ManagedHaReconcileCommandPayload['identity'] {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid managed.ha.reconcile identity')
+  }
+  if (
+    !isString(value.serviceId) ||
+    !UUID_RE.test(value.serviceId) ||
+    !isString(value.composeServiceName) ||
+    value.composeServiceName.length === 0 ||
+    !isString(value.containerName) ||
+    value.containerName !== managedHaContainerNameFromService(value.serviceId)
+  ) {
+    throw new TypeError('Invalid managed.ha.reconcile identity')
+  }
+  return {
+    serviceId: value.serviceId,
+    composeServiceName: value.composeServiceName,
+    containerName: value.containerName,
+  }
+}
+
+function parseManagedHaRaftPeer(value: unknown): ManagedHaRaftPeer {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid managed.ha.reconcile raft peer')
+  }
+  if (
+    !isString(value.nodeId) ||
+    !UUID_RE.test(value.nodeId) ||
+    !isString(value.address) ||
+    !isValidIpAddress(value.address) ||
+    !isValidPortNumber(value.raftPort) ||
+    !isValidPortNumber(value.httpPort)
+  ) {
+    throw new TypeError('Invalid managed.ha.reconcile raft peer')
+  }
+  return {
+    nodeId: value.nodeId,
+    address: value.address,
+    raftPort: value.raftPort,
+    httpPort: value.httpPort,
+  }
+}
+
+function parseManagedHaRaftConfig(value: unknown): ManagedHaRaftConfig {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid managed.ha.reconcile raft')
+  }
+  if (
+    !isString(value.nodeId) ||
+    !UUID_RE.test(value.nodeId) ||
+    !isValidPortNumber(value.httpPort) ||
+    !isValidPortNumber(value.raftPort) ||
+    !isString(value.advertiseAddress) ||
+    !isValidIpAddress(value.advertiseAddress) ||
+    !Array.isArray(value.peers) ||
+    value.peers.length > MAX_HA_PEERS
+  ) {
+    throw new TypeError('Invalid managed.ha.reconcile raft')
+  }
+  return {
+    nodeId: value.nodeId,
+    httpPort: value.httpPort,
+    raftPort: value.raftPort,
+    advertiseAddress: value.advertiseAddress,
+    peers: value.peers.map(parseManagedHaRaftPeer),
+  }
+}
+
+function parseManagedHaClusterMember(value: unknown): ManagedHaClusterMember {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid managed.ha.reconcile cluster member')
+  }
+  if (
+    !isString(value.memberId) ||
+    !UUID_RE.test(value.memberId) ||
+    (value.role !== 'primary' && value.role !== 'replica') ||
+    (value.replicaClass !== 'failover' &&
+      value.replicaClass !== 'read' &&
+      value.replicaClass !== null) ||
+    !HA_PROMOTION_RULES.has(value.promotionRule as string) ||
+    !isString(value.host) ||
+    value.host.length === 0 ||
+    !isValidPortNumber(value.port)
+  ) {
+    throw new TypeError('Invalid managed.ha.reconcile cluster member')
+  }
+  const member: ManagedHaClusterMember = {
+    memberId: value.memberId,
+    role: value.role,
+    replicaClass: value.replicaClass,
+    promotionRule: value.promotionRule as HaPromotionRule,
+    host: value.host,
+    port: value.port,
+  }
+  if (value.containerName !== undefined) {
+    if (
+      !isString(value.containerName) ||
+      !isValidDockerResourceName(value.containerName)
+    ) {
+      throw new TypeError('Invalid managed.ha.reconcile cluster member')
+    }
+    member.containerName = value.containerName
+  }
+  return member
+}
+
+function parseManagedHaCluster(value: unknown): ManagedHaCluster {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid managed.ha.reconcile cluster')
+  }
+  if (
+    !isString(value.managedId) ||
+    !SAFE_BACKUP_ID_RE.test(value.managedId) ||
+    typeof value.engine !== 'string' ||
+    !isManagedEngineCode(value.engine) ||
+    !isString(value.clusterAlias) ||
+    value.clusterAlias.length === 0 ||
+    value.clusterAlias.length > 128 ||
+    !Array.isArray(value.members) ||
+    value.members.length === 0 ||
+    value.members.length > MAX_HA_MEMBERS ||
+    !isString(value.replicationUsername) ||
+    !isSafeUsername(value.replicationUsername) ||
+    !isString(value.replicationPasswordEnvelope) ||
+    !value.replicationPasswordEnvelope.startsWith(DAEMON_ENVELOPE_PREFIX)
+  ) {
+    throw new TypeError('Invalid managed.ha.reconcile cluster')
+  }
+  return {
+    managedId: value.managedId,
+    engine: value.engine,
+    clusterAlias: value.clusterAlias,
+    members: value.members.map(parseManagedHaClusterMember),
+    replicationUsername: value.replicationUsername,
+    replicationPasswordEnvelope: value.replicationPasswordEnvelope,
+  }
+}
+
+/** Must stay in sync with the daemon `managed.ha.reconcile` validator. */
+export function parseManagedHaReconcilePayload(
+  value: unknown,
+): ManagedHaReconcileCommandPayload {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid managed.ha.reconcile payload')
+  }
+  if (
+    !isString(value.serverId) ||
+    !UUID_RE.test(value.serverId) ||
+    (value.desired !== 'present' && value.desired !== 'absent') ||
+    !Array.isArray(value.clusters) ||
+    value.clusters.length > MAX_HA_CLUSTERS
+  ) {
+    throw new TypeError('Invalid managed.ha.reconcile payload')
+  }
+  const raft = value.raft === null ? null : parseManagedHaRaftConfig(value.raft)
+  const orgTlsMaterial = parseManagedApplyOrgTlsMaterial(value.orgTlsMaterial)
+  const payload: ManagedHaReconcileCommandPayload = {
+    serverId: value.serverId,
+    desired: value.desired,
+    raft,
+    clusters: value.clusters.map(parseManagedHaCluster),
+    identity: parseManagedHaIdentity(value.identity),
+  }
+  if (orgTlsMaterial !== undefined) {
+    payload.orgTlsMaterial = orgTlsMaterial
+  }
+  return payload
+}
+
+/** Must stay in sync with the daemon `managed.ha.reconcile` result parser. */
+export function parseManagedHaReconcileResult(
+  value: unknown,
+): ManagedHaReconcileCommandResult {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid managed.ha.reconcile result')
+  }
+  if (
+    !isString(value.summary) ||
+    !Array.isArray(value.registeredClusters) ||
+    !value.registeredClusters.every((entry) =>
+      isString(entry) && SAFE_BACKUP_ID_RE.test(entry)
+    ) ||
+    typeof value.restarted !== 'boolean'
+  ) {
+    throw new TypeError('Invalid managed.ha.reconcile result')
+  }
+  const result: ManagedHaReconcileCommandResult = {
+    summary: value.summary,
+    registeredClusters: value.registeredClusters as string[],
+    restarted: value.restarted,
+  }
+  if (value.containers !== undefined) {
+    if (!Array.isArray(value.containers)) {
+      throw new TypeError('Invalid managed.ha.reconcile result containers')
+    }
+    const parsedContainers = parseDeployContainers(value.containers)
+    if (parsedContainers?.length !== value.containers.length) {
+      throw new TypeError('Invalid managed.ha.reconcile result containers')
+    }
+    result.containers = parsedContainers
+  }
+  return result
+}
+
+function parseOptionalManagedHaFailoverEngine(
+  value: unknown,
+): ManagedEngineCode | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !isManagedEngineCode(value)) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  return value
+}
+
+function parseOptionalManagedHaFailoverHost(
+  value: unknown,
+): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || value.length === 0) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  return value
+}
+
+function parseOptionalManagedHaFailoverPort(
+  value: unknown,
+): number | undefined {
+  if (value === undefined) return undefined
+  if (!isValidPortNumber(value)) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  return value
+}
+
+/** Must stay in sync with the daemon `managed.ha.failover` validator. */
+export function parseManagedHaFailoverPayload(
+  value: unknown,
+): ManagedHaFailoverCommandPayload {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  if (
+    !isString(value.managedId) ||
+    !SAFE_BACKUP_ID_RE.test(value.managedId) ||
+    !isString(value.sourceMemberId) ||
+    !UUID_RE.test(value.sourceMemberId) ||
+    !isString(value.targetMemberId) ||
+    !UUID_RE.test(value.targetMemberId) ||
+    !HA_FAILOVER_PHASES.has(value.phase as string)
+  ) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  return {
+    managedId: value.managedId,
+    sourceMemberId: value.sourceMemberId,
+    targetMemberId: value.targetMemberId,
+    phase: value.phase as ManagedHaFailoverPhase,
+    ...omitUndefinedEntries({
+      engine: parseOptionalManagedHaFailoverEngine(value.engine),
+      sourceHost: parseOptionalManagedHaFailoverHost(value.sourceHost),
+      sourcePort: parseOptionalManagedHaFailoverPort(value.sourcePort),
+      targetHost: parseOptionalManagedHaFailoverHost(value.targetHost),
+      targetPort: parseOptionalManagedHaFailoverPort(value.targetPort),
+    }),
+  }
+}
+
+/** Must stay in sync with the daemon `managed.ha.failover` result parser. */
+export function parseManagedHaFailoverResult(
+  value: unknown,
+): ManagedHaFailoverCommandResult {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid managed.ha.failover result')
+  }
+  if (
+    !isString(value.summary) ||
+    !HA_FAILOVER_PHASES.has(value.phase as string)
+  ) {
+    throw new TypeError('Invalid managed.ha.failover result')
+  }
+  return {
+    summary: value.summary,
+    phase: value.phase as ManagedHaFailoverPhase,
+  }
+}
+
 export function parseCommandPayload(
   type: CommandType,
   value: unknown,
@@ -4165,6 +4680,8 @@ export function parseCommandPayload(
   | ManagedRestoreCommandPayload
   | ManagedPromoteCommandPayload
   | ManagedIngressReconcileCommandPayload
+  | ManagedHaReconcileCommandPayload
+  | ManagedHaFailoverCommandPayload
   | SystemReconcileCommandPayload {
   switch (type) {
     case 'daemon.ping':
@@ -4199,6 +4716,10 @@ export function parseCommandPayload(
       return parseManagedPromotePayload(value)
     case 'managed.ingress.reconcile':
       return parseManagedIngressReconcilePayload(value)
+    case 'managed.ha.reconcile':
+      return parseManagedHaReconcilePayload(value)
+    case 'managed.ha.failover':
+      return parseManagedHaFailoverPayload(value)
     case 'system.reconcile':
       return parseSystemReconcilePayload(value)
   }
@@ -4224,6 +4745,8 @@ export function parseCommandResult(
   | ManagedRestoreCommandResult
   | ManagedPromoteCommandResult
   | ManagedIngressReconcileCommandResult
+  | ManagedHaReconcileCommandResult
+  | ManagedHaFailoverCommandResult
   | SystemReconcileCommandResult {
   switch (type) {
     case 'daemon.ping':
@@ -4258,6 +4781,10 @@ export function parseCommandResult(
       return parseManagedPromoteResult(value)
     case 'managed.ingress.reconcile':
       return parseManagedIngressReconcileResult(value)
+    case 'managed.ha.reconcile':
+      return parseManagedHaReconcileResult(value)
+    case 'managed.ha.failover':
+      return parseManagedHaFailoverResult(value)
     case 'system.reconcile':
       return parseSystemReconcileResult(value)
   }

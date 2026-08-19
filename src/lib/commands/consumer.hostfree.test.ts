@@ -3,7 +3,7 @@
  * paths (no Postgres / Redis).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import type {
   DaemonCell,
@@ -54,6 +54,8 @@ test('commandTimeoutMs returns per-type budgets and the default', () => {
   assertEquals(commandTimeoutMs('managed.restore'), 1_800_000)
   assertEquals(commandTimeoutMs('managed.promote'), 600_000)
   assertEquals(commandTimeoutMs('managed.ingress.reconcile'), 300_000)
+  assertEquals(commandTimeoutMs('managed.ha.reconcile'), 300_000)
+  assertEquals(commandTimeoutMs('managed.ha.failover'), 600_000)
   assertEquals(commandTimeoutMs('system.reconcile'), 300_000)
   assertEquals(commandTimeoutMs('unknown.future.command'), 60_000)
 })
@@ -118,7 +120,7 @@ test('hasManagedFollowUpDeps requires live queue plus both secret configs', () =
   assertEquals(hasManagedFollowUpDeps({}), false)
   assertEquals(hasManagedFollowUpDeps({ commandQueue: createNoopCommandQueue() }), false)
   const liveQueue = {
-    enqueue: async () => {},
+    enqueue: () => Promise.resolve(),
   }
   assertEquals(
     hasManagedFollowUpDeps({
@@ -318,9 +320,9 @@ function emptyRegistry(): DaemonCellRegistry {
     getCell: () => {
       throw new TypeError('getCell must not be called on fail-fast paths')
     },
-    listOnlineServerIds: async () => [],
-    getSnapshots: async () => new Map(),
-    purge: async () => {},
+    listOnlineServerIds: () => Promise.resolve([]),
+    getSnapshots: () => Promise.resolve(new Map()),
+    purge: () => Promise.resolve(),
   }
 }
 
@@ -448,64 +450,69 @@ test('processCommandEnvelope dispatches when online and maps a done outcome', as
   }
 
   const cell: DaemonCell = {
-    attachDaemonSocket: async () => ({
-      connectionId: 'conn',
-      lease: {
-        holder: 'conn',
-        expiresAt: '2020-01-01T00:01:00.000Z',
-      },
-    }),
-    detachDaemonSocket: async () => {},
-    recordInbound: async () => {},
-    getSnapshot: async () => ({
-      serverId: SERVER_ID,
-      version: 1,
-      updatedAt: '2020-01-01T00:00:00.000Z',
-      connected: true,
-    }),
-    putSnapshot: async (patch) => ({
-      serverId: SERVER_ID,
-      version: 1,
-      updatedAt: '2020-01-01T00:00:00.000Z',
-      connected: true,
-      ...patch,
-    }),
-    enqueue: async (outbound) => ({
-      serverId: SERVER_ID,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'queued',
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
-    markSent: async () => {},
-    handleInbound: async () => null,
-    getRequest: async () => null,
-    listRequests: async () => [],
-    waitForRequest: async () => pending,
-    createRequestAndWait: async (outbound) => ({
-      serverId: SERVER_ID,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'done',
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
-    readOutboxBatch: async () => [],
-    ackOutbox: async () => {},
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
-    releaseDeliveryLease: async () => {},
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
-    purge: async () => {},
+    attachDaemonSocket: () =>
+      Promise.resolve({
+        connectionId: 'conn',
+        lease: {
+          holder: 'conn',
+          expiresAt: '2020-01-01T00:01:00.000Z',
+        },
+      }),
+    detachDaemonSocket: () => Promise.resolve(),
+    recordInbound: () => Promise.resolve(),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId: SERVER_ID,
+        version: 1,
+        updatedAt: '2020-01-01T00:00:00.000Z',
+        connected: true,
+      }),
+    putSnapshot: (patch) =>
+      Promise.resolve({
+        serverId: SERVER_ID,
+        version: 1,
+        updatedAt: '2020-01-01T00:00:00.000Z',
+        connected: true,
+        ...patch,
+      }),
+    enqueue: (outbound) =>
+      Promise.resolve({
+        serverId: SERVER_ID,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'queued',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    markSent: () => Promise.resolve(),
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve([]),
+    waitForRequest: () => Promise.resolve(pending),
+    createRequestAndWait: (outbound) =>
+      Promise.resolve({
+        serverId: SERVER_ID,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'done',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    readOutboxBatch: () => Promise.resolve([]),
+    ackOutbox: () => Promise.resolve(),
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
+    releaseDeliveryLease: () => Promise.resolve(),
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
+    purge: () => Promise.resolve(),
   }
 
   const registry: DaemonCellRegistry = {
     getCell: () => cell,
-    listOnlineServerIds: async () => [SERVER_ID],
-    getSnapshots: async () => new Map(),
-    purge: async () => {},
+    listOnlineServerIds: () => Promise.resolve([SERVER_ID]),
+    getSnapshots: () => Promise.resolve(new Map()),
+    purge: () => Promise.resolve(),
   }
 
   await processCommandEnvelope(db, registry, {

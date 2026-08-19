@@ -1,12 +1,9 @@
+import { isManagedEngineCode, type ManagedEngineSpec } from '../../lib/managed/index.ts'
+import type { ManagedSslMode } from '../../lib/managed/ssl.ts'
 import {
-  isManagedEngineCode,
-  type ManagedEngineSpec,
-} from '../../lib/managed/index.ts'
-import type { ManagedSettings } from '../../lib/managed/settings.ts'
-import {
-  parseManagedStatus,
   type ManagedConnectionInfo,
   type ManagedEngineCode,
+  parseManagedStatus,
 } from '../../lib/managed/types.ts'
 
 export type ManagedResidualMetadata = {
@@ -26,9 +23,7 @@ export function parseManagedResidual(value: unknown): ManagedResidualMetadata {
     ...(typeof record.rootPrincipalId === 'string'
       ? { rootPrincipalId: record.rootPrincipalId }
       : {}),
-    ...(typeof record.rootUsername === 'string'
-      ? { rootUsername: record.rootUsername }
-      : {}),
+    ...(typeof record.rootUsername === 'string' ? { rootUsername: record.rootUsername } : {}),
     ...(typeof record.host === 'string' ? { host: record.host } : {}),
     ...(typeof record.port === 'number' ? { port: record.port } : {}),
     ...(typeof record.error === 'string' ? { error: record.error } : {}),
@@ -88,7 +83,8 @@ export function buildConnectionPayload(
     port: number
     database: string
     username: string
-    settings: ManagedSettings
+    /** Effective mode (service override → org default → platform). */
+    sslMode: ManagedSslMode
   },
 ): ManagedConnectionInfo {
   return spec.buildConnectionInfo({
@@ -96,6 +92,6 @@ export function buildConnectionPayload(
     port: params.port,
     database: params.database,
     username: params.username,
-    settings: params.settings,
+    sslMode: params.sslMode,
   })
 }

@@ -10,8 +10,8 @@
  * `binlog_expire_logs_seconds` is the disk-fill hazard that slots cover on
  * Postgres.
  *
- * **Image:** MySQL 9.7 LTS (approved — see `MYSQL_ALLOWED_IMAGES` in
- * `./settings.ts`). The Docker Official `mysql` image has never published an
+ * **Image:** the default MySQL LTS series from the release catalog
+ * (`./releases.ts`). The Docker Official `mysql` image has never published an
  * Alpine variant (it was Debian-only even before 8.0, and Oracle explicitly
  * ships only glibc-linked builds), so the default stays on the upstream
  * Debian-based tag; the Oracle Linux 9 variant is the documented alternative
@@ -26,24 +26,26 @@ import {
   MYSQL_ACCOUNT_MAX_LENGTH,
   MYSQL_IDENTIFIER_PATTERN,
 } from './mysql-family.ts'
+import { requireDefaultManagedImage } from './releases.ts'
+import { mysqlFamilySslMode } from './ssl.ts'
 import {
   DEFAULT_MANAGED_SETTINGS,
+  type ManagedSettings,
   MYSQL_RESERVED_ENV_KEYS,
   parseManagedSettingsBase,
-  type ManagedSettings,
 } from './settings.ts'
 import {
-  ManagedSecretPlaceholder,
   type BuildConnectionInfoInput,
   type BuildRuntimeSpecInput,
   type ManagedConnectionInfo,
   type ManagedEngineSpec,
   type ManagedRuntimeHealthcheck,
   type ManagedRuntimeSpec,
+  ManagedSecretPlaceholder,
   type ManagedUserOperations,
 } from './types.ts'
 
-const DEFAULT_IMAGE = 'docker.io/library/mysql:9.7'
+const DEFAULT_IMAGE = requireDefaultManagedImage('mysql')
 const DEFAULT_PORT = 3306
 const ROOT_USERNAME = 'root'
 const DEFAULT_DATABASE = 'appdb'
@@ -118,7 +120,11 @@ function asSettingsRecord(
 }
 
 function parseMysqlSettings(value: unknown): MysqlManagedSettings | null {
-  const base = parseManagedSettingsBase(value, MYSQL_RESERVED_ENV_KEYS, 'mysql')
+  const base = parseManagedSettingsBase(
+    value,
+    MYSQL_RESERVED_ENV_KEYS,
+    'mysql',
+  )
   if (base === null) return null
 
   const record = asSettingsRecord(value)
@@ -173,14 +179,15 @@ function buildPlatformMycnf(
     )
   }
 
-  if (settings.ssl.enabled || input.useOrgTls || input.member?.privateListener) {
-    lines.push(
-      `ssl_ca=${TLS_CA_PATH}`,
-      `ssl_cert=${TLS_CERT_PATH}`,
-      `ssl_key=${TLS_KEY_PATH}`,
-      'require_secure_transport=ON',
-    )
-  }
+  // Engine TLS is unconditional — ProxySQL dials backends with `use_ssl=1`,
+  // so the engine leg always requires an encrypted transport. Client-facing
+  // policy (`ManagedSslMode`) is enforced at the ProxySQL frontend.
+  lines.push(
+    `ssl_ca=${TLS_CA_PATH}`,
+    `ssl_cert=${TLS_CERT_PATH}`,
+    `ssl_key=${TLS_KEY_PATH}`,
+    'require_secure_transport=ON',
+  )
 
   if (input.member?.role === 'standby') {
     lines.push('read_only=ON', 'super_read_only=ON')
@@ -270,8 +277,7 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   const initialDatabase = settings.initialDatabase ?? DEFAULT_DATABASE
   const image = settings.image ?? DEFAULT_IMAGE
   // Underscore-safe: SAFE_IDENTIFIER_RE / SAFE_VOLUME_NAME_RE disallow hyphens.
-  const volumeName =
-    `managed_${input.managedId.replaceAll('-', '_')}_data`
+  const volumeName = `managed_${input.managedId.replaceAll('-', '_')}_data`
 
   const env: Record<string, string> = {
     /** Placeholder only — plaintext must never appear in a runtime spec. */
@@ -300,14 +306,8 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     },
   }
 
-  const needTls =
-    settings.ssl.enabled ||
-    input.useOrgTls === true ||
-    input.member?.privateListener !== undefined
-  if (needTls) {
-    const volumes = service.volumes as string[]
-    volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
-  }
+  const volumes = service.volumes as string[]
+  volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
 
   // Private listener: multi-member only (shared platform rule — never remap
   // the native 3306 inside the container).
@@ -348,13 +348,11 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
       enabled: settings.exposure.enabled,
       protocol: 'tcp',
       containerPort: DEFAULT_PORT,
-      ...(settings.exposure.bind !== undefined
-        ? { bind: settings.exposure.bind }
-        : {}),
+      ...(settings.exposure.scope !== undefined ? { scope: settings.exposure.scope } : {}),
     },
   }
 
-  if (needTls && !input.useOrgTls) {
+  if (!input.useOrgTls) {
     spec.tlsMaterial = {
       selfSigned: true,
       commonName: 'managed-mysql',
@@ -369,11 +367,9 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
 function buildConnectionInfo(
   input: BuildConnectionInfoInput,
 ): ManagedConnectionInfo {
-  const sslmode = input.settings.ssl.enabled ? 'VERIFY_IDENTITY' : 'PREFERRED'
-  const dsn =
-    `mysql://${encodeURIComponent(input.username)}:***@` +
+  const dsn = `mysql://${encodeURIComponent(input.username)}:***@` +
     `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
-    `?ssl-mode=${sslmode}`
+    `?ssl-mode=${mysqlFamilySslMode(input.sslMode)}`
   return {
     dsn,
     host: input.host,
@@ -390,7 +386,7 @@ function buildBindingDsn(
     `mysql://${encodeURIComponent(input.username)}:` +
     `${encodeURIComponent(input.password)}@` +
     `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
-    `?ssl-mode=VERIFY_IDENTITY`
+    `?ssl-mode=${mysqlFamilySslMode(input.sslMode)}`
   )
 }
 
@@ -409,6 +405,7 @@ export const mysqlEngineSpec: ManagedEngineSpec = {
   parseSettings: parseMysqlSettings,
   buildRuntimeSpec,
   buildConnectionInfo,
+  formatSslMode: mysqlFamilySslMode,
   userOperations: USER_OPERATIONS,
   binding: {
     scheme: 'mysql',

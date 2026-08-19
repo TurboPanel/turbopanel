@@ -7,26 +7,13 @@ import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { binding, hosting, managed, principal, variable } from '../../lib/db/schema.ts'
 import { getManagedEngineSpec } from '../../lib/managed/index.ts'
-import { managedIngressPortForEngine } from '../../lib/managed/ingress-ports.ts'
-import {
-  assertSafeBindingKeyPrefix,
-  DEFAULT_BINDING_KEY_PREFIX,
-} from '../../lib/naming.ts'
+import { assertSafeBindingKeyPrefix, DEFAULT_BINDING_KEY_PREFIX } from '../../lib/naming.ts'
 import { parseManagedRowOptions } from '../managed/options.ts'
-import {
-  isManagedReplicationPrincipal,
-  isManagedRootPrincipal,
-} from '../managed/routes-helpers.ts'
+import { isManagedReplicationPrincipal, isManagedRootPrincipal } from '../managed/routes-helpers.ts'
 import { listBindingEmittedKeys } from './materialize.ts'
-import {
-  isBindingEndpointError,
-  resolveBindingEndpoint,
-} from './resolve-endpoint.ts'
+import { isBindingEndpointError, resolveBindingEndpoint } from './resolve-endpoint.ts'
 
-export {
-  assertSafeBindingKeyPrefix,
-  DEFAULT_BINDING_KEY_PREFIX,
-}
+export { assertSafeBindingKeyPrefix, DEFAULT_BINDING_KEY_PREFIX }
 
 export const BINDING_KEY_PREFIX_IN_USE_ERROR = 'binding_key_prefix_in_use'
 export const BINDING_ENGINE_DEFAULTS_IN_USE_ERROR = 'binding_engine_defaults_in_use'
@@ -267,7 +254,8 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
           const resolved = await resolveBindingEndpoint(db, {
             serviceId: row.serviceId,
             managedId: mrow.id,
-            protocolPort: managedIngressPortForEngine(mrow.engine, spec.defaultPort),
+            engineCode: mrow.engine,
+            engineDefaultPort: spec.defaultPort,
           })
           if (!isBindingEndpointError(resolved)) {
             endpoint = { host: resolved.host, port: resolved.port }
@@ -427,9 +415,7 @@ export async function assertNoBindingKeyConflicts(
   const conflict = await findBindingKeyConflicts(db, {
     serviceId: params.serviceId,
     keys,
-    ...(params.excludeBindingId
-      ? { excludeBindingId: params.excludeBindingId }
-      : {}),
+    ...(params.excludeBindingId ? { excludeBindingId: params.excludeBindingId } : {}),
   })
   if (conflict) return { ok: false, key: conflict }
   return { ok: true }
@@ -535,13 +521,15 @@ export function parseBindingsListFilter(params: {
   if (filterCount !== 1) {
     return {
       ok: false,
-      error:
-        'Exactly one of serviceId, environmentId, or managedEnvironmentId must be specified',
+      error: 'Exactly one of serviceId, environmentId, or managedEnvironmentId must be specified',
       status: 400,
     }
   }
   if (params.serviceId) {
-    return { ok: true, filter: { kind: 'service', serviceId: params.serviceId } }
+    return {
+      ok: true,
+      filter: { kind: 'service', serviceId: params.serviceId },
+    }
   }
   if (params.managedEnvironmentId) {
     return {

@@ -2,7 +2,7 @@
  * Host-free placement + member list helpers for binding endpoints.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   consumerServerIdsForManaged,
@@ -175,7 +175,8 @@ test('resolveBindingEndpoint unavailable when cluster has no members', async () 
     await resolveBindingEndpoint(db, {
       serviceId: 'svc',
       managedId: 'm1',
-      protocolPort: 5432,
+      engineCode: 'postgres',
+      engineDefaultPort: 5432,
     }),
     { kind: 'binding_endpoint_unavailable' },
   )
@@ -219,7 +220,9 @@ test('resolveBindingEndpoint unavailable when listener server has no organizatio
       // listenerForServer: server row without organizationId
       return {
         from: () => ({
-          where: () => thenableLimit([{ organizationId: null }]),
+          innerJoin: () => ({
+            where: () => thenableLimit([{ organizationId: null }]),
+          }),
         }),
       }
     },
@@ -229,7 +232,8 @@ test('resolveBindingEndpoint unavailable when listener server has no organizatio
     await resolveBindingEndpoint(db, {
       serviceId: 'svc',
       managedId: 'm1',
-      protocolPort: 5432,
+      engineCode: 'postgres',
+      engineDefaultPort: 5432,
     }),
     { kind: 'binding_endpoint_unavailable' },
   )

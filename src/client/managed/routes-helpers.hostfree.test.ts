@@ -5,11 +5,13 @@
 import { assertEquals } from '@std/assert'
 import { BadRequestError } from '../shared.ts'
 import {
+  assertFailoverReplicaTransportAllowed,
   buildEmptyManagedDetailResponse,
   buildFencePromotePendingResponse,
   buildManagedDeleteHardResponse,
   buildManagedDeleteQueuedResponse,
   buildManagedDestroyQueuedResponse,
+  buildManagedSslView,
   buildOrgManagedListEntry,
   buildPromoteQueuedResponse,
   buildQueuedFanoutResponse,
@@ -20,24 +22,27 @@ import {
   evaluateManagedUserRotateGuard,
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
-  evaluateReplicaPlacementPrechecks,
-  replicaEndpointPurpose,
-  replicaPlacementNeedsDatacenter,
-  assertFailoverReplicaTransportAllowed,
   evaluatePromoteReplicaClass,
+  evaluateReadOnlyLoginTargets,
+  evaluateReadOnlyLoginTargetsLazy,
   evaluateReplicaClassConversion,
+  evaluateReplicaPlacementPrechecks,
   findManagedBackupById,
+  MANAGED_NO_READ_TARGETS_ERROR,
   mergeManagedPatchSettings,
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
+  operatorPromoteHttpResult,
   parseManagedCreateDisplayName,
   parseManagedLifecycleAction,
+  parseMemberPatch,
   parseMemberReadEligibleCreate,
   parseMemberReadEligiblePatch,
-  parseMemberPatch,
   parsePromoteForce,
   parseReplicaClassCreate,
   pickPrimaryCommandResult,
+  replicaEndpointPurpose,
+  replicaPlacementNeedsDatacenter,
   sortManagedBackupsDesc,
   validateManagedDatabaseCreateName,
 } from './routes-helpers.ts'
@@ -117,15 +122,17 @@ test('parseManagedCreateDisplayName rethrows unexpected errors', () => {
 })
 
 test('mergeManagedPatchSettings merges settings object and rejects invalid', () => {
-  const base = postgresEngineSpec.parseSettings(postgresEngineSpec.defaultSettings)
+  const base = postgresEngineSpec.parseSettings(
+    postgresEngineSpec.defaultSettings,
+  )
   if (!base) throw new TypeError('expected defaults')
 
   const merged = mergeManagedPatchSettings(postgresEngineSpec, base, {
-    settings: { exposure: { enabled: true, bind: 'public' } },
+    settings: { exposure: { enabled: true, scope: 'public' } },
   })
   if (!merged) throw new TypeError('expected merged')
   assertEquals(merged.exposure.enabled, true)
-  assertEquals(merged.exposure.bind, 'public')
+  assertEquals(merged.exposure.scope, 'public')
 
   const ignored = mergeManagedPatchSettings(postgresEngineSpec, base, {
     settings: 'nope',
@@ -195,7 +202,10 @@ test('parsePromoteForce and readEligible parsers', () => {
     error: 'Invalid request',
     status: 400,
   })
-  assertEquals(parseReplicaClassCreate({}), { ok: true, replicaClass: 'failover' })
+  assertEquals(parseReplicaClassCreate({}), {
+    ok: true,
+    replicaClass: 'failover',
+  })
   assertEquals(parseReplicaClassCreate({ replicaClass: 'read' }), {
     ok: true,
     replicaClass: 'read',
@@ -209,11 +219,14 @@ test('parsePromoteForce and readEligible parsers', () => {
     ok: true,
     replicaClass: 'read',
   })
-  assertEquals(parseMemberPatch({ readEligible: true, replicaClass: 'failover' }), {
-    ok: true,
-    readEligible: true,
-    replicaClass: 'failover',
-  })
+  assertEquals(
+    parseMemberPatch({ readEligible: true, replicaClass: 'failover' }),
+    {
+      ok: true,
+      readEligible: true,
+      replicaClass: 'failover',
+    },
+  )
   assertEquals(parseMemberPatch({}), {
     ok: false,
     error: 'Invalid request',
@@ -293,7 +306,11 @@ test('evaluateReplicaClassConversion allows failover to read and gates the rever
     null,
   )
   assertEquals(
-    evaluateReplicaClassConversion({ role: 'primary', replicaClass: null }, 'read', true),
+    evaluateReplicaClassConversion(
+      { role: 'primary', replicaClass: null },
+      'read',
+      true,
+    ),
     { ok: false, error: 'Invalid request', status: 400 },
   )
 })
@@ -301,14 +318,13 @@ test('evaluateReplicaClassConversion allows failover to read and gates the rever
 test('replica add/promote/conversion route helpers encode class rules', () => {
   assertEquals(replicaEndpointPurpose('failover'), 'failover-replication')
   assertEquals(replicaEndpointPurpose('read'), 'read-replication')
-  assertEquals(evaluatePromoteReplicaClass('failover', false), null)
-  assertEquals(evaluatePromoteReplicaClass('read', false), {
+  assertEquals(evaluatePromoteReplicaClass('failover'), null)
+  assertEquals(evaluatePromoteReplicaClass('read'), {
     ok: false,
     error: 'managed_replica_not_promotable',
     status: 422,
   })
-  assertEquals(evaluatePromoteReplicaClass('read', true), null)
-  assertEquals(evaluatePromoteReplicaClass(null, false), {
+  assertEquals(evaluatePromoteReplicaClass(null), {
     ok: false,
     error: 'managed_replica_not_promotable',
     status: 422,
@@ -344,6 +360,53 @@ test('user rotate/drop guards', () => {
   assertEquals(evaluateManagedUserDropGuard({}), null)
 })
 
+test('evaluateReadOnlyLoginTargets refuses read-only without a replica', () => {
+  assertEquals(evaluateReadOnlyLoginTargets('read-write', []), null)
+  assertEquals(
+    evaluateReadOnlyLoginTargets('read-only', [
+      { role: 'primary', readEligible: true },
+    ]),
+    { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 },
+  )
+  assertEquals(
+    evaluateReadOnlyLoginTargets('read-only', [
+      { role: 'replica', readEligible: false },
+    ]),
+    { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 },
+  )
+  assertEquals(
+    evaluateReadOnlyLoginTargets('read-only', [
+      { role: 'replica', readEligible: true },
+    ]),
+    null,
+  )
+})
+
+test('evaluateReadOnlyLoginTargetsLazy loads members only for read-only', async () => {
+  let loads = 0
+  const loadMembers = () => {
+    loads += 1
+    return Promise.resolve([{ role: 'replica', readEligible: true }])
+  }
+  assertEquals(
+    await evaluateReadOnlyLoginTargetsLazy('read-write', loadMembers),
+    null,
+  )
+  assertEquals(loads, 0)
+  assertEquals(
+    await evaluateReadOnlyLoginTargetsLazy('read-only', loadMembers),
+    null,
+  )
+  assertEquals(loads, 1)
+  assertEquals(
+    await evaluateReadOnlyLoginTargetsLazy(
+      'read-only',
+      () => Promise.resolve([{ role: 'primary', readEligible: true }]),
+    ),
+    { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 },
+  )
+})
+
 test('evaluatePromoteLagHttpGate honors force bypass', () => {
   assertEquals(
     evaluatePromoteLagHttpGate(undefined, true),
@@ -372,7 +435,10 @@ test('evaluatePromoteLagHttpGate honors force bypass', () => {
 test('pickPrimaryCommandResult and queued response builders', () => {
   assertEquals(pickPrimaryCommandResult([]), undefined)
   assertEquals(
-    pickPrimaryCommandResult([{ serverId: 'a' }, { commandId: 'c1', serverId: 'b' }]),
+    pickPrimaryCommandResult([{ serverId: 'a' }, {
+      commandId: 'c1',
+      serverId: 'b',
+    }]),
     { commandId: 'c1', serverId: 'b' },
   )
   assertEquals(
@@ -409,10 +475,30 @@ test('empty detail / delete / destroy / promote response shapes', () => {
   assertEquals(buildEmptyManagedDetailResponse('postgres'), {
     managed: null,
     connection: null,
+    endpoints: [],
     settings: null,
+    // No org default configured, so a not-yet-created cluster still reports the
+    // platform TLS policy it will inherit.
+    ssl: { configured: null, effective: 'require', organizationDefault: null },
+    release: null,
     server: null,
     rootUsername: 'postgres',
     members: [],
+    recovery: null,
+  })
+  assertEquals(
+    buildEmptyManagedDetailResponse('postgres', 'verify-full').ssl,
+    {
+      configured: null,
+      effective: 'verify-full',
+      organizationDefault: 'verify-full',
+    },
+  )
+  // A service override wins over the org default in both directions.
+  assertEquals(buildManagedSslView('prefer', 'verify-full'), {
+    configured: 'prefer',
+    effective: 'prefer',
+    organizationDefault: 'verify-full',
   })
   assertEquals(buildManagedDeleteHardResponse(), { ok: true, deleted: true })
   assertEquals(
@@ -452,6 +538,37 @@ test('empty detail / delete / destroy / promote response shapes', () => {
   assertEquals(
     buildPromoteQueuedResponse({ commandId: 'p', serverId: 's' }),
     { ok: true, commandId: 'p', status: 'queued', serverId: 's' },
+  )
+})
+
+test('operatorPromoteHttpResult maps switchover enqueue to HTTP', () => {
+  assertEquals(
+    operatorPromoteHttpResult({ ok: false, error: 'conflict', status: 409 }),
+    { status: 409, body: { error: 'conflict' } },
+  )
+  assertEquals(
+    operatorPromoteHttpResult({
+      ok: true,
+      commandId: 'f',
+      serverId: 's',
+      fencePending: true,
+    }),
+    {
+      status: 200,
+      body: buildFencePromotePendingResponse({ commandId: 'f', serverId: 's' }),
+    },
+  )
+  assertEquals(
+    operatorPromoteHttpResult({
+      ok: true,
+      commandId: 'p',
+      serverId: 's',
+      fencePending: false,
+    }),
+    {
+      status: 200,
+      body: buildPromoteQueuedResponse({ commandId: 'p', serverId: 's' }),
+    },
   )
 })
 

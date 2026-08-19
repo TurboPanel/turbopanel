@@ -1,6 +1,7 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
+import type { Db } from '../../db.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
 import type { ManagedEngineSpec } from '../../lib/managed/types.ts'
 import type { ManagedContext } from './context.ts'
@@ -33,12 +34,19 @@ function buildContext(spec: ManagedEngineSpec): ManagedContext {
     spec,
     serverId: '00000000-0000-4000-8000-000000000003',
     organizationId: '00000000-0000-4000-8000-000000000004',
+    orgDefaults: {},
   }
 }
 
-function buildOptions(overrides?: Partial<ManagedRowOptions>): ManagedRowOptions {
-  const settings = postgresEngineSpec.parseSettings(postgresEngineSpec.defaultSettings)
-  if (!settings) throw new TypeError('failed to build default settings fixture')
+function buildOptions(
+  overrides?: Partial<ManagedRowOptions>,
+): ManagedRowOptions {
+  const settings = postgresEngineSpec.parseSettings(
+    postgresEngineSpec.defaultSettings,
+  )
+  if (!settings) {
+    throw new TypeError('failed to build default settings fixture')
+  }
   return {
     settings,
     databases: ['postgres', 'app'],
@@ -47,7 +55,9 @@ function buildOptions(overrides?: Partial<ManagedRowOptions>): ManagedRowOptions
   }
 }
 
-function buildRecord(overrides?: Partial<ManagedBackupRecord>): ManagedBackupRecord {
+function buildRecord(
+  overrides?: Partial<ManagedBackupRecord>,
+): ManagedBackupRecord {
   return {
     id: 'bk_abc123',
     createdAt: '2024-01-01T00:00:00.000Z',
@@ -109,7 +119,9 @@ test('mapManagedBackupApiError maps unsupported to 400 and missing to 404', asyn
     kind: 'managed_backup_unsupported',
   })
   assertEquals(unsupported.status, 400)
-  assertEquals(await unsupported.json(), { error: 'managed_backup_unsupported' })
+  assertEquals(await unsupported.json(), {
+    error: 'managed_backup_unsupported',
+  })
 
   const missing = mapManagedBackupApiError(c, { kind: 'backup_not_found' })
   assertEquals(missing.status, 404)
@@ -125,7 +137,12 @@ test('buildManagedBackupCreatePayload builds a create payload with clamped reten
     },
   })
 
-  const built = buildManagedBackupCreatePayload(ctx, 'managed-1', options, 'app')
+  const built = buildManagedBackupCreatePayload(
+    ctx,
+    'managed-1',
+    options,
+    'app',
+  )
   if (isManagedBackupApiError(built)) {
     throw new Error(`expected success, got error kind=${built.kind}`)
   }
@@ -145,19 +162,35 @@ test('buildManagedBackupCreatePayload falls back to the engine default retention
   const ctx = buildContext(postgresEngineSpec)
   const options = buildOptions()
 
-  const built = buildManagedBackupCreatePayload(ctx, 'managed-1', options, 'postgres')
+  const built = buildManagedBackupCreatePayload(
+    ctx,
+    'managed-1',
+    options,
+    'postgres',
+  )
   if (isManagedBackupApiError(built)) {
     throw new Error(`expected success, got error kind=${built.kind}`)
   }
-  assertEquals(built.payload.retentionKeep, postgresEngineSpec.backup?.defaultRetentionKeep)
+  assertEquals(
+    built.payload.retentionKeep,
+    postgresEngineSpec.backup?.defaultRetentionKeep,
+  )
 })
 
 test('buildManagedBackupCreatePayload rejects engines without backup support', () => {
-  const unsupportedSpec: ManagedEngineSpec = { ...postgresEngineSpec, backup: undefined }
+  const unsupportedSpec: ManagedEngineSpec = {
+    ...postgresEngineSpec,
+    backup: undefined,
+  }
   const ctx = buildContext(unsupportedSpec)
   const options = buildOptions()
 
-  const built = buildManagedBackupCreatePayload(ctx, 'managed-1', options, 'postgres')
+  const built = buildManagedBackupCreatePayload(
+    ctx,
+    'managed-1',
+    options,
+    'postgres',
+  )
   if (!isManagedBackupApiError(built)) {
     throw new Error('expected managed_backup_unsupported error')
   }
@@ -180,7 +213,10 @@ test('buildManagedBackupDeletePayload builds a delete payload from a stored reco
 })
 
 test('buildManagedBackupDeletePayload rejects engines without backup support', () => {
-  const unsupportedSpec: ManagedEngineSpec = { ...postgresEngineSpec, backup: undefined }
+  const unsupportedSpec: ManagedEngineSpec = {
+    ...postgresEngineSpec,
+    backup: undefined,
+  }
   const ctx = buildContext(unsupportedSpec)
   const record = buildRecord()
 
@@ -221,7 +257,10 @@ test('buildManagedRestorePayload carries the stored checksum and size, never dum
 })
 
 test('buildManagedRestorePayload rejects engines without backup support', () => {
-  const unsupportedSpec: ManagedEngineSpec = { ...postgresEngineSpec, backup: undefined }
+  const unsupportedSpec: ManagedEngineSpec = {
+    ...postgresEngineSpec,
+    backup: undefined,
+  }
   const ctx = buildContext(unsupportedSpec)
   const record = buildRecord()
 

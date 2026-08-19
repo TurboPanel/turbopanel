@@ -303,6 +303,7 @@ export async function startDenoServer(
     connectLimiter: daemonConnectLimiter,
     inboundMessageLimit: inboundLimits.limit,
     inboundMessageWindowMs: inboundLimits.windowMs,
+    commandQueue,
   })
   registerAdminRoutes(app, {
     secrets: sessionSecrets,

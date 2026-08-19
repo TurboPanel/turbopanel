@@ -1,6 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { Context } from "hono";
-import { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import type { AppEnv } from "../../app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import {
@@ -108,6 +107,8 @@ import {
   type ManagedIngressConsumer,
   reservedIngressHostsForServer,
 } from "../managed/ingress-attachments.ts";
+import { loadManagedIngressPorts } from "../managed/org-defaults.ts";
+import type { ManagedIngressPorts } from "../../lib/managed/ingress-ports.ts";
 import { ensureManagedIngressHierarchy } from "../system/hierarchy.ts";
 import {
   composeServiceNetworkKeys,
@@ -520,7 +521,7 @@ async function resolveTcpUdpHostingEntry(
   };
 }
 
-async function resolveHostingEntry(
+function resolveHostingEntry(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   h: HostingRow,
@@ -834,6 +835,7 @@ type DeployCommandCreateParams = {
   generation: number;
   desiredHash: string;
   replicaCounts: Record<string, number>;
+  listenerPorts: ManagedIngressPorts;
 };
 
 type CreatedDeployCommand = QueuedCommandRef & { queuedAt: string };
@@ -843,6 +845,7 @@ type PreparedServerDeploy = {
   prepared: PreparedDeployCompose;
   hostings: DeployHostingPayload[];
   tlsMaterial: EnvironmentDeployTlsMaterial[];
+  listenerPorts: ManagedIngressPorts;
 };
 
 async function createDeployCommand(
@@ -898,6 +901,7 @@ async function createDeployCommand(
         ? { managedNetworkServices: params.managedNetworkServices }
         : {}),
       ...(params.noCache ? { noCache: true } : {}),
+      listenerPorts: params.listenerPorts,
     },
     expiresAt,
   });
@@ -992,6 +996,7 @@ function createParamsForPreparedServer(
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
+    listenerPorts: row.listenerPorts,
   };
 }
 
@@ -1510,11 +1515,22 @@ async function prepareOneServerDeploy(
   );
   if (materialsError) return materialsError;
 
+  const [serverRow] = await db
+    .select({ organizationId: server.organizationId })
+    .from(server)
+    .where(eq(server.id, params.serverId))
+    .limit(1);
+  const listenerPorts = await loadManagedIngressPorts(
+    db,
+    serverRow?.organizationId ?? params.auth.organizationId,
+  );
+
   return {
     serverId: params.serverId,
     prepared,
     hostings,
     tlsMaterial,
+    listenerPorts,
   };
 }
 

@@ -48,7 +48,13 @@ import {
   workspace,
 } from "../../lib/db/schema.ts";
 import { getManagedEngineSpec } from "../../lib/managed/index.ts";
+import type { ManagedIngressPorts } from "../../lib/managed/ingress-ports.ts";
+import {
+  DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
+  type ManagedSqlAccessScope,
+} from "../../lib/managed/access-scope.ts";
 import type { ManagedSettings } from "../../lib/managed/settings.ts";
+import type { ManagedSslMode } from "../../lib/managed/ssl.ts";
 import type { ManagedEngineCode } from "../../lib/managed/types.ts";
 import {
   isPrivateEndpointError,
@@ -56,17 +62,24 @@ import {
   type PrivateEndpointPurpose,
   resolvePrivateEndpoints,
 } from "../../lib/net/private-endpoint.ts";
-import type { HostingBindScope } from "../../lib/hosting-options.ts";
 import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
 } from "../../lib/project-options.ts";
 import { listServerSegments } from "../../lib/db/fabric-records.ts";
 import { loadListenerAttachedSegmentNames } from "./ingress-attachments.ts";
-import { resolveHostingBindAddress } from "../environments/deploy-prepare.ts";
+import {
+  isManagedAccessAddressError,
+  type ManagedAccessAddressError,
+  resolveManagedBindAddress,
+} from "./access-address.ts";
 import { consumerServerIdsForManaged } from "../bindings/resolve-endpoint.ts";
 import { materializeBindingsForPrincipal } from "../bindings/materialize.ts";
 import { compatLogWarn } from "../../log-compat.ts";
+import {
+  loadManagedIngressPorts,
+  loadManagedOrgDefaults,
+} from "./org-defaults.ts";
 import {
   ensureManagedIngressHierarchy,
   findManagedIngressHierarchy,
@@ -86,13 +99,16 @@ import {
   buildIngressUserRole,
   buildLocalOrMissingPortBackend,
   buildRemoteIngressBackend,
+  clusterAutoReadSplit,
+  clusterRequireTls,
   collectProxySqlListenerSans,
-  decideIngressBindScope,
+  decideIngressBindScopes,
   hostgroupsForClusterIndex,
   isAtRestSealedPassword,
   mergeHierarchyContainerSan,
+  principalConnectionRole,
   principalDefaultDatabase,
-  protocolPortForEngine,
+  protocolListenerForEngine,
   shouldSkipIngressFrontendUser,
   sortManagedIds,
 } from "./ingress-desired-pure.ts";
@@ -104,13 +120,13 @@ export const MANAGED_INGRESS_RECONCILE_TTL_MS = 300_000;
 export type ManagedIngressReconcilePrepareError =
   | { kind: "daemon_key_unavailable"; serverId: string }
   | { kind: "managed_credential_not_sealed" }
-  | { kind: "datacenter_ip_required"; serverId: string }
+  | ManagedAccessAddressError
   | PrivateEndpointError;
 
 export {
   collectProxySqlListenerSans,
   hostgroupsForClusterIndex,
-  unionExposureBind,
+  unionExposureScopes,
 } from "./ingress-desired-pure.ts";
 
 type MemberClusterRow = {
@@ -273,6 +289,8 @@ async function loadClusterUsersForManagedIds(
     };
     const defaultDatabase = principalDefaultDatabase(row.metadata);
     if (defaultDatabase !== undefined) user.defaultDatabase = defaultDatabase;
+    const connectionRole = principalConnectionRole(row.metadata);
+    if (connectionRole !== undefined) user.connectionRole = connectionRole;
     const list = byManaged.get(row.managedId) ?? [];
     list.push(user);
     byManaged.set(row.managedId, list);
@@ -382,17 +400,18 @@ function resolveClusterBackends(
 }
 
 /**
- * Build one cluster entry for `managedId`, recording its exposure bind (if
- * enabled) onto `enabledBinds`. Returns `null` when the cluster has no
+ * Build one cluster entry for `managedId`, recording its access scope (if
+ * exposure is enabled) onto `enabledScopes`. Returns `null` when the cluster has no
  * members or an unrecognized engine (nothing to reconcile for it).
  */
 function buildIngressClusterFromLoaded(
   managedId: string,
   members: MemberClusterRow[],
   index: number,
-  enabledBinds: Array<HostingBindScope | undefined>,
+  enabledScopes: Array<ManagedSqlAccessScope | undefined>,
   backends: ManagedIngressReconcileBackend[],
   users: ManagedIngressReconcileUser[],
+  orgDefaults: IngressOrgDefaults,
 ): ManagedIngressReconcileCluster | null {
   if (members.length === 0) return null;
 
@@ -405,62 +424,88 @@ function buildIngressClusterFromLoaded(
   const settings: ManagedSettings = parsed?.settings ??
     { ...spec.defaultSettings };
   if (settings.exposure.enabled) {
-    enabledBinds.push(settings.exposure.bind);
+    enabledScopes.push(
+      settings.exposure.scope ?? DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
+    );
   }
 
   const hostgroups = hostgroupsForClusterIndex(index);
+  const listener = protocolListenerForEngine(
+    engineCode,
+    spec.defaultPort,
+    orgDefaults.listenerPorts,
+  );
 
-  return {
+  const cluster: ManagedIngressReconcileCluster = {
     managedId,
     engine: engineCode,
-    protocolPort: protocolPortForEngine(engineCode, spec.defaultPort),
+    protocolPort: listener.protocolPort,
+    // Explicit: once ports are org-configurable the daemon can no longer infer
+    // the protocol module from the port number.
+    family: listener.family,
     writerHostgroup: hostgroups.writerHostgroup,
     readerHostgroup: hostgroups.readerHostgroup,
     backends,
     users,
   };
+  if (clusterAutoReadSplit(settings.routing)) cluster.autoReadSplit = true;
+  if (clusterRequireTls(settings.ssl.mode, orgDefaults.sslMode)) {
+    cluster.requireTls = true;
+  }
+  return cluster;
 }
 
 /**
- * Explicit bind decision for the shared ProxySQL frontend — never let an
+ * Every host address the shared ProxySQL frontend publishes on — never let an
  * ambiguous `undefined` mean two different things.
  *
- * Pure scope decision lives in {@link decideIngressBindScope}; `local` /
- * `datacenter` still resolve through the shared hosting-bind helper.
+ * Pure scope decision lives in {@link decideIngressBindScopes}. The result is a
+ * set because one frontend serves every cluster on the host and two clusters
+ * may legitimately want two different interfaces; an unresolvable scope fails
+ * the whole reconcile rather than publishing a surprise address.
  */
-async function resolveIngressBindAddress(
+async function resolveIngressBindAddresses(
   db: Db,
   serverId: string,
-  enabledBinds: Array<HostingBindScope | undefined>,
-): Promise<string | undefined | ManagedIngressReconcilePrepareError> {
-  const decision = decideIngressBindScope(enabledBinds);
-  if (decision.kind === "omit") return undefined;
-  if (decision.kind === "public_all_interfaces") return decision.address;
-
-  const bindResolved = await resolveHostingBindAddress(db, {
-    serverId,
-    options: { bind: decision.bind },
-    ipId: null,
-  });
-  if (
-    typeof bindResolved === "object" &&
-    bindResolved?.kind === "datacenter_ip_required"
-  ) {
-    return bindResolved;
+  enabledScopes: Array<ManagedSqlAccessScope | undefined>,
+): Promise<string[] | ManagedIngressReconcilePrepareError> {
+  const decision = decideIngressBindScopes(enabledScopes);
+  if (decision.kind === "omit") return [];
+  if (decision.kind === "public_all_interfaces") {
+    return [...decision.addresses];
   }
-  return typeof bindResolved === "string" ? bindResolved : undefined;
+
+  const addresses: string[] = [];
+  for (const scope of decision.scopes) {
+    const resolved = await resolveManagedBindAddress(db, { serverId, scope });
+    if (isManagedAccessAddressError(resolved)) return resolved;
+    // Distinct scopes can resolve to the same address (a single-homed host);
+    // compose would reject the duplicate published mapping.
+    if (!addresses.includes(resolved)) addresses.push(resolved);
+  }
+  return addresses;
 }
+
+/**
+ * Organization-resolved managed-database policy that applies to every cluster
+ * on one ProxySQL: the effective client TLS default and the listener ports.
+ */
+type IngressOrgDefaults = {
+  sslMode: ManagedSslMode | undefined;
+  listenerPorts: ManagedIngressPorts;
+};
 
 /** Build every cluster entry for `managedIds`, short-circuiting on the first error. */
 async function buildIngressClusters(
   db: Db,
   serverId: string,
   managedIds: readonly string[],
-  enabledBinds: Array<HostingBindScope | undefined>,
+  enabledScopes: Array<ManagedSqlAccessScope | undefined>,
   reseal: {
     secretsConfig: SecretsConfig;
     dataEncryptionSecrets: DerivedSecretsConfig;
   },
+  orgDefaults: IngressOrgDefaults,
 ): Promise<
   ManagedIngressReconcileCluster[] | ManagedIngressReconcilePrepareError
 > {
@@ -508,9 +553,10 @@ async function buildIngressClusters(
       managedId,
       members,
       index,
-      enabledBinds,
+      enabledScopes,
       backends,
       usersByManaged.get(managedId) ?? [],
+      orgDefaults,
     );
     if (cluster === null) continue;
     clusters.push(cluster);
@@ -548,7 +594,8 @@ async function resolveAdvertisedHost(
     const settings = parsed?.settings ?? { ...spec.defaultSettings };
     const listener = await resolveManagedConnectionListener(db, {
       serverId,
-      protocolPort: cluster.protocolPort,
+      engineCode,
+      engineDefaultPort: spec.defaultPort,
       exposure: settings.exposure,
     });
     if (listener?.host) return listener.host;
@@ -618,28 +665,38 @@ export async function buildManagedIngressReconcilePayload(
 
   const managedIds = sortManagedIds(managedIdSet);
 
-  const enabledBinds: Array<HostingBindScope | undefined> = [];
+  const orgDefaults = await loadManagedOrgDefaults(db, organizationId);
+  // TLS mode is a property of the org that owns the managed service, but the
+  // listener ports are a property of the host: one ProxySQL frontend binds one
+  // pair of ports for every cluster it fronts. Reading them from a member's org
+  // would make the bind flap when a grant places two orgs' members on one
+  // server, so they come from the server owner.
+  const listenerPorts = await loadManagedIngressPorts(
+    db,
+    serverRow.organizationId ?? organizationId,
+  );
+
+  const enabledScopes: Array<ManagedSqlAccessScope | undefined> = [];
   const clusters = await buildIngressClusters(
     db,
     params.serverId,
     managedIds,
-    enabledBinds,
+    enabledScopes,
     {
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     },
+    { sslMode: orgDefaults.sslMode, listenerPorts },
   );
   if ("kind" in clusters) return clusters;
   if (clusters.length === 0) return null;
 
-  const bindAddress = await resolveIngressBindAddress(
+  const bindAddresses = await resolveIngressBindAddresses(
     db,
     params.serverId,
-    enabledBinds,
+    enabledScopes,
   );
-  if (typeof bindAddress === "object" && bindAddress !== undefined) {
-    return bindAddress;
-  }
+  if (!Array.isArray(bindAddresses)) return bindAddresses;
 
   const advertisedHost = await resolveAdvertisedHost(
     db,
@@ -653,7 +710,7 @@ export async function buildManagedIngressReconcilePayload(
   );
   const listenerSans = collectProxySqlListenerSans({
     hostname: advertisedHost,
-    bindAddress: typeof bindAddress === "string" ? bindAddress : undefined,
+    bindAddresses,
     backendAddresses,
   });
   // Bindings (`resolveBindingEndpoint`) always dial ProxySQL by this
@@ -679,11 +736,14 @@ export async function buildManagedIngressReconcilePayload(
   const payload: ManagedIngressReconcileCommandPayload = {
     serverId: params.serverId,
     orgTlsMaterial,
+    // Always both listeners: ProxySQL configures them in one file, so sending
+    // only the families present today would unbind the other on the next apply.
+    listenerPorts,
     clusters,
   };
 
-  if (typeof bindAddress === "string") {
-    payload.bindAddress = bindAddress;
+  if (bindAddresses.length > 0) {
+    payload.bindAddresses = bindAddresses;
   }
 
   const attachedNames = new Set(

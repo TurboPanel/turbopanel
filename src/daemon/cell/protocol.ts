@@ -123,6 +123,12 @@ export type DaemonMessage =
     at: string;
   }
   | {
+    type: "managed-ha-event";
+    managedId: string;
+    sourceMemberId?: string;
+    at: string;
+  }
+  | {
     type: "fabric-paths-request";
     id: string;
     fabricId: string;
@@ -229,6 +235,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "heartbeat",
     "addresses-result",
     "managed-logs-result",
+    "managed-ha-event",
     "fabric-paths-result",
     "dev-sync-result",
     "tunnel-token-result",
@@ -383,6 +390,29 @@ function validateManagedLogsResultFields(
   return null;
 }
 
+const MANAGED_HA_EVENT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function validateManagedHaEventFields(
+  record: Record<string, unknown>,
+): string | null {
+  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
+  if (
+    typeof record.managedId !== "string" ||
+    !MANAGED_HA_EVENT_ID_RE.test(record.managedId)
+  ) {
+    return "invalid managedId";
+  }
+  if (
+    record.sourceMemberId !== undefined &&
+    (typeof record.sourceMemberId !== "string" ||
+      !MANAGED_HA_EVENT_ID_RE.test(record.sourceMemberId))
+  ) {
+    return "invalid sourceMemberId";
+  }
+  return null;
+}
+
 function isFabricPeerHealth(value: unknown): value is FabricPathPeerHealth {
   return typeof value === "string" && FABRIC_PEER_HEALTH.has(value);
 }
@@ -510,6 +540,8 @@ function validateInboundMessageFields(
       return validateAddressesResultFields(record);
     case "managed-logs-result":
       return validateManagedLogsResultFields(record);
+    case "managed-ha-event":
+      return validateManagedHaEventFields(record);
     case "fabric-paths-result":
       return validateFabricPathsResultFields(record);
     case "dev-sync-result":
@@ -743,6 +775,7 @@ export function wireMessageToInboundEnvelope(
   switch (msg.type) {
     case "hello":
     case "heartbeat":
+    case "managed-ha-event":
       return null;
 
     case "addresses-result":

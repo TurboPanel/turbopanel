@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from 'jsr:@std/assert'
+import { assertEquals, assertThrows } from '@std/assert'
 import {
   encodeCommandEnvelope,
   parseCommandEnvelope,
@@ -122,6 +122,8 @@ test('parseCommandEnvelope accepts every canonical command type', () => {
     'managed.restore',
     'managed.promote',
     'managed.ingress.reconcile',
+    'managed.ha.reconcile',
+    'managed.ha.failover',
     'system.reconcile',
   ] as const
   for (const type of types) {

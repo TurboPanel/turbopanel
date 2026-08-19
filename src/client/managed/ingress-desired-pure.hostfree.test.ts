@@ -10,24 +10,28 @@ import {
   buildIngressUserRole,
   buildLocalOrMissingPortBackend,
   buildRemoteIngressBackend,
+  clusterAutoReadSplit,
+  clusterRequireTls,
   collectProxySqlListenerSans,
-  decideIngressBindScope,
+  decideIngressBindScopes,
   hostgroupsForClusterIndex,
   isAtRestSealedPassword,
   isIngressRecord,
   isManagedReplicationPrincipal,
   isManagedRootPrincipal,
   looksLikeIpLiteral,
-  managedIngressFamilyForPort,
+  managedIngressFamilyForEngine,
   managedIngressPortForEngine,
   mergeHierarchyContainerSan,
+  principalConnectionRole,
   principalDefaultDatabase,
-  protocolPortForEngine,
+  protocolListenerForEngine,
   shouldSkipIngressFrontendUser,
   sortManagedIds,
-  unionExposureBind,
+  unionExposureScopes,
   WILDCARD_BIND_ADDRESSES,
 } from "./ingress-desired-pure.ts";
+import type { ManagedSslMode } from "../../lib/managed/ssl.ts";
 import { reservedIngressHostsForServer } from "./ingress-attachments.ts";
 
 /**
@@ -51,31 +55,64 @@ test("hostgroupsForClusterIndex pairs writer/reader and rejects bad indices", ()
   assertThrows(() => hostgroupsForClusterIndex(1.5), TypeError);
 });
 
-test("unionExposureBind picks most permissive scope", () => {
-  assertEquals(unionExposureBind([]), undefined);
-  assertEquals(unionExposureBind([undefined]), undefined);
-  assertEquals(unionExposureBind(["local"]), "local");
-  assertEquals(unionExposureBind(["local", "datacenter"]), "datacenter");
-  assertEquals(unionExposureBind(["datacenter", "public", "local"]), "public");
+test("unionExposureScopes unions distinct scopes and collapses public", () => {
+  assertEquals(unionExposureScopes([]), []);
+  assertEquals(unionExposureScopes([undefined]), []);
+  assertEquals(unionExposureScopes(["local"]), ["local"]);
+  assertEquals(unionExposureScopes(["local", "datacenter"]), [
+    "datacenter",
+    "local",
+  ]);
+  assertEquals(unionExposureScopes(["datacenter", "public", "local"]), [
+    "public",
+  ]);
 });
 
-test("protocolPortForEngine prefers defaultPort then engine family", () => {
-  assertEquals(protocolPortForEngine("postgres", 5432), 15432);
-  assertEquals(protocolPortForEngine("mysql", 3306), 16306);
-  assertEquals(protocolPortForEngine("postgres", 9999), 15432);
-  assertEquals(protocolPortForEngine("mysql", 9999), 16306);
-  assertEquals(protocolPortForEngine("mariadb", 9999), 16306);
-  assertEquals(protocolPortForEngine("redis", 9999), 15432);
+test("protocolListenerForEngine returns the platform default port and family", () => {
+  assertEquals(protocolListenerForEngine("postgres", 5432), {
+    protocolPort: 15432,
+    family: "pgsql",
+  });
+  assertEquals(protocolListenerForEngine("mysql", 3306), {
+    protocolPort: 16306,
+    family: "mysql",
+  });
+  assertEquals(protocolListenerForEngine("mariadb", 3306), {
+    protocolPort: 16306,
+    family: "mysql",
+  });
   assertEquals(managedIngressPortForEngine("postgres", 5432), 15432);
   assertEquals(managedIngressPortForEngine("mysql", 3306), 16306);
 });
 
-test("managedIngressFamilyForPort accepts legacy and new listener ports", () => {
-  assertEquals(managedIngressFamilyForPort(5432), "pgsql");
-  assertEquals(managedIngressFamilyForPort(15432), "pgsql");
-  assertEquals(managedIngressFamilyForPort(3306), "mysql");
-  assertEquals(managedIngressFamilyForPort(16306), "mysql");
-  assertEquals(managedIngressFamilyForPort(9999), null);
+test("protocolListenerForEngine honours organization-configured ports", () => {
+  const ports = { postgres: 18432, mysqlFamily: 18306 };
+  assertEquals(protocolListenerForEngine("postgres", 5432, ports), {
+    protocolPort: 18432,
+    family: "pgsql",
+  });
+  assertEquals(protocolListenerForEngine("mariadb", 3306, ports), {
+    protocolPort: 18306,
+    family: "mysql",
+  });
+  // Family must follow the engine even when the org moved Postgres onto a port
+  // that used to mean MySQL.
+  assertEquals(
+    protocolListenerForEngine("postgres", 5432, {
+      postgres: 16306,
+      mysqlFamily: 15432,
+    }),
+    { protocolPort: 16306, family: "pgsql" },
+  );
+});
+
+test("managedIngressFamilyForEngine falls back to the native backend port", () => {
+  assertEquals(managedIngressFamilyForEngine("postgres", 5432), "pgsql");
+  assertEquals(managedIngressFamilyForEngine("mysql", 3306), "mysql");
+  assertEquals(managedIngressFamilyForEngine("mariadb", 3306), "mysql");
+  // Unknown engine code (newer daemon): the native port decides.
+  assertEquals(managedIngressFamilyForEngine("percona", 3306), "mysql");
+  assertEquals(managedIngressFamilyForEngine("percona", 5432), "pgsql");
 });
 
 test("principal metadata helpers", () => {
@@ -97,6 +134,47 @@ test("principal metadata helpers", () => {
   );
   assertEquals(buildIngressUserRole({ managedRoot: true }), "root");
   assertEquals(buildIngressUserRole({}), "user");
+});
+
+test("principalConnectionRole only recognizes an explicit read-only login", () => {
+  assertEquals(
+    principalConnectionRole({ connectionRole: "read-only" }),
+    "read-only",
+  );
+  assertEquals(
+    principalConnectionRole({ connectionRole: "read-write" }),
+    undefined,
+  );
+  assertEquals(principalConnectionRole({}), undefined);
+  assertEquals(principalConnectionRole(null), undefined);
+  assertEquals(principalConnectionRole("read-only"), undefined);
+  assertEquals(principalConnectionRole({ connectionRole: true }), undefined);
+});
+
+test("clusterAutoReadSplit defaults off unless the operator opts in", () => {
+  assertEquals(clusterAutoReadSplit(undefined), false);
+  assertEquals(clusterAutoReadSplit({}), false);
+  assertEquals(clusterAutoReadSplit({ autoReadSplit: false }), false);
+  assertEquals(clusterAutoReadSplit({ autoReadSplit: true }), true);
+});
+
+test("clusterRequireTls resolves override, then org default, then require", () => {
+  // Nothing configured anywhere still enforces TLS — the platform default.
+  assertEquals(clusterRequireTls(undefined, undefined), true);
+  // Org default reaches an inheriting service...
+  assertEquals(clusterRequireTls(undefined, "prefer"), false);
+  assertEquals(clusterRequireTls(undefined, "verify-full"), true);
+  // ...and a service override wins over it in both directions, so an operator
+  // can loosen one cluster in a strict org and tighten one in a lax org.
+  assertEquals(clusterRequireTls("allow", "verify-full"), false);
+  assertEquals(clusterRequireTls("require", "disable"), true);
+  // Only require/verify-* force TLS; allow and prefer leave it optional.
+  assertEquals(
+    ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"].map(
+      (mode) => clusterRequireTls(mode as ManagedSslMode, undefined),
+    ),
+    [false, false, false, true, true, true],
+  );
 });
 
 test("looksLikeIpLiteral and SAN collectors", () => {
@@ -131,7 +209,7 @@ test("looksLikeIpLiteral and SAN collectors", () => {
 test("collectProxySqlListenerSans and hierarchy merge", () => {
   const sans = collectProxySqlListenerSans({
     hostname: "  pg.example  ",
-    bindAddress: "::",
+    bindAddresses: ["::"],
     backendAddresses: ["managed-abc", "203.0.113.50", "peer.lan"],
   });
   assertEquals(sans.dnsNames, ["peer.lan", "pg.example"]);
@@ -139,7 +217,7 @@ test("collectProxySqlListenerSans and hierarchy merge", () => {
 
   const ipv6Bind = collectProxySqlListenerSans({
     hostname: null,
-    bindAddress: "2001:db8::1",
+    bindAddresses: ["2001:db8::1"],
     backendAddresses: [],
   });
   assertEquals(ipv6Bind.dnsNames, []);
@@ -150,36 +228,38 @@ test("collectProxySqlListenerSans and hierarchy merge", () => {
   assertEquals(merged.ipAddresses, sans.ipAddresses);
 });
 
-test("decideIngressBindScope covers omit/public/resolve", () => {
-  assertEquals(decideIngressBindScope([]), { kind: "omit" });
-  assertEquals(decideIngressBindScope([undefined]), { kind: "omit" });
-  assertEquals(decideIngressBindScope([undefined, undefined]), { kind: "omit" });
-  assertEquals(decideIngressBindScope(["public"]), {
+test("decideIngressBindScopes covers omit/public/resolve", () => {
+  assertEquals(decideIngressBindScopes([]), { kind: "omit" });
+  assertEquals(decideIngressBindScopes([undefined]), { kind: "omit" });
+  assertEquals(decideIngressBindScopes([undefined, undefined]), {
+    kind: "omit",
+  });
+  assertEquals(decideIngressBindScopes(["public"]), {
     kind: "public_all_interfaces",
-    address: "0.0.0.0",
+    addresses: ["0.0.0.0"],
   });
-  assertEquals(decideIngressBindScope(["local"]), {
+  assertEquals(decideIngressBindScopes(["local"]), {
     kind: "resolve",
-    bind: "local",
+    scopes: ["local"],
   });
-  assertEquals(decideIngressBindScope(["datacenter", "local"]), {
+  assertEquals(decideIngressBindScopes(["datacenter", "local"]), {
     kind: "resolve",
-    bind: "datacenter",
+    scopes: ["datacenter", "local"],
   });
 });
 
-test("decideIngressBindScope ignores disabled clusters and promotes public over local", () => {
+test("decideIngressBindScopes ignores undefined and collapses public", () => {
   assertEquals(
-    decideIngressBindScope([undefined, "local", undefined]),
-    { kind: "resolve", bind: "local" },
+    decideIngressBindScopes([undefined, "local", undefined]),
+    { kind: "resolve", scopes: ["local"] },
   );
   assertEquals(
-    decideIngressBindScope([undefined, "public", "local"]),
-    { kind: "public_all_interfaces", address: "0.0.0.0" },
+    decideIngressBindScopes([undefined, "public", "local"]),
+    { kind: "public_all_interfaces", addresses: ["0.0.0.0"] },
   );
   assertEquals(
-    decideIngressBindScope(["local", "datacenter"]),
-    { kind: "resolve", bind: "datacenter" },
+    decideIngressBindScopes(["local", "datacenter"]),
+    { kind: "resolve", scopes: ["datacenter", "local"] },
   );
 });
 

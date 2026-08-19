@@ -6,7 +6,9 @@
  * substitutes plaintext from the decrypted `credentials[]` envelope.
  */
 
+import type { ManagedSqlAccessScope } from './access-scope.ts'
 import type { ManagedSettings } from './settings.ts'
+import type { ManagedSslMode } from './ssl.ts'
 
 /** Managed engine codes — environment-scoped services. */
 export const MANAGED_ENGINE_CODES = [
@@ -38,9 +40,7 @@ export type ManagedStatus = (typeof MANAGED_STATUSES)[number]
 
 export function parseManagedStatus(value: unknown): ManagedStatus | null {
   if (typeof value !== 'string') return null
-  return (MANAGED_STATUSES as readonly string[]).includes(value)
-    ? (value as ManagedStatus)
-    : null
+  return (MANAGED_STATUSES as readonly string[]).includes(value) ? (value as ManagedStatus) : null
 }
 
 /**
@@ -49,8 +49,7 @@ export function parseManagedStatus(value: unknown): ManagedStatus | null {
  * **Plaintext passwords must never appear in a runtime spec.** The daemon
  * substitutes this token from the decrypted credentials envelope at apply time.
  */
-export const ManagedSecretPlaceholder =
-  '${TURBOPANEL_MANAGED_ROOT_PASSWORD}' as const
+export const ManagedSecretPlaceholder = '${TURBOPANEL_MANAGED_ROOT_PASSWORD}' as const
 
 export type ManagedSecretPlaceholder = typeof ManagedSecretPlaceholder
 
@@ -82,11 +81,17 @@ export type ManagedRuntimeHealthcheck = {
   start_period: string
 }
 
+/**
+ * Echoed onto the runtime spec for diagnostics. The engine container never
+ * publishes a client listener regardless of `scope` — the daemon resolves
+ * managed apply to loopback and clients enter through shared ProxySQL, which is
+ * the only component that acts on the scope (see `access-scope.ts`).
+ */
 export type ManagedExposure = {
   enabled: boolean
   protocol: 'tcp' | 'udp' | 'http'
   containerPort: number
-  bind?: 'public' | 'datacenter' | 'local'
+  scope?: ManagedSqlAccessScope
 }
 
 /**
@@ -194,19 +199,25 @@ export type BuildConnectionInfoInput = {
   port: number
   database: string
   username: string
-  settings: ManagedSettings
+  /**
+   * **Effective** client TLS mode (service override → org default → platform
+   * fallback), already resolved by the caller. Engines render the parameter
+   * spelling; they never look at inheritance.
+   */
+  sslMode: ManagedSslMode
 }
 
 /** Allowlisted artifact extensions for managed backup dumps. */
 export const MANAGED_BACKUP_ARTIFACT_EXTENSIONS = ['dump', 'sql'] as const
 
-export type ManagedBackupArtifactExtension =
-  (typeof MANAGED_BACKUP_ARTIFACT_EXTENSIONS)[number]
+export type ManagedBackupArtifactExtension = (typeof MANAGED_BACKUP_ARTIFACT_EXTENSIONS)[number]
 
 export function isManagedBackupArtifactExtension(
   value: string,
 ): value is ManagedBackupArtifactExtension {
-  return (MANAGED_BACKUP_ARTIFACT_EXTENSIONS as readonly string[]).includes(value)
+  return (MANAGED_BACKUP_ARTIFACT_EXTENSIONS as readonly string[]).includes(
+    value,
+  )
 }
 
 /**
@@ -244,14 +255,19 @@ export type ManagedBindingDescriptor = {
     database: string
     user: string
     password: string
-    /** Optional SSL mode key (`PGSSLMODE`); value is forced to verify-full. */
+    /**
+     * Optional SSL mode key (`PGSSLMODE`); its value is the effective
+     * {@link ManagedSslMode} rendered through the engine's `formatSslMode`.
+     */
     sslMode?: string
   }
   /**
    * Build a plaintext DSN with the real password (secrets materialization).
-   * Forces TLS verify semantics (`sslmode=verify-full` / MySQL-family equivalent).
+   * TLS behavior follows the resolved `sslMode` on the input.
    */
-  buildBindingDsn(input: BuildConnectionInfoInput & { password: string }): string
+  buildBindingDsn(
+    input: BuildConnectionInfoInput & { password: string },
+  ): string
 }
 
 export type ManagedEngineSpec = {
@@ -266,6 +282,12 @@ export type ManagedEngineSpec = {
   parseSettings(value: unknown): ManagedSettings | null
   buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec
   buildConnectionInfo(input: BuildConnectionInfoInput): ManagedConnectionInfo
+  /**
+   * Engine-native spelling of a resolved TLS mode (Postgres `sslmode=` values
+   * are 1:1; MySQL-family `ssl-mode=` uses `REQUIRED` / `VERIFY_IDENTITY` /
+   * …). Keeps driver-parameter vocabulary in the engine module.
+   */
+  formatSslMode(mode: ManagedSslMode): string
   userOperations: ManagedUserOperations
   /** Present only when the engine supports backup/restore. */
   backup?: ManagedBackupDescriptor

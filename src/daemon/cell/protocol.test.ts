@@ -43,13 +43,21 @@ it("parseDaemonMessage returns null for invalid JSON", () => {
   assertEquals(parseDaemonMessage("not-json"), null);
 });
 
-it("validateDaemonInboundFrame accepts a valid heartbeat", () => {
-  const raw = JSON.stringify({
-    type: "heartbeat",
-    at: "2020-01-01T00:00:00.000Z",
-  });
-  const result = validateDaemonInboundFrame(raw);
+it("validateDaemonInboundFrame accepts managed-ha-event", () => {
+  const result = validateDaemonInboundFrame(JSON.stringify({
+    type: "managed-ha-event",
+    managedId: "00000000-0000-4000-8000-000000000001",
+    at: VALID_AT,
+  }));
   assertEquals(result.ok, true);
+});
+
+it("validateDaemonInboundFrame rejects managed-ha-event without managedId", () => {
+  const result = validateDaemonInboundFrame(JSON.stringify({
+    type: "managed-ha-event",
+    at: VALID_AT,
+  }));
+  assertEquals(result.ok, false);
 });
 
 it("validateDaemonInboundFrame rejects oversized frames", () => {
@@ -757,6 +765,14 @@ it("wireMessageToInboundEnvelope returns null for hello and heartbeat", () => {
     wireMessageToInboundEnvelope({ type: "heartbeat", at: VALID_AT }),
     null,
   );
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "managed-ha-event",
+      managedId: "00000000-0000-4000-8000-000000000001",
+      at: VALID_AT,
+    }),
+    null,
+  );
 });
 
 it("cell ping/pong constants and timing exports are stable", () => {
@@ -766,6 +782,10 @@ it("cell ping/pong constants and timing exports are stable", () => {
   assertEquals(DAEMON_OFFLINE_SWEEP_MS, 150_000);
   assertEquals(
     (DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has("hello"),
+    true,
+  );
+  assertEquals(
+    (DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has("managed-ha-event"),
     true,
   );
   assertEquals(

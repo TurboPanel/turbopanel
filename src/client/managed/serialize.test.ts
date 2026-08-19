@@ -1,10 +1,6 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
-import {
-  buildConnectionPayload,
-  parseManagedResidual,
-  serializeManagedRow,
-} from './serialize.ts'
+import { buildConnectionPayload, parseManagedResidual, serializeManagedRow } from './serialize.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -44,7 +40,7 @@ test('serializeManagedRow projects residual host/port and strips them from metad
     {
       id: 'managed-1',
       environmentId: 'env-1',
-      name: 'Postgres',
+      displayName: 'Postgres',
       engine: 'postgres',
       status: 'ready',
       metadata: {
@@ -96,15 +92,12 @@ test('serializeManagedRow defaults unknown engine/status and null host/port', ()
 })
 
 test('buildConnectionPayload delegates to the engine spec', () => {
-  const settings = postgresEngineSpec.parseSettings(postgresEngineSpec.defaultSettings)
-  if (!settings) throw new TypeError('failed to parse default postgres settings')
-
   const info = buildConnectionPayload(postgresEngineSpec, {
     host: 'db.example',
     port: 5432,
     database: 'app',
     username: 'app_user',
-    settings,
+    sslMode: 'verify-full',
   })
 
   assertEquals(info.host, 'db.example')
@@ -112,9 +105,24 @@ test('buildConnectionPayload delegates to the engine spec', () => {
   assertEquals(info.database, 'app')
   assertEquals(info.username, 'app_user')
   assertEquals(info.dsn.includes('***'), true)
-  // Default settings enable TLS, and verify-full matches the SANs issued for
-  // the ProxySQL listener certificate (container name + any exposed address).
+  // verify-full matches the SANs issued for the ProxySQL listener certificate
+  // (container name + any exposed address).
   assertEquals(info.dsn.includes('sslmode=verify-full'), true)
+})
+
+test('buildConnectionPayload renders whatever effective mode it is handed', () => {
+  // The caller resolves service override → org default → platform; the payload
+  // builder must not re-derive or clamp it.
+  assertEquals(
+    buildConnectionPayload(postgresEngineSpec, {
+      host: 'db.example',
+      port: 5432,
+      database: 'app',
+      username: 'app_user',
+      sslMode: 'prefer',
+    }).dsn.includes('sslmode=prefer'),
+    true,
+  )
 })
 
 test('parseManagedResidual ignores wrong-typed residual fields', () => {
@@ -134,7 +142,7 @@ test('serializeManagedRow keeps rootPrincipalId without host when only that resi
     {
       id: 'managed-3',
       environmentId: 'env-3',
-      name: 'Postgres',
+      displayName: 'Postgres',
       engine: 'postgres',
       status: 'stopped',
       metadata: { rootPrincipalId: 'prin-only' },

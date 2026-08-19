@@ -7,14 +7,14 @@
  * leniency is unsafe.
  */
 
-import type { HostingBindScope } from '../hosting-options.ts'
-import {
-  clampServiceResources,
-  type ResourceLimits,
-} from '../resource-limits.ts'
+import { clampServiceResources, type ResourceLimits } from '../resource-limits.ts'
 import type { ServiceOptions } from '../service-options.ts'
-
-const BIND_SCOPES = new Set<HostingBindScope>(['public', 'datacenter', 'local'])
+import {
+  isManagedSqlAccessScope,
+  type ManagedSqlAccessScope,
+} from './access-scope.ts'
+import { managedAllowedImagesForEngine } from './releases.ts'
+import { type ManagedSslMode, parseManagedSslMode } from './ssl.ts'
 
 /** Compose Spec restart policies. */
 const RESTART_POLICIES = new Set([
@@ -55,8 +55,7 @@ const ALLOWED_DOCKER_KEYS = new Set([
   'extraEnv',
 ])
 
-/** Hosting bind scopes — published ports are shared ProxySQL listeners (5432/3306). */
-// (former RESERVED_PUBLISHED_PORTS removed — managed no longer publishes unique ports)
+/** Client access scopes — shared ProxySQL listeners use org ingress ports (15432/16306). */
 
 const MAX_IMAGE_REF_LENGTH = 256
 /**
@@ -64,12 +63,12 @@ const MAX_IMAGE_REF_LENGTH = 256
  * engines may narrow to an allowed repository set later. Validated in steps
  * (name path, optional tag, optional digest) to keep each pattern simple.
  */
-const OCI_NAME_SEGMENT_RE =
-  /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$/
+const OCI_NAME_SEGMENT_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$/
 const OCI_TAG_RE = /^\w[a-zA-Z0-9._-]{0,127}$/
 const OCI_DIGEST_RE = /^sha256:[a-f0-9]{64}$/
 
 const MAX_ENGINE_CONFIG_BYTES = 16 * 1024
+// deno-lint-ignore no-control-regex -- intentional control-char reject list
 const CONTROL_CHAR_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/
 
 /** Bound on `settings.backups.retentionKeep` regardless of engine max. */
@@ -147,37 +146,27 @@ export function getManagedReservedEnvKeys(engine: string): ReadonlySet<string> {
 }
 
 /**
- * Approved managed-engine image references. Every surface that can
- * ultimately produce a `settings.image` value — this settings parser, the
- * `managed.apply` command payload parser (`parseManagedApplyPayload` in
- * `../commands/schemas.ts`), the daemon mirror
- * (`turbopaneld/src/instance/commands/contracts.ts`), and the UI image picker
- * (`ui/src/lib/managed-services.ts`) — must reject anything outside this
- * list. An operator (or a replayed/forged command payload that skipped the
- * settings save path) must never be able to run an unsupported or EOL major
- * version.
+ * Approved managed-engine image references, **derived** from the release
+ * catalog (`./releases.ts`) so a version series is added or retired in one
+ * place. Every surface that can ultimately produce a `settings.image` value —
+ * this settings parser, the `managed.apply` command payload parser
+ * (`parseManagedApplyPayload` in `../commands/schemas.ts`), the daemon mirror
+ * (`turbopaneld/src/instance/commands/contracts.ts`), and the UI version
+ * picker (`ui/src/lib/managed-releases.ts`) — must reject anything outside
+ * these lists. An operator (or a replayed/forged command payload that skipped
+ * the settings save path) must never be able to run an unsupported or EOL
+ * major version.
  *
- * Neither MySQL nor MariaDB publish an official Alpine-based image (MySQL
- * dropped its Alpine variant after 8.0; MariaDB has never shipped one), so
- * both allowlists use the Docker Official Image's default Debian-based tag,
- * with the vendor-published Oracle Linux (MySQL) / UBI (MariaDB) variant
- * listed as the documented alternative. PostgreSQL does publish an official
- * Alpine variant, which stays the default for its smaller footprint.
+ * Ordering is catalog order (default series first, default variant first), so
+ * the head of each list is that engine's default image.
  */
-export const POSTGRES_ALLOWED_IMAGES: readonly string[] = [
-  'docker.io/library/postgres:18-alpine',
-  'docker.io/library/postgres:18',
-]
+export const POSTGRES_ALLOWED_IMAGES: readonly string[] =
+  managedAllowedImagesForEngine('postgres') ?? []
 
-export const MYSQL_ALLOWED_IMAGES: readonly string[] = [
-  'docker.io/library/mysql:9.7',
-  'docker.io/library/mysql:9.7-oraclelinux9',
-]
+export const MYSQL_ALLOWED_IMAGES: readonly string[] = managedAllowedImagesForEngine('mysql') ?? []
 
-export const MARIADB_ALLOWED_IMAGES: readonly string[] = [
-  'docker.io/library/mariadb:12.3',
-  'docker.io/library/mariadb:12.3-ubi',
-]
+export const MARIADB_ALLOWED_IMAGES: readonly string[] = managedAllowedImagesForEngine('mariadb') ??
+  []
 
 const MANAGED_ALLOWED_IMAGES_BY_ENGINE: Record<string, readonly string[]> = {
   postgres: POSTGRES_ALLOWED_IMAGES,
@@ -186,7 +175,9 @@ const MANAGED_ALLOWED_IMAGES_BY_ENGINE: Record<string, readonly string[]> = {
 }
 
 /** Approved image references for `engine`, or `undefined` when the engine has no curated allowlist yet. */
-export function getManagedAllowedImages(engine: string): readonly string[] | undefined {
+export function getManagedAllowedImages(
+  engine: string,
+): readonly string[] | undefined {
   return MANAGED_ALLOWED_IMAGES_BY_ENGINE[engine]
 }
 
@@ -212,24 +203,49 @@ export type ManagedBackupSettings = {
   retentionKeep?: number
 }
 
+/**
+ * ProxySQL routing policy for this cluster.
+ *
+ * `autoReadSplit` is off unless the operator turns it on: a blanket `^SELECT`
+ * query rule silently changes read-after-write and locking-read semantics for
+ * an application that never asked for it. The safe path is a dedicated
+ * `read-only` login (`ManagedConnectionRole`), which lands on the reader
+ * hostgroup by default hostgroup rather than by regex.
+ */
+export type ManagedRoutingSettings = {
+  autoReadSplit?: boolean
+}
+
 export type ManagedSettings = {
   image?: string
-  ssl: { enabled: boolean }
+  /**
+   * Client-facing TLS policy at the ProxySQL boundary. `mode` omitted means
+   * **inherit the organization default** (then the platform `require`);
+   * resolve with `resolveManagedSslMode` rather than reading it directly.
+   * Engine-side TLS is unconditional — see `ssl.ts`.
+   */
+  ssl: { mode?: ManagedSslMode }
+  routing?: ManagedRoutingSettings
   resources?: NonNullable<ServiceOptions['resources']>
   dockerOptions?: ManagedDockerOptions
   /** Free-form engine-native config text (e.g. postgresql.conf snippet). */
   engineConfig?: string
+  /**
+   * Where clients may reach this cluster through the shared ProxySQL frontend.
+   * `scope` omitted while enabled means {@link DEFAULT_MANAGED_SQL_ACCESS_SCOPE}.
+   * Never a per-member engine publish — see `access-scope.ts`.
+   */
   exposure: {
     enabled: boolean
-    bind?: HostingBindScope
+    scope?: ManagedSqlAccessScope
   }
   /** Only meaningful for engines with a `backup` descriptor. */
   backups?: ManagedBackupSettings
 }
 
 export const DEFAULT_MANAGED_SETTINGS: ManagedSettings = {
-  /** Default on for new/undefined settings; ProxySQL listener enforcement is a later phase. */
-  ssl: { enabled: true },
+  /** No override — inherit the org default, then `require`. */
+  ssl: {},
   exposure: { enabled: false },
 }
 
@@ -272,10 +288,36 @@ function parseImage(value: unknown): string | null | undefined {
 }
 
 function parseSsl(value: unknown): ManagedSettings['ssl'] | null {
-  if (value === undefined) return DEFAULT_MANAGED_SETTINGS.ssl
+  if (value === undefined) return { ...DEFAULT_MANAGED_SETTINGS.ssl }
   if (!isRecord(value)) return null
-  if (typeof value.enabled !== 'boolean') return null
-  return { enabled: value.enabled }
+  for (const key of Object.keys(value)) {
+    if (key !== 'mode' && key !== 'enabled') return null
+  }
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
+    return null
+  }
+  const mode = parseManagedSslMode(value.mode)
+  if (mode === null) return null
+  if (mode !== undefined) {
+    return { mode }
+  }
+  if (value.enabled !== undefined) {
+    return { mode: value.enabled ? 'require' : 'disable' }
+  }
+  return {}
+}
+
+function parseRouting(
+  value: unknown,
+): ManagedRoutingSettings | null | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) return null
+  for (const key of Object.keys(value)) {
+    if (key !== 'autoReadSplit') return null
+  }
+  if (value.autoReadSplit === undefined) return undefined
+  if (typeof value.autoReadSplit !== 'boolean') return null
+  return { autoReadSplit: value.autoReadSplit }
 }
 
 function readOptionalNonNegativeNumber(value: unknown): number | undefined {
@@ -387,7 +429,9 @@ function parseDockerOptionsField(
 ): boolean {
   switch (key) {
     case 'restart': {
-      if (typeof value !== 'string' || !RESTART_POLICIES.has(value)) return false
+      if (typeof value !== 'string' || !RESTART_POLICIES.has(value)) {
+        return false
+      }
       out.restart = value
       return true
     }
@@ -458,6 +502,14 @@ function parseEngineConfig(value: unknown): string | null | undefined {
   return normalizeEngineConfig(value)
 }
 
+function migrateLegacyExposureBind(
+  value: unknown,
+): ManagedSqlAccessScope | null {
+  if (typeof value !== 'string') return null
+  if (isManagedSqlAccessScope(value)) return value
+  return null
+}
+
 function parseExposure(value: unknown): ManagedSettings['exposure'] | null {
   if (value === undefined) return { ...DEFAULT_MANAGED_SETTINGS.exposure }
   if (!isRecord(value)) return null
@@ -465,11 +517,13 @@ function parseExposure(value: unknown): ManagedSettings['exposure'] | null {
 
   const exposure: ManagedSettings['exposure'] = { enabled: value.enabled }
 
-  if (value.bind !== undefined) {
-    if (typeof value.bind !== 'string' || !BIND_SCOPES.has(value.bind as HostingBindScope)) {
-      return null
-    }
-    exposure.bind = value.bind as HostingBindScope
+  if (value.scope !== undefined) {
+    if (!isManagedSqlAccessScope(value.scope)) return null
+    exposure.scope = value.scope
+  } else if (value.bind !== undefined) {
+    const migrated = migrateLegacyExposureBind(value.bind)
+    if (migrated === null) return null
+    exposure.scope = migrated
   }
 
   return exposure
@@ -490,7 +544,9 @@ export function parseBackupSettings(
   const backups: ManagedBackupSettings = {}
   if (value.retentionKeep !== undefined) {
     const retentionKeep = readOptionalPositiveInt(value.retentionKeep)
-    if (retentionKeep === undefined || retentionKeep > MAX_BACKUP_RETENTION_KEEP) {
+    if (
+      retentionKeep === undefined || retentionKeep > MAX_BACKUP_RETENTION_KEEP
+    ) {
       return null
     }
     backups.retentionKeep = retentionKeep
@@ -542,6 +598,9 @@ function parseManagedSettingsRecord(
   const ssl = parseSsl(value.ssl)
   if (ssl === null) return null
 
+  const routing = parseRouting(value.routing)
+  if (routing === null) return null
+
   const resources = parseResources(value.resources)
   if (resources === null) return null
 
@@ -564,6 +623,7 @@ function parseManagedSettingsRecord(
     ssl,
     exposure,
     image,
+    routing,
     resources,
     dockerOptions,
     engineConfig,
@@ -575,6 +635,7 @@ function assembleManagedSettings(parts: {
   ssl: ManagedSettings['ssl']
   exposure: ManagedSettings['exposure']
   image: string | undefined
+  routing: ManagedRoutingSettings | undefined
   resources: ManagedSettings['resources'] | undefined
   dockerOptions: ManagedSettings['dockerOptions'] | undefined
   engineConfig: string | undefined
@@ -584,12 +645,15 @@ function assembleManagedSettings(parts: {
     ssl: parts.ssl,
     exposure: parts.exposure,
   }
+  if (parts.routing !== undefined) settings.routing = parts.routing
   if (parts.image !== undefined) settings.image = parts.image
   if (parts.resources !== undefined) settings.resources = parts.resources
   if (parts.dockerOptions !== undefined) {
     settings.dockerOptions = parts.dockerOptions
   }
-  if (parts.engineConfig !== undefined) settings.engineConfig = parts.engineConfig
+  if (parts.engineConfig !== undefined) {
+    settings.engineConfig = parts.engineConfig
+  }
   if (parts.backups !== undefined) settings.backups = parts.backups
   return settings
 }

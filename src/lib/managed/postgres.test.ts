@@ -1,12 +1,10 @@
 import { assertEquals } from '@std/assert'
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
-import {
-  ManagedSecretPlaceholder,
-  type ManagedSettings,
-} from './index.ts'
+import { ManagedSecretPlaceholder } from './index.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import type { PostgresManagedSettings } from './postgres.ts'
 import { POSTGRES_ALLOWED_IMAGES } from './settings.ts'
+import { MANAGED_SSL_MODES } from './ssl.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -50,12 +48,18 @@ test('parseSettings accepts every approved image and rejects everything else', (
     if (!parsed) throw new TypeError(`expected ${image} to be accepted`)
     assertEquals(parsed.image, image)
   }
+  // Below the oldest catalog series (upstream still supports 14; TurboPanel
+  // stops at 15 to bound the replication test matrix).
   assertEquals(
-    postgresEngineSpec.parseSettings({ image: 'docker.io/library/postgres:17' }),
+    postgresEngineSpec.parseSettings({
+      image: 'docker.io/library/postgres:14',
+    }),
     null,
   )
   assertEquals(
-    postgresEngineSpec.parseSettings({ image: 'docker.io/library/postgres:latest' }),
+    postgresEngineSpec.parseSettings({
+      image: 'docker.io/library/postgres:latest',
+    }),
     null,
   )
   assertEquals(
@@ -68,7 +72,7 @@ test('runtime spec has no ports key and container port stays 5432', () => {
   const spec = postgresEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
     settings: defaultSettings({
-      exposure: { enabled: true, bind: 'public' },
+      exposure: { enabled: true, scope: 'public' },
     }),
     rootUsername: 'postgres',
   })
@@ -136,7 +140,6 @@ test('POSTGRES_PASSWORD is placeholder and serialized spec has no plaintext', ()
 test('postgresql.conf is base plus appended operator snippet', () => {
   const settings = defaultSettings({
     engineConfig: 'log_min_duration_statement = 250\n',
-    ssl: { enabled: false },
   })
   const spec = postgresEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
@@ -153,14 +156,14 @@ test('postgresql.conf is base plus appended operator snippet', () => {
     conf.contents.includes('log_min_duration_statement = 250'),
     true,
   )
-  assertEquals(conf.contents.includes('ssl = on'), false)
+  assertEquals(conf.contents.includes('ssl = on'), true)
   assertEquals(conf.contents.includes('max_replication_slots = 3'), true)
 })
 
 test('max_replication_slots scales with memberCount plus headroom', () => {
   const spec = postgresEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
-    settings: defaultSettings({ ssl: { enabled: false } }),
+    settings: defaultSettings(),
     rootUsername: 'postgres',
     memberCount: 4,
   })
@@ -169,25 +172,24 @@ test('max_replication_slots scales with memberCount plus headroom', () => {
   assertEquals(conf.contents.includes('max_replication_slots = 6'), true)
 })
 
-test('ssl = on and tlsMaterial only when enabled', () => {
-  const off = postgresEngineSpec.buildRuntimeSpec({
-    managedId: '11111111-1111-1111-1111-111111111111',
-    settings: defaultSettings({ ssl: { enabled: false } }),
-    rootUsername: 'postgres',
-  })
-  assertEquals(off.tlsMaterial, undefined)
-
-  const on = postgresEngineSpec.buildRuntimeSpec({
-    managedId: '11111111-1111-1111-1111-111111111111',
-    settings: defaultSettings({ ssl: { enabled: true } }),
-    rootUsername: 'postgres',
-  })
-  const conf = on.configFiles.find((f) => f.path === 'postgresql.conf')
-  if (!conf) throw new TypeError('missing postgresql.conf')
-  assertEquals(conf.contents.includes('ssl = on'), true)
-  assertEquals(on.tlsMaterial?.selfSigned, true)
-  assertEquals(on.tlsMaterial?.certPath, 'tls/server.crt')
-  assertEquals(on.tlsMaterial?.keyPath, 'tls/server.key')
+test('engine TLS is unconditional, independent of the client SSL mode', () => {
+  // `ManagedSslMode` is a ProxySQL *frontend* policy. The engine must always
+  // hold cert material: `pg_hba.conf` publishes only `hostssl` rules and
+  // ProxySQL dials backends with `use_ssl=1`, so a plaintext engine would
+  // strand the backend leg no matter what a client is allowed to do.
+  for (const mode of MANAGED_SSL_MODES) {
+    const spec = postgresEngineSpec.buildRuntimeSpec({
+      managedId: '11111111-1111-1111-1111-111111111111',
+      settings: defaultSettings({ ssl: { mode } }),
+      rootUsername: 'postgres',
+    })
+    const conf = spec.configFiles.find((f) => f.path === 'postgresql.conf')
+    if (!conf) throw new TypeError('missing postgresql.conf')
+    assertEquals(conf.contents.includes('ssl = on'), true)
+    assertEquals(spec.tlsMaterial?.selfSigned, true)
+    assertEquals(spec.tlsMaterial?.certPath, 'tls/server.crt')
+    assertEquals(spec.tlsMaterial?.keyPath, 'tls/server.key')
+  }
 })
 
 test('resource mapping matches applyResourcesToComposeService', () => {
@@ -211,29 +213,25 @@ test('resource mapping matches applyResourcesToComposeService', () => {
   assertEquals(spec.service.deploy, expected.deploy)
 })
 
-test('postgres defaultSettings inherit ssl.enabled=true', () => {
-  const defaults = postgresEngineSpec.defaultSettings
-  assertEquals(defaults.ssl.enabled, true)
-  const settings = defaultSettings()
-  assertEquals(settings.ssl.enabled, true)
-  const info = postgresEngineSpec.buildConnectionInfo({
-    host: 'db.example',
-    port: 5432,
-    database: 'appdb',
-    username: 'postgres',
-    settings: settings as ManagedSettings,
-  })
-  assertEquals(info.dsn.includes('sslmode=verify-full'), true)
+test('postgres defaultSettings leave ssl.mode unset so the org default applies', () => {
+  assertEquals(postgresEngineSpec.defaultSettings.ssl.mode, undefined)
+  assertEquals(defaultSettings().ssl.mode, undefined)
+})
+
+test('formatSslMode renders libpq sslmode spellings verbatim', () => {
+  assertEquals(
+    MANAGED_SSL_MODES.map((mode) => postgresEngineSpec.formatSslMode(mode)),
+    [...MANAGED_SSL_MODES],
+  )
 })
 
 test('buildConnectionInfo masks the password', () => {
-  const settings = defaultSettings({ ssl: { enabled: true } }) as ManagedSettings
   const info = postgresEngineSpec.buildConnectionInfo({
     host: 'db.example',
     port: 5432,
     database: 'appdb',
     username: 'postgres',
-    settings,
+    sslMode: 'verify-full',
   })
   assertEquals(info.dsn.includes('***'), true)
   assertEquals(info.dsn.includes('sslmode=verify-full'), true)
@@ -349,8 +347,7 @@ test('parseSettings rejects engineConfig overriding platform-owned path/control 
 
 test('parseSettings still accepts harmless operator settings and they survive to the rendered conf', () => {
   const settings = postgresEngineSpec.parseSettings({
-    engineConfig:
-      "log_min_duration_statement = 250\nmax_connections = 200\nwork_mem = '8MB'\n",
+    engineConfig: "log_min_duration_statement = 250\nmax_connections = 200\nwork_mem = '8MB'\n",
   }) as PostgresManagedSettings | null
   if (!settings) throw new TypeError('expected postgres settings')
 
@@ -394,7 +391,9 @@ test('parseSettings rejects invalid initialDatabase and non-object input', () =>
 })
 
 test('parseSettings defaults initialDatabase and rejects blank conf lines that are not settings', () => {
-  const defaults = postgresEngineSpec.parseSettings({}) as PostgresManagedSettings | null
+  const defaults = postgresEngineSpec.parseSettings({}) as
+    | PostgresManagedSettings
+    | null
   if (!defaults) throw new TypeError('expected defaults')
   assertEquals(defaults.initialDatabase, 'postgres')
 
@@ -411,11 +410,14 @@ test('parseSettings accepts comment-only engineConfig', () => {
     engineConfig: '# tuning notes\n\n',
   })
   if (!settings) throw new TypeError('expected settings')
-  assertEquals((settings as PostgresManagedSettings).engineConfig, '# tuning notes\n\n')
+  assertEquals(
+    (settings as PostgresManagedSettings).engineConfig,
+    '# tuning notes\n\n',
+  )
 })
 
 test('buildPlatformPgHba grants replication for co-resident peers and /128 for IPv6', () => {
-  const settings = defaultSettings({ ssl: { enabled: true } })
+  const settings = defaultSettings()
   const spec = postgresEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
     settings,
@@ -460,7 +462,7 @@ test('buildPlatformPgHba grants replication for co-resident peers and /128 for I
 })
 
 test('buildPlatformPgHba scopes a public replica to its own address', () => {
-  const settings = defaultSettings({ ssl: { enabled: true } })
+  const settings = defaultSettings()
   const spec = postgresEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
     settings,
@@ -491,13 +493,15 @@ test('buildPlatformPgHba scopes a public replica to its own address', () => {
   assertEquals(hba.includes('0.0.0.0/0'), false)
   assertEquals(hba.includes('::/0'), false)
   assertEquals(
-    hba.includes('host    all             all             all                     reject'),
+    hba.includes(
+      'host    all             all             all                     reject',
+    ),
     true,
   )
 })
 
 test('standby primary_conninfo has no passfile (no durable auth plaintext)', () => {
-  const settings = defaultSettings({ ssl: { enabled: true } })
+  const settings = defaultSettings()
   const spec = postgresEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
     settings,
@@ -521,7 +525,10 @@ test('standby primary_conninfo has no passfile (no durable auth plaintext)', () 
   const conf = spec.configFiles.find((f) => f.path === 'postgresql.conf')?.contents ?? ''
   assertEquals(conf.includes('passfile='), false)
   assertEquals(conf.includes('sslmode=verify-full'), true)
-  assertEquals(conf.includes('host=managed-11111111-1111-1111-1111-111111111111'), true)
+  assertEquals(
+    conf.includes('host=managed-11111111-1111-1111-1111-111111111111'),
+    true,
+  )
   assertEquals(conf.includes('hostaddr=203.0.113.10'), true)
   // No durable auth/ volume mount for standby.
   const volumes = spec.service.volumes as string[]
@@ -538,7 +545,7 @@ test('buildRuntimeSpec applies dockerOptions onto compose service and env', () =
       labels: { 'app.tier': 'db' },
       extraEnv: { MY_FLAG: '1' },
     },
-    exposure: { enabled: true, bind: 'local' },
+    exposure: { enabled: true, scope: 'local' },
     resources: { memoryBytes: 256 * 1024 * 1024 },
   })
   const spec = postgresEngineSpec.buildRuntimeSpec({
@@ -558,7 +565,7 @@ test('buildRuntimeSpec applies dockerOptions onto compose service and env', () =
     '1',
   )
   assertEquals(spec.env.MY_FLAG, '1')
-  assertEquals(spec.exposure.bind, 'local')
+  assertEquals(spec.exposure.scope, 'local')
   assertEquals(
     spec.configFiles[0]?.contents.includes("shared_buffers = '"),
     true,
@@ -601,15 +608,14 @@ test(
   },
 )
 
-test('buildConnectionInfo uses sslmode=prefer when ssl disabled', () => {
-  const settings = defaultSettings({ ssl: { enabled: false } }) as ManagedSettings
+test('buildConnectionInfo renders the mode it is given, including disable', () => {
   const info = postgresEngineSpec.buildConnectionInfo({
     host: 'db.example',
     port: 5432,
     database: 'appdb',
     username: 'app_user',
-    settings,
+    sslMode: 'disable',
   })
-  assertEquals(info.dsn.includes('sslmode=prefer'), true)
+  assertEquals(info.dsn.includes('sslmode=disable'), true)
   assertEquals(info.dsn.includes(encodeURIComponent('app_user')), true)
 })

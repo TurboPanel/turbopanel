@@ -13,11 +13,13 @@
  *   server (identity is `project_id` + `server_id`, never
  *   `environment.metadata.component`)
  * - `service.composeServiceName = 'traefik'` — hosting ingress service
+ * - `project.metadata.component = 'managed-ha'` — shared Orchestrator project
  * - `service.composeServiceName = 'proxysql'` — managed ingress service
+ * - `service.composeServiceName = 'orchestrator'` — managed HA service
  * - hosting container via `ensureServiceIngressContainerAllocation` (`role='ingress'`,
  *   name `<serviceId>-in`)
- * - managed-ingress container via `allocateEnvironmentContainers` (`role='turbopanel'`,
- *   name `<serviceId>-sql`)
+ * - managed-ha container via `allocateEnvironmentContainers` (`role='turbopanel'`,
+ *   name `<serviceId>-ha`)
  *
  * Self-host stack (co-located instance only):
  *
@@ -53,7 +55,7 @@ import {
   type ContainerServiceSpec,
   ensureServiceIngressContainerAllocation,
 } from '../environments/allocate-containers.ts'
-import { managedIngressContainerNameFromService } from '../../lib/naming.ts'
+import { managedHaContainerNameFromService, managedIngressContainerNameFromService } from '../../lib/naming.ts'
 
 export const SYSTEM_HOSTING_INGRESS_COMPONENT = 'hosting-ingress'
 export const SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME = 'traefik'
@@ -64,6 +66,11 @@ export const SYSTEM_PROJECT_DISPLAY_NAME = 'Server Ingress'
 export const SYSTEM_MANAGED_INGRESS_COMPONENT = 'managed-ingress'
 export const SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME = 'proxysql'
 export const SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME = 'Database Ingress'
+
+/** Per-org Orchestrator Raft group (managed SQL HA). */
+export const SYSTEM_MANAGED_HA_COMPONENT = 'managed-ha'
+export const SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME = 'orchestrator'
+export const SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME = 'Database HA'
 
 /** Self-host project/environment identity key — not a wire `SystemComponentKey`. */
 export const SYSTEM_SELF_HOST_COMPONENT = 'turbopanel'
@@ -551,6 +558,163 @@ export async function findManagedIngressHierarchy(
         eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
         sql`${project.metadata}->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}`,
         eq(service.composeServiceName, SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME),
+      ),
+    )
+    .limit(1)
+  const row = rows[0]
+  if (!row) return null
+  return {
+    workspaceId: row.workspaceId,
+    projectId: row.projectId,
+    environmentId: row.environmentId,
+    serviceId: row.serviceId,
+    containerRowId: row.containerRowId,
+    containerName: row.containerName,
+  }
+}
+
+/**
+ * Shared managed-ha (Orchestrator) project under the system workspace.
+ *
+ * Race-safe via partial unique `uniq_project_workspace_system_component`.
+ */
+async function ensureManagedHaProject(
+  tx: Db,
+  workspaceId: string,
+): Promise<string> {
+  const metadataJson = JSON.stringify({
+    type: 'docker-compose',
+    component: SYSTEM_MANAGED_HA_COMPONENT,
+  })
+
+  const inserted = await tx.execute<{ id: string }>(sql`
+    INSERT INTO project (workspace_id, name, metadata)
+    VALUES (
+      ${workspaceId}::uuid,
+      ${SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME},
+      ${metadataJson}::jsonb
+    )
+    ON CONFLICT (workspace_id, (metadata->>'component'))
+      WHERE (metadata->>'component') IS NOT NULL
+    DO NOTHING
+    RETURNING id
+  `)
+  if (inserted[0]?.id) return inserted[0].id
+
+  const rows = await tx.execute<{ id: string }>(sql`
+    SELECT id
+    FROM project
+    WHERE workspace_id = ${workspaceId}::uuid
+      AND metadata->>'component' = ${SYSTEM_MANAGED_HA_COMPONENT}
+    LIMIT 1
+  `)
+  const existing = rows[0]?.id
+  if (!existing) {
+    throw new Error(
+      `managed-ha project missing after insert race (workspace=${workspaceId})`,
+    )
+  }
+  return existing
+}
+
+async function ensureManagedHaHierarchyImpl(
+  db: Db,
+  params: { organizationId: string; serverId: string },
+): Promise<SystemHierarchyIds> {
+  return await db.transaction(async (tx) => {
+    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
+    const projectId = await ensureManagedHaProject(tx, workspaceId)
+    const [serverRow] = await tx
+      .select({ displayName: server.name })
+      .from(server)
+      .where(eq(server.id, params.serverId))
+      .limit(1)
+    const environmentDisplayName =
+      serverRow?.displayName?.trim() || SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME
+    const environmentId = await ensureServerEnvironment(
+      tx,
+      projectId,
+      params.serverId,
+      environmentDisplayName,
+    )
+    const serviceId = await ensureComposeService(
+      tx,
+      environmentId,
+      SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
+    )
+
+    const allocations = await allocateEnvironmentContainers(tx, {
+      environmentId,
+      serverId: params.serverId,
+      containerServices: [
+        {
+          serviceId,
+          composeServiceName: SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
+          instances: 1,
+          role: 'turbopanel',
+          explicitContainerName: managedHaContainerNameFromService(serviceId),
+        },
+      ],
+      containerNaming: 'uuid',
+      environmentServiceIds: [serviceId],
+    })
+    const allocation = allocations[0]
+    if (!allocation) {
+      throw new Error(
+        `managed-ha container allocation missing (service=${serviceId})`,
+      )
+    }
+
+    return {
+      workspaceId,
+      projectId,
+      environmentId,
+      serviceId,
+      containerRowId: allocation.containerRowId,
+      containerName: allocation.containerName,
+    }
+  })
+}
+
+export const managedHaHierarchyProvision = {
+  ensure: ensureManagedHaHierarchyImpl,
+}
+
+export async function ensureManagedHaHierarchy(
+  db: Db,
+  params: { organizationId: string; serverId: string },
+): Promise<SystemHierarchyIds> {
+  return await managedHaHierarchyProvision.ensure(db, params)
+}
+
+/**
+ * Read-only lookup of an existing managed-ha service/container for this
+ * server. Does not provision rows. Used for empty-cluster teardown.
+ */
+export async function findManagedHaHierarchy(
+  db: Db,
+  params: { serverId: string },
+): Promise<SystemHierarchyIds | null> {
+  const rows = await db
+    .select({
+      workspaceId: workspace.id,
+      projectId: project.id,
+      environmentId: environment.id,
+      serviceId: service.id,
+      containerRowId: container.id,
+      containerName: container.containerName,
+    })
+    .from(environment)
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .innerJoin(service, eq(service.environmentId, environment.id))
+    .innerJoin(container, eq(container.serviceId, service.id))
+    .where(
+      and(
+        eq(environment.serverId, params.serverId),
+        eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
+        sql`${project.metadata}->>'component' = ${SYSTEM_MANAGED_HA_COMPONENT}`,
+        eq(service.composeServiceName, SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME),
       ),
     )
     .limit(1)

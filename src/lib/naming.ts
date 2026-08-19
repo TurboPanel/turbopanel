@@ -85,6 +85,26 @@ export function managedIngressContainerNameFromService(
   return name
 }
 
+/** Suffix for managed-ha (Orchestrator) container names (`<serviceId>-ha`). */
+export const MANAGED_HA_CONTAINER_NAME_SUFFIX = '-ha'
+
+/**
+ * Docker `container_name` for the shared per-server Orchestrator managed-ha
+ * row (`role='turbopanel'`, always ordinal 1). Distinct from `-sql` ProxySQL
+ * and `-in` Traefik.
+ */
+export function managedHaContainerNameFromService(
+  serviceId: string,
+): string {
+  const name = `${serviceId}${MANAGED_HA_CONTAINER_NAME_SUFFIX}`
+  if (!isValidDockerResourceName(name)) {
+    throw new TypeError(
+      `Invalid managed HA container name for service id: ${serviceId}`,
+    )
+  }
+  return name
+}
+
 /** Docker volume name for a `storage.kind = volume` row is the storage UUID. */
 export function dockerVolumeNameFromStorageId(storageId: string): string {
   if (!isValidDockerResourceName(storageId)) {

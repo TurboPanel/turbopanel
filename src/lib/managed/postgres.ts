@@ -4,30 +4,32 @@
  * Completely independent of the control-plane `turbopanel-database` container —
  * this is a per-environment tenant service provisioned via the managed registry.
  *
- * **Image:** PostgreSQL 18 (approved — see `POSTGRES_ALLOWED_IMAGES` in
- * `./settings.ts`). The official Alpine variant stays the default for its
+ * **Image:** the default PostgreSQL series from the release catalog
+ * (`./releases.ts`). The official Alpine variant stays the default for its
  * smaller footprint; the Debian-based variant is the documented alternative.
  */
 
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
+import { requireDefaultManagedImage } from './releases.ts'
+import type { ManagedSslMode } from './ssl.ts'
 import {
   DEFAULT_MANAGED_SETTINGS,
+  type ManagedSettings,
   parseManagedSettingsBase,
   POSTGRES_RESERVED_ENV_KEYS,
-  type ManagedSettings,
 } from './settings.ts'
 import {
-  ManagedSecretPlaceholder,
   type BuildConnectionInfoInput,
   type BuildRuntimeSpecInput,
   type ManagedConnectionInfo,
   type ManagedEngineSpec,
   type ManagedRuntimeHealthcheck,
   type ManagedRuntimeSpec,
+  ManagedSecretPlaceholder,
   type ManagedUserOperations,
 } from './types.ts'
 
-const DEFAULT_IMAGE = 'docker.io/library/postgres:18-alpine'
+const DEFAULT_IMAGE = requireDefaultManagedImage('postgres')
 const DEFAULT_PORT = 5432
 const ROOT_USERNAME = 'postgres'
 const DEFAULT_DATABASE = 'postgres'
@@ -40,8 +42,7 @@ const CONFIG_CONTAINER_PATH = '/etc/postgresql/postgresql.conf'
 const TLS_DIR_CONTAINER = '/etc/postgresql/tls'
 const DATA_VOLUME_TARGET = '/var/lib/postgresql'
 
-const INCLUDE_DIRECTIVE_RE =
-  /^\s*(include|include_if_exists|include_dir)\b/i
+const INCLUDE_DIRECTIVE_RE = /^\s*(include|include_if_exists|include_dir)\b/i
 /** Non-comment, non-blank postgresql.conf setting line. */
 const CONF_SETTING_LINE_RE = /^\s*[A-Za-z_]\w*\s*=.+$/
 /** Captures the setting name from a `CONF_SETTING_LINE_RE`-matched line. */
@@ -153,7 +154,11 @@ function asSettingsRecord(
 }
 
 function parsePostgresSettings(value: unknown): PostgresManagedSettings | null {
-  const base = parseManagedSettingsBase(value, POSTGRES_RESERVED_ENV_KEYS, 'postgres')
+  const base = parseManagedSettingsBase(
+    value,
+    POSTGRES_RESERVED_ENV_KEYS,
+    'postgres',
+  )
   if (base === null) return null
 
   const record = asSettingsRecord(value)
@@ -188,13 +193,13 @@ function buildPlatformPostgresqlConf(
   input: BuildRuntimeSpecInput,
 ): string {
   const lines = [
-    "# TurboPanel managed PostgreSQL — platform base (do not edit above the operator block)",
+    '# TurboPanel managed PostgreSQL — platform base (do not edit above the operator block)',
     "listen_addresses = '*'",
     'port = 5432',
     "hba_file = '/etc/postgresql/pg_hba.conf'",
     // Streaming replication (primary and standby) — always on so a single-member
     // cluster can grow to multi-member without a restart-level wal_level change.
-    "wal_level = replica",
+    'wal_level = replica',
     'max_wal_senders = 10',
     // Member count + headroom for backup / inspection connections.
     `max_replication_slots = ${replicationSlotCount(input.memberCount)}`,
@@ -204,39 +209,45 @@ function buildPlatformPostgresqlConf(
 
   const memoryBytes = settings.resources?.memoryBytes
   if (memoryBytes !== undefined && memoryBytes > 0) {
-    const sharedBuffers = Math.max(16, Math.floor(memoryBytes / (4 * 1024 * 1024)))
-    const effectiveCache = Math.max(48, Math.floor(memoryBytes / (2 * 1024 * 1024)))
+    const sharedBuffers = Math.max(
+      16,
+      Math.floor(memoryBytes / (4 * 1024 * 1024)),
+    )
+    const effectiveCache = Math.max(
+      48,
+      Math.floor(memoryBytes / (2 * 1024 * 1024)),
+    )
     lines.push(
       `shared_buffers = '${sharedBuffers}MB'`,
       `effective_cache_size = '${effectiveCache}MB'`,
     )
   }
 
-  if (settings.ssl.enabled || input.useOrgTls || input.member?.privateListener) {
-    lines.push(
-      'ssl = on',
-      `ssl_cert_file = '${TLS_CERT_PATH}'`,
-      `ssl_key_file = '${TLS_KEY_PATH}'`,
-    )
-    if (input.useOrgTls) {
-      lines.push(`ssl_ca_file = '${SSL_ROOTCERT_PATH}'`)
-    }
+  // Engine TLS is unconditional: `pg_hba.conf` below only publishes `hostssl`
+  // rules and ProxySQL dials backends with `use_ssl=1`. Client-facing policy
+  // (`ManagedSslMode`) is enforced at the ProxySQL frontend, not here.
+  lines.push(
+    'ssl = on',
+    `ssl_cert_file = '${TLS_CERT_PATH}'`,
+    `ssl_key_file = '${TLS_KEY_PATH}'`,
+  )
+  if (input.useOrgTls) {
+    lines.push(`ssl_ca_file = '${SSL_ROOTCERT_PATH}'`)
   }
 
   const replication = input.member?.replication
-  if (input.member?.role === 'standby' && replication?.primary && replication.slotName) {
+  if (
+    input.member?.role === 'standby' && replication?.primary &&
+    replication.slotName
+  ) {
     // No password/passfile in conf — durable plaintext secrets under managed
     // state are forbidden. `pg_basebackup -R` seeds password-bearing
     // primary_conninfo into the data volume's postgresql.auto.conf (not under
     // managed/<id>/auth). Platform conf supplies host / hostaddr / TLS paths
     // so re-apply can retarget the primary without re-storing secrets.
     const primary = replication.primary
-    const hostaddr =
-      primary.hostaddr !== undefined
-        ? ` hostaddr=${primary.hostaddr}`
-        : ''
-    const conninfo =
-      `user=${replication.username} host=${primary.host}${hostaddr} ` +
+    const hostaddr = primary.hostaddr !== undefined ? ` hostaddr=${primary.hostaddr}` : ''
+    const conninfo = `user=${replication.username} host=${primary.host}${hostaddr} ` +
       `port=${primary.port} sslmode=verify-full sslrootcert=${SSL_ROOTCERT_PATH}`
     lines.push(
       `primary_conninfo = '${conninfo.replaceAll("'", "''")}'`,
@@ -379,8 +390,7 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   const initialDatabase = settings.initialDatabase ?? DEFAULT_DATABASE
   const image = settings.image ?? DEFAULT_IMAGE
   // Underscore-safe: SAFE_IDENTIFIER_RE / SAFE_VOLUME_NAME_RE disallow hyphens.
-  const volumeName =
-    `managed_${input.managedId.replaceAll('-', '_')}_data`
+  const volumeName = `managed_${input.managedId.replaceAll('-', '_')}_data`
   const composeServiceName = 'postgres'
 
   // `POSTGRES_USER` seeds the container's bootstrap superuser and is deliberately
@@ -436,14 +446,8 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     },
   }
 
-  const needTls =
-    settings.ssl.enabled ||
-    input.useOrgTls === true ||
-    input.member?.privateListener !== undefined
-  if (needTls) {
-    const volumes = service.volumes as string[]
-    volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
-  }
+  const volumes = service.volumes as string[]
+  volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
 
   // Private listener: the one deliberate exception to "no published engine ports".
   // Multi-member only — binds solely on the member's private address at the
@@ -488,13 +492,11 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
       enabled: settings.exposure.enabled,
       protocol: 'tcp',
       containerPort: DEFAULT_PORT,
-      ...(settings.exposure.bind !== undefined
-        ? { bind: settings.exposure.bind }
-        : {}),
+      ...(settings.exposure.scope !== undefined ? { scope: settings.exposure.scope } : {}),
     },
   }
 
-  if (needTls && !input.useOrgTls) {
+  if (!input.useOrgTls) {
     // Self-signed fallback for single-member clusters with no org material.
     spec.tlsMaterial = {
       selfSigned: true,
@@ -507,15 +509,17 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   return spec
 }
 
+/** libpq spells every managed mode identically — 1:1 mapping. */
+function formatSslMode(mode: ManagedSslMode): string {
+  return mode
+}
+
 function buildConnectionInfo(
   input: BuildConnectionInfoInput,
 ): ManagedConnectionInfo {
-  // Match bindings / runtime: verify-full when TLS is on (default).
-  const sslmode = input.settings.ssl.enabled ? 'verify-full' : 'prefer'
-  const dsn =
-    `postgresql://${encodeURIComponent(input.username)}:***@` +
+  const dsn = `postgresql://${encodeURIComponent(input.username)}:***@` +
     `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
-    `?sslmode=${sslmode}`
+    `?sslmode=${formatSslMode(input.sslMode)}`
   return {
     dsn,
     host: input.host,
@@ -532,7 +536,7 @@ function buildBindingDsn(
     `postgresql://${encodeURIComponent(input.username)}:` +
     `${encodeURIComponent(input.password)}@` +
     `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
-    `?sslmode=verify-full`
+    `?sslmode=${formatSslMode(input.sslMode)}`
   )
 }
 
@@ -551,6 +555,7 @@ export const postgresEngineSpec: ManagedEngineSpec = {
   parseSettings: parsePostgresSettings,
   buildRuntimeSpec,
   buildConnectionInfo,
+  formatSslMode,
   userOperations: USER_OPERATIONS,
   binding: {
     scheme: 'postgresql',

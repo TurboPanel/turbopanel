@@ -2,7 +2,8 @@
  * Resolve the host/port a compose service dials for a managed cluster.
  *
  * A placed consuming service always dials **its own server's** ProxySQL
- * listener (15432 Postgres family / 16306 MySQL family), addressed by Docker
+ * listener (Postgres family / MySQL family ports, defaulting to 15432 / 16306
+ * and overridable per organization), addressed by Docker
  * container name on the shared {@link MANAGED_INGRESS_NETWORK} — never a
  * host-published address and never the engine-native port. That listener
  * routes to local or remote engine backends over the private path
@@ -20,13 +21,19 @@ import {
   binding,
   environment,
   node,
+  organization,
   principal,
   project,
   server,
   service,
   task,
 } from '../../lib/db/schema.ts'
+import {
+  managedIngressPortForEngine,
+  resolveManagedIngressPorts,
+} from '../../lib/managed/ingress-ports.ts'
 import type { PrivateEndpointError } from '../../lib/net/private-endpoint.ts'
+import { parseOrganizationOptions } from '../../lib/organization-options.ts'
 import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
@@ -87,7 +94,11 @@ export async function loadServicePlacementServerId(
 async function loadClusterMembers(
   db: Db,
   managedId: string,
-): Promise<Array<{ serverId: string; role: string; ordinal: number; readEligible: boolean }>> {
+): Promise<
+  Array<
+    { serverId: string; role: string; ordinal: number; readEligible: boolean }
+  >
+> {
   return await db
     .select({
       serverId: node.serverId,
@@ -105,19 +116,34 @@ async function loadClusterMembers(
 }
 
 /**
- * Docker container name of `serverId`'s ProxySQL frontend, provisioning the
- * per-server managed-ingress hierarchy if it does not exist yet. Reachable
- * from any compose service on the same host that joins
+ * Docker container name and client port of `serverId`'s ProxySQL frontend,
+ * provisioning the per-server managed-ingress hierarchy if it does not exist
+ * yet. Reachable from any compose service on the same host that joins
  * {@link MANAGED_INGRESS_NETWORK} — never a `127.0.0.1` / host-published
  * address, which a container cannot dial across its own network namespace.
+ *
+ * The listener port comes from the **server-owner** organization, not the
+ * consuming project's org: `managed.ingress.reconcile` is a whole-server
+ * command, so the port that frontend actually binds is whatever
+ * `server.organization_id` configured. Those differ for a grant-placed
+ * cross-org project, and reading the consumer's org there would hand out a DSN
+ * pointing at a port nothing is listening on.
  */
 async function listenerForServer(
   db: Db,
-  params: Readonly<{ serverId: string; protocolPort: number }>,
+  params: Readonly<{
+    serverId: string
+    engineCode: string
+    engineDefaultPort: number
+  }>,
 ): Promise<{ host: string; port: number } | null> {
   const [row] = await db
-    .select({ organizationId: server.organizationId })
+    .select({
+      organizationId: server.organizationId,
+      organizationOptions: organization.options,
+    })
     .from(server)
+    .innerJoin(organization, eq(server.organizationId, organization.id))
     .where(eq(server.id, params.serverId))
     .limit(1)
   if (!row?.organizationId) return null
@@ -126,7 +152,17 @@ async function listenerForServer(
     organizationId: row.organizationId,
     serverId: params.serverId,
   })
-  return { host: hierarchy.containerName, port: params.protocolPort }
+  const ports = resolveManagedIngressPorts(
+    parseOrganizationOptions(row.organizationOptions).managedDatabase?.ports,
+  )
+  return {
+    host: hierarchy.containerName,
+    port: managedIngressPortForEngine(
+      params.engineCode,
+      params.engineDefaultPort,
+      ports,
+    ),
+  }
 }
 
 /**
@@ -143,7 +179,8 @@ export async function resolveBindingEndpoint(
   params: Readonly<{
     serviceId: string
     managedId: string
-    protocolPort: number
+    engineCode: string
+    engineDefaultPort: number
   }>,
 ): Promise<ResolvedBindingEndpoint | BindingEndpointError> {
   const members = await loadClusterMembers(db, params.managedId)
@@ -152,14 +189,18 @@ export async function resolveBindingEndpoint(
   }
 
   const readSplit = members.some((m) => m.readEligible)
-  const serviceServerId = await loadServicePlacementServerId(db, params.serviceId)
+  const serviceServerId = await loadServicePlacementServerId(
+    db,
+    params.serviceId,
+  )
   // No service placement yet (deploy prerequisite unmet) — fall back to a
   // cluster member's server (primary first) as a best-effort display target.
   const targetServerId = serviceServerId ?? members[0]!.serverId
 
   const listener = await listenerForServer(db, {
     serverId: targetServerId,
-    protocolPort: params.protocolPort,
+    engineCode: params.engineCode,
+    engineDefaultPort: params.engineDefaultPort,
   })
   if (!listener) {
     return { kind: 'binding_endpoint_unavailable' }

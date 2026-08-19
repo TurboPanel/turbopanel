@@ -1,8 +1,10 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { ManagedSecretPlaceholder } from './index.ts'
 import { mariadbEngineSpec } from './mariadb.ts'
 import type { MariadbManagedSettings } from './mariadb.ts'
+import { mysqlEngineSpec } from './mysql.ts'
 import { MARIADB_ALLOWED_IMAGES } from './settings.ts'
+import { MANAGED_SSL_MODES } from './ssl.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -24,8 +26,14 @@ function defaultSettings(
 }
 
 test('default image is the approved MariaDB 12.3 LTS reference', () => {
-  assertEquals(mariadbEngineSpec.defaultImage, 'docker.io/library/mariadb:12.3')
-  assertEquals(MARIADB_ALLOWED_IMAGES.includes(mariadbEngineSpec.defaultImage), true)
+  assertEquals(
+    mariadbEngineSpec.defaultImage,
+    'docker.io/library/mariadb:12.3',
+  )
+  assertEquals(
+    MARIADB_ALLOWED_IMAGES.includes(mariadbEngineSpec.defaultImage),
+    true,
+  )
   assertEquals(mariadbEngineSpec.displayName, 'MariaDB')
   assertEquals(mariadbEngineSpec.principalProvider, 'mysql')
 })
@@ -41,7 +49,9 @@ test('parseSettings accepts every approved image and rejects everything else', (
     null,
   )
   assertEquals(
-    mariadbEngineSpec.parseSettings({ image: 'docker.io/library/mariadb:latest' }),
+    mariadbEngineSpec.parseSettings({
+      image: 'docker.io/library/mariadb:latest',
+    }),
     null,
   )
   assertEquals(
@@ -79,7 +89,8 @@ test('MARIADB_ROOT_PASSWORD placeholder and my.cnf MariaDB GTID vocabulary', () 
   })
   assertEquals(spec.env.MARIADB_ROOT_PASSWORD, ManagedSecretPlaceholder)
   assertEquals(spec.env.MARIADB_DATABASE, 'appdb')
-  const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ?? ''
+  const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ??
+    ''
   assertEquals(conf.includes('gtid_strict_mode=ON'), true)
   assertEquals(conf.includes('log_slave_updates=ON'), true)
   assertEquals(conf.includes('gtid_mode'), false)
@@ -93,31 +104,39 @@ test('standby sets read_only; initdb uses unix_socket without INSTALL PLUGIN', (
     rootUsername: 'root',
     member: { role: 'standby', ordinal: 2 },
   })
-  const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ?? ''
+  const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ??
+    ''
   assertEquals(conf.includes('read_only=ON'), true)
-  const initdb = spec.configFiles.find((f) =>
-    f.path === 'initdb/00-turbopanel.sql'
-  )?.contents ?? ''
+  const initdb = spec.configFiles.find((f) => f.path === 'initdb/00-turbopanel.sql')
+    ?.contents ?? ''
   assertEquals(initdb.includes('unix_socket'), true)
   assertEquals(initdb.includes('INSTALL PLUGIN'), false)
 })
 
-test('ssl tlsMaterial and masked DSN', () => {
-  const on = mariadbEngineSpec.buildRuntimeSpec({
+test('engine TLS material is unconditional and the DSN is masked', () => {
+  const spec = mariadbEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
-    settings: defaultSettings({ ssl: { enabled: true } }),
+    settings: defaultSettings(),
     rootUsername: 'root',
   })
-  assertEquals(on.tlsMaterial?.commonName, 'managed-mariadb')
+  assertEquals(spec.tlsMaterial?.commonName, 'managed-mariadb')
   const info = mariadbEngineSpec.buildConnectionInfo({
     host: 'db.example',
     port: 3306,
     database: 'appdb',
     username: 'root',
-    settings: defaultSettings({ ssl: { enabled: true } }),
+    sslMode: 'verify-full',
   })
   assertEquals(info.dsn.includes('***'), true)
   assertEquals(info.dsn.includes('ssl-mode=VERIFY_IDENTITY'), true)
+})
+
+test('mariadb formatSslMode matches the MySQL family spellings', () => {
+  assertEquals(
+    MANAGED_SSL_MODES.map((mode) => mariadbEngineSpec.formatSslMode(mode)),
+    MANAGED_SSL_MODES.map((mode) => mysqlEngineSpec.formatSslMode(mode)),
+  )
+  assertEquals(mariadbEngineSpec.defaultSettings.ssl.mode, undefined)
 })
 
 test('backup uses mariadb-dump / mariadb clients', () => {
@@ -148,7 +167,12 @@ test('parseSettings rejects reserved keys and MYSQL_/MARIADB_ extraEnv', () => {
 })
 
 test('parseSettings defaults initialDatabase to appdb and rejects system schemas', () => {
-  const defaults = mariadbEngineSpec.parseSettings({}) as MariadbManagedSettings
+  const defaults = mariadbEngineSpec.parseSettings(
+    {},
+  ) as MariadbManagedSettings
   assertEquals(defaults.initialDatabase, 'appdb')
-  assertEquals(mariadbEngineSpec.parseSettings({ initialDatabase: 'mysql' }), null)
+  assertEquals(
+    mariadbEngineSpec.parseSettings({ initialDatabase: 'mysql' }),
+    null,
+  )
 })

@@ -2,13 +2,10 @@
  * Host-free coverage for binding materialize helpers and error short-circuits.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { encryptSecret } from '../authn/data-encryption.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  parseSecretsEnv,
-} from '../authn/secrets.ts'
+import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 import type { ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
@@ -31,26 +28,33 @@ import {
 const test = Deno.test.bind(Deno)
 
 async function dataSecrets() {
-  const config = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const config = parseSecretsEnv(
+    TEST_ONLY_TURBOPANEL_SECRET,
+    undefined,
+    'deno',
+  )
   return await deriveEncryptionSecretsConfig(config, 'data-encryption')
 }
 
-/** Deep join chain used by materializeBinding (binding→…→workspace). */
+/**
+ * Deep join chain used by materializeBinding (binding→…→organization).
+ *
+ * Self-referential on purpose: a fixed ladder of join stubs has to be recounted
+ * every time the query gains a table (it grew an `organization` join to read the
+ * org default SSL mode), and the failure mode is an unhelpful
+ * "innerJoin is not a function" in ten unrelated tests.
+ */
 function materializeJoinDb(limitRows: unknown[]): Db {
-  const leaf = {
-    where: () => ({
-      limit: () => Promise.resolve(limitRows),
-    }),
+  const chain: {
+    innerJoin: () => typeof chain
+    where: () => { limit: () => Promise<unknown[]> }
+  } = {
+    innerJoin: () => chain,
+    where: () => ({ limit: () => Promise.resolve(limitRows) }),
   }
-  const j5 = { innerJoin: () => leaf }
-  const j4 = { innerJoin: () => j5 }
-  const j3 = { innerJoin: () => j4 }
-  const j2 = { innerJoin: () => j3 }
-  const j1 = { innerJoin: () => j2 }
-  const j0 = { innerJoin: () => j1 }
   return {
     select: () => ({
-      from: () => j0,
+      from: () => chain,
     }),
   } as unknown as Db
 }
@@ -74,10 +78,11 @@ function materializeFlowDb(
       const thenable = {
         limit: () => Promise.resolve(rows),
         orderBy: () => Promise.resolve(rows),
-        then: (onFulfilled: (v: unknown) => unknown, onRejected?: (e: unknown) => unknown) =>
-          Promise.resolve(rows).then(onFulfilled, onRejected),
-        catch: (onRejected: (e: unknown) => unknown) =>
-          Promise.resolve(rows).catch(onRejected),
+        then: (
+          onFulfilled: (v: unknown) => unknown,
+          onRejected?: (e: unknown) => unknown,
+        ) => Promise.resolve(rows).then(onFulfilled, onRejected),
+        catch: (onRejected: (e: unknown) => unknown) => Promise.resolve(rows).catch(onRejected),
         finally: (onFinally: () => void) => Promise.resolve(rows).finally(onFinally),
       }
       return {
@@ -130,6 +135,7 @@ function baseBindingRow(overrides: Record<string, unknown> = {}) {
       databases: ['app'],
     },
     organizationId: 'org',
+    organizationOptions: {},
     ...overrides,
   }
 }
@@ -154,7 +160,11 @@ test('listBindingEmittedKeys returns null for unsupported engines', () => {
 
 test('materializeBinding returns binding_not_found when join misses', async () => {
   assertEquals(
-    await materializeBinding(materializeJoinDb([]), await dataSecrets(), 'missing'),
+    await materializeBinding(
+      materializeJoinDb([]),
+      await dataSecrets(),
+      'missing',
+    ),
     { kind: 'binding_not_found' },
   )
 })
@@ -352,7 +362,7 @@ test('upsertBindingOwnedVariables inserts updates and deletes stale keys', async
   }
 
   const db = {
-    transaction: async (fn: (tx: typeof tx) => Promise<void>) => {
+    transaction: async (fn: (inner: typeof tx) => Promise<void>) => {
       await fn(tx)
     },
   } as unknown as Db

@@ -293,7 +293,7 @@ async function withManagedApplyPrepareFixtures(
 function settingsWithExposure(enabled: boolean): ManagedSettings {
   const parsed = postgresEngineSpec.parseSettings({
     ...(enabled
-      ? { exposure: { enabled: true, bind: 'local' } }
+      ? { exposure: { enabled: true, scope: 'local' } }
       : { exposure: { enabled: false } }),
   })
   if (!parsed) throw new TypeError('expected valid managed settings')

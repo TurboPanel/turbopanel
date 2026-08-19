@@ -206,6 +206,63 @@ export const managedSchemas = {
         type: 'array',
         items: { $ref: '#/components/schemas/ManagedMember' },
       },
+      recovery: {
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedRecoveryRecord' },
+          { type: 'null' },
+        ],
+        description:
+          'Latest HA recovery journal row for this cluster (`null` when none).',
+      },
+    },
+  },
+  ManagedRecoveryRecord: {
+    type: 'object',
+    required: [
+      'id',
+      'kind',
+      'state',
+      'sourcePrimaryMemberId',
+      'targetMemberId',
+      'startedAt',
+      'completedAt',
+      'blockedReason',
+      'lagBytes',
+      'sourceDatacenterId',
+      'targetDatacenterId',
+      'sourceServerId',
+      'targetServerId',
+    ],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      kind: {
+        type: 'string',
+        enum: ['automatic-failover', 'switchover', 'disaster-recovery'],
+      },
+      state: {
+        type: 'string',
+        enum: [
+          'detecting',
+          'fencing',
+          'promoting',
+          'repointing',
+          'reconciling-ingress',
+          'verifying',
+          'completed',
+          'failed',
+          'blocked',
+        ],
+      },
+      sourcePrimaryMemberId: { type: 'string', format: 'uuid' },
+      targetMemberId: { type: 'string', format: 'uuid', nullable: true },
+      startedAt: { type: 'string', format: 'date-time' },
+      completedAt: { type: 'string', format: 'date-time', nullable: true },
+      blockedReason: { type: 'string', nullable: true },
+      lagBytes: { type: 'number', nullable: true },
+      sourceDatacenterId: { type: 'string', format: 'uuid', nullable: true },
+      targetDatacenterId: { type: 'string', format: 'uuid', nullable: true },
+      sourceServerId: { type: 'string', format: 'uuid', nullable: true },
+      targetServerId: { type: 'string', format: 'uuid', nullable: true },
     },
   },
   CreateManagedRequest: {
@@ -219,7 +276,12 @@ export const managedSchemas = {
         type: 'object',
         properties: {
           enabled: { type: 'boolean' },
-          bind: { type: 'string', enum: ['public', 'datacenter', 'local'] },
+          scope: {
+            type: 'string',
+            enum: ['public', 'datacenter', 'local', 'turbofabric'],
+            description:
+              'SQL client access scope when enabled. Legacy `bind` is read-only migration input.',
+          },
         },
       },
     },
@@ -567,6 +629,9 @@ export const managedSchemas = {
   ManagedMemberExistsError: errorSchema('managed_member_exists'),
   ManagedMemberIsPrimaryError: errorSchema('managed_member_is_primary'),
   ManagedReplicaNotPromotableError: errorSchema('managed_replica_not_promotable'),
+  ManagedAutomaticFailoverBlockedError: errorSchema(
+    'managed_automatic_failover_blocked',
+  ),
   FailoverReplicaRequiresDatacenterTransportError: errorSchema(
     'failover_replica_requires_datacenter_transport',
   ),
@@ -1210,7 +1275,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Enqueue managed.promote for a replica member',
       description:
-        'Promotes a streaming **failover** replica to primary. Read-class replicas return 422 `managed_replica_not_promotable` unless `{ force: true }`. Body may include `{ force: true }` to bypass the lag health gate (and the class gate) for dead-primary failover (accepts possible data loss). Best-effort fences the old primary with managed.lifecycle stop when online (payload carries the managed engine code so the daemon resolves the correct runtime). On success the consumer flips roles and re-reconciles ProxySQL. The enqueued managed.promote payload includes optional `engine` (postgres|mysql|mariadb) for multi-engine promote; older commands without `engine` default to postgres on the daemon.',
+        'Promotes a streaming **failover** replica to primary (recorded switchover). Read-class replicas return 422 `managed_replica_not_promotable` with no class bypass — use `POST …/disaster-recovery/promote`. Body may include `{ force: true }` to bypass the lag/health gate on a **failover** replica (accepts possible data loss). Best-effort fences the old primary with managed.lifecycle stop when online. On success the consumer flips roles and re-reconciles ProxySQL plus managed HA. The enqueued managed.promote payload includes optional `engine` (postgres|mysql|mariadb); older commands without `engine` default to postgres on the daemon.',
       parameters: [ENV_ID_PARAM, MEMBER_ID_PARAM],
       requestBody: {
         required: false,
@@ -1265,7 +1330,101 @@ export const managedPaths = {
           },
         },
         422: {
-          description: 'managed_replica_not_promotable — read-class replica without force',
+          description:
+            'managed_replica_not_promotable — read-class replica (no force class bypass)',
+          ...jsonSchema('ManagedReplicaNotPromotableError'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/disaster-recovery/promote': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Promote a read replica for disaster recovery',
+      description:
+        'Dedicated DR path for **read** replicas (`confirm: true` required). Records a `disaster-recovery` journal row, fences when the old primary is reachable, promotes the target, then reclassifies leftover `failover` members outside the new primary datacenter to `read`. Failover replicas must use `POST …/members/{memberId}/promote`.',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['memberId', 'confirm'],
+              properties: {
+                memberId: { type: 'string', format: 'uuid' },
+                confirm: { type: 'boolean', const: true },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Disaster-recovery command queued',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: [
+                  'ok',
+                  'commandId',
+                  'status',
+                  'serverId',
+                  'fencePending',
+                  'kind',
+                  'lagBytes',
+                  'source',
+                  'target',
+                ],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  commandId: { type: 'string' },
+                  status: { type: 'string', const: 'queued' },
+                  serverId: { type: 'string' },
+                  fencePending: { type: 'boolean' },
+                  kind: { type: 'string', const: 'disaster-recovery' },
+                  lagBytes: { type: 'number', nullable: true },
+                  source: {
+                    type: 'object',
+                    required: ['memberId', 'serverId', 'datacenterId'],
+                    properties: {
+                      memberId: { type: 'string', format: 'uuid' },
+                      serverId: { type: 'string', format: 'uuid' },
+                      datacenterId: {
+                        type: 'string',
+                        format: 'uuid',
+                        nullable: true,
+                      },
+                    },
+                  },
+                  target: {
+                    type: 'object',
+                    required: ['memberId', 'serverId', 'datacenterId'],
+                    properties: {
+                      memberId: { type: 'string', format: 'uuid' },
+                      serverId: { type: 'string', format: 'uuid' },
+                      datacenterId: {
+                        type: 'string',
+                        format: 'uuid',
+                        nullable: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request — confirm must be true',
+        },
+        404: {
+          description: 'Managed row, member, or current primary not found',
+        },
+        422: {
+          description:
+            'managed_replica_not_promotable — target is not a read replica',
           ...jsonSchema('ManagedReplicaNotPromotableError'),
         },
       },

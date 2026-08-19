@@ -15,6 +15,8 @@ export const COMMAND_TYPES = [
   'managed.restore',
   'managed.promote',
   'managed.ingress.reconcile',
+  'managed.ha.reconcile',
+  'managed.ha.failover',
   'system.reconcile',
 ] as const
 

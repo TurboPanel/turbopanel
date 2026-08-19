@@ -1,6 +1,8 @@
 import type { Context, Hono } from "hono";
 import { upgradeWebSocket } from "hono/deno";
+import type { WSContext } from "hono/ws";
 import type { DaemonCellRegistry } from "./cell/contracts.ts";
+import type { DaemonInboundEnvelope, DaemonMessage } from "./cell/protocol.ts";
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -35,7 +37,9 @@ import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
 } from "./authn/server-identity-db.ts";
+import type { CommandQueue } from "../lib/commands/queue.ts";
 import type { RateLimiter } from "./rate-limit/contracts.ts";
+import { handleManagedHaEvent } from "../client/managed/ha-event.ts";
 import { createInboundWindowGate } from "./rate-limit/inbound-window.ts";
 import { daemonConnectRateLimitKey } from "./rate-limit/keys.ts";
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
@@ -67,8 +71,7 @@ function assignColocatedDaemonOnConnect(
     (err) => {
       compatLogError(
         "ws",
-        "failed to assign colocated server:",
-        String(err),
+        `failed to assign colocated server: ${String(err)}`,
       );
     },
   );
@@ -82,7 +85,7 @@ async function assertDaemonKeyStillActive(
   db: Db,
   serverId: string,
   keyId: string,
-  ws: WebSocket,
+  ws: WSContext<WebSocket>,
 ): Promise<boolean> {
   const daemonRow = await getServerDaemonStateByServerId(db, serverId);
   if (
@@ -101,7 +104,7 @@ function startDaemonOutboxPump(params: {
   serverId: string;
   connectionId: string;
   consumer: string;
-  ws: WebSocket;
+  ws: WSContext<WebSocket>;
   abortRef: { abort: boolean };
 }): void {
   const { cell, serverId, connectionId, consumer, ws, abortRef } = params;
@@ -187,7 +190,7 @@ async function handleDaemonCellPing(params: {
   db: Db;
   serverId: string;
   connectionId: string | undefined;
-  ws: WebSocket;
+  ws: WSContext<WebSocket>;
 }): Promise<void> {
   const { cell, db, serverId, connectionId, ws } = params;
   const pingAt = new Date().toISOString();
@@ -223,6 +226,105 @@ async function handleDaemonCellPing(params: {
   }
 }
 
+function rejectDaemonInboundFrame(
+  ws: WSContext<WebSocket>,
+  serverId: string,
+  connectionId: string | undefined,
+  reason: string,
+): void {
+  cellTrace("inbound-rejected", {
+    serverId,
+    conn: connectionId,
+    reason,
+  });
+  compatLogWarn(
+    "ws",
+    `rejected inbound frame from ${connectionId ?? "unknown"}: ${reason}`,
+  );
+  ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, "policy_violation");
+}
+
+async function handleDaemonPresenceInbound(params: {
+  cell: ReturnType<DaemonCellRegistry["getCell"]>;
+  db: Db;
+  serverId: string;
+  connectionId: string | undefined;
+  message: Extract<DaemonMessage, { type: "hello" | "heartbeat" }>;
+}): Promise<void> {
+  const { cell, db, serverId, connectionId, message } = params;
+  const presence = message as unknown as Record<string, unknown>;
+  const ips = ipsFromDaemonPresence(presence);
+  const resources = resourcesFromDaemonPresence(presence);
+
+  if (message.type === "hello") {
+    await touchServerMetadata(db, serverId, {
+      hostname: message.hostname,
+      machineKey: message.machineKey,
+      os: message.os,
+      resources,
+      timeSync: message.timeSync,
+      ips,
+      docker: message.docker,
+    });
+  } else if (message.timeSync || ips !== undefined || message.docker) {
+    await touchServerMetadata(db, serverId, {
+      resources,
+      timeSync: message.timeSync,
+      ips,
+      docker: message.docker,
+    });
+  }
+
+  await cell.recordInbound({
+    connectionId,
+    at: message.at,
+    daemonBuild: message.daemonBuild,
+  });
+  await onDaemonInbound(db, serverId, cell, {
+    at: message.at,
+    daemonBuild: message.daemonBuild,
+  });
+}
+
+async function handleDaemonManagedHaInbound(params: {
+  cell: ReturnType<DaemonCellRegistry["getCell"]>;
+  db: Db;
+  connectionId: string | undefined;
+  message: Extract<DaemonMessage, { type: "managed-ha-event" }>;
+  commandQueue?: CommandQueue;
+  reporterServerId: string;
+}): Promise<void> {
+  const { cell, db, connectionId, message } = params;
+  await handleManagedHaEvent(db, {
+    managedId: message.managedId,
+    sourceMemberId: message.sourceMemberId,
+    at: message.at,
+  }, {
+    commandQueue: params.commandQueue,
+    reporterServerId: params.reporterServerId,
+  });
+  await cell.recordInbound({ connectionId, at: message.at });
+}
+
+async function applyDaemonInboundEnvelope(params: {
+  cell: ReturnType<DaemonCellRegistry["getCell"]>;
+  db: Db;
+  serverId: string;
+  envelope: DaemonInboundEnvelope;
+}): Promise<void> {
+  const { cell, db, serverId, envelope } = params;
+  const record = await cell.handleInbound(envelope);
+  if (envelope.kind !== "update-result" || !record) return;
+  await onDaemonUpdateResult(
+    db,
+    serverId,
+    envelope.requestId,
+    envelope.ok,
+    envelope.at,
+    envelope.error,
+  );
+}
+
 export type DaemonWebSocketOptions = {
   developerSurface?: boolean;
   db?: Db;
@@ -233,6 +335,7 @@ export type DaemonWebSocketOptions = {
   connectLimiter?: RateLimiter;
   inboundMessageLimit?: number;
   inboundMessageWindowMs?: number;
+  commandQueue?: CommandQueue;
 };
 
 export function registerDaemonWebSocket(
@@ -299,7 +402,7 @@ export function registerDaemonWebSocket(
 
       const handleInboundMessage = async (
         raw: string,
-        ws: WebSocket,
+        ws: WSContext<WebSocket>,
       ): Promise<void> => {
         // Exception boundary — mirrors DO webSocketMessage (log + swallow) so a
         // transient DB/cell error cannot tear down the daemon WebSocket.
@@ -317,7 +420,7 @@ export function registerDaemonWebSocket(
 
       const handleInboundMessageBody = async (
         raw: string,
-        ws: WebSocket,
+        ws: WSContext<WebSocket>,
       ): Promise<void> => {
         if (raw === DAEMON_CELL_PING) {
           const keyStillActive = await assertDaemonKeyStillActive(
@@ -339,16 +442,12 @@ export function registerDaemonWebSocket(
 
         const validated = validateDaemonInboundFrame(raw);
         if (!validated.ok) {
-          cellTrace("inbound-rejected", {
-            serverId: payload.sub,
-            conn: connectionId,
-            reason: validated.reason,
-          });
-          compatLogWarn(
-            "ws",
-            `rejected inbound frame from ${connectionId ?? "unknown"}: ${validated.reason}`,
+          rejectDaemonInboundFrame(
+            ws,
+            payload.sub,
+            connectionId,
+            validated.reason,
           );
-          ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, "policy_violation");
           return;
         }
         const message = validated.message;
@@ -369,50 +468,25 @@ export function registerDaemonWebSocket(
 
         const cell = registry.getCell(payload.sub);
 
-        if (message.type === "hello") {
-          const presence = message as unknown as Record<string, unknown>;
-          const ips = ipsFromDaemonPresence(presence);
-          const resources = resourcesFromDaemonPresence(presence);
-          await touchServerMetadata(db, payload.sub, {
-            hostname: message.hostname,
-            machineKey: message.machineKey,
-            os: message.os,
-            resources,
-            timeSync: message.timeSync,
-            ips,
-            docker: message.docker,
-          });
-          await cell.recordInbound({
+        if (message.type === "hello" || message.type === "heartbeat") {
+          await handleDaemonPresenceInbound({
+            cell,
+            db,
+            serverId: payload.sub,
             connectionId,
-            at: message.at,
-            daemonBuild: message.daemonBuild,
-          });
-          await onDaemonInbound(db, payload.sub, cell, {
-            at: message.at,
-            daemonBuild: message.daemonBuild,
+            message,
           });
           return;
         }
 
-        if (message.type === "heartbeat") {
-          const presence = message as unknown as Record<string, unknown>;
-          const ips = ipsFromDaemonPresence(presence);
-          if (message.timeSync || ips !== undefined || message.docker) {
-            await touchServerMetadata(db, payload.sub, {
-              resources,
-              timeSync: message.timeSync,
-              ips,
-              docker: message.docker,
-            });
-          }
-          await cell.recordInbound({
+        if (message.type === "managed-ha-event") {
+          await handleDaemonManagedHaInbound({
+            cell,
+            db,
             connectionId,
-            at: message.at,
-            daemonBuild: message.daemonBuild,
-          });
-          await onDaemonInbound(db, payload.sub, cell, {
-            at: message.at,
-            daemonBuild: message.daemonBuild,
+            message,
+            commandQueue: options.commandQueue,
+            reporterServerId: payload.sub,
           });
           return;
         }
@@ -421,17 +495,12 @@ export function registerDaemonWebSocket(
 
         const envelope = wireMessageToInboundEnvelope(message);
         if (envelope) {
-          const record = await cell.handleInbound(envelope);
-          if (envelope.kind === "update-result" && record) {
-            await onDaemonUpdateResult(
-              db,
-              payload.sub,
-              envelope.requestId,
-              envelope.ok,
-              envelope.at,
-              envelope.error,
-            );
-          }
+          await applyDaemonInboundEnvelope({
+            cell,
+            db,
+            serverId: payload.sub,
+            envelope,
+          });
         }
       };
 
@@ -594,11 +663,19 @@ export function registerDaemonWebSocket(
   });
 
   if (options.developerSurface) {
-    registerStubWebSocket(app, DEVELOPER_WS_PATH, "developer", (c) =>
-      authorizeDeveloperUpgrade(c, options.sessionSecrets));
+    registerStubWebSocket(
+      app,
+      DEVELOPER_WS_PATH,
+      "developer",
+      (c) => authorizeDeveloperUpgrade(c, options.sessionSecrets),
+    );
   }
-  registerStubWebSocket(app, CLIENT_WS_PATH, "client", (c) =>
-    authorizeClientUpgrade(c, options.sessionSecrets));
+  registerStubWebSocket(
+    app,
+    CLIENT_WS_PATH,
+    "client",
+    (c) => authorizeClientUpgrade(c, options.sessionSecrets),
+  );
 }
 
 /**

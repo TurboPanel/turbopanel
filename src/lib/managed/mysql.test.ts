@@ -1,12 +1,10 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
-import {
-  ManagedSecretPlaceholder,
-  type ManagedSettings,
-} from './index.ts'
+import { ManagedSecretPlaceholder } from './index.ts'
 import { BINLOG_EXPIRE_LOGS_SECONDS, mysqlEngineSpec } from './mysql.ts'
 import type { MysqlManagedSettings } from './mysql.ts'
 import { MYSQL_ALLOWED_IMAGES } from './settings.ts'
+import { MANAGED_SSL_MODES } from './ssl.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -29,7 +27,10 @@ function defaultSettings(
 
 test('default image is the approved MySQL 9.7 LTS reference', () => {
   assertEquals(mysqlEngineSpec.defaultImage, 'docker.io/library/mysql:9.7')
-  assertEquals(MYSQL_ALLOWED_IMAGES.includes(mysqlEngineSpec.defaultImage), true)
+  assertEquals(
+    MYSQL_ALLOWED_IMAGES.includes(mysqlEngineSpec.defaultImage),
+    true,
+  )
   const spec = mysqlEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
     settings: defaultSettings(),
@@ -62,7 +63,7 @@ test('runtime spec has no ports key for single-member and container port stays 3
   const spec = mysqlEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
     settings: defaultSettings({
-      exposure: { enabled: true, bind: 'public' },
+      exposure: { enabled: true, scope: 'public' },
     }),
     rootUsername: 'root',
   })
@@ -93,7 +94,10 @@ test('volume name is hyphen-free and targets /var/lib/mysql', () => {
     rootUsername: 'root',
   })
   assertEquals(spec.volumes[0]?.target, '/var/lib/mysql')
-  assertEquals(spec.volumes[0]?.name, 'managed_aaaaaaaa_bbbb_cccc_dddd_eeeeeeeeeeee_data')
+  assertEquals(
+    spec.volumes[0]?.name,
+    'managed_aaaaaaaa_bbbb_cccc_dddd_eeeeeeeeeeee_data',
+  )
   assertEquals(spec.volumes[0]?.name.includes('-'), false)
 })
 
@@ -113,7 +117,6 @@ test('MYSQL_ROOT_PASSWORD is placeholder and never plaintext', () => {
 test('my.cnf is base plus operator snippet with bounded binlog retention', () => {
   const settings = defaultSettings({
     engineConfig: 'max_connections = 200\n',
-    ssl: { enabled: false },
   })
   const spec = mysqlEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
@@ -143,29 +146,32 @@ test('standby my.cnf sets read_only', () => {
     rootUsername: 'root',
     member: { role: 'standby', ordinal: 2 },
   })
-  const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ?? ''
+  const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ??
+    ''
   assertEquals(conf.includes('read_only=ON'), true)
   assertEquals(conf.includes('super_read_only=ON'), true)
   assertEquals(conf.includes('server_id=2'), true)
 })
 
-test('ssl and tlsMaterial only when enabled', () => {
-  const off = mysqlEngineSpec.buildRuntimeSpec({
-    managedId: '11111111-1111-1111-1111-111111111111',
-    settings: defaultSettings({ ssl: { enabled: false } }),
-    rootUsername: 'root',
-  })
-  assertEquals(off.tlsMaterial, undefined)
+test('engine TLS is unconditional, independent of the client SSL mode', () => {
+  // ProxySQL dials backends with `use_ssl=1`, so the engine keeps
+  // `require_secure_transport=ON` even when clients are allowed plaintext.
+  for (const mode of MANAGED_SSL_MODES) {
+    const spec = mysqlEngineSpec.buildRuntimeSpec({
+      managedId: '11111111-1111-1111-1111-111111111111',
+      settings: defaultSettings({ ssl: { mode } }),
+      rootUsername: 'root',
+    })
+    const conf = spec.configFiles.find((f) => f.path === 'my.cnf')
+    if (!conf) throw new TypeError('missing my.cnf')
+    assertEquals(conf.contents.includes('require_secure_transport=ON'), true)
+    assertEquals(spec.tlsMaterial?.selfSigned, true)
+  }
+})
 
-  const on = mysqlEngineSpec.buildRuntimeSpec({
-    managedId: '11111111-1111-1111-1111-111111111111',
-    settings: defaultSettings({ ssl: { enabled: true } }),
-    rootUsername: 'root',
-  })
-  const conf = on.configFiles.find((f) => f.path === 'my.cnf')
-  if (!conf) throw new TypeError('missing my.cnf')
-  assertEquals(conf.contents.includes('require_secure_transport=ON'), true)
-  assertEquals(on.tlsMaterial?.selfSigned, true)
+test('mysql defaultSettings leave ssl.mode unset so the org default applies', () => {
+  assertEquals(mysqlEngineSpec.defaultSettings.ssl.mode, undefined)
+  assertEquals(defaultSettings().ssl.mode, undefined)
 })
 
 test('initdb platform bootstrap is secret-free socket auth', () => {
@@ -210,22 +216,38 @@ test('resource mapping matches applyResourcesToComposeService', () => {
   applyResourcesToComposeService(expected, resources)
   assertEquals(spec.service.cpus, expected.cpus)
   assertEquals(spec.service.mem_limit, expected.mem_limit)
-  const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ?? ''
+  const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ??
+    ''
   assertEquals(conf.includes('innodb_buffer_pool_size='), true)
 })
 
-test('buildConnectionInfo masks the password with verify-identity when ssl on', () => {
-  const settings = defaultSettings({ ssl: { enabled: true } }) as ManagedSettings
+test('buildConnectionInfo masks the password and renders the given mode', () => {
   const info = mysqlEngineSpec.buildConnectionInfo({
     host: 'db.example',
     port: 3306,
     database: 'appdb',
     username: 'root',
-    settings,
+    sslMode: 'verify-full',
   })
   assertEquals(info.dsn.includes('***'), true)
   assertEquals(info.dsn.includes('ssl-mode=VERIFY_IDENTITY'), true)
   assertEquals(info.dsn.includes('super-secret'), false)
+})
+
+test('formatSslMode uses MySQL ssl-mode spellings, not libpq ones', () => {
+  // MySQL has no "try plaintext first" value, so `allow` and `prefer` collapse
+  // onto PREFERRED, and hostname verification is VERIFY_IDENTITY.
+  assertEquals(
+    MANAGED_SSL_MODES.map((mode) => mysqlEngineSpec.formatSslMode(mode)),
+    [
+      'DISABLED',
+      'PREFERRED',
+      'PREFERRED',
+      'REQUIRED',
+      'VERIFY_CA',
+      'VERIFY_IDENTITY',
+    ],
+  )
 })
 
 test('backup descriptor advertises sql dump client', () => {
@@ -251,12 +273,14 @@ test('parseSettings rejects reserved cnf keys and includes', () => {
     null,
   )
   assertEquals(
-    mysqlEngineSpec.parseSettings({ engineConfig: 'bind-address = 127.0.0.1\n' }),
+    mysqlEngineSpec.parseSettings({
+      engineConfig: 'bind-address = 127.0.0.1\n',
+    }),
     null,
   )
   assertEquals(
     mysqlEngineSpec.parseSettings({
-      engineConfig: "!include /etc/passwd\n",
+      engineConfig: '!include /etc/passwd\n',
     }),
     null,
   )
@@ -269,13 +293,19 @@ test('parseSettings rejects reserved cnf keys and includes', () => {
 })
 
 test('parseSettings rejects invalid initialDatabase', () => {
-  assertEquals(mysqlEngineSpec.parseSettings({ initialDatabase: 'bad-name' }), null)
+  assertEquals(
+    mysqlEngineSpec.parseSettings({ initialDatabase: 'bad-name' }),
+    null,
+  )
   assertEquals(
     mysqlEngineSpec.parseSettings({ initialDatabase: 'a'.repeat(65) }),
     null,
   )
   // System schemas are not valid application initial databases.
-  assertEquals(mysqlEngineSpec.parseSettings({ initialDatabase: 'mysql' }), null)
+  assertEquals(
+    mysqlEngineSpec.parseSettings({ initialDatabase: 'mysql' }),
+    null,
+  )
   assertEquals(mysqlEngineSpec.parseSettings({ initialDatabase: 'sys' }), null)
   const defaults = mysqlEngineSpec.parseSettings({}) as MysqlManagedSettings
   assertEquals(defaults.initialDatabase, 'appdb')

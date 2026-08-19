@@ -6,21 +6,25 @@
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
-  resolvePrivateEndpoints,
   type PrivateEndpointError,
   type PrivateEndpointPurpose,
   type PrivateEndpointTransport,
   type ResolvedPrivateEndpoint,
+  resolvePrivateEndpoints,
 } from '../../lib/net/private-endpoint.ts'
 import { container, node, server } from '../../lib/db/schema.ts'
 import type { ManagedReplicationHealth } from '../../lib/commands/schemas.ts'
+import {
+  MANAGED_PRIVATE_PORT_MAX,
+  MANAGED_PRIVATE_PORT_MIN,
+} from '../../lib/managed/ingress-ports.ts'
 
 /**
  * High contiguous host-port range for multi-member private listeners
- * (replication + remote ProxySQL backends).
+ * (replication + remote ProxySQL backends). Owned by `ingress-ports.ts` so the
+ * client-listener validator can reserve the same range.
  */
-export const MANAGED_PRIVATE_PORT_MIN = 45_000
-export const MANAGED_PRIVATE_PORT_MAX = 45_999
+export { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN }
 
 export type ManagedMemberRole = 'primary' | 'replica'
 export type ManagedReplicaClass = 'failover' | 'read'
@@ -92,7 +96,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | undefined {
+function parseReplicationHealth(
+  metadata: unknown,
+): ManagedReplicationHealth | undefined {
   if (!isRecord(metadata) || !isRecord(metadata.replication)) return undefined
   const r = metadata.replication
   if (
@@ -195,7 +201,9 @@ export async function listManagedMembersForManagedIds(
 }
 
 /** Smallest unused ordinal ≥ 2 (no replica-count ceiling). */
-export function nextReplicaOrdinal(members: readonly ManagedMemberRow[]): number {
+export function nextReplicaOrdinal(
+  members: readonly ManagedMemberRow[],
+): number {
   const used = new Set(members.map((m) => m.ordinal))
   let ordinal = 2
   while (used.has(ordinal)) {
@@ -209,18 +217,16 @@ export function serializeManagedMember(
   serverDisplayName: string | null,
 ): SerializedManagedMember {
   const role: ManagedMemberRole = row.role === 'replica' ? 'replica' : 'primary'
-  const replicaClass =
-    role === 'replica' &&
+  const replicaClass = role === 'replica' &&
       (row.replicaClass === 'failover' || row.replicaClass === 'read')
-      ? row.replicaClass
-      : null
-  const transport =
-    row.replicationTransport === 'local' ||
+    ? row.replicaClass
+    : null
+  const transport = row.replicationTransport === 'local' ||
       row.replicationTransport === 'datacenter' ||
       row.replicationTransport === 'fabric' ||
       row.replicationTransport === 'public'
-      ? row.replicationTransport
-      : null
+    ? row.replicationTransport
+    : null
   const out: SerializedManagedMember = {
     id: row.id,
     serverId: row.serverId,
@@ -255,9 +261,7 @@ export async function listSerializedManagedMembers(
     .where(eq(node.managedId, managedId))
     .orderBy(asc(node.ordinal))
 
-  return rows.map((row) =>
-    serializeManagedMember(row, row.serverDisplayName ?? null)
-  )
+  return rows.map((row) => serializeManagedMember(row, row.serverDisplayName ?? null))
 }
 
 /** A read replica is the only member allowed on the fabric/public ladder. */
@@ -283,9 +287,7 @@ export function replicationPurposeForMemberPair(
   a: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>,
   b: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>,
 ): PrivateEndpointPurpose {
-  return isReadMember(a) || isReadMember(b)
-    ? 'read-replication'
-    : 'failover-replication'
+  return isReadMember(a) || isReadMember(b) ? 'read-replication' : 'failover-replication'
 }
 
 /**
@@ -369,7 +371,11 @@ function buildUsedPrivatePortsByServer(
 
 /** Smallest free port in the managed private-port range, or null when full. */
 function findFreePrivatePort(used: ReadonlySet<number>): number | null {
-  for (let port = MANAGED_PRIVATE_PORT_MIN; port <= MANAGED_PRIVATE_PORT_MAX; port++) {
+  for (
+    let port = MANAGED_PRIVATE_PORT_MIN;
+    port <= MANAGED_PRIVATE_PORT_MAX;
+    port++
+  ) {
     if (!used.has(port)) return port
   }
   return null
@@ -428,7 +434,10 @@ export async function ensureMemberPrivatePorts(
       const used = usedByServer.get(member.serverId) ?? new Set()
       const assigned = findFreePrivatePort(used)
       if (assigned === null) {
-        return { kind: 'managed_private_port_exhausted', serverId: member.serverId }
+        return {
+          kind: 'managed_private_port_exhausted',
+          serverId: member.serverId,
+        }
       }
       used.add(assigned)
       await tx
@@ -519,14 +528,19 @@ function resolveCoResidentPeer(
 function resolveRemotePeer(
   fromMember: ManagedMemberRow,
   other: ManagedMemberRow,
-  endpoints: ReadonlyMap<string, ResolvedPrivateEndpoint | PrivateEndpointError>,
+  endpoints: ReadonlyMap<
+    string,
+    ResolvedPrivateEndpoint | PrivateEndpointError
+  >,
 ): ManagedMemberPeer | PrivateEndpointError {
   // Address is the peer's `tp0` relay address when transport is `fabric`,
   // matching the address the peer actually publishes.
   const resolved = endpoints.get(other.serverId)
   if (!resolved) return unavailablePeerError(fromMember, other)
   if ('kind' in resolved) return resolved
-  if (other.privatePort === null) return unavailablePeerError(fromMember, other)
+  if (other.privatePort === null) {
+    return unavailablePeerError(fromMember, other)
+  }
   return {
     memberId: other.id,
     role: other.role === 'replica' ? 'replica' : 'primary',
@@ -554,7 +568,10 @@ async function resolvePeerEndpointsByPurpose(
     else byPurpose.set(purpose, [peer.serverId])
   }
 
-  const endpoints = new Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>()
+  const endpoints = new Map<
+    string,
+    ResolvedPrivateEndpoint | PrivateEndpointError
+  >()
   for (const [purpose, toServerIds] of byPurpose) {
     const resolved = await resolvePrivateEndpoints(db, {
       fromServerId: fromMember.serverId,

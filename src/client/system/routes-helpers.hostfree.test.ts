@@ -2,9 +2,10 @@
  * Host-free coverage for system operate route pure helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   SYSTEM_HOSTING_INGRESS_COMPONENT,
+  SYSTEM_MANAGED_HA_COMPONENT,
   SYSTEM_MANAGED_INGRESS_COMPONENT,
 } from './hierarchy.ts'
 import {
@@ -25,8 +26,9 @@ const test = Deno.test.bind(Deno)
 test('isSystemOperateComponent accepts known components only', () => {
   assertEquals(isSystemOperateComponent(SYSTEM_HOSTING_INGRESS_COMPONENT), true)
   assertEquals(isSystemOperateComponent(SYSTEM_MANAGED_INGRESS_COMPONENT), true)
+  assertEquals(isSystemOperateComponent(SYSTEM_MANAGED_HA_COMPONENT), true)
   assertEquals(isSystemOperateComponent('postgres'), false)
-  assertEquals(SYSTEM_OPERATE_COMPONENTS.length, 2)
+  assertEquals(SYSTEM_OPERATE_COMPONENTS.length, 3)
 })
 
 test('mapSystemRestartFailure maps provisioned vs unavailable', () => {

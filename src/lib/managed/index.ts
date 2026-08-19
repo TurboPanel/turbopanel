@@ -17,15 +17,13 @@ import {
 } from './types.ts'
 
 export {
+  type BuildConnectionInfoInput,
+  type BuildRuntimeSpecInput,
+  isManagedBackupArtifactExtension,
+  isManagedEngineCode,
   MANAGED_BACKUP_ARTIFACT_EXTENSIONS,
   MANAGED_ENGINE_CODES,
   MANAGED_STATUSES,
-  ManagedSecretPlaceholder,
-  isManagedBackupArtifactExtension,
-  isManagedEngineCode,
-  parseManagedStatus,
-  type BuildConnectionInfoInput,
-  type BuildRuntimeSpecInput,
   type ManagedBackupArtifactExtension,
   type ManagedBackupDescriptor,
   type ManagedConfigFile,
@@ -38,32 +36,50 @@ export {
   type ManagedRuntimeHealthcheck,
   type ManagedRuntimeSpec,
   type ManagedRuntimeVolume,
+  ManagedSecretPlaceholder,
   type ManagedStatus,
   type ManagedTlsMaterialRequest,
   type ManagedUserOperationKind,
   type ManagedUserOperations,
+  parseManagedStatus,
 } from './types.ts'
 
 export {
+  clampManagedResources,
   DEFAULT_MANAGED_SETTINGS,
   getManagedAllowedImages,
   isManagedImageAllowed,
   MANAGED_DOCKER_OPTION_DENYLIST,
   MANAGED_EXTRA_ENV_KEY_RE,
+  type ManagedBackupSettings,
+  type ManagedDockerOptions,
+  type ManagedSettings,
   MARIADB_ALLOWED_IMAGES,
   MARIADB_RESERVED_ENV_KEYS,
   MYSQL_ALLOWED_IMAGES,
   MYSQL_RESERVED_ENV_KEYS,
-  POSTGRES_ALLOWED_IMAGES,
-  POSTGRES_RESERVED_ENV_KEYS,
-  clampManagedResources,
   parseBackupSettings,
   parseManagedDockerOptions,
   parseManagedSettingsBase,
-  type ManagedBackupSettings,
-  type ManagedDockerOptions,
-  type ManagedSettings,
+  POSTGRES_ALLOWED_IMAGES,
+  POSTGRES_RESERVED_ENV_KEYS,
 } from './settings.ts'
+
+export {
+  defaultManagedImage,
+  defaultManagedRelease,
+  describeManagedImage,
+  isSameManagedSeries,
+  MANAGED_ENGINE_RELEASES,
+  managedAllowedImagesForEngine,
+  type ManagedEngineLifecycle,
+  type ManagedEngineRelease,
+  type ManagedImageDescriptor,
+  type ManagedImageVariant,
+  managedReleasesForEngine,
+  requireDefaultManagedImage,
+  resolveManagedImage,
+} from './releases.ts'
 
 export { postgresEngineSpec } from './postgres.ts'
 export type { PostgresManagedSettings } from './postgres.ts'
