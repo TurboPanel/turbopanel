@@ -17,7 +17,7 @@ import type {
   ServerHostResources,
 } from "../../lib/db/server-metadata.ts";
 import {
-  osMetadataFromColumns,
+  resolveServerOsForRead,
   parseServerHostResources,
   parseServerDockerMetadata,
   timeSyncFromColumns,
@@ -170,14 +170,17 @@ export async function resolveFleetPresence(
     const projection = projections.get(row.id);
     const metadata = (row.metadata ?? {}) as ServerMetadata;
     const resources = parseServerHostResources(metadata.resources) ?? null;
-    const os = osMetadataFromColumns({
-      osId: row.osId ?? null,
-      osFamily: row.osFamily ?? null,
-      osVersion: row.osVersion ?? null,
-      osCodename: row.osCodename ?? null,
-      osPrettyName: row.osPrettyName ?? null,
-      osArchitecture: row.osArchitecture ?? null,
-    }) ?? null;
+    const os = resolveServerOsForRead(
+      {
+        osId: row.osId ?? null,
+        osFamily: row.osFamily ?? null,
+        osVersion: row.osVersion ?? null,
+        osCodename: row.osCodename ?? null,
+        osPrettyName: row.osPrettyName ?? null,
+        osArchitecture: row.osArchitecture ?? null,
+      },
+      metadata,
+    ) ?? null;
     const timeSync = timeSyncFromColumns({
       timezone: row.timezone ?? null,
       isTimeSyncEnabled: row.isTimeSyncEnabled ?? null,

@@ -596,6 +596,19 @@ export function osColumnsFromMetadata(os: ServerOsMetadata): ServerOsColumns {
   }
 }
 
+/** Dedicated columns first; legacy `metadata.os` when columns are unset. */
+export function resolveServerOsForRead(
+  row: ServerOsColumns,
+  metadata: unknown,
+): ServerOsMetadata | undefined {
+  return (
+    osMetadataFromColumns(row) ??
+    parseServerOsMetadata(
+      isRecord(metadata) ? metadata.os : undefined,
+    )
+  )
+}
+
 /** Compose the API `os` object from dedicated columns. */
 export function osMetadataFromColumns(
   row: ServerOsColumns,

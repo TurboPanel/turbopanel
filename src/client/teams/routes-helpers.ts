@@ -17,5 +17,5 @@ export function teamsListPayload(
   if (!canManage) {
     return { teams: [] }
   }
-  return { teams: [...rows] }
+  return { teams: rows.map((row) => ({ ...row })) }
 }
