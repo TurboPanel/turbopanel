@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 import type { DaemonJwtKeyring } from "../authn/daemon-jwt-keyring.ts";
 import { deriveDaemonJwtKeyring } from "../authn/daemon-jwt-keyring.ts";
-import { parseSecretsEnv } from "../../client/authn/secrets.ts";
+import { parseSecretsFromEnv } from "../../client/authn/secrets.ts";
 import {
   createWorkersDb,
   type Db,
@@ -726,8 +726,11 @@ export class DaemonCellObject {
     if (this.#daemonJwtKeyring) return this.#daemonJwtKeyring;
     if (!this.#daemonJwtKeyringPromise) {
       this.#daemonJwtKeyringPromise = (async () => {
-        const secretsConfig = parseSecretsEnv(
-          this.#env.TURBOPANEL_SECRETS,
+        const secretsConfig = parseSecretsFromEnv(
+          {
+            TURBOPANEL_SECRET: this.#env.TURBOPANEL_SECRET,
+            TURBOPANEL_SECRETS: this.#env.TURBOPANEL_SECRETS,
+          },
           "workers",
         );
         const keyring = await deriveDaemonJwtKeyring(secretsConfig);

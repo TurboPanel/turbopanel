@@ -5,8 +5,9 @@ import {
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-  parseSecretsEnv,
+  parseSecretsFromEnv,
   type DerivedSecretsConfig,
+  type SecretsConfig,
 } from './client/authn/secrets.ts'
 import { createApp } from './app.ts'
 import { createDenoDb, endDbConnection, type Db } from './db.ts'
@@ -119,7 +120,7 @@ async function startOptionalCommandConsumer(opts: {
   db: Db
   commandQueue: CommandQueue
   daemonCellRegistry: ReturnType<typeof createRedisDaemonCellRegistry>
-  secretsConfig: ReturnType<typeof parseSecretsEnv>
+  secretsConfig: SecretsConfig
   dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
 }): Promise<{ close(): Promise<void> } | null> {
   if (isNoopCommandQueue(opts.commandQueue)) {
@@ -176,8 +177,11 @@ export async function startDenoServer(
   })
   await assertPasswordHasherAvailable()
   logInfo('auth', 'Argon2id password hasher available')
-  const secretsConfig = parseSecretsEnv(
-    Deno.env.get('TURBOPANEL_SECRETS'),
+  const secretsConfig = parseSecretsFromEnv(
+    {
+      TURBOPANEL_SECRET: Deno.env.get('TURBOPANEL_SECRET'),
+      TURBOPANEL_SECRETS: Deno.env.get('TURBOPANEL_SECRETS'),
+    },
     'deno',
   )
   const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')

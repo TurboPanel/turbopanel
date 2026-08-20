@@ -6,6 +6,7 @@ import {
   deriveSecretsConfig,
   MIN_SECRET_LENGTH,
   parseSecretsEnv,
+  parseSecretsFromEnv,
 } from "./secrets.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 
@@ -172,7 +173,7 @@ test("rejects missing secrets outside explicit dev mode (deno)", () => {
       assertThrows(
         () => parseSecretsEnv(undefined, "deno"),
         Error,
-        "TURBOPANEL_SECRETS is required",
+        "TURBOPANEL_SECRET is required",
       );
     },
   );
@@ -224,6 +225,44 @@ test("rejects a keyring entry without a version separator", () => {
     () => parseSecretsEnv(STRONG_A, "deno"),
     Error,
     'expected "version:secret"',
+  );
+});
+
+test("parseSecretsFromEnv treats TURBOPANEL_SECRET as version 1", () => {
+  const config = parseSecretsFromEnv({ TURBOPANEL_SECRET: STRONG_A }, "workers");
+  assertEquals(config.versioned, [{ version: 1, value: STRONG_A }]);
+});
+
+test("parseSecretsFromEnv uses TURBOPANEL_SECRETS as the full keyring when set", () => {
+  const config = parseSecretsFromEnv(
+    { TURBOPANEL_SECRET: STRONG_A, TURBOPANEL_SECRETS: `2:${STRONG_B},1:${STRONG_A}` },
+    "workers",
+  );
+  assertEquals(config.versioned.map((v) => v.version), [2, 1]);
+  assertEquals(config.versioned[0].value, STRONG_B);
+});
+
+test("parseSecretsFromEnv ignores empty TURBOPANEL_SECRETS and uses TURBOPANEL_SECRET", () => {
+  const config = parseSecretsFromEnv(
+    { TURBOPANEL_SECRET: STRONG_A, TURBOPANEL_SECRETS: "  " },
+    "workers",
+  );
+  assertEquals(config.versioned, [{ version: 1, value: STRONG_A }]);
+});
+
+test("parseSecretsFromEnv rejects a too-short TURBOPANEL_SECRET", () => {
+  assertThrows(
+    () => parseSecretsFromEnv({ TURBOPANEL_SECRET: TOO_SHORT }, "workers"),
+    Error,
+    "too short",
+  );
+});
+
+test("parseSecretsFromEnv requires TURBOPANEL_SECRET on workers when neither var is set", () => {
+  assertThrows(
+    () => parseSecretsFromEnv({}, "workers"),
+    Error,
+    "TURBOPANEL_SECRET is required",
   );
 });
 

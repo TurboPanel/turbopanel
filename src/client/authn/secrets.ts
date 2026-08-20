@@ -122,6 +122,35 @@ function parseVersionedSecrets(secretsEnv: string): VersionedSecret[] {
   return versioned;
 }
 
+export type SecretEnvVars = {
+  TURBOPANEL_SECRET?: string;
+  TURBOPANEL_SECRETS?: string;
+};
+
+/**
+ * Resolve the root secret from process / Worker env.
+ *
+ * `TURBOPANEL_SECRET` is the normal single current secret (bare value, version 1).
+ * `TURBOPANEL_SECRETS` is the optional versioned keyring (`2:new,1:old`) used
+ * when rotating. When the keyring is set it is the full list and takes
+ * precedence so a rotation deploy does not need to clear the singular binding.
+ */
+export function parseSecretsFromEnv(
+  vars: SecretEnvVars,
+  runtime: SecretsRuntime = "deno",
+): SecretsConfig {
+  const secrets = normalizeEnvValue(vars.TURBOPANEL_SECRETS);
+  if (secrets !== undefined) {
+    return parseSecretsEnv(secrets, runtime);
+  }
+  const secret = normalizeEnvValue(vars.TURBOPANEL_SECRET);
+  if (secret !== undefined) {
+    assertValidSecretValue(secret, "TURBOPANEL_SECRET");
+    return { versioned: [{ version: 1, value: secret }] };
+  }
+  return parseSecretsEnv(undefined, runtime);
+}
+
 export function parseSecretsEnv(
   secretsEnv: string | undefined,
   runtime: SecretsRuntime = "deno",
@@ -136,7 +165,7 @@ export function parseSecretsEnv(
 
   if (secretsEnv === undefined) {
     if (!allowEphemeralSecrets(runtime)) {
-      throw new Error("TURBOPANEL_SECRETS is required");
+      throw new Error("TURBOPANEL_SECRET is required");
     }
     compatLogWarn('auth', 'No secret configured — using ephemeral random secret (dev only)');
     versioned = [{ version: 1, value: generateSecret() }];
@@ -203,7 +232,7 @@ export async function deriveSecretsConfig(
 ): Promise<DerivedSecretsConfig> {
   if (config.versioned.length === 0) {
     throw new Error(
-      "No signing secret available — configure TURBOPANEL_SECRETS",
+      "No signing secret available — configure TURBOPANEL_SECRET",
     );
   }
 
@@ -226,7 +255,7 @@ export async function deriveEncryptionSecretsConfig(
 ): Promise<DerivedSecretsConfig> {
   if (config.versioned.length === 0) {
     throw new Error(
-      "No signing secret available — configure TURBOPANEL_SECRETS",
+      "No signing secret available — configure TURBOPANEL_SECRET",
     );
   }
 

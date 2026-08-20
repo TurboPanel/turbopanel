@@ -30,6 +30,7 @@ const ENV_KEYS = [
   'TURBOPANEL_DEV_SURFACE',
   'TURBOPANEL_MODE',
   'TURBOPANEL_UI_MODE',
+  'TURBOPANEL_SECRET',
   'TURBOPANEL_SECRETS',
 ] as const
 
@@ -159,6 +160,23 @@ describe('verifyLocalConsoleAuthorization', () => {
       })
       assertEquals(await verifyRequest(req, now), true)
     })
+  })
+
+  it('accepts HMAC signed with TURBOPANEL_SECRET when TURBOPANEL_SECRETS is unset', async () => {
+    const saved = new Map<string, string | undefined>()
+    for (const key of ENV_KEYS) saved.set(key, Deno.env.get(key))
+    try {
+      Deno.env.set('TURBOPANEL_DEV_SURFACE', '1')
+      Deno.env.delete('TURBOPANEL_SECRETS')
+      Deno.env.set('TURBOPANEL_SECRET', SECRET)
+      const req = await signedRequest()
+      assertEquals(await verifyRequest(req), true)
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) Deno.env.delete(key)
+        else Deno.env.set(key, value)
+      }
+    }
   })
 
   it('rejects expired skew', async () => {

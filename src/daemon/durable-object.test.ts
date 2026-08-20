@@ -4,7 +4,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  parseSecretsEnv,
+  parseSecretsFromEnv,
 } from "../client/authn/secrets.ts";
 import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import type { Db } from "../db.ts";
@@ -61,10 +61,14 @@ async function issueTestDaemonJwt(
   serverId: string,
   keyId: string,
 ): Promise<string> {
-  const secret = env.TURBOPANEL_SECRETS?.replace(/^1:/, "") ??
-    "aa_daemon_cell_vitest_secret_value_aaaa_b_pad_abcdefghij0";
   const secrets = await deriveDaemonJwtKeyring(
-    parseSecretsEnv(env.TURBOPANEL_SECRETS ?? `1:${secret}`, "workers"),
+    parseSecretsFromEnv(
+      {
+        TURBOPANEL_SECRET: env.TURBOPANEL_SECRET,
+        TURBOPANEL_SECRETS: env.TURBOPANEL_SECRETS,
+      },
+      "workers",
+    ),
   );
   const issued = await issueDaemonJwt(
     { sub: serverId, kid: keyId },

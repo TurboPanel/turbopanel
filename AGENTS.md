@@ -286,7 +286,8 @@ vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/node/current/bin:/opt/turbop
   config dir (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout
   root. Beside those env files, Ansible holds `.instance_secrets` (versioned
   keyring, `root:<turbopanel_group>` `0640`, ordered `<version>:<value>`, first
-  entry current); it is injected into `runtime.dev-vars` as `TURBOPANEL_SECRETS`,
+  entry current); it is injected into `runtime.dev-vars` as `TURBOPANEL_SECRETS`
+  (the optional rotation keyring; `TURBOPANEL_SECRET` is the normal single secret),
   and rotation is gated by the `turbopanel_instance_secret_rotate` extra-var.
   Semantics:
   `src/client/authn/AGENTS.md`. Standalone scripts
@@ -1126,7 +1127,7 @@ sequenceDiagram
 - `src/daemon/authn/daemon-jwt.ts` — daemon JWT issue/verify (EdDSA/Ed25519,
   15-minute lifetime)
 - `src/daemon/authn/daemon-jwt-keyring.ts` — deterministic Ed25519 keyring
-  derived from `TURBOPANEL_SECRETS`; `deriveDaemonJwtKeyring`,
+  derived from `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`; `deriveDaemonJwtKeyring`,
   `buildJwksDocument`
 - `src/daemon/authn/daemon-state.ts` — `ServerDaemonState` / `ServerDaemonKey`
   types and parsers for `server.daemon` jsonb

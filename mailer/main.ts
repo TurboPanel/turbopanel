@@ -10,7 +10,7 @@ import {
 } from '../src/lib/settings/email-settings.ts'
 import {
   deriveEncryptionSecretsConfig,
-  parseSecretsEnv,
+  parseSecretsFromEnv,
 } from '../src/client/authn/secrets.ts'
 import type { DerivedSecretsConfig } from '../src/client/authn/secrets.ts'
 import type { MailerSender } from '../src/lib/email/sender-types.ts'
@@ -178,10 +178,11 @@ const db = createMailerDb()
 async function resolveMailerDataEncryptionSecrets(
   env: Record<string, string | undefined>,
 ): Promise<DerivedSecretsConfig | undefined> {
-  const secrets = env.TURBOPANEL_SECRETS?.trim()
-  if (!secrets) return undefined
+  const keyring = env.TURBOPANEL_SECRETS?.trim()
+  const secret = env.TURBOPANEL_SECRET?.trim()
+  if (!keyring && !secret) return undefined
   try {
-    const config = parseSecretsEnv(env.TURBOPANEL_SECRETS, 'deno')
+    const config = parseSecretsFromEnv(env, 'deno')
     return await deriveEncryptionSecretsConfig(config, 'data-encryption')
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)

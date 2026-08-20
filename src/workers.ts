@@ -4,8 +4,9 @@ import { deriveDaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-  parseSecretsEnv,
+  parseSecretsFromEnv,
   type DerivedSecretsConfig,
+  type SecretsConfig,
 } from './client/authn/secrets.ts'
 import { createApp, type AppEnv } from './app.ts'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
@@ -55,7 +56,7 @@ let cachedOtpVerifierSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
-let cachedSecretsConfig: ReturnType<typeof parseSecretsEnv> | null = null
+let cachedSecretsConfig: SecretsConfig | null = null
 let cachedCommandQueue: CommandQueue | null = null
 let cachedServerMetricsStore: ServerMetricsStore | null = null
 let cachedAuthRateLimiter: AuthRateLimiter | null = null
@@ -80,8 +81,11 @@ export function resetWorkerAppCachesForTests(): void {
   cachedDaemonCellRegistryFactory = null
 }
 async function initWorkerApp(env: CloudflareBindings) {
-  const secretsConfig = parseSecretsEnv(
-    env.TURBOPANEL_SECRETS,
+  const secretsConfig = parseSecretsFromEnv(
+    {
+      TURBOPANEL_SECRET: env.TURBOPANEL_SECRET,
+      TURBOPANEL_SECRETS: env.TURBOPANEL_SECRETS,
+    },
     'workers',
   )
   configureArgon2idWorkFactor({

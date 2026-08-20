@@ -89,32 +89,34 @@ Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) author
 
 ### Session secret configuration
 
-Both runtimes read the same root secret env var (Better Auth-style keyring semantics):
+Both runtimes resolve the same root secret via `parseSecretsFromEnv()`:
 
-- **`TURBOPANEL_SECRETS`** — versioned list in the **exact order given**. The **first entry is current/signing**; the rest are decrypt/verify-only fallbacks. Versions are labels for envelopes (`tpsecret.v<n>…`); **entry order** decides current vs fallback — not “highest version wins.” Operators should list highest version first (e.g. `2:secret,1:secret`); if entries are not already in descending-version order, boot logs a **warning only** and still treats the written first entry as current.
+- **`TURBOPANEL_SECRET`** — the normal single current secret (bare 48-char value, treated as version 1). This is what production Workers bind in the Cloudflare dashboard.
+- **`TURBOPANEL_SECRETS`** — optional versioned keyring for rotation, in the **exact order given**. The **first entry is current/signing**; the rest are decrypt/verify-only fallbacks. Versions are labels for envelopes (`tpsecret.v<n>…`); **entry order** decides current vs fallback — not “highest version wins.” Operators should list highest version first (e.g. `2:secret,1:secret`); if entries are not already in descending-version order, boot logs a **warning only** and still treats the written first entry as current. When this var is set it is the full keyring and takes precedence over `TURBOPANEL_SECRET`.
 
 **First entry signs / all keys verify.** Every key yields a stable `kid`; JWT headers include the active `kid`.
 
 `deriveSecretsConfig()` HKDF-derives HMAC keys for `session-signing` and `daemon-challenge-signing`. `deriveEncryptionSecretsConfig()` derives AES-256-GCM keys for `data-encryption`. The **daemon-facing JWT** uses `deriveDaemonJwtKeyring()` (`src/daemon/authn/daemon-jwt-keyring.ts`: Ed25519, HKDF salt `turbopanel`, info `daemon-jwt-eddsa`) — the legacy HMAC `daemon-jwt-signing` purpose is no longer used for daemon JWTs.
 
-**JWKS** (`GET /api/daemon/v1/jwks.json`) publishes all currently-valid **public** Ed25519 verification keys only — never `TURBOPANEL_SECRETS` or any HMAC key material. Old keys stay in JWKS during rotation and are removed once old tokens expire (≤15 min).
+**JWKS** (`GET /api/daemon/v1/jwks.json`) publishes all currently-valid **public** Ed25519 verification keys only — never `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` or any HMAC key material. Old keys stay in JWKS during rotation and are removed once old tokens expire (≤15 min).
 
-**Rotation:** add a new active key at the highest version, deploy, old tokens verify during their ≤15-min window, then drop the old key from the keyring/JWKS.
+**Rotation:** set `TURBOPANEL_SECRETS` to `2:new,1:old`, deploy, old tokens verify during their ≤15-min window, then drop the old key from the keyring/JWKS (or go back to a single `TURBOPANEL_SECRET`).
 
 | Variable | Behaviour |
 | --- | --- |
-| `TURBOPANEL_SECRETS` | Versioned list `2:secret,1:secret` — order as written; first entry is current/signing |
+| `TURBOPANEL_SECRET` | Single current secret (bare value → version 1). Required in production unless the keyring is set. |
+| `TURBOPANEL_SECRETS` | Optional versioned list `2:secret,1:secret` — order as written; first entry is current/signing. Used when rotating. |
 
 | Runtime | Source |
 | --- | --- |
-| Deno | `TURBOPANEL_SECRETS` env var (`instance-launch` injects it on managed hosts) |
-| Workers | Same name as a Wrangler binding / `.dev.vars` (Tilt `sync-env.sh` writes it from `dev/.env`) |
+| Deno | `TURBOPANEL_SECRET` and/or `TURBOPANEL_SECRETS` (`instance-launch` injects the keyring on managed hosts) |
+| Workers | Same names as Wrangler secrets / `.dev.vars` (Tilt `sync-env.sh` writes them from `dev/.env`) |
 
 **Root secret format:** 48 characters from `[A-Za-z0-9_]`, always at least one `_` between positions 2–47 (never in position 1 or 48). Implementation: `scripts/generate-secret.mjs` (re-exported from `src/generate-secret.ts`). Generate with `pnpm generate:secret` in `instance/`. HKDF uses the UTF-8 bytes of the string as key material (`deriveKey` in `src/client/authn/secrets.ts`). Same helper (`generatePassword`) is the canonical generator for random passwords.
 
-`TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when it is missing. Co-located dev Ansible (`instance-launch`) persists `/etc/turbopanel/instance/.instance_secrets` (versioned keyring, `<version>:<value>` comma-separated, highest first) — `root:<turbopanel_group>` mode `0640` so the dev console can HMAC Local-Console developer API calls — and emits it into `runtime.dev-vars` as `TURBOPANEL_SECRETS` for **both** Deno and Workers runtimes so session cookies and daemon JWTs survive runtime toggles; the Deno unit also loads `runtime.dev-vars` via `EnvironmentFile`. Rotation is the opt-in extra-var `turbopanel_instance_secret_rotate` (ordinary converges never rotate). Without that file, Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) falls back to an ephemeral random key (sessions do not survive restarts or switches).
+`TURBOPANEL_SECRET` (or `TURBOPANEL_SECRETS` while rotating) must be set in production. Workers always fail fast when both are missing. Co-located dev Ansible (`instance-launch`) persists `/etc/turbopanel/instance/.instance_secrets` (versioned keyring, `<version>:<value>` comma-separated, highest first) — `root:<turbopanel_group>` mode `0640` so the dev console can HMAC Local-Console developer API calls — and emits it into `runtime.dev-vars` as `TURBOPANEL_SECRETS` for **both** Deno and Workers runtimes so session cookies and daemon JWTs survive runtime toggles; the Deno unit also loads `runtime.dev-vars` via `EnvironmentFile`. Rotation is the opt-in extra-var `turbopanel_instance_secret_rotate` (ordinary converges never rotate). Without that file, Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) falls back to an ephemeral random key (sessions do not survive restarts or switches).
 
-Add a `TURBOPANEL_SECRETS` keyring line to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
+Add a `TURBOPANEL_SECRET=` line (or a `TURBOPANEL_SECRETS` keyring) to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
 
 ### Local-Console HMAC (co-located dev terminal)
 
@@ -143,7 +145,7 @@ Local-Console auth is Deno + developer-surface only; it never applies on Workers
 
 ### Data encryption
 
-`tpsecret` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords, email secrets). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v<version>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded version enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Every TurboPanel-authored serialized secret shares grammar `<scheme>.v<version>.<fields…>`; `src/client/authn/envelope.ts` is the single owner of format/parse (`formatEnvelope` / `parseEnvelope` / `hasEnvelopeScheme`) — no module hand-rolls `split(".")`. Bump the version token when the payload layout changes; the scheme identifies the purpose. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRETS` root of trust yields a rollable data-encryption keyring. A credential sealed as `tpsecret` is server-agnostic at rest and can be delivered to any authorized daemon.
+`tpsecret` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords, email secrets). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v<version>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded version enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Every TurboPanel-authored serialized secret shares grammar `<scheme>.v<version>.<fields…>`; `src/client/authn/envelope.ts` is the single owner of format/parse (`formatEnvelope` / `parseEnvelope` / `hasEnvelopeScheme`) — no module hand-rolls `split(".")`. Bump the version token when the payload layout changes; the scheme identifies the purpose. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRET` root of trust yields a rollable data-encryption keyring. A credential sealed as `tpsecret` is server-agnostic at rest and can be delivered to any authorized daemon.
 
 **OTP verifiers** use `tpotp.v<n>.<hmacHex>` (HMAC material unchanged): direct-version lookup plus a rotation-safety sweep across remaining keyring entries.
 

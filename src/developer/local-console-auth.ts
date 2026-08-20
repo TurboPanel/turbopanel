@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 import { isDeveloperSurfaceEnabled } from '../dev-mode.ts'
-import { parseSecretsEnv } from '../client/authn/secrets.ts'
+import { parseSecretsFromEnv } from '../client/authn/secrets.ts'
 
 export const LOCAL_CONSOLE_SCHEME = 'Local-Console'
 export const LOCAL_CONSOLE_MAX_SKEW_MS = 60_000
@@ -18,12 +18,13 @@ function resolveLocalConsoleRootSecret(): string | undefined {
   if (typeof Deno === 'undefined') return undefined
   try {
     // Share the same validated parse/selection as the rest of the process.
-    // Order-as-written is authoritative: `parseSecretsEnv` keeps versioned
-    // entries in list order, so entry [0] is the current signing secret.
     // Invalid/weak configurations throw and disable local-console auth rather
     // than falling back to a loose parse.
-    const config = parseSecretsEnv(
-      Deno.env.get('TURBOPANEL_SECRETS'),
+    const config = parseSecretsFromEnv(
+      {
+        TURBOPANEL_SECRET: Deno.env.get('TURBOPANEL_SECRET'),
+        TURBOPANEL_SECRETS: Deno.env.get('TURBOPANEL_SECRETS'),
+      },
       'deno',
     )
     return config.versioned[0]?.value
