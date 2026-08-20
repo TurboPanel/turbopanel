@@ -553,6 +553,15 @@ export function bindingDatabaseTargetHttpStatus(
   return 400
 }
 
+function uniqueViolationMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    const message = (err as { message: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return ''
+}
+
 export function mapBindingUniqueViolation(
   err: unknown,
 ):
@@ -560,7 +569,7 @@ export function mapBindingUniqueViolation(
   | { error: typeof BINDING_KEY_PREFIX_IN_USE_ERROR; status: 409 }
   | null {
   if (!isPostgresUniqueViolation(err)) return null
-  const message = err instanceof Error ? err.message : String(err)
+  const message = uniqueViolationMessage(err)
   if (message.includes('uniq_binding_service_engine_defaults')) {
     return { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR, status: 409 }
   }
