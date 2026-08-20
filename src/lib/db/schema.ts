@@ -185,11 +185,9 @@ export const tls = pgTable(
 )
 /**
  * Durable Organization CA rotation journal (one in-flight rotation per org).
- * Physical name is one word (`tlsrotation`) per the table-naming rule; the
- * unique index keeps the `tls_rotation` vocabulary from the rotation API.
  */
-export const tlsRotation = pgTable(
-  'tlsrotation',
+export const rotation = pgTable(
+  'rotation',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -216,20 +214,20 @@ export const tlsRotation = pgTable(
     results: jsonb().default([]),
   },
   (table) => [
-    index('idx_tls_rotation_organization_id').using(
+    index('idx_rotation_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: 'tls_rotation_organization_id_organization_id_fk',
+      name: 'rotation_organization_id_organization_id_fk',
     }).onDelete('cascade'),
-    uniqueIndex('uniq_tls_rotation_inflight_organization')
+    uniqueIndex('uniq_rotation_inflight_organization')
       .on(table.organizationId)
       .where(sql`${table.state} = 'in_progress'`),
     check(
-      'tls_rotation_state_check',
+      'rotation_state_check',
       sql`${table.state} IN ('in_progress','awaiting_retire','completed','failed')`,
     ),
   ],
@@ -1155,12 +1153,12 @@ export const node = pgTable(
 )
 /**
  * Tracking row for Organization-CA-signed managed leaves (ProxySQL frontend
- * and per-node engine). Physical name is one word (`tlsleaf`). Re-issuance
- * upserts rather than appending history (partial uniques below). Declared
- * after `node` / `managed` / `server` so those FKs resolve.
+ * and per-node engine). Re-issuance upserts rather than appending history
+ * (partial uniques below). Declared after `node` / `managed` / `server` so
+ * those FKs resolve.
  */
-export const tlsLeaf = pgTable(
-  'tlsleaf',
+export const leaf = pgTable(
+  'leaf',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -1184,51 +1182,51 @@ export const tlsLeaf = pgTable(
       .notNull(),
   },
   (table) => [
-    index('idx_tlsleaf_not_after').using(
+    index('idx_leaf_not_after').using(
       'btree',
       table.notAfter.asc().nullsLast().op('timestamptz_ops'),
     ),
-    index('idx_tlsleaf_organization_id').using(
+    index('idx_leaf_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops'),
     ),
-    uniqueIndex('uniq_tlsleaf_ingress_server')
+    uniqueIndex('uniq_leaf_ingress_server')
       .on(table.serverId)
       .where(sql`${table.kind} = 'ingress'`),
-    uniqueIndex('uniq_tlsleaf_engine_node')
+    uniqueIndex('uniq_leaf_engine_node')
       .on(table.nodeId)
       .where(sql`${table.kind} = 'engine'`),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: 'tls_leaf_organization_id_organization_id_fk',
+      name: 'leaf_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'tls_leaf_server_id_server_id_fk',
+      name: 'leaf_server_id_server_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],
-      name: 'tls_leaf_managed_id_managed_id_fk',
+      name: 'leaf_managed_id_managed_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.nodeId],
       foreignColumns: [node.id],
-      name: 'tls_leaf_node_id_node_id_fk',
+      name: 'leaf_node_id_node_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.caId],
       foreignColumns: [tls.id],
-      name: 'tls_leaf_ca_id_tls_id_fk',
+      name: 'leaf_ca_id_tls_id_fk',
     }).onDelete('cascade'),
     check(
-      'tls_leaf_kind_check',
+      'leaf_kind_check',
       sql`${table.kind} IN ('ingress','engine')`,
     ),
     check(
-      'tls_leaf_kind_keys_check',
+      'leaf_kind_keys_check',
       sql`(
         (${table.kind} = 'ingress' AND ${table.nodeId} IS NULL AND ${table.managedId} IS NULL)
         OR

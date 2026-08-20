@@ -321,7 +321,7 @@ export const tlsPaths = {
       summary:
         "Begin Organization CA rotation: mint generation N+1, retire N, journal + fan-out",
       description:
-        "Lease-guarded. Mints a new active Organization CA, retires the prior generation into the overlap trust bundle, records a `tlsrotation` journal row, and fans one bounded batch of `managed.apply` / `managed.ingress.reconcile` (plus binding rematerialize) across the org. Repeat POST while `in_progress` to resume from the stored cursor without minting another generation. Does not enqueue `environment.deploy`. Concurrent rotate while `awaiting_retire` (or mint still in flight) returns 409 `ca_rotation_in_progress`.",
+        "Lease-guarded. Mints a new active Organization CA, retires the prior generation into the overlap trust bundle, records a `rotation` journal row, and fans one bounded batch of `managed.apply` / `managed.ingress.reconcile` (plus binding rematerialize) across the org. Repeat POST while `in_progress` to resume from the stored cursor without minting another generation. Does not enqueue `environment.deploy`. Concurrent rotate while `awaiting_retire` (or mint still in flight) returns 409 `ca_rotation_in_progress`.",
       security: [{ cookieAuth: [] }],
       responses: {
         200: {

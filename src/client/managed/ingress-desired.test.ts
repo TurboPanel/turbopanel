@@ -21,6 +21,7 @@ import {
   datacenter,
   environment,
   ip,
+  leaf,
   managed,
   network,
   node,
@@ -31,7 +32,6 @@ import {
   service,
   task,
   tls,
-  tlsLeaf,
   workspace,
 } from "../../lib/db/schema.ts";
 import { postgresEngineSpec } from "../../lib/managed/postgres.ts";
@@ -504,9 +504,9 @@ test("exposure disabled omits bindAddresses — no public ProxySQL publish", asy
       assertEquals(built.identity?.composeServiceName, "proxysql");
       assertEquals(built.identity?.containerName.endsWith("-sql"), true);
       const mintedLeaves = await db
-        .select({ id: tlsLeaf.id })
-        .from(tlsLeaf)
-        .where(eq(tlsLeaf.serverId, serverId));
+        .select({ id: leaf.id })
+        .from(leaf)
+        .where(eq(leaf.serverId, serverId));
       assertEquals(mintedLeaves.length, 0);
     },
   );

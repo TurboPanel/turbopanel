@@ -235,7 +235,7 @@ export type PreparedManagedMemberApply = {
   memberId: string
   serverId: string
   payload: ManagedApplyCommandPayload
-  /** Minted engine leaf; committed to `tlsleaf` only after command success. */
+  /** Minted engine leaf; committed to `leaf` only after command success. */
   pendingTlsLeaf?: UpsertTlsLeafTrackingParams
 }
 

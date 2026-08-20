@@ -378,7 +378,7 @@ without a data migration. Multi-member apply also ensures a platform
 **per-member** `postgresql.conf` + `pg_hba.conf` (platform-owned HBA), and ships
 an org-CA engine leaf for `sslmode=verify-full` on both the ProxySQL backend leg
 and `primary_conninfo`. Leaf `notAfter` + signing `ca_generation` are persisted
-on `tlsleaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`
+on `leaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`
 command metadata — see `src/lib/tls/AGENTS.md` → Leaf tracking + renewal sweep)
 — not at payload generation. Member CRUD: `GET/POST …/managed/members`
 (`replicaClass` default `failover`), `PATCH/DELETE …/members/:memberId`

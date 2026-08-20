@@ -10,6 +10,7 @@ import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db
 import {
   container,
   environment,
+  leaf,
   managed,
   organization,
   principal,
@@ -17,7 +18,6 @@ import {
   server,
   service,
   tls,
-  tlsLeaf,
   workspace,
 } from '../../lib/db/schema.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
@@ -580,9 +580,9 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
     assertEquals(prepared.members[0]!.pendingTlsLeaf?.kind, 'engine')
 
     const mintedLeaves = await db
-      .select({ id: tlsLeaf.id })
-      .from(tlsLeaf)
-      .where(eq(tlsLeaf.organizationId, organizationId))
+      .select({ id: leaf.id })
+      .from(leaf)
+      .where(eq(leaf.organizationId, organizationId))
     assertEquals(mintedLeaves.length, 0)
 
     // Re-apply reuses the same active CA (no second row).

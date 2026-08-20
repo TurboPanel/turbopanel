@@ -6,7 +6,7 @@
 import { assertEquals } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { CommandQueue } from "../../lib/commands/queue.ts";
-import { tlsLeaf } from "../../lib/db/schema.ts";
+import { leaf } from "../../lib/db/schema.ts";
 import {
   endLeafRenewalSweep,
   isTlsLeafDue,
@@ -216,7 +216,7 @@ test("loadDueTlsLeaves is a single indexed keyset query (never OFFSET, never per
       id: "11111111-1111-4111-8111-111111111111",
     },
   });
-  assertEquals(recorded.from, tlsLeaf);
+  assertEquals(recorded.from, leaf);
   assertEquals(recorded.joins.includes("leftJoin"), true);
   assertEquals(recorded.usedOffset, false);
   assertEquals(recorded.limit, LEAF_RENEWAL_BATCH_SIZE);
@@ -289,7 +289,7 @@ function createResumableSweepMemoryDb(leaves: DueTlsLeafRow[]): {
     }),
     select: () => ({
       from: (table: unknown) => {
-        if (table === tlsLeaf) {
+        if (table === leaf) {
           return {
             leftJoin: () => ({
               where: () => ({

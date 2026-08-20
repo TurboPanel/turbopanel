@@ -4,7 +4,7 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import type { Db } from "../../db.ts";
-import { tlsLeaf } from "../../lib/db/schema.ts";
+import { leaf } from "../../lib/db/schema.ts";
 import {
   organizationCaLeafNotAfterIso,
   parsePendingTlsLeafTracking,
@@ -32,7 +32,7 @@ function recordingUpsertDb(): { db: Db; conflicts: RecordedConflict[] } {
   const conflicts: RecordedConflict[] = [];
   const db = {
     insert: (table: unknown) => {
-      assertEquals(table, tlsLeaf);
+      assertEquals(table, leaf);
       return {
         values: () => ({
           onConflictDoUpdate: (conflict: RecordedConflict) => {
@@ -68,7 +68,7 @@ test("upsertTlsLeafTracking ingress conflicts on serverId where kind=ingress", a
     notAfter: "2026-04-01T00:00:00.000Z",
   });
   assertEquals(conflicts.length, 1);
-  assertEquals(conflicts[0]?.target, tlsLeaf.serverId);
+  assertEquals(conflicts[0]?.target, leaf.serverId);
   assertEquals(typeof conflicts[0]?.set.notAfter, "string");
 });
 
@@ -85,7 +85,7 @@ test("upsertTlsLeafTracking engine conflicts on nodeId where kind=engine", async
     notAfter: "2026-04-01T00:00:00.000Z",
   });
   assertEquals(conflicts.length, 1);
-  assertEquals(conflicts[0]?.target, tlsLeaf.nodeId);
+  assertEquals(conflicts[0]?.target, leaf.nodeId);
 });
 
 test("upsertTlsLeafTracking engine requires nodeId and managedId", async () => {
@@ -153,5 +153,5 @@ test("commitPendingTlsLeafTracking upserts only when metadata is valid", async (
     true,
   );
   assertEquals(conflicts.length, 1);
-  assertEquals(conflicts[0]?.target, tlsLeaf.serverId);
+  assertEquals(conflicts[0]?.target, leaf.serverId);
 });

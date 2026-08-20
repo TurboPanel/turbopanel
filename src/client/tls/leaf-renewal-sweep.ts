@@ -1,7 +1,7 @@
 /**
  * Organization-CA leaf renewal sweep.
  *
- * Scans `tlsleaf` expiry-ordered (org-agnostic, keyset cursor, never OFFSET)
+ * Scans `leaf` expiry-ordered (org-agnostic, keyset cursor, never OFFSET)
  * and re-enqueues the existing `managed.apply` / `managed.ingress.reconcile`
  * paths so leaves are reminted. Concurrent Workers isolates / Deno ticks
  * share a `setting`-table CAS lease (`LEAF_RENEWAL_SWEEP_LOCK`) that also
@@ -14,7 +14,7 @@ import type { AppEnv } from "../../app.ts";
 import type { DerivedSecretsConfig, SecretsConfig } from "../authn/secrets.ts";
 import type { Db } from "../../db.ts";
 import type { CommandQueue } from "../../lib/commands/queue.ts";
-import { setting, tls, tlsLeaf } from "../../lib/db/schema.ts";
+import { leaf, setting, tls } from "../../lib/db/schema.ts";
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from "../../lib/tls/self-signed.ts";
 import { enqueueManagedIngressReconcile } from "../managed/ingress-desired.ts";
 import { enqueueApplyForManagedCluster } from "./rotation-fanout.ts";
@@ -291,15 +291,15 @@ export async function resetLeafRenewalSweepLockForTests(db?: Db): Promise<void> 
 
 function leafRenewalKeysetCondition(cursor: LeafRenewalCursor) {
   return or(
-    gt(tlsLeaf.notAfter, cursor.notAfter),
-    and(eq(tlsLeaf.notAfter, cursor.notAfter), gt(tlsLeaf.id, cursor.id)),
+    gt(leaf.notAfter, cursor.notAfter),
+    and(eq(leaf.notAfter, cursor.notAfter), gt(leaf.id, cursor.id)),
   );
 }
 
 function dueLeafPredicate(deadlineIso: string) {
   return or(
-    lt(tlsLeaf.notAfter, deadlineIso),
-    sql`${tlsLeaf.caGeneration} IS DISTINCT FROM ${tls.caGeneration}`,
+    lt(leaf.notAfter, deadlineIso),
+    sql`${leaf.caGeneration} IS DISTINCT FROM ${tls.caGeneration}`,
   );
 }
 
@@ -324,26 +324,26 @@ export async function loadDueTlsLeaves(
 
   return await db
     .select({
-      id: tlsLeaf.id,
-      organizationId: tlsLeaf.organizationId,
-      serverId: tlsLeaf.serverId,
-      kind: tlsLeaf.kind,
-      managedId: tlsLeaf.managedId,
-      nodeId: tlsLeaf.nodeId,
-      caGeneration: tlsLeaf.caGeneration,
-      notAfter: tlsLeaf.notAfter,
+      id: leaf.id,
+      organizationId: leaf.organizationId,
+      serverId: leaf.serverId,
+      kind: leaf.kind,
+      managedId: leaf.managedId,
+      nodeId: leaf.nodeId,
+      caGeneration: leaf.caGeneration,
+      notAfter: leaf.notAfter,
     })
-    .from(tlsLeaf)
+    .from(leaf)
     .leftJoin(
       tls,
       and(
-        eq(tls.organizationId, tlsLeaf.organizationId),
+        eq(tls.organizationId, leaf.organizationId),
         eq(tls.source, "organization_ca"),
         eq(tls.caState, "active"),
       ),
     )
     .where(whereClause)
-    .orderBy(asc(tlsLeaf.notAfter), asc(tlsLeaf.id))
+    .orderBy(asc(leaf.notAfter), asc(leaf.id))
     .limit(limit);
 }
 
@@ -359,13 +359,13 @@ export async function countDueTlsLeavesForOrganization(
   const deadlineIso = leafRenewalDeadlineIso(params.nowMs);
   const [row] = await db
     .select({ dueCount: count() })
-    .from(tlsLeaf)
+    .from(leaf)
     .where(
       and(
-        eq(tlsLeaf.organizationId, organizationId),
+        eq(leaf.organizationId, organizationId),
         or(
-          lt(tlsLeaf.notAfter, deadlineIso),
-          sql`${tlsLeaf.caGeneration} IS DISTINCT FROM ${params.activeCaGeneration}`,
+          lt(leaf.notAfter, deadlineIso),
+          sql`${leaf.caGeneration} IS DISTINCT FROM ${params.activeCaGeneration}`,
         ),
       ),
     );

@@ -1,16 +1,16 @@
 /**
  * Persist Organization-CA-signed managed leaf expiry + signing generation.
  *
- * `tlsleaf` is successfully **deployed** leaf state, not payload generation.
+ * `leaf` is successfully **deployed** leaf state, not payload generation.
  * `issueLeafCertificate` itself is fire-and-forget; mint sites stash the new
  * leaf on command metadata (`pendingTlsLeaf`) and the command consumer upserts
  * only after `managed.apply` / `managed.ingress.reconcile` succeed. Re-issuance
- * overwrites via the partial unique indexes on `tlsleaf`
- * (`uniq_tlsleaf_ingress_server` / `uniq_tlsleaf_engine_node`) — no history.
+ * overwrites via the partial unique indexes on `leaf`
+ * (`uniq_leaf_ingress_server` / `uniq_leaf_engine_node`) — no history.
  */
 import { sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
-import { tlsLeaf } from "../../lib/db/schema.ts";
+import { leaf } from "../../lib/db/schema.ts";
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from "../../lib/tls/self-signed.ts";
 
 const MS_PER_DAY = 86_400_000;
@@ -122,7 +122,7 @@ export function parsePendingTlsLeafTracking(
 }
 
 /**
- * Upsert `tlsleaf` from command metadata. Returns `false` when no valid
+ * Upsert `leaf` from command metadata. Returns `false` when no valid
  * pending leaf is present (enqueue/terminal failure must never call this).
  */
 export async function commitPendingTlsLeafTracking(
@@ -146,7 +146,7 @@ export async function upsertTlsLeafTracking(
   const issuedAt = params.issuedAt ?? new Date().toISOString();
   if (params.kind === "ingress") {
     await db
-      .insert(tlsLeaf)
+      .insert(leaf)
       .values({
         organizationId: params.organizationId,
         serverId: params.serverId,
@@ -159,8 +159,8 @@ export async function upsertTlsLeafTracking(
         issuedAt,
       })
       .onConflictDoUpdate({
-        target: tlsLeaf.serverId,
-        targetWhere: sql`${tlsLeaf.kind} = 'ingress'`,
+        target: leaf.serverId,
+        targetWhere: sql`${leaf.kind} = 'ingress'`,
         set: {
           organizationId: params.organizationId,
           caId: params.caId,
@@ -177,7 +177,7 @@ export async function upsertTlsLeafTracking(
   }
 
   await db
-    .insert(tlsLeaf)
+    .insert(leaf)
     .values({
       organizationId: params.organizationId,
       serverId: params.serverId,
@@ -190,8 +190,8 @@ export async function upsertTlsLeafTracking(
       issuedAt,
     })
     .onConflictDoUpdate({
-      target: tlsLeaf.nodeId,
-      targetWhere: sql`${tlsLeaf.kind} = 'engine'`,
+      target: leaf.nodeId,
+      targetWhere: sql`${leaf.kind} = 'engine'`,
       set: {
         organizationId: params.organizationId,
         serverId: params.serverId,

@@ -57,10 +57,10 @@ Read-only reference — no behavior claims beyond today:
   `../../client/managed/apply-prepare.ts`
   (leaf signing uses `signer.*`; `caCertPem` / `<PREFIX>_CA_CERT` ship
   `trustBundlePem`; minted engine-leaf details ride command metadata as
-  `pendingTlsLeaf` and are upserted onto `tlsleaf` `kind='engine'` only after
+  `pendingTlsLeaf` and are upserted onto `leaf` `kind='engine'` only after
   `managed.apply` succeeds)
 - `buildOrgTlsForServer` in `../../client/managed/ingress-desired.ts`
-  (same pending-metadata path for `tlsleaf` `kind='ingress'` on
+  (same pending-metadata path for `leaf` `kind='ingress'` on
   `managed.ingress.reconcile` success)
 - `computeBindingVariableSet` in `../../client/bindings/materialize.ts`
 -   `GET /tls/ca` / `POST /tls/ca/rotate` / `GET /tls/ca/rotation` /
@@ -70,7 +70,7 @@ Read-only reference — no behavior claims beyond today:
   and rematerializes bindings — see `../commands/AGENTS.md`. Repeat POST
   while `in_progress` resumes the stored cursor without minting another
   generation. `GET /tls/ca` also returns `leafHealth: { dueCount,
-  caGeneration, caNotAfter }` (one indexed COUNT on `tlsleaf` for this org
+  caGeneration, caNotAfter }` (one indexed COUNT on `leaf` for this org
   plus the active Organization CA generation and expiry). `TlsPublicRow`
   includes `caGeneration`. `POST /tls/ca/retire`
   advances `retired` → `revoked` only after every tracked command succeeded
@@ -105,7 +105,7 @@ CA reference out of `src/lib/tls/` / `src/client/tls/` over punching a hole.
 
 Managed leaves from `issueLeafCertificate` are 90-day and used to be minted
 transiently on every `managed.apply` / `managed.ingress.reconcile`. They are
-now tracked in **`tlsleaf`** (`src/lib/db/schema.ts` `tlsLeaf`) as
+now tracked in **`leaf`** (`src/lib/db/schema.ts` `leaf`) as
 successfully **deployed** leaf state — not payload generation:
 
 | Column | Role |
@@ -114,11 +114,11 @@ successfully **deployed** leaf state — not payload generation:
 | `ca_id` / `ca_generation` | signing Organization CA row + generation |
 | `not_after` | leaf expiry (`timestamptz`) |
 
-Re-issuance **upserts** (partial uniques `uniq_tlsleaf_ingress_server` /
-`uniq_tlsleaf_engine_node`) — no history. Helpers:
+Re-issuance **upserts** (partial uniques `uniq_leaf_ingress_server` /
+`uniq_leaf_engine_node`) — no history. Helpers:
 `src/client/tls/leaf-tracking.ts`. Mint sites (`buildOrgTlsMaterialForServer` /
 `buildOrgTlsForServer`) persist freshly minted details as command metadata
-(`pendingTlsLeaf`); the command consumer upserts `tlsleaf` only on success of
+(`pendingTlsLeaf`); the command consumer upserts `leaf` only on success of
 `managed.apply` / `managed.ingress.reconcile`. Enqueue or terminal failure
 leaves the previous deployed `notAfter` visible to `loadDueTlsLeaves` /
 `countDueTlsLeavesForOrganization`.

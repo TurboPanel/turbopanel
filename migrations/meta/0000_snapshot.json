@@ -1,5 +1,5 @@
 {
-  "id": "8605ec19-f904-486b-a965-bdb6bc27e1ca",
+  "id": "ec2fc58b-5557-490b-ad13-a8ad7dd81551",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2154,6 +2154,221 @@
       },
       "isRLSEnabled": false
     },
+    "public.leaf": {
+      "name": "leaf",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "managed_id": {
+          "name": "managed_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "node_id": {
+          "name": "node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ca_id": {
+          "name": "ca_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ca_generation": {
+          "name": "ca_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "not_after": {
+          "name": "not_after",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_leaf_not_after": {
+          "name": "idx_leaf_not_after",
+          "columns": [
+            {
+              "expression": "not_after",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "timestamptz_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_leaf_organization_id": {
+          "name": "idx_leaf_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_leaf_ingress_server": {
+          "name": "uniq_leaf_ingress_server",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"leaf\".\"kind\" = 'ingress'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_leaf_engine_node": {
+          "name": "uniq_leaf_engine_node",
+          "columns": [
+            {
+              "expression": "node_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"leaf\".\"kind\" = 'engine'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "leaf_organization_id_organization_id_fk": {
+          "name": "leaf_organization_id_organization_id_fk",
+          "tableFrom": "leaf",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "leaf_server_id_server_id_fk": {
+          "name": "leaf_server_id_server_id_fk",
+          "tableFrom": "leaf",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "leaf_managed_id_managed_id_fk": {
+          "name": "leaf_managed_id_managed_id_fk",
+          "tableFrom": "leaf",
+          "tableTo": "managed",
+          "columnsFrom": [
+            "managed_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "leaf_node_id_node_id_fk": {
+          "name": "leaf_node_id_node_id_fk",
+          "tableFrom": "leaf",
+          "tableTo": "node",
+          "columnsFrom": [
+            "node_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "leaf_ca_id_tls_id_fk": {
+          "name": "leaf_ca_id_tls_id_fk",
+          "tableFrom": "leaf",
+          "tableTo": "tls",
+          "columnsFrom": [
+            "ca_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "leaf_kind_check": {
+          "name": "leaf_kind_check",
+          "value": "\"leaf\".\"kind\" IN ('ingress','engine')"
+        },
+        "leaf_kind_keys_check": {
+          "name": "leaf_kind_keys_check",
+          "value": "(\n        (\"leaf\".\"kind\" = 'ingress' AND \"leaf\".\"node_id\" IS NULL AND \"leaf\".\"managed_id\" IS NULL)\n        OR\n        (\"leaf\".\"kind\" = 'engine' AND \"leaf\".\"node_id\" IS NOT NULL AND \"leaf\".\"managed_id\" IS NOT NULL)\n      )"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.license": {
       "name": "license",
       "schema": "",
@@ -4139,6 +4354,150 @@
       },
       "isRLSEnabled": false
     },
+    "public.rotation": {
+      "name": "rotation",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "from_ca_generation": {
+          "name": "from_ca_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "to_ca_generation": {
+          "name": "to_ca_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "results": {
+          "name": "results",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'[]'::jsonb"
+        }
+      },
+      "indexes": {
+        "idx_rotation_organization_id": {
+          "name": "idx_rotation_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_rotation_inflight_organization": {
+          "name": "uniq_rotation_inflight_organization",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"rotation\".\"state\" = 'in_progress'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "rotation_organization_id_organization_id_fk": {
+          "name": "rotation_organization_id_organization_id_fk",
+          "tableFrom": "rotation",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "rotation_state_check": {
+          "name": "rotation_state_check",
+          "value": "\"rotation\".\"state\" IN ('in_progress','awaiting_retire','completed','failed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.segment": {
       "name": "segment",
       "schema": "",
@@ -5843,365 +6202,6 @@
         "tls_ca_generation_required_check": {
           "name": "tls_ca_generation_required_check",
           "value": "ca_state IS NULL OR ca_state = 'revoked' OR ca_generation IS NOT NULL"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.tlsleaf": {
-      "name": "tlsleaf",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "server_id": {
-          "name": "server_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "managed_id": {
-          "name": "managed_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "node_id": {
-          "name": "node_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ca_id": {
-          "name": "ca_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ca_generation": {
-          "name": "ca_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "not_after": {
-          "name": "not_after",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "issued_at": {
-          "name": "issued_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "idx_tlsleaf_not_after": {
-          "name": "idx_tlsleaf_not_after",
-          "columns": [
-            {
-              "expression": "not_after",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "timestamptz_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_tlsleaf_organization_id": {
-          "name": "idx_tlsleaf_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_tlsleaf_ingress_server": {
-          "name": "uniq_tlsleaf_ingress_server",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"tlsleaf\".\"kind\" = 'ingress'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_tlsleaf_engine_node": {
-          "name": "uniq_tlsleaf_engine_node",
-          "columns": [
-            {
-              "expression": "node_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"tlsleaf\".\"kind\" = 'engine'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "tls_leaf_organization_id_organization_id_fk": {
-          "name": "tls_leaf_organization_id_organization_id_fk",
-          "tableFrom": "tlsleaf",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "tls_leaf_server_id_server_id_fk": {
-          "name": "tls_leaf_server_id_server_id_fk",
-          "tableFrom": "tlsleaf",
-          "tableTo": "server",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "tls_leaf_managed_id_managed_id_fk": {
-          "name": "tls_leaf_managed_id_managed_id_fk",
-          "tableFrom": "tlsleaf",
-          "tableTo": "managed",
-          "columnsFrom": [
-            "managed_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "tls_leaf_node_id_node_id_fk": {
-          "name": "tls_leaf_node_id_node_id_fk",
-          "tableFrom": "tlsleaf",
-          "tableTo": "node",
-          "columnsFrom": [
-            "node_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "tls_leaf_ca_id_tls_id_fk": {
-          "name": "tls_leaf_ca_id_tls_id_fk",
-          "tableFrom": "tlsleaf",
-          "tableTo": "tls",
-          "columnsFrom": [
-            "ca_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "tls_leaf_kind_check": {
-          "name": "tls_leaf_kind_check",
-          "value": "\"tlsleaf\".\"kind\" IN ('ingress','engine')"
-        },
-        "tls_leaf_kind_keys_check": {
-          "name": "tls_leaf_kind_keys_check",
-          "value": "(\n        (\"tlsleaf\".\"kind\" = 'ingress' AND \"tlsleaf\".\"node_id\" IS NULL AND \"tlsleaf\".\"managed_id\" IS NULL)\n        OR\n        (\"tlsleaf\".\"kind\" = 'engine' AND \"tlsleaf\".\"node_id\" IS NOT NULL AND \"tlsleaf\".\"managed_id\" IS NOT NULL)\n      )"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.tlsrotation": {
-      "name": "tlsrotation",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "metadata": {
-          "name": "metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "options": {
-          "name": "options",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "from_ca_generation": {
-          "name": "from_ca_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "to_ca_generation": {
-          "name": "to_ca_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "results": {
-          "name": "results",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'[]'::jsonb"
-        }
-      },
-      "indexes": {
-        "idx_tls_rotation_organization_id": {
-          "name": "idx_tls_rotation_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_tls_rotation_inflight_organization": {
-          "name": "uniq_tls_rotation_inflight_organization",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"tlsrotation\".\"state\" = 'in_progress'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "tls_rotation_organization_id_organization_id_fk": {
-          "name": "tls_rotation_organization_id_organization_id_fk",
-          "tableFrom": "tlsrotation",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "tls_rotation_state_check": {
-          "name": "tls_rotation_state_check",
-          "value": "\"tlsrotation\".\"state\" IN ('in_progress','awaiting_retire','completed','failed')"
         }
       },
       "isRLSEnabled": false

@@ -1562,7 +1562,7 @@ async function applyPendingTlsLeafSideEffect(
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
-      `pending tlsleaf commit failed for command ${record.id}: ${message}`,
+      `pending leaf commit failed for command ${record.id}: ${message}`,
     )
   }
 }

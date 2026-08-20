@@ -771,7 +771,7 @@ async function fanOutLeftoverIngress(
 
 /**
  * Bounded/resumable fan-out across managed clusters in id order.
- * Persist each batch onto `tlsRotation.results` when `rotationId` is set.
+ * Persist each batch onto `rotation.results` when `rotationId` is set.
  */
 export async function runOrganizationCaRotationFanout(
   c: Context<AppEnv>,

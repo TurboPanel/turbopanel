@@ -81,6 +81,9 @@ test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', 
   if (!unique.includes('credential')) {
     throw new TypeError('expected credential table')
   }
+  if (!unique.includes('leaf') || !unique.includes('rotation')) {
+    throw new TypeError('expected Organization CA tables leaf / rotation')
+  }
   if (!unique.includes('steward')) {
     throw new TypeError('expected principal-service table "steward"')
   }
@@ -94,10 +97,12 @@ test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', 
     unique.includes('assignment') ||
     unique.includes('bridge') ||
     unique.includes('vpn') ||
-    unique.includes('peer')
+    unique.includes('peer') ||
+    unique.includes('tlsleaf') ||
+    unique.includes('tlsrotation')
   ) {
     throw new TypeError(
-      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge / vpn / peer must not reappear',
+      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge / vpn / peer / tlsleaf / tlsrotation must not reappear',
     )
   }
 

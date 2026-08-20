@@ -21,9 +21,9 @@ import {
   managed,
   organization,
   project,
+  rotation,
   server,
   tls,
-  tlsRotation,
   user,
   workspace,
 } from "../../lib/db/schema.ts";
@@ -153,8 +153,8 @@ async function withTlsFixtures(
   try {
     await fn({ db, app, secrets, userId, organizationId });
   } finally {
-    await db.delete(tlsRotation).where(
-      eq(tlsRotation.organizationId, organizationId),
+    await db.delete(rotation).where(
+      eq(rotation.organizationId, organizationId),
     );
     await db.delete(tls).where(eq(tls.organizationId, organizationId));
     await db.delete(grant).where(eq(grant.actorId, userId));
@@ -454,13 +454,13 @@ test("POST /tls/ca/rotate retires prior CA and mints a new active generation", a
 
       const [journal] = await db
         .select({
-          id: tlsRotation.id,
-          state: tlsRotation.state,
-          fromCaGeneration: tlsRotation.fromCaGeneration,
-          toCaGeneration: tlsRotation.toCaGeneration,
+          id: rotation.id,
+          state: rotation.state,
+          fromCaGeneration: rotation.fromCaGeneration,
+          toCaGeneration: rotation.toCaGeneration,
         })
-        .from(tlsRotation)
-        .where(eq(tlsRotation.organizationId, organizationId))
+        .from(rotation)
+        .where(eq(rotation.organizationId, organizationId))
         .limit(1);
       assertEquals(journal?.id, rotateBody.rotationId);
       assertEquals(journal?.state, "awaiting_retire");
@@ -678,7 +678,7 @@ test("POST /tls/ca/retire waits for tracked command success then revokes the ret
 
       try {
         await db
-          .update(tlsRotation)
+          .update(rotation)
           .set({
             results: [{
               serverId,
@@ -687,7 +687,7 @@ test("POST /tls/ca/retire waits for tracked command success then revokes the ret
               status: "queued",
             }],
           })
-          .where(eq(tlsRotation.id, rotateBody.rotationId));
+          .where(eq(rotation.id, rotateBody.rotationId));
 
         const earlyRetire = await app.request("/tls/ca/retire", {
           method: "POST",
@@ -779,11 +779,11 @@ test("POST /tls/ca/rotate resumes fan-out across batches until awaiting_retire",
 
         const [afterFirst] = await db
           .select({
-            state: tlsRotation.state,
-            toCaGeneration: tlsRotation.toCaGeneration,
+            state: rotation.state,
+            toCaGeneration: rotation.toCaGeneration,
           })
-          .from(tlsRotation)
-          .where(eq(tlsRotation.id, firstBody.rotationId))
+          .from(rotation)
+          .where(eq(rotation.id, firstBody.rotationId))
           .limit(1);
         assertEquals(afterFirst?.state, "in_progress");
         assertEquals(afterFirst?.toCaGeneration, 2);
@@ -804,9 +804,9 @@ test("POST /tls/ca/rotate resumes fan-out across batches until awaiting_retire",
         assertEquals(secondBody.generation, 2);
 
         const [afterSecond] = await db
-          .select({ state: tlsRotation.state })
-          .from(tlsRotation)
-          .where(eq(tlsRotation.id, firstBody.rotationId))
+          .select({ state: rotation.state })
+          .from(rotation)
+          .where(eq(rotation.id, firstBody.rotationId))
           .limit(1);
         assertEquals(afterSecond?.state, "awaiting_retire");
 
@@ -924,7 +924,7 @@ test("POST /tls/ca/retire stays blocked when binding rematerialize failed", asyn
       const rotateBody = await rotate.json() as { rotationId: string };
 
       await db
-        .update(tlsRotation)
+        .update(rotation)
         .set({
           state: "awaiting_retire",
           results: [{
@@ -935,7 +935,7 @@ test("POST /tls/ca/retire stays blocked when binding rematerialize failed", asyn
             error: "binding_ca_unavailable",
           }],
         })
-        .where(eq(tlsRotation.id, rotateBody.rotationId));
+        .where(eq(rotation.id, rotateBody.rotationId));
 
       const retire = await app.request("/tls/ca/retire", {
         method: "POST",

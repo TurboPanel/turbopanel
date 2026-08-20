@@ -1,7 +1,7 @@
 /**
  * Organization CA rotation journal lease.
  *
- * Concurrency is the partial-unique `uniq_tls_rotation_inflight_organization`
+ * Concurrency is the partial-unique `uniq_rotation_inflight_organization`
  * index (`state = 'in_progress'`) plus an age-bounded steal of a crashed
  * in-progress row (same CAS shape as `tryBeginReencryptSweep`). The journal
  * row is the audit trail — it is never deleted; `endCaRotation` is implicit
@@ -9,7 +9,7 @@
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
-import { tlsRotation } from "../../lib/db/schema.ts";
+import { rotation } from "../../lib/db/schema.ts";
 
 export const CA_ROTATION_STATES = [
   "in_progress",
@@ -53,7 +53,7 @@ function isCaRotationState(value: unknown): value is CaRotationState {
 }
 
 function serializeJournalRow(
-  row: typeof tlsRotation.$inferSelect,
+  row: typeof rotation.$inferSelect,
 ): CaRotationJournalRow | null {
   if (!isCaRotationState(row.state)) return null;
   return {
@@ -89,9 +89,9 @@ export async function loadLatestCaRotation(
 ): Promise<CaRotationJournalRow | null> {
   const [row] = await db
     .select()
-    .from(tlsRotation)
-    .where(eq(tlsRotation.organizationId, organizationId))
-    .orderBy(desc(tlsRotation.createdAt))
+    .from(rotation)
+    .where(eq(rotation.organizationId, organizationId))
+    .orderBy(desc(rotation.createdAt))
     .limit(1);
   if (!row) return null;
   return serializeJournalRow(row);
@@ -103,14 +103,14 @@ async function loadBlockingCaRotation(
 ): Promise<CaRotationJournalRow | null> {
   const [row] = await db
     .select()
-    .from(tlsRotation)
+    .from(rotation)
     .where(
       and(
-        eq(tlsRotation.organizationId, organizationId),
-        inArray(tlsRotation.state, [...CA_ROTATION_BLOCKING_STATES]),
+        eq(rotation.organizationId, organizationId),
+        inArray(rotation.state, [...CA_ROTATION_BLOCKING_STATES]),
       ),
     )
-    .orderBy(desc(tlsRotation.startedAt))
+    .orderBy(desc(rotation.startedAt))
     .limit(1);
   if (!row) return null;
   return serializeJournalRow(row);
@@ -123,7 +123,7 @@ async function insertInProgressRotation(
 ): Promise<CaRotationJournalRow | null> {
   const startedAt = nowIso(nowMs);
   const inserted = await db
-    .insert(tlsRotation)
+    .insert(rotation)
     .values({
       organizationId,
       state: "in_progress",
@@ -131,8 +131,8 @@ async function insertInProgressRotation(
       results: [],
     })
     .onConflictDoNothing({
-      target: tlsRotation.organizationId,
-      where: sql`${tlsRotation.state} = 'in_progress'`,
+      target: rotation.organizationId,
+      where: sql`${rotation.state} = 'in_progress'`,
     })
     .returning();
   const row = inserted[0];
@@ -159,7 +159,7 @@ async function stealStaleInProgressRotation(
   // Preserve results / metadata / generations so crash recovery resumes the
   // in-flight journal instead of minting another Organization CA generation.
   const stolen = await db
-    .update(tlsRotation)
+    .update(rotation)
     .set({
       startedAt,
       completedAt: null,
@@ -167,9 +167,9 @@ async function stealStaleInProgressRotation(
     })
     .where(
       and(
-        eq(tlsRotation.id, existing.id),
-        eq(tlsRotation.state, "in_progress"),
-        eq(tlsRotation.startedAt, existing.startedAt),
+        eq(rotation.id, existing.id),
+        eq(rotation.state, "in_progress"),
+        eq(rotation.startedAt, existing.startedAt),
       ),
     )
     .returning();
@@ -215,7 +215,7 @@ export async function updateCaRotationJournal(
 ): Promise<CaRotationJournalRow | null> {
   const updatedAt = nowIso();
   const [row] = await db
-    .update(tlsRotation)
+    .update(rotation)
     .set({
       updatedAt,
       ...(patch.state === undefined ? {} : { state: patch.state }),
@@ -231,7 +231,7 @@ export async function updateCaRotationJournal(
         ? {}
         : { completedAt: patch.completedAt }),
     })
-    .where(eq(tlsRotation.id, rotationId))
+    .where(eq(rotation.id, rotationId))
     .returning();
   if (!row) return null;
   return serializeJournalRow(row);
