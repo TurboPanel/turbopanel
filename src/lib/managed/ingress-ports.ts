@@ -22,7 +22,7 @@ export type ManagedIngressFamily = 'pgsql' | 'mysql'
 
 /** Platform defaults when an organization configures nothing. */
 export const MANAGED_INGRESS_PGSQL_PORT = 15432
-export const MANAGED_INGRESS_MYSQL_PORT = 16306
+export const MANAGED_INGRESS_MYSQL_PORT = 13306
 
 /**
  * High contiguous host-port range for multi-member private listeners

@@ -74,15 +74,15 @@ test("protocolListenerForEngine returns the platform default port and family", (
     family: "pgsql",
   });
   assertEquals(protocolListenerForEngine("mysql", 3306), {
-    protocolPort: 16306,
+    protocolPort: 13306,
     family: "mysql",
   });
   assertEquals(protocolListenerForEngine("mariadb", 3306), {
-    protocolPort: 16306,
+    protocolPort: 13306,
     family: "mysql",
   });
   assertEquals(managedIngressPortForEngine("postgres", 5432), 15432);
-  assertEquals(managedIngressPortForEngine("mysql", 3306), 16306);
+  assertEquals(managedIngressPortForEngine("mysql", 3306), 13306);
 });
 
 test("protocolListenerForEngine honours organization-configured ports", () => {

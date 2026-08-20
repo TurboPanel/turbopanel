@@ -22,10 +22,10 @@ const test = Deno.test.bind(Deno)
 
 test('platform defaults are the documented high listener ports', () => {
   assertEquals(MANAGED_INGRESS_PGSQL_PORT, 15432)
-  assertEquals(MANAGED_INGRESS_MYSQL_PORT, 16306)
+  assertEquals(MANAGED_INGRESS_MYSQL_PORT, 13306)
   assertEquals(DEFAULT_MANAGED_INGRESS_PORTS, {
     postgres: 15432,
-    mysqlFamily: 16306,
+    mysqlFamily: 13306,
   })
 })
 
@@ -68,11 +68,11 @@ test('legacy engine-native ports are not selectable as client listeners', () => 
 
 test('validateManagedIngressPorts names the offending family', () => {
   assertEquals(
-    validateManagedIngressPorts({ postgres: 15432, mysqlFamily: 16306 }),
+    validateManagedIngressPorts({ postgres: 15432, mysqlFamily: 13306 }),
     { ok: true },
   )
   assertEquals(
-    validateManagedIngressPorts({ postgres: 80, mysqlFamily: 16306 }),
+    validateManagedIngressPorts({ postgres: 80, mysqlFamily: 13306 }),
     { ok: false, field: 'postgres', reason: 'out_of_range' },
   )
   assertEquals(
@@ -95,7 +95,7 @@ test('resolveManagedIngressPorts merges over defaults and ignores bad stored val
 
   assertEquals(resolveManagedIngressPorts({ postgres: 18432 }), {
     postgres: 18432,
-    mysqlFamily: 16306,
+    mysqlFamily: 13306,
   })
   assertEquals(resolveManagedIngressPorts({ mysqlFamily: 18306 }), {
     postgres: 15432,
@@ -110,7 +110,7 @@ test('resolveManagedIngressPorts merges over defaults and ignores bad stored val
   // falls back to that family's platform default.
   assertEquals(resolveManagedIngressPorts({ postgres: 80 }), {
     postgres: 15432,
-    mysqlFamily: 16306,
+    mysqlFamily: 13306,
   })
   assertEquals(
     resolveManagedIngressPorts({ postgres: 6032, mysqlFamily: 18306 }),
@@ -120,9 +120,9 @@ test('resolveManagedIngressPorts merges over defaults and ignores bad stored val
 
 test('a stored pair that would collide falls back wholesale', () => {
   // Only Postgres is overridden, but onto the *inherited* MySQL default: taking
-  // the override would leave both families on 16306.
+  // the override would leave both families on 13306.
   assertEquals(
-    resolveManagedIngressPorts({ postgres: 16306 }),
+    resolveManagedIngressPorts({ postgres: 13306 }),
     DEFAULT_MANAGED_INGRESS_PORTS,
   )
   assertEquals(
@@ -147,8 +147,8 @@ test('family follows the engine, never the port number', () => {
 
 test('managedIngressPortForEngine maps engines onto configured listeners', () => {
   assertEquals(managedIngressPortForEngine('postgres', 5432), 15432)
-  assertEquals(managedIngressPortForEngine('mysql', 3306), 16306)
-  assertEquals(managedIngressPortForEngine('mariadb', 3306), 16306)
+  assertEquals(managedIngressPortForEngine('mysql', 3306), 13306)
+  assertEquals(managedIngressPortForEngine('mariadb', 3306), 13306)
 
   const ports = { postgres: 18432, mysqlFamily: 18306 }
   assertEquals(managedIngressPortForEngine('postgres', 5432, ports), 18432)

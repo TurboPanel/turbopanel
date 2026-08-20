@@ -82,27 +82,27 @@ test("managed defaults responses separate configured from effective", () => {
     sslMode: null,
     effectiveSslMode: "require",
     ports: { postgres: null, mysqlFamily: null },
-    effectivePorts: { postgres: 15432, mysqlFamily: 16306 },
+    effectivePorts: { postgres: 15432, mysqlFamily: 13306 },
   });
   assertEquals(managedDefaultsGetResponse({ sslMode: "prefer" }), {
     sslMode: "prefer",
     effectiveSslMode: "prefer",
     ports: { postgres: null, mysqlFamily: null },
-    effectivePorts: { postgres: 15432, mysqlFamily: 16306 },
+    effectivePorts: { postgres: 15432, mysqlFamily: 13306 },
   });
   // One overridden family must not drag the other off its platform listener.
   assertEquals(managedDefaultsGetResponse({ ports: { postgres: 18432 } }), {
     sslMode: null,
     effectiveSslMode: "require",
     ports: { postgres: 18432, mysqlFamily: null },
-    effectivePorts: { postgres: 18432, mysqlFamily: 16306 },
+    effectivePorts: { postgres: 18432, mysqlFamily: 13306 },
   });
   assertEquals(managedDefaultsPutResponse({ sslMode: "disable" }), {
     ok: true,
     sslMode: "disable",
     effectiveSslMode: "disable",
     ports: { postgres: null, mysqlFamily: null },
-    effectivePorts: { postgres: 15432, mysqlFamily: 16306 },
+    effectivePorts: { postgres: 15432, mysqlFamily: 13306 },
   });
 });
 
@@ -182,7 +182,7 @@ test("validateManagedDefaults catches a collision only visible after merge", () 
   // reachable by overriding one family onto the other's inherited default, so
   // the per-field parser cannot see it.
   assertEquals(
-    validateManagedDefaults({ ports: { postgres: 16306 } }),
+    validateManagedDefaults({ ports: { postgres: 13306 } }),
     {
       ok: false,
       error:

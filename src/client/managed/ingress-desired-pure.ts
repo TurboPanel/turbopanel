@@ -76,7 +76,7 @@ export function isIngressRecord(
  * Wire `protocolPort` + `family` for a cluster.
  *
  * Both travel together because the daemon must not re-derive a protocol family
- * from a number an operator chose: with configurable listeners, `16306` is only
+ * from a number an operator chose: with configurable listeners, `13306` is only
  * MySQL by convention.
  */
 export function protocolListenerForEngine(

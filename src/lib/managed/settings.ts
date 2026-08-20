@@ -55,7 +55,7 @@ const ALLOWED_DOCKER_KEYS = new Set([
   'extraEnv',
 ])
 
-/** Client access scopes — shared ProxySQL listeners use org ingress ports (15432/16306). */
+/** Client access scopes — shared ProxySQL listeners use org ingress ports (15432/13306). */
 
 const MAX_IMAGE_REF_LENGTH = 256
 /**

@@ -254,7 +254,7 @@ consumer: resolve the mode at the route/serializer edge and pass it
 ## Client listener ports
 
 `ingress-ports.ts` owns the two shared-ProxySQL **client** listeners: `postgres`
-(default `15432`) and `mysqlFamily` (default `16306`, MySQL **and** MariaDB).
+(default `15432`) and `mysqlFamily` (default `13306`, MySQL **and** MariaDB).
 Engine-native backend ports (`spec.defaultPort`, 5432 / 3306) and member private
 listeners (`45000`–`45999`) are untouched by this setting.
 
@@ -297,7 +297,7 @@ named. Store/serve `ports` (configured, `null` per family = inherit) and
 
 | Surface                    | Shape                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `16306` (see Client listener ports above), TLS to the **server-owner Organization CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)                  |
+| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `13306` (see Client listener ports above), TLS to the **server-owner Organization CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)                  |
 | Routing                    | ProxySQL hostgroups map each login's `connectionRole` → primary/replica backends over the local Docker network, a fabric relay address over `tp0`, or a datacenter private address (see Client routing above; `^SELECT` rules only under `routing.autoReadSplit`)                                                                                   |
 | Engine containers          | Reachable only on the managed network (container DNS / IP from apply peers); no host `ports:`                                                                                                                                                                                                                                                       |
 | Desired-state command      | Whole-server `managed.ingress.reconcile` builds `clusters[]` + **resealed frontend user passwords** for every managed cluster needed on that server (local members **and** clusters bound by compose services placed on the server). Binding lookup is scoped to the target org + server; cluster members/users/endpoints are batched per reconcile |

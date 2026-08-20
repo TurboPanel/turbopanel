@@ -1080,7 +1080,7 @@ export type EnvironmentDeployCommandPayload = {
   /**
    * Server-owner org effective ProxySQL client listener ports. When present,
    * the daemon also reserves these alongside platform defaults `15432` /
-   * `16306` for tenant raw tcp/udp ingress.
+   * `13306` for tenant raw tcp/udp ingress.
    */
   listenerPorts?: ManagedIngressPorts;
 };
@@ -2879,7 +2879,7 @@ export type ManagedIngressReconcileCluster = {
   engine: ManagedEngineCode;
   /**
    * Organization-resolved client listener port. Platform defaults are
-   * 15432 / 16306; legacy 5432/3306 stay accepted for daemon skew.
+   * 15432 / 13306; legacy 5432/3306 stay accepted for daemon skew.
    */
   protocolPort: ManagedIngressProtocolPort;
   /**

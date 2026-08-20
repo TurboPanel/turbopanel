@@ -2,7 +2,7 @@
  * Resolve the host/port a compose service dials for a managed cluster.
  *
  * A placed consuming service always dials **its own server's** ProxySQL
- * listener (Postgres family / MySQL family ports, defaulting to 15432 / 16306
+ * listener (Postgres family / MySQL family ports, defaulting to 15432 / 13306
  * and overridable per organization), addressed by Docker
  * container name on the shared {@link MANAGED_INGRESS_NETWORK} — never a
  * host-published address and never the engine-native port. That listener

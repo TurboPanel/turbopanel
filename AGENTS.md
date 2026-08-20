@@ -979,7 +979,7 @@ stops, or self-heals them (no restart-via-`system.reconcile` path — see
 the durable dynamic config on `managed.ingress.reconcile` and can self-heal via
 `system.reconcile` (`selfHeal: proxysql`). It is **not** part of
 `turbopanel-system` and is **not** inspect-only. Client SQL enters ProxySQL's
-published `15432`/`16306` listeners; managed engines never publish arbitrary host
+published `15432`/`13306` listeners; managed engines never publish arbitrary host
 ports. When a binding consumer is not co-resident, ProxySQL also joins
 `turbopanel-managed` **plus each consuming environment's spanning `tpn_*`
 network** (pinned to the reserved last-usable host address). Tenant
