@@ -279,7 +279,7 @@ test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', asy
     secretsConfig,
     dataEncryptionSecrets,
     { serverId, keyId },
-    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem },
+    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem, trustBundlePem: ca.certificatePem },
     managedId,
   )
 
@@ -304,6 +304,99 @@ test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', asy
   )
 })
 
+test('buildManagedOrgTlsMaterial org A leaf does not validate against org B CA bundle', async () => {
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
+  const recipientA = {
+    serverId: '11111111-1111-4111-8111-111111111111',
+    keyId: '22222222-2222-4222-8222-222222222222',
+  }
+  const recipientB = {
+    serverId: '55555555-5555-4555-8555-555555555555',
+    keyId: '66666666-6666-4666-8666-666666666666',
+  }
+  const orgA = await mintOrganizationCa({ commonName: 'Org A CA' })
+  const orgBActive = await mintOrganizationCa({ commonName: 'Org B CA Active' })
+  const orgBRetired = await mintOrganizationCa({ commonName: 'Org B CA Retired' })
+  const orgBBundle = `${orgBActive.certificatePem}${orgBRetired.certificatePem}`
+
+  const leafA = await buildManagedOrgTlsMaterial(
+    secretsConfig,
+    dataEncryptionSecrets,
+    recipientA,
+    {
+      certificatePem: orgA.certificatePem,
+      privateKeyPem: orgA.privateKeyPem,
+      trustBundlePem: orgA.certificatePem,
+    },
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  )
+  const leafB = await buildManagedOrgTlsMaterial(
+    secretsConfig,
+    dataEncryptionSecrets,
+    recipientB,
+    {
+      certificatePem: orgBActive.certificatePem,
+      privateKeyPem: orgBActive.privateKeyPem,
+      trustBundlePem: orgBBundle,
+    },
+    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  )
+
+  assertEquals(leafB.caCertPem, orgBBundle)
+  assertEquals(
+    await verifyCertificateSignature(leafA.certificatePem, orgA.certificatePem),
+    true,
+  )
+  assertEquals(
+    await verifyCertificateSignature(leafA.certificatePem, orgBBundle),
+    false,
+  )
+  assertEquals(
+    await verifyCertificateSignature(leafB.certificatePem, orgBBundle),
+    true,
+  )
+  assertEquals(
+    await verifyCertificateSignature(leafB.certificatePem, orgA.certificatePem),
+    false,
+  )
+})
+
+test('buildManagedOrgTlsMaterial ships trustBundlePem as caCertPem and signs with the active signer', async () => {
+  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption',
+  )
+  const active = await mintOrganizationCa({ commonName: 'Org CA Active' })
+  const retired = await mintOrganizationCa({ commonName: 'Org CA Retired' })
+  const trustBundlePem = `${active.certificatePem}${retired.certificatePem}`
+  const material = await buildManagedOrgTlsMaterial(
+    secretsConfig,
+    dataEncryptionSecrets,
+    {
+      serverId: '11111111-1111-4111-8111-111111111111',
+      keyId: '22222222-2222-4222-8222-222222222222',
+    },
+    {
+      certificatePem: active.certificatePem,
+      privateKeyPem: active.privateKeyPem,
+      trustBundlePem,
+    },
+    '44444444-4444-4444-8444-444444444444',
+  )
+
+  assertEquals(material.caCertPem, trustBundlePem)
+  assertEquals(material.caCertPem.split('BEGIN CERTIFICATE').length - 1, 2)
+  assertEquals(
+    await verifyCertificateSignature(material.certificatePem, material.caCertPem),
+    true,
+  )
+})
+
 test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replication', async () => {
   const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
@@ -319,7 +412,7 @@ test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replica
       serverId: 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff',
       keyId: 'cccccccc-dddd-4eee-8fff-000000000000',
     },
-    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem },
+    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem, trustBundlePem: ca.certificatePem },
     managedId,
     ['svc-1'],
     ['203.0.113.50'],
@@ -347,7 +440,7 @@ test('buildManagedOrgTlsMaterial dedupes managed leaf name and localhost from ex
       serverId: 'eeeeeeee-ffff-4aaa-8bbb-cccccccccccc',
       keyId: 'ffffffff-0000-4bbb-8ccc-dddddddddddd',
     },
-    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem },
+    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem, trustBundlePem: ca.certificatePem },
     managedId,
     [`managed-${managedId}`, 'localhost', 'extra.example'],
   )

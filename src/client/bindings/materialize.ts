@@ -325,7 +325,7 @@ export async function materializeBinding(
     password: plaintextPassword,
     host: endpoint.host,
     port: endpoint.port,
-    caCertPem: ca.certificatePem,
+    caCertPem: ca.trustBundlePem,
     readSplit: endpoint.readSplit,
     engineCode: row.managedEngine,
     sslMode: resolveManagedSslMode(

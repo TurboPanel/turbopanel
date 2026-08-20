@@ -4,6 +4,9 @@ Pure-TypeScript registry for environment-scoped managed database/cache engines
 (Postgres, MySQL, MariaDB). Importable from both the Workers and Deno graphs —
 no Deno/Node globals, `.ts` relative imports only.
 
+Canonical CA taxonomy (**Platform CA** vs **Organization CA**):
+`../tls/AGENTS.md`.
+
 ## Spec contract
 
 Each engine implements `ManagedEngineSpec` (`types.ts`): identity defaults
@@ -107,7 +110,15 @@ parsing tags.
 MySQL/MariaDB use **socket-auth platform admin accounts** seeded by
 `initdb/00-turbopanel.sql` (MySQL `auth_socket` / MariaDB built-in
 `unix_socket`) — the analogue of Postgres `local … trust`, so daemon SQL and
-`backup.ts` stay credential-free (no `-p` argv, no `MYSQL_PWD`).
+`backup.ts` stay credential-free (no `-p` argv, no `MYSQL_PWD`). Platform
+`my.cnf` sets `authentication_policy=*,,` so that initdb can install
+`auth_socket`; pinning factor 1 to `caching_sha2_password` made
+`IDENTIFIED WITH auth_socket` fail and left `root@localhost` on
+`MYSQL_ROOT_PASSWORD`. Official MariaDB images still set
+`root@localhost` to a password plugin (`mysql_native_password`); initdb
+must `ALTER USER … IDENTIFIED VIA unix_socket` (CREATE IF NOT EXISTS is a
+no-op when the account already exists), and apply retries socket 1045 via a
+defaults-extra-file then restores `unix_socket`.
 
 **MySQL has no replication slots.** Binary log retention is the disk-fill hazard
 that slots cover on Postgres: platform `my.cnf` always sets a bounded
@@ -145,7 +156,7 @@ re-asserted at the daemon command-contract boundary.
 4. **TLS is a request.** `tlsMaterial` asks the daemon to generate engine
    self-signed key material; the instance never ships private keys in the spec.
    Frontend TLS for clients uses the org `organization_ca` leaf shipped as
-   `orgTlsMaterial` and written under managed `tls/proxysql/` plus the shared
+   `orgTlsMaterial` (`caCertPem` is the active+retired trust bundle) and written under managed `tls/proxysql/` plus the shared
    ProxySQL `configDir/proxysql/tls/` tree.
 5. **Docker option denylist.** `MANAGED_DOCKER_OPTION_DENYLIST` rejects
    `privileged`, `network_mode`, `volumes`, `ports`, `cap_add`, etc. Denied or
@@ -208,8 +219,8 @@ unconditionally. The mode decides exactly two things:
 
 `verify-ca` / `verify-full` differ from `require` **only** in the connection
 string — certificate verification is the client's decision and ProxySQL cannot
-enforce it. They are usable because the org CA is downloadable from the managed
-Connect surface; do not pretend the ingress validates them.
+enforce it. They are usable because the **Organization CA** is downloadable from
+the managed Connect surface; do not pretend the ingress validates them.
 
 **Resolution is three-layer, never a stored effective value:**
 
@@ -242,10 +253,10 @@ consumer: resolve the mode at the route/serializer edge and pass it
 
 ## Client listener ports
 
-`ingress-ports.ts` owns the two shared-ProxySQL **client** listeners:
-`postgres` (default `15432`) and `mysqlFamily` (default `16306`, MySQL **and**
-MariaDB). Engine-native backend ports (`spec.defaultPort`, 5432 / 3306) and
-member private listeners (`45000`–`45999`) are untouched by this setting.
+`ingress-ports.ts` owns the two shared-ProxySQL **client** listeners: `postgres`
+(default `15432`) and `mysqlFamily` (default `16306`, MySQL **and** MariaDB).
+Engine-native backend ports (`spec.defaultPort`, 5432 / 3306) and member private
+listeners (`45000`–`45999`) are untouched by this setting.
 
 They are configurable **per organization**, never per managed service: one
 ProxySQL frontend fronts every managed cluster on a host, so a per-service port
@@ -260,20 +271,20 @@ orgs' members on one host. Resolving from the consumer's org would emit a DSN
 pointing at a port nothing listens on, and would make the bind flap. Both
 `resolveBindingEndpoint` (via `listenerForServer`) and
 `resolveManagedConnectionListener` therefore take `engineCode` +
-`engineDefaultPort` and resolve the port internally — do not pass a
-pre-resolved `protocolPort` in from a route that only knows the consumer's org.
+`engineDefaultPort` and resolve the port internally — do not pass a pre-resolved
+`protocolPort` in from a route that only knows the consumer's org.
 
 **Protocol family is derived from the engine, never from the port**
 (`managedIngressFamilyForEngine`). Once operators pick numbers, `15432` no
 longer means "Postgres", so the wire payload carries `family` (`pgsql` |
 `mysql`) explicitly alongside `protocolPort`.
 
-| Rule | Where |
-| ---- | ----- |
-| Range `1024`–`65535` (privileged ports refused outright, not preflighted) | `rejectManagedIngressPort` |
-| Not ProxySQL admin `6032` / `6132`; not the `45000`–`45999` private range | `rejectManagedIngressPort` |
-| `postgres !== mysqlFamily` | `validateManagedIngressPorts` (`collision`) |
-| Existing **host** listener conflict | daemon-side preflight before any compose write (see `../../../turbopaneld/src/managed/AGENTS.md`) |
+| Rule                                                                      | Where                                                                                             |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Range `1024`–`65535` (privileged ports refused outright, not preflighted) | `rejectManagedIngressPort`                                                                        |
+| Not ProxySQL admin `6032` / `6132`; not the `45000`–`45999` private range | `rejectManagedIngressPort`                                                                        |
+| `postgres !== mysqlFamily`                                                | `validateManagedIngressPorts` (`collision`)                                                       |
+| Existing **host** listener conflict                                       | daemon-side preflight before any compose write (see `../../../turbopaneld/src/managed/AGENTS.md`) |
 
 Read paths are lenient and write paths are strict: `resolveManagedIngressPorts`
 ignores malformed stored jsonb (and falls back wholesale on a stored collision,
@@ -286,11 +297,11 @@ named. Store/serve `ports` (configured, `null` per family = inherit) and
 
 | Surface                    | Shape                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `16306` (see Client listener ports above), TLS to the **server-owner org CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)                                     |
+| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `16306` (see Client listener ports above), TLS to the **server-owner Organization CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)                  |
 | Routing                    | ProxySQL hostgroups map each login's `connectionRole` → primary/replica backends over the local Docker network, a fabric relay address over `tp0`, or a datacenter private address (see Client routing above; `^SELECT` rules only under `routing.autoReadSplit`)                                                                                   |
 | Engine containers          | Reachable only on the managed network (container DNS / IP from apply peers); no host `ports:`                                                                                                                                                                                                                                                       |
 | Desired-state command      | Whole-server `managed.ingress.reconcile` builds `clusters[]` + **resealed frontend user passwords** for every managed cluster needed on that server (local members **and** clusters bound by compose services placed on the server). Binding lookup is scoped to the target org + server; cluster members/users/endpoints are batched per reconcile |
-| Org CA scoping             | CA and frontend leaf for ProxySQL come from **`server.organization_id`**, with SANs for advertised listener host/IP — not only synthetic names                                                                                                                                                                                                      |
+| Organization CA scoping    | Organization CA and frontend leaf for ProxySQL come from **`server.organization_id`**, with SANs for advertised listener host/IP — not only synthetic names                                                                                                                                                                                         |
 | Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                  |
 
 Connection info helpers surface the ProxySQL frontend port/host when exposure is
@@ -366,7 +377,10 @@ without a data migration. Multi-member apply also ensures a platform
 `managedReplication` principal (not listed as a client user), builds
 **per-member** `postgresql.conf` + `pg_hba.conf` (platform-owned HBA), and ships
 an org-CA engine leaf for `sslmode=verify-full` on both the ProxySQL backend leg
-and `primary_conninfo`. Member CRUD: `GET/POST …/managed/members`
+and `primary_conninfo`. Leaf `notAfter` + signing `ca_generation` are persisted
+on `tlsleaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`
+command metadata — see `src/lib/tls/AGENTS.md` → Leaf tracking + renewal sweep)
+— not at payload generation. Member CRUD: `GET/POST …/managed/members`
 (`replicaClass` default `failover`), `PATCH/DELETE …/members/:memberId`
 (`readEligible` / `replicaClass` conversion), `POST …/members/:memberId/promote`
 (lag-gated; **failover** class required — `{ force: true }` bypasses lag/health
@@ -377,27 +391,28 @@ fencing (journal table `recovery`). Candidate pick requires `replica` +
 `failover` + same datacenter **and** the same lag/health gate as operator
 promote (`evaluateManagedPromoteLagGate` — streaming, fresh observation, lag
 under 64 MiB / 30s). Missing observations fail closed. Unreachable old primary
-on auto-failover blocks with `managed_automatic_failover_blocked` (`Automatic
-failover blocked: unable to verify previous primary is fenced`). Same-DC
-failover members that fail the lag gate are skipped; if none remain,
+on auto-failover blocks with `managed_automatic_failover_blocked`
+(`Automatic
+failover blocked: unable to verify previous primary is fenced`).
+Same-DC failover members that fail the lag gate are skipped; if none remain,
 `Automatic failover blocked: no same-datacenter failover replica is healthy
-enough to promote`. `readEligible` never selects an automatic candidate.
-`Future:` fail-closed HA lease (daemon stops advertising a former writer if it
-loses the Orchestrator Raft lease).
+enough to promote`.
+`readEligible` never selects an automatic candidate. `Future:` fail-closed HA
+lease (daemon stops advertising a former writer if it loses the Orchestrator
+Raft lease).
 
 ## High availability
 
 Physical table `recovery` (one word) journals `automatic-failover` /
-`switchover` / `disaster-recovery`. In-flight uniqueness is one non-terminal
-row per `managed_id`. Orchestrator HTTP stays on the daemon
-(`managed.ha.reconcile` / `managed.ha.failover`); instance `ManagedHaAuthority`
-is policy only (`Recover: false` on Orchestrator). Designated recover on the
-daemon falls back to `managed.promote` when Orchestrator is absent or the
-recover API fails. Detection is an unsolicited
-`managed-ha-event` over the daemon WebSocket — not a Durable Object poll loop.
-DR rewrite: members no longer in the new primary's datacenter cannot stay
-`failover` → `read` (keep `readEligible`). Same-DC `read` peers are never
-silently upgraded to `failover`.
+`switchover` / `disaster-recovery`. In-flight uniqueness is one non-terminal row
+per `managed_id`. Orchestrator HTTP stays on the daemon (`managed.ha.reconcile`
+/ `managed.ha.failover`); instance `ManagedHaAuthority` is policy only
+(`Recover: false` on Orchestrator). Designated recover on the daemon falls back
+to `managed.promote` when Orchestrator is absent or the recover API fails.
+Detection is an unsolicited `managed-ha-event` over the daemon WebSocket — not a
+Durable Object poll loop. DR rewrite: members no longer in the new primary's
+datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
+peers are never silently upgraded to `failover`.
 
 ### Manual live HA checklist
 
@@ -429,3 +444,14 @@ insert; placement uses `organization:manage` on the target server (not ownership
 equality with the environment org) so grant-backed hosts are allowed. The daemon
 mirrors this as a frontend-user conflict guard on `managed.ingress.reconcile`
 (`ManagedFrontendUserConflictError`).
+
+## Delete / destroy
+
+Placed clusters (`managed.server_id` set) always enqueue `managed.destroy` on
+`DELETE …/managed` — including `stopped` / `failed` / `provisioning`. Lifecycle
+stop is `compose stop`, not `down`, so containers still exist. Project and
+environment delete return **409** `managed_runtime_present` while a `managed`
+row remains (`environment_id` CASCADE must not drop live host runtime). Hard-delete
+the Postgres row only when the cluster was never placed.
+
+Daemon teardown: `turbopaneld/src/managed/AGENTS.md` (`destroy.ts`).

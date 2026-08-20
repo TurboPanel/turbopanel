@@ -9,12 +9,16 @@ import {
   type DerivedSecretsConfig,
 } from './client/authn/secrets.ts'
 import { createApp } from './app.ts'
-import { createDenoDb } from './db.ts'
+import { createDenoDb, endDbConnection, type Db } from './db.ts'
 import { logInfo, logWarn } from './logger.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from './daemon/cell/control-plane-monitor.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
 import { runSystemReconcileSweep } from './client/system/reconcile.ts'
+import {
+  LEAF_RENEWAL_SWEEP_INTERVAL_MS,
+  runLeafRenewalSweepTick,
+} from './client/tls/leaf-renewal-sweep.ts'
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
@@ -56,7 +60,6 @@ import {
   isNoopCommandQueue,
 } from './lib/commands/noop-command-queue.ts'
 import type { CommandQueue } from './lib/commands/queue.ts'
-import type { Db } from './db.ts'
 import { createRedisQueryCache } from './query-cache/redis-query-cache.ts'
 import {
   hardenInstanceSocket,
@@ -331,9 +334,38 @@ export async function startDenoServer(
     }
   }, DAEMON_CELL_MAINTAIN_MS)
 
+  // First Deno-side scheduled surface besides cell maintain: Organization CA
+  // leaf renewal. Fresh createDenoDb() per tick, always endDbConnection in
+  // finally — do not reuse the process-long `db` (same discipline as Workers
+  // Hyperdrive). Overlap-guarded; cadence is minutes, not the 60s cell tick.
+  let leafRenewalInFlight = false
+  const leafRenewalTimer = setInterval(() => {
+    if (leafRenewalInFlight) return
+    if (isNoopCommandQueue(commandQueue)) return
+    leafRenewalInFlight = true
+    void (async () => {
+      const tickDb = createDenoDb()
+      try {
+        // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced
+        // per bounded batch; reset when the sweep completes or the cursor
+        // is invalid).
+        await runLeafRenewalSweepTick(tickDb, commandQueue, {
+          secretsConfig,
+          dataEncryptionSecrets,
+        })
+      } catch (err) {
+        logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
+      } finally {
+        await endDbConnection(tickDb).catch(() => {})
+        leafRenewalInFlight = false
+      }
+    })()
+  }, LEAF_RENEWAL_SWEEP_INTERVAL_MS)
+
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     Deno.addSignalListener(signal, async () => {
       clearInterval(maintenanceTimer)
+      clearInterval(leafRenewalTimer)
       await emailQueue.close?.()
       await commandQueue.close?.()
       await commandConsumer?.close()

@@ -75,6 +75,11 @@ import {
 import { updateManagedMemberObservedReplication } from '../../client/managed/members.ts'
 import { findManagedHaHierarchy, findManagedIngressHierarchy } from '../../client/system/hierarchy.ts'
 import {
+  commitPendingTlsLeafTracking,
+  parsePendingTlsLeafValue,
+  pendingTlsLeafMetadata,
+} from '../../client/tls/leaf-tracking.ts'
+import {
   fencePhaseFromCommandMetadata,
   onFenceCommandFailed,
   onFenceCommandSucceeded,
@@ -857,28 +862,6 @@ async function applyManagedApplySideEffect(
     const payload = parseManagedApplyPayload(record.payload)
     const applyResult = parseManagedApplyResult(result)
     const updatedAt = nowIso()
-    // #region agent log
-    fetch('http://localhost:7928/ingest/ca9ed83a-836b-44e5-96a8-2a946923e182', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Debug-Session-Id': '323212',
-      },
-      body: JSON.stringify({
-        sessionId: '323212',
-        runId: 'monitor-fix',
-        hypothesisId: 'M1',
-        location: 'consumer.ts:applyManagedApplySideEffect',
-        message: 'managed.apply succeeded after monitor ensure',
-        data: {
-          commandId: record.id,
-          managedId: payload.managedId,
-          appliedUserCount: applyResult.appliedUsers?.length ?? 0,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {})
-    // #endregion
     // `managed.server_id` is the primary placement pin. Fan-out apply sends one
     // command per member — only the primary member may update the pin / host /
     // port so a late replica success cannot re-home the cluster.
@@ -940,6 +923,7 @@ type PendingStandbyApply = {
   serverId: string
   memberId: string
   payload: unknown
+  pendingTlsLeaf?: unknown
 }
 
 async function enqueuePendingStandbyApplies(
@@ -969,6 +953,10 @@ async function enqueuePendingStandbyApplies(
       continue
     }
     const expiresAt = new Date(Date.now() + 600_000).toISOString()
+    const pendingTlsLeaf = parsePendingTlsLeafValue(standby.pendingTlsLeaf)
+    const metadata = pendingTlsLeaf
+      ? pendingTlsLeafMetadata(pendingTlsLeaf)
+      : undefined
     try {
       const next = await createCommandRecord(db, {
         serverId: standby.serverId,
@@ -977,6 +965,7 @@ async function enqueuePendingStandbyApplies(
         type: 'managed.apply',
         payload,
         expiresAt,
+        ...(metadata ? { metadata } : {}),
       })
       const envelope: CommandEnvelope = {
         commandId: next.id,
@@ -1556,6 +1545,28 @@ async function applyManagedFailedSideEffect(
   await markManagedRowsFailedFromCommand(db, record, error ?? fromMeta ?? record.error ?? undefined)
 }
 
+async function applyPendingTlsLeafSideEffect(
+  db: Db,
+  record: CommandRecord,
+): Promise<void> {
+  if (
+    record.type !== 'managed.apply' &&
+    record.type !== 'managed.ingress.reconcile'
+  ) {
+    return
+  }
+  try {
+    const meta = await getCommandMetadata(db, record.id)
+    await commitPendingTlsLeafTracking(db, meta)
+  } catch (err) {
+    const message = errorMessage(err)
+    compatLogWarn(
+      'command-consumer',
+      `pending tlsleaf commit failed for command ${record.id}: ${message}`,
+    )
+  }
+}
+
 async function applySucceededSideEffects(
   db: Db,
   record: CommandRecord,
@@ -1573,6 +1584,7 @@ async function applySucceededSideEffects(
   await applyManagedIngressReconcileSideEffect(db, record, envelope, result)
   await applyManagedHaReconcileSideEffect(db, record, envelope, result)
   await applyManagedApplySideEffect(db, record, envelope, result, deps)
+  await applyPendingTlsLeafSideEffect(db, record)
   await applyManagedLifecycleSideEffect(db, record, envelope, result, deps)
   await applyManagedDestroySideEffect(db, record, envelope, result, deps)
   await applyManagedPromoteSideEffect(db, record, envelope, result, deps)

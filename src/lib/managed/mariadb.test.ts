@@ -110,6 +110,7 @@ test('standby sets read_only; initdb uses unix_socket without INSTALL PLUGIN', (
   const initdb = spec.configFiles.find((f) => f.path === 'initdb/00-turbopanel.sql')
     ?.contents ?? ''
   assertEquals(initdb.includes('unix_socket'), true)
+  assertEquals(initdb.includes("ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket"), true)
   assertEquals(initdb.includes('INSTALL PLUGIN'), false)
 })
 

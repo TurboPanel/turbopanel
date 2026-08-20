@@ -31,6 +31,7 @@ import {
   service,
   task,
   tls,
+  tlsLeaf,
   workspace,
 } from "../../lib/db/schema.ts";
 import { postgresEngineSpec } from "../../lib/managed/postgres.ts";
@@ -483,7 +484,9 @@ test("empty managedIdSet with prior hierarchy returns teardown payload", async (
         dataEncryptionSecrets,
       });
       if (built === null || "kind" in built) {
-        throw new TypeError(`expected teardown payload, got ${JSON.stringify(built)}`);
+        throw new TypeError(
+          `expected teardown payload, got ${JSON.stringify(built)}`,
+        );
       }
       assertEquals(built.serverId, serverId);
       assertEquals(built.clusters, []);
@@ -507,6 +510,13 @@ test("exposure disabled omits bindAddresses — no public ProxySQL publish", asy
       }
       assertEquals("bindAddresses" in built, false);
       assertEquals(built.clusters.length, 1);
+      assertEquals(built.identity?.composeServiceName, "proxysql");
+      assertEquals(built.identity?.containerName.endsWith("-sql"), true);
+      const mintedLeaves = await db
+        .select({ id: tlsLeaf.id })
+        .from(tlsLeaf)
+        .where(eq(tlsLeaf.serverId, serverId));
+      assertEquals(mintedLeaves.length, 0);
     },
   );
 });

@@ -1556,8 +1556,8 @@ test('DELETE /environments/:id/managed targets managed.server_id when environmen
     })
     assertEquals(create.status, 200)
     const created = await create.json() as { managed: { id: string } }
-    // `ready` (not stopped/failed/provisioning) so the route dispatches to
-    // the daemon instead of taking the hard-delete shortcut.
+    // Placed clusters always dispatch to the daemon (lifecycle stop leaves
+    // containers; failed apply can still have brought the engine up).
     await db.update(managed).set({ status: 'ready' }).where(
       eq(managed.id, created.managed.id),
     )
@@ -1603,8 +1603,7 @@ test('DELETE /environments/:id/managed marks the enqueued destroy payload delete
     })
     assertEquals(create.status, 200)
     const created = await create.json() as { managed: { id: string } }
-    // `ready` (not stopped/failed/provisioning) so the route dispatches to
-    // the daemon instead of taking the hard-delete shortcut — this is the
+    // Placed clusters always dispatch to the daemon — this is the
     // single-click delete flow: API delete → queued managed.destroy →
     // consumer deletes the row only after the daemon reports success.
     await db.update(managed).set({ status: 'ready' }).where(
@@ -2132,7 +2131,52 @@ test('POST lifecycle rejects invalid action', async () => {
   })
 })
 
-test('DELETE hard-deletes stopped managed without enqueueing destroy', async () => {
+test('DELETE hard-deletes unplaced managed without enqueueing destroy', async () => {
+  await withManagedFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    commandQueue,
+    userId,
+    organizationId,
+    environmentId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    assertEquals(create.status, 200)
+    const created = await create.json() as { managed: { id: string } }
+    await db.update(managed).set({ serverId: null }).where(
+      eq(managed.id, created.managed.id),
+    )
+
+    const beforeCount = commandQueue.envelopes.length
+    const destroy = await app.request(`/environments/${environmentId}/managed`, {
+      method: 'DELETE',
+      headers,
+    })
+    assertEquals(destroy.status, 200)
+    assertEquals(await destroy.json(), { ok: true, deleted: true })
+    assertEquals(commandQueue.envelopes.length, beforeCount)
+
+    const rows = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(eq(managed.environmentId, environmentId))
+    assertEquals(rows.length, 0)
+  })
+})
+
+test('DELETE stopped placed managed enqueues destroy instead of hard-delete', async () => {
   await withManagedFixtures({}, async ({
     db,
     app,
@@ -2166,14 +2210,17 @@ test('DELETE hard-deletes stopped managed without enqueueing destroy', async () 
       headers,
     })
     assertEquals(destroy.status, 200)
-    assertEquals(await destroy.json(), { ok: true, deleted: true })
-    assertEquals(commandQueue.envelopes.length, beforeCount)
+    const destroyBody = await destroy.json() as { deleted: boolean }
+    assertEquals(destroyBody.deleted, false)
+    assertEquals(commandQueue.envelopes.length, beforeCount + 1)
+    assertEquals(commandQueue.envelopes.at(-1)?.type, 'managed.destroy')
 
-    const rows = await db
+    const [stillPresent] = await db
       .select({ id: managed.id })
       .from(managed)
-      .where(eq(managed.environmentId, environmentId))
-    assertEquals(rows.length, 0)
+      .where(eq(managed.id, created.managed.id))
+      .limit(1)
+    assertEquals(stillPresent?.id, created.managed.id)
   })
 })
 

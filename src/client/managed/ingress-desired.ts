@@ -83,6 +83,7 @@ import {
 import {
   ensureManagedIngressHierarchy,
   findManagedIngressHierarchy,
+  SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
 } from "../system/hierarchy.ts";
 import {
   ensureMemberPrivatePorts,
@@ -95,6 +96,11 @@ import {
   buildManagedOrgTlsMaterial,
   ensureActiveOrganizationCa,
 } from "./apply-prepare.ts";
+import {
+  organizationCaLeafNotAfterIso,
+  pendingTlsLeafMetadata,
+  type UpsertTlsLeafTrackingParams,
+} from "../tls/leaf-tracking.ts";
 import {
   buildIngressUserRole,
   buildLocalOrMissingPortBackend,
@@ -312,7 +318,10 @@ async function buildOrgTlsForServer(
     dnsNames: string[];
     ipAddresses: string[];
   },
-): Promise<ManagedApplyOrgTlsMaterial | ManagedIngressReconcilePrepareError> {
+): Promise<
+  | { material: ManagedApplyOrgTlsMaterial; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
+  | ManagedIngressReconcilePrepareError
+> {
   const daemonState = await getServerDaemonStateByServerId(db, serverId);
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
     return { kind: "daemon_key_unavailable", serverId };
@@ -330,17 +339,32 @@ async function buildOrgTlsForServer(
 
   const caPrivateKeyPem = await decryptSecret(
     dataEncryptionSecrets,
-    ca.privateKeyPemSealed,
+    ca.signer.privateKeyPemSealed,
   );
-  return buildManagedOrgTlsMaterial(
+  const material = await buildManagedOrgTlsMaterial(
     secretsConfig,
     dataEncryptionSecrets,
     { serverId, keyId: daemonState.key.id },
-    { certificatePem: ca.certificatePem, privateKeyPem: caPrivateKeyPem },
+    {
+      certificatePem: ca.signer.certificatePem,
+      privateKeyPem: caPrivateKeyPem,
+      trustBundlePem: ca.trustBundlePem,
+    },
     `ingress-${serverId}`,
     listenerSans.dnsNames,
     listenerSans.ipAddresses,
   );
+  return {
+    material,
+    pendingTlsLeaf: {
+      kind: "ingress",
+      organizationId,
+      serverId,
+      caId: ca.signer.id,
+      caGeneration: ca.signer.caGeneration,
+      notAfter: organizationCaLeafNotAfterIso(),
+    },
+  };
 }
 
 function resolveClusterBackends(
@@ -603,16 +627,13 @@ async function resolveAdvertisedHost(
   return fallbackHost;
 }
 
-/**
- * Build the full `managed.ingress.reconcile` payload for a server.
- *
- * The ProxySQL stack exists on a server **iff** it hosts a managed `node` row
- * or a bound consumer (`loadBoundManagedIdsForServer`) — never on every org
- * server. Returns `null` when neither is true **and** no prior hierarchy
- * exists. When a prior hierarchy exists but the set is empty, returns a
- * teardown payload `{ serverId, clusters: [] }` with no bindAddress / TLS.
- */
-export async function buildManagedIngressReconcilePayload(
+type BuiltManagedIngressReconcile = {
+  payload: ManagedIngressReconcileCommandPayload;
+  pendingTlsLeaf?: UpsertTlsLeafTrackingParams;
+};
+
+/** Internal: payload plus minted ingress leaf that is not yet deployed. */
+async function buildManagedIngressReconcileDesired(
   db: Db,
   params: {
     serverId: string;
@@ -620,7 +641,7 @@ export async function buildManagedIngressReconcilePayload(
     dataEncryptionSecrets: DerivedSecretsConfig;
   },
 ): Promise<
-  | ManagedIngressReconcileCommandPayload
+  | BuiltManagedIngressReconcile
   | null
   | ManagedIngressReconcilePrepareError
 > {
@@ -655,7 +676,7 @@ export async function buildManagedIngressReconcilePayload(
       serverId: params.serverId,
     });
     if (!existing) return null;
-    return { serverId: params.serverId, clusters: [] };
+    return { payload: { serverId: params.serverId, clusters: [] } };
   }
 
   const hierarchy = await ensureManagedIngressHierarchy(db, {
@@ -735,11 +756,16 @@ export async function buildManagedIngressReconcilePayload(
 
   const payload: ManagedIngressReconcileCommandPayload = {
     serverId: params.serverId,
-    orgTlsMaterial,
+    orgTlsMaterial: orgTlsMaterial.material,
     // Always both listeners: ProxySQL configures them in one file, so sending
     // only the families present today would unbind the other on the next apply.
     listenerPorts,
     clusters,
+    identity: {
+      serviceId: hierarchy.serviceId,
+      composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
+      containerName: hierarchy.containerName,
+    },
   };
 
   if (bindAddresses.length > 0) {
@@ -757,7 +783,33 @@ export async function buildManagedIngressReconcilePayload(
     if (segments.length > 0) payload.segments = segments;
   }
 
-  return payload;
+  return { payload, pendingTlsLeaf: orgTlsMaterial.pendingTlsLeaf };
+}
+
+/**
+ * Build the full `managed.ingress.reconcile` payload for a server.
+ *
+ * The ProxySQL stack exists on a server **iff** it hosts a managed `node` row
+ * or a bound consumer (`loadBoundManagedIdsForServer`) — never on every org
+ * server. Returns `null` when neither is true **and** no prior hierarchy
+ * exists. When a prior hierarchy exists but the set is empty, returns a
+ * teardown payload `{ serverId, clusters: [] }` with no bindAddress / TLS.
+ */
+export async function buildManagedIngressReconcilePayload(
+  db: Db,
+  params: {
+    serverId: string;
+    secretsConfig: SecretsConfig;
+    dataEncryptionSecrets: DerivedSecretsConfig;
+  },
+): Promise<
+  | ManagedIngressReconcileCommandPayload
+  | null
+  | ManagedIngressReconcilePrepareError
+> {
+  const built = await buildManagedIngressReconcileDesired(db, params);
+  if (built === null || "kind" in built) return built;
+  return built.payload;
 }
 
 /**
@@ -835,7 +887,7 @@ export async function enqueueManagedIngressReconcile(
     dataEncryptionSecrets: DerivedSecretsConfig;
   }>,
 ): Promise<EnqueueManagedIngressReconcileResult> {
-  const built = await buildManagedIngressReconcilePayload(db, {
+  const built = await buildManagedIngressReconcileDesired(db, {
     serverId: params.serverId,
     secretsConfig: params.secretsConfig,
     dataEncryptionSecrets: params.dataEncryptionSecrets,
@@ -846,14 +898,18 @@ export async function enqueueManagedIngressReconcile(
   const expiresAt = new Date(
     Date.now() + MANAGED_INGRESS_RECONCILE_TTL_MS,
   ).toISOString();
+  const metadata = built.pendingTlsLeaf
+    ? pendingTlsLeafMetadata(built.pendingTlsLeaf)
+    : undefined;
 
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
     actorType: params.actorType,
     actorId: params.actorId,
     type: "managed.ingress.reconcile",
-    payload: built,
+    payload: built.payload,
     expiresAt,
+    ...(metadata ? { metadata } : {}),
   });
 
   const envelope: CommandEnvelope = {

@@ -1,6 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import type { Context } from 'hono'
-import { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { encryptSecret } from '../authn/data-encryption.ts'
@@ -26,10 +25,7 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
-import {
-  deleteProjectCascade,
-  PROJECT_HAS_RUNNING_SERVICES_ERROR,
-} from '../../lib/db/project-delete.ts'
+import { deleteProjectCascade } from '../../lib/db/project-delete.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { reconcileServicesForProject } from '../environments/reconcile-after-compose-save.ts'
 import {
@@ -105,7 +101,7 @@ export async function scaffoldCatalogEnvironments(
 
 type ResolvedCreateProjectType = import('./routes-helpers.ts').ResolvedCreateProjectType
 
-async function runCreateProjectTransaction(
+function runCreateProjectTransaction(
   db: Db,
   input: {
     projectType: ResolvedCreateProjectType
@@ -120,7 +116,7 @@ async function runCreateProjectTransaction(
     defaultEnvironmentName: string
   },
 ): Promise<string> {
-  return db.transaction(async (tx) => {
+  return db.transaction((tx) => {
     if (input.projectType === 'empty') {
       return insertEmptyProject(tx, {
         name: input.displayName,
@@ -207,14 +203,14 @@ async function resolveWorkspaceTarget(
   return workspaceId
 }
 
-async function resolveWorkspaceIdForCreate(
+function resolveWorkspaceIdForCreate(
   c: Context<AppEnv>,
   db: Db,
   body: Record<string, unknown>,
   organizationId: string,
 ): Promise<string | Response> {
   const workspaceId = requireStringField(c, body, 'workspaceId')
-  if (workspaceId instanceof Response) return workspaceId
+  if (workspaceId instanceof Response) return Promise.resolve(workspaceId)
 
   return resolveWorkspaceTarget(c, db, workspaceId, organizationId)
 }
@@ -278,7 +274,7 @@ async function parseCreateProjectInput(
 
   const optionsResult = parseCreateProjectOptions(body)
   if (!optionsResult.ok) {
-    if (optionsResult.error === 'compose_invalid') {
+    if ('issues' in optionsResult) {
       return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
     }
     return c.json({ error: optionsResult.error }, optionsResult.status)
@@ -316,16 +312,16 @@ async function parseCreateProjectInput(
  * Validates an optional move target for PATCH. Returns `undefined` when no
  * move was requested; otherwise the target workspace id or an error Response.
  */
-async function parseProjectMoveTarget(
+function parseProjectMoveTarget(
   c: Context<AppEnv>,
   db: Db,
   body: Record<string, unknown>,
   organizationId: string,
 ): Promise<string | Response | undefined> {
-  if (body.workspaceId === undefined) return undefined
+  if (body.workspaceId === undefined) return Promise.resolve(undefined)
 
   const workspaceId = requireStringField(c, body, 'workspaceId')
-  if (workspaceId instanceof Response) return workspaceId
+  if (workspaceId instanceof Response) return Promise.resolve(workspaceId)
 
   return resolveWorkspaceTarget(c, db, workspaceId, organizationId)
 }
@@ -348,7 +344,7 @@ function parseProjectPatchOptions(
 
   const normalized = normalizeProjectPatchOptions(optionsResult)
   if (!normalized.ok) {
-    if (normalized.error === 'compose_invalid') {
+    if ('issues' in normalized) {
       return c.json({ error: normalized.error, issues: normalized.issues }, 400)
     }
     return c.json({ error: normalized.error }, normalized.status)
@@ -402,6 +398,7 @@ async function assertDefaultServerIdInOrg(
   if (!options || !('defaultServerId' in options)) return
   const serverId = options.defaultServerId
   if (serverId === undefined || serverId === null) return
+  if (typeof serverId !== 'string') return
   if (!(await verifyServerInOrg(db, serverId, organizationId))) {
     return c.json({ error: 'Not found' }, 404)
   }
@@ -441,20 +438,6 @@ async function insertDockerComposeProject(
     options: { compose: emptyComposeDocument() },
   })
   return inserted.id
-}
-
-function catalogProjectOptions(
-  fields: {
-    options: Record<string, unknown> | null
-    entry: CatalogEntry
-  },
-  includeEngineOptions: boolean,
-): Record<string, unknown> {
-  if (fields.options) return fields.options
-  if (includeEngineOptions && fields.entry.options) {
-    return { compose: fields.entry.compose, ...fields.entry.options }
-  }
-  return { compose: fields.entry.compose }
 }
 
 async function insertCatalogProject(
@@ -513,7 +496,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   router.use('/projects/:id/configure', createSessionMiddleware(secrets))
   router.use('/project-catalog', createSessionMiddleware(secrets))
 
-  router.get('/project-catalog', async (c) => {
+  router.get('/project-catalog', (c) => {
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
@@ -797,7 +780,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const result = await deleteProjectCascade(db, id)
     if (!result.ok) {
-      return c.json({ error: PROJECT_HAS_RUNNING_SERVICES_ERROR }, 409)
+      return c.json({ error: result.error }, 409)
     }
 
     return c.json({ ok: true as const })

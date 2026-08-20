@@ -24,7 +24,6 @@ import {
   clampManagedResources,
   type ManagedSettings,
 } from '../../lib/managed/settings.ts'
-import { isManagedEngineCode } from '../../lib/managed/types.ts'
 import { parseResourceLimits } from '../../lib/resource-limits.ts'
 import {
   createManagedPrincipal,
@@ -144,6 +143,7 @@ import {
   isManagedReplicationPrincipal,
   isPlainObject,
   managedSessionPaths,
+  managedStatusListenerParams,
   mergeCreateSettings,
   mergeManagedPatchSettings,
   nextDatabasesAfterCreate,
@@ -1218,7 +1218,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
 
-    const canHardDelete = canHardDeleteManaged(row.status, row.serverId)
+    const canHardDelete = canHardDeleteManaged(row.serverId)
 
     if (canHardDelete) {
       // Clear never-applied pending container rows so deleteProjectCascade does
@@ -2400,24 +2400,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         })
       : null
 
-    let listener: { host: string; port: number } | null = null
-    if (row?.serverId) {
-      const engineCode = row.engine && isManagedEngineCode(row.engine)
-        ? row.engine
-        : null
-      const spec = engineCode ? getManagedEngineSpec(engineCode) : null
-      if (spec) {
-        const parsed = parseManagedRowOptions(spec, row.options)
-        if (parsed) {
-          listener = await resolveManagedConnectionListener(db, {
-            serverId: row.serverId,
-            engineCode: spec.engine,
-            engineDefaultPort: spec.defaultPort,
-            exposure: parsed.settings.exposure,
-          })
-        }
-      }
-    }
+    const listenerParams = managedStatusListenerParams(row)
+    const listener = listenerParams
+      ? await resolveManagedConnectionListener(db, listenerParams)
+      : null
 
     return c.json({
       status: row?.status ?? null,
@@ -2425,10 +2411,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       port: listener?.port ?? residual.port ?? null,
       error: lastError,
       containers: rows.map(serializeContainerRow),
-      members: memberRows.map((m) => {
-        const serialized = serializeManagedMember(m, null)
-        return buildStatusMemberView(serialized)
-      }),
+      members: memberRows.map((m) =>
+        buildStatusMemberView(serializeManagedMember(m, null)),
+      ),
     })
   })
 

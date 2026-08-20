@@ -332,7 +332,7 @@ export const managedSchemas = {
       deleted: {
         type: 'boolean',
         description:
-          'True when the row was hard-deleted; false when `managed.destroy` was enqueued',
+          'True when the row was hard-deleted (unplaced cluster); false when `managed.destroy` was enqueued for a placed cluster',
       },
       commandId: { type: 'string' },
       serverId: { type: 'string' },

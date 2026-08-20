@@ -29,6 +29,7 @@ import {
   evaluateReplicaPlacementPrechecks,
   findManagedBackupById,
   MANAGED_NO_READ_TARGETS_ERROR,
+  managedStatusListenerParams,
   mergeManagedPatchSettings,
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
@@ -47,6 +48,7 @@ import {
   validateManagedDatabaseCreateName,
 } from './routes-helpers.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
+import { writeManagedRowOptions } from './options.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -234,13 +236,10 @@ test('parsePromoteForce and readEligible parsers', () => {
   })
 })
 
-test('canHardDeleteManaged covers terminal and unplaced states', () => {
-  assertEquals(canHardDeleteManaged('stopped', 's1'), true)
-  assertEquals(canHardDeleteManaged('failed', 's1'), true)
-  assertEquals(canHardDeleteManaged('provisioning', 's1'), true)
-  assertEquals(canHardDeleteManaged('ready', null), true)
-  assertEquals(canHardDeleteManaged('ready', 's1'), false)
-  assertEquals(canHardDeleteManaged('applying', 's1'), false)
+test('canHardDeleteManaged is true only when unplaced', () => {
+  assertEquals(canHardDeleteManaged(null), true)
+  assertEquals(canHardDeleteManaged(undefined), true)
+  assertEquals(canHardDeleteManaged('s1'), false)
 })
 
 test('evaluateReplicaPlacementPrechecks blocks duplicate members only', () => {
@@ -649,4 +648,65 @@ test('buildStatusMemberView and org list entry', () => {
   assertEquals(entry.workspaceDisplayName, 'Default')
   assertEquals(entry.serverDisplayName, 'Host')
   assertEquals(entry.members, [{ id: 'mem' }])
+})
+
+test('managedStatusListenerParams skips unplaced, uncatalogued, and unreadable rows', () => {
+  const settings = postgresEngineSpec.parseSettings(
+    postgresEngineSpec.defaultSettings,
+  )
+  if (!settings) {
+    throw new TypeError('failed to parse default postgres settings')
+  }
+  const options = writeManagedRowOptions({
+    settings,
+    databases: ['postgres'],
+    backups: [],
+  })
+
+  assertEquals(managedStatusListenerParams(null), null)
+  assertEquals(
+    managedStatusListenerParams({
+      serverId: null,
+      engine: 'postgres',
+      options,
+    }),
+    null,
+  )
+  assertEquals(
+    managedStatusListenerParams({
+      serverId: 's1',
+      engine: 'nope',
+      options,
+    }),
+    null,
+  )
+  assertEquals(
+    managedStatusListenerParams({
+      serverId: 's1',
+      engine: 'redis',
+      options,
+    }),
+    null,
+  )
+  assertEquals(
+    managedStatusListenerParams({
+      serverId: 's1',
+      engine: 'postgres',
+      options: { settings: { image: '' } },
+    }),
+    null,
+  )
+  assertEquals(
+    managedStatusListenerParams({
+      serverId: 's1',
+      engine: 'postgres',
+      options,
+    }),
+    {
+      serverId: 's1',
+      engineCode: 'postgres',
+      engineDefaultPort: postgresEngineSpec.defaultPort,
+      exposure: settings.exposure,
+    },
+  )
 })

@@ -4,6 +4,7 @@ import {
   container,
   environment,
   hosting,
+  managed,
   project,
   service,
 } from './schema.ts'
@@ -14,6 +15,7 @@ import { purgeEnvironmentsComposeNetworks } from './fabric-records.ts'
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
 
 export const PROJECT_HAS_RUNNING_SERVICES_ERROR = 'project_has_running_services'
+export const MANAGED_RUNTIME_PRESENT_ERROR = 'managed_runtime_present'
 
 /**
  * True when a container still needs an environment.stop before project delete.
@@ -27,13 +29,18 @@ export function isActiveContainerStatus(status: string | undefined): boolean {
 
 export type ProjectDeleteResult =
   | { ok: true }
-  | { ok: false; error: 'project_has_running_services' }
+  | {
+    ok: false
+    error: 'project_has_running_services' | 'managed_runtime_present'
+  }
 
 /**
  * Cascade-delete a project and all child resources after verifying no active
- * containers remain. Order: container → hosting → service → environment → project.
- * Variables and managed rows cascade via FK (environment-scoped managed when
- * environments are deleted).
+ * containers remain and no managed-engine rows still exist. Order: container →
+ * hosting → service → environment → project. Variables cascade via FK.
+ * Managed host runtime must be torn down with `managed.destroy` first —
+ * `managed.environment_id` is ON DELETE CASCADE, so a live row here would
+ * otherwise drop the cluster without stopping Docker.
  */
 export async function deleteProjectCascade(
   db: Db,
@@ -47,6 +54,14 @@ export async function deleteProjectCascade(
   const environmentIds = envRows.map((row) => row.id)
 
   if (environmentIds.length > 0) {
+    const managedRows = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(inArray(managed.environmentId, environmentIds))
+    if (managedRows.length > 0) {
+      return { ok: false, error: MANAGED_RUNTIME_PRESENT_ERROR }
+    }
+
     const serviceRows = await db
       .select({ id: service.id })
       .from(service)

@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { and, eq, inArray, ne } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -20,6 +20,7 @@ import {
   server,
   service,
   tls,
+  tlsLeaf,
   workspace,
 } from '../../lib/db/schema.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
@@ -563,16 +564,29 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
     )
 
     const cas = await db
-      .select({ id: tls.id, source: tls.source, status: tls.status })
+      .select({
+        id: tls.id,
+        source: tls.source,
+        caState: tls.caState,
+        caGeneration: tls.caGeneration,
+      })
       .from(tls)
       .where(
         and(
           eq(tls.organizationId, organizationId),
           eq(tls.source, 'organization_ca'),
-          ne(tls.status, 'revoked'),
+          eq(tls.caState, 'active'),
         ),
       )
     assertEquals(cas.length, 1)
+    assertEquals(cas[0]?.caGeneration, 1)
+    assertEquals(prepared.members[0]!.pendingTlsLeaf?.kind, 'engine')
+
+    const mintedLeaves = await db
+      .select({ id: tlsLeaf.id })
+      .from(tlsLeaf)
+      .where(eq(tlsLeaf.organizationId, organizationId))
+    assertEquals(mintedLeaves.length, 0)
 
     // Re-apply reuses the same active CA (no second row).
     const again = await prepareManagedApplyPayloads(c, db, {
@@ -593,15 +607,16 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
     )
 
     const casAfter = await db
-      .select({ id: tls.id })
+      .select({ id: tls.id, caState: tls.caState })
       .from(tls)
       .where(
         and(
           eq(tls.organizationId, organizationId),
           eq(tls.source, 'organization_ca'),
-          ne(tls.status, 'revoked'),
+          eq(tls.caState, 'active'),
         ),
       )
     assertEquals(casAfter.length, 1)
+    assertEquals(casAfter[0]?.caState, 'active')
   })
 })

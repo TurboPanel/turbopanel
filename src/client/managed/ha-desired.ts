@@ -464,13 +464,17 @@ export async function buildManagedHaReconcilePayload(
   if ('kind' in ca) return null
   const caPrivateKeyPem = await decryptSecret(
     params.dataEncryptionSecrets,
-    ca.privateKeyPemSealed,
+    ca.signer.privateKeyPemSealed,
   )
   const orgTlsMaterial = await buildManagedOrgTlsMaterial(
     params.secretsConfig,
     params.dataEncryptionSecrets,
     { serverId: params.serverId, keyId: daemonState.key.id },
-    { certificatePem: ca.certificatePem, privateKeyPem: caPrivateKeyPem },
+    {
+      certificatePem: ca.signer.certificatePem,
+      privateKeyPem: caPrivateKeyPem,
+      trustBundlePem: ca.trustBundlePem,
+    },
     `ha-${params.serverId}`,
     [identity.containerName],
     [raft.advertiseAddress],

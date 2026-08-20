@@ -59,15 +59,23 @@ export function pickManagedFailureMessage(
   commands: readonly ManagedFailureCommand[],
   managedId: string,
 ): string | null {
-  const failed = commands
-    .filter((row) => isFailedCommand(row) && hasCommandError(row))
-    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
-  const engine = failed.find((row) =>
+  const newestFirst = [...commands].sort((a, b) =>
+    (b.createdAt ?? '').localeCompare(a.createdAt ?? '')
+  )
+  const engine = newestFirst.find((row) =>
+    isFailedCommand(row) &&
+    hasCommandError(row) &&
     MANAGED_ENGINE_FAILURE_TYPES.has(row.type) &&
     commandManagedId(row.payload) === managedId
   )
-  const ingress = failed.find((row) => row.type === MANAGED_INGRESS_FAILURE_TYPE)
-  return mergeManagedFailureMessages(engine?.error, ingress?.error)
+  const latestIngress = newestFirst.find((row) =>
+    row.type === MANAGED_INGRESS_FAILURE_TYPE
+  )
+  const ingressError =
+    latestIngress && isFailedCommand(latestIngress) && hasCommandError(latestIngress)
+      ? latestIngress.error
+      : null
+  return mergeManagedFailureMessages(engine?.error, ingressError)
 }
 
 export async function loadManagedStatusError(

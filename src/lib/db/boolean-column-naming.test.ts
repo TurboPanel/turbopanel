@@ -33,14 +33,14 @@ const RETIRED_BOOLEAN_NAMES = [
   'read_only',
 ] as const
 
-const BOOLEAN_RENAMES: ReadonlyArray<readonly [string, string]> = [
-  ['connected', 'is_connected'],
-  ['read_eligible', 'is_read_eligible'],
-  ['for_build', 'is_for_build'],
-  ['for_runtime', 'is_for_runtime'],
-  ['emit_engine_defaults', 'is_emit_engine_defaults'],
-  ['read_only', 'is_read_only'],
-]
+const REQUIRED_IS_PREFIX_COLUMNS = [
+  'is_connected',
+  'is_read_eligible',
+  'is_for_build',
+  'is_for_runtime',
+  'is_emit_engine_defaults',
+  'is_read_only',
+] as const
 
 const SCHEMA_BOOLEAN_RE = /\bboolean\(\s*'([^']+)'\s*\)/g
 
@@ -142,12 +142,7 @@ test('schema.ts boolean() physical names start with is_', async () => {
 test('latest drizzle snapshot boolean columns start with is_', async () => {
   const here = dirname(fromFileUrl(import.meta.url))
   const metaDir = join(here, '../../../migrations/meta')
-  const { tag, snapshot, snapshotFile } = await readLatestSnapshot(metaDir)
-  if (tag === '0000_init') {
-    throw new TypeError(
-      'expected a versioned snapshot after 0000_init so the is_ rename is recorded',
-    )
-  }
+  const { snapshot, snapshotFile } = await readLatestSnapshot(metaDir)
   const names = extractSnapshotBooleanNames(snapshot)
   if (names.length === 0) {
     throw new TypeError(`expected boolean columns in ${snapshotFile}`)
@@ -157,30 +152,24 @@ test('latest drizzle snapshot boolean columns start with is_', async () => {
     assertPhysicalBooleanName(name)
   }
   assertNoRetiredBooleanNames(unique)
-  for (const required of [
-    'is_connected',
-    'is_read_eligible',
-    'is_for_build',
-    'is_for_runtime',
-    'is_emit_engine_defaults',
-    'is_read_only',
-  ]) {
+  for (const required of REQUIRED_IS_PREFIX_COLUMNS) {
     if (!unique.includes(required)) {
       throw new TypeError(`expected boolean column "${required}" in ${snapshotFile}`)
     }
   }
 })
 
-test('versioned boolean rename migration uses RENAME COLUMN', async () => {
+test('migrations/0000_init.sql boolean columns use is_ names', async () => {
   const here = dirname(fromFileUrl(import.meta.url))
-  const metaDir = join(here, '../../../migrations/meta')
-  const { tag } = await readLatestSnapshot(metaDir)
-  const sqlPath = join(here, '../../../migrations', `${tag}.sql`)
-  const sql = await Deno.readTextFile(sqlPath)
-  for (const [from, to] of BOOLEAN_RENAMES) {
-    const stmt = `RENAME COLUMN "${from}" TO "${to}"`
-    if (!sql.includes(stmt)) {
-      throw new TypeError(`expected ${stmt} in ${tag}.sql so existing data is preserved`)
+  const sql = await Deno.readTextFile(join(here, '../../../migrations/0000_init.sql'))
+  for (const required of REQUIRED_IS_PREFIX_COLUMNS) {
+    if (!sql.includes(`"${required}"`)) {
+      throw new TypeError(`expected quoted column "${required}" in 0000_init.sql`)
+    }
+  }
+  for (const retired of RETIRED_BOOLEAN_NAMES) {
+    if (sql.includes(`"${retired}"`)) {
+      throw new TypeError(`retired quoted column "${retired}" must not appear in 0000_init.sql`)
     }
   }
 })

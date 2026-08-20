@@ -255,6 +255,8 @@ test('materializeBinding returns binding_ca_unavailable when CA is unsealed', as
           [{
             certificatePem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----',
             privateKeyPem: 'plaintext-not-sealed',
+            caState: 'active',
+            caGeneration: 1,
           }],
         ],
       ),
@@ -277,6 +279,8 @@ test('materializeBinding returns binding_endpoint_unavailable when cluster has n
           [{
             certificatePem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----',
             privateKeyPem: sealedKey,
+            caState: 'active',
+            caGeneration: 1,
           }],
           [], // loadClusterMembers → empty
         ],

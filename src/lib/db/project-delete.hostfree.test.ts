@@ -7,6 +7,7 @@ import type { Db } from '../../db.ts'
 import {
   deleteProjectCascade,
   isActiveContainerStatus,
+  MANAGED_RUNTIME_PRESENT_ERROR,
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
 } from './project-delete.ts'
 
@@ -23,6 +24,7 @@ type DeleteCall = { table: string; ids: string[] }
 
 function createCascadeMockDb(scenario: {
   environmentIds?: string[]
+  managedIds?: string[]
   serviceIds?: string[]
   containers?: ContainerRow[]
   hostingIds?: string[]
@@ -33,6 +35,7 @@ function createCascadeMockDb(scenario: {
   const projectId = 'proj-1'
 
   const envIds = scenario.environmentIds ?? []
+  const managedIds = scenario.managedIds ?? []
   const serviceIds = scenario.serviceIds ?? []
   const containers = scenario.containers ?? []
   const hostingIds = scenario.hostingIds ?? []
@@ -40,6 +43,7 @@ function createCascadeMockDb(scenario: {
 
   const selectQueue: unknown[][] = [
     envIds.map((id) => ({ id })),
+    managedIds.map((id) => ({ id })),
     serviceIds.map((id) => ({ id })),
     containers,
     hostingIds.map((id) => ({ id })),
@@ -119,6 +123,19 @@ test('deleteProjectCascade removes environments when no services exist', async (
   const result = await deleteProjectCascade(db, 'proj-1')
   assertEquals(result, { ok: true })
   assertEquals(stats.transactions, 1)
+})
+
+test('deleteProjectCascade rejects remaining managed runtime before transaction', async () => {
+  const { db, stats } = createCascadeMockDb({
+    environmentIds: ['env-1'],
+    managedIds: ['managed-1'],
+  })
+  const result = await deleteProjectCascade(db, 'proj-1')
+  assertEquals(result, {
+    ok: false,
+    error: MANAGED_RUNTIME_PRESENT_ERROR,
+  })
+  assertEquals(stats.transactions, 0)
 })
 
 test('deleteProjectCascade rejects active containers before transaction', async () => {

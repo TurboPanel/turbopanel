@@ -1,13 +1,13 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import type { Context } from 'hono'
-import { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
-import { environment } from '../../lib/db/schema.ts'
+import { environment, managed } from '../../lib/db/schema.ts'
+import { MANAGED_RUNTIME_PRESENT_ERROR } from '../../lib/db/project-delete.ts'
 import { applyStorageRetentionOnParentDelete } from '../../lib/db/storage-records.ts'
 import { purgeEnvironmentComposeNetworks } from '../../lib/db/fabric-records.ts'
 import { verifyServerInOrg } from './deploy-prepare.ts'
@@ -92,7 +92,7 @@ function applyEnvironmentOptionsPatch(
 ): Response | undefined {
   const optionsResult = parseEnvironmentPatchOptions(body)
   if (!optionsResult.ok) {
-    if (optionsResult.error === 'compose_invalid') {
+    if ('issues' in optionsResult) {
       return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
     }
     return c.json({ error: optionsResult.error }, optionsResult.status)
@@ -161,7 +161,7 @@ async function parseCreateEnvironmentInput(
 
   const jsonb = parseCreateEnvironmentJsonb(body)
   if (!jsonb.ok) {
-    if (jsonb.error === 'compose_invalid') {
+    if ('issues' in jsonb) {
       return c.json({ error: jsonb.error, issues: jsonb.issues }, 400)
     }
     return c.json({ error: jsonb.error }, jsonb.status)
@@ -368,6 +368,15 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const immutable = await assertNotSystemOwnedOr403(c, 'environment', id)
     if (immutable) return immutable
+
+    const [managedRow] = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(eq(managed.environmentId, id))
+      .limit(1)
+    if (managedRow) {
+      return c.json({ error: MANAGED_RUNTIME_PRESENT_ERROR }, 409)
+    }
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await applyStorageRetentionOnParentDelete(tx, { environmentIds: [id] })

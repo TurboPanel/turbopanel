@@ -1,4 +1,4 @@
-import { and, eq, ne } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
@@ -50,6 +50,16 @@ import {
   resolveManagedBindAddress,
 } from './access-address.ts'
 import { ensureManagedReplicationPrincipal, listManagedPrincipals } from '../principals/store.ts'
+import {
+  loadOrganizationCaSet,
+  nextOrganizationCaGeneration,
+  type OrganizationCaSet,
+} from '../tls/organization-ca.ts'
+import {
+  organizationCaLeafNotAfterIso,
+  pendingTlsLeafMetadata,
+  type UpsertTlsLeafTrackingParams,
+} from '../tls/leaf-tracking.ts'
 import { isOrganizationCaUniqueViolation } from '../tls/routes-helpers.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
@@ -107,6 +117,17 @@ function isPrimaryMemberPayload(
   return false
 }
 
+function metadataForManagedApplyMember(
+  member: PreparedManagedMemberApply,
+  extraMetadata?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const pending = member.pendingTlsLeaf
+    ? pendingTlsLeafMetadata(member.pendingTlsLeaf)
+    : {}
+  const merged = { ...extraMetadata, ...pending }
+  return Object.keys(merged).length > 0 ? merged : undefined
+}
+
 async function enqueueOneManagedApplyMember(
   db: Db,
   commandQueue: CommandQueue,
@@ -118,6 +139,7 @@ async function enqueueOneManagedApplyMember(
 ): Promise<ManagedApplyEnqueueResult> {
   const { member } = params
   const expiresAt = new Date(Date.now() + APPLY_EXPIRES_MS).toISOString()
+  const metadata = metadataForManagedApplyMember(member, params.extraMetadata)
   try {
     const record = await createCommandRecord(db, {
       serverId: member.serverId,
@@ -126,7 +148,7 @@ async function enqueueOneManagedApplyMember(
       type: 'managed.apply',
       payload: member.payload,
       expiresAt,
-      ...(params.extraMetadata ? { metadata: params.extraMetadata } : {}),
+      ...(metadata ? { metadata } : {}),
     })
     const envelope: CommandEnvelope = {
       commandId: record.id,
@@ -213,6 +235,8 @@ export type PreparedManagedMemberApply = {
   memberId: string
   serverId: string
   payload: ManagedApplyCommandPayload
+  /** Minted engine leaf; committed to `tlsleaf` only after command success. */
+  pendingTlsLeaf?: UpsertTlsLeafTrackingParams
 }
 
 export type ManagedApplyEnqueueResult = {
@@ -435,49 +459,31 @@ async function buildCredentials(
   return credentials
 }
 
-type ActiveOrganizationCa = {
-  certificatePem: string
-  privateKeyPemSealed: string
+function organizationCaSetOrSealedError(
+  set: OrganizationCaSet | null,
+): OrganizationCaSet | ManagedApplyPrepareError {
+  if (
+    !set ||
+    set.signer.certificatePem.length === 0 ||
+    !set.signer.privateKeyPemSealed.startsWith(ENVELOPE_PREFIX_SECRET)
+  ) {
+    return { kind: 'managed_credential_not_sealed' }
+  }
+  return set
 }
 
 /**
- * Look up the active org CA, or mint + insert one when absent (same ensure
- * semantics as `GET /tls/ca`). Returns sealed CA private key for leaf issue.
+ * Look up the active Organization CA set, or mint + insert one when absent
+ * (same ensure semantics as `GET /tls/ca`). Signing uses `signer` only; trust
+ * material is `trustBundlePem` (active+retired).
  */
 export async function ensureActiveOrganizationCa(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   organizationId: string,
-): Promise<ActiveOrganizationCa | ManagedApplyPrepareError> {
-  const [existing] = await db
-    .select({
-      certificatePem: tls.certificatePem,
-      privateKeyPem: tls.privateKeyPem,
-    })
-    .from(tls)
-    .where(
-      and(
-        eq(tls.organizationId, organizationId),
-        eq(tls.source, 'organization_ca'),
-        ne(tls.status, 'revoked'),
-      ),
-    )
-    .limit(1)
-
-  if (existing) {
-    if (
-      typeof existing.certificatePem !== 'string' ||
-      existing.certificatePem.length === 0 ||
-      typeof existing.privateKeyPem !== 'string' ||
-      !existing.privateKeyPem.startsWith(ENVELOPE_PREFIX_SECRET)
-    ) {
-      return { kind: 'managed_credential_not_sealed' }
-    }
-    return {
-      certificatePem: existing.certificatePem,
-      privateKeyPemSealed: existing.privateKeyPem,
-    }
-  }
+): Promise<OrganizationCaSet | ManagedApplyPrepareError> {
+  const existingSet = await loadOrganizationCaSet(db, organizationId)
+  if (existingSet) return organizationCaSetOrSealedError(existingSet)
 
   const material = await mintOrganizationCa()
   const privateKeyPemSealed = await encryptSecret(
@@ -493,19 +499,10 @@ export async function ensureActiveOrganizationCa(
 
   try {
     await db.transaction(async (tx) => {
-      const [race] = await tx
-        .select({ id: tls.id })
-        .from(tls)
-        .where(
-          and(
-            eq(tls.organizationId, organizationId),
-            eq(tls.source, 'organization_ca'),
-            ne(tls.status, 'revoked'),
-          ),
-        )
-        .limit(1)
+      const race = await loadOrganizationCaSet(tx, organizationId)
       if (race) return
 
+      const caGeneration = await nextOrganizationCaGeneration(tx, organizationId)
       await tx.insert(tls).values({
         organizationId,
         name: 'Organization CA',
@@ -517,40 +514,17 @@ export async function ensureActiveOrganizationCa(
         fingerprintSha256: columns.fingerprintSha256,
         metadata: residual,
         options: null,
+        caState: 'active',
+        caGeneration,
       })
     })
   } catch (err) {
     if (!isOrganizationCaUniqueViolation(err)) throw err
   }
 
-  const [row] = await db
-    .select({
-      certificatePem: tls.certificatePem,
-      privateKeyPem: tls.privateKeyPem,
-    })
-    .from(tls)
-    .where(
-      and(
-        eq(tls.organizationId, organizationId),
-        eq(tls.source, 'organization_ca'),
-        ne(tls.status, 'revoked'),
-      ),
-    )
-    .limit(1)
-
-  if (
-    !row ||
-    typeof row.certificatePem !== 'string' ||
-    row.certificatePem.length === 0 ||
-    typeof row.privateKeyPem !== 'string' ||
-    !row.privateKeyPem.startsWith(ENVELOPE_PREFIX_SECRET)
-  ) {
-    return { kind: 'managed_credential_not_sealed' }
-  }
-  return {
-    certificatePem: row.certificatePem,
-    privateKeyPemSealed: row.privateKeyPem,
-  }
+  return organizationCaSetOrSealedError(
+    await loadOrganizationCaSet(db, organizationId),
+  )
 }
 
 /**
@@ -566,7 +540,11 @@ export async function buildManagedOrgTlsMaterial(
   secretsConfig: SecretsConfig,
   dataEncryptionSecrets: DerivedSecretsConfig,
   recipient: { serverId: string; keyId: string },
-  ca: { certificatePem: string; privateKeyPem: string },
+  ca: {
+    certificatePem: string
+    privateKeyPem: string
+    trustBundlePem: string
+  },
   managedId: string,
   extraSans: readonly string[] = [],
   ipAddresses: readonly string[] = [],
@@ -599,7 +577,7 @@ export async function buildManagedOrgTlsMaterial(
   return {
     certificatePem: leaf.certificatePem,
     privateKeyEnvelope,
-    caCertPem: ca.certificatePem,
+    caCertPem: ca.trustBundlePem,
   }
 }
 
@@ -611,14 +589,19 @@ async function buildOrgTlsMaterialForServer(
     organizationId: string
     serverId: string
     managedId: string
+    nodeId: string
     extraSans?: readonly string[]
     ipAddresses?: readonly string[]
   },
-): Promise<ManagedApplyOrgTlsMaterial | ManagedApplyPrepareError> {
+): Promise<
+  | { material: ManagedApplyOrgTlsMaterial; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
+  | ManagedApplyPrepareError
+> {
   const {
     organizationId,
     serverId,
     managedId,
+    nodeId,
     extraSans = [],
     ipAddresses = [],
   } = params
@@ -636,17 +619,34 @@ async function buildOrgTlsMaterialForServer(
 
   const caPrivateKeyPem = await decryptSecret(
     dataEncryptionSecrets,
-    ca.privateKeyPemSealed,
+    ca.signer.privateKeyPemSealed,
   )
-  return buildManagedOrgTlsMaterial(
+  const material = await buildManagedOrgTlsMaterial(
     secretsConfig,
     dataEncryptionSecrets,
     { serverId, keyId: daemonState.key.id },
-    { certificatePem: ca.certificatePem, privateKeyPem: caPrivateKeyPem },
+    {
+      certificatePem: ca.signer.certificatePem,
+      privateKeyPem: caPrivateKeyPem,
+      trustBundlePem: ca.trustBundlePem,
+    },
     managedId,
     extraSans,
     ipAddresses,
   )
+  return {
+    material,
+    pendingTlsLeaf: {
+      kind: 'engine',
+      organizationId,
+      serverId,
+      managedId,
+      nodeId,
+      caId: ca.signer.id,
+      caGeneration: ca.signer.caGeneration,
+      notAfter: organizationCaLeafNotAfterIso(),
+    },
+  }
 }
 
 function resolveRootUsername(
@@ -932,7 +932,10 @@ async function attachManagedOrgTlsMaterial(
     containerName: string
     payload: ManagedApplyCommandPayload
   },
-): Promise<ManagedApplyPrepareError | null> {
+): Promise<
+  | { pendingTlsLeaf: UpsertTlsLeafTrackingParams }
+  | ManagedApplyPrepareError
+> {
   const { input, member, memberInput, containerSans, containerName, payload } = params
   const [memberServer] = await db
     .select({ organizationId: serverTable.organizationId })
@@ -955,6 +958,7 @@ async function attachManagedOrgTlsMaterial(
       organizationId: memberOrganizationId,
       serverId: member.serverId,
       managedId: input.managedRow.id,
+      nodeId: member.id,
       extraSans: [...containerSans, containerName],
       // Private listener IP must be an IP SAN so remote MySQL/MariaDB replicas
       // using hostaddr + VERIFY_IDENTITY match the primary leaf.
@@ -962,8 +966,8 @@ async function attachManagedOrgTlsMaterial(
     },
   )
   if ('kind' in orgTlsMaterial) return orgTlsMaterial
-  payload.orgTlsMaterial = orgTlsMaterial
-  return null
+  payload.orgTlsMaterial = orgTlsMaterial.material
+  return { pendingTlsLeaf: orgTlsMaterial.pendingTlsLeaf }
 }
 
 async function buildPayloadForMember(
@@ -977,7 +981,10 @@ async function buildPayloadForMember(
     replicationUsername: string | null
     containerSans: readonly string[]
   },
-): Promise<ManagedApplyCommandPayload | ManagedApplyPrepareError> {
+): Promise<
+  | { payload: ManagedApplyCommandPayload; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
+  | ManagedApplyPrepareError
+> {
   const { members, member, multiMember, replicationUsername, containerSans } = params
   const secretsConfig = c.get('secretsConfig')
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -1110,7 +1117,7 @@ async function buildPayloadForMember(
 
   attachOptionalPayloadFields(payload, input, memberInput, runtime, databases)
 
-  const tlsError = await attachManagedOrgTlsMaterial(
+  const tlsResult = await attachManagedOrgTlsMaterial(
     db,
     secretsConfig,
     dataEncryptionSecrets,
@@ -1123,9 +1130,9 @@ async function buildPayloadForMember(
       payload,
     },
   )
-  if (tlsError) return tlsError
+  if (isPrepareError(tlsResult)) return tlsResult
 
-  return payload
+  return { payload, pendingTlsLeaf: tlsResult.pendingTlsLeaf }
 }
 
 /**
@@ -1240,11 +1247,11 @@ async function prepareOneMemberApply(
   },
 ): Promise<PreparedManagedMemberApply | ManagedApplyPrepareError> {
   const { member } = params
-  const payload = await buildPayloadForMember(c, db, input, params)
-  if (isPrepareError(payload)) return payload
+  const built = await buildPayloadForMember(c, db, input, params)
+  if (isPrepareError(built)) return built
 
-  if (member.role === 'replica' && payload.peers.length > 0) {
-    const primaryPeer = payload.peers.find((p) => p.role === 'primary')
+  if (member.role === 'replica' && built.payload.peers.length > 0) {
+    const primaryPeer = built.payload.peers.find((p) => p.role === 'primary')
     if (primaryPeer) {
       await updateMemberReplicationTransport(
         db,
@@ -1257,7 +1264,8 @@ async function prepareOneMemberApply(
   return {
     memberId: member.id,
     serverId: member.serverId,
-    payload,
+    payload: built.payload,
+    pendingTlsLeaf: built.pendingTlsLeaf,
   }
 }
 
@@ -1448,6 +1456,9 @@ async function enqueueTwoPhaseManagedApply(
     serverId: member.serverId,
     memberId: member.memberId,
     payload: member.payload,
+    ...(member.pendingTlsLeaf
+      ? { pendingTlsLeaf: member.pendingTlsLeaf }
+      : {}),
   }))
 
   let queuedPrimary = false

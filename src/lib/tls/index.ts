@@ -34,6 +34,7 @@ export {
   buildKeyUsageExtension,
   extractSubjectNameDer,
   issueLeafCertificate,
+  ORGANIZATION_CA_LEAF_VALID_DAYS,
   KEY_USAGE_CRL_SIGN,
   KEY_USAGE_DIGITAL_SIGNATURE,
   KEY_USAGE_KEY_CERT_SIGN,

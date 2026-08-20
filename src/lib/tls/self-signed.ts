@@ -2,8 +2,8 @@
  * Mint short-lived self-signed RSA leaves and organization CA material for the
  * org TLS library. Workers + Deno safe (Web Crypto only).
  *
- * This module must never write the instance-wide platform CA
- * (`<stateDir>/tls/ca.crt|ca.key|ca-bundle.pem`). Org TLS library material is
+ * This module must never read or write the **Platform CA** files under
+ * `<stateDir>/tls/` (see `src/lib/tls/AGENTS.md`). Org TLS library material is
  * scoped to hosting/managed-DB leaves and cannot affect daemon trust.
  */
 
@@ -248,7 +248,7 @@ function asBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
   return new Uint8Array(bytes)
 }
 
-async function generateRsaKeyPair(): Promise<CryptoKeyPair> {
+function generateRsaKeyPair(): Promise<CryptoKeyPair> {
   return crypto.subtle.generateKey(
     {
       name: 'RSASSA-PKCS1-v1_5',
@@ -484,7 +484,7 @@ export async function verifyCertificateSignature(
   }
 }
 
-async function importRsaPrivateKeyFromPem(
+function importRsaPrivateKeyFromPem(
   privateKeyPem: string,
 ): Promise<CryptoKey> {
   const decoded = decodePrivateKeyToPkcs8(privateKeyPem)
@@ -605,6 +605,12 @@ export async function mintOrganizationCa(opts?: {
 }
 
 /**
+ * Default validity for Organization-CA-signed managed leaves (days).
+ * The renewal sweep treats remaining lifetime below this / 3 as due.
+ */
+export const ORGANIZATION_CA_LEAF_VALID_DAYS = 90
+
+/**
  * Issue a server leaf certificate signed by an organization CA.
  *
  * `dnsNames` supplies DNS SANs. Optional `ipAddresses` adds iPAddress SANs so
@@ -637,7 +643,7 @@ export async function issueLeafCertificate(
   const caSigningKey = await importRsaPrivateKeyFromPem(caPrivateKeyPem)
   const issuerNameDer = extractSubjectNameDer(caCertPem)
 
-  const validDays = opts?.validDays ?? 90
+  const validDays = opts?.validDays ?? ORGANIZATION_CA_LEAF_VALID_DAYS
   const { notBefore, notAfter } = validityWindow(validDays)
   const cn = opts?.commonName ?? names[0]!
 

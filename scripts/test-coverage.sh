@@ -347,6 +347,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/storage-records.hostfree.test.ts \
   src/lib/db/table-naming.test.ts \
   src/lib/db/boolean-column-naming.test.ts \
+  src/lib/db/tls-leaf-indexes.test.ts \
   src/lib/db/task-records.hostfree.test.ts \
   src/lib/db/workspace-kind.test.ts \
   src/lib/docker-network-name.test.ts \
@@ -440,6 +441,11 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/tls/routes.test.ts \
   src/client/tls/routes-helpers.test.ts \
   src/client/tls/routes-helpers.hostfree.test.ts \
+  src/client/tls/organization-ca.hostfree.test.ts \
+  src/client/tls/rotation-fanout.hostfree.test.ts \
+  src/client/tls/rotation-lease.hostfree.test.ts \
+  src/client/tls/leaf-tracking.hostfree.test.ts \
+  src/client/tls/leaf-renewal-sweep.hostfree.test.ts \
   src/client/variables/routes.test.ts \
   src/client/workspaces/routes.test.ts \
   src/client/workspaces/routes-helpers.hostfree.test.ts

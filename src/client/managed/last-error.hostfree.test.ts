@@ -65,6 +65,39 @@ test('pickManagedFailureMessage prefers latest apply-family then ingress', () =>
   )
 })
 
+test('pickManagedFailureMessage ignores ingress failure superseded by a later success', () => {
+  const managedId = 'managed-1'
+  assertEquals(
+    pickManagedFailureMessage(
+      [
+        {
+          type: 'managed.ingress.reconcile',
+          status: 'succeeded',
+          error: null,
+          payload: {},
+          createdAt: '2026-08-19T19:15:04.000Z',
+        },
+        {
+          type: 'managed.ingress.reconcile',
+          status: 'failed',
+          error: 'managed-ingress descriptor is missing',
+          payload: {},
+          createdAt: '2026-08-19T18:40:00.000Z',
+        },
+        {
+          type: 'managed.apply',
+          status: 'failed',
+          error: "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)",
+          payload: { managedId },
+          createdAt: '2026-08-19T19:16:00.000Z',
+        },
+      ],
+      managedId,
+    ),
+    "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)",
+  )
+})
+
 test('pickManagedFailureMessage returns null when nothing failed', () => {
   assertEquals(
     pickManagedFailureMessage(

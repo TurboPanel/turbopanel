@@ -79,6 +79,9 @@ jobs:
       - name: Check vocabulary (no daemon-as-agent phrasing)
         run: pnpm run check:vocabulary
 
+      - name: Check CA boundary (Organization CA must not touch Platform CA paths)
+        run: pnpm run check:ca-boundary
+
       - name: Test with coverage
         run: pnpm test:coverage
 

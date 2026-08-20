@@ -24,7 +24,7 @@ CREATE TABLE "binding" (
 	"service_id" uuid NOT NULL,
 	"database_name" varchar(255) NOT NULL,
 	"key_prefix" varchar(64) DEFAULT 'DATABASE' NOT NULL,
-	"emit_engine_defaults" boolean DEFAULT true NOT NULL,
+	"is_emit_engine_defaults" boolean DEFAULT true NOT NULL,
 	CONSTRAINT "uniq_binding_service_prefix" UNIQUE("service_id","key_prefix"),
 	CONSTRAINT "binding_key_prefix_format_check" CHECK ((char_length((key_prefix)::text) >= 1) AND (char_length((key_prefix)::text) <= 64) AND ((key_prefix)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)),
 	CONSTRAINT "binding_database_name_format_check" CHECK ((char_length((database_name)::text) >= 1) AND (char_length((database_name)::text) <= 63) AND ((database_name)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text))
@@ -267,7 +267,7 @@ CREATE TABLE "mount" (
 	"service_id" uuid NOT NULL,
 	"destination_path" text NOT NULL,
 	"subpath" text,
-	"read_only" boolean DEFAULT false NOT NULL,
+	"is_read_only" boolean DEFAULT false NOT NULL,
 	CONSTRAINT "uniq_mount_service_destination" UNIQUE("service_id","destination_path")
 );
 --> statement-breakpoint
@@ -303,7 +303,7 @@ CREATE TABLE "node" (
 	"server_id" uuid NOT NULL,
 	"role" text DEFAULT 'primary' NOT NULL,
 	"replica_class" text,
-	"read_eligible" boolean DEFAULT false NOT NULL,
+	"is_read_eligible" boolean DEFAULT false NOT NULL,
 	"ordinal" integer DEFAULT 1 NOT NULL,
 	"replication_transport" text,
 	"private_port" integer,
@@ -444,7 +444,7 @@ CREATE TABLE "server" (
 	"is_time_sync_enabled" boolean,
 	"ntp_servers" jsonb,
 	"ntp_last_synced_at" timestamp(3) with time zone,
-	"connected" boolean DEFAULT false NOT NULL,
+	"is_connected" boolean DEFAULT false NOT NULL,
 	"status_changed_at" timestamp(3) with time zone,
 	"daemon" jsonb
 );
@@ -570,8 +570,49 @@ CREATE TABLE "tls" (
 	"status" text DEFAULT 'ready' NOT NULL,
 	"not_after" timestamp(3) with time zone,
 	"fingerprint_sha256" text,
+	"ca_state" text,
+	"ca_generation" integer,
 	CONSTRAINT "tls_source_check" CHECK (source IN ('upload', 'lets_encrypt', 'self_signed', 'organization_ca')),
-	CONSTRAINT "tls_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "tls_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
+	CONSTRAINT "tls_ca_state_check" CHECK (ca_state IS NULL OR ca_state IN ('active', 'retired', 'revoked')),
+	CONSTRAINT "tls_ca_lifecycle_source_check" CHECK ((source = 'organization_ca' AND ca_state IS NOT NULL) OR (source <> 'organization_ca' AND ca_state IS NULL AND ca_generation IS NULL)),
+	CONSTRAINT "tls_ca_generation_source_check" CHECK (ca_generation IS NULL OR source = 'organization_ca'),
+	CONSTRAINT "tls_ca_generation_required_check" CHECK (ca_state IS NULL OR ca_state = 'revoked' OR ca_generation IS NOT NULL)
+);
+--> statement-breakpoint
+CREATE TABLE "tlsleaf" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"organization_id" uuid NOT NULL,
+	"server_id" uuid NOT NULL,
+	"kind" text NOT NULL,
+	"managed_id" uuid,
+	"node_id" uuid,
+	"ca_id" uuid NOT NULL,
+	"ca_generation" integer NOT NULL,
+	"not_after" timestamp(3) with time zone NOT NULL,
+	"issued_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "tls_leaf_kind_check" CHECK ("tlsleaf"."kind" IN ('ingress','engine')),
+	CONSTRAINT "tls_leaf_kind_keys_check" CHECK ((
+        ("tlsleaf"."kind" = 'ingress' AND "tlsleaf"."node_id" IS NULL AND "tlsleaf"."managed_id" IS NULL)
+        OR
+        ("tlsleaf"."kind" = 'engine' AND "tlsleaf"."node_id" IS NOT NULL AND "tlsleaf"."managed_id" IS NOT NULL)
+      ))
+);
+--> statement-breakpoint
+CREATE TABLE "tlsrotation" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
+	"organization_id" uuid NOT NULL,
+	"from_ca_generation" integer DEFAULT 0 NOT NULL,
+	"to_ca_generation" integer DEFAULT 0 NOT NULL,
+	"state" text NOT NULL,
+	"started_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"completed_at" timestamp(3) with time zone,
+	"results" jsonb DEFAULT '[]'::jsonb,
+	CONSTRAINT "tls_rotation_state_check" CHECK ("tlsrotation"."state" IN ('in_progress','awaiting_retire','completed','failed'))
 );
 --> statement-breakpoint
 CREATE TABLE "2fa" (
@@ -615,8 +656,8 @@ CREATE TABLE "variable" (
 	"value" text DEFAULT '' NOT NULL,
 	"is_secret" boolean DEFAULT false NOT NULL,
 	"is_literal" boolean DEFAULT false NOT NULL,
-	"for_build" boolean DEFAULT false NOT NULL,
-	"for_runtime" boolean DEFAULT true NOT NULL,
+	"is_for_build" boolean DEFAULT false NOT NULL,
+	"is_for_runtime" boolean DEFAULT true NOT NULL,
 	"description" varchar(255),
 	CONSTRAINT "variable_exactly_one_parent_check" CHECK (((organization_id IS NOT NULL)::int +
         (workspace_id IS NOT NULL)::int +
@@ -715,6 +756,12 @@ ALTER TABLE "team" ADD CONSTRAINT "team_organization_id_organization_id_fk" FORE
 ALTER TABLE "teammate" ADD CONSTRAINT "teammate_team_id_team_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."team"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "teammate" ADD CONSTRAINT "teammate_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tls" ADD CONSTRAINT "tls_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tlsleaf" ADD CONSTRAINT "tls_leaf_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tlsleaf" ADD CONSTRAINT "tls_leaf_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tlsleaf" ADD CONSTRAINT "tls_leaf_managed_id_managed_id_fk" FOREIGN KEY ("managed_id") REFERENCES "public"."managed"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tlsleaf" ADD CONSTRAINT "tls_leaf_node_id_node_id_fk" FOREIGN KEY ("node_id") REFERENCES "public"."node"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tlsleaf" ADD CONSTRAINT "tls_leaf_ca_id_tls_id_fk" FOREIGN KEY ("ca_id") REFERENCES "public"."tls"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tlsrotation" ADD CONSTRAINT "tls_rotation_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "2fa" ADD CONSTRAINT "2fa_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "variable" ADD CONSTRAINT "variable_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "variable" ADD CONSTRAINT "variable_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -728,7 +775,7 @@ ALTER TABLE "workspace" ADD CONSTRAINT "workspace_organization_id_organization_i
 CREATE INDEX "idx_account_user_id" ON "account" USING btree ("user_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_binding_principal_id" ON "binding" USING btree ("principal_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_binding_service_id" ON "binding" USING btree ("service_id" uuid_ops);--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_binding_service_engine_defaults" ON "binding" USING btree ("service_id") WHERE "binding"."emit_engine_defaults";--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_binding_service_engine_defaults" ON "binding" USING btree ("service_id") WHERE "binding"."is_emit_engine_defaults";--> statement-breakpoint
 CREATE INDEX "idx_command_server_id_created_at" ON "command" USING btree ("server_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "idx_command_status" ON "command" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "idx_container_service_id" ON "container" USING btree ("service_id" uuid_ops);--> statement-breakpoint
@@ -797,7 +844,7 @@ CREATE INDEX "idx_segment_server_id" ON "segment" USING btree ("server_id" uuid_
 CREATE INDEX "idx_server_organization_id" ON "server" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_server_machine_key" ON "server" USING btree ("machine_key" text_ops);--> statement-breakpoint
 CREATE INDEX "idx_server_hostname" ON "server" USING btree ("hostname" text_ops);--> statement-breakpoint
-CREATE INDEX "idx_server_connected" ON "server" USING btree ("id") WHERE "server"."connected";--> statement-breakpoint
+CREATE INDEX "idx_server_connected" ON "server" USING btree ("id") WHERE "server"."is_connected";--> statement-breakpoint
 CREATE INDEX "idx_service_environment_id" ON "service" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_service_environment_compose_name" ON "service" USING btree ("environment_id","compose_service_name");--> statement-breakpoint
 CREATE INDEX "idx_session_user_id" ON "session" USING btree ("user_id" uuid_ops);--> statement-breakpoint
@@ -819,7 +866,14 @@ CREATE INDEX "idx_teammate_user_id" ON "teammate" USING btree ("user_id" uuid_op
 CREATE INDEX "idx_tls_organization_id" ON "tls" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_tls_not_after" ON "tls" USING btree ("not_after" timestamptz_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_tls_organization_fingerprint_sha256" ON "tls" USING btree ("organization_id","fingerprint_sha256") WHERE "tls"."fingerprint_sha256" IS NOT NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_tls_organization_active_ca" ON "tls" USING btree ("organization_id") WHERE "tls"."source" = 'organization_ca' AND "tls"."status" != 'revoked';--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_tls_organization_active_ca" ON "tls" USING btree ("organization_id") WHERE "tls"."source" = 'organization_ca' AND "tls"."ca_state" = 'active';--> statement-breakpoint
+CREATE INDEX "idx_tls_organization_ca_generation" ON "tls" USING btree ("organization_id","ca_generation") WHERE "tls"."source" = 'organization_ca';--> statement-breakpoint
+CREATE INDEX "idx_tlsleaf_not_after" ON "tlsleaf" USING btree ("not_after" timestamptz_ops);--> statement-breakpoint
+CREATE INDEX "idx_tlsleaf_organization_id" ON "tlsleaf" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_tlsleaf_ingress_server" ON "tlsleaf" USING btree ("server_id") WHERE "tlsleaf"."kind" = 'ingress';--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_tlsleaf_engine_node" ON "tlsleaf" USING btree ("node_id") WHERE "tlsleaf"."kind" = 'engine';--> statement-breakpoint
+CREATE INDEX "idx_tls_rotation_organization_id" ON "tlsrotation" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_tls_rotation_inflight_organization" ON "tlsrotation" USING btree ("organization_id") WHERE "tlsrotation"."state" = 'in_progress';--> statement-breakpoint
 CREATE INDEX "idx_2fa_user_id" ON "2fa" USING btree ("user_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_variable_organization_id" ON "variable" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_variable_workspace_id" ON "variable" USING btree ("workspace_id" uuid_ops);--> statement-breakpoint

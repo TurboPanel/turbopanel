@@ -45,6 +45,11 @@
 import { type Db, endDbConnection } from "../../db.ts";
 import { resolveWorkersDb } from "../../workers-bindings.ts";
 import { runSystemReconcileSweep } from "../../client/system/reconcile.ts";
+import { runLeafRenewalSweepTick } from "../../client/tls/leaf-renewal-sweep.ts";
+import type {
+  DerivedSecretsConfig,
+  SecretsConfig,
+} from "../../client/authn/secrets.ts";
 import { createWorkersCommandQueue } from "../../lib/commands/workers-queue.ts";
 import {
   resolveServerMetricsStore,
@@ -587,8 +592,66 @@ export async function sweepOnce(
   await sweepOnceWithAe(db, activeById, resolvedDeps, nowMs);
 }
 
+type CronTlsRenewal = {
+  secretsConfig: SecretsConfig;
+  dataEncryptionSecrets: DerivedSecretsConfig;
+};
+
+function sweepErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function sweepOnceSafely(
+  env: CloudflareBindings,
+  db: Db,
+): Promise<void> {
+  try {
+    await sweepOnce(env, db);
+  } catch (err) {
+    sweepTrace("sweep-failed", { error: sweepErrorMessage(err) });
+  }
+}
+
+async function runLeafRenewalSweepTickSafely(
+  db: Db,
+  commandQueue: ReturnType<typeof createWorkersCommandQueue>,
+  tlsRenewal: CronTlsRenewal,
+): Promise<void> {
+  try {
+    // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced
+    // per bounded batch; reset when the sweep completes or the cursor
+    // is invalid).
+    await runLeafRenewalSweepTick(db, commandQueue, tlsRenewal);
+  } catch (err) {
+    sweepTrace("leaf-renewal-sweep-failed", {
+      error: sweepErrorMessage(err),
+    });
+  }
+}
+
+async function runQueuedCronSweeps(
+  db: Db,
+  queue: NonNullable<CloudflareBindings["TURBOPANEL_COMMAND_QUEUE"]>,
+  tlsRenewal?: CronTlsRenewal | null,
+): Promise<void> {
+  try {
+    const commandQueue = createWorkersCommandQueue(queue);
+    await runSystemReconcileSweep(db, commandQueue);
+    if (tlsRenewal) {
+      await runLeafRenewalSweepTickSafely(db, commandQueue, tlsRenewal);
+    }
+  } catch (err) {
+    sweepTrace("system-reconcile-sweep-failed", {
+      error: sweepErrorMessage(err),
+    });
+  }
+}
+
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */
-export async function runOfflineSweep(env: CloudflareBindings): Promise<void> {
+export async function runOfflineSweep(
+  env: CloudflareBindings,
+  tlsRenewal?: CronTlsRenewal | null,
+): Promise<void> {
   // Cron-only isolate never ran `initWorkerApp` — register a write-only AE
   // sink so demotions / self-heal emit status rows (no SQL config needed).
   setServerStatusEventSink(
@@ -606,28 +669,17 @@ export async function runOfflineSweep(env: CloudflareBindings): Promise<void> {
   if (!db) return;
 
   try {
-    try {
-      await sweepOnce(env, db);
-    } catch (err) {
-      sweepTrace("sweep-failed", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    await sweepOnceSafely(env, db);
 
     // System-reconcile drift sweep reuses this cron's already-open db — never
     // open a second Hyperdrive client per tick. Skip when the queue binding
     // is absent.
     if (env.TURBOPANEL_COMMAND_QUEUE) {
-      try {
-        const commandQueue = createWorkersCommandQueue(
-          env.TURBOPANEL_COMMAND_QUEUE,
-        );
-        await runSystemReconcileSweep(db, commandQueue);
-      } catch (err) {
-        sweepTrace("system-reconcile-sweep-failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+      await runQueuedCronSweeps(
+        db,
+        env.TURBOPANEL_COMMAND_QUEUE,
+        tlsRenewal,
+      );
     }
   } finally {
     await endDbConnection(db).catch(() => {});

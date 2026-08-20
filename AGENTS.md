@@ -310,6 +310,9 @@ fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
   **`pnpm test:do` is not enough** — vitest bundles `src/workers-vitest.ts` with
   a narrow include list and can tree-shake away modules only the full deploy
   graph pulls in.
+- **`pnpm check:ca-boundary`** — Organization CA sources (`src/lib/tls/`,
+  `src/client/tls/`) must not reference Platform CA paths. See
+  `src/lib/tls/AGENTS.md`. Wired into `test:hook` and CI `build.yml`.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`. Keep the
   `Cloudflare.Env` / global `Env` aliases that extend `CloudflareBindings`
   (vitest `cloudflare:test` `env` is typed as `Cloudflare.Env`, not the
@@ -365,11 +368,11 @@ dev user. In **production** it is **`2770 tp:tp`** (setgid) so the
 | `TURBOPANEL_UI_ROOT`        | `/opt/turbopanel/share/ui`     | Directory of `expo export --platform web` output (local manual dev typically sets `../ui/dist`)                                                                                                                                                                                                                                 |
 | `TURBOPANEL_UI_SERVICE`     | `turbopanel-ui`                | Name of the Expo systemd unit on managed hosts (injected for orchestration; no instance API surface today)                                                                                                                                                                                                                      |
 | `CADDY_PORT`                | `8443`                         | HTTPS listen port                                                                                                                                                                                                                                                                                                               |
-| `CADDY_TLS_CERT`            | `./certs/self-signed.crt`      | Server leaf certificate (signed by the platform CA; stays under the instance `certs/` dir)                                                                                                                                                                      |
+| `CADDY_TLS_CERT`            | `./certs/self-signed.crt`      | Server leaf certificate (signed by the **Platform CA**; stays under the instance `certs/` dir)                                                                                                                                                                  |
 | `CADDY_TLS_KEY`             | `./certs/self-signed.key`      | Server leaf private key                                                                                                                                                                                                                                                                                                         |
-| `TURBOPANEL_TLS_CA`         | `/var/lib/turbopanel/tls/ca.crt` | Durable platform CA (override; default is `${TURBOPANEL_STATE_DIR}/tls/ca.crt`)                                                                                                                                                                               |
-| `TURBOPANEL_TLS_CA_KEY`     | `/var/lib/turbopanel/tls/ca.key` | Durable platform CA private key                                                                                                                                                                                                                               |
-| `TURBOPANEL_TLS_CA_BUNDLE`  | `/var/lib/turbopanel/tls/ca-bundle.pem` | Current+retired PEM bundle served at `GET /api/daemon/v1/instance/ca`                                                                                                                                                                                      |
+| `TURBOPANEL_TLS_CA`         | `/var/lib/turbopanel/tls/ca.crt` | Durable **Platform CA** (override; default is `${TURBOPANEL_STATE_DIR}/tls/ca.crt`)                                                                                                                                                                            |
+| `TURBOPANEL_TLS_CA_KEY`     | `/var/lib/turbopanel/tls/ca.key` | Durable **Platform CA** private key                                                                                                                                                                                                                           |
+| `TURBOPANEL_TLS_CA_BUNDLE`  | `/var/lib/turbopanel/tls/ca-bundle.pem` | Current+retired **Platform CA** PEM bundle served at `GET /api/daemon/v1/instance/ca`                                                                                                                                                                      |
 | `TURBOPANEL_TLS_EXTRA_SANS` | —                              | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`)                                                                                                                                                                                                                                                           |
 | `TURBOPANEL_PUBLIC_URLS`    | —                              | Comma-separated list of URLs/hosts this control plane is reachable at (e.g. `https://panel.example.com,https://huey.lan:8443`). Persisted in the `setting` table by the admin API; read by `generate-self-signed-cert.mjs` to derive cert SANs. Also consulted by `resolvePublicBaseUrl` as the preferred install-command host. |
 
@@ -593,24 +596,28 @@ Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp` in production.
 
 - Entrypoint: `https://<host>:8443` (this `Caddyfile`) — binds all interfaces;
   use `localhost` or the machine's LAN IP.
-- Self-hosted TLS uses a **platform CA** stored in the durable state tree
+- Self-hosted TLS uses a **Platform CA** stored in the durable state tree
   (`/var/lib/turbopanel/tls/ca.crt` + `ca.key`, plus `ca-bundle.pem` for
   current+retired overlap). The Caddy **leaf** stays under the instance
   `certs/` dir (`self-signed.crt` + `.key`). **`auto_https off` is mandatory
   and must never be removed.** Caddy must never auto-provision certs via ACME or
   on-demand TLS. All cert issuance goes through
-  `scripts/generate-self-signed-cert.mjs` (self-hosted, platform CA) or an
+  `scripts/generate-self-signed-cert.mjs` (self-hosted, **Platform CA**) or an
   explicitly-configured publicly-trusted cert. The `instance-certs-apply.yml`
   playbook is the runtime **leaf-only** cert-regen path triggered by the admin
   public-URL apply action — it never passes `TURBOPANEL_TLS_CA_ROTATE`.
   `ensureCa()` migrates legacy checkout `certs/ca.*` once and refuses to mint
-  over an unreadable existing CA. Rotation is opt-in
-  (`TURBOPANEL_TLS_CA_ROTATE=1`) and keeps the outgoing root in the bundle until
-  daemons ack `server.tls.trust.reconcile`. Daemons fetch the bundle from
-  `GET /api/daemon/v1/instance/ca`. Trust the platform CA in browsers/OS to
-  avoid warnings. The **org TLS library** (`/api/client/v1/tls`, `/tls/ca`) is a
-  separate per-organization store for hosting/managed-DB leaves and must never
-  write platform CA paths.
+  over an unreadable existing **Platform CA**. Rotation is opt-in
+  (`TURBOPANEL_TLS_CA_ROTATE=1`) and keeps the outgoing **Platform CA** root in
+  the bundle until daemons ack `server.tls.trust.reconcile`. Daemons fetch the
+  bundle from `GET /api/daemon/v1/instance/ca`. Trust the **Platform CA** in
+  browsers/OS to avoid warnings. The **Organization CA** and org TLS library
+  (`/api/client/v1/tls`, `/tls/ca`) are a separate per-organization store for
+  managed-database / ProxySQL / replication leaves and must never write
+  **Platform CA** paths — see `src/lib/tls/AGENTS.md`. **Future:** tenant
+  **hosting** leaves (Caddy-fronted web services) remain operator-pinned library
+  certificates or Caddy `tls internal`. They are never issued by the
+  Organization CA.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO`
   for Deno).
 
@@ -625,25 +632,26 @@ runtime (the old `TURBOPANEL_TLS_INSECURE` daemon env was dead and was removed;
 `run.sh --insecure-tls` only affects the bootstrap `curl -k` downloads). Three
 valid configurations:
 
-| Path                          | CA trust                                                                                                           | SAN requirement                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Path                          | Platform CA trust                                                                                                  | SAN requirement                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Self-signed (self-hosted)** | Daemon trusts the downloaded **platform CA bundle** (`TURBOPANEL_INSTANCE_CA` → `/etc/turbopanel/instance-ca.pem`, fetched from `GET /api/daemon/v1/instance/ca`). Instance material lives under `/var/lib/turbopanel/tls/` (`ca.crt` / `ca.key` / `ca-bundle.pem`) — not the replaceable checkout. Distinct from the org TLS library. | The leaf cert **must** include the hostname the daemon dials. SANs are derived from the configured public URL(s) — `TURBOPANEL_PUBLIC_URL` / `TURBOPANEL_BASE_URL` / `TURBOPANEL_INSTANCE_URL` and `TURBOPANEL_TLS_EXTRA_SANS` (see `scripts/generate-self-signed-cert.mjs`). Never hardcode the hostname.                                                                                                                    |
+| **Self-signed (self-hosted)** | Daemon trusts the downloaded **Platform CA** bundle (`TURBOPANEL_INSTANCE_CA` → `/etc/turbopanel/instance-ca.pem`, fetched from `GET /api/daemon/v1/instance/ca`). Instance material lives under `/var/lib/turbopanel/tls/` (`ca.crt` / `ca.key` / `ca-bundle.pem`) — not the replaceable checkout. Distinct from the **Organization CA** (`src/lib/tls/AGENTS.md`). | The leaf cert **must** include the hostname the daemon dials. SANs are derived from the configured public URL(s) — `TURBOPANEL_PUBLIC_URL` / `TURBOPANEL_BASE_URL` / `TURBOPANEL_INSTANCE_URL` and `TURBOPANEL_TLS_EXTRA_SANS` (see `scripts/generate-self-signed-cert.mjs`). Never hardcode the hostname.                                                                                                                    |
 | **Let's Encrypt**             | Publicly-valid → daemon uses the **system trust store** (ship **no** `TURBOPANEL_INSTANCE_CA`)                     | The real cert already covers the public hostname.                                                                                                                                                                                                                                                                                                                                                                             |
 | **Cloudflare tunnel / proxy** | Cloudflare's edge cert is publicly-valid → **system trust**                                                        | Daemon dials the public Cloudflare hostname, which the edge cert already covers. **Caveat:** behind a tunnel the instance cannot auto-discover its own public hostname (cloudflared dials out), so the reachable URL(s) must be **declared by the operator** (admin surface / `TURBOPANEL_PUBLIC_URL`), not auto-detected. The self-signed origin leg (cloudflared → local Caddy) is separate from what the daemon validates. |
 
 Note: `Deno.createHttpClient({ caCerts })` **adds** to the system roots (does
-not replace them), so configuring the platform CA does not break validation of
-publicly-trusted certs. The daemon re-reads `instance-ca.pem` on each reconnect
-(mtime+size cache) and parks TLS chain/SAN/expiry failures as `tls-trust`
-instead of looping every 30 s. Control-plane rotation appends the outgoing CA
-to the bundle, then fans `server.tls.trust.reconcile` over the existing WSS
-session so the new anchor lands **before** the old one is retired.
+not replace them), so configuring the **Platform CA** does not break validation
+of publicly-trusted certs. The daemon re-reads `instance-ca.pem` on each
+reconnect (mtime+size cache) and parks TLS chain/SAN/expiry failures as
+`tls-trust` instead of looping every 30 s. Control-plane rotation appends the
+outgoing **Platform CA** to the bundle, then fans `server.tls.trust.reconcile`
+over the existing WSS session so the new anchor lands **before** the old one is
+retired.
 
 **Install command TLS** follows the selected origin (`src/lib/install-tls.ts`),
 not “we are in development”:
 
 - HTTPS on a non-443 port, loopback, RFC1918, or reserved LAN TLDs (`.lan` /
-  `.local` / …) → `curl -k` + `TURBOPANEL_INSECURE_TLS=1` (platform CA)
+  `.local` / …) → `curl -k` + `TURBOPANEL_INSECURE_TLS=1` (Platform CA)
 - HTTPS on port 443 for a public hostname (Cloudflare/ngrok tunnel, opt-in Let’s
   Encrypt, uploaded cert) → system trust; **no** `-k`
 - Plaintext `http://` (dev `:8880`) → no TLS flags
@@ -652,7 +660,7 @@ Let’s Encrypt and uploaded certificates for the **control-plane origin** are
 operator opt-in. Caddy keeps `auto_https off` — the platform never obtains a
 public certificate unless the operator explicitly requests it. A Cloudflare
 tunnel presents a publicly-trusted cert at the edge; the origin can stay on the
-platform CA.
+**Platform CA**.
 
 Dev overlay install commands also set
 `TURBOPANEL_DL_BASE=<origin>/downloads/daemon` so remote servers fetch the
@@ -916,6 +924,7 @@ orientation; the detail moved to:
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                             |
 | **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` display label (API `displayName`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `task` (nullable `task.address`) / `label`; TurboFabric `fabric` / `relay` / `segment`; storage identity `storage` / `location` / `mount` (+ schema-only `credential`) |
 | **Query cache**                   | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                                                                                                                                                                                               |
+| **TLS & certificate authorities** | `src/lib/tls/AGENTS.md`                             | Platform CA vs Organization CA boundary, org TLS library primitives, leaf issuance + `tlsleaf` tracking, Workers/Deno renewal sweep |
 
 ## Self-host system inventory
 

@@ -2,6 +2,7 @@ import type { Context } from 'hono'
 import { eq } from 'drizzle-orm'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
+import { getManagedEngineSpec, isManagedEngineCode } from '../../lib/managed/index.ts'
 import type { ManagedSettings } from '../../lib/managed/settings.ts'
 import {
   defaultManagedRelease,
@@ -26,7 +27,7 @@ import { BadRequestError, parseDisplayName, requireStringField } from '../shared
 import { USERNAME_RE } from '../principals/store.ts'
 import { LOOPBACK_BIND, resolveManagedDialHost } from './access-address.ts'
 import type { ManagedContext } from './context.ts'
-import type { ManagedRowOptions } from './options.ts'
+import { parseManagedRowOptions, type ManagedRowOptions } from './options.ts'
 import { evaluateManagedPromoteLagGate } from '../../lib/managed/promote-lag.ts'
 
 export { evaluateManagedPromoteLagGate }
@@ -140,6 +141,38 @@ export async function resolveManagedConnectionListener(
   return {
     host: LOOPBACK_BIND,
     port: await resolveListenerPortForServer(db, params),
+  }
+}
+
+/**
+ * Args for {@link resolveManagedConnectionListener} on GET …/managed/status.
+ *
+ * Returns null when the cluster is unplaced, uncatalogued, or has unreadable
+ * options — the status route then falls back to residual `host`/`port`.
+ */
+export function managedStatusListenerParams(
+  row: {
+    serverId: string | null
+    engine: string | null
+    options: unknown
+  } | null,
+): {
+  serverId: string
+  engineCode: string
+  engineDefaultPort: number
+  exposure: ManagedSettings['exposure']
+} | null {
+  if (!row?.serverId) return null
+  if (!row.engine || !isManagedEngineCode(row.engine)) return null
+  const spec = getManagedEngineSpec(row.engine)
+  if (!spec) return null
+  const parsed = parseManagedRowOptions(spec, row.options)
+  if (!parsed) return null
+  return {
+    serverId: row.serverId,
+    engineCode: spec.engine,
+    engineDefaultPort: spec.defaultPort,
+    exposure: parsed.settings.exposure,
   }
 }
 
@@ -690,17 +723,15 @@ export function parseMemberPatch(
 }
 
 /**
- * Hard-delete is safe when the cluster never reached a destroyable live
- * state (or has no placement pin).
+ * Hard-delete is safe only when the cluster has no placement pin — there is
+ * no host runtime to tear down. Stopped / failed / provisioning clusters can
+ * still have Docker containers (lifecycle stop is non-destructive; apply may
+ * have brought the engine up before failing).
  */
 export function canHardDeleteManaged(
-  status: string | null | undefined,
   serverId: string | null | undefined,
 ): boolean {
-  return status === 'stopped' ||
-    status === 'failed' ||
-    status === 'provisioning' ||
-    !serverId
+  return !serverId
 }
 
 export type ReplicaPlacementPrecheckError = {

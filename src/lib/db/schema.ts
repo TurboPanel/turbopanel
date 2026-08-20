@@ -126,6 +126,13 @@ export const tls = pgTable(
     status: text().default('ready').notNull(),
     notAfter: timestamp('not_after', { precision: 3, withTimezone: true, mode: 'string' }),
     fingerprintSha256: text('fingerprint_sha256'),
+    /**
+     * Organization CA lifecycle: `active` | `retired` | `revoked`.
+     * Null on non-CA library rows. `status` remains the row's own health.
+     */
+    caState: text('ca_state'),
+    /** Monotonic per-org counter on Organization CA rows; null on non-CA rows. */
+    caGeneration: integer('ca_generation'),
   },
   (table) => [
     index('idx_tls_organization_id').using(
@@ -141,7 +148,10 @@ export const tls = pgTable(
       .where(sql`${table.fingerprintSha256} IS NOT NULL`),
     uniqueIndex('uniq_tls_organization_active_ca')
       .on(table.organizationId)
-      .where(sql`${table.source} = 'organization_ca' AND ${table.status} != 'revoked'`),
+      .where(sql`${table.source} = 'organization_ca' AND ${table.caState} = 'active'`),
+    index('idx_tls_organization_ca_generation')
+      .on(table.organizationId, table.caGeneration)
+      .where(sql`${table.source} = 'organization_ca'`),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -155,7 +165,74 @@ export const tls = pgTable(
       'tls_name_format_check',
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
+    check(
+      'tls_ca_state_check',
+      sql`ca_state IS NULL OR ca_state IN ('active', 'retired', 'revoked')`
+    ),
+    check(
+      'tls_ca_lifecycle_source_check',
+      sql`(source = 'organization_ca' AND ca_state IS NOT NULL) OR (source <> 'organization_ca' AND ca_state IS NULL AND ca_generation IS NULL)`
+    ),
+    check(
+      'tls_ca_generation_source_check',
+      sql`ca_generation IS NULL OR source = 'organization_ca'`
+    ),
+    check(
+      'tls_ca_generation_required_check',
+      sql`ca_state IS NULL OR ca_state = 'revoked' OR ca_generation IS NOT NULL`
+    ),
   ]
+)
+/**
+ * Durable Organization CA rotation journal (one in-flight rotation per org).
+ * Physical name is one word (`tlsrotation`) per the table-naming rule; the
+ * unique index keeps the `tls_rotation` vocabulary from the rotation API.
+ */
+export const tlsRotation = pgTable(
+  'tlsrotation',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    fromCaGeneration: integer('from_ca_generation').default(0).notNull(),
+    toCaGeneration: integer('to_ca_generation').default(0).notNull(),
+    /** `in_progress` | `awaiting_retire` | `completed` | `failed` */
+    state: text().notNull(),
+    startedAt: timestamp('started_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    completedAt: timestamp('completed_at', { precision: 3, withTimezone: true, mode: 'string' }),
+    /** Per-server / per-cluster fan-out rows (`ingress` | `apply`). */
+    results: jsonb().default([]),
+  },
+  (table) => [
+    index('idx_tls_rotation_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'tls_rotation_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    uniqueIndex('uniq_tls_rotation_inflight_organization')
+      .on(table.organizationId)
+      .where(sql`${table.state} = 'in_progress'`),
+    check(
+      'tls_rotation_state_check',
+      sql`${table.state} IN ('in_progress','awaiting_retire','completed','failed')`,
+    ),
+  ],
 )
 export const passkey = pgTable(
   'passkey',
@@ -1073,6 +1150,90 @@ export const node = pgTable(
     check(
       'node_status_check',
       sql`status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed','needs_resync')`,
+    ),
+  ],
+)
+/**
+ * Tracking row for Organization-CA-signed managed leaves (ProxySQL frontend
+ * and per-node engine). Physical name is one word (`tlsleaf`). Re-issuance
+ * upserts rather than appending history (partial uniques below). Declared
+ * after `node` / `managed` / `server` so those FKs resolve.
+ */
+export const tlsLeaf = pgTable(
+  'tlsleaf',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** `ingress` | `engine` */
+    kind: text().notNull(),
+    /** Engine leaves only — the managed cluster that owns the node. */
+    managedId: uuid('managed_id'),
+    /** Engine leaves only — the cluster member whose leaf this tracks. */
+    nodeId: uuid('node_id'),
+    /** Signing Organization CA row (`tls.id`). */
+    caId: uuid('ca_id').notNull(),
+    caGeneration: integer('ca_generation').notNull(),
+    notAfter: timestamp('not_after', { precision: 3, withTimezone: true, mode: 'string' })
+      .notNull(),
+    issuedAt: timestamp('issued_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index('idx_tlsleaf_not_after').using(
+      'btree',
+      table.notAfter.asc().nullsLast().op('timestamptz_ops'),
+    ),
+    index('idx_tlsleaf_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    uniqueIndex('uniq_tlsleaf_ingress_server')
+      .on(table.serverId)
+      .where(sql`${table.kind} = 'ingress'`),
+    uniqueIndex('uniq_tlsleaf_engine_node')
+      .on(table.nodeId)
+      .where(sql`${table.kind} = 'engine'`),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'tls_leaf_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'tls_leaf_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'tls_leaf_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.nodeId],
+      foreignColumns: [node.id],
+      name: 'tls_leaf_node_id_node_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.caId],
+      foreignColumns: [tls.id],
+      name: 'tls_leaf_ca_id_tls_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'tls_leaf_kind_check',
+      sql`${table.kind} IN ('ingress','engine')`,
+    ),
+    check(
+      'tls_leaf_kind_keys_check',
+      sql`(
+        (${table.kind} = 'ingress' AND ${table.nodeId} IS NULL AND ${table.managedId} IS NULL)
+        OR
+        (${table.kind} = 'engine' AND ${table.nodeId} IS NOT NULL AND ${table.managedId} IS NOT NULL)
+      )`,
     ),
   ],
 )

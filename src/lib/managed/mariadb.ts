@@ -187,6 +187,7 @@ function buildInitdbSql(): string {
   return [
     '-- TurboPanel managed MariaDB — platform socket-auth admin accounts',
     "CREATE USER IF NOT EXISTS 'root'@'localhost' IDENTIFIED VIA unix_socket;",
+    "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket;",
     "GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;",
     `CREATE USER IF NOT EXISTS '${CONTAINER_USER}'@'localhost' IDENTIFIED VIA unix_socket;`,
     `GRANT ALL PRIVILEGES ON *.* TO '${CONTAINER_USER}'@'localhost' WITH GRANT OPTION;`,

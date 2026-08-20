@@ -234,7 +234,17 @@ export default {
   ) {
     initPromise ??= initWorkerApp(env)
     await initPromise
-    ctx.waitUntil(runOfflineSweep(env))
+    ctx.waitUntil(
+      runOfflineSweep(
+        env,
+        cachedSecretsConfig && cachedDataEncryptionSecrets
+          ? {
+            secretsConfig: cachedSecretsConfig,
+            dataEncryptionSecrets: cachedDataEncryptionSecrets,
+          }
+          : null,
+      ),
+    )
   },
 
   async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {
