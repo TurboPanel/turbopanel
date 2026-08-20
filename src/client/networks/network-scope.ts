@@ -46,7 +46,7 @@ export type NetworkCreateFields = {
   kind: string
   datacenterId: string | null | undefined
   serverId: string | null | undefined
-  displayName: string | null
+  name: string | null
   cidr: string | null
   metadata: Record<string, unknown> | null
   options: Record<string, unknown> | null
@@ -60,7 +60,7 @@ export function buildNetworkCreateValues(input: {
     kind: input.kind,
     ...(input.datacenterId !== undefined ? { datacenterId: input.datacenterId } : {}),
     ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
-    ...(input.displayName !== null ? { name: input.displayName } : {}),
+    ...(input.name !== null ? { name: input.name } : {}),
     ...(input.cidr !== null ? { cidr: input.cidr } : {}),
     ...(input.metadata !== null ? { metadata: input.metadata } : {}),
     ...(input.options !== null ? { options: input.options } : {}),

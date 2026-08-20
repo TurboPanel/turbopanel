@@ -5,16 +5,13 @@ import {
   decryptSecretForDaemon,
   parseDaemonSecretEnvelope,
 } from '../authn/data-encryption.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  parseSecretsEnv,
-} from '../authn/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
 import type { ManagedApplyCommandPayload } from '../../lib/commands/schemas.ts'
 import {
   mintOrganizationCa,
   verifyCertificateSignature,
 } from '../../lib/tls/index.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   buildManagedOrgTlsMaterial,
   isPrepareError,
@@ -265,7 +262,7 @@ test('prepareErrorResponse ignores serverId on wire body', async () => {
 })
 
 test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',
@@ -305,7 +302,7 @@ test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', asy
 })
 
 test('buildManagedOrgTlsMaterial org A leaf does not validate against org B CA bundle', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',
@@ -366,7 +363,7 @@ test('buildManagedOrgTlsMaterial org A leaf does not validate against org B CA b
 })
 
 test('buildManagedOrgTlsMaterial ships trustBundlePem as caCertPem and signs with the active signer', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',
@@ -398,7 +395,7 @@ test('buildManagedOrgTlsMaterial ships trustBundlePem as caCertPem and signs wit
 })
 
 test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replication', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',
@@ -426,7 +423,7 @@ test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replica
 })
 
 test('buildManagedOrgTlsMaterial dedupes managed leaf name and localhost from extraSans', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',

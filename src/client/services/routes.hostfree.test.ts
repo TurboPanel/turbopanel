@@ -8,7 +8,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
 import { service } from '../../lib/db/schema.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -19,7 +19,7 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { SERVICE_CREATE_NOT_SUPPORTED } from './routes-helpers.ts'
 import { registerServiceRoutes } from './routes.ts'
@@ -45,7 +45,7 @@ const SERVICE_PATHS = [
 ] as const
 
 async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -67,7 +67,7 @@ type SessionAppOpts = {
 async function buildSessionApp(
   opts: SessionAppOpts,
 ): Promise<{ app: Hono<AppEnv>; cookie: string }> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
   const userId = crypto.randomUUID()
@@ -112,7 +112,7 @@ async function buildSessionApp(
                   limit: () =>
                     Promise.resolve([{
                       id: serviceId,
-                      displayName: 'Web',
+                      name: 'Web',
                       description: null,
                       environmentId,
                       composeServiceName: 'web',
@@ -124,7 +124,7 @@ async function buildSessionApp(
                   orderBy: () =>
                     Promise.resolve([{
                       id: serviceId,
-                      displayName: 'Web',
+                      name: 'Web',
                       description: null,
                       environmentId,
                       composeServiceName: 'web',
@@ -245,7 +245,7 @@ test('POST /services returns 400 when environmentId is missing', async () => {
       ...sessionHeaders(cookie),
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ displayName: 'Web' }),
+    body: JSON.stringify({ name: 'Web' }),
   })
   assertEquals(res.status, 400)
   assertEquals(await res.json(), { error: 'Invalid request' })
@@ -309,7 +309,7 @@ test('POST /services returns service_create_not_supported when fields are valid'
     },
     body: JSON.stringify({
       environmentId,
-      displayName: 'API',
+      name: 'API',
     }),
   })
   assertEquals(res.status, 400)
@@ -327,7 +327,7 @@ test('PATCH /services/:id returns 404 when the service is outside the org', asyn
       ...sessionHeaders(cookie),
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ displayName: 'Renamed' }),
+    body: JSON.stringify({ name: 'Renamed' }),
   })
   assertEquals(res.status, 404)
   assertEquals(await res.json(), { error: 'Not found' })
@@ -344,7 +344,7 @@ test('PATCH /services/:id returns 403 when organization:manage is denied', async
       ...sessionHeaders(cookie),
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ displayName: 'Renamed' }),
+    body: JSON.stringify({ name: 'Renamed' }),
   })
   assertEquals(res.status, 403)
   assertEquals(await res.json(), { ok: false, error: 'Forbidden' })

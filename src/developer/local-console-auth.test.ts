@@ -30,24 +30,21 @@ const ENV_KEYS = [
   'TURBOPANEL_DEV_SURFACE',
   'TURBOPANEL_MODE',
   'TURBOPANEL_UI_MODE',
-  'TURBOPANEL_SECRET',
   'TURBOPANEL_SECRETS',
 ] as const
 
 async function withDevSurface<T>(
   fn: () => Promise<T>,
-  secrets?: { secret?: string; keyring?: string },
+  keyring?: string,
 ): Promise<T> {
   const saved = new Map<string, string | undefined>()
   for (const key of ENV_KEYS) saved.set(key, Deno.env.get(key))
   try {
     Deno.env.set('TURBOPANEL_DEV_SURFACE', '1')
-    if (secrets?.keyring !== undefined) {
-      Deno.env.set('TURBOPANEL_SECRETS', secrets.keyring)
-      Deno.env.delete('TURBOPANEL_SECRET')
+    if (keyring !== undefined) {
+      Deno.env.set('TURBOPANEL_SECRETS', keyring)
     } else {
-      Deno.env.set('TURBOPANEL_SECRET', secrets?.secret ?? SECRET)
-      Deno.env.delete('TURBOPANEL_SECRETS')
+      Deno.env.set('TURBOPANEL_SECRETS', `1:${SECRET}`)
     }
     return await fn()
   } finally {
@@ -310,7 +307,7 @@ describe('verifyLocalConsoleAuthorization', () => {
         body,
       })
       assertEquals(await verifyRequest(req), true)
-    }, { keyring: `2:${SECRET_V2},1:${SECRET}` })
+    }, `2:${SECRET_V2},1:${SECRET}`)
   })
 
   it('rejects authorization signed with a retired keyring entry', async () => {
@@ -335,14 +332,14 @@ describe('verifyLocalConsoleAuthorization', () => {
         body,
       })
       assertEquals(await verifyRequest(req), false)
-    }, { keyring: `2:${SECRET_V2},1:${SECRET}` })
+    }, `2:${SECRET_V2},1:${SECRET}`)
   })
 
   it('rejects requests when instance secrets configuration is invalid', async () => {
     await withDevSurface(async () => {
       const req = await signedRequest()
       assertEquals(await verifyRequest(req), false)
-    }, { keyring: 'not-a-valid-keyring' })
+    }, 'not-a-valid-keyring')
   })
 })
 

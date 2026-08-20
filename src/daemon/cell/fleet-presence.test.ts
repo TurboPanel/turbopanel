@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 import {
@@ -104,11 +104,12 @@ function createThrowingSnapshotRegistry(
     getCell: () => {
       throw new Error("getSnapshots must not be called on default path");
     },
-    listOnlineServerIds: async () => options.onlineIds ?? [],
-    getSnapshots: async () => {
-      throw new Error("getSnapshots must not be called on default path");
-    },
-    purge: async () => {},
+    listOnlineServerIds: () => Promise.resolve(options.onlineIds ?? []),
+    getSnapshots: () =>
+      Promise.reject(
+        new Error("getSnapshots must not be called on default path"),
+      ),
+    purge: () => Promise.resolve(),
   };
 }
 
@@ -123,16 +124,16 @@ function createSnapshotRegistry(
     getCell: () => {
       throw new Error("not used in fleet presence tests");
     },
-    listOnlineServerIds: async () => options.onlineIds ?? [],
-    getSnapshots: async (ids: string[]) => {
+    listOnlineServerIds: () => Promise.resolve(options.onlineIds ?? []),
+    getSnapshots: (ids: string[]) => {
       const result = new Map<string, DaemonCellSnapshot>();
       for (const id of ids) {
         const snapshot = snapshots.get(id);
         if (snapshot) result.set(id, snapshot);
       }
-      return result;
+      return Promise.resolve(result);
     },
-    purge: async () => {},
+    purge: () => Promise.resolve(),
   };
 }
 
@@ -441,7 +442,7 @@ test("fleetPresenceToConnection uses zero lastInboundAt when absent", () => {
 test("resolveFleetPresence enriches os / resources / timeSync / ips / docker / geo from columns and metadata", async () => {
   const metadata: ServerMetadata = {
     resources: {
-      cpu: { coreCount: 4, threadCount: 8 },
+      cpus: [{ cores: { total: 4 }, threads: { total: 8 } }],
       memory: { totalBytes: 16_000_000_000 },
       swap: { totalBytes: 2_000_000_000 },
       ips: [

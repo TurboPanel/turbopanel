@@ -1,13 +1,13 @@
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
-import { afterEach, it } from '@std/testing/bdd'
+import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createAuthRateLimiter,
   setSharedAuthRateLimiterForTests,
@@ -17,7 +17,6 @@ import {
   createMockAuthDb,
   seedMockCredentialUser,
   seedMockExpiredOtpVerification,
-  seedMockInstalledInstance,
   seedMockOtpVerification,
   seedMockSession,
   seedMockSignupEnabled,
@@ -43,16 +42,9 @@ const test = Deno.test.bind(Deno)
 
 const dbUrl = getDatabaseUrl()
 
-afterEach(() => {
-  setSharedAuthRateLimiterForTests(undefined)
-})
-
 async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -193,31 +185,35 @@ it('reset-password/otp returns 429 when the limiter is exceeded', async () => {
     }),
   )
 
-  const db = createDenoDb()
-  const email = `reset-limit-${crypto.randomUUID()}@example.com`
-  const { app } = await createAuthApp(db)
+  try {
+    const db = createDenoDb()
+    const email = `reset-limit-${crypto.randomUUID()}@example.com`
+    const { app } = await createAuthApp(db)
 
-  const makeRequest = () =>
-    app.request(`${CLIENT_API_PREFIX}/auth/reset-password/otp`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'X-Real-IP': '203.0.113.61',
-      },
-      body: JSON.stringify({
-        email,
-        otp: '000000',
-        password: 'new-password-1',
-      }),
-    })
+    const makeRequest = () =>
+      app.request(`${CLIENT_API_PREFIX}/auth/reset-password/otp`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Real-IP': '203.0.113.61',
+        },
+        body: JSON.stringify({
+          email,
+          otp: '000000',
+          password: 'new-password-1',
+        }),
+      })
 
-  const first = await makeRequest()
-  // Invalid OTP (or user missing) — but not rate-limited yet.
-  assertEquals(first.status === 400 || first.status === 404, true)
+    const first = await makeRequest()
+    // Invalid OTP (or user missing) — but not rate-limited yet.
+    assertEquals(first.status === 400 || first.status === 404, true)
 
-  const second = await makeRequest()
-  assertEquals(second.status, 429)
-  assertEquals(second.headers.get('Retry-After') !== null, true)
+    const second = await makeRequest()
+    assertEquals(second.status, 429)
+    assertEquals(second.headers.get('Retry-After') !== null, true)
+  } finally {
+    setSharedAuthRateLimiterForTests(undefined)
+  }
 })
 
 async function buildOtpAuthApp(
@@ -230,18 +226,14 @@ async function buildOtpAuthApp(
     platformEnv?: Record<string, string | undefined>
   } = {},
 ) {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = 'otpVerifierSecrets' in opts
     ? opts.otpVerifierSecrets
     : await deriveSecretsConfig(secretsConfig, 'email-otp-verifier')
   const app = new Hono<AppEnv>()
-  const client = new Hono()
-  client.use('*', (c, next) => {
+  app.use('*', (c, next) => {
     if (db) c.set('db', db)
     if (opts.emailQueue) c.set('emailQueue', opts.emailQueue)
     if (opts.platformEnv) c.set('platformEnv', opts.platformEnv)
@@ -250,6 +242,7 @@ async function buildOtpAuthApp(
     }))
     return next()
   })
+  const client = new Hono()
   registerAuthRoutes(client, {
     secrets,
     otpVerifierSecrets,
@@ -300,7 +293,7 @@ test('verify-otp maps missing OTP rows to Invalid OTP', async () => {
     body: JSON.stringify({ email: 'otp@example.com', otp: '123456', type: 'sign-in' }),
   })
   assertEquals(res.status, 400)
-  const body = await res.json()
+  const body = await res.json() as { error?: string }
   assertEquals(body.error, 'Invalid OTP')
 })
 
@@ -345,7 +338,7 @@ test('send-otp returns 200 for valid sign-in request with mock db', async () => 
     body: JSON.stringify({ email: 'otp@example.com', type: 'sign-in' }),
   })
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await res.json() as { ok?: boolean }
   assertEquals(body.ok, true)
 })
 
@@ -358,7 +351,7 @@ test('sign-in/otp returns 400 for invalid OTP with mock db', async () => {
     body: JSON.stringify({ email: 'otp@example.com', otp: '123456' }),
   })
   assertEquals(res.status, 400)
-  const body = await res.json()
+  const body = await res.json() as { error?: string }
   assertEquals(body.error, 'Invalid OTP')
 })
 
@@ -374,11 +367,8 @@ test('send-otp email-verification requires an active session cookie', async () =
 })
 
 test('verify-email/otp rejects email mismatch for signed session', async () => {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const state = createEmptyMockAuthState()
   const token = crypto.randomUUID()
@@ -405,11 +395,8 @@ test('verify-email/otp rejects email mismatch for signed session', async () => {
 })
 
 test('sign-in/otp succeeds for existing mock user with seeded OTP', async () => {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
     'email-otp-verifier',
@@ -434,18 +421,15 @@ test('sign-in/otp succeeds for existing mock user with seeded OTP', async () => 
     body: JSON.stringify({ email, otp: '654321' }),
   })
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await res.json() as { ok?: boolean; email?: string }
   assertEquals(body.ok, true)
   assertEquals(body.email, email)
   assertEquals(res.headers.get('Set-Cookie')?.includes('HttpOnly'), true)
 })
 
 test('sign-in/otp auto-registers on Workers when signup is enabled', async () => {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
     'email-otp-verifier',
@@ -471,11 +455,8 @@ test('sign-in/otp auto-registers on Workers when signup is enabled', async () =>
 })
 
 test('verify-email/otp marks mock user verified with seeded OTP', async () => {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -513,14 +494,14 @@ test('verify-email/otp marks mock user verified with seeded OTP', async () => {
     body: JSON.stringify({ email, otp: '445566' }),
   })
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await res.json() as { ok?: boolean }
   assertEquals(body.ok, true)
   assertEquals(state.users[0]?.isEmailVerified, true)
 })
 
 test('verify-otp succeeds without consuming seeded OTP rows', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const state = createEmptyMockAuthState()
@@ -540,7 +521,7 @@ test('verify-otp succeeds without consuming seeded OTP rows', async () => {
 
 test('sign-in/otp rejects disabled mock users', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const state = createEmptyMockAuthState()
@@ -565,7 +546,7 @@ test('sign-in/otp rejects disabled mock users', async () => {
 
 test('sign-in/otp requires install before auto-registration on Deno', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const state = createEmptyMockAuthState()
@@ -586,8 +567,9 @@ test('send-otp enqueues email when queue is configured', async () => {
   let enqueued = false
   const { app } = await buildOtpAuthApp(createMockAuthDb(createEmptyMockAuthState()), {
     emailQueue: {
-      enqueue: async () => {
+      enqueue: () => {
         enqueued = true
+        return Promise.resolve()
       },
     },
   })
@@ -603,7 +585,7 @@ test('send-otp enqueues email when queue is configured', async () => {
 
 test('reset-password/otp updates credential password with seeded OTP', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const state = createEmptyMockAuthState()
@@ -627,7 +609,7 @@ test('reset-password/otp updates credential password with seeded OTP', async () 
     }),
   })
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await res.json() as { ok?: boolean }
   assertEquals(body.ok, true)
   assertEquals(state.accounts[0]?.password.startsWith('$argon2'), true)
 })
@@ -651,7 +633,7 @@ test('reset-password/request-otp returns 200 with mock db', async () => {
 
 test('send-otp email-verification succeeds for signed session', async () => {
   const secrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'session-signing',
   )
   const state = createEmptyMockAuthState()
@@ -665,7 +647,12 @@ test('send-otp email-verification succeeds for signed session', async () => {
   })
   let enqueued = false
   const { app } = await buildOtpAuthApp(createMockAuthDb(state), {
-    emailQueue: { enqueue: async () => { enqueued = true } },
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
   })
   const signed = await buildSignedCookie(token, secrets)
 
@@ -684,7 +671,7 @@ test('send-otp email-verification succeeds for signed session', async () => {
 
 test('sign-in/otp returns 403 when signup is disabled for new users', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const email = 'signup-disabled-otp@example.com'
@@ -702,7 +689,7 @@ test('sign-in/otp returns 403 when signup is disabled for new users', async () =
 
 test('verify-otp returns expired for stale seeded rows', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const email = 'expired-otp@example.com'
@@ -716,6 +703,6 @@ test('verify-otp returns expired for stale seeded rows', async () => {
     body: JSON.stringify({ email, otp: '667788', type: 'sign-in' }),
   })
   assertEquals(res.status, 400)
-  const body = await res.json()
+  const body = await res.json() as { error?: string }
   assertEquals(body.error, 'OTP expired')
 })

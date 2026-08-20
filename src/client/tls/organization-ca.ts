@@ -40,7 +40,7 @@ export type OrganizationCaTrustBundleRow = {
 
 const ORGANIZATION_CA_LIFECYCLE_SELECT = {
   id: tls.id,
-  displayName: tls.name,
+  name: tls.name,
   source: tls.source,
   organizationId: tls.organizationId,
   status: tls.status,
@@ -61,7 +61,7 @@ function publicTlsRowFromLifecycle(
 ): TlsRowForPublic {
   return {
     id: row.id,
-    displayName: row.displayName,
+    name: row.name,
     source: row.source,
     organizationId: row.organizationId,
     status: row.status,

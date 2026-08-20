@@ -2,7 +2,7 @@
  * Host-free coverage for environment route authz short-circuits (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
@@ -17,8 +17,8 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerEnvironmentRoutes } from './routes.ts'
 
@@ -43,14 +43,18 @@ const ENVIRONMENT_PATHS = [
 ] as const
 
 async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     if (db) c.set('db', db)
     return next()
   })
-  registerEnvironmentRoutes(app, { secrets, runtime: 'deno' })
+  registerEnvironmentRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   return app
 }
 
@@ -59,7 +63,7 @@ async function buildSessionApp(opts: {
   /** Seed an environment entity row so GET/:id reaches assertCanReadOr403. */
   withEnvironmentRow?: boolean
 }): Promise<{ app: Hono<AppEnv>; cookie: string }> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
   const userId = crypto.randomUUID()
@@ -105,7 +109,7 @@ async function buildSessionApp(opts: {
                   limit: () =>
                     Promise.resolve([{
                       id: environmentId,
-                      displayName: 'Staging',
+                      name: 'Staging',
                       description: null,
                       projectId,
                       serverId: null,
@@ -131,7 +135,11 @@ async function buildSessionApp(opts: {
     c.set('db', db)
     return next()
   })
-  registerEnvironmentRoutes(app, { secrets, runtime: 'deno' })
+  registerEnvironmentRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   return { app, cookie }
 }
 
@@ -139,7 +147,10 @@ test('registerEnvironmentRoutes requires session secrets', () => {
   const app = new Hono<AppEnv>()
   let threw = false
   try {
-    registerEnvironmentRoutes(app, { runtime: 'deno' })
+    registerEnvironmentRoutes(app, {
+      runtime: 'deno',
+      signupEnvOverride: undefined,
+    })
   } catch (error) {
     threw = true
     assertEquals(error instanceof TypeError, true)
@@ -178,7 +189,7 @@ test('PATCH /environments/:id returns 403 when organization:manage is denied', a
       Cookie: cookie,
       [ORG_ID_HEADER]: organizationId,
     },
-    body: JSON.stringify({ displayName: 'Renamed' }),
+    body: JSON.stringify({ name: 'Renamed' }),
   })
   assertEquals(res.status, 403)
   assertEquals(await res.json(), { ok: false, error: 'Forbidden' })

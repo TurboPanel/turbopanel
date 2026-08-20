@@ -1,5 +1,4 @@
 import { assertEquals } from '@std/assert'
-import { describe, it } from '@std/testing/bdd'
 import { Hono } from 'hono'
 import { createApp, type AppEnv } from '../../app.ts'
 import {
@@ -26,8 +25,12 @@ import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
  */
 const test = Deno.test.bind(Deno)
 
+function describe(_name: string, fn: () => void): void {
+  fn()
+}
+
 describe('isSameOriginBrowserWrite', () => {
-  it('allows matching Origin', () => {
+  test('allows matching Origin', () => {
     assertEquals(
       isSameOriginBrowserWrite(
         'https://panel.example.com',
@@ -38,7 +41,7 @@ describe('isSameOriginBrowserWrite', () => {
     )
   })
 
-  it('rejects cross-origin Origin', () => {
+  test('rejects cross-origin Origin', () => {
     assertEquals(
       isSameOriginBrowserWrite(
         'https://evil.example',
@@ -49,7 +52,7 @@ describe('isSameOriginBrowserWrite', () => {
     )
   })
 
-  it('allows matching Referer when Origin is absent', () => {
+  test('allows matching Referer when Origin is absent', () => {
     assertEquals(
       isSameOriginBrowserWrite(
         undefined,
@@ -60,21 +63,21 @@ describe('isSameOriginBrowserWrite', () => {
     )
   })
 
-  it('allows non-browser requests with neither Origin nor Referer', () => {
+  test('allows non-browser requests with neither Origin nor Referer', () => {
     assertEquals(
       isSameOriginBrowserWrite(undefined, undefined, 'https://panel.example.com'),
       true,
     )
   })
 
-  it('rejects when expected origin is null', () => {
+  test('rejects when expected origin is null', () => {
     assertEquals(
       isSameOriginBrowserWrite('https://panel.example.com', undefined, null),
       false,
     )
   })
 
-  it('rejects malformed Origin / Referer values', () => {
+  test('rejects malformed Origin / Referer values', () => {
     assertEquals(
       isSameOriginBrowserWrite('not a url', undefined, 'https://panel.example.com'),
       false,
@@ -91,7 +94,7 @@ describe('isSameOriginBrowserWrite', () => {
 })
 
 describe('browser write protection residual branches', () => {
-  it('passes through non-write methods', async () => {
+  test('passes through non-write methods', async () => {
     const app = new Hono()
     app.use('*', createBrowserWriteProtectionMiddleware('workers'))
     app.get(`${CLIENT_API_PREFIX}/status`, (c) => c.json({ ok: true }))
@@ -105,7 +108,7 @@ describe('browser write protection residual branches', () => {
     assertEquals(res.status, 200)
   })
 
-  it('forbids writes when the request URL cannot be parsed', async () => {
+  test('forbids writes when the request URL cannot be parsed', async () => {
     const app = new Hono()
     app.use('*', createBrowserWriteProtectionMiddleware('workers'))
     app.post(`${CLIENT_API_PREFIX}/auth/sign-in`, (c) => c.json({ ok: true }))
@@ -131,7 +134,7 @@ describe('browser write protection residual branches', () => {
 })
 
 describe('browser write protection middleware', () => {
-  it('rejects cross-origin credentialed client writes and allows same-origin', async () => {
+  test('rejects cross-origin credentialed client writes and allows same-origin', async () => {
     const app = new Hono()
     app.use('*', createBrowserWriteProtectionMiddleware('workers'))
     app.post(`${CLIENT_API_PREFIX}/auth/sign-in`, (c) => c.json({ ok: true }))
@@ -161,7 +164,7 @@ describe('browser write protection middleware', () => {
     assertEquals(same.status, 200)
   })
 
-  it('protects admin and install write prefixes', async () => {
+  test('protects admin and install write prefixes', async () => {
     const app = new Hono()
     app.use('*', createBrowserWriteProtectionMiddleware('workers'))
     app.put(`${ADMIN_API_PREFIX}/settings/signup`, (c) => c.json({ ok: true }))
@@ -186,7 +189,7 @@ describe('browser write protection middleware', () => {
     assertEquals(installCross.status, 403)
   })
 
-  it('rejects cross-origin developer writes; allows same-origin and non-browser', async () => {
+  test('rejects cross-origin developer writes; allows same-origin and non-browser', async () => {
     const app = new Hono()
     app.use('*', createBrowserWriteProtectionMiddleware('workers'))
     app.post(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, (c) => c.json({ ok: true }))
@@ -225,7 +228,7 @@ describe('browser write protection middleware', () => {
     assertEquals(nonBrowser.status, 200)
   })
 
-  it('does not gate daemon bearer routes', async () => {
+  test('does not gate daemon bearer routes', async () => {
     const app = new Hono()
     app.use('*', createBrowserWriteProtectionMiddleware('workers'))
     app.post(`${DAEMON_API_PREFIX}/auth/session`, (c) => c.json({ ok: true }))
@@ -240,7 +243,7 @@ describe('browser write protection middleware', () => {
     assertEquals(res.status, 200)
   })
 
-  it('Deno proxy-style HTTPS Origin matches X-Forwarded-Proto + Host', async () => {
+  test('Deno proxy-style HTTPS Origin matches X-Forwarded-Proto + Host', async () => {
     const app = new Hono()
     app.use('*', createBrowserWriteProtectionMiddleware('deno'))
     app.post(`${CLIENT_API_PREFIX}/auth/sign-in`, (c) => c.json({ ok: true }))
@@ -261,7 +264,7 @@ describe('browser write protection middleware', () => {
     assertEquals(res.status, 200)
   })
 
-  it('Workers ignores spoofed X-Forwarded-Proto for origin checks', async () => {
+  test('Workers ignores spoofed X-Forwarded-Proto for origin checks', async () => {
     const app = new Hono()
     app.use('*', createBrowserWriteProtectionMiddleware('workers'))
     app.post(`${CLIENT_API_PREFIX}/auth/sign-in`, (c) => c.json({ ok: true }))
@@ -282,7 +285,7 @@ describe('browser write protection middleware', () => {
     assertEquals(res.status, 403)
   })
 
-  it('resolveExpectedBrowserOrigin returns null for unparseable request URLs', () => {
+  test('resolveExpectedBrowserOrigin returns null for unparseable request URLs', () => {
     const badCtx = {
       req: {
         header: () => undefined,
@@ -292,7 +295,7 @@ describe('browser write protection middleware', () => {
     assertEquals(resolveExpectedBrowserOrigin(badCtx, 'workers'), null)
   })
 
-  it('resolveExpectedBrowserOrigin uses proxy signal on Deno only', () => {
+  test('resolveExpectedBrowserOrigin uses proxy signal on Deno only', () => {
     const denoReq = new Request('http://localhost/api/client/v1/auth/sign-in', {
       headers: {
         Host: 'panel.example.com:8443',
@@ -331,12 +334,9 @@ describe('browser write protection middleware', () => {
     )
   })
 
-  it('createApp mounts write protection before client routes', async () => {
-    const secretsConfig = parseSecretsEnv(
-      TEST_ONLY_TURBOPANEL_SECRET,
-      undefined,
-      'workers',
-    )
+  test('createApp mounts write protection before client routes', async () => {
+    const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'workers')
     const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
     const otpVerifierSecrets = await deriveSecretsConfig(
       secretsConfig,
@@ -379,7 +379,7 @@ describe('browser write protection middleware', () => {
 })
 
 describe('CORS read-only methods for docs origins', () => {
-  it('preflight for POST does not advertise write methods', async () => {
+  test('preflight for POST does not advertise write methods', async () => {
     const app = new Hono<AppEnv>()
     registerCorsMiddleware(app, 'https://docs.example.com')
     app.post('/api/client/v1/auth/sign-in', (c) => c.json({ ok: true }))
@@ -399,7 +399,7 @@ describe('CORS read-only methods for docs origins', () => {
     assertEquals(allowed.includes('GET'), true)
   })
 
-  it('emits Vary: Origin for allowed and disallowed origins', async () => {
+  test('emits Vary: Origin for allowed and disallowed origins', async () => {
     const app = new Hono<AppEnv>()
     registerCorsMiddleware(app, 'https://docs.example.com')
     app.get('/api/client/v1/status', (c) => c.json({ ok: true }))

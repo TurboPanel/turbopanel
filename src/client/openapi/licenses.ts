@@ -2,10 +2,10 @@ export function buildLicenseSchemas(installCommandDescription: string) {
   return {
     LicenseRecord: {
       type: 'object',
-      required: ['id', 'displayName', 'createdAt', 'revocable', 'boundServer'],
+      required: ['id', 'name', 'createdAt', 'revocable', 'boundServer'],
       properties: {
         id: { type: 'string' },
-        displayName: { type: ['string', 'null'] },
+        name: { type: ['string', 'null'] },
         createdAt: { type: 'string', format: 'date-time' },
         revocable: {
           type: 'boolean',
@@ -16,10 +16,10 @@ export function buildLicenseSchemas(installCommandDescription: string) {
           oneOf: [
             {
               type: 'object',
-              required: ['id', 'displayName', 'connected'],
+              required: ['id', 'name', 'connected'],
               properties: {
                 id: { type: 'string', format: 'uuid' },
-                displayName: { type: ['string', 'null'] },
+                name: { type: ['string', 'null'] },
                 connected: { type: 'boolean' },
               },
             },
@@ -43,7 +43,7 @@ export function buildLicenseSchemas(installCommandDescription: string) {
     CreateLicenseRequest: {
       type: 'object',
       properties: {
-        displayName: { type: 'string' },
+        name: { type: 'string' },
         installBaseUrl: {
           type: 'string',
           description:

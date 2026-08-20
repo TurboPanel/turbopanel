@@ -42,20 +42,16 @@ import {
   SYSTEM_EMAIL_DB_KEY,
   updateEmailSettings,
 } from '../../lib/settings/email-settings.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 /** Generous limiter so multi-case Workers suites do not trip the shared IP bucket. */
 const testAuthRateLimiter = createAuthRateLimiter({
   defaultPolicy: { limit: 10_000, windowMs: 60_000 },
 })
 
-class DeliveringEmailQueue implements EmailQueue {
-  async enqueue(_job: EmailJob): Promise<void> {}
-}
-
 class FailingEmailQueue implements EmailQueue {
-  async enqueue(_job: EmailJob): Promise<void> {
-    throw new Error('simulated enqueue failure')
+  enqueue(_job: EmailJob): Promise<void> {
+    return Promise.reject(new Error('simulated enqueue failure'))
   }
 }
 
@@ -98,7 +94,7 @@ async function createAuthRouteApp(
     dataEncryptionSecrets?: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
   },
 ) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, runtime)
+  const secretsConfig = parseTestSecretsConfig(runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -139,7 +135,7 @@ async function createClientRouteApp(
   signupEnvOverride?: SignupEnvOverride,
   platformEnv?: Record<string, string | undefined>,
 ) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, runtime)
+  const secretsConfig = parseTestSecretsConfig(runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -254,7 +250,7 @@ it('Workers duplicate sign-up is indistinguishable from a new sign-up', async ()
       headers: { 'content-type': 'application/json' },
       body,
     })
-    const secondJson = await second.json()
+    const secondJson = await second.json() as { ok?: boolean }
 
     // Anti-enumeration: caller must not be able to tell the account already exists.
     if (second.status !== first.status) {
@@ -329,7 +325,7 @@ it('Workers sign-up creates an organization for the new user', async () => {
     }
 
     const workspaceRows = await db
-      .select({ displayName: workspace.name })
+      .select({ name: workspace.name })
       .from(workspace)
       .where(eq(workspace.organizationId, organizationId))
     if (workspaceRows.length !== 1) {
@@ -337,9 +333,9 @@ it('Workers sign-up creates an organization for the new user', async () => {
         `expected exactly one workspace, got ${JSON.stringify(workspaceRows)}`,
       )
     }
-    if (workspaceRows[0]?.displayName !== DEFAULT_WORKSPACE_NAME) {
+    if (workspaceRows[0]?.name !== DEFAULT_WORKSPACE_NAME) {
       throw new Error(
-        `expected workspace displayName ${DEFAULT_WORKSPACE_NAME}, got ${workspaceRows[0]?.displayName}`,
+        `expected workspace displayName ${DEFAULT_WORKSPACE_NAME}, got ${workspaceRows[0]?.name}`,
       )
     }
   } finally {
@@ -356,7 +352,7 @@ it('Workers OTP auto-registration succeeds without install completion', async ()
   const db = createDenoDb()
   const email = `workers-otp-${crypto.randomUUID()}@example.com`
   const app = await createAuthRouteApp(db, 'workers', '1')
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'workers')
+  const secretsConfig = parseTestSecretsConfig('workers')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
     OTP_VERIFIER_SECRET_PURPOSE,
@@ -688,11 +684,8 @@ it('Workers status, sign-up, and OTP auto-registration agree when DB signup is t
       throw new Error(`expected sign-up 403 when disabled, got ${signUpOff.status}`)
     }
 
-    const otpSecretsConfig = parseSecretsEnv(
-      TEST_ONLY_TURBOPANEL_SECRET,
-      undefined,
-      'workers',
-    )
+    const otpSecretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'workers')
     const otpVerifierSecrets = await deriveSecretsConfig(
       otpSecretsConfig,
       OTP_VERIFIER_SECRET_PURPOSE,
@@ -768,7 +761,7 @@ it('Workers email queue follows DB Mailgun settings without a Worker restart', a
   }
 
   const db = createDenoDb()
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'workers')
+  const secretsConfig = parseTestSecretsConfig('workers')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',

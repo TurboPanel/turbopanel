@@ -1,11 +1,8 @@
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  parseSecretsEnv,
-} from '../authn/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
 import type { Db } from '../../db.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
   DEFAULT_PRODUCTION_ENVIRONMENT_NAME,
@@ -25,6 +22,8 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
 function thenableRows(rows: unknown[]) {
   const promise = Promise.resolve(rows)
@@ -52,8 +51,8 @@ function stubSecrets(): DerivedSecretsConfig {
   }
 }
 
-async function realDataEncryptionSecrets(): Promise<DerivedSecretsConfig> {
-  const config = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+function realDataEncryptionSecrets(): Promise<DerivedSecretsConfig> {
+  const config = parseTestSecretsConfig('deno')
   return deriveEncryptionSecretsConfig(config, 'data-encryption')
 }
 
@@ -72,7 +71,7 @@ function createTxStub(opts: {
   insertedProjectId?: string
   onUpdate?: (patch: Record<string, unknown>) => void
   onInsertVariable?: (values: Record<string, unknown>) => void
-}): Db {
+}): DbTx {
   const envRows = opts.envRows ?? []
   const existingVarKeys = opts.existingVarKeys ?? []
   const existingExtraEnvIds = opts.existingExtraEnvIds ?? []
@@ -130,12 +129,12 @@ function createTxStub(opts: {
         }
       },
     }),
-  } as unknown as Db
+  } as unknown as DbTx
 }
 
 function createProjectSelectDb(
   rows: Array<{ id: string; metadata: unknown; options: unknown }>,
-  tx?: Db,
+  tx?: DbTx,
   transactionError?: Error,
 ): Db {
   return {
@@ -146,7 +145,7 @@ function createProjectSelectDb(
         }),
       }),
     }),
-    transaction: async (fn: (inner: Db) => Promise<unknown>) => {
+    transaction: (fn: (inner: DbTx) => Promise<unknown>) => {
       if (transactionError) throw transactionError
       return fn(tx ?? createTxStub({
         envRows: [{

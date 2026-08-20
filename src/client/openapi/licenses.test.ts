@@ -1,4 +1,4 @@
-import { assertEquals, assertExists } from 'jsr:@std/assert'
+import { assertEquals, assertExists } from '@std/assert'
 import { buildLicensePaths, buildLicenseSchemas } from './licenses.ts'
 
 /**
@@ -22,7 +22,7 @@ test('buildLicenseSchemas documents license lifecycle shapes', () => {
   const schemas = buildLicenseSchemas(INSTALL_DESC)
   assertEquals(
     (schemas.LicenseRecord as SchemaObject).required,
-    ['id', 'displayName', 'createdAt', 'revocable', 'boundServer'],
+    ['id', 'name', 'createdAt', 'revocable', 'boundServer'],
   )
   assertEquals(
     (schemas.CreateLicenseResponse as SchemaObject).required,

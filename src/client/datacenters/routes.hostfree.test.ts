@@ -2,12 +2,12 @@
  * Host-free coverage for datacenter route authz short-circuits (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import { registerDatacenterRoutes } from './routes.ts'
 
 /**
@@ -21,14 +21,18 @@ const test = Deno.test.bind(Deno)
 const id = '11111111-1111-4111-8111-111111111111'
 
 async function buildApp(): Promise<Hono<AppEnv>> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', {} as Db)
     return next()
   })
-  registerDatacenterRoutes(app, { secrets, runtime: 'deno' })
+  registerDatacenterRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   return app
 }
 
@@ -47,7 +51,7 @@ test('datacenter routes return 401 without a session cookie', async () => {
       headers: { 'content-type': 'application/json' },
       body: method === 'GET' || method === 'DELETE'
         ? undefined
-        : JSON.stringify({ displayName: 'dc' }),
+        : JSON.stringify({ name: 'dc' }),
     })
     assertEquals(res.status, 401, `${method} ${path}`)
     assertEquals(await res.json(), { ok: false, error: 'Unauthorized' })

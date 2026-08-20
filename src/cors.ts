@@ -1,4 +1,4 @@
-import type { Hono } from 'hono'
+import type { Env, Hono } from 'hono'
 
 /**
  * Docs / Scalar CORS is read-oriented. Cookie-authenticated writes must go
@@ -20,8 +20,8 @@ function parseCorsOrigins(raw: string | undefined): Set<string> {
 }
 
 /** Reflects configured browser origins (e.g. local docs site → Caddy API). */
-export function registerCorsMiddleware(
-  app: Hono,
+export function registerCorsMiddleware<E extends Env>(
+  app: Hono<E>,
   corsOriginsEnv: string | undefined,
 ): void {
   const allowed = parseCorsOrigins(corsOriginsEnv)

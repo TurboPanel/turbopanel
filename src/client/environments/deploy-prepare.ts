@@ -196,13 +196,12 @@ export type DeployPrepareWarning = {
 
 export type PreparedDeployCompose = {
   /**
-   * Merged effective runtime compose (display / preview / legacy single-file
-   * fallback for daemons that predate `composeFiles`).
+   * Compiled runtime YAML (internal prepare output for hashing/preview).
+   * Wire payloads use required `composeFiles` with `role: 'runtime'`.
    */
   composeYaml: string;
   /**
-   * Compiled runtime files. New deploys send a single `role: 'runtime'`
-   * `compose.yaml` entry.
+   * Required runtime snapshot: exactly one `role: 'runtime'` `compose.yaml`.
    */
   composeFiles: EnvironmentDeployComposeFile[];
   /** SHA-256 hex of `composeYaml` (compiled runtime, before daemon overlay). */

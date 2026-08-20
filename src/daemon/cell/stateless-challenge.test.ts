@@ -3,7 +3,7 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from '../../client/authn/secrets.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
   consumeChallenge,
@@ -26,7 +26,7 @@ const test = Deno.test.bind(Deno)
 
 async function challengeSecrets() {
   return await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'workers'),
+    parseTestSecretsConfig('workers'),
     'daemon-challenge-signing',
   )
 }
@@ -325,15 +325,12 @@ test('stateless challenge verifies with fallback signing keys', async () => {
   const legacySecret =
     'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7Rr8Ss9Tt0Uu1'
   const signing = await deriveSecretsConfig(
-    parseSecretsEnv(legacySecret, undefined, 'workers'),
+    parseSecretsEnv(`1:${legacySecret}`, 'workers'),
     'daemon-challenge-signing',
   )
   const verifying = await deriveSecretsConfig(
-    parseSecretsEnv(
-      undefined,
-      `2:${TEST_ONLY_TURBOPANEL_SECRET},1:${legacySecret}`,
-      'workers',
-    ),
+    parseSecretsEnv(`2:${TEST_ONLY_TURBOPANEL_SECRET},1:${legacySecret}`,
+    'workers'),
     'daemon-challenge-signing',
   )
   const now = Date.parse('2026-08-05T12:00:00.000Z')

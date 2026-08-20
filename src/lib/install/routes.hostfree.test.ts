@@ -2,7 +2,7 @@
  * Host-free coverage for install route short-circuits (no Postgres / PAM).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
@@ -11,9 +11,9 @@ import {
   seedMockInstalledInstance,
 } from '../../client/authn/authn-hostfree-doubles.ts'
 import { createAuthRateLimiter } from '../../client/authn/auth-rate-limit.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../../client/authn/secrets.ts'
+import { deriveSecretsConfig } from '../../client/authn/secrets.ts'
 import { INSTALL_API_PREFIX } from '../../surfaces.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { registerInstallRoutes } from './routes.ts'
 
 /**
@@ -32,7 +32,7 @@ async function buildApp(opts: {
 } = {}): Promise<Hono<AppEnv>> {
   const runtime = opts.runtime ?? 'deno'
   const withSecrets = opts.withSecrets ?? true
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, runtime)
+  const secretsConfig = parseTestSecretsConfig(runtime)
   const secrets = withSecrets
     ? await deriveSecretsConfig(secretsConfig, 'session-signing')
     : undefined
@@ -49,7 +49,7 @@ async function buildApp(opts: {
     }))
     return next()
   })
-  registerInstallRoutes(app, { secrets, runtime })
+  registerInstallRoutes(app, { secrets, runtime, signupEnvOverride: undefined })
   return app
 }
 

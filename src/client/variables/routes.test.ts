@@ -12,7 +12,7 @@ import { createSession } from '../authn/session-store.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-  parseSecretsEnv,
+  type SecretsConfig,
 } from '../authn/secrets.ts'
 import { decryptSecret, encryptSecret } from '../authn/data-encryption.ts'
 import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
@@ -32,7 +32,7 @@ import {
 } from '../../lib/db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerVariableRoutes } from './routes.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -49,7 +49,7 @@ async function generateDaemonKey() {
 }
 
 async function createVariableTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
@@ -81,7 +81,7 @@ async function withVariableFixtures(
     db: ReturnType<typeof createDenoDb>
     app: Hono<AppEnv>
     secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
-    secretsConfig: ReturnType<typeof parseSecretsEnv>
+    secretsConfig: SecretsConfig
     dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
     userId: string
     organizationId: string

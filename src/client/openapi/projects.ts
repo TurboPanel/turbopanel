@@ -5,7 +5,7 @@ export const projectSchemas = {
     type: 'object',
     properties: {
       id: { type: 'string' },
-      displayName: { type: ['string', 'null'] },
+      name: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       workspaceId: { type: 'string' },
       metadata: { type: 'object', nullable: true },
@@ -33,7 +33,7 @@ export const projectSchemas = {
     type: 'object',
     required: ['workspaceId'],
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
       workspaceId: { type: 'string' },
       type: {
@@ -88,7 +88,7 @@ export const projectSchemas = {
   UpdateProjectRequest: {
     type: 'object',
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
       workspaceId: {
         type: 'string',

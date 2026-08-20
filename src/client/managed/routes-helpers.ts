@@ -23,12 +23,15 @@ import {
 } from '../../lib/managed/access-scope.ts'
 import { organization, server } from '../../lib/db/schema.ts'
 import { parseOrganizationOptions } from '../../lib/organization-options.ts'
-import { BadRequestError, parseDisplayName, requireStringField } from '../shared.ts'
+import { BadRequestError, parseName, requireStringField } from '../shared.ts'
 import { USERNAME_RE } from '../principals/store.ts'
 import { LOOPBACK_BIND, resolveManagedDialHost } from './access-address.ts'
 import type { ManagedContext } from './context.ts'
 import { parseManagedRowOptions, type ManagedRowOptions } from './options.ts'
 import { evaluateManagedPromoteLagGate } from '../../lib/managed/promote-lag.ts'
+import { loadManagedStatusError } from './last-error.ts'
+import { listManagedMembers, type ManagedMemberRow } from './members.ts'
+import type { ManagedResidualMetadata } from './serialize.ts'
 
 export { evaluateManagedPromoteLagGate }
 
@@ -176,6 +179,42 @@ export function managedStatusListenerParams(
   }
 }
 
+type ManagedStatusContextRow = {
+  id: string
+  status: string | null
+  serverId: string | null
+  engine: string | null
+  options: unknown
+}
+
+/** Members, failure text, and listener for GET …/managed/status. */
+export async function loadManagedStatusSnapshot(
+  db: Db,
+  row: ManagedStatusContextRow | null,
+  residual: ManagedResidualMetadata,
+): Promise<{
+  memberRows: ManagedMemberRow[]
+  lastError: string | null
+  listener: Awaited<ReturnType<typeof resolveManagedConnectionListener>>
+}> {
+  if (!row) {
+    return { memberRows: [], lastError: null, listener: null }
+  }
+
+  const memberRows = await listManagedMembers(db, row.id)
+  const lastError = await loadManagedStatusError(db, {
+    managedId: row.id,
+    status: row.status,
+    residualError: residual.error ?? null,
+    serverIds: [row.serverId, ...memberRows.map((entry) => entry.serverId)],
+  })
+  const listenerParams = managedStatusListenerParams(row)
+  const listener = listenerParams
+    ? await resolveManagedConnectionListener(db, listenerParams)
+    : null
+  return { memberRows, lastError, listener }
+}
+
 export function isPlainObject(
   value: unknown,
 ): value is Record<string, unknown> {
@@ -206,16 +245,15 @@ export function managedSessionPaths(): string[] {
 }
 
 /**
- * Prefer `scope`; fall back to legacy `bind`. Invalid tokens reject the create.
+ * Accept only `scope`. Retired `bind` and other keys reject the create.
  */
 function parseCreateExposureScope(
   exposureRaw: Record<string, unknown>,
 ): ManagedSqlAccessScope | undefined | null {
-  let raw: unknown = exposureRaw.bind
-  if (exposureRaw.scope !== undefined) raw = exposureRaw.scope
-  if (raw === undefined) return undefined
-  if (!isManagedSqlAccessScope(raw)) return null
-  return raw
+  if (exposureRaw.bind !== undefined) return null
+  if (exposureRaw.scope === undefined) return undefined
+  if (!isManagedSqlAccessScope(exposureRaw.scope)) return null
+  return exposureRaw.scope
 }
 
 function mergeCreateExposure(
@@ -563,16 +601,16 @@ export function parseManagedLifecycleAction(
 }
 
 /**
- * Display-name parse for managed create — mirrors {@link parseDisplayName}
+ * Name parse for managed create — mirrors {@link parseName}
  * but returns a typed validation error instead of throwing.
  */
-export function parseManagedCreateDisplayName(
+export function parseManagedCreateName(
   body: Record<string, unknown>,
 ):
-  | { ok: true; displayName: string | null }
+  | { ok: true; name: string | null }
   | ManagedRouteValidationError {
   try {
-    return { ok: true, displayName: parseDisplayName(body) }
+    return { ok: true, name: parseName(body) }
   } catch (error) {
     if (error instanceof BadRequestError) {
       return { ok: false, error: 'Invalid request', status: 400 }

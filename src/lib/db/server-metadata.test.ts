@@ -162,19 +162,6 @@ test('parseServerHostResources accepts capacity totals', () => {
     },
   )
   assertEquals(
-    parseServerHostResources({
-      cpu: { coreCount: 4, threadCount: 8, socketCount: 1 },
-    }),
-    {
-      cpus: [{ cores: { total: 4 }, threads: { total: 8 } }],
-    },
-  )
-  assertEquals(parseServerHostResources({ cpu: { coreCount: 0 } }), undefined)
-  assertEquals(
-    parseServerHostResources({ cpu: { threadCount: 0 } }),
-    undefined,
-  )
-  assertEquals(
     parseServerHostResources({ memory: { totalBytes: -1 } }),
     undefined,
   )
@@ -257,7 +244,6 @@ test('parseServerTimeSync accepts daemon time-sync blocks', () => {
       ntpSynced: false,
       ntpServers: ['time.cloudflare.com', '  '],
       fallbackNtpServers: ['203.0.113.10'],
-      capturedAt: '2020-01-01T00:00:00.000Z',
     }),
     {
       timezone: 'America/Chicago',
@@ -265,26 +251,21 @@ test('parseServerTimeSync accepts daemon time-sync blocks', () => {
       ntpSynced: false,
       ntpServers: ['time.cloudflare.com'],
       fallbackNtpServers: ['203.0.113.10'],
-      capturedAt: '2020-01-01T00:00:00.000Z',
     },
   )
   assertEquals(parseServerTimeSync({ timezone: '  ' }), undefined)
   assertEquals(parseServerTimeSync('nope'), undefined)
 })
 
-test('serverTimeSyncEquals ignores capturedAt', () => {
+test('serverTimeSyncEquals compares field-wise', () => {
   const a = {
     timezone: 'UTC',
     ntpEnabled: true,
     ntpServers: ['time.cloudflare.com'],
-    capturedAt: '2020-01-01T00:00:00.000Z',
   }
   assertEquals(
-    serverTimeSyncEquals(a, {
-      ...a,
-      capturedAt: '2020-01-02T00:00:00.000Z',
-    }),
-    true,
+    serverTimeSyncEquals(a, { ...a, ntpSynced: true }),
+    false,
   )
   assertEquals(
     serverTimeSyncEquals(a, { ...a, timezone: 'Europe/London' }),
@@ -491,19 +472,7 @@ test('parseServerIps and serverIpsEquals', () => {
   )
 })
 
-test('ipsFromDaemonPresence prefers resources.ips then ips[] and maps legacy addresses', () => {
-  const current = ipsFromDaemonPresence({
-    ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
-    addresses: {
-      privateIpv4: ['10.0.0.9'],
-      privateIpv6: [],
-      publicIpv4: [],
-      publicIpv6: [],
-    },
-  })
-  assertEquals(current, [
-    { address: '10.0.0.8', version: 4, scope: 'private' },
-  ])
+test('ipsFromDaemonPresence reads resources.ips only', () => {
   assertEquals(
     ipsFromDaemonPresence({
       resources: {
@@ -514,33 +483,21 @@ test('ipsFromDaemonPresence prefers resources.ips then ips[] and maps legacy add
           interface: 'eth0',
         }],
       },
-      ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
     }),
     [
       { address: '10.0.0.4', version: 4, scope: 'private', interface: 'eth0' },
     ],
   )
-  assertEquals(
-    ipsFromDaemonPresence({
-      addresses: {
-        privateIpv4: ['10.0.0.5'],
-        privateIpv6: [],
-        publicIpv4: ['203.0.113.10'],
-        publicIpv6: [],
-      },
-    }),
-    [
-      { address: '10.0.0.5', version: 4, scope: 'private' },
-      { address: '203.0.113.10', version: 4, scope: 'public' },
-    ],
-  )
   assertEquals(ipsFromDaemonPresence({}), undefined)
+  assertEquals(ipsFromDaemonPresence({ ips: [] }), undefined)
 })
 
-test('resourcesFromDaemonPresence prefers resources and maps inventory', () => {
+test('resourcesFromDaemonPresence reads resources only', () => {
   assertEquals(
     resourcesFromDaemonPresence({
-      resources: { cpu: { coreCount: 8, threadCount: 16 } },
+      resources: {
+        cpus: [{ cores: { total: 8 }, threads: { total: 16 } }],
+      },
       inventory: { cpuCores: 2, cpuThreads: 4 },
     }),
     { cpus: [{ cores: { total: 8 }, threads: { total: 16 } }] },
@@ -554,16 +511,15 @@ test('resourcesFromDaemonPresence prefers resources and maps inventory', () => {
         swapTotalBytes: 0,
       },
     }),
-    {
-      cpus: [{ cores: { total: 4 }, threads: { total: 8 } }],
-      memory: { totalBytes: 1024 },
-      swap: { totalBytes: 0 },
-    },
+    undefined,
   )
   assertEquals(
     resourcesFromDaemonPresence({
-      resources: { cpu: { coreCount: 2 } },
-      ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
+      resources: {
+        cpus: [{ cores: { total: 2 } }],
+        ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
+      },
+      ips: [{ address: '203.0.113.10', version: 4, scope: 'public' }],
     }),
     {
       cpus: [{ cores: { total: 2 } }],
@@ -664,7 +620,7 @@ test('timeSyncColumnPatch does not rewrite last-sync on every synced heartbeat',
 test('parseServerHostResources keeps ips including interface', () => {
   assertEquals(
     parseServerHostResources({
-      cpu: { coreCount: 2 },
+      cpus: [{ cores: { total: 2 } }],
       ips: [
         {
           address: '10.0.0.5',

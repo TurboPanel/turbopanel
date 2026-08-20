@@ -79,11 +79,8 @@ function createStubRegistry(): DaemonCellRegistry {
 }
 
 async function createTlsTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,

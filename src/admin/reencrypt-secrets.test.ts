@@ -50,16 +50,13 @@ class RollbackTestTransaction extends Error {
 }
 
 function createV1OnlySecrets() {
-  const config = parseSecretsEnv(undefined, `1:${V1_SECRET}`, "deno");
+  const config = parseSecretsEnv(`1:${V1_SECRET}`, "deno");
   return deriveEncryptionSecretsConfig(config, "data-encryption");
 }
 
 function createRotatedSecrets() {
-  const config = parseSecretsEnv(
-    undefined,
-    `2:${V2_SECRET},1:${V1_SECRET}`,
-    "deno",
-  );
+  const config = parseSecretsEnv(`2:${V2_SECRET},1:${V1_SECRET}`,
+    "deno");
   return deriveEncryptionSecretsConfig(config, "data-encryption");
 }
 
@@ -127,6 +124,8 @@ async function installIsolatedFixtureSchema(
       status text DEFAULT 'ready' NOT NULL,
       not_after timestamptz(3),
       fingerprint_sha256 text,
+      ca_state text,
+      ca_generation integer,
       metadata jsonb NOT NULL,
       options jsonb
     )
@@ -192,7 +191,7 @@ async function withIsolatedFixture(
 test("reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintext/malformed", async () => {
   const v1Only = await createV1OnlySecrets();
   const rotated = await createRotatedSecrets();
-  const secretsConfig = parseSecretsEnv(undefined, `1:${V1_SECRET}`, "deno");
+  const secretsConfig = parseSecretsEnv(`1:${V1_SECRET}`, "deno");
 
   const v1VariablePlain = "variable-v1-secret";
   const v1TlsPlain = "tls-v1-private-key";

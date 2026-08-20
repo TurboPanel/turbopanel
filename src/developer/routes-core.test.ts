@@ -132,10 +132,12 @@ function createRoutesCoreMockDb(opts: {
         }),
       }),
     }),
-    execute: async () => {
+    execute: () => {
       if (opts.executeThrows) throw opts.executeThrows;
-      return opts.executeRows ??
-        [{ version: "PostgreSQL 16", database: "turbopanel" }];
+      return Promise.resolve(
+        opts.executeRows ??
+          [{ version: "PostgreSQL 16", database: "turbopanel" }],
+      );
     },
   } as unknown as Db;
 }
@@ -164,11 +166,12 @@ function createDiagnosticsCell(
     storageByCallSite: {},
   };
 
-  const noopAsync = async () => {};
+  const noopAsync = () => Promise.resolve();
   const requestBehavior = opts.requestBehavior ?? "done";
 
   return {
-    attachDaemonSocket: async () => ({
+    attachDaemonSocket: () =>
+      Promise.resolve({
       connectionId: "conn",
       lease: {
         holder: "conn",
@@ -178,7 +181,8 @@ function createDiagnosticsCell(
     }),
     detachDaemonSocket: noopAsync,
     recordInbound: noopAsync,
-    getSnapshot: async () => ({
+    getSnapshot: () =>
+      Promise.resolve({
       serverId: opts.snapshotServerId === undefined
         ? serverId
         : (opts.snapshotServerId ?? ""),
@@ -186,14 +190,16 @@ function createDiagnosticsCell(
       updatedAt: new Date().toISOString(),
       connected: false,
     }),
-    putSnapshot: async (patch) => ({
+    putSnapshot: (patch) =>
+      Promise.resolve({
       serverId,
       version: 1,
       updatedAt: new Date().toISOString(),
       connected: false,
       ...patch,
     }),
-    enqueue: async (outbound) => ({
+    enqueue: (outbound) =>
+      Promise.resolve({
       serverId,
       requestId: outbound.requestId,
       requestKind: outbound.kind,
@@ -202,13 +208,13 @@ function createDiagnosticsCell(
       expiresAt: outbound.at,
     }),
     markSent: noopAsync,
-    handleInbound: async () => null,
-    getRequest: async () => null,
-    listRequests: async () => opts.listRequests ?? [],
-    waitForRequest: async () => null,
-    createRequestAndWait: async (outbound) => {
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve(opts.listRequests ?? []),
+    waitForRequest: () => Promise.resolve(null),
+    createRequestAndWait: (outbound) => {
       if (requestBehavior === "throw") {
-        throw new Error("daemon not connected");
+        return Promise.reject(new Error("daemon not connected"));
       }
       const base: PendingRequestRecord = {
         serverId,
@@ -219,13 +225,17 @@ function createDiagnosticsCell(
         expiresAt: outbound.at,
       };
       if (requestBehavior === "failed") {
-        return { ...base, status: "failed", error: "failed to fetch addresses" };
+        return Promise.resolve({
+          ...base,
+          status: "failed",
+          error: "failed to fetch addresses",
+        });
       }
       if (requestBehavior === "expired") {
-        return { ...base, status: "expired" };
+        return Promise.resolve({ ...base, status: "expired" });
       }
       if (requestBehavior === "done-with-addresses") {
-        return {
+        return Promise.resolve({
           ...base,
           status: "done",
           result: {
@@ -233,19 +243,19 @@ function createDiagnosticsCell(
               { address: "203.0.113.10", version: 4, scope: "public" },
             ],
           },
-        };
+        });
       }
-      return { ...base, status: "done" };
+      return Promise.resolve({ ...base, status: "done" });
     },
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
     releaseDeliveryLease: noopAsync,
-    readOutboxBatch: async () => [],
+    readOutboxBatch: () => Promise.resolve([]),
     ackOutbox: noopAsync,
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: noopAsync,
-    getDiagnostics: async () => diagnostics,
+    getDiagnostics: () => Promise.resolve(diagnostics),
   };
 }
 
@@ -265,9 +275,9 @@ function createRegistry(
         snapshotServerId: opts.snapshotServerId,
         listRequests: opts.listRequests,
       }),
-    purge: async () => {},
-    listOnlineServerIds: async () => opts.onlineIds ?? [],
-    getSnapshots: async () => new Map(),
+    purge: () => Promise.resolve(),
+    listOnlineServerIds: () => Promise.resolve(opts.onlineIds ?? []),
+    getSnapshots: () => Promise.resolve(new Map()),
   };
 }
 
@@ -288,7 +298,7 @@ type TestAppOptions = {
 
 async function createTestApp(options: TestAppOptions = {}) {
   const secrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_SECRET, undefined, "workers"),
+    parseSecretsEnv(`1:${TEST_SECRET}`, "workers"),
     "session-signing",
   );
   const developer = buildDeveloperRouter({
@@ -317,24 +327,6 @@ async function createTestApp(options: TestAppOptions = {}) {
   });
   app.route(DEVELOPER_API_PREFIX, developer);
   return { app, secrets };
-}
-
-async function signedSuperadminCookie(
-  secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-) {
-  const state = createEmptyMockAuthState();
-  const token = crypto.randomUUID();
-  seedMockSession(state, token, {
-    sessionId: crypto.randomUUID(),
-    userId: crypto.randomUUID(),
-    email: "root@example.com",
-    role: "superadmin",
-  });
-  const signed = await buildSignedCookie(token, secrets);
-  return {
-    db: createMockAuthDb(state),
-    cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}`,
-  };
 }
 
 describe("isDaemonDebugEnabled", () => {
@@ -367,7 +359,7 @@ describe("developer auth gate", () => {
 
   it("returns 403 for non-superadmin sessions", async () => {
     const secrets = await deriveSecretsConfig(
-      parseSecretsEnv(TEST_SECRET, undefined, "workers"),
+      parseSecretsEnv(`1:${TEST_SECRET}`, "workers"),
       "session-signing",
     );
     const state = createEmptyMockAuthState();
@@ -393,7 +385,7 @@ describe("developer auth gate", () => {
 
   it("allows superadmin sessions through auth middleware", async () => {
     const secrets = await deriveSecretsConfig(
-      parseSecretsEnv(TEST_SECRET, undefined, "workers"),
+      parseSecretsEnv(`1:${TEST_SECRET}`, "workers"),
       "session-signing",
     );
     const state = createEmptyMockAuthState();
@@ -985,19 +977,19 @@ describe("developer database routes via routes-core", () => {
 describe("developer router mount helpers", () => {
   it("mountDeveloperRouter and registerDeveloperRoutesCore expose events", async () => {
     const secrets = await deriveSecretsConfig(
-      parseSecretsEnv(TEST_SECRET, undefined, "workers"),
+      parseSecretsEnv(`1:${TEST_SECRET}`, "workers"),
       "session-signing",
     );
     const developer = buildDeveloperRouter({ secrets, authRequired: false });
     const mounted = new Hono<
       { Variables: AppEnv["Variables"]; Bindings: CloudflareBindings }
     >();
-    mountDeveloperRouter(mounted as Hono, developer);
+    mountDeveloperRouter(mounted, developer);
 
     const coreApp = new Hono<
       { Variables: AppEnv["Variables"]; Bindings: CloudflareBindings }
     >();
-    registerDeveloperRoutesCore(coreApp as Hono, { secrets, authRequired: false });
+    registerDeveloperRoutesCore(coreApp, { secrets, authRequired: false });
     coreApp.use("*", async (c, next) => {
       c.set("db", createRoutesCoreMockDb());
       c.set("daemonCellRegistry", createRegistry(SERVER_ID));

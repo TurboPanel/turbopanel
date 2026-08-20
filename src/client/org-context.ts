@@ -14,7 +14,7 @@ const UUID_RE =
 
 export type OrganizationSummary = {
   id: string
-  displayName: string | null
+  name: string | null
   createdAt: string
 }
 
@@ -106,7 +106,7 @@ export async function listAccessibleOrganizations(
     return db
       .select({
         id: organization.id,
-        displayName: organization.name,
+        name: organization.name,
         createdAt: organization.createdAt,
       })
       .from(organization)
@@ -146,7 +146,7 @@ export async function listAccessibleOrganizations(
     )
     SELECT
       o.id AS id,
-      o.name AS "displayName",
+      o.name AS "name",
       o.created_at AS "createdAt"
     FROM ${organization} o
     WHERE o.id IN (SELECT organization_id FROM accessible_org_ids)

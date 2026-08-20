@@ -1,10 +1,10 @@
 export const organizationSchemas = {
   OrganizationRecord: {
     type: "object",
-    required: ["id", "displayName", "createdAt"],
+    required: ["id", "name", "createdAt"],
     properties: {
       id: { type: "string", format: "uuid" },
-      displayName: { type: ["string", "null"] },
+      name: { type: ["string", "null"] },
       createdAt: { type: "string", format: "date-time" },
     },
   },
@@ -27,14 +27,14 @@ export const organizationSchemas = {
   },
   OrganizationUpdate: {
     type: "object",
-    required: ["displayName"],
+    required: ["name"],
     properties: {
-      displayName: {
+      name: {
         type: "string",
         minLength: 1,
         maxLength: 255,
         description:
-          "Non-empty display name (any characters except control characters; ≤255). Cannot be cleared.",
+          "Non-empty name (any characters except control characters; ≤255). Cannot be cleared.",
       },
     },
   },
@@ -597,7 +597,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ["Organizations"],
       summary: "Rename an organization",
       description:
-        "Manage-gated. Updates organization.displayName (any characters except control characters; ≤255). Names are not unique. The name cannot be cleared.",
+        "Manage-gated. Updates organization.name (any characters except control characters; ≤255). Names are not unique. The name cannot be cleared.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -627,7 +627,7 @@ export const organizationPaths: Record<string, unknown> = {
           },
         },
         "400": {
-          description: "Invalid displayName or body",
+          description: "Invalid name or body",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ErrorResponse" },

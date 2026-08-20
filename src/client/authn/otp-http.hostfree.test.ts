@@ -3,11 +3,11 @@
  * and handler wiring not duplicated in otp-reset-password.test.ts).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createAuthRateLimiter,
   type AuthRateLimitPurpose,
@@ -16,6 +16,7 @@ import {
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
+  readJsonBody,
   seedMockCredentialUser,
   seedMockOtpVerification,
   seedMockSession,
@@ -52,18 +53,18 @@ function tightAuthRateLimiter(purpose: AuthRateLimitPurpose): AuthRateLimiter {
 async function buildOtpApp(
   db: ReturnType<typeof createMockAuthDb> | undefined,
   opts: {
+    secrets?: Awaited<ReturnType<typeof deriveSecretsConfig>>
     otpVerifierSecrets?: Awaited<ReturnType<typeof deriveSecretsConfig>>
     runtime?: 'deno' | 'workers'
     emailQueue?: { enqueue: (job: unknown) => Promise<void> }
     authRateLimiter?: AuthRateLimiter
   } = {},
 ) {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
-  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
+  const secrets = 'secrets' in opts
+    ? opts.secrets
+    : await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = 'otpVerifierSecrets' in opts
     ? opts.otpVerifierSecrets
     : await deriveSecretsConfig(secretsConfig, 'email-otp-verifier')
@@ -121,7 +122,7 @@ test('send-otp rejects invalid email before OTP storage', async () => {
     body: JSON.stringify({ email: 'not-an-email', type: 'sign-in' }),
   })
   assertEquals(res.status, 400)
-  const body = await res.json()
+  const body = await readJsonBody<{ ok: boolean; error: string }>(res)
   assertEquals(body.ok, false)
   assertEquals(body.error, 'Enter a valid email address')
 })
@@ -136,7 +137,7 @@ test('verify-otp rejects invalid email before verifier lookup', async () => {
     body: JSON.stringify({ email: 'bad', otp: '123456', type: 'sign-in' }),
   })
   assertEquals(res.status, 400)
-  const body = await res.json()
+  const body = await readJsonBody<{ error: string }>(res)
   assertEquals(body.error, 'Enter a valid email address')
 })
 
@@ -157,15 +158,15 @@ test('sign-in/otp rejects non-string name and invalid email', async () => {
     body: JSON.stringify({ email: 'not-an-email', otp: '123456' }),
   })
   assertEquals(badEmail.status, 400)
-  assertEquals((await badEmail.json()).error, 'Enter a valid email address')
+  assertEquals(
+    (await readJsonBody<{ error: string }>(badEmail)).error,
+    'Enter a valid email address',
+  )
 })
 
 test('send-otp email-verification rejects email mismatch for signed session', async () => {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const state = createEmptyMockAuthState()
   const token = crypto.randomUUID()
@@ -205,14 +206,14 @@ test('reset-password/otp rejects weak password before OTP verification', async (
   })
   assertEquals(res.status, 400)
   assertEquals(
-    (await res.json()).error,
+    (await readJsonBody<{ error: string }>(res)).error,
     'Password must include at least one number',
   )
 })
 
 test('reset-password/otp returns 404 when user row is missing after valid OTP', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const email = 'ghost-reset@example.com'
@@ -230,12 +231,12 @@ test('reset-password/otp returns 404 when user row is missing after valid OTP', 
     }),
   })
   assertEquals(res.status, 404)
-  assertEquals((await res.json()).error, 'User not found')
+  assertEquals((await readJsonBody<{ error: string }>(res)).error, 'User not found')
 })
 
 test('reset-password/otp returns 404 for disabled users', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const email = 'disabled-reset@example.com'
@@ -260,12 +261,12 @@ test('reset-password/otp returns 404 for disabled users', async () => {
     }),
   })
   assertEquals(res.status, 404)
-  assertEquals((await res.json()).error, 'User not found')
+  assertEquals((await readJsonBody<{ error: string }>(res)).error, 'User not found')
 })
 
 test('reset-password/otp returns 404 when credential account is missing', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const email = 'no-account@example.com'
@@ -294,7 +295,7 @@ test('reset-password/otp returns 404 when credential account is missing', async 
 
 test('verify-otp returns 429 after too many failed attempts', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const email = 'locked-otp@example.com'
@@ -317,7 +318,7 @@ test('verify-otp returns 429 after too many failed attempts', async () => {
     body: JSON.stringify({ email, otp: '654321', type: 'sign-in' }),
   })
   assertEquals(locked.status, 429)
-  assertEquals((await locked.json()).error, 'Too many attempts')
+  assertEquals((await readJsonBody<{ error: string }>(locked)).error, 'Too many attempts')
 })
 
 test('reset-password/request-otp rejects invalid email', async () => {
@@ -330,12 +331,12 @@ test('reset-password/request-otp rejects invalid email', async () => {
     body: JSON.stringify({ email: 'not-an-email' }),
   })
   assertEquals(res.status, 400)
-  assertEquals((await res.json()).error, 'Enter a valid email address')
+  assertEquals((await readJsonBody<{ error: string }>(res)).error, 'Enter a valid email address')
 })
 
 test('send-otp returns 200 during resend cooldown without leaking state', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const state = createEmptyMockAuthState()
@@ -351,12 +352,12 @@ test('send-otp returns 200 during resend cooldown without leaking state', async 
     body: JSON.stringify({ email, type: 'sign-in' }),
   })
   assertEquals(res.status, 200)
-  assertEquals((await res.json()).ok, true)
+  assertEquals((await readJsonBody<{ ok: boolean }>(res)).ok, true)
 })
 
 test('reset-password/otp updates password for mock credential user', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const email = 'cred-reset@example.com'
@@ -399,7 +400,7 @@ test('send-otp returns 429 when auth rate limit is exceeded', async () => {
   assertEquals((await makeRequest()).status, 200)
   const limited = await makeRequest()
   assertEquals(limited.status, 429)
-  assertEquals((await limited.json()).error, 'Too many requests')
+  assertEquals((await readJsonBody<{ error: string }>(limited)).error, 'Too many requests')
   assertEquals(limited.headers.get('Retry-After') !== null, true)
 })
 
@@ -420,7 +421,7 @@ test('verify-otp returns 429 when auth rate limit is exceeded', async () => {
   assertEquals((await makeRequest()).status, 400)
   const limited = await makeRequest()
   assertEquals(limited.status, 429)
-  assertEquals((await limited.json()).error, 'Too many requests')
+  assertEquals((await readJsonBody<{ error: string }>(limited)).error, 'Too many requests')
 })
 
 test('sign-in/otp returns 429 when auth rate limit is exceeded', async () => {
@@ -440,7 +441,7 @@ test('sign-in/otp returns 429 when auth rate limit is exceeded', async () => {
   assertEquals((await makeRequest()).status, 400)
   const limited = await makeRequest()
   assertEquals(limited.status, 429)
-  assertEquals((await limited.json()).error, 'Too many requests')
+  assertEquals((await readJsonBody<{ error: string }>(limited)).error, 'Too many requests')
 })
 
 test('reset-password/request-otp returns 429 when auth rate limit is exceeded', async () => {
@@ -460,7 +461,7 @@ test('reset-password/request-otp returns 429 when auth rate limit is exceeded', 
   assertEquals((await makeRequest()).status, 200)
   const limited = await makeRequest()
   assertEquals(limited.status, 429)
-  assertEquals((await limited.json()).error, 'Too many requests')
+  assertEquals((await readJsonBody<{ error: string }>(limited)).error, 'Too many requests')
 })
 
 test('reset-password/otp returns 429 when auth rate limit is exceeded', async () => {
@@ -485,12 +486,12 @@ test('reset-password/otp returns 429 when auth rate limit is exceeded', async ()
   assertEquals(first.status === 400 || first.status === 404, true)
   const limited = await makeRequest()
   assertEquals(limited.status, 429)
-  assertEquals((await limited.json()).error, 'Too many requests')
+  assertEquals((await readJsonBody<{ error: string }>(limited)).error, 'Too many requests')
 })
 
 async function seedSignInOtpSuccessState() {
   const otpVerifierSecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'email-otp-verifier',
   )
   const state = createEmptyMockAuthState()
@@ -570,4 +571,46 @@ test('sign-in/otp honors x-forwarded-proto https on Deno trusted proxy', async (
   const cookie = res.headers.get('Set-Cookie') ?? ''
   assertEquals(cookie.startsWith(`${HTTPS_SESSION_COOKIE_NAME}=`), true)
   assertEquals(cookie.includes('; Secure'), true)
+})
+
+test('sign-in/otp returns 503 when session secrets are missing', async () => {
+  const { state, email, otpVerifierSecrets } = await seedSignInOtpSuccessState()
+  const { app } = await buildOtpApp(createMockAuthDb(state), {
+    secrets: undefined,
+    otpVerifierSecrets,
+  })
+
+  const res = await app.request(`${AUTH_PREFIX}/sign-in/otp`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Real-IP': '203.0.113.128',
+    },
+    body: JSON.stringify({ email, otp: '654321' }),
+  })
+  assertEquals(res.status, 503)
+  assertEquals(
+    (await readJsonBody<{ error: string }>(res)).error,
+    'Not configured',
+  )
+})
+
+test('send-otp email-verification returns 401 when session secrets are missing', async () => {
+  const db = createMockAuthDb(createEmptyMockAuthState())
+  const { app } = await buildOtpApp(db, { secrets: undefined })
+
+  const res = await app.request(`${AUTH_PREFIX}/send-otp`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Real-IP': '203.0.113.129',
+      Cookie: `${HTTP_SESSION_COOKIE_NAME}=tpsession.v1.token.sig`,
+    },
+    body: JSON.stringify({ email: 'session@example.com', type: 'email-verification' }),
+  })
+  assertEquals(res.status, 401)
+  assertEquals(
+    (await readJsonBody<{ error: string }>(res)).error,
+    'Unauthorized',
+  )
 })

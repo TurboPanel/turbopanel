@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -12,7 +12,7 @@ import {
   assertCanReadOr403,
   assertNotSystemOwnedOr403,
   getOrgId,
-  parseDisplayName,
+  parseName,
   parseDescription,
   parseJsonBody,
   parseJsonbObject,
@@ -70,7 +70,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const rows = await db
       .select({
         id: hosting.id,
-        displayName: hosting.name,
+        name: hosting.name,
         description: hosting.description,
         serviceId: hosting.serviceId,
         tlsId: hosting.tlsId,
@@ -107,7 +107,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const rows = await db
       .select({
         id: hosting.id,
-        displayName: hosting.name,
+        name: hosting.name,
         description: hosting.description,
         serviceId: hosting.serviceId,
         tlsId: hosting.tlsId,
@@ -162,10 +162,10 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const immutable = await assertNotSystemOwnedOr403(c, 'service', serviceId)
     if (immutable) return immutable
 
-    let displayName: string | null
+    let name: string | null
     let description: string | null
     try {
-      displayName = parseDisplayName(body)
+      name = parseName(body)
       description = parseDescription(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
@@ -193,7 +193,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const [inserted] = await tx
         .insert(hosting)
         .values({
-          name: displayName,
+          name,
           description,
           serviceId,
           ...(fks.tlsId.kind === 'value' ? { tlsId: fks.tlsId.value } : {}),

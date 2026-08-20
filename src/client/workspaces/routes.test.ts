@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -9,10 +9,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import {
-  deriveSecretsConfig,
-  parseSecretsEnv,
-} from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   container,
   environment,
@@ -36,7 +33,7 @@ import {
   SYSTEM_WORKSPACE_DISPLAY_NAME,
 } from '../system/hierarchy.ts'
 import { registerWorkspaceRoutes } from './routes.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -49,7 +46,7 @@ const dbUrl = getDatabaseUrl()
 const test = Deno.test.bind(Deno)
 
 async function createWorkspaceRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -250,12 +247,12 @@ test('GET /workspaces returns System before Default for same-transaction install
     })
     assertEquals(list.status, 200)
     const body = await list.json() as {
-      workspaces: Array<{ displayName: string; kind: string }>
+      workspaces: Array<{ name: string; kind: string }>
     }
     assertEquals(body.workspaces.length, 2)
-    assertEquals(body.workspaces[0]?.displayName, SYSTEM_WORKSPACE_DISPLAY_NAME)
+    assertEquals(body.workspaces[0]?.name, SYSTEM_WORKSPACE_DISPLAY_NAME)
     assertEquals(body.workspaces[0]?.kind, WORKSPACE_KIND_SYSTEM)
-    assertEquals(body.workspaces[1]?.displayName, 'Default Workspace')
+    assertEquals(body.workspaces[1]?.name, 'Default Workspace')
     assertEquals(body.workspaces[1]?.kind, WORKSPACE_KIND_USER)
   } finally {
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))

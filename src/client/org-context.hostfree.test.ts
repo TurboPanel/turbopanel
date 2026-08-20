@@ -2,7 +2,7 @@
  * Host-free org context helpers (mock Db — no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { Db } from '../db.ts'
 import {
@@ -144,7 +144,7 @@ test('listAccessibleOrganizations returns team-scoped orgs for regular users', a
       Promise.resolve([
         {
           id: 'o2',
-          displayName: 'Member Org',
+          name: 'Member Org',
           createdAt: '2020-01-01T00:00:00.000Z',
         },
       ]),
@@ -152,7 +152,7 @@ test('listAccessibleOrganizations returns team-scoped orgs for regular users', a
 
   const orgs = await listAccessibleOrganizations(db, 'member-user')
   assertEquals(orgs.length, 1)
-  assertEquals(orgs[0]?.displayName, 'Member Org')
+  assertEquals(orgs[0]?.name, 'Member Org')
 })
 
 test('listAccessibleOrganizations returns all orgs for superadmin', async () => {
@@ -171,7 +171,7 @@ test('listAccessibleOrganizations returns all orgs for superadmin', async () => 
             Promise.resolve([
               {
                 id: 'o1',
-                displayName: 'Acme',
+                name: 'Acme',
                 createdAt: 't0',
               },
             ]),
@@ -180,5 +180,5 @@ test('listAccessibleOrganizations returns all orgs for superadmin', async () => 
     }),
   } as unknown as Db
   const orgs = await listAccessibleOrganizations(db, 'admin')
-  assertEquals(orgs[0]?.displayName, 'Acme')
+  assertEquals(orgs[0]?.name, 'Acme')
 })

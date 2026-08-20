@@ -2,7 +2,7 @@
  * Host-free coverage for environment route pure validation helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { emptyComposeDocument } from '../../lib/compose/index.ts'
 import {
   parseCreateEnvironmentJsonb,
@@ -29,7 +29,7 @@ test('serializeEnvironment maps row fields', () => {
   assertEquals(
     serializeEnvironment({
       id: validUuid,
-      displayName: 'Production',
+      name: 'Production',
       description: null,
       projectId: validUuid,
       serverId: null,
@@ -37,7 +37,7 @@ test('serializeEnvironment maps row fields', () => {
       options: null,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
-    }).displayName,
+    }).name,
     'Production',
   )
 })
@@ -45,7 +45,7 @@ test('serializeEnvironment maps row fields', () => {
 test('parseCreateEnvironmentNames validates names', () => {
   const ok = parseCreateEnvironmentNames({ name: 'Staging' })
   if (!ok.ok) throw new TypeError('expected valid environment names')
-  assertEquals(ok.displayName, 'Staging')
+  assertEquals(ok.name, 'Staging')
   assertEquals(parseCreateEnvironmentNames({ name: 'bad/name' }).ok, true)
   assertEquals(parseCreateEnvironmentNames({ name: 'bad\nname' }).ok, false)
 })
@@ -75,10 +75,19 @@ test('parseCreateEnvironmentJsonb lints compose and strips promoted metadata', (
 })
 
 test('parseOptionalServerIdShape accepts omitted, null, and uuid', () => {
-  assertEquals(parseOptionalServerIdShape({}).serverId, undefined)
-  assertEquals(parseOptionalServerIdShape({ serverId: null }).serverId, null)
+  const omitted = parseOptionalServerIdShape({})
+  if (!omitted.ok) throw new TypeError('expected omitted serverId')
+  assertEquals(omitted.serverId, undefined)
+
+  const cleared = parseOptionalServerIdShape({ serverId: null })
+  if (!cleared.ok) throw new TypeError('expected null serverId')
+  assertEquals(cleared.serverId, null)
+
   assertEquals(parseOptionalServerIdShape({ serverId: 'bad' }).ok, false)
-  assertEquals(parseOptionalServerIdShape({ serverId: validUuid }).serverId, validUuid)
+
+  const pinned = parseOptionalServerIdShape({ serverId: validUuid })
+  if (!pinned.ok) throw new TypeError('expected valid serverId')
+  assertEquals(pinned.serverId, validUuid)
 })
 
 test('parseEnvironmentPatchMetadata returns absent when field omitted', () => {
@@ -96,14 +105,14 @@ test('parseEnvironmentPatchOptions rejects invalid compose', () => {
   assertEquals(absent.options, 'absent')
 })
 
-test('parseCreateEnvironmentNames rejects bad description and prefers displayName', () => {
+test('parseCreateEnvironmentNames rejects bad description and reads name', () => {
   assertEquals(
     parseCreateEnvironmentNames({ name: 'Ok', description: 12 }).ok,
     false,
   )
-  const named = parseCreateEnvironmentNames({ displayName: 'Prod', description: 'live' })
-  if (!named.ok) throw new TypeError('expected valid displayName create')
-  assertEquals(named.displayName, 'Prod')
+  const named = parseCreateEnvironmentNames({ name: 'Prod', description: 'live' })
+  if (!named.ok) throw new TypeError('expected valid name create')
+  assertEquals(named.name, 'Prod')
   assertEquals(named.description, 'live')
 })
 

@@ -26,7 +26,7 @@ import {
   assertCanCreateOr403,
   assertCanReadOr403,
   getOrgId,
-  parseDisplayName,
+  parseName,
   parseJsonBody,
 } from "../shared.ts";
 import {
@@ -81,7 +81,7 @@ import { listCommandRecordsByIds } from "../../lib/db/command-records.ts";
 
 const TLS_PUBLIC_SELECT = {
   id: tls.id,
-  displayName: tls.name,
+  name: tls.name,
   source: tls.source,
   organizationId: tls.organizationId,
   status: tls.status,
@@ -194,7 +194,7 @@ async function insertTlsRow(
   db: NonNullable<ReturnType<typeof getDb>>,
   params: {
     organizationId: string;
-    displayName: string | null;
+    name: string | null;
     source: TlsSource;
     material: CreateTlsMaterial;
     options: TlsOptions | null;
@@ -218,7 +218,7 @@ async function insertTlsRow(
         .insert(tls)
         .values({
           organizationId: params.organizationId,
-          name: params.displayName,
+          name: params.name,
           source: params.source,
           certificatePem: params.material.certificatePem,
           privateKeyPem: params.material.privateKeyPemSealed,
@@ -498,9 +498,9 @@ function buildTlsRowPatch(
   | { ok: false; error: string; status: 400 | 409 | 500 } {
   const patch: TlsRowPatch = { updatedAt: new Date().toISOString() };
 
-  if (body.displayName !== undefined) {
+  if (body.name !== undefined) {
     try {
-      patch.name = parseDisplayName(body);
+      patch.name = parseName(body);
     } catch {
       return { ok: false, error: "Invalid request", status: 400 };
     }
@@ -864,9 +864,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       }
     }
 
-    let displayName: string | null;
+    let name: string | null;
     try {
-      displayName = parseDisplayName(body);
+      name = parseName(body);
     } catch {
       return c.json({ error: "Invalid request" }, 400);
     }
@@ -891,7 +891,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
 
     const idOrResponse = await insertTlsRow(c, db, {
       organizationId,
-      displayName,
+      name,
       source,
       material,
       options,

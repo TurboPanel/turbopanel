@@ -2,7 +2,7 @@
  * Host-free coverage gaps for license create body parsing.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { DISPLAY_NAME_MAX_LENGTH } from '../../lib/display-name-format.ts'
 import {
   installBaseUrlValidationError,
@@ -27,13 +27,12 @@ test('parseLicenseCreateFields accepts partial string fields and ignores extras'
     { name: 'Edge node' },
   )
   assertEquals(
-    parseLicenseCreateFields(JSON.stringify({ displayName: 'Rack 2' })),
+    parseLicenseCreateFields(JSON.stringify({ name: 'Rack 2' })),
     { name: 'Rack 2' },
   )
   assertEquals(
     parseLicenseCreateFields(JSON.stringify({
-      displayName: 'Preferred',
-      name: 'Legacy',
+      name: 'Preferred',
       installBaseUrl: 'https://panel.example.com',
       extra: 'ignored',
     })),
@@ -53,11 +52,11 @@ test('parseLicenseCreateFields accepts partial string fields and ignores extras'
 
 test('parseLicenseCreateFields normalizes Unicode, smart quotes, and trimming', () => {
   assertEquals(
-    parseLicenseCreateFields(JSON.stringify({ displayName: 'Café 东京' })),
+    parseLicenseCreateFields(JSON.stringify({ name: 'Café 东京' })),
     { name: 'Café 东京' },
   )
   assertEquals(
-    parseLicenseCreateFields(JSON.stringify({ displayName: '  O\u2019Reilly  ' })),
+    parseLicenseCreateFields(JSON.stringify({ name: '  O\u2019Reilly  ' })),
     { name: "O'Reilly" },
   )
   assertEquals(
@@ -72,22 +71,31 @@ test('parseLicenseCreateFields omits absent and whitespace-only optional names',
     {},
   )
   assertEquals(
-    parseLicenseCreateFields(JSON.stringify({ displayName: '   ' })),
+    parseLicenseCreateFields(JSON.stringify({ name: '   ' })),
     {},
   )
   assertEquals(
     parseLicenseCreateFields(JSON.stringify({
-      displayName: '  ',
       name: 'Legacy',
       installBaseUrl: 'https://panel.example.com',
     })),
-    { installBaseUrl: 'https://panel.example.com' },
+    {
+      name: 'Legacy',
+      installBaseUrl: 'https://panel.example.com',
+    },
+  )
+  assertEquals(
+    parseLicenseCreateFields(JSON.stringify({
+      name: 'Preferred',
+      displayName: 'Ignored',
+    })),
+    { name: 'Preferred' },
   )
 })
 
 test('parseLicenseCreateFields rejects control characters and over-length names', () => {
   assertEquals(
-    parseLicenseCreateFields(JSON.stringify({ displayName: 'bad\nname' })),
+    parseLicenseCreateFields(JSON.stringify({ name: 'bad\nname' })),
     'invalid',
   )
   assertEquals(
@@ -98,13 +106,13 @@ test('parseLicenseCreateFields rejects control characters and over-length names'
   )
   assertEquals(
     parseLicenseCreateFields(JSON.stringify({
-      displayName: '😀'.repeat(DISPLAY_NAME_MAX_LENGTH),
+      name: '😀'.repeat(DISPLAY_NAME_MAX_LENGTH),
     })),
     { name: '😀'.repeat(DISPLAY_NAME_MAX_LENGTH) },
   )
   assertEquals(
     parseLicenseCreateFields(JSON.stringify({
-      displayName: '😀'.repeat(DISPLAY_NAME_MAX_LENGTH + 1),
+      name: '😀'.repeat(DISPLAY_NAME_MAX_LENGTH + 1),
     })),
     'invalid',
   )
@@ -116,7 +124,7 @@ test('parseLicenseCreateFields rejects numeric field types', () => {
     'invalid',
   )
   assertEquals(
-    parseLicenseCreateFields(JSON.stringify({ displayName: 2 })),
+    parseLicenseCreateFields(JSON.stringify({ name: 2 })),
     'invalid',
   )
 })
@@ -155,7 +163,7 @@ test('serializeLicenseListEntry shapes bound and unbound rows', () => {
     }),
     {
       id: 'l1',
-      displayName: 'Edge',
+      name: 'Edge',
       createdAt: '2026-01-01T00:00:00.000Z',
       revocable: true,
       boundServer: null,
@@ -170,7 +178,7 @@ test('serializeLicenseListEntry shapes bound and unbound rows', () => {
       bound: { id: 's1', name: 'node' },
       status: { serverId: 's1', connected: true },
     }).boundServer,
-    { id: 's1', displayName: 'node', connected: true },
+    { id: 's1', name: 'node', connected: true },
   )
 })
 

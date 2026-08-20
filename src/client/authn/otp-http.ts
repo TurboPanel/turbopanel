@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm'
 import { getCookie } from 'hono/cookie'
-import type { Hono, Context } from 'hono'
+import type { Context, Env, Hono } from 'hono'
 import {
   buildSignedCookie,
   resolveRequestTls,
@@ -89,7 +89,10 @@ async function readActiveSession(
 
   if (!cookieValue) return null
 
-  const result = await verifySignedCookie(cookieValue, opts.secrets)
+  const secrets = opts.secrets
+  if (!secrets) return null
+
+  const result = await verifySignedCookie(cookieValue, secrets)
   if (!result) return null
 
   return getSession(db, result.token)
@@ -205,7 +208,7 @@ async function resolveOtpSignInUserId(
   return { userId: created.id }
 }
 
-export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
+export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteOpts) {
   auth.post('/send-otp', async (c) => {
     const db = getDb(c)
     if (db === undefined) {
@@ -411,11 +414,16 @@ export function registerOtpRoutes(auth: Hono, opts: AuthRouteOpts) {
     }
     const userId = resolved.userId
 
+    const secrets = opts.secrets
+    if (!secrets) {
+      return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
+
     const { token } = await createSession(db, userId, {
       ipAddress: resolveClientIp(c, opts.runtime) ?? undefined,
       userAgent: c.req.header('User-Agent') ?? undefined,
     })
-    const cookieValue = await buildSignedCookie(token, opts.secrets)
+    const cookieValue = await buildSignedCookie(token, secrets)
     const tls = requestTls(c, opts.runtime)
     const setCookieHeader = buildCookieHeader(
       cookieValue,

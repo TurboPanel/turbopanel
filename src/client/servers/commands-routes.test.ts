@@ -6,7 +6,7 @@
  * satisfies either path). The discriminating assertion is grant-present vs
  * grant-absent, not own vs manage.
  */
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
@@ -19,7 +19,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   command,
   grant,
@@ -37,7 +37,7 @@ import {
   transitionCommand,
 } from '../../lib/db/command-records.ts'
 
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -65,66 +65,72 @@ function createRecordingCommandQueue(): CommandQueue & { envelopes: CommandEnvel
   const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
-    enqueue: async (envelope) => {
+    enqueue: (envelope) => {
       envelopes.push(envelope)
+      return Promise.resolve()
     },
   }
 }
 
 function createMockCell(serverId: string): DaemonCell {
-  const noopAsync = async () => {}
+  const noopAsync = () => Promise.resolve()
   return {
-    attachDaemonSocket: async () => ({
-      connectionId: 'conn',
-      lease: {
-        holder: 'conn',
-        token: 'conn',
-        expiresAt: new Date(Date.now() + 45_000).toISOString(),
-      },
-    }),
+    attachDaemonSocket: () =>
+      Promise.resolve({
+        connectionId: 'conn',
+        lease: {
+          holder: 'conn',
+          token: 'conn',
+          expiresAt: new Date(Date.now() + 45_000).toISOString(),
+        },
+      }),
     detachDaemonSocket: noopAsync,
     recordInbound: noopAsync,
-    getSnapshot: async () => ({
-      serverId,
-      version: 0,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-    }),
-    putSnapshot: async (patch) => ({
-      serverId,
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-      ...patch,
-    }),
-    enqueue: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'queued' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId,
+        version: 0,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+      }),
+    putSnapshot: (patch) =>
+      Promise.resolve({
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+        ...patch,
+      }),
+    enqueue: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'queued' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
     markSent: noopAsync,
-    handleInbound: async () => null,
-    getRequest: async () => null,
-    listRequests: async () => [],
-    waitForRequest: async () => null,
-    createRequestAndWait: async (outbound) => ({
-      serverId,
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'done' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve([]),
+    waitForRequest: () => Promise.resolve(null),
+    createRequestAndWait: (outbound) =>
+      Promise.resolve({
+        serverId,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'done' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
     releaseDeliveryLease: noopAsync,
-    readOutboxBatch: async () => [],
+    readOutboxBatch: () => Promise.resolve([]),
     ackOutbox: noopAsync,
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: noopAsync,
   }
 }
@@ -142,10 +148,11 @@ function createTrackingRegistry(): DaemonCellRegistry & { purgedIds: string[] } 
       }
       return cell
     },
-    listOnlineServerIds: async () => [],
-    getSnapshots: async () => new Map(),
-    purge: async (serverId: string) => {
+    listOnlineServerIds: () => Promise.resolve([]),
+    getSnapshots: () => Promise.resolve(new Map()),
+    purge: (serverId: string) => {
       purgedIds.push(serverId)
+      return Promise.resolve()
     },
   }
 }
@@ -157,7 +164,7 @@ async function createCommandsRoutesTestApp(
     commandQueue?: CommandQueue
   },
 ) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {

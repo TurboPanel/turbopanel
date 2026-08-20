@@ -2,7 +2,7 @@
  * Host-free coverage for workspace route pure validation helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   parseWorkspaceCreateNames,
   parseWorkspacePatchNames,
@@ -19,7 +19,7 @@ const test = Deno.test.bind(Deno)
 test('parseWorkspaceCreateNames validates names', () => {
   const ok = parseWorkspaceCreateNames({ name: 'Team A', description: 'Primary' })
   if (!ok.ok) throw new TypeError('expected valid workspace names')
-  assertEquals(ok.displayName, 'Team A')
+  assertEquals(ok.name, 'Team A')
   assertEquals(ok.description, 'Primary')
   assertEquals(parseWorkspaceCreateNames({ name: 'bad/name' }).ok, true)
   assertEquals(parseWorkspaceCreateNames({ name: 'bad\nname' }).ok, false)

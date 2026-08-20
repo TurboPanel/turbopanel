@@ -1,7 +1,7 @@
 import {
   applyValidatedComposeOption,
   stripProjectComposePlacementOption,
-  type ComposeLintIssue,
+  type ComposeValidationIssue,
 } from '../../lib/compose/index.ts'
 import { isPlacementServerId } from '../../lib/compose/placement.ts'
 import {
@@ -10,7 +10,7 @@ import {
 } from '../../lib/project-options.ts'
 import {
   parseDescription,
-  parseDisplayName,
+  parseName,
   stripPromotedMetadataKeys,
 } from '../shared.ts'
 import {
@@ -30,7 +30,7 @@ export type ProjectRouteValidationError = {
 export type ProjectComposeValidationError = {
   ok: false
   error: 'compose_invalid'
-  issues: ComposeLintIssue[]
+  issues: ComposeValidationIssue[]
   status: 400
 }
 
@@ -114,12 +114,12 @@ export function parseJsonbField(
 export function parseCreateProjectNames(
   body: Record<string, unknown>,
 ):
-  | { ok: true; displayName: string | null; description: string | null }
+  | { ok: true; name: string | null; description: string | null }
   | ProjectRouteValidationError {
   try {
     return {
       ok: true,
-      displayName: parseDisplayName(body),
+      name: parseName(body),
       description: parseDescription(body),
     }
   } catch {

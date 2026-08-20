@@ -8,7 +8,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
 import { grant, invitation } from '../../lib/db/schema.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -19,7 +19,7 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerAccessRoutes } from './routes.ts'
 
@@ -37,7 +37,7 @@ const organizationId = '33333333-3333-4333-8333-333333333333'
 const resourceId = organizationId
 
 async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -65,7 +65,7 @@ type SessionAppOpts = {
 async function buildSessionApp(
   opts: SessionAppOpts = {},
 ): Promise<{ app: Hono<AppEnv>; cookie: string; email: string }> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
   const userId = crypto.randomUUID()

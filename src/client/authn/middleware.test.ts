@@ -23,10 +23,11 @@ import {
   type DerivedSecretsConfig,
 } from './secrets.ts'
 import { session, user } from '../../lib/db/schema.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
+  readJsonBody,
   seedMockSession,
 } from './authn-hostfree-doubles.ts'
 import type { SessionData } from './session-store.ts'
@@ -42,12 +43,9 @@ const test = Deno.test.bind(Deno)
 const dbUrl = getDatabaseUrl()
 const V2_SECRET = 'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7Rr8'
 
-async function sessionSigningSecrets(): Promise<DerivedSecretsConfig> {
-  const config = parseSecretsEnv(
-    undefined,
-    `2:${V2_SECRET},1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno',
-  )
+function sessionSigningSecrets(): Promise<DerivedSecretsConfig> {
+  const config = parseSecretsEnv(`2:${V2_SECRET},1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   return deriveSecretsConfig(config, 'session-signing')
 }
 
@@ -61,7 +59,7 @@ async function signedCookieForUser(
   const signingSecrets = signWithCurrent
     ? secrets
     : await deriveSecretsConfig(
-      parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+      parseTestSecretsConfig('deno'),
       'session-signing',
     )
   return await buildSignedCookie(token, signingSecrets)
@@ -105,7 +103,7 @@ test('createSessionMiddleware rejects missing cookies', async () => {
 
   const res = await app.request('http://localhost/protected')
   assertEquals(res.status, 401)
-  const body = await res.json()
+  const body = await readJsonBody<{ error: string }>(res)
   assertEquals(body.error, 'Unauthorized')
 })
 
@@ -120,7 +118,7 @@ test('resolveSession and resolveRootSession return null without a cookie', async
 
   const res = await app.request('http://localhost/probe')
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await readJsonBody<{ resolved: boolean; root: boolean }>(res)
   assertEquals(body.resolved, false)
   assertEquals(body.root, false)
 })
@@ -137,7 +135,7 @@ test('resolveSession rejects tampered cookie signatures', async () => {
     headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=not-a-valid-cookie` },
   })
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await readJsonBody<{ resolved: boolean }>(res)
   assertEquals(body.resolved, false)
 })
 
@@ -150,14 +148,18 @@ test('createSessionMiddleware accepts a valid signed session cookie', async () =
       return next()
     })
     app.use('*', createSessionMiddleware(secrets))
-    app.get('/protected', (c) => c.json({ ok: true, userId: c.get('session').userId }))
+    app.get('/protected', (c) => {
+      const session = c.get('session')
+      if (!session) throw new TypeError('expected session')
+      return c.json({ ok: true, userId: session.userId })
+    })
 
     const cookie = await signedCookieForUser(db, secrets, userId)
     const res = await app.request('http://localhost/protected', {
       headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${cookie}` },
     })
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readJsonBody<{ userId: string }>(res)
     assertEquals(body.userId, userId)
   })
 })
@@ -252,7 +254,7 @@ test('resolveSession rotates cookies signed with a fallback key', async () => {
       headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${cookie}` },
     })
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readJsonBody<{ ok: boolean; rotated: boolean }>(res)
     assertEquals(body.ok, true)
     assertEquals(body.rotated, true)
     assertEquals(res.headers.get('Set-Cookie')?.includes('Max-Age='), true)
@@ -295,7 +297,7 @@ test('resolveRootSession returns null for non-superadmin mock session', async ()
   const res = await app.request('http://localhost/root', {
     headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}` },
   })
-  const body = await res.json()
+  const body = await readJsonBody<{ root: string | null }>(res)
   assertEquals(body.root, null)
 })
 
@@ -381,13 +383,17 @@ test('createSessionMiddleware accepts mock superadmin session without postgres',
     return next()
   })
   app.use('*', createSessionMiddleware(secrets))
-  app.get('/protected', (c) => c.json({ userId: c.get('session').userId }))
+  app.get('/protected', (c) => {
+    const session = c.get('session')
+    if (!session) throw new TypeError('expected session')
+    return c.json({ userId: session.userId })
+  })
 
   const res = await app.request('http://localhost/protected', {
     headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}` },
   })
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await readJsonBody<{ userId: string }>(res)
   assertEquals(body.userId, userId)
 })
 
@@ -502,7 +508,7 @@ test('createRootOnlyMiddleware accepts mock superadmin and rejects users', async
 test('resolveSession rotates fallback-signed cookies with mock db', async () => {
   const secrets = await sessionSigningSecrets()
   const legacySecrets = await deriveSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'session-signing',
   )
   const token = crypto.randomUUID()
@@ -531,7 +537,7 @@ test('resolveSession rotates fallback-signed cookies with mock db', async () => 
     headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}` },
   })
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await readJsonBody<{ ok: boolean; rotated: boolean }>(res)
   assertEquals(body.ok, true)
   assertEquals(body.rotated, true)
   assertEquals(res.headers.get('Set-Cookie')?.includes('Max-Age='), true)

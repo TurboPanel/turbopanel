@@ -851,7 +851,7 @@ test("parseCommandPayload and parseCommandResult dispatch by type", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeYaml: "services: {}\n",
+      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
       hostings: [],
     }),
     {
@@ -859,7 +859,7 @@ test("parseCommandPayload and parseCommandResult dispatch by type", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeYaml: "services: {}\n",
+      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
       hostings: [],
     },
   );
@@ -1895,7 +1895,7 @@ test("parseCommandPayload accepts traditionalWebSites and dockerExternalNetworks
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeYaml: "services:\n  api:\n    image: node:22\n",
+      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
       hostings: [],
       dockerExternalNetworks: ["zeta-net", "alpha-net", "alpha-net"],
       traditionalWebSites: [
@@ -1920,7 +1920,7 @@ test("parseCommandPayload accepts traditionalWebSites and dockerExternalNetworks
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeYaml: "services:\n  api:\n    image: node:22\n",
+      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
       hostings: [],
       dockerExternalNetworks: ["alpha-net", "zeta-net"],
       traditionalWebSites: [
@@ -1950,7 +1950,7 @@ test("parseCommandPayload accepts noCache on environment.deploy", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeYaml: "services:\n  api:\n    image: node:22\n",
+      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
       hostings: [],
       noCache: true,
     }),
@@ -1959,7 +1959,7 @@ test("parseCommandPayload accepts noCache on environment.deploy", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeYaml: "services:\n  api:\n    image: node:22\n",
+      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
       hostings: [],
       noCache: true,
     },
@@ -1974,7 +1974,7 @@ test("parseCommandPayload rejects non-boolean noCache on environment.deploy", ()
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeYaml: "services: {}\n",
+        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
         hostings: [],
         noCache: "yes",
       }),
@@ -1990,7 +1990,7 @@ test("parseCommandPayload accepts principalMaterial with and without uid/gid", (
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeYaml: "services: {}\n",
+      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
       hostings: [],
       principalMaterial: [
         {
@@ -2013,7 +2013,7 @@ test("parseCommandPayload accepts principalMaterial with and without uid/gid", (
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeYaml: "services: {}\n",
+      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
       hostings: [],
       principalMaterial: [
         {
@@ -2042,7 +2042,7 @@ test("parseCommandPayload rejects negative or non-integer principal ids", () => 
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeYaml: "services: {}\n",
+        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
         hostings: [],
         principalMaterial: [
           {
@@ -2063,7 +2063,7 @@ test("parseCommandPayload rejects negative or non-integer principal ids", () => 
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeYaml: "services: {}\n",
+        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
         hostings: [],
         traditionalWebSites: [
           {
@@ -2091,7 +2091,7 @@ test("parseCommandPayload rejects overlong, unsafe, or empty principal material 
     projectId: "proj-1",
     organizationId: "org-1",
     projectName: "tp-demo",
-    composeYaml: "services: {}\n",
+    composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
     hostings: [] as unknown[],
   };
   const overlongUsername = `u${"x".repeat(32)}`; // 33 chars
@@ -2311,7 +2311,7 @@ test("parseCommandPayload rejects invalid dockerExternalNetworks names", () => {
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeYaml: "services: {}\n",
+        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
         hostings: [],
         dockerExternalNetworks: ["-bad"],
       }),
@@ -2326,7 +2326,7 @@ test("parseCommandPayload accepts and dedupes managedNetworkServices", () => {
     projectId: "proj-1",
     organizationId: "org-1",
     projectName: "tp-demo",
-    composeYaml: "services:\n  app:\n    image: node:22\n",
+    composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  app:\\n    image: node:22\\n" }],
     hostings: [],
     managedNetworkServices: ["app", "app"],
   }) as { managedNetworkServices?: string[] };
@@ -2341,7 +2341,7 @@ test("parseCommandPayload rejects invalid managedNetworkServices entries", () =>
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeYaml: "services: {}\n",
+        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
         hostings: [],
         managedNetworkServices: [123],
       }),
@@ -2829,7 +2829,7 @@ const BASE_ENVIRONMENT_DEPLOY = {
   projectId: "proj-1",
   organizationId: "org-1",
   projectName: "tp-demo",
-  composeYaml: "services: {}\n",
+  composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
   hostings: [] as unknown[],
 };
 
@@ -3001,46 +3001,31 @@ test("parseEnvironmentDeployPayload parses rich hostings and optional material",
   );
 });
 
-test("parseEnvironmentDeployPayload round-trips composeFiles in caller order", () => {
-  const composeFiles = [
-    {
-      filename: "docker-compose.yml",
-      role: "project" as const,
-      content: "services:\n  web:\n    image: nginx\n",
-    },
-    {
-      filename: "docker-compose.prod.yml",
-      role: "environment" as const,
-      source: "inline" as const,
-      content: "services:\n  web:\n    restart: always\n",
-    },
-    {
-      filename: "docker-compose.turbopanel.yml",
-      role: "platform" as const,
-      content: "services:\n  web:\n    container_name: abc\n",
-    },
-  ];
+test("parseEnvironmentDeployPayload round-trips runtime composeFiles", () => {
+  const composeFiles = [{
+    filename: "compose.yaml",
+    role: "runtime" as const,
+    content: "services:\n  web:\n    image: nginx\n",
+  }];
   const result = parseEnvironmentDeployPayload({
     ...BASE_ENVIRONMENT_DEPLOY,
     composeFiles,
   });
   assertEquals(result.composeFiles, composeFiles);
-  // Optional source omitted stays omitted
-  assertEquals(result.composeFiles?.[0]?.source, undefined);
-  // Order preserved (must not sort by filename)
-  assertEquals(
-    result.composeFiles?.map((f) => f.filename),
-    [
-      "docker-compose.yml",
-      "docker-compose.prod.yml",
-      "docker-compose.turbopanel.yml",
-    ],
-  );
 });
 
-test("parseEnvironmentDeployPayload accepts legacy payloads without composeFiles", () => {
-  const result = parseEnvironmentDeployPayload(BASE_ENVIRONMENT_DEPLOY);
-  assertEquals(result.composeFiles, undefined);
+test("parseEnvironmentDeployPayload rejects missing composeFiles", () => {
+  assertThrows(
+    () => parseEnvironmentDeployPayload({
+      environmentId: "env-1",
+      projectId: "proj-1",
+      organizationId: "org-1",
+      projectName: "tp-demo",
+      hostings: [],
+    }),
+    Error,
+    "Invalid environment.deploy payload",
+  );
 });
 
 test("parseEnvironmentDeployPayload parses repository source with valid path", () => {
@@ -3048,16 +3033,16 @@ test("parseEnvironmentDeployPayload parses repository source with valid path", (
     ...BASE_ENVIRONMENT_DEPLOY,
     composeFiles: [
       {
-        filename: "docker-compose.yml",
-        role: "project" as const,
+        filename: "compose.yaml",
+        role: "runtime" as const,
         source: "repository" as const,
-        path: "deploy/docker-compose.yml",
+        path: "deploy/compose.yaml",
         content: "services:\n  web:\n    image: nginx\n",
       },
     ],
   });
-  assertEquals(result.composeFiles?.[0]?.source, "repository");
-  assertEquals(result.composeFiles?.[0]?.path, "deploy/docker-compose.yml");
+  assertEquals(result.composeFiles[0]?.source, "repository");
+  assertEquals(result.composeFiles[0]?.path, "deploy/compose.yaml");
 });
 
 test("parseDeployComposeFiles rejects a path with traversal or a leading slash", () => {

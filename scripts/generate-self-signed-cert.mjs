@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -64,9 +64,6 @@ const caKeyPath = envTrim('TURBOPANEL_TLS_CA_KEY') || path.join(caDir, 'ca.key')
 const caBundlePath = envTrim('TURBOPANEL_TLS_CA_BUNDLE') || path.join(caDir, 'ca-bundle.pem')
 const caRetiredPath = path.join(path.dirname(caCrtPath), 'ca-retired.pem')
 const caSrlPath = path.join(path.dirname(caCrtPath), 'ca.srl')
-const legacyCaCrtPath = path.join(certsDir, 'ca.crt')
-const legacyCaKeyPath = path.join(certsDir, 'ca.key')
-const legacyCaSrlPath = path.join(certsDir, 'ca.srl')
 const crtPath = path.join(certsDir, 'self-signed.crt')
 const keyPath = path.join(certsDir, 'self-signed.key')
 const csrPath = path.join(certsDir, 'server.csr')
@@ -260,7 +257,7 @@ function inspectReadable(filePath) {
     accessSync(filePath, constants.R_OK)
     return 'ok'
   } catch (err) {
-    if (err && err.code === 'ENOENT') return 'absent'
+    if (err?.code === 'ENOENT') return 'absent'
     return 'unreadable'
   }
 }
@@ -313,29 +310,6 @@ function writeCaBundle() {
   writeFileSync(caBundlePath, `${parts.join('\n')}\n`)
 }
 
-function migrateLegacyCaIfNeeded() {
-  const durableCrt = inspectReadable(caCrtPath)
-  const durableKey = inspectReadable(caKeyPath)
-  if (durableCrt === 'ok' || durableKey === 'ok') return
-  if (durableCrt === 'unreadable' || durableKey === 'unreadable') {
-    console.error(
-      'generate-self-signed-cert: durable platform CA is present but unreadable; refusing to mint a replacement root',
-    )
-    process.exit(1)
-  }
-  if (!existsSync(legacyCaCrtPath) || !existsSync(legacyCaKeyPath)) return
-
-  mkdirSync(path.dirname(caCrtPath), { recursive: true })
-  renameSync(legacyCaCrtPath, caCrtPath)
-  renameSync(legacyCaKeyPath, caKeyPath)
-  if (existsSync(legacyCaSrlPath)) {
-    renameSync(legacyCaSrlPath, caSrlPath)
-  }
-  console.log(
-    `generate-self-signed-cert: migrated platform CA from ${certsDir} to ${path.dirname(caCrtPath)}`,
-  )
-}
-
 function mintPlatformCa() {
   mkdirSync(path.dirname(caCrtPath), { recursive: true })
   console.log('generate-self-signed-cert: creating platform CA')
@@ -377,8 +351,6 @@ function rotatePlatformCa() {
 }
 
 function ensureCa() {
-  migrateLegacyCaIfNeeded()
-
   const crtState = inspectReadable(caCrtPath)
   const keyState = inspectReadable(caKeyPath)
   if (crtState === 'unreadable' || keyState === 'unreadable') {
@@ -474,7 +446,6 @@ function generateServerCert(expectedSans) {
 
 const expectedSans = subjectAltNames()
 const existingSans = readCertSubjectAltNames()
-migrateLegacyCaIfNeeded()
 const caReady = existsSync(caCrtPath) && existsSync(caKeyPath)
 const rotateRequested = isCaRotateRequested()
 

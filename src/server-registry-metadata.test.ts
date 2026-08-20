@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { mergeServerMetadataIdentity } from './server-registry.ts'
 import type { ServerReportedIp } from './server-addresses.ts'
 
@@ -28,32 +28,32 @@ test('mergeServerMetadataIdentity ignores os (dedicated columns)', () => {
   )
 })
 
-test('mergeServerMetadataIdentity nests ips under resources without clobbering geo', () => {
+test('mergeServerMetadataIdentity merges ips under resources without clobbering geo', () => {
   const geo = { country: 'US', city: 'Chicago' }
-  const cpu = { coreCount: 4, threadCount: 8 }
+  const cpus = [{ cores: { total: 4 }, threads: { total: 8 } }]
   const ips: ServerReportedIp[] = [
     { address: '10.0.0.1', version: 4, scope: 'private', interface: 'eth0' },
     { address: '203.0.113.10', version: 4, scope: 'public', interface: 'eth0' },
   ]
   const merged = mergeServerMetadataIdentity(
-    { geo, resources: { cpu } },
-    { ips },
+    { geo, resources: { cpus } },
+    { resources: { ips } },
   )
   assertEquals(merged?.geo, geo)
-  assertEquals(merged?.resources?.cpu, cpu)
+  assertEquals(merged?.resources?.cpus, cpus)
   assertEquals(merged?.resources?.ips, ips)
 
   const heartbeatMerged = mergeServerMetadataIdentity(
-    { resources: { cpu } },
+    { resources: { cpus } },
     { resources: { ips } },
   )
-  assertEquals(heartbeatMerged?.resources?.cpu, cpu)
+  assertEquals(heartbeatMerged?.resources?.cpus, cpus)
   assertEquals(heartbeatMerged?.resources?.ips, ips)
 
   assertEquals(
     mergeServerMetadataIdentity(
-      { resources: { cpu, ips } },
-      { ips },
+      { resources: { cpus, ips } },
+      { resources: { ips } },
     ),
     null,
   )
@@ -66,11 +66,11 @@ test('mergeServerMetadataIdentity replaces stale ips with empty daemon report', 
   ]
   const emptyReport: ServerReportedIp[] = []
   const merged = mergeServerMetadataIdentity(
-    { resources: { ips: prior, cpu: { coreCount: 2 } } },
-    { ips: emptyReport },
+    { resources: { ips: prior, cpus: [{ cores: { total: 2 } }] } },
+    { resources: { ips: emptyReport } },
   )
   assertEquals(merged?.resources?.ips, emptyReport)
-  assertEquals(merged?.resources?.cpu, { coreCount: 2 })
+  assertEquals(merged?.resources?.cpus, [{ cores: { total: 2 } }])
 })
 
 test('mergeServerMetadataIdentity ignores hostname/machineKey on the identity payload', () => {
@@ -81,9 +81,9 @@ test('mergeServerMetadataIdentity ignores hostname/machineKey on the identity pa
   assertEquals(merged, null)
 })
 
-test('mergeServerMetadataIdentity replaces leftover cpu with cpus', () => {
+test('mergeServerMetadataIdentity replaces cpus on hello refresh', () => {
   const merged = mergeServerMetadataIdentity(
-    { resources: { cpu: { coreCount: 2 } } },
+    { resources: { cpus: [{ cores: { total: 2 } }] } },
     {
       resources: {
         cpus: [{ cores: { total: 8 }, threads: { total: 16 } }],
@@ -93,7 +93,6 @@ test('mergeServerMetadataIdentity replaces leftover cpu with cpus', () => {
   assertEquals(merged?.resources?.cpus, [
     { cores: { total: 8 }, threads: { total: 16 } },
   ])
-  assertEquals(merged?.resources?.cpu, undefined)
 })
 
 test('mergeServerMetadataIdentity treats null/undefined current as empty base', () => {
@@ -120,7 +119,7 @@ test('mergeServerMetadataIdentity ignores empty patches', () => {
 test('mergeServerMetadataIdentity ignores timeSync (dedicated columns)', () => {
   assertEquals(
     mergeServerMetadataIdentity(
-      { resources: { cpu: { coreCount: 1 } } },
+      { resources: { cpus: [{ cores: { total: 1 } }] } },
       {
         timeSync: {
           timezone: 'America/Chicago',

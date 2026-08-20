@@ -89,34 +89,32 @@ Superadmin-only routes (`createRootOnlyMiddleware`, `resolveRootSession`) author
 
 ### Session secret configuration
 
-Both runtimes read the same root secret env vars (Better Auth-style keyring semantics):
+Both runtimes read the same root secret env var (Better Auth-style keyring semantics):
 
 - **`TURBOPANEL_SECRETS`** — versioned list in the **exact order given**. The **first entry is current/signing**; the rest are decrypt/verify-only fallbacks. Versions are labels for envelopes (`tpsecret.v<n>…`); **entry order** decides current vs fallback — not “highest version wins.” Operators should list highest version first (e.g. `2:secret,1:secret`); if entries are not already in descending-version order, boot logs a **warning only** and still treats the written first entry as current.
-- **`TURBOPANEL_SECRET`** — single root secret. Alone, it becomes the sole keyring entry (`v1`, current). When set **alongside** `TURBOPANEL_SECRETS`, it is folded in as an additional **decrypt-only** fallback (`version: 1`, always appended last — never current). If the keyring already has `1:` with the **same** value, the fold is a no-op; if `1:` exists with a **different** value, boot fails (ambiguity — both env names are named in the error).
 
 **First entry signs / all keys verify.** Every key yields a stable `kid`; JWT headers include the active `kid`.
 
 `deriveSecretsConfig()` HKDF-derives HMAC keys for `session-signing` and `daemon-challenge-signing`. `deriveEncryptionSecretsConfig()` derives AES-256-GCM keys for `data-encryption`. The **daemon-facing JWT** uses `deriveDaemonJwtKeyring()` (`src/daemon/authn/daemon-jwt-keyring.ts`: Ed25519, HKDF salt `turbopanel`, info `daemon-jwt-eddsa`) — the legacy HMAC `daemon-jwt-signing` purpose is no longer used for daemon JWTs.
 
-**JWKS** (`GET /api/daemon/v1/jwks.json`) publishes all currently-valid **public** Ed25519 verification keys only — never `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` or any HMAC key material. Old keys stay in JWKS during rotation and are removed once old tokens expire (≤15 min).
+**JWKS** (`GET /api/daemon/v1/jwks.json`) publishes all currently-valid **public** Ed25519 verification keys only — never `TURBOPANEL_SECRETS` or any HMAC key material. Old keys stay in JWKS during rotation and are removed once old tokens expire (≤15 min).
 
 **Rotation:** add a new active key at the highest version, deploy, old tokens verify during their ≤15-min window, then drop the old key from the keyring/JWKS.
 
 | Variable | Behaviour |
 | --- | --- |
-| `TURBOPANEL_SECRET` | Single 48-char root key (`src/generate-secret.ts`); alone → `v1` current; with `TURBOPANEL_SECRETS` → decrypt-only `v1` fallback (noop if identical; boot error if conflicting) |
 | `TURBOPANEL_SECRETS` | Versioned list `2:secret,1:secret` — order as written; first entry is current/signing |
 
 | Runtime | Source |
 | --- | --- |
-| Deno | `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` env vars (`instance-launch` injects them on managed hosts) |
-| Workers | Same names as Wrangler bindings / `.dev.vars` (Tilt `sync-env.sh` writes them from `dev/.env`) |
+| Deno | `TURBOPANEL_SECRETS` env var (`instance-launch` injects it on managed hosts) |
+| Workers | Same name as a Wrangler binding / `.dev.vars` (Tilt `sync-env.sh` writes it from `dev/.env`) |
 
 **Root secret format:** 48 characters from `[A-Za-z0-9_]`, always at least one `_` between positions 2–47 (never in position 1 or 48). Implementation: `scripts/generate-secret.mjs` (re-exported from `src/generate-secret.ts`). Generate with `pnpm generate:secret` in `instance/`. HKDF uses the UTF-8 bytes of the string as key material (`deriveKey` in `src/client/authn/secrets.ts`). Same helper (`generatePassword`) is the canonical generator for random passwords.
 
-At least one of `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when both are missing. Co-located dev Ansible (`instance-launch`) persists `/etc/turbopanel/instance/.instance_secret` (legacy singular, generate-once) and `/etc/turbopanel/instance/.instance_secrets` (versioned keyring, `<version>:<value>` comma-separated, highest first) — both `root:<turbopanel_group>` mode `0640` so the dev console can HMAC Local-Console developer API calls — and emits both into `runtime.dev-vars` for **both** Deno and Workers runtimes so session cookies and daemon JWTs survive runtime toggles; the Deno unit also loads `runtime.dev-vars` via `EnvironmentFile`. Rotation is the opt-in extra-var `turbopanel_instance_secret_rotate` (ordinary converges never rotate). Without those files, Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) falls back to an ephemeral random key (sessions do not survive restarts or switches).
+`TURBOPANEL_SECRETS` must be set in production. Workers always fail fast when it is missing. Co-located dev Ansible (`instance-launch`) persists `/etc/turbopanel/instance/.instance_secrets` (versioned keyring, `<version>:<value>` comma-separated, highest first) — `root:<turbopanel_group>` mode `0640` so the dev console can HMAC Local-Console developer API calls — and emits it into `runtime.dev-vars` as `TURBOPANEL_SECRETS` for **both** Deno and Workers runtimes so session cookies and daemon JWTs survive runtime toggles; the Deno unit also loads `runtime.dev-vars` via `EnvironmentFile`. Rotation is the opt-in extra-var `turbopanel_instance_secret_rotate` (ordinary converges never rotate). Without that file, Deno co-located dev (`TURBOPANEL_UI_MODE` ≠ `static`) falls back to an ephemeral random key (sessions do not survive restarts or switches).
 
-Add a `TURBOPANEL_SECRET` to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
+Add a `TURBOPANEL_SECRETS` keyring line to `dev/.env` before running `pnpm dev` (Tilt syncs it to `instance/.dev.vars` — see `dev/.env.example`).
 
 ### Local-Console HMAC (co-located dev terminal)
 
@@ -145,7 +143,7 @@ Local-Console auth is Deno + developer-surface only; it never applies on Workers
 
 ### Data encryption
 
-`tpsecret` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords, email secrets). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v<version>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded version enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Every TurboPanel-authored serialized secret shares grammar `<scheme>.v<version>.<fields…>`; `src/client/authn/envelope.ts` is the single owner of format/parse (`formatEnvelope` / `parseEnvelope` / `hasEnvelopeScheme`) — no module hand-rolls `split(".")`. Bump the version token when the payload layout changes; the scheme identifies the purpose. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` root of trust yields a rollable data-encryption keyring. A credential sealed as `tpsecret` is server-agnostic at rest and can be delivered to any authorized daemon.
+`tpsecret` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords, email secrets). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v<version>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded version enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Every TurboPanel-authored serialized secret shares grammar `<scheme>.v<version>.<fields…>`; `src/client/authn/envelope.ts` is the single owner of format/parse (`formatEnvelope` / `parseEnvelope` / `hasEnvelopeScheme`) — no module hand-rolls `split(".")`. Bump the version token when the payload layout changes; the scheme identifies the purpose. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRETS` root of trust yields a rollable data-encryption keyring. A credential sealed as `tpsecret` is server-agnostic at rest and can be delivered to any authorized daemon.
 
 **OTP verifiers** use `tpotp.v<n>.<hmacHex>` (HMAC material unchanged): direct-version lookup plus a rotation-safety sweep across remaining keyring entries.
 
@@ -205,8 +203,8 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `POST` | `/api/client/v1/variables` | Create variable under an environment; `isSecret=true` seals via `encryptSecret` (client surface encrypts only — delivery re-seals to `tpdaemon` via `resealSecretForDaemon`; daemon decrypts via `POST /api/daemon/v1/secrets/decrypt`) |
 | `PATCH` | `/api/client/v1/variables/:id` | Update variable; re-seals on secret value update (lazy re-seal-on-write under the current key version) |
 | `DELETE` | `/api/client/v1/variables/:id` | Delete variable |
-| `GET` | `/api/client/v1/licenses` | List active registration keys (`organization:own`). UI **Pending keys** (`/<orgId>/servers/keys`) shows unbound rows only (no token). List JSON uses OpenAPI `displayName` / `boundServer.displayName`. |
-| `POST` | `/api/client/v1/licenses` | Create a one-shot registration key (`organization:own`; used by Add Server). Body accepts `displayName` (preferred) or legacy `name`. Optional name is omitted when absent or whitespace-only; non-empty values go through `normalizeDisplayName` / `isValidDisplayName` (**400** when over-length or control characters). Rejects reserved display name `'this server'`; **409** `server_capacity_exceeded` when `organization.options.maxServers` is exhausted (enrolled servers + unconsumed keys). Response includes `installCommand` from `buildLicenseInstallCommand` — production shape is `curl -fsSL turbopanel.sh \| TURBOPANEL_LICENSE=… sh` (optional `TURBOPANEL_HOST`; `TURBOPANEL_INSECURE_TLS=1` only when the origin needs the platform CA — see `src/lib/install-tls.ts`). Dev overlay also sets `TURBOPANEL_DL_BASE=<origin>/downloads/daemon`. |
+| `GET` | `/api/client/v1/licenses` | List active registration keys (`organization:own`). UI **Pending keys** (`/<orgId>/servers/keys`) shows unbound rows only (no token). List JSON uses OpenAPI `name` / `boundServer.name`. |
+| `POST` | `/api/client/v1/licenses` | Create a one-shot registration key (`organization:own`; used by Add Server). Body accepts `name`. Optional name is omitted when absent or whitespace-only; non-empty values go through `normalizeDisplayName` / `isValidDisplayName` (**400** when over-length or control characters). Rejects reserved name `'this server'`; **409** `server_capacity_exceeded` when `organization.options.maxServers` is exhausted (enrolled servers + unconsumed keys). Response includes `installCommand` from `buildLicenseInstallCommand` — production shape is `curl -fsSL turbopanel.sh \| TURBOPANEL_LICENSE=… sh` (optional `TURBOPANEL_HOST`; `TURBOPANEL_INSECURE_TLS=1` only when the origin needs the platform CA — see `src/lib/install-tls.ts`). Dev overlay also sets `TURBOPANEL_DL_BASE=<origin>/downloads/daemon`. |
 | `DELETE` | `/api/client/v1/licenses/{id}` | Invalidate a registration key (`organization:own`; soft `revoked_at`). UI only offers this for **unbound** keys; bound revoke still disconnects enrolled servers. Co-located control-plane key is not revocable. |
 | `GET` | `/api/client/v1/tls` | List org TLS certs (metadata + public PEM; private key never returned) |
 | `POST` | `/api/client/v1/tls` | Create cert (`upload` / `self_signed` / `lets_encrypt`); seals private key with `encryptSecret` (`tpsecret`) |

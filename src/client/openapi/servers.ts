@@ -142,7 +142,7 @@ export const serverSchemas = {
         type: 'array',
         items: { $ref: '#/components/schemas/ServerCpuSocket' },
         description:
-          'Physical CPU sockets in physical-id order. Leftover resources.cpu is lifted into a single entry on read.',
+          'Physical CPU sockets in physical-id order.',
       },
       gpus: {
         type: 'array',
@@ -229,7 +229,7 @@ export const serverSchemas = {
     type: 'object',
     properties: {
       id: { type: 'string' },
-      displayName: { type: ['string', 'null'] },
+      name: { type: ['string', 'null'] },
       organizationId: { type: ['string', 'null'] },
       licenseId: { type: ['string', 'null'] },
       options: { type: ['object', 'null'], additionalProperties: true },
@@ -378,7 +378,7 @@ export const serverSchemas = {
           required: ['id'],
           properties: {
             id: { type: 'string', format: 'uuid' },
-            displayName: { type: ['string', 'null'] },
+            name: { type: ['string', 'null'] },
           },
         },
         description:
@@ -428,7 +428,7 @@ export const serverSchemas = {
   PatchServerRequest: {
     type: 'object',
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       options: {
         type: 'object',
         description:

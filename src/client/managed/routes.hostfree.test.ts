@@ -12,12 +12,12 @@
  * CI coverage uses `scripts/test-coverage.sh` (`deno test -A …`).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import { managedSessionPaths } from './routes-helpers.ts'
 import { registerManagedRoutes } from './routes.ts'
 
@@ -30,7 +30,7 @@ import { registerManagedRoutes } from './routes.ts'
 const test = Deno.test.bind(Deno)
 
 async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {

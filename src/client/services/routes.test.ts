@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -9,7 +9,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   environment,
   grant,
@@ -21,7 +21,7 @@ import {
 } from '../../lib/db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerServiceRoutes } from './routes.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -34,7 +34,7 @@ const dbUrl = getDatabaseUrl()
 const test = Deno.test.bind(Deno)
 
 async function createServiceRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -164,7 +164,7 @@ test('POST /services rejects a composeServiceName in the body with 400', async (
       },
       body: JSON.stringify({
         environmentId,
-        displayName: 'web',
+        name: 'web',
         composeServiceName: 'web',
       }),
     })
@@ -192,7 +192,7 @@ test('POST /services is not supported even without composeServiceName in the bod
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ environmentId, displayName: 'web' }),
+      body: JSON.stringify({ environmentId, name: 'web' }),
     })
     assertEquals(createRes.status, 400)
     const body = await createRes.json() as { error: string }

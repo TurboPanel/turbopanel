@@ -2,7 +2,7 @@ import type { Context } from 'hono'
 import { isValidCidr } from '../../lib/ip-address.ts'
 import { normalizeDockerNetworkOptions } from '../../lib/docker-network-name.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { buildPatchUpdateFields, parseDisplayName, parseJsonbObject } from '../shared.ts'
+import { buildPatchUpdateFields, parseName, parseJsonbObject } from '../shared.ts'
 
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -57,13 +57,13 @@ export function parseNetworkKind(
   return kindRaw
 }
 
-export function parseOptionalDisplayNameField(
+export function parseOptionalNameField(
   c: Context,
   body: Record<string, unknown>,
 ): string | null | Response {
-  if (body.displayName === undefined) return null
+  if (body.name === undefined) return null
   try {
-    return parseDisplayName(body)
+    return parseName(body)
   } catch {
     return c.json({ error: 'Invalid request' }, 400)
   }
@@ -81,7 +81,6 @@ export function parseOptionalCidrField(
 }
 
 export type NetworkPatchFields = {
-  displayName?: string | null
   name?: string | null
   cidr?: string | null
   metadata?: Record<string, unknown> | null
@@ -133,9 +132,9 @@ export function parseNetworkPatchFields(
     return c.json({ error: 'Invalid request' }, 400)
   }
 
-  if (body.displayName !== undefined) {
+  if (body.name !== undefined) {
     try {
-      patchFields.name = parseDisplayName(body)
+      patchFields.name = parseName(body)
     } catch {
       return c.json({ error: 'Invalid request' }, 400)
     }

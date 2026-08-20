@@ -131,17 +131,14 @@ function stagedSweepDb(opts: {
 
 function deriveV1Only() {
   return deriveEncryptionSecretsConfig(
-    parseSecretsEnv(undefined, `1:${TEST_ONLY_TURBOPANEL_SECRET}`, "deno"),
+    parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, "deno"),
     "data-encryption",
   );
 }
 
 async function deriveRotated() {
-  const env = parseSecretsEnv(
-    undefined,
-    `2:${TEST_ONLY_TURBOPANEL_SECRET_V2},1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno",
-  );
+  const env = parseSecretsEnv(`2:${TEST_ONLY_TURBOPANEL_SECRET_V2},1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   return {
     env,
     secrets: await deriveEncryptionSecretsConfig(env, "data-encryption"),
@@ -150,7 +147,7 @@ async function deriveRotated() {
 
 function deriveV2Only() {
   return deriveEncryptionSecretsConfig(
-    parseSecretsEnv(undefined, `2:${TEST_ONLY_TURBOPANEL_SECRET_V2}`, "deno"),
+    parseSecretsEnv(`2:${TEST_ONLY_TURBOPANEL_SECRET_V2}`, "deno"),
     "data-encryption",
   );
 }

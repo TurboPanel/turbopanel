@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import { Hono, type Context } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -29,7 +29,7 @@ import {
 
 const SERVICE_SELECT = {
   id: service.id,
-  displayName: service.name,
+  name: service.name,
   description: service.description,
   environmentId: service.environmentId,
   composeServiceName: service.composeServiceName,

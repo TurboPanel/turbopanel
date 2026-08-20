@@ -4,7 +4,7 @@ import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import { verification } from '../../lib/db/schema.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createEmailOtp,
   deriveOtpVerifier,
@@ -23,8 +23,8 @@ import {
 
 const dbUrl = getDatabaseUrl()
 
-async function testOtpSecrets(): Promise<DerivedSecretsConfig> {
-  const config = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+function testOtpSecrets(): Promise<DerivedSecretsConfig> {
+  const config = parseTestSecretsConfig('deno')
   return deriveSecretsConfig(config, OTP_VERIFIER_SECRET_PURPOSE)
 }
 
@@ -182,9 +182,8 @@ it('createEmailOtp stores a keyed HMAC verifier, never the raw OTP', async () =>
 it('stored OTP verifier cannot be validated with only the database value', async () => {
   const secrets = await testOtpSecrets()
   const otherConfig = parseSecretsEnv(
-    // Distinct fixture secret — offline attacker without TURBOPANEL_SECRET.
-    'Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp9Oo8_Nn7Mm6Ll5Kk4',
-    undefined,
+    // Distinct fixture secret — offline attacker without TURBOPANEL_SECRETS.
+    '1:Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp9Oo8_Nn7Mm6Ll5Kk4',
     'deno',
   )
   const wrongSecrets = await deriveSecretsConfig(
@@ -228,11 +227,8 @@ it('stored OTP verifier cannot be validated with only the database value', async
 })
 
 it('rotated fallback OTP keys still verify existing verifiers', async () => {
-  const oldConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const oldConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const oldSecrets = await deriveSecretsConfig(
     oldConfig,
     OTP_VERIFIER_SECRET_PURPOSE,
@@ -249,11 +245,8 @@ it('rotated fallback OTP keys still verify existing verifiers', async () => {
   assertEquals(storedUnderV1.startsWith('tpotp.v1.'), true)
 
   // Rotate: new current key (v2) with v1 as fallback.
-  const rotatedConfig = parseSecretsEnv(
-    undefined,
-    `2:Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2Mm3_Nn4Oo5Pp6Qq7,1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno',
-  )
+  const rotatedConfig = parseSecretsEnv(`2:Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2Mm3_Nn4Oo5Pp6Qq7,1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const rotatedSecrets = await deriveSecretsConfig(
     rotatedConfig,
     OTP_VERIFIER_SECRET_PURPOSE,

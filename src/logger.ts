@@ -66,7 +66,11 @@ export function logInfo(component: string, ...parts: unknown[]): void {
 }
 
 export function isDaemonDebugEnabled(
-  env?: { TURBOPANEL_DAEMON_DEBUG?: string },
+  env?: {
+    TURBOPANEL_DAEMON_DEBUG?: string
+    /** Ignored — cell trace uses {@link TURBOPANEL_DAEMON_DEBUG} only. */
+    TURBOPANEL_LOG_LEVEL?: string
+  },
 ): boolean {
   const value = env?.TURBOPANEL_DAEMON_DEBUG ?? readEnv('TURBOPANEL_DAEMON_DEBUG')
   return value === '1' || value === 'true'

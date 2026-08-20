@@ -1,5 +1,5 @@
 import { asc, eq, inArray } from 'drizzle-orm'
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -29,8 +29,13 @@ import {
 } from './routes-helpers.ts'
 
 export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
-  router.use('/workspaces', createSessionMiddleware(opts.secrets))
-  router.use('/workspaces/:id', createSessionMiddleware(opts.secrets))
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for workspace routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/workspaces', createSessionMiddleware(secrets))
+  router.use('/workspaces/:id', createSessionMiddleware(secrets))
 
   router.get('/workspaces', async (c) => {
     const db = getDb(c)
@@ -56,7 +61,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const rows = await db
       .select({
         id: workspace.id,
-        displayName: workspace.name,
+        name: workspace.name,
         description: workspace.description,
         kind: workspace.kind,
         organizationId: workspace.organizationId,
@@ -87,7 +92,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const rows = await db
       .select({
         id: workspace.id,
-        displayName: workspace.name,
+        name: workspace.name,
         description: workspace.description,
         kind: workspace.kind,
         organizationId: workspace.organizationId,
@@ -127,12 +132,12 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     if (!names.ok) {
       return c.json({ error: names.error }, names.status)
     }
-    const { displayName, description } = names
+    const { name, description } = names
 
     const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
 
-    if (await isWorkspaceDisplayNameTaken(db, organizationId, displayName)) {
+    if (await isWorkspaceDisplayNameTaken(db, organizationId, name)) {
       return c.json({ error: WORKSPACE_NAME_IN_USE_ERROR }, 409)
     }
 
@@ -141,7 +146,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
         .insert(workspace)
         // Public create is always `user`. `kind='turbopanel'` is reachable only from
         // ensureSystemWorkspace in src/client/system/hierarchy.ts.
-        .values({ name: displayName, description, organizationId, kind: WORKSPACE_KIND_USER })
+        .values({ name, description, organizationId, kind: WORKSPACE_KIND_USER })
         .returning({ id: workspace.id })
       return inserted.id
     })

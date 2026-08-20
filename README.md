@@ -80,7 +80,7 @@ Full routing table: [SUPPORT.md](https://github.com/turbopanel/.github/blob/trun
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/turbopanel/.github/blob/trunk/CONTRIBUTING.md). Contributor setup uses the [TurboPanel Development Environment](https://github.com/turbopanel/dev) — not a production install path.
+See [CONTRIBUTING.md](https://github.com/turbopanel/.github/blob/trunk/CONTRIBUTING.md). Contributor setup uses the [TurboPanel Development Environment](https://github.com/turbopanel/dev) — not a production install path. Pull requests are accepted under the [Contributor License Agreement](https://github.com/turbopanel/.github/blob/trunk/CLA.md).
 
 ## Security
 
@@ -90,4 +90,6 @@ Report vulnerabilities privately: [turbopanel.io/security](https://turbopanel.io
 
 TurboPanel is licensed under the [GNU Affero General Public License v3.0 only (AGPL-3.0-only)](./LICENSE).
 
-Copyright (C) 2025 TurboPanel contributors
+The TurboPanel name and logos are trademarks. See [TRADEMARKS.md](./TRADEMARKS.md).
+
+Copyright (C) 2025-2026 TurboPanel contributors

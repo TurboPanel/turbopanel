@@ -17,7 +17,7 @@ import {
 } from '../../lib/db/server-metadata.ts'
 import type { OrganizationOptions } from '../../lib/organization-options.ts'
 import type { DatacenterOptions } from '../../lib/datacenter-options.ts'
-import { parseDisplayName } from '../shared.ts'
+import { parseName } from '../shared.ts'
 import { colocatedServerUpdateBlockedReason } from './update-status.ts'
 import type { ServerUpdateCommit } from './update-status.ts'
 import {
@@ -101,7 +101,7 @@ export type ServerRouteValidationError = {
 
 export type ServerDatacenterRef = {
   id: string
-  displayName: string | null
+  name: string | null
 }
 
 /**
@@ -118,7 +118,7 @@ export function shapeServerDatacenters(
     seen.add(row.datacenterId)
     out.push({
       id: row.datacenterId,
-      displayName: displayNamesById.get(row.datacenterId) ?? null,
+      name: displayNamesById.get(row.datacenterId) ?? null,
     })
   }
   return out.sort((a, b) => a.id.localeCompare(b.id))
@@ -132,7 +132,7 @@ function parseServerPatchName(
   body: Record<string, unknown>,
 ): { ok: true; name: string | null } | ServerRouteValidationError {
   try {
-    return { ok: true, name: parseDisplayName(body) }
+    return { ok: true, name: parseName(body) }
   } catch {
     return invalidServerPatchRequest()
   }
@@ -183,7 +183,7 @@ export function parseServerPatchCore(
   | ServerRouteValidationError {
   const patch: ServerPatchFields = { updatedAt }
 
-  if (body.displayName !== undefined || body.name !== undefined) {
+  if (body.name !== undefined) {
     const name = parseServerPatchName(body)
     if (!name.ok) return name
     patch.name = name.name

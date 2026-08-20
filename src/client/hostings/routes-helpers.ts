@@ -123,7 +123,7 @@ export async function resolveOptionalHostingFks(
 }
 
 export type HostingPatchFields = {
-  displayName?: string | null
+  name?: string | null
   description?: string | null
   metadata?: Record<string, unknown> | null
   options?: Record<string, unknown> | null
@@ -161,17 +161,17 @@ export async function buildHostingPatchFields(
   return patchFields
 }
 
-export async function assertCreateHostingBindScope(
+export function assertCreateHostingBindScope(
   c: Context,
   db: Db,
   ipIdResult: Extract<OptionalIpIdResult, { kind: 'absent' | 'value' }>,
   options: ReturnType<typeof parseHostingOptions> | null,
 ): Promise<Response | null> {
-  if (ipIdResult.kind !== 'value' || !ipIdResult.value) return null
+  if (ipIdResult.kind !== 'value' || !ipIdResult.value) return Promise.resolve(null)
   return assertHostingPublicBindScope(c, db, ipIdResult.value, options)
 }
 
-export async function assertMergedHostingBindScope(
+export function assertMergedHostingBindScope(
   c: Context,
   db: Db,
   existing: Readonly<{ ipId: string | null; options: unknown }>,
@@ -185,7 +185,7 @@ export async function assertMergedHostingBindScope(
   if (patchFields.ipId !== undefined) {
     effectiveIpId = patchFields.ipId
   }
-  if (!effectiveIpId) return null
+  if (!effectiveIpId) return Promise.resolve(null)
   return assertHostingPublicBindScope(c, db, effectiveIpId, mergedOptions)
 }
 

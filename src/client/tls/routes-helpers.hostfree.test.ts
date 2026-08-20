@@ -39,11 +39,8 @@ import {
 const test = Deno.test.bind(Deno);
 
 async function dataEncryptionSecrets() {
-  const config = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const config = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   return await deriveEncryptionSecretsConfig(config, "data-encryption");
 }
 
@@ -190,7 +187,7 @@ test("ORGANIZATION_CA_DOWNLOAD_HEADERS are stable", () => {
 test("toPublicTlsRow refreshes metadata and rejects unassemblable rows", () => {
   const ok = toPublicTlsRow({
     id: "11111111-1111-4111-8111-111111111111",
-    displayName: "Leaf",
+    name: "Leaf",
     source: "self_signed",
     organizationId: "22222222-2222-4222-8222-222222222222",
     status: "ready",
@@ -210,7 +207,7 @@ test("toPublicTlsRow refreshes metadata and rejects unassemblable rows", () => {
     updatedAt: "2026-01-02T00:00:00.000Z",
   });
   if (!ok) throw new TypeError("expected public tls row");
-  assertEquals(ok.displayName, "Leaf");
+  assertEquals(ok.name, "Leaf");
   assertEquals(ok.metadata.status, "ready");
   assertEquals(ok.options?.prefer, 1);
   assertEquals(ok.trustBundlePem, undefined);
@@ -219,7 +216,7 @@ test("toPublicTlsRow refreshes metadata and rejects unassemblable rows", () => {
   const withBundle = toPublicTlsRow(
     {
       id: "11111111-1111-4111-8111-111111111111",
-      displayName: "Leaf",
+      name: "Leaf",
       source: "organization_ca",
       organizationId: "22222222-2222-4222-8222-222222222222",
       status: "ready",
@@ -256,7 +253,7 @@ test("toPublicTlsRow refreshes metadata and rejects unassemblable rows", () => {
   assertEquals(
     toPublicTlsRow({
       id: "11111111-1111-4111-8111-111111111111",
-      displayName: null,
+      name: null,
       source: "upload",
       organizationId: "22222222-2222-4222-8222-222222222222",
       status: "ready",

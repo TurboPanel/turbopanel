@@ -185,11 +185,8 @@ async function createAdminTestApp(
     runtime?: "deno" | "workers";
   }> = {},
 ) {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const dataEncryptionSecrets = options.withDataEncryption === false
     ? undefined
@@ -326,11 +323,8 @@ test("POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin
     const failIds = new Set([failId]);
     const { registry, purgedIds } = createTrackingRegistry(failIds);
 
-    const secretsConfig = parseSecretsEnv(
-      TEST_ONLY_TURBOPANEL_SECRET,
-      undefined,
-      "deno",
-    );
+    const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
     const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
     const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
       secretsConfig,

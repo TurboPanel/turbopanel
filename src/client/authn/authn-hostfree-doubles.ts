@@ -22,6 +22,16 @@ import { IS_SIGNUP_ENABLED_CONFIG_KEY } from './install-state.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
 import type { SessionData } from './session-store.ts'
 
+export async function readJsonBody<T = Record<string, unknown>>(
+  response: Response,
+): Promise<T> {
+  const body: unknown = await response.json()
+  if (typeof body !== 'object' || body === null) {
+    throw new TypeError('expected JSON object body')
+  }
+  return body as T
+}
+
 export type MockCredentialUser = {
   id: string
   email: string
@@ -283,7 +293,7 @@ function fetchCredentialJoinRows(
 }
 
 function fetchVerificationLimited(
-  state: MockAuthState,
+  _state: MockAuthState,
   internal: MockAuthStateInternal,
   limit: number,
 ): Promise<Row[]> {
@@ -453,7 +463,7 @@ function applyUserPatch(state: MockAuthState, patch: Record<string, unknown>): v
   }
 }
 
-async function returningAfterUpdate(
+function returningAfterUpdate(
   state: MockAuthState,
   table: unknown,
   patch: Record<string, unknown>,
@@ -462,26 +472,28 @@ async function returningAfterUpdate(
     for (const row of state.licenses) {
       if (row.revokedAt === null) {
         row.revokedAt = asString(patch.revokedAt, new Date().toISOString())
-        return [{ id: row.id }]
+        return Promise.resolve([{ id: row.id }])
       }
     }
   }
   applyUserPatch(state, patch)
   if (table === user) {
     const first = state.users[0]
-    return first
-      ? [{ id: first.id, isEmailVerified: first.isEmailVerified }]
-      : []
+    return Promise.resolve(
+      first
+        ? [{ id: first.id, isEmailVerified: first.isEmailVerified }]
+        : [],
+    )
   }
   if (table === account) {
-    if (state.accounts.length === 0) return []
+    if (state.accounts.length === 0) return Promise.resolve([])
     const accountRow = state.accounts[0]
     if (patch.password !== undefined) {
       accountRow.password = String(patch.password)
     }
-    return [{ id: crypto.randomUUID() }]
+    return Promise.resolve([{ id: crypto.randomUUID() }])
   }
-  return []
+  return Promise.resolve([])
 }
 
 function deleteVerificationRows(state: MockAuthState, internal: MockAuthStateInternal): void {

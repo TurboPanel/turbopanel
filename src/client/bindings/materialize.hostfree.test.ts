@@ -28,11 +28,8 @@ import {
 const test = Deno.test.bind(Deno)
 
 async function dataSecrets() {
-  const config = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const config = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   return await deriveEncryptionSecretsConfig(config, 'data-encryption')
 }
 

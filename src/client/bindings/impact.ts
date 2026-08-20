@@ -14,7 +14,7 @@ import {
 
 export type BindingImpactService = {
   serviceId: string
-  displayName: string | null
+  name: string | null
   environmentId: string
   projectId: string
   keyPrefix: string
@@ -27,14 +27,14 @@ export type BindingRedeployRequired = {
 
 function toImpact(row: {
   serviceId: string
-  displayName: string | null
+  name: string | null
   environmentId: string
   projectId: string
   keyPrefix: string
 }): BindingImpactService {
   return {
     serviceId: row.serviceId,
-    displayName: row.displayName,
+    name: row.name,
     environmentId: row.environmentId,
     projectId: row.projectId,
     keyPrefix: row.keyPrefix,
@@ -48,7 +48,7 @@ export async function listBindingImpactForPrincipal(
   const rows = await db
     .select({
       serviceId: binding.serviceId,
-      displayName: service.name,
+      name: service.name,
       environmentId: service.environmentId,
       projectId: environment.projectId,
       keyPrefix: binding.keyPrefix,
@@ -71,7 +71,7 @@ export async function listBindingImpactForDatabase(
   const rows = await db
     .select({
       serviceId: binding.serviceId,
-      displayName: service.name,
+      name: service.name,
       environmentId: service.environmentId,
       projectId: environment.projectId,
       keyPrefix: binding.keyPrefix,

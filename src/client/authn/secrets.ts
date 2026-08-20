@@ -123,42 +123,20 @@ function parseVersionedSecrets(secretsEnv: string): VersionedSecret[] {
 }
 
 export function parseSecretsEnv(
-  secretEnv: string | undefined,
   secretsEnv: string | undefined,
   runtime: SecretsRuntime = "deno",
 ): SecretsConfig {
-  secretEnv = normalizeEnvValue(secretEnv);
   secretsEnv = normalizeEnvValue(secretsEnv);
 
   let versioned: VersionedSecret[] = [];
 
   if (secretsEnv !== undefined) {
-    // Non-descending warning runs here on the operator's keyring alone —
-    // before folding in TURBOPANEL_SECRET as a decrypt-only tail entry.
     versioned = parseVersionedSecrets(secretsEnv);
   }
 
-  if (secretEnv !== undefined) {
-    assertValidSecretValue(secretEnv, "TURBOPANEL_SECRET");
-    const existingV1 = versioned.find((entry) => entry.version === 1);
-    if (existingV1 !== undefined) {
-      if (existingV1.value !== secretEnv) {
-        throw new Error(
-          "TURBOPANEL_SECRET and TURBOPANEL_SECRETS both define version 1 with different values; " +
-            "remove one or make them identical",
-        );
-      }
-      // Identical v1 already present — idempotent fold, no change.
-    } else {
-      // Decrypt-only fallback (or sole entry when TURBOPANEL_SECRETS is unset).
-      // Never unshift — must not become current when a keyring already exists.
-      versioned.push({ version: 1, value: secretEnv });
-    }
-  }
-
-  if (secretEnv === undefined && secretsEnv === undefined) {
+  if (secretsEnv === undefined) {
     if (!allowEphemeralSecrets(runtime)) {
-      throw new Error("TURBOPANEL_SECRET or TURBOPANEL_SECRETS is required");
+      throw new Error("TURBOPANEL_SECRETS is required");
     }
     compatLogWarn('auth', 'No secret configured — using ephemeral random secret (dev only)');
     versioned = [{ version: 1, value: generateSecret() }];
@@ -225,7 +203,7 @@ export async function deriveSecretsConfig(
 ): Promise<DerivedSecretsConfig> {
   if (config.versioned.length === 0) {
     throw new Error(
-      "No signing secret available — configure TURBOPANEL_SECRET or TURBOPANEL_SECRETS",
+      "No signing secret available — configure TURBOPANEL_SECRETS",
     );
   }
 
@@ -248,7 +226,7 @@ export async function deriveEncryptionSecretsConfig(
 ): Promise<DerivedSecretsConfig> {
   if (config.versioned.length === 0) {
     throw new Error(
-      "No signing secret available — configure TURBOPANEL_SECRET or TURBOPANEL_SECRETS",
+      "No signing secret available — configure TURBOPANEL_SECRETS",
     );
   }
 

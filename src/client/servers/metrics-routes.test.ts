@@ -1,4 +1,4 @@
-import { assertEquals, assertExists } from 'jsr:@std/assert'
+import { assertEquals, assertExists } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -10,7 +10,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   grant,
   organization,
@@ -31,9 +31,37 @@ import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { resetDenoMetricsChartCacheForTests } from '../../daemon/metrics/query/cache.ts'
 import { MAX_METRICS_POINTS } from '../../daemon/metrics/query/resolution.ts'
 
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
+
+type MetricsRouteJsonBody = {
+  ok?: boolean
+  error?: string
+  backend?: string
+  metrics?: string[]
+  points?: Array<{
+    values: Record<string, number | null>
+    sampleCount?: number
+  }>
+  from?: string
+  available?: boolean
+  resolutionSeconds?: number
+  sampleCount?: number
+  latestAt?: string
+  serverId?: string
+  initialConnected?: boolean
+  uptimeSeconds?: number
+  downtimeSeconds?: number
+  unknownSeconds?: number
+  uptimePercent?: number
+  truncated?: boolean
+  events?: Array<{ reason?: string }>
+}
+
+async function readMetricsJson(res: Response): Promise<MetricsRouteJsonBody> {
+  return await res.json() as MetricsRouteJsonBody
+}
 
 const FROM = '2026-01-01T00:00:00.000Z'
 const TO = '2026-01-01T01:00:00.000Z'
@@ -62,21 +90,21 @@ function createFakeMetricsStore(
     connectionCalls,
     writeHostSample: () => {},
     writeStatusEvent: () => {},
-    queryHostSeries: async (input) => {
+    queryHostSeries: (input) => {
       seriesCalls.push(input)
       if (handlers?.queryHostSeries) {
         return handlers.queryHostSeries(input)
       }
       return disabled.queryHostSeries(input)
     },
-    queryHostSummary: async (input) => {
+    queryHostSummary: (input) => {
       summaryCalls.push(input)
       if (handlers?.queryHostSummary) {
         return handlers.queryHostSummary(input)
       }
       return disabled.queryHostSummary(input)
     },
-    queryStatusHistory: async (input) => {
+    queryStatusHistory: (input) => {
       connectionCalls.push(input)
       if (handlers?.queryStatusHistory) {
         return handlers.queryStatusHistory(input)
@@ -92,7 +120,7 @@ async function createMetricsRoutesTestApp(
   metricsStore?: ServerMetricsStore,
   runtime: 'workers' | 'deno' = 'deno',
 ) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -102,7 +130,11 @@ async function createMetricsRoutesTestApp(
     }
     return next()
   })
-  registerServerMetricsRoutes(app, { secrets, runtime })
+  registerServerMetricsRoutes(app, {
+    secrets,
+    runtime,
+    signupEnvOverride: undefined,
+  })
   return { app, secrets }
 }
 
@@ -248,7 +280,7 @@ it('GET /servers/:id/metrics/series rejects unknown metrics', async () => {
       { headers: { Cookie: cookie } },
     )
     assertEquals(res.status, 400)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertEquals(body.ok, false)
   })
 })
@@ -265,7 +297,7 @@ it('GET /servers/:id/metrics/series rejects invalid range', async () => {
 
 it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', async () => {
   const fakeStore = createFakeMetricsStore({
-    queryHostSeries: async (input) => ({
+    queryHostSeries: (input) => Promise.resolve({
       kind: 'clickhouse',
       available: true,
       serverId: input.serverId,
@@ -287,13 +319,13 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
       `/servers/${serverId}/metrics/series?from=${FROM}&to=${TO}&metrics=cpuUsagePercent,memoryUsedBytes`
     const res = await app.request(url, { headers: { Cookie: cookie } })
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertEquals(body.ok, true)
     assertEquals(body.metrics, ['cpuUsagePercent', 'memoryUsedBytes'])
-    assertEquals(body.points.length, 1)
-    assertEquals(body.points[0].values.cpuUsagePercent, 0)
-    assertEquals(body.points[0].values.memoryUsedBytes, null)
-    assertEquals(body.points[0].sampleCount, 1)
+    assertEquals(body.points!.length, 1)
+    assertEquals(body.points![0]!.values.cpuUsagePercent, 0)
+    assertEquals(body.points![0]!.values.memoryUsedBytes, null)
+    assertEquals(body.points![0]!.sampleCount, 1)
     assertEquals(fakeStore.seriesCalls.length, 1)
     assertEquals(fakeStore.seriesCalls[0]!.metrics, [
       'cpuUsagePercent',
@@ -314,7 +346,7 @@ it('GET /servers/:id/metrics/series returns available:false for disabled store',
       { headers: { Cookie: cookie } },
     )
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertEquals(body.available, false)
     assertEquals(body.backend, 'disabled')
     assertEquals(body.points, [])
@@ -328,7 +360,7 @@ it('GET /servers/:id/metrics/series rejects oversized maxPoints', async () => {
       { headers: { Cookie: cookie } },
     )
     assertEquals(res.status, 400)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertEquals(body.ok, false)
   })
 })
@@ -337,7 +369,7 @@ it('GET /servers/:id/metrics/series clamps resolution=60 over maximum range', as
   const from = '2026-01-01T00:00:00.000Z'
   const to = '2026-04-01T00:00:00.000Z'
   const fakeStore = createFakeMetricsStore({
-    queryHostSeries: async (input) => ({
+    queryHostSeries: (input) => Promise.resolve({
       kind: 'clickhouse',
       available: true,
       serverId: input.serverId,
@@ -355,7 +387,7 @@ it('GET /servers/:id/metrics/series clamps resolution=60 over maximum range', as
       { headers: { Cookie: cookie } },
     )
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertEquals(body.resolutionSeconds, 86400)
     assertEquals(fakeStore.seriesCalls.length, 1)
     assertEquals(fakeStore.seriesCalls[0]!.resolutionSeconds, 86400)
@@ -364,7 +396,7 @@ it('GET /servers/:id/metrics/series clamps resolution=60 over maximum range', as
 
 it('GET /servers/:id/metrics/series cache uses canonical range for exact timestamps', async () => {
   const fakeStore = createFakeMetricsStore({
-    queryHostSeries: async (input) => ({
+    queryHostSeries: (input) => Promise.resolve({
       kind: 'clickhouse',
       available: true,
       serverId: input.serverId,
@@ -390,14 +422,14 @@ it('GET /servers/:id/metrics/series cache uses canonical range for exact timesta
 
     const first = await app.request(urlA, { headers: { Cookie: cookie } })
     assertEquals(first.status, 200)
-    const bodyA = await first.json()
+    const bodyA = await readMetricsJson(first)
     assertEquals(bodyA.from, '2026-01-01T00:00:00.000Z')
 
     const second = await app.request(urlB, { headers: { Cookie: cookie } })
     assertEquals(second.status, 200)
-    const bodyB = await second.json()
+    const bodyB = await readMetricsJson(second)
     assertEquals(bodyB.from, '2026-01-01T00:00:00.000Z')
-    assertEquals(bodyB.points[0].values.cpuUsagePercent, 1)
+    assertEquals(bodyB.points![0]!.values.cpuUsagePercent, 1)
     assertEquals(fakeStore.seriesCalls.length, 1)
     assertEquals(fakeStore.seriesCalls[0]!.from, '2026-01-01T00:00:00.000Z')
   }, fakeStore)
@@ -405,9 +437,7 @@ it('GET /servers/:id/metrics/series cache uses canonical range for exact timesta
 
 it('GET /servers/:id/metrics/series maps Analytics Engine failures to 503', async () => {
   const fakeStore = createFakeMetricsStore({
-    queryHostSeries: async () => {
-      throw new Error('AE SQL unavailable')
-    },
+    queryHostSeries: () => Promise.reject(new Error('AE SQL unavailable')),
   })
 
   if (!dbUrl) return
@@ -455,7 +485,7 @@ it('GET /servers/:id/metrics/series maps Analytics Engine failures to 503', asyn
       { headers: { Cookie: cookie } },
     )
     assertEquals(res.status, 503)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertEquals(body.ok, false)
     assertEquals(body.error, 'metrics_backend_unavailable')
     assertEquals(body.backend, 'analytics-engine')
@@ -472,9 +502,7 @@ it('GET /servers/:id/metrics/series maps Analytics Engine failures to 503', asyn
 
 it('GET /servers/:id/metrics/series maps ClickHouse failures to 503', async () => {
   const fakeStore = createFakeMetricsStore({
-    queryHostSeries: async () => {
-      throw new Error('ClickHouse unavailable')
-    },
+    queryHostSeries: () => Promise.reject(new Error('ClickHouse unavailable')),
   })
 
   await withMetricsFixtures(async ({ app, serverId, cookie }) => {
@@ -483,7 +511,7 @@ it('GET /servers/:id/metrics/series maps ClickHouse failures to 503', async () =
       { headers: { Cookie: cookie } },
     )
     assertEquals(res.status, 503)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertEquals(body.ok, false)
     assertEquals(body.error, 'metrics_backend_unavailable')
     assertEquals(body.backend, 'clickhouse')
@@ -492,7 +520,7 @@ it('GET /servers/:id/metrics/series maps ClickHouse failures to 503', async () =
 
 it('GET /servers/:id/metrics/summary returns normalized payload', async () => {
   const fakeStore = createFakeMetricsStore({
-    queryHostSummary: async (input) => ({
+    queryHostSummary: (input) => Promise.resolve({
       kind: 'clickhouse',
       available: true,
       serverId: input.serverId,
@@ -507,7 +535,7 @@ it('GET /servers/:id/metrics/summary returns normalized payload', async () => {
       { headers: { Cookie: cookie } },
     )
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertExists(body.ok)
     assertEquals(body.sampleCount, 12)
     assertEquals(body.latestAt, TO)
@@ -620,9 +648,7 @@ it('GET /servers/:id/metrics/connection rejects invalid range', async () => {
 
 it('GET /servers/:id/metrics/connection maps backend failures to 503', async () => {
   const fakeStore = createFakeMetricsStore({
-    queryStatusHistory: async () => {
-      throw new Error('ClickHouse unavailable')
-    },
+    queryStatusHistory: () => Promise.reject(new Error('ClickHouse unavailable')),
   })
 
   await withMetricsFixtures(async ({ app, serverId, cookie }) => {
@@ -631,7 +657,7 @@ it('GET /servers/:id/metrics/connection maps backend failures to 503', async () 
       { headers: { Cookie: cookie } },
     )
     assertEquals(res.status, 503)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertEquals(body.ok, false)
     assertEquals(body.error, 'metrics_backend_unavailable')
     assertEquals(body.backend, 'clickhouse')
@@ -640,7 +666,7 @@ it('GET /servers/:id/metrics/connection maps backend failures to 503', async () 
 
 it('GET /servers/:id/metrics/connection returns payload and caches on repeat', async () => {
   const fakeStore = createFakeMetricsStore({
-    queryStatusHistory: async (input) => ({
+    queryStatusHistory: (input) => Promise.resolve({
       kind: 'clickhouse',
       available: true,
       serverId: input.serverId,
@@ -663,7 +689,7 @@ it('GET /servers/:id/metrics/connection returns payload and caches on repeat', a
       `/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`
     const res = await app.request(url, { headers: { Cookie: cookie } })
     assertEquals(res.status, 200)
-    const body = await res.json()
+    const body = await readMetricsJson(res)
     assertEquals(body.ok, true)
     assertEquals(body.serverId, serverId)
     assertEquals(body.available, true)
@@ -673,8 +699,8 @@ it('GET /servers/:id/metrics/connection returns payload and caches on repeat', a
     assertEquals(body.unknownSeconds, 0)
     assertEquals(body.uptimePercent, 0.75)
     assertEquals(body.truncated, false)
-    assertEquals(body.events.length, 1)
-    assertEquals(body.events[0].reason, 'connect')
+    assertEquals(body.events!.length, 1)
+    assertEquals(body.events![0]!.reason, 'connect')
     assertEquals(fakeStore.connectionCalls.length, 1)
 
     const cached = await app.request(url, { headers: { Cookie: cookie } })

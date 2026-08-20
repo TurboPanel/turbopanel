@@ -19,7 +19,7 @@ import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 
 export type ServersListRow = {
   id: string
-  displayName: string | null
+  name: string | null
   organizationId: string
   licenseId: string | null
   options: typeof server.$inferSelect.options
@@ -69,7 +69,7 @@ async function loadCachedListRows(
   const rows = await readDb
     .select({
       id: server.id,
-      displayName: server.name,
+      name: server.name,
       organizationId: server.organizationId,
       licenseId: license.id,
       options: server.options,

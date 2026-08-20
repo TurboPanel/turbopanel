@@ -22,11 +22,12 @@
     "yaml": "npm:yaml@^2.8.0",
     "@noble/hashes/": "npm:@noble/hashes@1.8.0/"
   },
+  "exclude": ["ts-deno-globals.d.ts"],
   "lint": {
     "rules": {
       "exclude": ["no-slow-types"]
     },
-    "exclude": ["scripts/"]
+    "exclude": ["scripts/", "ts-deno-globals.d.ts"]
   },
   "compilerOptions": {
     "lib": ["deno.window", "dom", "dom.iterable"],

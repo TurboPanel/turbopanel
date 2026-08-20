@@ -12,7 +12,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   command,
   container,
@@ -30,7 +30,7 @@ import {
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { ensureSystemHierarchy } from './hierarchy.ts'
 import { registerSystemRoutes } from './routes.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -173,7 +173,7 @@ async function withSystemRouteFixtures(
     : createRecordingCommandQueue()
   const registry = options.withRegistry === false ? undefined : createTrackingRegistry()
 
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {

@@ -10,7 +10,9 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and
 | TurboPanel Control Plane | [turbopanel/turbopanel](https://github.com/turbopanel/turbopanel) | `instance` (runtime/architecture only) |
 
 - **License:** AGPL-3.0-only ([`LICENSE`](./LICENSE), `package.json` /
-  `deno.json`).
+  `deno.json`). Trademarks are not granted by the software license
+  ([`TRADEMARKS.md`](./TRADEMARKS.md)). Contributions require the
+  [CLA](https://github.com/turbopanel/.github/blob/trunk/CLA.md).
 - **Maturity label:** **Private alpha** (README, roadmap, site banner — keep
   identical).
 - **README** is product-facing; **AGENTS.md** is maintainer-facing. Do not use
@@ -259,6 +261,15 @@ Unit tests use non-production secrets from `src/test-fixtures/secrets.ts`
 convention in `wrangler.vitest.jsonc`. The secret scanner allowlists only exact
 fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
 
+**Where to run tests:** host VirtFS checkouts lack a usable Node/pnpm/Deno
+tree. Run suites **inside the Vagrant guest** from the host `dev` checkout
+(`../dev/AGENTS.md` → Testing). Do not run `pnpm test` / `pnpm test:do` /
+`deno task test` on the host:
+
+```bash
+vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/node/current/bin:/opt/turbopanel/vendor/deno/current:$PATH"; cd ~/turbopanel && pnpm test:do'
+```
+
 ## Setup
 
 - **Deno** — <https://docs.deno.com/runtime/getting_started/installation/>
@@ -273,11 +284,11 @@ fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
   `/opt/turbopanel/vendor/` — not `orchestration/runtime/venv`).
 - Managed/co-located installs: secret-bearing runtime env lives in the instance
   config dir (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout
-  root. Beside those env files, Ansible holds `.instance_secret` (legacy
-  singular) and `.instance_secrets` (versioned keyring,
-  `root:<turbopanel_group>` `0640`, ordered `<version>:<value>`, first entry
-  current); both are injected into `runtime.dev-vars`, and rotation is gated by
-  the `turbopanel_instance_secret_rotate` extra-var. Semantics:
+  root. Beside those env files, Ansible holds `.instance_secrets` (versioned
+  keyring, `root:<turbopanel_group>` `0640`, ordered `<version>:<value>`, first
+  entry current); it is injected into `runtime.dev-vars` as `TURBOPANEL_SECRETS`,
+  and rotation is gated by the `turbopanel_instance_secret_rotate` extra-var.
+  Semantics:
   `src/client/authn/AGENTS.md`. Standalone scripts
   (`scripts/generate-self-signed-cert.mjs`, `scripts/workers-serve.sh`,
   `scripts/drizzle-studio-serve.sh`) default to the FHS location
@@ -606,7 +617,8 @@ Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp` in production.
   explicitly-configured publicly-trusted cert. The `instance-certs-apply.yml`
   playbook is the runtime **leaf-only** cert-regen path triggered by the admin
   public-URL apply action — it never passes `TURBOPANEL_TLS_CA_ROTATE`.
-  `ensureCa()` migrates legacy checkout `certs/ca.*` once and refuses to mint
+  `ensureCa()` validates readable existing durable **Platform CA** files,
+  rotates when requested, or mints a new durable root — and refuses to mint
   over an unreadable existing **Platform CA**. Rotation is opt-in
   (`TURBOPANEL_TLS_CA_ROTATE=1`) and keeps the outgoing **Platform CA** root in
   the bundle until daemons ack `server.tls.trust.reconcile`. Daemons fetch the
@@ -748,7 +760,7 @@ deliberately-unversioned probe.
   Org record: `GET`/`PATCH /organizations/:id` — GET is access-gated (same
   visibility as the org list: team membership, owner/manager grant, or
   platform admin; missing or inaccessible → **404**); PATCH is manage-gated
-  (`{ displayName }` required, any characters except control characters,
+  (`{ name }` required, any characters except control characters,
   ≤255, cannot clear;
   names are not unique). Returns `{ organization }` / `{ ok, organization }`.
   Org defaults: `GET`/`PUT /organizations/:id/default-timezone`. Picker source:
@@ -821,12 +833,13 @@ deliberately-unversioned probe.
 - **Org server seat capacity:** `organization.options.maxServers`
   (`null`/omitted = unlimited). `GET`/`PUT /organizations/:id/server-capacity`;
   `POST /licenses` returns **409** `server_capacity_exceeded` when enrolled
-  servers + unconsumed keys fill the cap. Optional create `displayName` (legacy
-  `name`) is omitted when blank and otherwise uses `normalizeDisplayName` /
-  `isValidDisplayName` (**400** for control characters or over-length).
+  servers + unconsumed keys fill the cap. Optional create `name` (legacy
+  `displayName` accepted on input) is omitted when blank and otherwise uses
+  `normalizeDisplayName` / `isValidDisplayName` (**400** for control characters
+  or over-length).
   `GET`/`DELETE /licenses` are
   owner-only; the UI **Pending keys** page lists unbound keys (OpenAPI
-  `displayName`). Self-hosted operators set the cap;
+  `name`). Self-hosted operators set the cap;
   Workers/Stripe billing will write the same field later.
 - **Org managed-database defaults:** `organization.options.managedDatabase`
   (`src/lib/managed/org-defaults.ts`). `GET`/`PUT
@@ -864,7 +877,7 @@ deliberately-unversioned probe.
   **`uniq_network_datacenter_cidr`**; **all subnets in a datacenter are assumed
   mutually routable** — the datacenter *is* the routing domain, there are no
   per-pair adjacency records. `POST /datacenters` body is
-  `{ displayName?, description?, members: [{ serverId, address }],
+  `{ name?, description?, members: [{ serverId, address }],
   sourceServerId? }` — at least one member is required; addresses must be
   daemon-reported private IPs; the first subnet is **derived** from that seed
   member’s reported interface prefix (`ips[].cidr` where `scope='private'`,
@@ -887,7 +900,7 @@ deliberately-unversioned probe.
   (`GET /datacenters/name-suggestions`) group geo/ASN from servers with zero
   memberships. List/detail expose `privateCidrs` (one entry per subnet) plus
   detail `subnets[]` and `options.addressPreference`. Server list/detail expose
-  `datacenters: { id, displayName }[]`. `DELETE /datacenters/:id` returns
+  `datacenters: { id, name }[]`. `DELETE /datacenters/:id` returns
   **409** `datacenter_has_members` while any membership pin remains; otherwise
   **every** `kind='datacenter'` network is deleted with the datacenter
   (**409** `datacenter_has_networks` only for leftover non-site / docker rows).
@@ -922,7 +935,7 @@ orientation; the detail moved to:
 | **Bindings**                      | `src/client/bindings/`                              | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                                                                                                     |
 | **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                                                                                                                                                                                              |
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                             |
-| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` display label (API `displayName`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `task` (nullable `task.address`) / `label`; TurboFabric `fabric` / `relay` / `segment`; storage identity `storage` / `location` / `mount` (+ schema-only `credential`) |
+| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` label (API `name`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `task` (nullable `task.address`) / `label`; TurboFabric `fabric` / `relay` / `segment`; storage identity `storage` / `location` / `mount` (+ schema-only `credential`) |
 | **Query cache**                   | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                                                                                                                                                                                               |
 | **TLS & certificate authorities** | `src/lib/tls/AGENTS.md`                             | Platform CA vs Organization CA boundary, org TLS library primitives, leaf issuance + `tlsleaf` tracking, Workers/Deno renewal sweep |
 
@@ -1113,7 +1126,7 @@ sequenceDiagram
 - `src/daemon/authn/daemon-jwt.ts` — daemon JWT issue/verify (EdDSA/Ed25519,
   15-minute lifetime)
 - `src/daemon/authn/daemon-jwt-keyring.ts` — deterministic Ed25519 keyring
-  derived from `TURBOPANEL_SECRET(S)`; `deriveDaemonJwtKeyring`,
+  derived from `TURBOPANEL_SECRETS`; `deriveDaemonJwtKeyring`,
   `buildJwksDocument`
 - `src/daemon/authn/daemon-state.ts` — `ServerDaemonState` / `ServerDaemonKey`
   types and parsers for `server.daemon` jsonb

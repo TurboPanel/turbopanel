@@ -34,7 +34,7 @@ export function serializeManagedRow(
   row: {
     id: string
     environmentId: string | null
-    displayName: string | null
+    name: string | null
     engine: string | null
     status: string | null
     metadata: unknown
@@ -63,7 +63,7 @@ export function serializeManagedRow(
   return {
     id: row.id,
     environmentId: row.environmentId,
-    displayName: row.displayName,
+    name: row.name,
     engine,
     status,
     host,

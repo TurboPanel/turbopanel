@@ -336,35 +336,35 @@ test("parseServerCapacityPutBody requires maxServers and validates values", () =
   assertEquals(capped.maxServers, 3);
 });
 
-test("parseOrganizationCreateDisplayName defaults when displayName is absent", () => {
+test("parseOrganizationCreateDisplayName defaults when name is absent", () => {
   const defaultName = parseOrganizationCreateDisplayName({});
   if (!defaultName.ok) {
     throw new TypeError("expected default organization name");
   }
-  assertEquals(defaultName.displayName, "New Organization");
+  assertEquals(defaultName.name, "New Organization");
 
   const apostrophe = parseOrganizationCreateDisplayName({
-    displayName: "O'Reilly",
+    name: "O'Reilly",
   });
   if (!apostrophe.ok) {
     throw new TypeError("expected apostrophe organization name");
   }
-  assertEquals(apostrophe.displayName, "O'Reilly");
+  assertEquals(apostrophe.name, "O'Reilly");
 
   const unicode = parseOrganizationCreateDisplayName({
-    displayName: "Müller GmbH",
+    name: "Müller GmbH",
   });
   if (!unicode.ok) {
     throw new TypeError("expected Unicode organization name");
   }
-  assertEquals(unicode.displayName, "Müller GmbH");
+  assertEquals(unicode.name, "Müller GmbH");
 
   // Control characters are rejected (wire field is validated, not ignored).
   const rejected = parseOrganizationCreateDisplayName({
-    displayName: "bad\nname",
+    name: "bad\nname",
   });
   if (rejected.ok) {
-    throw new TypeError("expected invalid displayName to be rejected");
+    throw new TypeError("expected invalid name to be rejected");
   }
   assertEquals(rejected.status, 400);
 });
@@ -372,36 +372,36 @@ test("parseOrganizationCreateDisplayName defaults when displayName is absent", (
 test("parseOrganizationPatchDisplayName requires a valid display name", () => {
   assertEquals(parseOrganizationPatchDisplayName({}).ok, false);
   assertEquals(
-    parseOrganizationPatchDisplayName({ displayName: "" }).ok,
+    parseOrganizationPatchDisplayName({ name: "" }).ok,
     false,
   );
   assertEquals(
-    parseOrganizationPatchDisplayName({ displayName: "bad\nname" }).ok,
+    parseOrganizationPatchDisplayName({ name: "bad\nname" }).ok,
     false,
   );
   assertEquals(
-    parseOrganizationPatchDisplayName({ displayName: null }).ok,
+    parseOrganizationPatchDisplayName({ name: null }).ok,
     false,
   );
 
   const ok = parseOrganizationPatchDisplayName({
-    displayName: " O'Reilly ",
+    name: " O'Reilly ",
   });
   if (!ok.ok) {
     throw new TypeError("expected apostrophe organization name");
   }
-  assertEquals(ok.displayName, "O'Reilly");
+  assertEquals(ok.name, "O'Reilly");
 
   const folded = parseOrganizationPatchDisplayName({
-    displayName: "McDonald\u2019s",
+    name: "McDonald\u2019s",
   });
   if (!folded.ok) {
     throw new TypeError("expected folded curly apostrophe");
   }
-  assertEquals(folded.displayName, "McDonald's");
+  assertEquals(folded.name, "McDonald's");
 });
 
-test("toOrganizationRecord maps name to displayName", () => {
+test("toOrganizationRecord maps DB name to name", () => {
   assertEquals(
     toOrganizationRecord({
       id: "11111111-1111-1111-1111-111111111111",
@@ -410,7 +410,7 @@ test("toOrganizationRecord maps name to displayName", () => {
     }),
     {
       id: "11111111-1111-1111-1111-111111111111",
-      displayName: "Acme",
+      name: "Acme",
       createdAt: "2026-01-01T00:00:00.000Z",
     },
   );

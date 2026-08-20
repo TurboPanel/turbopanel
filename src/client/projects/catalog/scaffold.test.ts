@@ -1,13 +1,10 @@
-import { assertEquals, assertNotEquals, assertThrows } from 'jsr:@std/assert'
+import { assertEquals, assertNotEquals, assertThrows } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import {
   decryptSecret,
   parseSecretEnvelope,
 } from '../../authn/data-encryption.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  parseSecretsEnv,
-} from '../../authn/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../../authn/secrets.ts'
 import { getDatabaseUrl } from '../../../db-url.ts'
 import { createDenoDb } from '../../../db.ts'
 import {
@@ -17,7 +14,7 @@ import {
   variable,
   workspace,
 } from '../../../lib/db/schema.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
 import { scaffoldCatalogEnvironments } from '../routes.ts'
 import {
   getCatalogEntry,
@@ -105,7 +102,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
   }
 
   const db = createDenoDb()
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',
@@ -137,12 +134,14 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
 
   let envId: string | undefined
   try {
-    await scaffoldCatalogEnvironments(
-      db,
-      proj!.id,
-      entry,
-      dataEncryptionSecrets,
-    )
+    await db.transaction(async (tx) => {
+      await scaffoldCatalogEnvironments(
+        tx,
+        proj!.id,
+        entry,
+        dataEncryptionSecrets,
+      )
+    })
 
     const envs = await db
       .select({ id: environment.id })
@@ -205,7 +204,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
   const sharedEntry: CatalogEntry = {
     code: 'shared-secret-fixture',
     kind: 'managed',
-    name: 'Shared Secret Fixture',
+    displayName: 'Shared Secret Fixture',
     description: 'Test-only entry for sharedCredentialId',
     compose: {
       version: 1,
@@ -214,7 +213,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
     },
     environments: [
       {
-        name: 'production',
+        displayName: 'production',
         variables: [
           {
             key: 'DB_PASSWORD',
@@ -232,7 +231,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
   }
 
   const db = createDenoDb()
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',
@@ -260,12 +259,14 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
 
   let envId: string | undefined
   try {
-    await scaffoldCatalogEnvironments(
-      db,
-      proj!.id,
-      sharedEntry,
-      dataEncryptionSecrets,
-    )
+    await db.transaction(async (tx) => {
+      await scaffoldCatalogEnvironments(
+        tx,
+        proj!.id,
+        sharedEntry,
+        dataEncryptionSecrets,
+      )
+    })
 
     const [env] = await db
       .select({ id: environment.id })

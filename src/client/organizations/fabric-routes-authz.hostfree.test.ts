@@ -16,8 +16,8 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { registerOrganizationFabricRoutes } from './fabric-routes.ts'
 
 /**
@@ -45,7 +45,7 @@ async function buildSessionApp(opts: {
   /** Stub dispatch infra for PUT enable/disable paths past authz. */
   withDispatch?: boolean
 }): Promise<{ app: Hono<AppEnv>; cookie: string }> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
   const state = createEmptyMockAuthState()
@@ -83,7 +83,7 @@ async function buildSessionApp(opts: {
 }
 
 test('TurboFabric routes return 401 without a session cookie', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -233,7 +233,7 @@ async function buildFabricEnableApp(opts: {
    */
   enableEmptyOrg?: boolean
 }): Promise<{ app: Hono<AppEnv>; cookie: string }> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
   const state = createEmptyMockAuthState()
@@ -392,7 +392,7 @@ test('GET /fabric returns disabled settings when TurboFabric is off', async () =
 })
 
 test('POST /fabric/apply returns 503 when command dispatch is unavailable', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
   const state = createEmptyMockAuthState()
@@ -470,7 +470,7 @@ test('PUT /fabric returns 503 when command dispatch is unavailable', async () =>
 })
 
 test('PATCH /fabric/relays/:serverId returns 404 when the relay is missing', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
   const state = createEmptyMockAuthState()

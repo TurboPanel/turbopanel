@@ -78,72 +78,22 @@ export function parseServerIps(value: unknown): ServerReportedIp[] | undefined {
   return out.sort((a, b) => a.address.localeCompare(b.address))
 }
 
-function pushLegacyAddressList(
-  out: ServerReportedIp[],
-  seen: Set<string>,
-  list: unknown,
-  version: 4 | 6,
-  scope: ServerReportedIpScope,
-): void {
-  if (!Array.isArray(list)) return
-  for (const item of list) {
-    if (typeof item !== 'string') continue
-    const address = stripInetPrefixSuffix(item.trim())
-    if (!address || seen.has(address)) continue
-    seen.add(address)
-    out.push({ address, version, scope })
-  }
-}
-
-/**
- * Map a pre-`ips[]` hello/heartbeat `addresses` object
- * (`privateIpv4` / `publicIpv4` / …) to {@link ServerReportedIp} rows.
- * Returns `undefined` when the value is not that object shape.
- */
-export function parseLegacyServerAddresses(
-  value: unknown,
-): ServerReportedIp[] | undefined {
-  if (!isRecord(value)) return undefined
-  const out: ServerReportedIp[] = []
-  const seen = new Set<string>()
-  pushLegacyAddressList(out, seen, value.privateIpv4, 4, 'private')
-  pushLegacyAddressList(out, seen, value.privateIpv6, 6, 'private')
-  pushLegacyAddressList(out, seen, value.publicIpv4, 4, 'public')
-  pushLegacyAddressList(out, seen, value.publicIpv6, 6, 'public')
-  return out.sort((a, b) => a.address.localeCompare(b.address))
-}
-
-/**
- * Prefer `resources.ips[]`, then top-level `ips[]`, then the pre-rename
- * `addresses` object so remotes that have not rebuilt yet still persist
- * private IPs for datacenters.
- */
+/** Host addresses from daemon hello / change-detected heartbeat payloads. */
 export function ipsFromDaemonPresence(
   payload: unknown,
 ): ServerReportedIp[] | undefined {
   if (!isRecord(payload)) return undefined
-  if (isRecord(payload.resources)) {
-    const nested = parseServerIps(payload.resources.ips)
-    if (nested !== undefined) return nested
-  }
-  const fromIps = parseServerIps(payload.ips)
-  if (fromIps !== undefined) return fromIps
-  return parseLegacyServerAddresses(payload.addresses)
+  if (!isRecord(payload.resources)) return undefined
+  return parseServerIps(payload.resources.ips)
 }
 
-/**
- * Reported addresses stored on `server.metadata` — `resources.ips` first,
- * then the retired top-level `ips` key.
- */
+/** Reported addresses stored on `server.metadata.resources.ips`. */
 export function reportedIpsFromServerMetadata(
   metadata: unknown,
 ): ServerReportedIp[] | undefined {
   if (!isRecord(metadata)) return undefined
-  if (isRecord(metadata.resources)) {
-    const nested = parseServerIps(metadata.resources.ips)
-    if (nested !== undefined) return nested
-  }
-  return parseServerIps(metadata.ips)
+  if (!isRecord(metadata.resources)) return undefined
+  return parseServerIps(metadata.resources.ips)
 }
 
 export function serverIpsEquals(

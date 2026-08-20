@@ -1,12 +1,13 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import { createApp, type AppEnv } from './app.ts'
 import { HEALTH_PATH } from './surfaces.ts'
+import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from './client/authn/secrets.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from './test-fixtures/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from './test-fixtures/secrets.ts'
 import type { Db } from './db.ts'
 
 /**
@@ -20,11 +21,8 @@ const test = Deno.test.bind(Deno)
 const FAKE_DB = { tag: 'db' } as unknown as Db
 
 async function secretsBundle() {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'workers',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'workers')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -45,9 +43,12 @@ test('createApp serves root text and health JSON', async () => {
 
 test('createApp injects runtime and optional dependencies into context', async () => {
   const { secrets, otpVerifierSecrets } = await secretsBundle()
-  const authRateLimiter = { check: () => ({ allowed: true }) }
-  const emailQueue = { enqueue: async () => undefined }
-  const commandQueue = { enqueue: async () => undefined }
+  const authRateLimiter: AuthRateLimiter = {
+    check: () => Promise.resolve({ allowed: true, retryAfterSeconds: 0 }),
+    reset: () => undefined,
+  }
+  const emailQueue = { enqueue: () => Promise.resolve() }
+  const commandQueue = { enqueue: () => Promise.resolve() }
 
   const app = createApp({
     db: FAKE_DB,
@@ -61,7 +62,7 @@ test('createApp injects runtime and optional dependencies into context', async (
     signupEnvOverride: undefined,
     authRateLimiter,
     dataEncryptionSecrets: secrets,
-    secretsConfig: parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    secretsConfig: parseTestSecretsConfig('deno'),
   })
 
   app.get('/probe', (c: Context<AppEnv>) =>

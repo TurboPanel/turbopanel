@@ -29,7 +29,6 @@ import {
   DEVELOPER_WS_PATH,
 } from "../surfaces.ts";
 import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
-import { ipsFromDaemonPresence } from "../server-addresses.ts";
 import { resourcesFromDaemonPresence } from "../lib/db/server-metadata.ts";
 import { touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
@@ -253,7 +252,6 @@ async function handleDaemonPresenceInbound(params: {
 }): Promise<void> {
   const { cell, db, serverId, connectionId, message } = params;
   const presence = message as unknown as Record<string, unknown>;
-  const ips = ipsFromDaemonPresence(presence);
   const resources = resourcesFromDaemonPresence(presence);
 
   if (message.type === "hello") {
@@ -263,14 +261,12 @@ async function handleDaemonPresenceInbound(params: {
       os: message.os,
       resources,
       timeSync: message.timeSync,
-      ips,
       docker: message.docker,
     });
-  } else if (message.timeSync || ips !== undefined || message.docker) {
+  } else if (message.timeSync || resources !== undefined || message.docker) {
     await touchServerMetadata(db, serverId, {
       resources,
       timeSync: message.timeSync,
-      ips,
       docker: message.docker,
     });
   }

@@ -178,11 +178,10 @@ const db = createMailerDb()
 async function resolveMailerDataEncryptionSecrets(
   env: Record<string, string | undefined>,
 ): Promise<DerivedSecretsConfig | undefined> {
-  const secret = env.TURBOPANEL_SECRET?.trim()
   const secrets = env.TURBOPANEL_SECRETS?.trim()
-  if (!secret && !secrets) return undefined
+  if (!secrets) return undefined
   try {
-    const config = parseSecretsEnv(env.TURBOPANEL_SECRET, env.TURBOPANEL_SECRETS, 'deno')
+    const config = parseSecretsEnv(env.TURBOPANEL_SECRETS, 'deno')
     return await deriveEncryptionSecretsConfig(config, 'data-encryption')
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)

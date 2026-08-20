@@ -10,7 +10,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   container,
   command,
@@ -48,7 +48,7 @@ import type { QueryCache } from '../../query-cache/contracts.ts'
 import type { ServersListRow } from '../../query-cache/read-models/servers-list.ts'
 import type { ServerDetailRow } from '../../query-cache/read-models/server-detail.ts'
 
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const SERVER_STATUS_RECORD_KEYS: (keyof ServerStatusRecord)[] = [
   'serverId',
@@ -224,7 +224,7 @@ async function createServerRoutesTestApp(
   queryCache?: QueryCache,
   commandQueue?: import('../../lib/commands/queue.ts').CommandQueue,
 ) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -246,7 +246,7 @@ async function createServerRoutesTestApp(
 
 const SERVERS_LIST_SELECT_KEYS = new Set([
   'id',
-  'displayName',
+  'name',
   'organizationId',
   'licenseId',
   'options',
@@ -347,7 +347,7 @@ test('createListRowsOnlyReadDb rejects partial servers-list select columns', asy
   assertThrows(
     () => readDb.select({
       id: server.id,
-      displayName: server.name,
+      name: server.name,
       organizationId: server.organizationId,
       licenseId: license.id,
       options: server.options,
@@ -361,7 +361,7 @@ test('createListRowsOnlyReadDb rejects partial servers-list select columns', asy
   const allowedReadDb = createListRowsOnlyReadDb(createStubDbForCachedReadTests())
   await allowedReadDb.select({
     id: server.id,
-    displayName: server.name,
+    name: server.name,
     organizationId: server.organizationId,
     licenseId: license.id,
     options: server.options,
@@ -408,7 +408,7 @@ function createRecordingQueryCache(
 
 const SERVER_DETAIL_SELECT_KEYS = new Set([
   'id',
-  'displayName',
+  'name',
   'organizationId',
   'licenseId',
   'options',
@@ -1089,7 +1089,7 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
 
   const db = createDenoDb()
   const registry = createTrackingRegistry()
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {

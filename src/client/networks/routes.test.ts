@@ -9,7 +9,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   datacenter,
   grant,
@@ -20,7 +20,7 @@ import {
 } from '../../lib/db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerNetworkRoutes } from './routes.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -43,7 +43,7 @@ async function sessionCookie(
 }
 
 async function createNetworkRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -116,7 +116,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
   }
 
   const db = createDenoDb()
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -192,7 +192,7 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
   }
 
   const db = createDenoDb()
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -266,7 +266,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
   }
 
   const db = createDenoDb()
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -434,7 +434,7 @@ test('GET /networks returns 403 for org member without organization:manage', asy
   }
 
   const db = createDenoDb()
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -623,10 +623,10 @@ test('GET /networks/:id returns network detail', async () => {
     })
     assertEquals(res.status, 200)
     const body = await res.json() as {
-      network: { id: string; displayName: string; cidr: string; kind: string }
+      network: { id: string; name: string; cidr: string; kind: string }
     }
     assertEquals(body.network.id, netRow!.id)
-    assertEquals(body.network.displayName, 'Detail LAN')
+    assertEquals(body.network.name, 'Detail LAN')
     assertEquals(body.network.cidr, '10.1.0.0/24')
     assertEquals(body.network.kind, 'datacenter')
   })
@@ -679,7 +679,7 @@ test('GET /networks/:id returns 404 for network in another org', async () => {
   })
 })
 
-test('PATCH /networks/:id updates displayName and cidr', async () => {
+test('PATCH /networks/:id updates name and cidr', async () => {
   await withNetworkFixtures(async ({
     db,
     app,

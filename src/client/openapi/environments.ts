@@ -5,7 +5,7 @@ export const environmentSchemas = {
     type: 'object',
     properties: {
       id: { type: 'string' },
-      displayName: { type: ['string', 'null'] },
+      name: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       projectId: { type: 'string' },
       serverId: {
@@ -41,7 +41,7 @@ export const environmentSchemas = {
     type: 'object',
     required: ['projectId'],
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
       projectId: { type: 'string' },
       serverId: {
@@ -63,7 +63,7 @@ export const environmentSchemas = {
   UpdateEnvironmentRequest: {
     type: 'object',
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
       serverId: {
         type: ['string', 'null'],

@@ -29,7 +29,7 @@ export function isTlsUuid(value: string): boolean {
 
 export type TlsPublicRow = {
   id: string;
-  displayName: string | null;
+  name: string | null;
   source: string;
   organizationId: string;
   metadata: TlsMetadata;
@@ -51,7 +51,7 @@ export type TlsPublicRow = {
 
 export type TlsRowForPublic = {
   id: string;
-  displayName: string | null;
+  name: string | null;
   source: string;
   organizationId: string;
   status: string;
@@ -80,7 +80,7 @@ export function toPublicTlsRow(
   if (!metadata) return null;
   const publicRow: TlsPublicRow = {
     id: row.id,
-    displayName: row.displayName,
+    name: row.name,
     source: row.source,
     organizationId: row.organizationId,
     metadata: refreshTlsStatus(metadata),

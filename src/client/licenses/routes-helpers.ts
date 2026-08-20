@@ -51,15 +51,12 @@ export function parseLicenseCreateFields(
   }
 
   const record = body as Record<string, unknown>
-  const displayName = optionalStringField(record.displayName)
-  if (!displayName.ok) return 'invalid'
-  const name = optionalStringField(record.name)
-  if (!name.ok) return 'invalid'
+  const nameField = optionalStringField(record.name)
+  if (!nameField.ok) return 'invalid'
   const installBaseUrl = optionalStringField(record.installBaseUrl)
   if (!installBaseUrl.ok) return 'invalid'
 
-  const pickedName = displayName.value ?? name.value
-  const parsedName = parseOptionalLicenseName(pickedName)
+  const parsedName = parseOptionalLicenseName(nameField.value)
   if (!parsedName.ok) return 'invalid'
 
   const fields: LicenseCreateFields = {}
@@ -112,13 +109,13 @@ export function serializeLicenseListEntry(params: {
 }) {
   return {
     id: params.id,
-    displayName: params.name,
+    name: params.name,
     createdAt: params.createdAt,
     revocable: params.revocable,
     boundServer: params.bound
       ? {
         id: params.bound.id,
-        displayName: params.bound.name,
+        name: params.bound.name,
         connected: params.status?.connected ?? false,
       }
       : null,

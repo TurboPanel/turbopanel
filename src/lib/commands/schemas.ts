@@ -1019,18 +1019,11 @@ export type EnvironmentDeployCommandPayload = {
   organizationId: string;
   projectName: string;
   /**
-   * Compiled runtime docker-compose YAML for this server (same body as the
-   * single `composeFiles` `role: 'runtime'` entry). Kept so older daemons
-   * that ignore `composeFiles` still have a single-file body.
-   * May be `services: {}` when all sites are traditional-web.
+   * Compiled runtime snapshot the daemon writes as
+   * `{ filename: 'compose.yaml', role: 'runtime' }`. May be `services: {}`
+   * when all sites are traditional-web.
    */
-  composeYaml: string;
-  /**
-   * Compose files the daemon writes. New deploys send a single
-   * `{ filename: 'compose.yaml', role: 'runtime' }` entry. Older queued
-   * commands may still carry a project → environment → platform chain.
-   */
-  composeFiles?: EnvironmentDeployComposeFile[];
+  composeFiles: EnvironmentDeployComposeFile[];
   /** Environment desired generation this command is applying. */
   generation?: number;
   /** SHA-256 hex of the compiled runtime YAML (before daemon overlay). */
@@ -1043,8 +1036,8 @@ export type EnvironmentDeployCommandPayload = {
   hostings: EnvironmentDeployHosting[];
   /**
    * Host-native web sites (nginx MVP). Compose services with
-   * `x-turbopanel.serviceKind: traditional-web` are stripped from `composeYaml`
-   * and listed here instead.
+   * `x-turbopanel.serviceKind: traditional-web` are stripped from the
+   * compiled runtime compose and listed here instead.
    */
   traditionalWebSites?: EnvironmentDeployTraditionalWebSite[];
   /**
@@ -1159,25 +1152,18 @@ function requireDeployPayloadStrings(
   value: Record<string, unknown>,
 ): Pick<
   EnvironmentDeployCommandPayload,
-  | "environmentId"
-  | "projectId"
-  | "organizationId"
-  | "projectName"
-  | "composeYaml"
+  "environmentId" | "projectId" | "organizationId" | "projectName"
 > {
-  const { environmentId, projectId, organizationId, projectName, composeYaml } =
-    value;
+  const { environmentId, projectId, organizationId, projectName } = value;
   if (
     !isString(environmentId) ||
     !isString(projectId) ||
     !isString(organizationId) ||
-    !isString(projectName) ||
-    !isString(composeYaml) ||
-    composeYaml.length === 0
+    !isString(projectName)
   ) {
     throw new Error("Invalid environment.deploy payload");
   }
-  return { environmentId, projectId, organizationId, projectName, composeYaml };
+  return { environmentId, projectId, organizationId, projectName };
 }
 
 function parseDeployHostingProxy(
@@ -1870,31 +1856,15 @@ function parseDeployComposeFileEntry(
  */
 export function parseDeployComposeFiles(
   value: unknown,
-): EnvironmentDeployComposeFile[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length === 0) {
+): EnvironmentDeployComposeFile[] {
+  if (!Array.isArray(value) || value.length !== 1) {
     throw new Error("Invalid environment.deploy payload");
   }
-  const files = value.map(parseDeployComposeFileEntry);
-  const seen = new Set<string>();
-  let platformCount = 0;
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i]!;
-    if (seen.has(file.filename)) {
-      throw new Error("Invalid environment.deploy payload");
-    }
-    seen.add(file.filename);
-    if (file.role === "platform") {
-      platformCount += 1;
-      if (i !== files.length - 1) {
-        throw new Error("Invalid environment.deploy payload");
-      }
-    }
-  }
-  if (platformCount > 1) {
+  const file = parseDeployComposeFileEntry(value[0]);
+  if (file.role !== "runtime" || file.filename !== "compose.yaml") {
     throw new Error("Invalid environment.deploy payload");
   }
-  return files;
+  return [file];
 }
 
 const DESIRED_HASH_RE = /^[0-9a-f]{64}$/;
@@ -2053,9 +2023,9 @@ export function parseEnvironmentDeployPayload(
   const strings = requireDeployPayloadStrings(value);
   return {
     ...strings,
+    composeFiles: parseDeployComposeFiles(value.composeFiles),
     hostings: parseDeployHostings(value.hostings),
     ...omitUndefinedEntries({
-      composeFiles: parseDeployComposeFiles(value.composeFiles),
       traditionalWebSites: parseDeployTraditionalWebSites(
         value.traditionalWebSites,
       ),

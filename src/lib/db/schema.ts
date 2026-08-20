@@ -1454,8 +1454,8 @@ export const service = pgTable(
     options: jsonb(),
     environmentId: uuid('environment_id').notNull(),
     /**
-     * User-facing display label (column renamed from `display_name`). Nullable
-     * and not unique. Client JSON still exposes this field as `displayName`.
+     * User-facing label (Postgres column `name`, renamed from `display_name`).
+     * Nullable and not unique. Client JSON field is `name`.
      */
     name: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),

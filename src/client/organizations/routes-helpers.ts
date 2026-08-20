@@ -5,7 +5,7 @@ import {
 import { DISPLAY_NAME_MAX_LENGTH } from "../../lib/display-name-format.ts";
 import { isAllowedTimezone } from "../../lib/timezones.ts";
 import type { OrganizationSummary } from "../org-context.ts";
-import { BadRequestError, parseDisplayName } from "../shared.ts";
+import { BadRequestError, parseName } from "../shared.ts";
 import {
   type NtpDefaults,
   parseDefaultFabricEnabledInput,
@@ -298,14 +298,14 @@ export function parseServerCapacityPutBody(
 
 export function parseOrganizationCreateDisplayName(
   body: Record<string, unknown>,
-): { ok: true; displayName: string } | OrganizationRouteValidationError {
+): { ok: true; name: string } | OrganizationRouteValidationError {
   try {
-    const parsed = parseDisplayName({
-      displayName: typeof body.displayName === "string"
-        ? body.displayName
-        : NEW_ORGANIZATION_DISPLAY_NAME,
-    });
-    return { ok: true, displayName: parsed ?? NEW_ORGANIZATION_DISPLAY_NAME };
+    const hasName = body.name !== undefined;
+    if (!hasName) {
+      return { ok: true, name: NEW_ORGANIZATION_DISPLAY_NAME };
+    }
+    const parsed = parseName(body);
+    return { ok: true, name: parsed ?? NEW_ORGANIZATION_DISPLAY_NAME };
   } catch (error) {
     if (error instanceof BadRequestError) {
       return { ok: false, error: "Invalid request", status: 400 };
@@ -314,19 +314,19 @@ export function parseOrganizationCreateDisplayName(
   }
 }
 
-/** PATCH requires a non-empty display name; it cannot be cleared. */
+/** PATCH requires a non-empty name; it cannot be cleared. */
 export function parseOrganizationPatchDisplayName(
   body: Record<string, unknown>,
-): { ok: true; displayName: string } | OrganizationRouteValidationError {
-  if (!("displayName" in body) && !("name" in body)) {
+): { ok: true; name: string } | OrganizationRouteValidationError {
+  if (!("name" in body)) {
     return { ok: false, error: "Invalid request", status: 400 };
   }
   try {
-    const parsed = parseDisplayName(body);
+    const parsed = parseName(body);
     if (parsed === null) {
       return { ok: false, error: "Invalid request", status: 400 };
     }
-    return { ok: true, displayName: parsed };
+    return { ok: true, name: parsed };
   } catch (error) {
     if (error instanceof BadRequestError) {
       return { ok: false, error: "Invalid request", status: 400 };
@@ -342,7 +342,7 @@ export function toOrganizationRecord(row: {
 }): OrganizationSummary {
   return {
     id: row.id,
-    displayName: row.name,
+    name: row.name,
     createdAt: row.createdAt,
   };
 }

@@ -116,7 +116,7 @@ export function registerOrganizationRoutes(
     const { organizationId } = await createOrganizationForUser(
       db,
       session.userId,
-      parsedDisplayName.displayName,
+      parsedDisplayName.name,
     );
 
     return c.json({ ok: true as const, id: organizationId });
@@ -159,7 +159,7 @@ export function registerOrganizationRoutes(
     if (!orgRow) return c.json({ error: "Not found" }, 404);
 
     await db.update(organization).set({
-      name: parsed.displayName,
+      name: parsed.name,
       updatedAt: new Date().toISOString(),
     }).where(eq(organization.id, id));
 

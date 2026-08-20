@@ -58,13 +58,7 @@ const test = Deno.test.bind(Deno);
 
 const dbUrl = getDatabaseUrl();
 
-/**
- * Parsed exposure, plus the retired `bind` field still accepted by the
- * settings parser (migrated onto `scope`).
- */
-type ExposureInput =
-  | ManagedSettings["exposure"]
-  | { enabled: boolean; bind: string };
+type ExposureInput = ManagedSettings["exposure"];
 
 function exposureSettings(exposure: ExposureInput): ManagedSettings {
   const parsed = postgresEngineSpec.parseSettings({ exposure });
@@ -73,11 +67,8 @@ function exposureSettings(exposure: ExposureInput): ManagedSettings {
 }
 
 async function testEncryptionContext() {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     "data-encryption",
@@ -521,31 +512,9 @@ test("exposure disabled omits bindAddresses — no public ProxySQL publish", asy
   );
 });
 
-test("legacy exposure.bind migrates to scope during settings parse", () => {
-  const settings = exposureSettings({ enabled: true, bind: "public" });
-  assertEquals(settings.exposure.scope, "public");
-});
-
 test("exposure enabled + scope public resolves bindAddresses to all-interfaces", async () => {
   await withSingleClusterIngressFixture(
     { enabled: true, scope: "public" },
-    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
-      const built = await buildManagedIngressReconcilePayload(db, {
-        serverId,
-        secretsConfig,
-        dataEncryptionSecrets,
-      });
-      if (built === null || "kind" in built) {
-        throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`);
-      }
-      assertEquals(built.bindAddresses, ["0.0.0.0"]);
-    },
-  );
-});
-
-test("exposure enabled + legacy bind public resolves bindAddresses to all-interfaces", async () => {
-  await withSingleClusterIngressFixture(
-    { enabled: true, bind: "public" },
     async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
       const built = await buildManagedIngressReconcilePayload(db, {
         serverId,

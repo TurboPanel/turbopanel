@@ -74,7 +74,7 @@ export async function hashEmailForOtp(email: string): Promise<string> {
  * digest — a six-digit OTP space is offline-brute-forceable without a secret.
  * Outside explicit development mode a missing key fails closed; in explicit
  * development the same hard failure applies so tests must pass a derived
- * keyring (entrypoint boot always derives one from `TURBOPANEL_SECRET(S)`).
+ * keyring (entrypoint boot always derives one from `TURBOPANEL_SECRETS`).
  */
 export function requireOtpVerifierSecrets(
   secrets: DerivedSecretsConfig | undefined,
@@ -109,7 +109,7 @@ function constantTimeEqual(a: string, b: string): boolean {
  * log) would otherwise expose a live credential. Instead we store an HMAC-SHA256
  * of the OTP purpose ({@link OTP_VERIFIER_CONTEXT}), the flow `type`, and the
  * email context (`emailHash`), keyed by a server-held secret derived from
- * `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`. Format:
+ * `TURBOPANEL_SECRETS`. Format:
  * `tpotp.v{keyVersion}.{hmacHex}` — the embedded version selects current or
  * fallback keys during rotation. The {@link MAX_OTP_ATTEMPTS} attempt cap remains
  * the online brute-force defense; the HMAC secret blocks offline attacks on a

@@ -110,8 +110,7 @@ test('mergeCreateSettings merges exposure overrides and re-validates', () => {
   const legacyBind = mergeCreateSettings(postgresEngineSpec, {
     exposure: { enabled: true, bind: 'datacenter' },
   })
-  if (!legacyBind) throw new TypeError('expected merged settings')
-  assertEquals(legacyBind.exposure.scope, 'datacenter')
+  assertEquals(legacyBind, null)
 
   const invalidScope = mergeCreateSettings(postgresEngineSpec, {
     exposure: { enabled: true, scope: 'internet' },

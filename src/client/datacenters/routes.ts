@@ -32,7 +32,7 @@ import {
   buildPatchUpdateFields,
   getOrgId,
   parseDescription,
-  parseDisplayName,
+  parseName,
   parseJsonbObject,
   parseJsonBody,
 } from "../shared.ts";
@@ -68,7 +68,7 @@ function parseCreateDatacenterInput(
   let name: string | null;
   let description: string | null;
   try {
-    name = parseDisplayName(body);
+    name = parseName(body);
     description = parseDescription(body);
   } catch {
     return c.json({ error: "Invalid request" }, 400);
@@ -259,7 +259,7 @@ type DatacenterSubnetView = {
   id: string;
   cidr: string;
   version: 4 | 6;
-  displayName: string | null;
+  name: string | null;
   description: null;
   memberCount: number;
 };
@@ -298,7 +298,7 @@ async function loadDatacenterSubnetViews(
       id: subnet.networkId,
       cidr: subnet.cidr,
       version: subnet.version,
-      displayName: subnet.name,
+      name: subnet.name,
       description: null,
       memberCount: counts.get(subnet.networkId) ?? 0,
     }))
@@ -356,7 +356,7 @@ async function derivedSiteCidrsOverlap(
   );
 }
 
-async function orgDatacenterCidrsOverlap(
+function orgDatacenterCidrsOverlap(
   db: Db,
   organizationId: string,
   cidr: string,
@@ -444,7 +444,7 @@ export function registerDatacenterRoutes(
     const rows = await db
       .select({
         id: datacenter.id,
-        displayName: datacenter.name,
+        name: datacenter.name,
         description: datacenter.description,
         organizationId: datacenter.organizationId,
         metadata: datacenter.metadata,
@@ -573,7 +573,7 @@ export function registerDatacenterRoutes(
     const [row] = await db
       .select({
         id: datacenter.id,
-        displayName: datacenter.name,
+        name: datacenter.name,
         description: datacenter.description,
         organizationId: datacenter.organizationId,
         metadata: datacenter.metadata,
@@ -903,9 +903,9 @@ export function registerDatacenterRoutes(
       return c.json({ error: "invalid_cidr" }, 400);
     }
 
-    let displayName: string | null;
+    let name: string | null;
     try {
-      displayName = parseDisplayName(body);
+      name = parseName(body);
       parseDescription(body);
     } catch {
       return c.json({ error: "Invalid request" }, 400);
@@ -922,7 +922,7 @@ export function registerDatacenterRoutes(
         datacenterId: id,
         kind: "datacenter",
         cidr,
-        ...(displayName !== null ? { name: displayName } : {}),
+        ...(name !== null ? { name } : {}),
       })
       .returning({ id: network.id });
 
@@ -966,8 +966,8 @@ export function registerDatacenterRoutes(
 
     let name: string | null | undefined;
     try {
-      if (body.displayName !== undefined || body.name !== undefined) {
-        name = parseDisplayName(body);
+      if (body.name !== undefined) {
+        name = parseName(body);
       }
       if (body.description !== undefined) {
         parseDescription(body);

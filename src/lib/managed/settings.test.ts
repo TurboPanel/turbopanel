@@ -52,18 +52,8 @@ test('ssl.mode round-trips every supported mode and rejects unknown ones', () =>
   // A typo must reject rather than fall back to a weaker mode.
   assertEquals(parseManagedSettingsBase({ ssl: { mode: 'requrie' } }), null)
   assertEquals(parseManagedSettingsBase({ ssl: { mode: true } }), null)
-  // Legacy boolean contract migrates to explicit modes.
-  assertEquals(parseManagedSettingsBase({ ssl: { enabled: true } })?.ssl, {
-    mode: 'require',
-  })
-  assertEquals(parseManagedSettingsBase({ ssl: { enabled: false } })?.ssl, {
-    mode: 'disable',
-  })
-  // Explicit mode wins when both are present.
-  assertEquals(
-    parseManagedSettingsBase({ ssl: { enabled: true, mode: 'prefer' } })?.ssl,
-    { mode: 'prefer' },
-  )
+  assertEquals(parseManagedSettingsBase({ ssl: { enabled: true } }), null)
+  assertEquals(parseManagedSettingsBase({ ssl: { enabled: false } }), null)
 })
 
 test('image ref accept/reject', () => {
@@ -281,16 +271,10 @@ test('dockerOptions returns null on each denied key', () => {
   )
 })
 
-test('exposure accept/reject scope; legacy bind migrates', () => {
+test('exposure accept/reject scope only', () => {
   assertEquals(
     parseManagedSettingsBase({
       exposure: { enabled: true, scope: 'public' },
-    })?.exposure,
-    { enabled: true, scope: 'public' },
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, bind: 'public' },
     })?.exposure,
     { enabled: true, scope: 'public' },
   )
@@ -314,16 +298,22 @@ test('exposure accept/reject scope; legacy bind migrates', () => {
   )
   assertEquals(
     parseManagedSettingsBase({
+      exposure: { enabled: true, bind: 'public' },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
       exposure: { enabled: true, bind: 'internet' },
     }),
     null,
   )
-  // publishedPort is ignored — shared ProxySQL listeners use org ingress ports.
+  // Unknown exposure keys (e.g. retired publishedPort) reject the document.
   assertEquals(
     parseManagedSettingsBase({
       exposure: { enabled: true, publishedPort: 22, scope: 'local' },
-    })?.exposure,
-    { enabled: true, scope: 'local' },
+    }),
+    null,
   )
   assertEquals(
     parseManagedSettingsBase({
@@ -452,7 +442,7 @@ test('ssl / resources / engineConfig / exposure reject malformed input', () => {
   assertEquals(parseManagedSettingsBase({ exposure: { enabled: 1 } }), null)
   assertEquals(
     parseManagedSettingsBase({
-      exposure: { enabled: false, bind: 'internet' },
+      exposure: { enabled: false, bind: 'local' },
     }),
     null,
   )
@@ -621,10 +611,4 @@ test('image tag-only rejects and non-finite resource numbers', () => {
     parseManagedSettingsBase({ resources: { cpus: -2.5 } }),
     null,
   )
-})
-
-test('parseManagedSslMode migrates legacy ssl.enabled boolean', () => {
-  assertEquals(parseManagedSettingsBase({ ssl: { enabled: false } })?.ssl, {
-    mode: 'disable',
-  })
 })

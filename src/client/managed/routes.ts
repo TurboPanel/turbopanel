@@ -90,7 +90,6 @@ import {
   mapManagedBackupApiError,
   resolveBackupDatabase,
 } from './backups.ts'
-import { loadManagedStatusError } from './last-error.ts'
 import { fetchManagedLogs, parseLogsTailQuery } from './logs.ts'
 import {
   deleteManagedMember,
@@ -143,13 +142,13 @@ import {
   isManagedReplicationPrincipal,
   isPlainObject,
   managedSessionPaths,
-  managedStatusListenerParams,
+  loadManagedStatusSnapshot,
   mergeCreateSettings,
   mergeManagedPatchSettings,
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
   operatorPromoteHttpResult,
-  parseManagedCreateDisplayName,
+  parseManagedCreateName,
   parseManagedLifecycleAction,
   parseManagedUserCreateFields,
   parseMemberReadEligibleCreate,
@@ -186,7 +185,7 @@ async function findManagedForEnvironment(db: NonNullable<ReturnType<typeof getDb
     .select({
       id: managed.id,
       environmentId: managed.environmentId,
-      displayName: managed.name,
+      name: managed.name,
       engine: managed.engine,
       status: managed.status,
       metadata: managed.metadata,
@@ -336,7 +335,7 @@ async function deleteManagedCompensation(
 const MANAGED_RETURNING = {
   id: managed.id,
   environmentId: managed.environmentId,
-  displayName: managed.name,
+  name: managed.name,
   engine: managed.engine,
   status: managed.status,
   metadata: managed.metadata,
@@ -375,18 +374,18 @@ async function resolveManagedCreatePlan(
   body: Record<string, unknown>,
 ): Promise<
   | {
-    displayName: string
+    name: string
     settings: ManagedSettings
     initialDatabase: string
     rowOptions: ReturnType<typeof writeManagedRowOptions>
   }
   | Response
 > {
-  const displayNameResult = parseManagedCreateDisplayName(body)
+  const displayNameResult = parseManagedCreateName(body)
   if (!displayNameResult.ok) {
     return c.json({ error: displayNameResult.error }, displayNameResult.status)
   }
-  const displayName = displayNameResult.displayName
+  const displayName = displayNameResult.name
 
   let settings = mergeCreateSettings(ctx.spec, body)
   if (!settings) {
@@ -408,7 +407,7 @@ async function resolveManagedCreatePlan(
 
   const initialDatabase = readInitialDatabase(ctx.spec)
   return {
-    displayName: displayName ?? ctx.envDisplayName ?? ctx.spec.displayName,
+    name: displayName ?? ctx.envDisplayName ?? ctx.spec.displayName,
     settings,
     initialDatabase,
     rowOptions: writeManagedRowOptions({
@@ -426,7 +425,7 @@ async function insertManagedCreateTransaction(
     environmentId: string
     ctx: ManagedContext
     serverId: string
-    displayName: string
+    name: string
     rowOptions: ReturnType<typeof writeManagedRowOptions>
     initialDatabase: string
     dataEncryptionSecrets: DerivedSecretsConfig
@@ -440,7 +439,7 @@ async function insertManagedCreateTransaction(
     environmentId,
     ctx,
     serverId,
-    displayName,
+    name,
     rowOptions,
     initialDatabase,
     dataEncryptionSecrets,
@@ -451,7 +450,7 @@ async function insertManagedCreateTransaction(
     .values({
       environmentId,
       serverId,
-      name: displayName,
+      name: name,
       engine: ctx.spec.engine,
       status: 'provisioning',
       metadata: {},
@@ -659,7 +658,7 @@ async function createManagedAndEnqueueApply(
     createServerId: string
     userId: string
     plan: {
-      displayName: string
+      name: string
       rowOptions: ReturnType<typeof writeManagedRowOptions>
       initialDatabase: string
     }
@@ -684,7 +683,7 @@ async function createManagedAndEnqueueApply(
         environmentId,
         ctx,
         serverId: createServerId,
-        displayName: plan.displayName,
+        name: plan.name,
         rowOptions: plan.rowOptions,
         initialDatabase: plan.initialDatabase,
         dataEncryptionSecrets,
@@ -1013,7 +1012,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       ? await db
         .select({
           id: server.id,
-          displayName: server.name,
+          name: server.name,
           hostname: server.hostname,
         })
         .from(server)
@@ -1102,7 +1101,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .returning({
         id: managed.id,
         environmentId: managed.environmentId,
-        displayName: managed.name,
+        name: managed.name,
         engine: managed.engine,
         status: managed.status,
         metadata: managed.metadata,
@@ -2366,7 +2365,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (auth instanceof Response) return auth
 
     const row = await findManagedForEnvironment(db, environmentId)
-    const residual = row ? parseManagedResidual(row.metadata) : {}
+    const residual = parseManagedResidual(row?.metadata)
 
     const rows = await db
       .select({
@@ -2387,23 +2386,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .innerJoin(service, eq(container.serviceId, service.id))
       .where(eq(service.environmentId, environmentId))
 
-    const memberRows = row
-      ? await listManagedMembers(db, row.id)
-      : []
-
-    const lastError = row
-      ? await loadManagedStatusError(db, {
-          managedId: row.id,
-          status: row.status,
-          residualError: residual.error ?? null,
-          serverIds: [row.serverId, ...memberRows.map((entry) => entry.serverId)],
-        })
-      : null
-
-    const listenerParams = managedStatusListenerParams(row)
-    const listener = listenerParams
-      ? await resolveManagedConnectionListener(db, listenerParams)
-      : null
+    const { memberRows, lastError, listener } = await loadManagedStatusSnapshot(
+      db,
+      row,
+      residual,
+    )
 
     return c.json({
       status: row?.status ?? null,
@@ -2651,7 +2638,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .select({
         id: managed.id,
         environmentId: managed.environmentId,
-        displayName: managed.name,
+        name: managed.name,
         engine: managed.engine,
         status: managed.status,
         metadata: managed.metadata,

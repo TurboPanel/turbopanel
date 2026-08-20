@@ -2,11 +2,11 @@ import {
   applyValidatedComposeOption,
   isPlacementServerId,
   stripComposePlacementOption,
-  type ComposeLintIssue,
+  type ComposeValidationIssue,
 } from '../../lib/compose/index.ts'
 import {
   parseDescription,
-  parseDisplayName,
+  parseName,
   stripPromotedMetadataKeys,
 } from '../shared.ts'
 
@@ -24,13 +24,13 @@ export type EnvironmentRouteValidationError = {
 export type EnvironmentComposeValidationError = {
   ok: false
   error: 'compose_invalid'
-  issues: ComposeLintIssue[]
+  issues: ComposeValidationIssue[]
   status: 400
 }
 
 export type EnvironmentRow = {
   id: string
-  displayName: string | null
+  name: string | null
   description: string | null
   projectId: string
   serverId: string | null
@@ -43,7 +43,7 @@ export type EnvironmentRow = {
 export function serializeEnvironment(row: EnvironmentRow) {
   return {
     id: row.id,
-    displayName: row.displayName,
+    name: row.name,
     description: row.description,
     projectId: row.projectId,
     serverId: row.serverId,
@@ -71,12 +71,12 @@ export function parseJsonbField(
 export function parseCreateEnvironmentNames(
   body: Record<string, unknown>,
 ):
-  | { ok: true; displayName: string | null; description: string | null }
+  | { ok: true; name: string | null; description: string | null }
   | EnvironmentRouteValidationError {
   try {
     return {
       ok: true,
-      displayName: parseDisplayName(body),
+      name: parseName(body),
       description: parseDescription(body),
     }
   } catch {
@@ -143,7 +143,7 @@ export function parseOptionalServerIdShape(
   if (!isPlacementServerId(value)) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
-  return { ok: true, serverId: value }
+  return { ok: true, serverId: value as string }
 }
 
 export function parseEnvironmentPatchMetadata(

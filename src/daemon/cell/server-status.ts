@@ -18,11 +18,9 @@ import type {
 } from "../../lib/db/server-metadata.ts";
 import {
   osMetadataFromColumns,
-  parseServerOsMetadata,
   parseServerHostResources,
   parseServerDockerMetadata,
   timeSyncFromColumns,
-  parseServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
 import type { ServerReportedIp } from "../../server-addresses.ts";
 import { reportedIpsFromServerMetadata } from "../../server-addresses.ts";
@@ -57,7 +55,7 @@ export type ServerFleetPresence = {
     channel?: string;
   };
   geo: ServerGeo | null;
-  /** From `server.os_*` columns (daemon hello); leftover `metadata.os` is a fallback. */
+  /** From `server.os_*` columns (daemon hello). */
   os: ServerOsMetadata | null;
   /** From `server.metadata.resources` (cpu/RAM/swap + ips). */
   resources: ServerHostResources | null;
@@ -179,13 +177,13 @@ export async function resolveFleetPresence(
       osCodename: row.osCodename ?? null,
       osPrettyName: row.osPrettyName ?? null,
       osArchitecture: row.osArchitecture ?? null,
-    }) ?? parseServerOsMetadata(metadata.os) ?? null;
+    }) ?? null;
     const timeSync = timeSyncFromColumns({
       timezone: row.timezone ?? null,
       isTimeSyncEnabled: row.isTimeSyncEnabled ?? null,
       ntpServers: row.ntpServers,
       ntpLastSyncedAt: row.ntpLastSyncedAt ?? null,
-    }) ?? parseServerTimeSync(metadata.timeSync) ?? null;
+    }) ?? null;
     const ips = reportedIpsFromServerMetadata(metadata) ?? null;
     const state = parseServerDaemonState(row.daemon);
     const rawRemote = projection?.remoteAddress ?? null;

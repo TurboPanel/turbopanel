@@ -17,7 +17,6 @@ import { createSession } from '../authn/session-store.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-  parseSecretsEnv,
   type SecretsConfig,
 } from '../authn/secrets.ts'
 import {
@@ -39,7 +38,7 @@ import {
 } from '../../lib/db/schema.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { registerBindingRoutes } from './routes.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -170,7 +169,7 @@ async function withBindingFixtures(
     return
   }
 
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const db = createDenoDb()
   const { app, secrets, dataEncryptionSecrets } = await createBindingRoutesTestApp(
     db,

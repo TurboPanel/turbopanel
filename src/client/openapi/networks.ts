@@ -10,7 +10,7 @@ export const networkSchemas = {
       serverId: { type: ['string', 'null'], format: 'uuid' },
       kind: { type: 'string', enum: ['datacenter', 'docker'] },
       cidr: { type: ['string', 'null'] },
-      displayName: { type: ['string', 'null'] },
+      name: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
       options: { type: ['object', 'null'] },
       createdAt: { type: 'string', format: 'date-time' },
@@ -61,7 +61,7 @@ export const networkSchemas = {
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       serverId: { type: ['string', 'null'], format: 'uuid' },
       cidr: { type: 'string' },
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       metadata: { type: 'object' },
       options: {
         description:
@@ -76,7 +76,7 @@ export const networkSchemas = {
   PatchNetworkRequest: {
     type: 'object',
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       cidr: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
       options: {

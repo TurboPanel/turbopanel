@@ -818,7 +818,6 @@ type DeployCommandCreateParams = {
   projectId: string;
   organizationId: string;
   projectName: string;
-  composeYaml: string;
   composeFiles: EnvironmentDeployComposeFile[];
   hostings: DeployHostingPayload[];
   traditionalWebSites: EnvironmentDeployTraditionalWebSite[];
@@ -863,7 +862,6 @@ async function createDeployCommand(
       projectId: params.projectId,
       organizationId: params.organizationId,
       projectName: params.projectName,
-      composeYaml: params.composeYaml,
       composeFiles: params.composeFiles,
       generation: params.generation,
       desiredHash: params.desiredHash,
@@ -976,7 +974,6 @@ function createParamsForPreparedServer(
     projectId: params.projectId,
     organizationId: params.organizationId,
     projectName: params.projectName,
-    composeYaml: row.prepared.composeYaml,
     composeFiles: row.prepared.composeFiles,
     hostings: row.hostings,
     traditionalWebSites: buildTraditionalWebSitesForDeploy(
@@ -1269,13 +1266,12 @@ export function registerEnvironmentDeployPreviewRoutes(
 
     return c.json({
       ok: true as const,
-      composeYaml: first?.prepared.composeYaml ?? "",
       composeFiles: first?.prepared.composeFiles ?? [],
       projectName,
       servers: preparedByServer.map((row) => ({
         serverId: row.serverId,
-        displayName: nameById.get(row.serverId) ?? row.serverId,
-        composeYaml: row.prepared.composeYaml,
+        name: nameById.get(row.serverId) ?? row.serverId,
+        composeFiles: row.prepared.composeFiles,
         services: Object.keys(row.prepared.replicaCounts).sort((a, b) =>
           a.localeCompare(b)
         ),

@@ -105,7 +105,7 @@ function runCreateProjectTransaction(
   db: Db,
   input: {
     projectType: ResolvedCreateProjectType
-    displayName: string | null
+    name: string | null
     description: string | null
     workspaceId: string
     metadata: Record<string, unknown> | null
@@ -119,7 +119,7 @@ function runCreateProjectTransaction(
   return db.transaction((tx) => {
     if (input.projectType === 'empty') {
       return insertEmptyProject(tx, {
-        name: input.displayName,
+        name: input.name,
         description: input.description,
         workspaceId: input.workspaceId,
         serverId: input.serverId,
@@ -129,7 +129,7 @@ function runCreateProjectTransaction(
 
     if (input.projectType === 'docker-compose') {
       return insertDockerComposeProject(tx, {
-        name: input.displayName,
+        name: input.name,
         description: input.description,
         workspaceId: input.workspaceId,
         metadata: input.metadata,
@@ -148,7 +148,7 @@ function runCreateProjectTransaction(
 
     return insertCatalogProject(tx, {
       projectType: input.projectType,
-      name: input.displayName,
+      name: input.name,
       description: input.description,
       workspaceId: input.workspaceId,
       metadata: input.metadata,
@@ -162,7 +162,7 @@ function runCreateProjectTransaction(
 }
 
 type CreateProjectInput = {
-  displayName: string | null
+  name: string | null
   description: string | null
   workspaceId: string
   organizationId: string
@@ -215,10 +215,10 @@ function resolveWorkspaceIdForCreate(
   return resolveWorkspaceTarget(c, db, workspaceId, organizationId)
 }
 
-function parseDisplayNameAndDescription(
+function parseNameAndDescription(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
-): { displayName: string | null; description: string | null } | Response {
+): { name: string | null; description: string | null } | Response {
   const parsed = parseCreateProjectNames(body)
   if (!parsed.ok) {
     return c.json({ error: parsed.error }, parsed.status)
@@ -255,9 +255,9 @@ async function parseCreateProjectInput(
   const workspaceId = await resolveWorkspaceIdForCreate(c, db, body, organizationId)
   if (workspaceId instanceof Response) return workspaceId
 
-  const nameFields = parseDisplayNameAndDescription(c, body)
+  const nameFields = parseNameAndDescription(c, body)
   if (nameFields instanceof Response) return nameFields
-  const { displayName, description } = nameFields
+  const { name, description } = nameFields
 
   const projectType = resolveCreateProjectType(body)
   if (projectType === 'invalid') {
@@ -295,7 +295,7 @@ async function parseCreateProjectInput(
   )
 
   return {
-    displayName,
+    name,
     description,
     workspaceId,
     organizationId,
@@ -534,7 +534,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const rows = await db
       .select({
         id: project.id,
-        displayName: project.name,
+        name: project.name,
         description: project.description,
         workspaceId: project.workspaceId,
         metadata: project.metadata,
@@ -569,7 +569,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const rows = await db
       .select({
         id: project.id,
-        displayName: project.name,
+        name: project.name,
         description: project.description,
         workspaceId: project.workspaceId,
         metadata: project.metadata,
@@ -609,7 +609,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       await isProjectDisplayNameTaken(
         db,
         input.organizationId,
-        input.displayName,
+        input.name,
       )
     ) {
       return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)

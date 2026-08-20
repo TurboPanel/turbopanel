@@ -19,8 +19,8 @@ const REAL_IP_HEADER = "X-Real-IP";
 const TEST_SECRET = "aa_workers_ws_forward_test_secret_value_b_pad_abcdefghij0";
 
 async function createTestSecrets() {
-  return deriveDaemonJwtKeyring(
-    parseSecretsEnv(TEST_SECRET, undefined, "workers"),
+  return await deriveDaemonJwtKeyring(
+    parseSecretsEnv(`1:${TEST_SECRET}`, "workers"),
   );
 }
 
@@ -79,7 +79,7 @@ function createWorkersWsApp(secrets: Awaited<ReturnType<typeof createTestSecrets
     c.set("db", createMockDb());
     await next();
   });
-  registerWorkersDaemonWebSocket(app, { secrets });
+  registerWorkersDaemonWebSocket(app as unknown as Hono, { secrets });
   return app;
 }
 
@@ -92,7 +92,7 @@ function createWorkersWsAppWithLimiter(
     c.set("db", createMockDb());
     await next();
   });
-  registerWorkersDaemonWebSocket(app, { secrets, connectLimiter });
+  registerWorkersDaemonWebSocket(app as unknown as Hono, { secrets, connectLimiter });
   return app;
 }
 
@@ -174,7 +174,7 @@ describe("registerWorkersDaemonWebSocket forwarding", () => {
     const serverId = "test-srv-ws-rate-limited";
     const secrets = await createTestSecrets();
     const app = createWorkersWsAppWithLimiter(secrets, {
-      limit: async () => ({ success: false }),
+      limit: () => Promise.resolve({ success: false }),
     });
     const token = await issueTestToken(serverId);
     const { env, getForwardedRequest, getByNameArg } = createForwardCaptureEnv();
@@ -243,7 +243,7 @@ describe("registerWorkersDaemonWebSocket forwarding", () => {
   it("returns 503 when the request db is unavailable", async () => {
     const secrets = await createTestSecrets();
     const app = new Hono<{ Variables: AppEnv["Variables"]; Bindings: CloudflareBindings }>();
-    registerWorkersDaemonWebSocket(app, { secrets });
+    registerWorkersDaemonWebSocket(app as unknown as Hono, { secrets });
     const token = await issueTestToken("test-srv-ws-no-db");
     const { env } = createForwardCaptureEnv();
 
@@ -264,7 +264,7 @@ describe("registerWorkersDaemonWebSocket forwarding", () => {
     const serverId = "test-srv-ws-rate-allowed";
     const secrets = await createTestSecrets();
     const app = createWorkersWsAppWithLimiter(secrets, {
-      limit: async () => ({ success: true }),
+      limit: () => Promise.resolve({ success: true }),
     });
     const token = await issueTestToken(serverId);
     const { env, getForwardedRequest, getByNameArg } = createForwardCaptureEnv();

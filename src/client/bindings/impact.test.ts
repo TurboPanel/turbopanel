@@ -2,7 +2,7 @@
  * Host-free coverage for binding redeploy-impact helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   hasBindingsForDatabase,
@@ -58,14 +58,14 @@ test('listBindingImpactForPrincipal sorts by keyPrefix and sets count', async ()
     joinChain([
       {
         serviceId: 's2',
-        displayName: 'B',
+        name: 'B',
         environmentId: 'e1',
         projectId: 'p1',
         keyPrefix: 'ZZZ',
       },
       {
         serviceId: 's1',
-        displayName: 'A',
+        name: 'A',
         environmentId: 'e1',
         projectId: 'p1',
         keyPrefix: 'AAA',
@@ -103,7 +103,7 @@ test('hasBindingsForDatabase delegates to impact count', async () => {
       joinChain([
         {
           serviceId: 's1',
-          displayName: null,
+          name: null,
           environmentId: 'e1',
           projectId: 'p1',
           keyPrefix: 'DB',

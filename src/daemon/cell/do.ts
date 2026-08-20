@@ -20,10 +20,6 @@ import {
   type ServerOsMetadata,
   type ServerTimeSync,
 } from "../../lib/db/server-metadata.ts";
-import {
-  ipsFromDaemonPresence,
-  type ServerReportedIp,
-} from "../../server-addresses.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { handleManagedHaEvent } from "../../client/managed/ha-event.ts";
 import { touchServerMetadata } from "../../server-registry.ts";
@@ -731,7 +727,6 @@ export class DaemonCellObject {
     if (!this.#daemonJwtKeyringPromise) {
       this.#daemonJwtKeyringPromise = (async () => {
         const secretsConfig = parseSecretsEnv(
-          this.#env.TURBOPANEL_SECRET,
           this.#env.TURBOPANEL_SECRETS,
           "workers",
         );
@@ -1142,7 +1137,6 @@ export class DaemonCellObject {
       os?: ServerOsMetadata;
       resources?: ServerHostResources;
       timeSync?: ServerTimeSync;
-      ips?: ServerReportedIp[];
       docker?: ServerDockerMetadata;
     },
     geo?: ServerGeo,
@@ -1154,7 +1148,6 @@ export class DaemonCellObject {
         hostIdentity?.os ||
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
-        hostIdentity?.ips ||
         hostIdentity?.docker
       ) {
         await touchServerMetadata(db, serverId, {
@@ -1163,7 +1156,6 @@ export class DaemonCellObject {
           os: hostIdentity.os,
           resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
-          ips: hostIdentity.ips,
           docker: hostIdentity.docker,
         });
       }
@@ -1667,7 +1659,6 @@ export class DaemonCellObject {
       os?: ServerOsMetadata;
       resources?: ServerHostResources;
       timeSync?: ServerTimeSync;
-      ips?: ServerReportedIp[];
       docker?: ServerDockerMetadata;
     },
   ): Promise<void> {
@@ -1688,13 +1679,15 @@ export class DaemonCellObject {
     );
     const presenceFacts = {
       timeSync: parsed.timeSync,
-      ips: ipsFromDaemonPresence(parsed),
+      resources: resourcesFromDaemonPresence(parsed),
       docker: parsed.docker,
     };
     const hasPresenceFacts = Boolean(
-      presenceFacts.timeSync || presenceFacts.ips || presenceFacts.docker,
+      presenceFacts.timeSync ||
+        presenceFacts.resources ||
+        presenceFacts.docker,
     );
-    // hostname/os stay hello-only; timeSync / resources.ips / docker project
+    // hostname/os stay hello-only; timeSync / resources / docker project
     // on both hello and change-detected heartbeats.
     let hostIdentity:
       | {
@@ -1703,7 +1696,6 @@ export class DaemonCellObject {
         os?: ServerOsMetadata;
         resources?: ServerHostResources;
         timeSync?: ServerTimeSync;
-        ips?: ServerReportedIp[];
         docker?: ServerDockerMetadata;
       }
       | undefined;
@@ -1712,14 +1704,10 @@ export class DaemonCellObject {
         hostname: parsed.hostname,
         machineKey: parsed.machineKey,
         os: parsed.os,
-        resources: resourcesFromDaemonPresence(parsed),
         ...presenceFacts,
       };
     } else if (hasPresenceFacts) {
-      hostIdentity = {
-        ...presenceFacts,
-        resources: resourcesFromDaemonPresence(parsed),
-      };
+      hostIdentity = presenceFacts;
     }
     const hasHostIdentity = Boolean(
       hostIdentity?.hostname ||
@@ -1727,7 +1715,6 @@ export class DaemonCellObject {
         hostIdentity?.os ||
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
-        hostIdentity?.ips ||
         hostIdentity?.docker,
     );
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined;

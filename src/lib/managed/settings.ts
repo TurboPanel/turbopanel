@@ -291,18 +291,12 @@ function parseSsl(value: unknown): ManagedSettings['ssl'] | null {
   if (value === undefined) return { ...DEFAULT_MANAGED_SETTINGS.ssl }
   if (!isRecord(value)) return null
   for (const key of Object.keys(value)) {
-    if (key !== 'mode' && key !== 'enabled') return null
-  }
-  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') {
-    return null
+    if (key !== 'mode') return null
   }
   const mode = parseManagedSslMode(value.mode)
   if (mode === null) return null
   if (mode !== undefined) {
     return { mode }
-  }
-  if (value.enabled !== undefined) {
-    return { mode: value.enabled ? 'require' : 'disable' }
   }
   return {}
 }
@@ -502,17 +496,12 @@ function parseEngineConfig(value: unknown): string | null | undefined {
   return normalizeEngineConfig(value)
 }
 
-function migrateLegacyExposureBind(
-  value: unknown,
-): ManagedSqlAccessScope | null {
-  if (typeof value !== 'string') return null
-  if (isManagedSqlAccessScope(value)) return value
-  return null
-}
-
 function parseExposure(value: unknown): ManagedSettings['exposure'] | null {
   if (value === undefined) return { ...DEFAULT_MANAGED_SETTINGS.exposure }
   if (!isRecord(value)) return null
+  for (const key of Object.keys(value)) {
+    if (key !== 'enabled' && key !== 'scope') return null
+  }
   if (typeof value.enabled !== 'boolean') return null
 
   const exposure: ManagedSettings['exposure'] = { enabled: value.enabled }
@@ -520,10 +509,6 @@ function parseExposure(value: unknown): ManagedSettings['exposure'] | null {
   if (value.scope !== undefined) {
     if (!isManagedSqlAccessScope(value.scope)) return null
     exposure.scope = value.scope
-  } else if (value.bind !== undefined) {
-    const migrated = migrateLegacyExposureBind(value.bind)
-    if (migrated === null) return null
-    exposure.scope = migrated
   }
 
   return exposure

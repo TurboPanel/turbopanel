@@ -2,7 +2,7 @@
  * Host-free coverage for project route pure validation helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
@@ -18,7 +18,7 @@ import {
   resolveCreateProjectType,
 } from './routes-helpers.ts'
 import type { CatalogEntry } from './catalog/index.ts'
-import { emptyComposeDocument } from '../../lib/compose/index.ts'
+import { emptyComposeDocument, type ComposeDocument } from '../../lib/compose/index.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -63,9 +63,12 @@ test('catalogProjectOptions prefers caller options and engine defaults', () => {
   const entry = {
     code: 'postgres',
     kind: 'managed',
-    compose: { services: {} },
+    displayName: 'PostgreSQL',
+    description: 'Managed PostgreSQL',
+    compose: emptyComposeDocument(),
     options: { managedEngine: 'postgres' },
-  } as CatalogEntry
+    environments: [],
+  } satisfies CatalogEntry
 
   assertEquals(
     catalogProjectOptions({ options: { compose: { services: { web: {} } } }, entry }, true),
@@ -84,7 +87,7 @@ test('catalogProjectOptions prefers caller options and engine defaults', () => {
 test('parseCreateProjectNames validates display names', () => {
   const ok = parseCreateProjectNames({ name: 'My Project', description: 'Notes' })
   if (!ok.ok) throw new TypeError('expected valid names')
-  assertEquals(ok.displayName, 'My Project')
+  assertEquals(ok.name, 'My Project')
   assertEquals(ok.description, 'Notes')
 
   assertEquals(parseCreateProjectNames({ name: 'bad@name' }).ok, true)
@@ -101,7 +104,9 @@ test('parseCreateProjectOptions accepts valid compose documents', () => {
 
   const parsed = parseCreateProjectOptions({ options: { compose } })
   if (!parsed.ok) throw new TypeError('expected valid compose options')
-  assertEquals((parsed.options?.compose as typeof compose).data.services?.web?.image, 'nginx:alpine')
+  const services = (parsed.options?.compose as ComposeDocument).data
+    .services as Record<string, { image?: string }>
+  assertEquals(services.web?.image, 'nginx:alpine')
 })
 
 test('parseCreateProjectMetadata strips reserved component key', () => {
@@ -114,9 +119,10 @@ test('parseCreateProjectMetadata strips reserved component key', () => {
 })
 
 test('parseCreateProjectServerIdField accepts omitted, null, and uuid', () => {
-  assertEquals(parseCreateProjectServerIdField({}).ok, true)
-  if (!parseCreateProjectServerIdField({}).ok) throw new TypeError()
-  assertEquals(parseCreateProjectServerIdField({}).serverId, undefined)
+  const omitted = parseCreateProjectServerIdField({})
+  assertEquals(omitted.ok, true)
+  if (!omitted.ok) throw new TypeError()
+  assertEquals(omitted.serverId, undefined)
 
   const cleared = parseCreateProjectServerIdField({ serverId: null })
   if (!cleared.ok) throw new TypeError('expected null serverId')

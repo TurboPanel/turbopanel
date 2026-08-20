@@ -44,7 +44,7 @@ function lifecycleRow(overrides: {
 }) {
   return {
     id: overrides.id,
-    displayName: 'Organization CA',
+    name: 'Organization CA',
     source: 'organization_ca',
     organizationId: 'org-1',
     status: 'ready',

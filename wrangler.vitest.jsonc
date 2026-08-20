@@ -36,6 +36,6 @@
     }
   ],
   "vars": {
-    "TURBOPANEL_SECRET": "TEST_ONLY_TURBOPANEL_SECRET_aa_daemon_cell_vitest_b"
+    "TURBOPANEL_SECRETS": "1:TEST_ONLY_TURBOPANEL_SECRET_aa_daemon_cell_vitest_b"
   }
 }

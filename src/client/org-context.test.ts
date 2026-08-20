@@ -9,7 +9,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from './authn/crypto.ts'
 import { createSession } from './authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './authn/secrets.ts'
+import { deriveSecretsConfig } from './authn/secrets.ts'
 import {
   grant,
   organization,
@@ -25,12 +25,12 @@ import {
   resolveOrgId,
 } from './org-context.ts'
 
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
 async function createOrgTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {

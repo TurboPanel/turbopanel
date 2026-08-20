@@ -24,8 +24,7 @@ async function buildApp(
   runtime: 'deno' | 'workers' = 'workers',
 ): Promise<Hono<AppEnv>> {
   const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
+    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
     runtime,
   )
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -206,11 +205,8 @@ it('Deno createApp injects authRateLimiter before client routes (deny-all → 42
   // Regression: Deno previously set authRateLimiter *after* registerClientRoutes,
   // so client auth fell through to getSharedAuthRateLimiter(). A deny-all limiter
   // passed to createApp must be the one auth routes use.
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -253,11 +249,8 @@ it('Deno auth stays throttled when Redis-backed limiter fails closed', async () 
     }),
   )
 
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    'deno',
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,

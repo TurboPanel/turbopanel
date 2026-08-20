@@ -1,7 +1,9 @@
 /**
  * Ambient Deno types for the workspace TypeScript language service.
- * Deno runtime and `deno check` use `deno.json` libs; this file satisfies
- * editors that type-check via tsconfig.json without the Deno LSP.
+ * Deno runtime, `deno check`, and the Deno LSP use `deno.json` libs and
+ * exclude this file; it satisfies editors that type-check via tsconfig.json
+ * without the Deno LSP. Do not load it under Deno — it collides with
+ * `lib.deno.ns.d.ts` and `@types/node`.
  */
 
 /** Minimal Node/`nodejs_compat` env access for shared modules (Workers + tooling). */
@@ -171,6 +173,12 @@ declare module '@std/assert' {
 }
 
 declare module '@std/testing/bdd' {
+  export function describe(name: string, fn: () => void): void
+  export function describe(
+    name: string,
+    options: { ignore?: boolean; only?: boolean },
+    fn: () => void,
+  ): void
   export function it(name: string, fn: () => void | Promise<void>): void
   export function it(
     name: string,

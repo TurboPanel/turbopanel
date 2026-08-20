@@ -160,17 +160,13 @@ Object reads for deploy status. Hosting Caddy (`:80`/`:443`) is distinct from
 control-plane Caddy (`:8443`).
 
 **`composeFiles[]` (compiled runtime file):** `environment.deploy` carries
-`EnvironmentDeployComposeFile[]`. New deploys send a **single**
+`EnvironmentDeployComposeFile[]`. Deploys send a **single**
 `{ filename: 'compose.yaml', role: 'runtime', source: 'inline', content }` entry
 — that is the file the daemon writes under
 `/var/lib/turbopanel/deployments/<projectId>/<environmentId>/` next to `.env`
 (non-secrets, mode `0640`) and `deployment.json` (includes `secrets[]` plan, no
-plaintext). Older queued commands may still carry a project → environment →
-platform chain (`role: 'project' | 'environment' | 'platform'`). Each entry is
-`{ filename, role, source?: 'inline' | 'repository', path?: string, content }`:
-`filename` must match `COMPOSE_FILE_NAME_RE` (`/^[A-Za-z0-9._-]+\.ya?ml$/`,
-basename-only). The deprecated top-level **`composeYaml`** field is the same
-compiled body (legacy single-file fallback). Secret values never enter durable
+plaintext). `filename` must match `COMPOSE_FILE_NAME_RE`
+(`/^[A-Za-z0-9._-]+\.ya?ml$/`, basename-only). Secret values never enter durable
 YAML: `secretPlan[]` + `variableMaterial[]` (`tpdaemon` envelopes;
 `sealVariableMaterialForDaemon` always reseals plaintext) materialize files
 under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (mode

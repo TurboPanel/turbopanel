@@ -12,7 +12,6 @@ import { createSession } from '../authn/session-store.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-  parseSecretsEnv,
   type SecretsConfig,
 } from '../authn/secrets.ts'
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
@@ -45,7 +44,7 @@ import {
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { getCatalogEntry, readManagedEngineOptions } from '../projects/catalog/index.ts'
 import { registerManagedRoutes } from './routes.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -216,7 +215,7 @@ async function withManagedFixtures(
     return
   }
 
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const db = createDenoDb()
   try {
     await withManagedFixturesBody(db, secretsConfig, options, fn)
@@ -2155,7 +2154,9 @@ test('DELETE hard-deletes unplaced managed without enqueueing destroy', async ()
     })
     assertEquals(create.status, 200)
     const created = await create.json() as { managed: { id: string } }
-    await db.update(managed).set({ serverId: null }).where(
+    // Create enqueues apply and sets status=applying; clear the busy guard so
+    // DELETE can exercise the unplaced hard-delete path.
+    await db.update(managed).set({ serverId: null, status: 'ready' }).where(
       eq(managed.id, created.managed.id),
     )
 

@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -12,7 +12,6 @@ import { createSession } from '../authn/session-store.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-  parseSecretsEnv,
 } from '../authn/secrets.ts'
 import {
   container,
@@ -47,7 +46,7 @@ import {
   ensureSelfHostSystemHierarchy,
   ensureSystemHierarchy,
 } from '../system/hierarchy.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -60,7 +59,7 @@ const dbUrl = getDatabaseUrl()
 const test = Deno.test.bind(Deno)
 
 async function createProjectRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
@@ -351,11 +350,11 @@ test('POST /projects empty scaffolds Production once with type empty', async () 
     assertEquals(projectRow?.options, null)
 
     const envs = await db
-      .select({ displayName: environment.name })
+      .select({ name: environment.name })
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.displayName, 'Production')
+    assertEquals(envs[0]!.name, 'Production')
   })
 })
 
@@ -450,11 +449,11 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
     assertEquals(body.ok, true)
 
     const envs = await db
-      .select({ displayName: environment.name })
+      .select({ name: environment.name })
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.displayName, 'Staging')
+    assertEquals(envs[0]!.name, 'Staging')
   })
 })
 
@@ -491,11 +490,11 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
     const body = await res.json() as { ok: boolean; id: string }
 
     const envs = await db
-      .select({ displayName: environment.name })
+      .select({ name: environment.name })
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.displayName, 'Live')
+    assertEquals(envs[0]!.name, 'Live')
   })
 })
 
@@ -542,11 +541,11 @@ test('POST /projects/:id/configure reuses custom-named default environment', asy
     assertEquals(configureRes.status, 200)
 
     const envs = await db
-      .select({ displayName: environment.name })
+      .select({ name: environment.name })
       .from(environment)
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.displayName, 'Staging')
+    assertEquals(envs[0]!.name, 'Staging')
   })
 })
 
@@ -584,11 +583,11 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
     const [scaffolded] = await db
       .select({
         id: environment.id,
-        displayName: environment.name,
+        name: environment.name,
       })
       .from(environment)
       .where(eq(environment.projectId, id))
-    assertEquals(scaffolded?.displayName, 'Staging')
+    assertEquals(scaffolded?.name, 'Staging')
 
     await db
       .update(organization)
@@ -609,13 +608,13 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
     const envs = await db
       .select({
         id: environment.id,
-        displayName: environment.name,
+        name: environment.name,
       })
       .from(environment)
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
     assertEquals(envs[0]!.id, scaffolded!.id)
-    assertEquals(envs[0]!.displayName, 'Staging')
+    assertEquals(envs[0]!.name, 'Staging')
 
     const [projectRow] = await db
       .select({ metadata: project.metadata })
@@ -683,15 +682,15 @@ test('POST /projects/:id/configure prefers literal Production over org default m
     const envs = await db
       .select({
         id: environment.id,
-        displayName: environment.name,
+        name: environment.name,
         description: environment.description,
       })
       .from(environment)
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 2)
 
-    const production = envs.find((row) => row.displayName === 'Production')
-    const staging = envs.find((row) => row.displayName === 'Staging')
+    const production = envs.find((row) => row.name === 'Production')
+    const staging = envs.find((row) => row.name === 'Staging')
     assertEquals(production != null, true)
     assertEquals(staging != null, true)
     assertEquals(staging!.description, 'Custom default sibling')
@@ -772,13 +771,13 @@ test('POST /projects/:id/configure pins serverId on existing default environment
 
       const [after] = await db
         .select({
-          displayName: environment.name,
+          name: environment.name,
           serverId: environment.serverId,
         })
         .from(environment)
         .where(eq(environment.projectId, id))
         .limit(1)
-      assertEquals(after?.displayName, 'Production')
+      assertEquals(after?.name, 'Production')
       assertEquals(after?.serverId, serverId)
     } finally {
       await db
@@ -920,11 +919,11 @@ test('POST /projects/:id/configure managed postgres reuses Production', async ()
     assertEquals(metadata?.code, 'postgres')
 
     const envs = await db
-      .select({ id: environment.id, displayName: environment.name })
+      .select({ id: environment.id, name: environment.name })
       .from(environment)
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.displayName, 'Production')
+    assertEquals(envs[0]!.name, 'Production')
 
     const managedForEnv = await db
       .select({ id: managed.id })
@@ -1100,7 +1099,7 @@ test('system workspace project mutations return system_resource_immutable', asyn
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ displayName: 'Renamed Ingress' }),
+      body: JSON.stringify({ name: 'Renamed Ingress' }),
     })
     assertEquals(patchSystem.status, 403)
     assertEquals(await patchSystem.json(), {
@@ -1145,7 +1144,7 @@ test('system descendant mutations return system_resource_immutable; container re
     systemEnvironmentId,
     systemServiceId,
   }) => {
-    const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+    const secretsConfig = parseTestSecretsConfig('deno')
     const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
       secretsConfig,
       'data-encryption',
@@ -1175,7 +1174,7 @@ test('system descendant mutations return system_resource_immutable; container re
       {
         method: 'PATCH',
         headers,
-        body: JSON.stringify({ displayName: 'Nope' }),
+        body: JSON.stringify({ name: 'Nope' }),
       },
     )
     assertEquals(patchEnv.status, 403)
@@ -1345,7 +1344,7 @@ test('TurboPanel self-host descendant mutations return system_resource_immutable
     selfHostEnvironmentId,
     selfHostServiceId,
   }) => {
-    const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+    const secretsConfig = parseTestSecretsConfig('deno')
     const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
       secretsConfig,
       'data-encryption',
@@ -1376,7 +1375,7 @@ test('TurboPanel self-host descendant mutations return system_resource_immutable
     // Environment / service delete.
     const patchEnv = await descendantApp.request(
       `/environments/${selfHostEnvironmentId}`,
-      { method: 'PATCH', headers, body: JSON.stringify({ displayName: 'Nope' }) },
+      { method: 'PATCH', headers, body: JSON.stringify({ name: 'Nope' }) },
     )
     assertEquals(patchEnv.status, 403)
     assertEquals(await patchEnv.json(), {

@@ -4,11 +4,14 @@
   // Workers Vitest files import the virtual `cloudflare:test` module; Deno
   // treats `cloudflare:` as a remote URL scheme (`no-cache`). Leave them to
   // tsc / vitest-pool-workers (triple-slash refs in those files).
+  // `ts-deno-globals.d.ts` is a tsc-only shim (see that file); Deno already
+  // has `lib.deno.ns.d.ts` and would report merge conflicts.
   "deno.disablePaths": [
     "./src/daemon/durable-object.test.ts",
     "./src/daemon/cell/do-registry.test.ts",
     "./src/workers.entry.test.ts",
-    "./vitest.config.ts"
+    "./vitest.config.ts",
+    "./ts-deno-globals.d.ts"
   ],
   "files.associations": {
     ".secretscan-allowlist": "plaintext"

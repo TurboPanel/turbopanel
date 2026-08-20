@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import {
   buildSignedCookie,
   resolveRequestTls,
@@ -149,7 +150,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
  * Cloudflare Workers has no install wizard — first-user bootstrap uses public
  * sign-up (`POST /api/client/v1/auth/sign-up` or OTP auto-registration).
  */
-export function registerInstallRoutes(app: Hono, opts: AuthRouteOpts) {
+export function registerInstallRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   const install = new Hono({ strict: false })
 
   install.post('/bootstrap', async (c) => {

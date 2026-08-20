@@ -6,14 +6,16 @@ import {
   expandedOriginServiceNames,
   mergeComposeLayers,
   PLATFORM_COMPOSE_FILENAME,
-  PROJECT_COMPOSE_FILENAME,
   RUNTIME_COMPOSE_FILENAME,
-  renderComposeFiles,
+  renderRuntimeComposeFiles,
   stripComposeTurbopanelExtensions,
 } from './deploy-layers.ts'
 import { applyVariablesToComposeDocument } from '../../lib/compose/apply-variables.ts'
-import type { ComposeDocument } from '../../lib/compose/index.ts'
-import { emptyComposeDocument } from '../../lib/compose/index.ts'
+import {
+  composeDocumentToRuntimeYaml,
+  emptyComposeDocument,
+  type ComposeDocument,
+} from '../../lib/compose/index.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -185,48 +187,24 @@ test('buildPlatformComposeLayer diffs injected keys and materializes expanded si
   })
 })
 
-test('renderComposeFiles omits blank environment overlay and falls back when all blank', () => {
-  const withBlankEnv = renderComposeFiles([
-    {
-      role: 'project',
-      filename: PROJECT_COMPOSE_FILENAME,
-      document: doc({ services: { web: { image: 'nginx' } } }),
-    },
-    {
-      role: 'environment',
-      filename: 'docker-compose.env.yml',
-      document: emptyComposeDocument(),
-    },
-    {
-      role: 'platform',
-      filename: PLATFORM_COMPOSE_FILENAME,
-      document: doc({
-        services: { web: { container_name: 'uuid' } },
-      }),
-    },
-  ])
-  assertEquals(withBlankEnv.map((f) => f.filename), [
-    PROJECT_COMPOSE_FILENAME,
-    PLATFORM_COMPOSE_FILENAME,
-  ])
-  assertEquals(withBlankEnv.every((f) => f.source === 'inline'), true)
+test('renderRuntimeComposeFiles emits a single runtime compose.yaml', () => {
+  const files = renderRuntimeComposeFiles(
+    'services:\n  web:\n    image: nginx\n',
+  )
+  assertEquals(files.length, 1)
+  assertEquals(files[0]!.filename, RUNTIME_COMPOSE_FILENAME)
+  assertEquals(files[0]!.role, 'runtime')
+  assertEquals(files[0]!.source, 'inline')
+  assertEquals(files[0]!.content, 'services:\n  web:\n    image: nginx\n')
+})
 
-  const allBlank = renderComposeFiles([
-    {
-      role: 'project',
-      filename: PROJECT_COMPOSE_FILENAME,
-      document: emptyComposeDocument(),
-    },
-    {
-      role: 'environment',
-      filename: 'docker-compose.env.yml',
-      document: emptyComposeDocument(),
-    },
-  ])
-  assertEquals(allBlank.length, 1)
-  assertEquals(allBlank[0]!.role, 'runtime')
-  assertEquals(allBlank[0]!.filename, RUNTIME_COMPOSE_FILENAME)
-  assertEquals(allBlank[0]!.content, 'services: {}\n')
+test('renderRuntimeComposeFiles falls back to empty services when content is blank', () => {
+  const files = renderRuntimeComposeFiles('')
+  assertEquals(files.length, 1)
+  assertEquals(files[0]!.filename, RUNTIME_COMPOSE_FILENAME)
+  assertEquals(files[0]!.role, 'runtime')
+  assertEquals(files[0]!.source, 'inline')
+  assertEquals(files[0]!.content, 'services: {}\n')
 })
 
 test('merge of user layers + platform equals effective after extension strip', () => {
@@ -281,11 +259,11 @@ test('merge of user layers + platform equals effective after extension strip', (
 })
 
 test(
-  'list-form environment + platform inject: composeYaml effective matches merge of composeFiles',
+  'list-form environment + platform inject: merged layers match the effective document',
   () => {
     // User compose keeps list-form environment; platform injects mapping keys.
-    // composeYaml (apply-variables effective) must match mergeComposeLayers of
-    // the emitted composeFiles chain so preview / legacy daemon match multi-file.
+    // The compiled runtime file is a single compose.yaml, so preview and deploy
+    // share the merged effective document rather than a multi-file -f chain.
     const project = doc({
       services: {
         web: {
@@ -345,10 +323,14 @@ test(
         document: platformDocument,
       },
     ]
-    const composeFiles = renderComposeFiles(layers)
-    assertEquals(composeFiles.length >= 1, true)
-
     const assembled = mergeComposeLayers(layers)
+    const runtimeFiles = renderRuntimeComposeFiles(
+      composeDocumentToRuntimeYaml(assembled),
+    )
+    assertEquals(runtimeFiles.length, 1)
+    assertEquals(runtimeFiles[0]!.filename, RUNTIME_COMPOSE_FILENAME)
+    assertEquals(runtimeFiles[0]!.role, 'runtime')
+    assertEquals(runtimeFiles[0]!.source, 'inline')
     assertEquals(
       stripComposeTurbopanelExtensions(assembled).data,
       stripComposeTurbopanelExtensions(effective).data,

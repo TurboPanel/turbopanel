@@ -2,13 +2,12 @@
  * Host-free coverage for service route pure validation helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   parseServiceCreateFields,
   parseServicePatchFields,
   rejectComposeServiceNameInBody,
   serializeService,
-  SERVICE_CREATE_NOT_SUPPORTED,
   stripServicePromotedMetadata,
 } from './routes-helpers.ts'
 
@@ -26,7 +25,7 @@ test('serializeService exposes composeServiceName', () => {
   assertEquals(
     serializeService({
       id: validUuid,
-      displayName: 'Web',
+      name: 'Web',
       description: null,
       environmentId: validUuid,
       composeServiceName: 'web',
@@ -82,13 +81,13 @@ test('parseServicePatchFields normalizes metadata and options', () => {
 
 test('parseServiceCreateFields accepts display metadata and options', () => {
   const parsed = parseServiceCreateFields({
-    displayName: 'API',
+    name: 'API',
     description: 'edge',
     metadata: { composeServiceName: 'drop', note: 1 },
     options: { instances: 2 },
   })
   if (!parsed.ok) throw new TypeError('expected valid service create')
-  assertEquals(parsed.displayName, 'API')
+  assertEquals(parsed.name, 'API')
   assertEquals(parsed.description, 'edge')
   assertEquals(parsed.metadata?.composeServiceName, undefined)
   assertEquals(parsed.metadata?.note, 1)

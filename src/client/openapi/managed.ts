@@ -66,7 +66,7 @@ export const managedSchemas = {
     required: [
       'id',
       'serverId',
-      'serverDisplayName',
+      'serverName',
       'role',
       'replicaClass',
       'readEligible',
@@ -77,7 +77,7 @@ export const managedSchemas = {
     properties: {
       id: { type: 'string' },
       serverId: { type: 'string' },
-      serverDisplayName: { type: 'string', nullable: true },
+      serverName: { type: 'string', nullable: true },
       role: { type: 'string', enum: ['primary', 'replica'] },
       replicaClass: {
         type: 'string',
@@ -104,7 +104,7 @@ export const managedSchemas = {
     required: [
       'id',
       'environmentId',
-      'displayName',
+      'name',
       'engine',
       'status',
       'host',
@@ -118,7 +118,7 @@ export const managedSchemas = {
     properties: {
       id: { type: 'string' },
       environmentId: { type: 'string', nullable: true },
-      displayName: { type: 'string', nullable: true },
+      name: { type: 'string', nullable: true },
       engine: {
         type: 'string',
         nullable: true,
@@ -198,7 +198,7 @@ export const managedSchemas = {
         nullable: true,
         properties: {
           id: { type: 'string' },
-          displayName: { type: 'string', nullable: true },
+          name: { type: 'string', nullable: true },
         },
       },
       rootUsername: { type: 'string', nullable: true },
@@ -268,9 +268,9 @@ export const managedSchemas = {
   CreateManagedRequest: {
     type: 'object',
     properties: {
-      displayName: {
+      name: {
         type: 'string',
-        description: 'Optional display name; defaults to the environment name',
+        description: 'Optional name; defaults to the environment name',
       },
       exposure: {
         type: 'object',
@@ -374,7 +374,7 @@ export const managedSchemas = {
           ],
           properties: {
             serviceId: { type: 'string' },
-            displayName: { type: ['string', 'null'] },
+            name: { type: ['string', 'null'] },
             environmentId: { type: 'string' },
             projectId: { type: 'string' },
             keyPrefix: { type: 'string' },
@@ -523,13 +523,13 @@ export const managedSchemas = {
       'id',
       'engine',
       'engineDisplayName',
-      'displayName',
+      'name',
       'projectId',
-      'projectDisplayName',
+      'projectName',
       'environmentId',
-      'environmentDisplayName',
+      'environmentName',
       'serverId',
-      'serverDisplayName',
+      'serverName',
       'status',
       'host',
       'port',
@@ -539,13 +539,13 @@ export const managedSchemas = {
       id: { type: 'string' },
       engine: { type: 'string', nullable: true },
       engineDisplayName: { type: 'string', nullable: true },
-      displayName: { type: 'string', nullable: true },
+      name: { type: 'string', nullable: true },
       projectId: { type: 'string' },
-      projectDisplayName: { type: 'string', nullable: true },
+      projectName: { type: 'string', nullable: true },
       environmentId: { type: 'string' },
-      environmentDisplayName: { type: 'string', nullable: true },
+      environmentName: { type: 'string', nullable: true },
       serverId: { type: 'string', nullable: true },
-      serverDisplayName: { type: 'string', nullable: true },
+      serverName: { type: 'string', nullable: true },
       status: { type: 'string', nullable: true },
       host: { type: 'string', nullable: true },
       port: { type: 'number', nullable: true },

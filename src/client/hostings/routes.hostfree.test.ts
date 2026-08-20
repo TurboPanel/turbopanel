@@ -2,13 +2,13 @@
  * Host-free coverage for hosting route short-circuits (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
 import { registerHostingRoutes } from './routes.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -19,14 +19,18 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
 const test = Deno.test.bind(Deno)
 
 async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     if (db) c.set('db', db)
     return next()
   })
-  registerHostingRoutes(app, { secrets, runtime: 'deno' })
+  registerHostingRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   return app
 }
 
@@ -34,7 +38,7 @@ test('registerHostingRoutes requires session secrets', () => {
   const app = new Hono<AppEnv>()
   let threw = false
   try {
-    registerHostingRoutes(app, { runtime: 'deno' })
+    registerHostingRoutes(app, { runtime: 'deno', signupEnvOverride: undefined })
   } catch (error) {
     threw = true
     assertEquals(error instanceof TypeError, true)
@@ -61,7 +65,7 @@ test('POST /hostings returns 401 without a session', async () => {
   const res = await app.request('/hostings', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ displayName: 'Site' }),
+    body: JSON.stringify({ name: 'Site' }),
   })
   assertEquals(res.status, 401)
 })

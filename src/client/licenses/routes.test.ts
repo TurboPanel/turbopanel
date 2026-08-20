@@ -10,7 +10,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
   colocatedLicenseRevokeError,
@@ -32,7 +32,7 @@ import { ensureSelfHostSystemHierarchy } from '../system/hierarchy.ts'
 import { registerLicenseRoutes } from './routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -51,7 +51,7 @@ async function createLicenseTestApp(
   db: ReturnType<typeof createDenoDb>,
   registry?: DaemonCellRegistry,
 ) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -570,7 +570,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
   }
 })
 
-test('POST /licenses rejects reserved colocated displayName', async () => {
+test('POST /licenses rejects reserved colocated name', async () => {
   await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, ownerId)
     const res = await app.request('/licenses', {
@@ -584,7 +584,7 @@ test('POST /licenses rejects reserved colocated displayName', async () => {
 
     if (res.status !== 400) {
       throw new Error(
-        `expected 400 creating license with reserved displayName, got ${res.status}`,
+        `expected 400 creating license with reserved name, got ${res.status}`,
       )
     }
 
@@ -593,7 +593,7 @@ test('POST /licenses rejects reserved colocated displayName', async () => {
       .from(license)
       .where(eq(license.organizationId, organizationId))
     if (rows.length !== 0) {
-      throw new Error('reserved displayName must not create a license row')
+      throw new Error('reserved name must not create a license row')
     }
   })
 })
@@ -602,7 +602,7 @@ test('POST /licenses normalizes Unicode, smart quotes, and trimming', async () =
   await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, ownerId)
     const res = await postLicense(app, cookie, organizationId, {
-      displayName: '  O\u2019Reilly Café 东京  ',
+      name: '  O\u2019Reilly Café 东京  ',
     })
     assertEquals(res.status, 200)
 
@@ -618,7 +618,7 @@ test('POST /licenses omits whitespace-only optional names', async () => {
   await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, ownerId)
     const res = await postLicense(app, cookie, organizationId, {
-      displayName: '   ',
+      name: '   ',
     })
     assertEquals(res.status, 200)
 
@@ -630,16 +630,16 @@ test('POST /licenses omits whitespace-only optional names', async () => {
   })
 })
 
-test('POST /licenses rejects control characters and over-length displayName', async () => {
+test('POST /licenses rejects control characters and over-length name', async () => {
   await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, ownerId)
     const control = await postLicense(app, cookie, organizationId, {
-      displayName: 'bad\nname',
+      name: 'bad\nname',
     })
     assertEquals(control.status, 400)
 
     const overLength = await postLicense(app, cookie, organizationId, {
-      displayName: 'a'.repeat(DISPLAY_NAME_MAX_LENGTH + 1),
+      name: 'a'.repeat(DISPLAY_NAME_MAX_LENGTH + 1),
     })
     assertEquals(overLength.status, 400)
 

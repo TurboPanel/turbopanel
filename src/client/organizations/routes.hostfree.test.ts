@@ -8,7 +8,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
 import { organization } from '../../lib/db/schema.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -19,7 +19,7 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
 import { registerOrganizationRoutes } from './routes.ts'
 
 /**
@@ -49,7 +49,7 @@ const ORG_PATHS = [
 ] as const
 
 async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -75,7 +75,7 @@ type SessionAppOpts = {
 async function buildSessionApp(
   opts: SessionAppOpts,
 ): Promise<{ app: Hono<AppEnv>; cookie: string }> {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
   const userId = crypto.randomUUID()
@@ -122,7 +122,6 @@ async function buildSessionApp(
           const row = {
             id: orgId,
             name: 'Org Routes',
-            displayName: 'Org Routes',
             createdAt: '2020-01-01T00:00:00.000Z',
             options: opts.orgOptions ?? null,
           }
@@ -176,7 +175,7 @@ test('organization routes return 401 without a session cookie', async () => {
   }
 })
 
-test('POST /organizations returns 400 for a control-character displayName', async () => {
+test('POST /organizations returns 400 for a control-character name', async () => {
   const { app, cookie } = await buildSessionApp({ manageAllowed: true })
   const res = await app.request('/organizations', {
     method: 'POST',
@@ -184,7 +183,7 @@ test('POST /organizations returns 400 for a control-character displayName', asyn
       Cookie: cookie,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ displayName: 'bad\nname' }),
+    body: JSON.stringify({ name: 'bad\nname' }),
   })
   assertEquals(res.status, 400)
 })
@@ -223,13 +222,13 @@ test('PATCH /organizations/:id returns 403 when manage is denied', async () => {
       Cookie: cookie,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ displayName: 'Renamed' }),
+    body: JSON.stringify({ name: 'Renamed' }),
   })
   assertEquals(res.status, 403)
   assertEquals(await res.json(), { error: 'Forbidden' })
 })
 
-test('PATCH /organizations/:id returns 400 when displayName is missing', async () => {
+test('PATCH /organizations/:id returns 400 when name is missing', async () => {
   const { app, cookie } = await buildSessionApp({
     manageAllowed: true,
     executeQueue: [[{ allowed: true }]],
@@ -245,7 +244,7 @@ test('PATCH /organizations/:id returns 400 when displayName is missing', async (
   assertEquals(res.status, 400)
 })
 
-test('PATCH /organizations/:id returns 400 for an empty displayName', async () => {
+test('PATCH /organizations/:id returns 400 for an empty name', async () => {
   const { app, cookie } = await buildSessionApp({
     manageAllowed: true,
     executeQueue: [[{ allowed: true }]],
@@ -256,7 +255,7 @@ test('PATCH /organizations/:id returns 400 for an empty displayName', async () =
       Cookie: cookie,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ displayName: '' }),
+    body: JSON.stringify({ name: '' }),
   })
   assertEquals(res.status, 400)
 })

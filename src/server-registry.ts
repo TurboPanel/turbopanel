@@ -2,10 +2,6 @@ import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from './db.ts'
 import { verifyDaemonLicense } from './daemon/authn/license.ts'
 import {
-  parseServerIps,
-  type ServerReportedIp,
-} from './server-addresses.ts'
-import {
   mergeServerHostResources,
   osColumnsEqual,
   osColumnsFromMetadata,
@@ -79,21 +75,14 @@ export type ServerHelloIdentity = {
   os?: ServerOsMetadata
   resources?: ServerHostResources
   timeSync?: ServerTimeSync
-  ips?: ServerReportedIp[]
   docker?: ServerDockerMetadata
 }
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   const patch: Partial<ServerMetadata> = {}
   const resources = parseServerHostResources(identity.resources)
-  const ips =
-    identity.ips === undefined ? undefined : parseServerIps(identity.ips)
-  let nextResources = resources
-  if (ips !== undefined) {
-    nextResources = mergeServerHostResources(resources, { ips })
-  }
-  if (nextResources && Object.keys(nextResources).length > 0) {
-    patch.resources = nextResources
+  if (resources && Object.keys(resources).length > 0) {
+    patch.resources = resources
   }
   const docker = parseServerDockerMetadata(identity.docker)
   if (docker) patch.docker = docker
@@ -161,7 +150,7 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'ips' | 'docker'
+    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'docker'
   >,
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)

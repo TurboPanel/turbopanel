@@ -4,7 +4,7 @@
 
 export type TeamListRow = {
   id: string
-  displayName: string | null
+  name: string | null
   organizationId: string
   createdAt: string
   updatedAt: string

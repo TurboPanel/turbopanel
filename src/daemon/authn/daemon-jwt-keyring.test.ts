@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { parseSecretsEnv } from '../../client/authn/secrets.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import {
@@ -14,7 +14,7 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-const LEGACY_V1 = TEST_ONLY_TURBOPANEL_SECRET
+const PLURAL_V1 = TEST_ONLY_TURBOPANEL_SECRET
 const PLURAL_V2 = 'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7'
 const PLURAL_V3 = 'Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2Mm3Nn4_Oo5Pp6Qq7Rr8'
 
@@ -55,17 +55,15 @@ test('deriveDaemonJwtKeyring exposes active kid and verifiers for each version',
 })
 
 test(
-  'deriveDaemonJwtKeyring keeps first plural entry active when parseSecretsEnv folds legacy TURBOPANEL_SECRET',
+  'deriveDaemonJwtKeyring keeps first keyring entry active for multi-version TURBOPANEL_SECRETS',
   async () => {
-    // Real migration shape: ordered TURBOPANEL_SECRETS + folded decrypt-only v1.
     const config = parseSecretsEnv(
-      LEGACY_V1,
-      `3:${PLURAL_V3},2:${PLURAL_V2}`,
+      `3:${PLURAL_V3},2:${PLURAL_V2},1:${PLURAL_V1}`,
       'deno',
     )
     assertEquals(config.versioned.map((v) => v.version), [3, 2, 1])
     assertEquals(config.versioned[0]?.value, PLURAL_V3)
-    assertEquals(config.versioned[2], { version: 1, value: LEGACY_V1 })
+    assertEquals(config.versioned[2], { version: 1, value: PLURAL_V1 })
 
     const keyring = await deriveDaemonJwtKeyring(config)
     const fromFirstPluralOnly = await deriveDaemonJwtKeyring({

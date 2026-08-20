@@ -23,7 +23,6 @@ function resolveLocalConsoleRootSecret(): string | undefined {
     // Invalid/weak configurations throw and disable local-console auth rather
     // than falling back to a loose parse.
     const config = parseSecretsEnv(
-      Deno.env.get('TURBOPANEL_SECRET'),
       Deno.env.get('TURBOPANEL_SECRETS'),
       'deno',
     )
@@ -117,7 +116,7 @@ export async function hashLocalConsoleContent(
   body: Uint8Array | string,
 ): Promise<string> {
   const bytes = typeof body === 'string' ? new TextEncoder().encode(body) : body
-  return sha256Base64Url(bytes)
+  return await sha256Base64Url(bytes)
 }
 
 /** Build `Authorization: Local-Console …` for the co-located dev console. */

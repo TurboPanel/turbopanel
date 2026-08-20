@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Env } from 'hono'
 import { eq } from 'drizzle-orm'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
@@ -68,7 +68,7 @@ export function buildDeveloperRouter(
     return c.json({ connections })
   })
 
-  developer.get('/daemon/events', async (c) => {
+  developer.get('/daemon/events', (c) => {
     return c.json({ events: [] })
   })
 
@@ -450,13 +450,16 @@ export function buildDeveloperRouter(
   return developer
 }
 
-export function mountDeveloperRouter(app: Hono, developer: Hono): Hono {
+export function mountDeveloperRouter<E extends Env>(
+  app: Hono<E>,
+  developer: Hono,
+): Hono {
   app.route(DEVELOPER_API_PREFIX, developer)
   return developer
 }
 
-export function registerDeveloperRoutesCore(
-  app: Hono,
+export function registerDeveloperRoutesCore<E extends Env>(
+  app: Hono<E>,
   opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
 ) {
   return mountDeveloperRouter(app, buildDeveloperRouter(opts))

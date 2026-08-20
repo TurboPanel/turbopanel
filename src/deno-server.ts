@@ -177,7 +177,6 @@ export async function startDenoServer(
   await assertPasswordHasherAvailable()
   logInfo('auth', 'Argon2id password hasher available')
   const secretsConfig = parseSecretsEnv(
-    Deno.env.get('TURBOPANEL_SECRET'),
     Deno.env.get('TURBOPANEL_SECRETS'),
     'deno',
   )
@@ -279,9 +278,9 @@ export async function startDenoServer(
     c.set('platformEnv', Deno.env.toObject())
     return next()
   })
-  // Install / daemon registrars still take untyped Hono.
+  // Daemon registrars still take untyped Hono; install/admin use AppEnv.
   const routes = app as unknown as Hono
-  registerInstallRoutes(routes, {
+  registerInstallRoutes(app, {
     secrets: sessionSecrets,
     otpVerifierSecrets,
     runtime: 'deno',

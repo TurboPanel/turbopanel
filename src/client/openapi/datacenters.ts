@@ -8,7 +8,7 @@ export const datacenterSchemas = {
       id: { type: "string", format: "uuid" },
       cidr: { type: "string" },
       version: { type: "integer", enum: [4, 6] },
-      displayName: { type: ["string", "null"] },
+      name: { type: ["string", "null"] },
       description: { type: ["string", "null"] },
       memberCount: { type: "integer", minimum: 0 },
     },
@@ -19,7 +19,7 @@ export const datacenterSchemas = {
     properties: {
       id: { type: "string", format: "uuid" },
       organizationId: { type: "string", format: "uuid" },
-      displayName: { type: ["string", "null"] },
+      name: { type: ["string", "null"] },
       description: { type: ["string", "null"] },
       metadata: { type: ["object", "null"] },
       options: {
@@ -64,7 +64,7 @@ export const datacenterSchemas = {
     type: "object",
     required: ["members"],
     properties: {
-      displayName: { type: "string" },
+      name: { type: "string" },
       description: { type: "string" },
       metadata: { type: "object" },
       options: { type: "object" },
@@ -94,14 +94,14 @@ export const datacenterSchemas = {
         type: "string",
         format: "uuid",
         description:
-          "When displayName is omitted, seed the name and metadata.geo from this member (defaults to members[0])",
+          "When `name` is omitted, seed the datacenter name and metadata.geo from this member (defaults to members[0])",
       },
     },
   },
   PatchDatacenterRequest: {
     type: "object",
     properties: {
-      displayName: { type: "string" },
+      name: { type: "string" },
       description: { type: "string" },
       metadata: { type: ["object", "null"] },
       options: {
@@ -116,18 +116,18 @@ export const datacenterSchemas = {
     required: ["cidr"],
     properties: {
       cidr: { type: "string" },
-      displayName: { type: "string" },
+      name: { type: "string" },
       description: {
         type: "string",
         description:
-          "Accepted for request validation only. Site networks have no description column; the label is stored in `name` (`displayName`).",
+          "Accepted for request validation only. Site networks have no description column; the label is stored in the `name` column.",
       },
     },
   },
   PatchDatacenterSubnetRequest: {
     type: "object",
     properties: {
-      displayName: { type: "string" },
+      name: { type: "string" },
       description: {
         type: "string",
         description:
@@ -138,14 +138,14 @@ export const datacenterSchemas = {
   DatacenterNameSuggestion: {
     type: "object",
     required: [
-      "displayName",
+      "name",
       "serverCount",
       "serverIds",
       "serverLabels",
       "geo",
     ],
     properties: {
-      displayName: { type: "string" },
+      name: { type: "string" },
       serverCount: { type: "integer", minimum: 1 },
       serverIds: {
         type: "array",

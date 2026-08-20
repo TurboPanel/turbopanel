@@ -116,7 +116,7 @@ test('parseServerPatchCore validates name, options, and emptiness', () => {
   assertEquals(rejectedDc.error, 'Invalid request')
 
   const withName = parseServerPatchCore(
-    { displayName: 'edge-1' },
+    { name: 'edge-1' },
     '2020-01-01T00:00:00.000Z',
   )
   if (!withName.ok) throw new TypeError('expected name patch')
@@ -171,8 +171,8 @@ test('shapeServerDatacenters dedupes and sorts memberships', () => {
       names,
     ),
     [
-      { id: 'dc-a', displayName: 'Alpha' },
-      { id: 'dc-b', displayName: 'Beta' },
+      { id: 'dc-a', name: 'Alpha' },
+      { id: 'dc-b', name: 'Beta' },
     ],
   )
 })

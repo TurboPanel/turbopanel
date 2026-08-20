@@ -5,7 +5,7 @@ export const serviceSchemas = {
     type: 'object',
     properties: {
       id: { type: 'string' },
-      displayName: { type: ['string', 'null'] },
+      name: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       environmentId: { type: 'string' },
       composeServiceName: {
@@ -44,7 +44,7 @@ export const serviceSchemas = {
     type: 'object',
     required: ['environmentId'],
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
       environmentId: { type: 'string' },
       metadata: { type: 'object', nullable: true },
@@ -58,7 +58,7 @@ export const serviceSchemas = {
   UpdateServiceRequest: {
     type: 'object',
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
       metadata: { type: 'object', nullable: true },
       options: {

@@ -95,7 +95,7 @@ export async function deriveDaemonJwtKeyring(
 ): Promise<DaemonJwtKeyring> {
   if (config.versioned.length === 0) {
     throw new Error(
-      "No signing secret available — configure TURBOPANEL_SECRET or TURBOPANEL_SECRETS",
+      "No signing secret available — configure TURBOPANEL_SECRETS",
     );
   }
 

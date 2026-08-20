@@ -96,7 +96,6 @@ export const deploySchemas = {
     type: 'object',
     required: [
       'ok',
-      'composeYaml',
       'composeFiles',
       'projectName',
       'containers',
@@ -105,15 +104,10 @@ export const deploySchemas = {
     ],
     properties: {
       ok: { type: 'boolean', const: true },
-      composeYaml: {
-        type: 'string',
-        description:
-          'Compiled runtime compose for the first participating server (legacy single-file fallback). Secret values redacted. Same body as `composeFiles[0]` when that file is `role: runtime`.',
-      },
       composeFiles: {
         type: 'array',
         description:
-          'Compiled runtime files the daemon writes. New deploys send a single `{ filename: compose.yaml, role: runtime }` entry. Users never see project/environment/platform layers.',
+          'Compiled runtime file the daemon writes as `compose.yaml` (`role: runtime`). Secret values redacted.',
         items: { $ref: '#/components/schemas/DeployPreviewComposeFile' },
       },
       servers: {
@@ -122,11 +116,14 @@ export const deploySchemas = {
           'Per-server compiled snapshots when the scheduler places tasks on more than one host. Omitted or empty for a whole-environment pin / single-server plan.',
         items: {
           type: 'object',
-          required: ['serverId', 'displayName', 'composeYaml', 'services'],
+          required: ['serverId', 'name', 'composeFiles', 'services'],
           properties: {
             serverId: { type: 'string' },
-            displayName: { type: 'string' },
-            composeYaml: { type: 'string' },
+            name: { type: 'string' },
+            composeFiles: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/DeployPreviewComposeFile' },
+            },
             services: {
               type: 'array',
               items: { type: 'string' },
@@ -307,7 +304,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Preview the exact compose document that deploy would send',
       description:
-        'Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeYaml` / `composeFiles` are the compiled runtime snapshot for the first participating server; `servers[]` lists every host. Prepare gates surface as warnings so the preview always renders.',
+        'Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeFiles` is the compiled runtime snapshot for the first participating server; `servers[]` lists every host. Prepare gates surface as warnings so the preview always renders.',
       parameters: [
         {
           name: 'id',

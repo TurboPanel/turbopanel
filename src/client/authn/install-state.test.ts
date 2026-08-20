@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert@1'
+import { assertEquals } from '@std/assert'
 import { asc, and, eq, inArray, isNull } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db-url.ts'
@@ -333,7 +333,7 @@ it('install produces System workspace then Default Workspace', async () => {
     const rows = await db
       .select({
         id: workspace.id,
-        displayName: workspace.name,
+        name: workspace.name,
         kind: workspace.kind,
       })
       .from(workspace)
@@ -341,9 +341,9 @@ it('install produces System workspace then Default Workspace', async () => {
       .orderBy(asc(workspace.createdAt), asc(workspace.id))
 
     assertEquals(rows.length, 2)
-    assertEquals(rows[0]?.displayName, SYSTEM_WORKSPACE_DISPLAY_NAME)
+    assertEquals(rows[0]?.name, SYSTEM_WORKSPACE_DISPLAY_NAME)
     assertEquals(rows[0]?.kind, WORKSPACE_KIND_SYSTEM)
-    assertEquals(rows[1]?.displayName, DEFAULT_WORKSPACE_NAME)
+    assertEquals(rows[1]?.name, DEFAULT_WORKSPACE_NAME)
     assertEquals(rows[1]?.kind, WORKSPACE_KIND_USER)
   } finally {
     if (organizationId && userId) {

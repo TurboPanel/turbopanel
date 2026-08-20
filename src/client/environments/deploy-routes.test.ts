@@ -19,6 +19,7 @@ import {
   parseSecretsEnv,
 } from "../authn/secrets.ts";
 import { emptyComposeDocument } from "../../lib/compose/index.ts";
+import { DEFAULT_MANAGED_INGRESS_PORTS } from "../../lib/managed/ingress-ports.ts";
 import type { ComposeDocument } from "../../lib/compose/types.ts";
 import type { PreparedDeployCompose } from "./deploy-prepare.ts";
 import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
@@ -201,12 +202,14 @@ test("ingressServerIdsForDeploy includes attachments, leftovers, and managed hos
         prepared: stubPreparedDeployCompose(["web"]),
         hostings: [],
         tlsMaterial: [],
+        listenerPorts: DEFAULT_MANAGED_INGRESS_PORTS,
       },
       {
         serverId: "srv-b",
         prepared: stubPreparedDeployCompose([]),
         hostings: [],
         tlsMaterial: [],
+        listenerPorts: DEFAULT_MANAGED_INGRESS_PORTS,
       },
     ],
     attachments: [{ serverId: "srv-attach", networkKeys: ["default"] }],
@@ -424,11 +427,8 @@ async function createDeployRoutesTestApp(
     commandQueue: CommandQueue;
   },
 ) {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
@@ -626,8 +626,7 @@ test("GET /environments/:id/deploy-preview returns prepared yaml with warnings f
     assertEquals(res.status, 200);
     const body = await res.json() as {
       ok: boolean;
-      composeYaml: string;
-      composeFiles?: Array<{ filename: string; role: string; content: string }>;
+      composeFiles: Array<{ filename: string; role: string; content: string }>;
       projectName: string;
       containers: unknown[];
       volumes: unknown[];
@@ -685,7 +684,6 @@ test("GET /environments/:id/deploy-preview returns containers for a service", as
     assertEquals(res.status, 200);
     const body = await res.json() as {
       ok: boolean;
-      composeYaml: string;
       composeFiles: Array<{
         filename: string;
         role: string;
@@ -704,7 +702,8 @@ test("GET /environments/:id/deploy-preview returns containers for a service", as
     };
     assertEquals(body.ok, true);
     assertEquals(body.projectName, projectId);
-    assertEquals(body.composeYaml.includes("web:"), true);
+    const runtimeYaml = body.composeFiles[0]?.content ?? "";
+    assertEquals(runtimeYaml.includes("web:"), true);
     assertEquals(body.containers.length >= 1, true);
     assertEquals(body.containers[0]!.composeServiceName, "web");
     assertEquals(body.containers[0]!.ordinal, 1);
@@ -714,20 +713,19 @@ test("GET /environments/:id/deploy-preview returns containers for a service", as
       body.containers[0]!.serviceId,
     );
     assertEquals(
-      body.composeYaml.includes(
+      runtimeYaml.includes(
         `container_name: ${body.containers[0]!.serviceId}`,
       ),
       true,
     );
 
-    assertEquals(body.composeFiles.length >= 1, true);
+    assertEquals(body.composeFiles.length, 1);
     assertEquals(body.composeFiles[0]!.role, "runtime");
     assertEquals(body.composeFiles[0]!.filename, "compose.yaml");
-    assertEquals(body.composeFiles.length, 1);
   });
 });
 
-test("POST /environments/:id/deploy payload carries composeYaml and ordered composeFiles", async () => {
+test("POST /environments/:id/deploy payload carries runtime composeFiles", async () => {
   await withDeployFixtures(async ({
     db,
     app,
@@ -778,15 +776,13 @@ test("POST /environments/:id/deploy payload carries composeYaml and ordered comp
       .where(eq(command.id, body.commandId))
       .limit(1);
     const payload = row?.payload as {
-      composeYaml?: string;
-      composeFiles?: Array<{ filename: string; role: string; content: string }>;
+      composeFiles: Array<{ filename: string; role: string; content: string }>;
     };
-    assertEquals(typeof payload.composeYaml, "string");
     assertEquals(Array.isArray(payload.composeFiles), true);
-    assertEquals(payload.composeFiles!.length, 1);
-    assertEquals(payload.composeFiles![0]!.role, "runtime");
-    assertEquals(payload.composeFiles![0]!.filename, "compose.yaml");
-    assertEquals(payload.composeFiles![0]!.content, payload.composeYaml);
+    assertEquals(payload.composeFiles.length, 1);
+    assertEquals(payload.composeFiles[0]!.role, "runtime");
+    assertEquals(payload.composeFiles[0]!.filename, "compose.yaml");
+    assertEquals(payload.composeFiles[0]!.content.includes("web:"), true);
   });
 });
 

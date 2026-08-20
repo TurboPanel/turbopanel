@@ -115,7 +115,7 @@ export const hostingSchemas = {
     required: ['id', 'serviceId', 'createdAt', 'updatedAt'],
     properties: {
       id: { type: 'string' },
-      displayName: { type: ['string', 'null'] },
+      name: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       serviceId: { type: 'string' },
       tlsId: {
@@ -152,7 +152,7 @@ export const hostingSchemas = {
     type: 'object',
     required: ['serviceId'],
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
       serviceId: { type: 'string' },
       tlsId: { type: ['string', 'null'], format: 'uuid' },
@@ -164,7 +164,7 @@ export const hostingSchemas = {
   UpdateHostingRequest: {
     type: 'object',
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
       tlsId: { type: ['string', 'null'], format: 'uuid' },
       ipId: { type: ['string', 'null'], format: 'uuid' },

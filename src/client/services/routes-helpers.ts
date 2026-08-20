@@ -2,7 +2,7 @@ import { parseServiceOptions } from '../../lib/service-options.ts'
 import {
   buildPatchUpdateFields,
   parseDescription,
-  parseDisplayName,
+  parseName,
   stripPromotedMetadataKeys,
 } from '../shared.ts'
 
@@ -17,8 +17,8 @@ export type ServiceRouteValidationError = {
 
 export type ServiceRow = {
   id: string
-  /** DB column `name` (renamed display label) — exposed as `displayName`. */
-  displayName: string | null
+  /** DB column `name` (renamed display label). */
+  name: string | null
   description: string | null
   environmentId: string
   composeServiceName: string
@@ -31,7 +31,7 @@ export type ServiceRow = {
 export function serializeService(row: ServiceRow) {
   return {
     id: row.id,
-    displayName: row.displayName,
+    name: row.name,
     description: row.description,
     environmentId: row.environmentId,
     composeServiceName: row.composeServiceName,
@@ -108,7 +108,7 @@ export function parseServiceCreateFields(
 ):
   | {
     ok: true
-    displayName: string | null
+    name: string | null
     description: string | null
     metadata: Record<string, unknown> | null
     options: Record<string, unknown> | null
@@ -119,7 +119,7 @@ export function parseServiceCreateFields(
   if (composeNameRejected) return composeNameRejected
 
   try {
-    const displayName = parseDisplayName(body)
+    const name = parseName(body)
     const description = parseDescription(body)
     const metadataResult = parseJsonbField(body, 'metadata')
     if (metadataResult === 'invalid') {
@@ -137,7 +137,7 @@ export function parseServiceCreateFields(
 
     return {
       ok: true,
-      displayName,
+      name,
       description,
       metadata,
       options: optionsResult.kind === 'value' ? optionsResult.value : null,
@@ -172,7 +172,7 @@ export function parseServicePatchFields(
 
   let patch: ServicePatchFields
   try {
-    // Maps JSON `displayName` → column `name` (renamed display label).
+    // Maps JSON `name` → column `name` (display label).
     patch = buildPatchUpdateFields(body)
   } catch {
     return { ok: false, error: 'Invalid request', status: 400 }

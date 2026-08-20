@@ -72,8 +72,6 @@ export type DaemonMessage =
     resources?: ServerHostResources;
     /** Host timezone + NTP state; persisted to timezone / NTP columns. */
     timeSync?: ServerTimeSync;
-    /** Legacy top-level addresses; prefer `resources.ips`. */
-    ips?: ServerReportedIp[];
     /**
      * Docker CLI / Compose plugin versions; persisted to `server.metadata.docker`.
      * Omit when Docker is not installed.
@@ -91,8 +89,6 @@ export type DaemonMessage =
      * `server.metadata.resources`.
      */
     resources?: ServerHostResources;
-    /** Legacy top-level addresses; prefer `resources.ips`. */
-    ips?: ServerReportedIp[];
     /**
      * Change-detected Docker facts; persisted to `server.metadata.docker`.
      * Omit when Docker is not installed.

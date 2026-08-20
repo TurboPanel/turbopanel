@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createAuthRateLimiter,
   createFailClosedAuthRateLimiter,
@@ -11,6 +11,7 @@ import {
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
+  readJsonBody,
   seedMockCredentialUser,
   seedMockInstalledInstance,
   seedMockSession,
@@ -33,7 +34,7 @@ import {
   registerAuthnRoutes,
 } from './http.ts'
 import { hashPassword } from './password.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
+import { deriveSecretsConfig } from './secrets.ts'
 import type { SessionData } from './session-store.ts'
 
 /**
@@ -51,7 +52,7 @@ const sessionData = {
 }
 
 async function authSecrets() {
-  const config = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const config = parseTestSecretsConfig('deno')
   return {
     secrets: await deriveSecretsConfig(config, 'session-signing'),
     otpVerifierSecrets: await deriveSecretsConfig(config, 'email-otp-verifier'),
@@ -268,7 +269,7 @@ test('sign-in succeeds for verified mock user and sets session cookie', async ()
     body: JSON.stringify({ email: 'verified@example.com', password }),
   })
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await readJsonBody<{ ok: boolean; email: string }>(res)
   assertEquals(body.ok, true)
   assertEquals(body.email, 'verified@example.com')
   assertEquals(res.headers.get('Set-Cookie')?.includes('Max-Age='), true)
@@ -298,13 +299,6 @@ test('sign-out clears HTTP and HTTPS session cookies', async () => {
   })
   httpsApp.route(CLIENT_API_PREFIX, client)
 
-  const httpsRes = await httpsApp.request(`${CLIENT_API_PREFIX}/auth/sign-out`, {
-    method: 'POST',
-    headers: {
-      Cookie: `${HTTPS_SESSION_COOKIE_NAME}=${signed}`,
-    },
-  }, { /* @ts-expect-error test shim */ })
-  // Hono request URL controls cookie name — use https URL
   const httpsRes2 = await httpsApp.request('https://panel.example.com/api/client/v1/auth/sign-out', {
     method: 'POST',
     headers: {
@@ -316,7 +310,6 @@ test('sign-out clears HTTP and HTTPS session cookies', async () => {
   const joined = cookies.join(';')
   assertEquals(joined.includes(HTTPS_SESSION_COOKIE_NAME), true)
   assertEquals(joined.includes('__Secure-'), false)
-  assertEquals(httpsRes.status, httpsRes2.status)
 })
 
 test('verify-email requires token query param', async () => {
@@ -360,7 +353,7 @@ test('sign-up returns 403 when signup override disables registration', async () 
     body: JSON.stringify({ email: 'new@example.com', password: 'Sup3r-secret!' }),
   })
   assertEquals(res.status, 403)
-  const body = await res.json()
+  const body = await readJsonBody<{ error: string }>(res)
   assertEquals(body.error, 'Sign-up is not enabled')
 })
 
@@ -379,7 +372,7 @@ test('Workers sign-up succeeds with mock db and no email verification', async ()
     body: JSON.stringify({ email: 'new-worker@example.com', password: 'Sup3r-secret!' }),
   })
   assertEquals(res.status, 201)
-  const body = await res.json()
+  const body = await readJsonBody<{ ok: boolean }>(res)
   assertEquals(body.ok, true)
   assertEquals(state.users.length, 1)
   assertEquals(state.users[0]?.email, 'new-worker@example.com')
@@ -463,8 +456,9 @@ test('Workers sign-up queues verification email when mail is configured', async 
     runtime: 'workers',
     signupEnvOverride: '1',
     emailQueue: {
-      enqueue: async () => {
+      enqueue: () => {
         queued = true
+        return Promise.resolve()
       },
     },
     platformEnv: {
@@ -532,7 +526,7 @@ test('registerAuthnRoutes session returns user payload for signed cookie', async
     headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}` },
   })
   assertEquals(res.status, 200)
-  const body = await res.json()
+  const body = await readJsonBody<{ ok: boolean; email: string }>(res)
   assertEquals(body.ok, true)
   assertEquals(body.email, sessionData.email)
 })
@@ -541,20 +535,20 @@ test('enforceAuthRateLimit returns 429 when limiter blocks', async () => {
   setSharedAuthRateLimiterForTests(createFailClosedAuthRateLimiter())
   try {
     const app = new Hono()
-    let blocked: Response | null = null
+    const captured = { response: null as Response | null }
     app.post('/rate-test', async (c) => {
-      blocked = await enforceAuthRateLimit(c, 'sign-in', 'user@example.com', 'deno')
+      captured.response = await enforceAuthRateLimit(c, 'sign-in', 'user@example.com', 'deno')
       return c.text('ok')
     })
     await app.request('/rate-test', {
       method: 'POST',
       headers: { 'X-Real-IP': '203.0.113.12' },
     })
-    if (!blocked) {
+    if (!captured.response) {
       throw new TypeError('expected enforceAuthRateLimit to return a 429 response')
     }
-    assertEquals(blocked.status, 429)
-    assertEquals(blocked.headers.get('Retry-After') !== null, true)
+    assertEquals(captured.response.status, 429)
+    assertEquals(captured.response.headers.get('Retry-After') !== null, true)
   } finally {
     setSharedAuthRateLimiterForTests(undefined)
   }

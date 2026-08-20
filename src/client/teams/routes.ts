@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm'
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { canManageOrganization } from '../authz/index.ts'
@@ -8,8 +9,13 @@ import { team } from '../../lib/db/schema.ts'
 import { getOrgId } from '../shared.ts'
 import { teamsListPayload } from './routes-helpers.ts'
 
-export function registerTeamRoutes(router: Hono, opts: AuthRouteOpts) {
-  router.use('/teams', createSessionMiddleware(opts.secrets))
+export function registerTeamRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for team routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/teams', createSessionMiddleware(secrets))
 
   router.get('/teams', async (c) => {
     const db = getDb(c)
@@ -34,7 +40,7 @@ export function registerTeamRoutes(router: Hono, opts: AuthRouteOpts) {
     const rows = await db
       .select({
         id: team.id,
-        displayName: team.name,
+        name: team.name,
         organizationId: team.organizationId,
         createdAt: team.createdAt,
         updatedAt: team.updatedAt,

@@ -81,7 +81,6 @@ export function resetWorkerAppCachesForTests(): void {
 }
 async function initWorkerApp(env: CloudflareBindings) {
   const secretsConfig = parseSecretsEnv(
-    env.TURBOPANEL_SECRET,
     env.TURBOPANEL_SECRETS,
     'workers',
   )

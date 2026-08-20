@@ -73,10 +73,14 @@ export function registerServerMetricsRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
 ) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for server metrics routes')
+  }
+  const secrets = opts.secrets
   const cache = createMetricsChartCache(opts.runtime)
 
-  router.use('/servers/metrics/*', createSessionMiddleware(opts.secrets))
-  router.use('/servers/:id/metrics/*', createSessionMiddleware(opts.secrets))
+  router.use('/servers/metrics/*', createSessionMiddleware(secrets))
+  router.use('/servers/:id/metrics/*', createSessionMiddleware(secrets))
 
   /**
    * One fleet usage snapshot for the org servers overview.

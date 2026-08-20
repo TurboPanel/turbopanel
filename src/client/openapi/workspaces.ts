@@ -5,7 +5,7 @@ export const workspaceSchemas = {
     type: 'object',
     properties: {
       id: { type: 'string' },
-      displayName: { type: ['string', 'null'] },
+      name: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       kind: {
         type: 'string',
@@ -32,7 +32,7 @@ export const workspaceSchemas = {
     type: 'object',
     description: 'New workspaces are always created with kind=user; a caller-supplied kind is ignored.',
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
     },
   },

@@ -55,7 +55,7 @@ export const tlsSchemas = {
     properties: {
       id: { type: "string" },
       organizationId: { type: "string" },
-      displayName: { type: ["string", "null"] },
+      name: { type: ["string", "null"] },
       source: {
         type: "string",
         enum: ["upload", "lets_encrypt", "self_signed", "organization_ca"],
@@ -99,7 +99,7 @@ export const tlsSchemas = {
         type: "string",
         enum: ["upload", "lets_encrypt", "self_signed", "organization_ca"],
       },
-      displayName: { type: "string" },
+      name: { type: "string" },
       certificatePem: {
         type: "string",
         description: "Required for source=upload",
@@ -125,7 +125,7 @@ export const tlsSchemas = {
   PatchTlsRequest: {
     type: "object",
     properties: {
-      displayName: { type: "string" },
+      name: { type: "string" },
       prefer: { type: ["number", "null"] },
       autoRenew: { type: "boolean" },
       revoke: {

@@ -5,10 +5,7 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  parseSecretsEnv,
-} from '../authn/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
 import {
   container,
@@ -26,7 +23,7 @@ import {
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
 import type { ManagedSettings } from '../../lib/managed/settings.ts'
 import { createManagedPrincipal } from '../principals/store.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import {
   isPrepareError,
@@ -141,7 +138,7 @@ async function withManagedApplyPrepareFixtures(
     return
   }
 
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',
@@ -316,14 +313,14 @@ test('ensureManagedContainerAllocation creates service + ordinal-1 container nam
       .select({
         id: service.id,
         composeServiceName: service.composeServiceName,
-        displayName: service.name,
+        name: service.name,
       })
       .from(service)
       .where(eq(service.environmentId, environmentId))
     assertEquals(services.length, 1)
     assertEquals(services[0]!.id, allocation.serviceId)
     assertEquals(services[0]!.composeServiceName, 'postgres')
-    assertEquals(services[0]!.displayName, 'postgres')
+    assertEquals(services[0]!.name, 'postgres')
 
     const rows = await db
       .select({

@@ -119,7 +119,7 @@ test('cachedServersListReadModel sorts visible ids and enriches from primary db'
     id: row.id,
     daemon: null,
     metadata: null,
-    hostname: row.displayName,
+    hostname: row.name,
     machineKey: null,
     connected: row.id === 'srv-a',
     statusChangedAt: '2024-01-01T00:00:00.000Z',

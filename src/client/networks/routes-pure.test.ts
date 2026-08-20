@@ -14,7 +14,7 @@ import {
   parseNetworkKind,
   parseNetworkPatchFields,
   parseOptionalCidrField,
-  parseOptionalDisplayNameField,
+  parseOptionalNameField,
   parseUuidQueryParam,
   rejectImmutableNetworkScopePatch,
   requireDockerNetworkOptions,
@@ -100,7 +100,7 @@ test('buildNetworkCreateValues omits null optional fields', () => {
       kind: 'docker',
       datacenterId: undefined,
       serverId: undefined,
-      displayName: null,
+      name: null,
       cidr: null,
       metadata: null,
       options: { dockerNetworkName: 'shared-net' },
@@ -118,7 +118,7 @@ test('buildNetworkCreateValues omits null optional fields', () => {
       kind: 'datacenter',
       datacenterId: 'dc-1',
       serverId: null,
-      displayName: 'Private LAN',
+      name: 'Private LAN',
       cidr: '10.0.0.0/24',
       metadata: { note: 'primary' },
       options: null,
@@ -185,7 +185,7 @@ test('parseNetworkKind and CIDR helpers validate create/patch input', () => {
   if (!(badKind instanceof Response)) throw new TypeError('expected response')
   assertEquals(badKind.status, 400)
 
-  assertEquals(parseOptionalDisplayNameField(c, {}), null)
+  assertEquals(parseOptionalNameField(c, {}), null)
   assertEquals(parseOptionalCidrField(c, { cidr: '10.0.0.0/24' }), '10.0.0.0/24')
   assertEquals(parseOptionalCidrField(c, {}), null)
 
@@ -194,10 +194,10 @@ test('parseNetworkKind and CIDR helpers validate create/patch input', () => {
   assertEquals(patchFields.cidr, null)
 })
 
-test('parseOptionalDisplayNameField and CIDR helpers reject invalid values', () => {
+test('parseOptionalNameField and CIDR helpers reject invalid values', () => {
   const c = mockContext()
-  const badName = parseOptionalDisplayNameField(c, {
-    displayName: 'bad\nname',
+  const badName = parseOptionalNameField(c, {
+    name: 'bad\nname',
   })
   if (!(badName instanceof Response)) throw new TypeError('expected response')
   assertEquals(badName.status, 400)
@@ -220,7 +220,7 @@ test('parseNetworkPatchFields rejects invalid name metadata and options', async 
   assertEquals(badName.status, 400)
 
   const badDisplayName = parseNetworkPatchFields(c, {
-    displayName: 'bad\nname',
+    name: 'bad\nname',
   }, 'datacenter')
   if (!(badDisplayName instanceof Response)) throw new TypeError('expected response')
   assertEquals(badDisplayName.status, 400)

@@ -36,7 +36,7 @@ import {
 
 const ENVIRONMENT_SELECT = {
   id: environment.id,
-  displayName: environment.name,
+  name: environment.name,
   description: environment.description,
   projectId: environment.projectId,
   serverId: environment.serverId,
@@ -47,7 +47,7 @@ const ENVIRONMENT_SELECT = {
 } as const
 
 type EnvironmentPatchFields = {
-  displayName?: string | null
+  name?: string | null
   description?: string | null
   serverId?: string | null
   metadata?: Record<string, unknown> | null
@@ -57,7 +57,7 @@ type EnvironmentPatchFields = {
 
 type CreateEnvironmentInput = {
   projectId: string
-  displayName: string | null
+  name: string | null
   description: string | null
   serverId?: string | null
   metadata: Record<string, unknown> | null
@@ -172,7 +172,7 @@ async function parseCreateEnvironmentInput(
 
   return {
     projectId,
-    displayName: names.displayName,
+    name: names.name,
     description: names.description,
     ...(serverId !== undefined ? { serverId } : {}),
     metadata: jsonb.metadata,
@@ -277,7 +277,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       const [inserted] = await tx
         .insert(environment)
         .values({
-          name: input.displayName,
+          name: input.name,
           description: input.description,
           projectId: input.projectId,
           ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),

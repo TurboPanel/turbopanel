@@ -12,7 +12,6 @@ import {
   type EnvironmentDeployComposeFile,
 } from '../../lib/commands/schemas.ts'
 import {
-  composeDocumentToRuntimeYaml,
   emptyContainerComposeYaml,
   emptyComposeDocument,
   renameComposeVolumesInLayer,
@@ -356,10 +355,6 @@ export function buildPlatformComposeLayer(params: Readonly<{
   }
 }
 
-function fallbackEmptyComposeFiles(): EnvironmentDeployComposeFile[] {
-  return renderRuntimeComposeFiles(emptyContainerComposeYaml())
-}
-
 /**
  * Single compiled runtime file the daemon writes as `compose.yaml`.
  */
@@ -375,29 +370,6 @@ export function renderRuntimeComposeFiles(
       content: body.endsWith('\n') ? body : `${body}\n`,
     },
   ]
-}
-
-/**
- * Render layers to the wire `composeFiles` shape. Blank YAML layers are
- * omitted; when every layer is blank, return a single empty runtime file so
- * the daemon always has something to run / tear down (all-traditional-web).
- */
-export function renderComposeFiles(
-  layers: readonly ComposeLayer[],
-): EnvironmentDeployComposeFile[] {
-  const files: EnvironmentDeployComposeFile[] = []
-  for (const layer of layers) {
-    const content = composeDocumentToRuntimeYaml(layer.document)
-    if (content.trim() === '') continue
-    files.push({
-      filename: layer.filename,
-      role: layer.role,
-      source: 'inline',
-      content,
-    })
-  }
-  if (files.length === 0) return fallbackEmptyComposeFiles()
-  return files
 }
 
 /**

@@ -353,12 +353,12 @@ async function ensureSystemHierarchyImpl(
     const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
     const projectId = await ensureHostingIngressProject(tx, workspaceId)
     const [serverRow] = await tx
-      .select({ displayName: server.name })
+      .select({ name: server.name })
       .from(server)
       .where(eq(server.id, params.serverId))
       .limit(1)
     const environmentDisplayName =
-      serverRow?.displayName?.trim() || SYSTEM_PROJECT_DISPLAY_NAME
+      serverRow?.name?.trim() || SYSTEM_PROJECT_DISPLAY_NAME
     const environmentId = await ensureServerEnvironment(
       tx,
       projectId,
@@ -463,12 +463,12 @@ async function ensureManagedIngressHierarchyImpl(
     const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
     const projectId = await ensureManagedIngressProject(tx, workspaceId)
     const [serverRow] = await tx
-      .select({ displayName: server.name })
+      .select({ name: server.name })
       .from(server)
       .where(eq(server.id, params.serverId))
       .limit(1)
     const environmentDisplayName =
-      serverRow?.displayName?.trim() || SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME
+      serverRow?.name?.trim() || SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME
     const environmentId = await ensureServerEnvironment(
       tx,
       projectId,
@@ -625,12 +625,12 @@ async function ensureManagedHaHierarchyImpl(
     const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
     const projectId = await ensureManagedHaProject(tx, workspaceId)
     const [serverRow] = await tx
-      .select({ displayName: server.name })
+      .select({ name: server.name })
       .from(server)
       .where(eq(server.id, params.serverId))
       .limit(1)
     const environmentDisplayName =
-      serverRow?.displayName?.trim() || SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME
+      serverRow?.name?.trim() || SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME
     const environmentId = await ensureServerEnvironment(
       tx,
       projectId,

@@ -1,11 +1,8 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../db.ts'
 import { encryptSecret } from '../client/authn/data-encryption.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  parseSecretsEnv,
-} from '../client/authn/secrets.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../client/authn/secrets.ts'
+import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import {
   attachWebMetadataToTraditionalSites,
   formatHostingEnvFile,
@@ -33,7 +30,7 @@ function thenableRows(rows: unknown[]) {
 }
 
 async function dataSecrets() {
-  const config = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const config = parseTestSecretsConfig('deno')
   return await deriveEncryptionSecretsConfig(config, 'data-encryption')
 }
 

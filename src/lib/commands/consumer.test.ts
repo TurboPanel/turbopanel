@@ -4,8 +4,12 @@ import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb, endDbConnection } from '../../db.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../daemon/cell/contracts.ts'
 import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
-import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../client/authn/secrets.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  type SecretsConfig,
+  type DerivedSecretsConfig,
+} from '../../client/authn/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   binding,
   command,
@@ -2312,7 +2316,12 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
         projectId,
         organizationId,
         projectName: 'tp-deploy-test',
-        composeYaml: 'services:\n  web:\n    image: nginx\n',
+        composeFiles: [{
+          filename: 'compose.yaml',
+          role: 'runtime',
+          source: 'inline',
+          content: 'services:\n  web:\n    image: nginx\n',
+        }],
         hostings: [],
       },
     })
@@ -3843,8 +3852,8 @@ type PromoteConsumerFixture = {
   primaryMemberId: string
   standbyMemberId: string
   bindingId: string
-  secretsConfig: ReturnType<typeof parseSecretsEnv>
-  dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
 }
 
 async function insertPromoteFixtureServer(
@@ -3954,7 +3963,7 @@ async function withPromoteConsumerFixtures(
 ): Promise<void> {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
-    const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+    const secretsConfig = parseTestSecretsConfig('deno')
     const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
       secretsConfig,
       'data-encryption',

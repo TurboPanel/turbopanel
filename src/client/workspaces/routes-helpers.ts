@@ -1,6 +1,6 @@
 import {
   parseDescription,
-  parseDisplayName,
+  parseName,
 } from '../shared.ts'
 
 export type WorkspaceRouteValidationError = {
@@ -12,12 +12,12 @@ export type WorkspaceRouteValidationError = {
 export function parseWorkspaceCreateNames(
   body: Record<string, unknown>,
 ):
-  | { ok: true; displayName: string | null; description: string | null }
+  | { ok: true; name: string | null; description: string | null }
   | WorkspaceRouteValidationError {
   try {
     return {
       ok: true,
-      displayName: parseDisplayName(body),
+      name: parseName(body),
       description: parseDescription(body),
     }
   } catch {
@@ -38,18 +38,12 @@ export function parseWorkspacePatchNames(
     updatedAt,
   }
 
-  if (body.displayName !== undefined || body.name !== undefined) {
-    if (
-      body.displayName !== undefined &&
-      typeof body.displayName !== 'string'
-    ) {
-      return { ok: false, error: 'Invalid request', status: 400 }
-    }
-    if (body.name !== undefined && typeof body.name !== 'string') {
+  if (body.name !== undefined) {
+    if (typeof body.name !== 'string') {
       return { ok: false, error: 'Invalid request', status: 400 }
     }
     try {
-      patch.name = parseDisplayName(body)
+      patch.name = parseName(body)
     } catch {
       return { ok: false, error: 'Invalid request', status: 400 }
     }

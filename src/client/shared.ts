@@ -15,34 +15,16 @@ export {
 
 export class BadRequestError extends Error {}
 
-export async function getOrgId(
+export function getOrgId(
   c: Context,
   userId: string,
 ): Promise<string | Response> {
   return resolveOrgId(c, userId);
 }
 
-/**
- * Prefer `displayName` (OpenAPI / client UI); fall back to legacy `name`.
- */
-function pickDisplayNameRaw(body: Record<string, unknown>): unknown {
-  if (body.displayName !== undefined) {
-    return body.displayName;
-  }
-  if (body.name !== undefined) {
-    return body.name;
-  }
-  return undefined;
-}
-
-/**
- * Parse resource name from the wire body.
- *
- * Prefer `displayName` (OpenAPI / client UI). Accept legacy `name` for older
- * callers and tests. (`parseDisplayName` is the historical export name.)
- */
-export function parseDisplayName(body: Record<string, unknown>): string | null {
-  const raw = pickDisplayNameRaw(body);
+/** Parse resource name from the wire body (`name` only). */
+export function parseName(body: Record<string, unknown>): string | null {
+  const raw = body.name;
   if (raw === undefined) {
     return null;
   }
@@ -112,12 +94,11 @@ export function buildPatchUpdateFields(
     updatedAt: string;
   } = { updatedAt };
 
-  const rawName = pickDisplayNameRaw(body);
-  if (rawName !== undefined) {
-    if (typeof rawName !== "string") {
+  if (body.name !== undefined) {
+    if (typeof body.name !== "string") {
       throw new BadRequestError("Invalid request");
     }
-    const name = normalizeDisplayName(rawName);
+    const name = normalizeDisplayName(body.name);
     if (!isValidDisplayName(name)) {
       throw new BadRequestError("Invalid request");
     }
@@ -176,7 +157,7 @@ export async function assertCanManageOr403(
  * manage-level access. Delegates to {@link assertCanManageOr403} so the broad
  * org-access check stays in one place.
  */
-export async function assertCanReadOr403(
+export function assertCanReadOr403(
   c: Context,
   kind: string,
   entityId: string,
@@ -190,7 +171,7 @@ export async function assertCanReadOr403(
  * delegates to {@link assertCanManageOr403}. Do NOT use `organization:own`
  * here — that is now an exact owner-only check.
  */
-export async function assertCanCreateOr403(
+export function assertCanCreateOr403(
   c: Context,
   parentKind: string,
   parentId: string,

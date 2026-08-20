@@ -3,7 +3,7 @@
  * delete subtree, and provision wrappers (Db doubles only — no Postgres).
  */
 
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   ingressContainerNameFromService,
@@ -68,7 +68,7 @@ function createSequencedDb(opts: {
   const track = opts.track ?? {}
 
   const db: Record<string, unknown> = {
-    execute: async () => {
+    execute: () => {
       track.executes = (track.executes ?? 0) + 1
       const next = opts.execute?.[executeI++]
       const rows = typeof next === 'function' ? next() : (next ?? [])
@@ -135,7 +135,7 @@ test('isSystemSelfHostComposeServiceName allowlists only stack services', () => 
 
 test('findSystemEnvironmentForServer returns first match or null', async () => {
   const hit = {
-    execute: async () => [{ id: 'env-1' }],
+    execute: () => [{ id: 'env-1' }],
   } as unknown as Db
   assertEquals(await findSystemEnvironmentForServer(hit, 'srv'), 'env-1')
   assertEquals(
@@ -144,14 +144,14 @@ test('findSystemEnvironmentForServer returns first match or null', async () => {
   )
 
   const miss = {
-    execute: async () => [],
+    execute: () => [],
   } as unknown as Db
   assertEquals(await findSystemEnvironmentForServer(miss, 'srv'), null)
 })
 
 test('ensureSystemWorkspace returns insert id or existing row', async () => {
   const inserted = {
-    execute: async () => [{ id: 'ws-new' }],
+    execute: () => [{ id: 'ws-new' }],
     select: () => {
       throw new TypeError('should not select after insert')
     },
@@ -159,7 +159,7 @@ test('ensureSystemWorkspace returns insert id or existing row', async () => {
   assertEquals(await ensureSystemWorkspace(inserted, 'org'), 'ws-new')
 
   const raced = {
-    execute: async () => [],
+    execute: () => [],
     select: () => ({
       from: () => ({
         where: () => ({
@@ -171,7 +171,7 @@ test('ensureSystemWorkspace returns insert id or existing row', async () => {
   assertEquals(await ensureSystemWorkspace(raced, 'org'), 'ws-existing')
 
   const missing = {
-    execute: async () => [],
+    execute: () => [],
     select: () => ({
       from: () => ({
         where: () => ({
@@ -239,7 +239,7 @@ test('ensureSystemHierarchy inserts workspace/project/env/service/ingress', asyn
       [], // FOR UPDATE project lock
     ],
     select: [
-      [{ displayName: '  Edge Host  ' }], // server name
+      [{ name: '  Edge Host  ' }], // server name
       [], // no existing environment
       [{ id: SVC }], // compose service after upsert
       [{
@@ -279,7 +279,7 @@ test('ensureSystemHierarchy reuses existing env and falls back display name', as
       [], // FOR UPDATE
     ],
     select: [
-      [{ displayName: '   ' }], // blank → SYSTEM_PROJECT_DISPLAY_NAME
+      [{ name: '   ' }], // blank → SYSTEM_PROJECT_DISPLAY_NAME
       [{ id: ENV }], // existing environment
       [{ id: SVC }],
       [{
@@ -365,7 +365,7 @@ test('ensureServerEnvironment insert failure throws', async () => {
       [],
     ],
     select: [
-      [{ displayName: 'Host' }],
+      [{ name: 'Host' }],
       [], // no existing env
     ],
     insertReturning: [[]], // insert failed
@@ -390,7 +390,7 @@ test('ensureComposeService missing after upsert throws', async () => {
       [],
     ],
     select: [
-      [{ displayName: 'Host' }],
+      [{ name: 'Host' }],
       [{ id: ENV }],
       [], // service missing
     ],
@@ -417,7 +417,7 @@ test('ensureManagedIngressHierarchy provisions proxysql system container', async
       [], // FOR UPDATE
     ],
     select: [
-      [{ displayName: 'DB Host' }],
+      [{ name: 'DB Host' }],
       [], // no env
       [{ id: SVC }], // proxysql service
       // nested allocateServiceContainers select

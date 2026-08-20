@@ -70,7 +70,7 @@ import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
 const test = Deno.test.bind(Deno);
 
 function createDaemonJwtSecrets() {
-  const parsed = parseSecretsEnv(generateSecret(), undefined, "deno");
+  const parsed = parseSecretsEnv(`1:${generateSecret()}`, "deno");
   return deriveDaemonJwtKeyring(parsed);
 }
 
@@ -370,7 +370,7 @@ it("WS upgrade rejects HTTP 401 when JWT is invalid", async () => {
 
 function createSessionSecrets() {
   return deriveSecretsConfig(
-    parseSecretsEnv(generateSecret(), undefined, "deno"),
+    parseSecretsEnv(`1:${generateSecret()}`, "deno"),
     "session-signing",
   );
 }
@@ -2083,9 +2083,11 @@ test("live WS update-result and heartbeat with addresses cover inbound dispatch"
     ws.send(JSON.stringify({
       type: "heartbeat",
       at: new Date().toISOString(),
-      ips: [
-        { address: "203.0.113.10", version: 4, scope: "public" },
-      ],
+      resources: {
+        ips: [
+          { address: "203.0.113.10", version: 4, scope: "public" },
+        ],
+      },
     }));
     await new Promise((resolve) => setTimeout(resolve, 40));
 
@@ -2365,9 +2367,9 @@ test("developer stub WS accepts superadmin session and local-console auth", asyn
   assertEquals(forbidden.status, 403);
 
   // Local-console auth without sessionSecrets.
-  const prevSecret = Deno.env.get("TURBOPANEL_SECRET");
+  const prevSecrets = Deno.env.get("TURBOPANEL_SECRETS");
   const prevDevSurface = Deno.env.get("TURBOPANEL_DEV_SURFACE");
-  Deno.env.set("TURBOPANEL_SECRET", TEST_ONLY_TURBOPANEL_SECRET);
+  Deno.env.set("TURBOPANEL_SECRETS", `1:${TEST_ONLY_TURBOPANEL_SECRET}`);
   Deno.env.set("TURBOPANEL_DEV_SURFACE", "1");
   try {
     const consoleApp = new Hono();
@@ -2418,8 +2420,8 @@ test("developer stub WS accepts superadmin session and local-console auth", asyn
       await server.finished.catch(() => {});
     }
   } finally {
-    if (prevSecret === undefined) Deno.env.delete("TURBOPANEL_SECRET");
-    else Deno.env.set("TURBOPANEL_SECRET", prevSecret);
+    if (prevSecrets === undefined) Deno.env.delete("TURBOPANEL_SECRETS");
+    else Deno.env.set("TURBOPANEL_SECRETS", prevSecrets);
     if (prevDevSurface === undefined) Deno.env.delete("TURBOPANEL_DEV_SURFACE");
     else Deno.env.set("TURBOPANEL_DEV_SURFACE", prevDevSurface);
   }

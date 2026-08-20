@@ -34,7 +34,7 @@ import {
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
   operatorPromoteHttpResult,
-  parseManagedCreateDisplayName,
+  parseManagedCreateName,
   parseManagedLifecycleAction,
   parseMemberPatch,
   parseMemberReadEligibleCreate,
@@ -83,28 +83,28 @@ test('parseManagedLifecycleAction accepts start/stop/restart only', () => {
   })
 })
 
-test('parseManagedCreateDisplayName accepts null/string and maps BadRequestError', () => {
-  const omitted = parseManagedCreateDisplayName({})
+test('parseManagedCreateName accepts null/string and maps BadRequestError', () => {
+  const omitted = parseManagedCreateName({})
   if (!omitted.ok) throw new TypeError('expected ok')
-  assertEquals(omitted.displayName, null)
+  assertEquals(omitted.name, null)
 
-  const named = parseManagedCreateDisplayName({ name: 'Orders DB' })
+  const named = parseManagedCreateName({ name: 'Orders DB' })
   if (!named.ok) throw new TypeError('expected ok')
-  assertEquals(named.displayName, 'Orders DB')
+  assertEquals(named.name, 'Orders DB')
 
-  const invalid = parseManagedCreateDisplayName({ name: '   ' })
+  const invalid = parseManagedCreateName({ name: '   ' })
   if (invalid.ok) throw new TypeError('expected invalid blank name')
   assertEquals(invalid, { ok: false, error: 'Invalid request', status: 400 })
 
-  const wrongType = parseManagedCreateDisplayName({ name: 42 })
+  const wrongType = parseManagedCreateName({ name: 42 })
   if (wrongType.ok) throw new TypeError('expected non-string rejection')
   assertEquals(wrongType.status, 400)
 })
 
-test('parseManagedCreateDisplayName rethrows unexpected errors', () => {
+test('parseManagedCreateName rethrows unexpected errors', () => {
   let threw = false
   try {
-    parseManagedCreateDisplayName(
+    parseManagedCreateName(
       new Proxy({} as Record<string, unknown>, {
         get(_target, prop) {
           if (prop === 'name') throw new TypeError('unexpected')

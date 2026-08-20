@@ -1,9 +1,9 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
   BadRequestError,
   buildPatchUpdateFields,
   parseDescription,
-  parseDisplayName,
+  parseName,
   parseJsonbObject,
   requireStringField,
   stripPromotedMetadataKeys,
@@ -17,42 +17,40 @@ import {
  */
 const test = Deno.test.bind(Deno);
 
-test("parseDisplayName returns null when absent and trims valid names", () => {
-  assertEquals(parseDisplayName({}), null);
-  assertEquals(parseDisplayName({ displayName: "  My App  " }), "My App");
-  assertEquals(parseDisplayName({ name: "  Legacy Name  " }), "Legacy Name");
+test("parseName returns null when absent and trims valid names", () => {
+  assertEquals(parseName({}), null);
+  assertEquals(parseName({ name: "  My App  " }), "My App");
+  assertEquals(parseName({ name: "  Legacy Name  " }), "Legacy Name");
 });
 
-test("parseDisplayName prefers displayName over legacy name", () => {
-  assertEquals(
-    parseDisplayName({ displayName: "Preferred", name: "Legacy" }),
-    "Preferred",
-  );
+test("parseName ignores leftover displayName and reads name only", () => {
+  assertEquals(parseName({ displayName: "Ignored", name: "Preferred" }), "Preferred");
+  assertEquals(parseName({ displayName: "Ignored" }), null);
 });
 
-test("parseDisplayName rejects non-strings, empty, control characters, and over-length", () => {
-  assertThrows(() => parseDisplayName({ displayName: 1 }), BadRequestError);
-  assertThrows(() => parseDisplayName({ name: 1 }), BadRequestError);
-  assertThrows(() => parseDisplayName({ displayName: "" }), BadRequestError);
+test("parseName rejects non-strings, empty, control characters, and over-length", () => {
+  assertEquals(parseName({ displayName: "From alias" }), null);
+  assertThrows(() => parseName({ name: 1 }), BadRequestError);
+  assertThrows(() => parseName({ name: "" }), BadRequestError);
   assertThrows(
-    () => parseDisplayName({ displayName: "bad\nname" }),
+    () => parseName({ name: "bad\nname" }),
     BadRequestError,
   );
   assertThrows(
-    () => parseDisplayName({ displayName: "a".repeat(256) }),
+    () => parseName({ name: "a".repeat(256) }),
     BadRequestError,
   );
 });
 
-test("parseDisplayName accepts Unicode labels, apostrophes, and folds typographic quotes", () => {
-  assertEquals(parseDisplayName({ displayName: "O'Reilly" }), "O'Reilly");
+test("parseName accepts Unicode labels, apostrophes, and folds typographic quotes", () => {
+  assertEquals(parseName({ name: "O'Reilly" }), "O'Reilly");
   assertEquals(
-    parseDisplayName({ displayName: "  O\u2019Reilly  " }),
+    parseName({ name: "  O\u2019Reilly  " }),
     "O'Reilly",
   );
-  assertEquals(parseDisplayName({ displayName: "Müller GmbH" }), "Müller GmbH");
-  assertEquals(parseDisplayName({ displayName: "东京" }), "东京");
-  assertEquals(parseDisplayName({ displayName: "bad@name" }), "bad@name");
+  assertEquals(parseName({ name: "Müller GmbH" }), "Müller GmbH");
+  assertEquals(parseName({ name: "东京" }), "东京");
+  assertEquals(parseName({ name: "bad@name" }), "bad@name");
 });
 
 test("parseDescription trims, maps empty to null, and rejects oversize", () => {
@@ -89,10 +87,10 @@ test("buildPatchUpdateFields always sets updatedAt and optional patches", () => 
   assertEquals(patched.name, "Renamed");
   assertEquals(patched.description, "notes");
 
-  const fromDisplayName = buildPatchUpdateFields({
+  const ignoredAlias = buildPatchUpdateFields({
     displayName: "  From UI  ",
   });
-  assertEquals(fromDisplayName.name, "From UI");
+  assertEquals("name" in ignoredAlias, false);
 
   const clearedDescription = buildPatchUpdateFields({ description: "  " });
   assertEquals(clearedDescription.description, null);

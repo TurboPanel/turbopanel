@@ -62,11 +62,8 @@ async function sessionCookie(
 async function createDatacenterRoutesTestApp(
   db: ReturnType<typeof createDenoDb>,
 ) {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -146,11 +143,8 @@ test("GET /datacenters/name-suggestions uses unassigned server geo and ASN", asy
   }
 
   const db = createDenoDb();
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -265,11 +259,8 @@ test("GET /datacenters/:id returns 404 for datacenter in another org", async () 
   }
 
   const db = createDenoDb();
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -341,11 +332,8 @@ test("GET /datacenters returns 403 for org member without organization:manage", 
   }
 
   const db = createDenoDb();
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -392,11 +380,8 @@ test("DELETE /datacenters/:id succeeds when no scoped networks exist", async () 
   }
 
   const db = createDenoDb();
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -473,11 +458,8 @@ test("DELETE /datacenters/:id returns 409 when members remain", async () => {
   }
 
   const db = createDenoDb();
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -616,12 +598,12 @@ test("GET /datacenters lists datacenters with privateCidrs", async () => {
     assertEquals(res.status, 200);
     const body = await res.json() as {
       datacenters: Array<
-        { id: string; displayName: string; privateCidrs: string[] }
+        { id: string; name: string; privateCidrs: string[] }
       >;
     };
     assertEquals(body.datacenters.length, 1);
     assertEquals(body.datacenters[0]?.id, dc!.id);
-    assertEquals(body.datacenters[0]?.displayName, "Listed DC");
+    assertEquals(body.datacenters[0]?.name, "Listed DC");
     assertEquals(body.datacenters[0]?.privateCidrs, ["10.10.0.0/24"]);
   });
 });
@@ -712,10 +694,10 @@ test("GET /datacenters/:id returns datacenter detail with privateCidrs", async (
 
     assertEquals(res.status, 200);
     const body = await res.json() as {
-      datacenter: { id: string; displayName: string; privateCidrs: string[] };
+      datacenter: { id: string; name: string; privateCidrs: string[] };
     };
     assertEquals(body.datacenter.id, dc!.id);
-    assertEquals(body.datacenter.displayName, "Detail DC");
+    assertEquals(body.datacenter.name, "Detail DC");
     assertEquals(body.datacenter.privateCidrs, ["10.20.0.0/24"]);
   });
 });

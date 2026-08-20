@@ -28,7 +28,7 @@ import {
   parseNetworkKind,
   parseNetworkPatchFields,
   parseOptionalCidrField,
-  parseOptionalDisplayNameField,
+  parseOptionalNameField,
   parseUuidQueryParam,
   rejectImmutableNetworkScopePatch,
   resolveKindQueryFilter,
@@ -48,7 +48,7 @@ const NETWORK_SELECT = {
   serverId: network.serverId,
   kind: network.kind,
   cidr: network.cidr,
-  displayName: network.name,
+  name: network.name,
   metadata: network.metadata,
   options: network.options,
   createdAt: network.createdAt,
@@ -138,8 +138,8 @@ async function parseNetworkCreateFields(
   const scopeDenied = assertNetworkKindScope(c, kind, datacenterId, serverId)
   if (scopeDenied) return scopeDenied
 
-  const displayName = parseOptionalDisplayNameField(c, body)
-  if (displayName instanceof Response) return displayName
+  const name = parseOptionalNameField(c, body)
+  if (name instanceof Response) return name
 
   const cidr = parseOptionalCidrField(c, body)
   if (cidr instanceof Response) return cidr
@@ -157,7 +157,7 @@ async function parseNetworkCreateFields(
     kind,
     datacenterId,
     serverId,
-    displayName,
+    name,
     cidr,
     metadata: metadataResult,
     options: optionsResult,

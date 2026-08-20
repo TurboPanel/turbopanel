@@ -17,32 +17,28 @@ import {
   deriveEncryptionSecretsConfig,
   parseSecretsEnv,
 } from './secrets.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const V2_SECRET = 'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7'
 const V1_SECRET = TEST_ONLY_TURBOPANEL_SECRET
 
-async function createCurrentSecrets() {
-  const config = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+function createCurrentSecrets() {
+  const config = parseTestSecretsConfig('deno')
   return deriveEncryptionSecretsConfig(config, 'data-encryption')
 }
 
-async function createRotatedSecrets() {
-  const config = parseSecretsEnv(
-    undefined,
-    `2:${V2_SECRET},1:${V1_SECRET}`,
-    'deno',
-  )
+function createRotatedSecrets() {
+  const config = parseSecretsEnv(`2:${V2_SECRET},1:${V1_SECRET}`, 'deno')
   return deriveEncryptionSecretsConfig(config, 'data-encryption')
 }
 
-async function createV1OnlySecrets() {
-  const config = parseSecretsEnv(undefined, `1:${V1_SECRET}`, 'deno')
+function createV1OnlySecrets() {
+  const config = parseSecretsEnv(`1:${V1_SECRET}`, 'deno')
   return deriveEncryptionSecretsConfig(config, 'data-encryption')
 }
 
-async function createSecretsConfig() {
-  return parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+function createSecretsConfig() {
+  return parseTestSecretsConfig('deno')
 }
 
 describe('encryptSecretForDaemon / decryptSecretForDaemon', () => {

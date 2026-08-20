@@ -16,8 +16,8 @@ export default defineConfig({
       miniflare: {
         isolatedStorage: false,
         bindings: {
-          TURBOPANEL_SECRET:
-            'aa_daemon_cell_vitest_secret_value_aaaa_b_pad_abcdefghij0',
+          TURBOPANEL_SECRETS:
+            '1:aa_daemon_cell_vitest_secret_value_aaaa_b_pad_abcdefghij0',
           // Construct-time DO binding — runtime `env.TURBOPANEL_DAEMON_DEBUG = …`
           // in tests does not update the Durable Object's env snapshot.
           TURBOPANEL_DAEMON_DEBUG: '1',

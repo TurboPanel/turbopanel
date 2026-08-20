@@ -1,11 +1,8 @@
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  parseSecretsEnv,
-} from '../authn/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
 import { decryptSecret } from '../authn/data-encryption.ts'
 import {
   steward,
@@ -31,7 +28,7 @@ import {
   SERVER_PRINCIPAL_PROVIDER,
   setPrincipalPassword,
 } from './store.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -53,7 +50,7 @@ async function withPrincipalFixtures(
   }
 
   const db = createDenoDb()
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     'data-encryption',

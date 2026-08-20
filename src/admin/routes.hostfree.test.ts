@@ -2,7 +2,7 @@
  * Host-free coverage for admin route short-circuits and wiring branches.
  */
 
-import { assertEquals, assertExists } from 'jsr:@std/assert'
+import { assertEquals, assertExists } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app.ts'
 import {
@@ -17,11 +17,10 @@ import {
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-  parseSecretsEnv,
 } from '../client/authn/secrets.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../daemon/cell/contracts.ts'
 import { ADMIN_API_PREFIX } from '../surfaces.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { registerAdminRoutes } from './routes.ts'
 
 /**
@@ -36,51 +35,59 @@ type WaitFn = (
   outbound: { requestId: string; at: string; kind: string },
 ) => Promise<PendingRequestRecord>
 
+function jsonBody<T>(res: Response): Promise<T> {
+  return res.json() as Promise<T>
+}
+
 function createCell(opts: Readonly<{
   wait?: WaitFn
   purgeError?: unknown
 }> = {}): DaemonCell {
-  const noopAsync = async () => {}
+  const noopAsync = () => Promise.resolve()
   return {
-    attachDaemonSocket: async () => ({
-      connectionId: 'conn',
-      lease: {
-        holder: 'conn',
-        token: 'conn',
-        expiresAt: new Date(Date.now() + 45_000).toISOString(),
-      },
-    }),
+    attachDaemonSocket: () =>
+      Promise.resolve({
+        connectionId: 'conn',
+        lease: {
+          holder: 'conn',
+          token: 'conn',
+          expiresAt: new Date(Date.now() + 45_000).toISOString(),
+        },
+      }),
     detachDaemonSocket: noopAsync,
     recordInbound: noopAsync,
-    getSnapshot: async () => ({
-      serverId: 'unused',
-      version: 0,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-    }),
-    putSnapshot: async (patch) => ({
-      serverId: 'unused',
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      connected: false,
-      ...patch,
-    }),
-    enqueue: async (outbound) => ({
-      serverId: 'unused',
-      requestId: outbound.requestId,
-      requestKind: outbound.kind,
-      status: 'queued' as const,
-      createdAt: outbound.at,
-      expiresAt: outbound.at,
-    }),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId: 'unused',
+        version: 0,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+      }),
+    putSnapshot: (patch) =>
+      Promise.resolve({
+        serverId: 'unused',
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: false,
+        ...patch,
+      }),
+    enqueue: (outbound) =>
+      Promise.resolve({
+        serverId: 'unused',
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'queued' as const,
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
     markSent: noopAsync,
-    handleInbound: async () => null,
-    getRequest: async () => null,
-    listRequests: async () => [],
-    waitForRequest: async () => null,
-    createRequestAndWait: async (outbound) => {
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve([]),
+    waitForRequest: () => Promise.resolve(null),
+    createRequestAndWait: (outbound) => {
       if (opts.wait) return opts.wait(outbound)
-      return {
+      return Promise.resolve({
         serverId: 'unused',
         requestId: outbound.requestId,
         requestKind: outbound.kind,
@@ -90,17 +97,20 @@ function createCell(opts: Readonly<{
         result: {
           ips: [],
         },
-      }
+      })
     },
-    claimDeliveryLease: async () => null,
-    renewDeliveryLease: async () => null,
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
     releaseDeliveryLease: noopAsync,
-    readOutboxBatch: async () => [],
+    readOutboxBatch: () => Promise.resolve([]),
     ackOutbox: noopAsync,
-    prune: async () => [],
-    clearUpdateStatus: async () => ({ cleared: 0 }),
-    purge: async () => {
-      if (opts.purgeError !== undefined) throw opts.purgeError
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
+    purge: () => {
+      if (opts.purgeError !== undefined) {
+        return Promise.reject(opts.purgeError)
+      }
+      return Promise.resolve()
     },
   }
 }
@@ -118,8 +128,8 @@ function createRegistry(opts: Readonly<{
   })
   return {
     getCell: () => cell,
-    listOnlineServerIds: async () => opts.onlineIds ?? [],
-    getSnapshots: async (ids) => {
+    listOnlineServerIds: () => Promise.resolve(opts.onlineIds ?? []),
+    getSnapshots: (ids) => {
       const out = new Map()
       for (const id of ids) {
         const snap = opts.snapshots?.get(id)
@@ -133,7 +143,7 @@ function createRegistry(opts: Readonly<{
           })
         }
       }
-      return out
+      return Promise.resolve(out)
     },
     purge: async (serverId) => {
       if (opts.purgeThrows !== undefined) throw opts.purgeThrows
@@ -152,7 +162,7 @@ async function buildApp(opts: Readonly<{
   devSurface?: boolean
   getEnv?: () => Record<string, string | undefined>
 }> = {}) {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets = opts.withDataEncryption === false
     ? undefined
@@ -191,7 +201,7 @@ async function buildApp(opts: Readonly<{
 }
 
 test('admin routes return 401 without a session cookie', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   registerAdminRoutes(app, { secrets, runtime: 'deno', devSurface: false })
@@ -254,7 +264,7 @@ test('POST /daemon/broadcast validates payload and sends when registry is presen
     body: JSON.stringify({ payload: { ping: true } }),
   })
   assertEquals(ok.status, 200)
-  const body = await ok.json()
+  const body = await jsonBody<{ ok: boolean; sent: number }>(ok)
   assertEquals(body.ok, true)
   assertEquals(typeof body.sent, 'number')
 })
@@ -315,7 +325,7 @@ test('GET /instance/addresses is Deno-only', async () => {
     headers: { Cookie: workers.cookie },
   })
   assertEquals(blocked.status, 422)
-  const blockedBody = await blocked.json()
+  const blockedBody = await jsonBody<{ ok: boolean }>(blocked)
   assertEquals(blockedBody.ok, false)
 
   const deno = await buildApp({ runtime: 'deno' })
@@ -323,7 +333,7 @@ test('GET /instance/addresses is Deno-only', async () => {
     headers: { Cookie: deno.cookie },
   })
   assertEquals(ok.status, 200)
-  const body = await ok.json()
+  const body = await jsonBody<{ ok: boolean; source: string; ips: unknown }>(ok)
   assertEquals(body.ok, true)
   assertEquals(body.source, 'instance')
   assertExists(body.ips)
@@ -365,7 +375,7 @@ test('GET/PUT /settings/email cover db/validation/encryption branches', async ()
     headers: { Cookie: cookie },
   })
   assertEquals(get.status, 200)
-  const getBody = await get.json()
+  const getBody = await jsonBody<{ settings: unknown }>(get)
   assertExists(getBody.settings)
 
   const bad = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
@@ -499,7 +509,7 @@ test('POST /cells/:serverId/purge returns 503/500 branches', async () => {
     { method: 'POST', headers: { Cookie: failing.cookie } },
   )
   assertEquals(res500.status, 500)
-  const body = await res500.json()
+  const body = await jsonBody<{ ok: boolean; error: string }>(res500)
   assertEquals(body.ok, false)
   assertEquals(body.error, 'boom')
 
@@ -519,7 +529,7 @@ test('devSurface OpenAPI and Scalar routes are registered', async () => {
     headers: { Cookie: cookie },
   })
   assertEquals(openapi.status, 200)
-  const spec = await openapi.json()
+  const spec = await jsonBody<{ openapi: string }>(openapi)
   assertEquals(typeof spec.openapi, 'string')
 
   const reference = await app.request(`${ADMIN_API_PREFIX}/reference`, {

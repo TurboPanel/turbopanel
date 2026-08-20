@@ -86,18 +86,6 @@ export type ServerGpu = {
 }
 
 /**
- * Leftover hello CPU block (`resources.cpu`). Current writes use
- * {@link ServerHostResources.cpus}; this shape is still accepted on ingest.
- */
-export type ServerCpuResources = {
-  name?: string
-  architecture?: string
-  socketCount?: number
-  coreCount?: number
-  threadCount?: number
-}
-
-/**
  * Static host capacity from daemon hello (`/proc/cpuinfo` + `/proc/stat` +
  * `/proc/meminfo` + DRM). Used for fleet inventory totals and load-average
  * normalization — not live usage (that lives in the metrics backend).
@@ -105,11 +93,6 @@ export type ServerCpuResources = {
 export type ServerHostResources = {
   /** One entry per physical socket, ordered 0, 1, … */
   cpus?: ServerCpuSocket[]
-  /**
-   * Leftover hello shape. Prefer {@link cpus}; still accepted on ingest and
-   * kept in stored jsonb until the next hello with `cpus`.
-   */
-  cpu?: ServerCpuResources
   gpus?: ServerGpu[]
   memory?: { totalBytes?: number }
   swap?: { totalBytes?: number }
@@ -143,11 +126,6 @@ export type ServerTimeSync = {
   fallbackNtpServers?: string[]
   /** Last successful NTP sync (ISO). */
   lastSyncedAt?: string
-  /**
-   * Legacy sample stamp when facts lived in `server.metadata.timeSync`.
-   * No longer written.
-   */
-  capturedAt?: string
 }
 
 /** One configured NTP host stored in `server.ntp_servers` jsonb. */
@@ -189,20 +167,14 @@ export type ServerDockerMetadata = {
 /**
  * JSON stored in `server.metadata`. Nested fields are optional.
  * Hostname / machineKey / OS / observed timezone / NTP live on dedicated
- * `server` columns (not here). Residual `os` / `timeSync` / top-level `ips`
- * may still appear in leftover jsonb from older writes and are read as
- * fallbacks only.
+ * `server` columns (not here).
  */
 export type ServerMetadata = {
-  /** Leftover jsonb; current writes use `server.os_*` columns. */
-  os?: ServerOsMetadata
   /**
    * Host capacity (`cpus` / `gpus` / RAM / swap) from daemon hello, plus
    * `ips` from hello / change-detected heartbeat.
    */
   resources?: ServerHostResources
-  /** Leftover jsonb; current writes nest ips under `resources.ips`. */
-  ips?: ServerReportedIp[]
   /**
    * Cell placement / generation nested under `cell` (options overrides apply).
    */
@@ -213,8 +185,6 @@ export type ServerMetadata = {
    * connecting IP changes. Stored in jsonb — no migration required.
    */
   geo?: ServerGeo
-  /** Leftover jsonb; current writes use timezone / NTP columns. */
-  timeSync?: ServerTimeSync
   /**
    * Docker CLI / Compose plugin versions. Present only when the daemon
    * reports Docker installed; omitted (not `null`) when it is not.
@@ -380,33 +350,10 @@ function parseCpuSockets(value: unknown): ServerCpuSocket[] | undefined {
   return sockets.length > 0 ? sockets : undefined
 }
 
-function parseLegacyCpuResources(
-  value: unknown,
-): ServerCpuResources | undefined {
-  if (!isRecord(value)) return undefined
-  const cpu: ServerCpuResources = {}
-  const name = optionalTrimmedString(value.name)
-  if (name) cpu.name = name
-  const architecture = optionalTrimmedString(value.architecture)
-  if (architecture) cpu.architecture = architecture
-  const socketCount = optionalPositiveInt(value.socketCount)
-  if (socketCount !== undefined) cpu.socketCount = socketCount
-  const coreCount = optionalPositiveInt(value.coreCount)
-  if (coreCount !== undefined) cpu.coreCount = coreCount
-  const threadCount = optionalPositiveInt(value.threadCount)
-  if (threadCount !== undefined) cpu.threadCount = threadCount
-  return Object.keys(cpu).length > 0 ? cpu : undefined
-}
-
-function liftLegacyCpu(cpu: ServerCpuResources): ServerCpuSocket | undefined {
-  const socket: ServerCpuSocket = {}
-  if (cpu.name) socket.name = cpu.name
-  if (cpu.architecture) socket.architecture = cpu.architecture
-  if (cpu.coreCount !== undefined) socket.cores = { total: cpu.coreCount }
-  if (cpu.threadCount !== undefined) {
-    socket.threads = { total: cpu.threadCount }
-  }
-  return Object.keys(socket).length > 0 ? socket : undefined
+function parseHostCpus(
+  value: Record<string, unknown>,
+): ServerCpuSocket[] | undefined {
+  return parseCpuSockets(value.cpus)
 }
 
 function parseGpu(value: unknown): ServerGpu | undefined {
@@ -435,17 +382,6 @@ function parseGpus(value: unknown): ServerGpu[] | undefined {
     if (gpu) gpus.push(gpu)
   }
   return gpus.length > 0 ? gpus : undefined
-}
-
-function parseHostCpus(
-  value: Record<string, unknown>,
-): ServerCpuSocket[] | undefined {
-  const sockets = parseCpuSockets(value.cpus)
-  if (sockets) return sockets
-  const leftover = parseLegacyCpuResources(value.cpu)
-  if (!leftover) return undefined
-  const lifted = liftLegacyCpu(leftover)
-  return lifted ? [lifted] : undefined
 }
 
 function parseMemoryTotal(value: unknown): { totalBytes: number } | undefined {
@@ -491,12 +427,7 @@ export function mergeServerHostResources(
   incoming: ServerHostResources,
 ): ServerHostResources {
   const next: ServerHostResources = { ...current }
-  if (incoming.cpus) {
-    next.cpus = incoming.cpus
-    delete next.cpu
-  } else if (incoming.cpu && !next.cpus) {
-    next.cpu = incoming.cpu
-  }
+  if (incoming.cpus) next.cpus = incoming.cpus
   if (incoming.gpus) next.gpus = incoming.gpus
   if (incoming.memory) next.memory = incoming.memory
   if (incoming.swap) next.swap = incoming.swap
@@ -504,29 +435,12 @@ export function mergeServerHostResources(
   return next
 }
 
-/**
- * Prefer current `resources`; fall back to the pre-rename `inventory`
- * (`cpuCores` / `cpuThreads` / `memoryTotalBytes` / `swapTotalBytes`).
- */
+/** Host capacity from daemon hello / change-detected heartbeat payloads. */
 export function resourcesFromDaemonPresence(
   payload: unknown,
 ): ServerHostResources | undefined {
   if (!isRecord(payload)) return undefined
-  let resources = parseServerHostResources(payload.resources)
-  if (!resources && isRecord(payload.inventory)) {
-    resources = parseServerHostResources({
-      cpu: {
-        coreCount: payload.inventory.cpuCores,
-        threadCount: payload.inventory.cpuThreads,
-      },
-      memory: { totalBytes: payload.inventory.memoryTotalBytes },
-      swap: { totalBytes: payload.inventory.swapTotalBytes },
-    })
-  }
-  const topLevelIps = parseServerIps(payload.ips)
-  if (topLevelIps !== undefined && resources?.ips === undefined) {
-    resources = mergeServerHostResources(resources, { ips: topLevelIps })
-  }
+  const resources = parseServerHostResources(payload.resources)
   return resources && Object.keys(resources).length > 0 ? resources : undefined
 }
 
@@ -607,21 +521,6 @@ function gpusEquals(
   return true
 }
 
-function cpuResourcesEquals(
-  a: ServerCpuResources | undefined,
-  b: ServerCpuResources | undefined,
-): boolean {
-  if (a === b) return true
-  if (!a || !b) return false
-  return (
-    a.name === b.name &&
-    a.architecture === b.architecture &&
-    a.socketCount === b.socketCount &&
-    a.coreCount === b.coreCount &&
-    a.threadCount === b.threadCount
-  )
-}
-
 export function serverHostResourcesEquals(
   a: ServerHostResources | null | undefined,
   b: ServerHostResources | null | undefined,
@@ -630,7 +529,6 @@ export function serverHostResourcesEquals(
   if (!a || !b) return false
   return (
     cpuSocketsEquals(a.cpus, b.cpus) &&
-    cpuResourcesEquals(a.cpu, b.cpu) &&
     gpusEquals(a.gpus, b.gpus) &&
     a.memory?.totalBytes === b.memory?.totalBytes &&
     a.swap?.totalBytes === b.swap?.totalBytes &&
@@ -958,8 +856,6 @@ export function parseServerTimeSync(
   }
   const lastSyncedAt = optionalIsoTimestamp(value.lastSyncedAt)
   if (lastSyncedAt) timeSync.lastSyncedAt = lastSyncedAt
-  const capturedAt = optionalTrimmedString(value.capturedAt)
-  if (capturedAt) timeSync.capturedAt = capturedAt
   return Object.keys(timeSync).length > 0 ? timeSync : undefined
 }
 
@@ -1057,7 +953,7 @@ export function timeSyncFromColumns(
   return Object.keys(timeSync).length > 0 ? timeSync : undefined
 }
 
-/** Compare time-sync facts, ignoring `capturedAt`. */
+/** Compare time-sync facts for equality. */
 export function serverTimeSyncEquals(
   a: ServerTimeSync | null | undefined,
   b: ServerTimeSync | null | undefined,

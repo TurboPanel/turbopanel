@@ -2,7 +2,7 @@
  * Host-free coverage for deploy authorize helpers (no Postgres / orchestration).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -17,8 +17,8 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../authn/secrets.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import {
   authorizeDeployRequest,
@@ -230,14 +230,18 @@ test('authorizeDeployRequest returns flags when manage is allowed', async () => 
 })
 
 test('POST /environments/:id/deploy returns 401 without a session cookie', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', {} as Db)
     return next()
   })
-  registerEnvironmentDeployRoutes(app, { secrets, runtime: 'deno' })
+  registerEnvironmentDeployRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   const res = await app.request(`/environments/${environmentId}/deploy`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -248,7 +252,7 @@ test('POST /environments/:id/deploy returns 401 without a session cookie', async
 })
 
 test('POST /environments/:id/deploy returns 403 when manage is denied', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
   const userId = crypto.randomUUID()
@@ -285,7 +289,11 @@ test('POST /environments/:id/deploy returns 403 when manage is denied', async ()
     c.set('db', db)
     return next()
   })
-  registerEnvironmentDeployRoutes(app, { secrets, runtime: 'deno' })
+  registerEnvironmentDeployRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
 
   const res = await app.request(`/environments/${environmentId}/deploy`, {
     method: 'POST',
@@ -301,16 +309,21 @@ test('POST /environments/:id/deploy returns 403 when manage is denied', async ()
 })
 
 test('deploy stop / lifecycle / preview routes return 401 without a session cookie', async () => {
-  const secretsConfig = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno')
+  const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', {} as Db)
     return next()
   })
-  registerEnvironmentStopRoutes(app, { secrets, runtime: 'deno' })
-  registerEnvironmentLifecycleRoutes(app, { secrets, runtime: 'deno' })
-  registerEnvironmentDeployPreviewRoutes(app, { secrets, runtime: 'deno' })
+  const routeOpts = {
+    secrets,
+    runtime: 'deno' as const,
+    signupEnvOverride: undefined,
+  }
+  registerEnvironmentStopRoutes(app, routeOpts)
+  registerEnvironmentLifecycleRoutes(app, routeOpts)
+  registerEnvironmentDeployPreviewRoutes(app, routeOpts)
 
   const paths = [
     ['POST', `/environments/${environmentId}/stop`],

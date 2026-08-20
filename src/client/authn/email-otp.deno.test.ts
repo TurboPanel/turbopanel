@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   deriveOtpVerifier,
   generateOtp,
@@ -7,8 +7,8 @@ import {
   requireOtpVerifierSecrets,
   verifyOtpVerifier,
 } from "./email-otp.ts";
-import { deriveSecretsConfig, parseSecretsEnv } from "./secrets.ts";
-import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
+import { deriveSecretsConfig } from "./secrets.ts";
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts';
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -18,8 +18,8 @@ import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
  */
 const test = Deno.test.bind(Deno);
 
-async function otpVerifierSecrets() {
-  const config = parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, "deno");
+function otpVerifierSecrets() {
+  const config = parseTestSecretsConfig("deno");
   return deriveSecretsConfig(config, OTP_VERIFIER_SECRET_PURPOSE);
 }
 

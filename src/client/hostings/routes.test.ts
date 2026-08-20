@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv } from "../../app.ts";
@@ -57,18 +57,19 @@ test("PATCH /hostings rejects public bind with non-public ip scope", async () =>
   }
 
   const db = createDenoDb();
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
     c.set("db", db);
     return next();
   });
-  registerHostingRoutes(app, { secrets, runtime: "deno" });
+  registerHostingRoutes(app, {
+    secrets,
+    runtime: "deno",
+    signupEnvOverride: undefined,
+  });
 
   const [orgA] = await db
     .insert(organization)
@@ -187,7 +188,7 @@ test("PATCH /hostings rejects public bind with non-public ip scope", async () =>
   });
 
   assertEquals(res.status, 400);
-  const body = await res.json();
+  const body = await res.json() as { error: string };
   assertEquals(body.error, "hosting_bind_scope_mismatch");
 
   await db.delete(hosting).where(eq(hosting.id, host!.id));
@@ -208,18 +209,19 @@ test("PATCH /hostings returns 404 when ipId belongs to another org", async () =>
   if (!dbUrl) return;
 
   const db = createDenoDb();
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
     c.set("db", db);
     return next();
   });
-  registerHostingRoutes(app, { secrets, runtime: "deno" });
+  registerHostingRoutes(app, {
+    secrets,
+    runtime: "deno",
+    signupEnvOverride: undefined,
+  });
 
   const [orgA] = await db
     .insert(organization)
@@ -324,18 +326,19 @@ test("PATCH /hostings returns 404 when ipId belongs to another org", async () =>
 });
 
 async function createHostingTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
     c.set("db", db);
     return next();
   });
-  registerHostingRoutes(app, { secrets, runtime: "deno" });
+  registerHostingRoutes(app, {
+    secrets,
+    runtime: "deno",
+    signupEnvOverride: undefined,
+  });
   return { app, secrets };
 }
 
@@ -490,10 +493,10 @@ test("hosting CRUD covers list, filter, create, patch, and delete", async () => 
     });
     assertEquals(list.status, 200);
     const listBody = await list.json() as {
-      hostings: Array<{ id: string; displayName: string | null }>;
+      hostings: Array<{ id: string; name: string | null }>;
     };
     assertEquals(listBody.hostings.length, 1);
-    assertEquals(listBody.hostings[0]?.displayName, "Primary Site");
+    assertEquals(listBody.hostings[0]?.name, "Primary Site");
 
     const filtered = await app.request(`/hostings?serviceId=${serviceId}`, {
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
@@ -512,7 +515,7 @@ test("hosting CRUD covers list, filter, create, patch, and delete", async () => 
     const detailBody = await detail.json() as {
       hosting: {
         id: string;
-        displayName: string | null;
+        name: string | null;
         description: string | null;
       };
     };
@@ -603,7 +606,7 @@ test("POST /hostings returns 400 without serviceId", async () => {
         [ORG_ID_HEADER]: organizationId,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ displayName: "Missing Service" }),
+      body: JSON.stringify({ name: "Missing Service" }),
     });
     assertEquals(res.status, 400);
   });
@@ -671,7 +674,7 @@ test("POST /hostings returns 404 when service belongs to another org", async () 
         },
         body: JSON.stringify({
           serviceId: foreignSvc!.id,
-          displayName: "Foreign",
+          name: "Foreign",
         }),
       });
       assertEquals(res.status, 404);
@@ -692,7 +695,6 @@ test("GET /hostings/:id returns 404 for a hosting in another org", async () => {
     secrets,
     userId,
     organizationId,
-    serviceId,
   }) => {
     const now = new Date().toISOString();
     const [foreignOrg] = await db
@@ -787,7 +789,7 @@ test("POST /hostings returns 400 for malformed tlsId", async () => {
       }),
     });
     assertEquals(res.status, 400);
-    const body = await res.json();
+    const body = await res.json() as { error: string };
     assertEquals(body.error, "Invalid request");
   });
 });

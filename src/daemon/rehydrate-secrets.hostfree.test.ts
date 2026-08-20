@@ -112,11 +112,8 @@ function rehydrateDb(pages: unknown[][]): Db {
 }
 
 async function encryptionFixtures() {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     "data-encryption",

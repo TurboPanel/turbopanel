@@ -2,13 +2,10 @@
  * Host-free coverage for principal store helpers (no Postgres).
  */
 
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  parseSecretsEnv,
-} from '../authn/secrets.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createManagedPrincipal,
   createPrincipal,
@@ -37,7 +34,7 @@ const test = Deno.test.bind(Deno)
 
 async function testDataEncryptionSecrets() {
   return await deriveEncryptionSecretsConfig(
-    parseSecretsEnv(TEST_ONLY_TURBOPANEL_SECRET, undefined, 'deno'),
+    parseTestSecretsConfig('deno'),
     'data-encryption',
   )
 }

@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv } from "../../app.ts";
@@ -25,18 +25,19 @@ const dbUrl = getDatabaseUrl();
 const test = Deno.test.bind(Deno);
 
 async function createOrgRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(
-    TEST_ONLY_TURBOPANEL_SECRET,
-    undefined,
-    "deno",
-  );
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
     c.set("db", db);
     return next();
   });
-  registerOrganizationRoutes(app, { secrets, runtime: "deno" });
+  registerOrganizationRoutes(app, {
+    secrets,
+    runtime: "deno",
+    signupEnvOverride: undefined,
+  });
   return { app, secrets };
 }
 
@@ -312,7 +313,7 @@ test("POST /organizations creates an org owned by the signed-in user", async () 
           Cookie: cookie,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ displayName: "Second Organization" }),
+        body: JSON.stringify({ name: "Second Organization" }),
       });
       assertEquals(res.status, 200);
       const body = await res.json() as { ok: true; id: string };
@@ -324,7 +325,7 @@ test("POST /organizations creates an org owned by the signed-in user", async () 
       });
       assertEquals(listRes.status, 200);
       const listBody = await listRes.json() as {
-        organizations: Array<{ id: string; displayName: string | null }>;
+        organizations: Array<{ id: string; name: string | null }>;
       };
       const ids = listBody.organizations.map((org) => org.id);
       assertEquals(ids.includes(organizationId), true);
@@ -359,12 +360,12 @@ test("GET /organizations/:id returns the accessible organization", async () => {
       const body = await res.json() as {
         organization: {
           id: string;
-          displayName: string | null;
+          name: string | null;
           createdAt: string;
         };
       };
       assertEquals(body.organization.id, organizationId);
-      assertEquals(body.organization.displayName, "Org Route Test Org");
+      assertEquals(body.organization.name, "Org Route Test Org");
       assertEquals(typeof body.organization.createdAt, "string");
 
       const missing = await app.request(
@@ -399,25 +400,25 @@ test("PATCH /organizations/:id renames the organization", async () => {
           Cookie: cookie,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ displayName: "O'Reilly" }),
+        body: JSON.stringify({ name: "O'Reilly" }),
       });
       assertEquals(res.status, 200);
       const body = await res.json() as {
         ok: true;
-        organization: { id: string; displayName: string | null };
+        organization: { id: string; name: string | null };
       };
       assertEquals(body.ok, true);
       assertEquals(body.organization.id, organizationId);
-      assertEquals(body.organization.displayName, "O'Reilly");
+      assertEquals(body.organization.name, "O'Reilly");
 
       const getRes = await app.request(`/organizations/${organizationId}`, {
         headers: { Cookie: cookie },
       });
       assertEquals(getRes.status, 200);
       const getBody = await getRes.json() as {
-        organization: { displayName: string | null };
+        organization: { name: string | null };
       };
-      assertEquals(getBody.organization.displayName, "O'Reilly");
+      assertEquals(getBody.organization.name, "O'Reilly");
     },
   );
 });
@@ -432,7 +433,7 @@ test("PATCH /organizations/:id rejects invalid names and non-managers", async ()
           Cookie: cookie,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ displayName: "bad\nname" }),
+        body: JSON.stringify({ name: "bad\nname" }),
       });
       assertEquals(invalid.status, 400);
     },
@@ -447,7 +448,7 @@ test("PATCH /organizations/:id rejects invalid names and non-managers", async ()
           Cookie: cookie,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ displayName: "Renamed Org" }),
+        body: JSON.stringify({ name: "Renamed Org" }),
       });
       assertEquals(denied.status, 403);
     },

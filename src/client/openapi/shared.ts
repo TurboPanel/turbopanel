@@ -8,7 +8,7 @@ export const sharedSchemas = {
   UpdateEntityRequest: {
     type: 'object',
     properties: {
-      displayName: { type: 'string' },
+      name: { type: 'string' },
       description: { type: 'string' },
     },
   },

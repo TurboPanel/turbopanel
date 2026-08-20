@@ -3,7 +3,7 @@
  * can be exercised with a fake (no live Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from './db.ts'
 import {
   getServerLicenseBinding,
@@ -33,10 +33,10 @@ function queryResult<T>(rows: T[]) {
   })
 }
 
-test('mergeServerMetadataIdentity ignores invalid timeSync and empty ips no-op', () => {
+test('mergeServerMetadataIdentity ignores invalid timeSync', () => {
   assertEquals(
     mergeServerMetadataIdentity(
-      { resources: { cpu: { coreCount: 1 } } },
+      { resources: { cpus: [{ cores: { total: 1 } }] } },
       { timeSync: { timezone: 1 } as never },
     ),
     null,
@@ -147,10 +147,12 @@ test('touchServerMetadata writes hostname and metadata deltas', async () => {
       version: '13',
     },
     timeSync: { timezone: 'America/Chicago', ntpEnabled: true },
-    ips: [
-      { address: '10.0.0.1', version: 4, scope: 'private' },
-      { address: '203.0.113.10', version: 4, scope: 'public' },
-    ],
+    resources: {
+      ips: [
+        { address: '10.0.0.1', version: 4, scope: 'private' },
+        { address: '203.0.113.10', version: 4, scope: 'public' },
+      ],
+    },
   })
   assertEquals(patches.length, 1)
   assertEquals(patches[0]?.hostname, 'edge-1')

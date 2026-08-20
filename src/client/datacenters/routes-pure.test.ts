@@ -147,11 +147,11 @@ test('parseOptionalUuid accepts null and valid UUIDs only', () => {
 })
 
 test('attachPrivateCidrs joins datacenter network CIDR lists', () => {
-  const rows = [{ id: 'dc-a', displayName: 'Site A' }]
+  const rows = [{ id: 'dc-a', name: 'Site A' }]
   const cidrs = new Map([['dc-a', ['10.0.0.0/24', '10.0.1.0/24']]])
   assertEquals(attachPrivateCidrs(rows, cidrs), [{
     id: 'dc-a',
-    displayName: 'Site A',
+    name: 'Site A',
     privateCidrs: ['10.0.0.0/24', '10.0.1.0/24'],
   }])
   assertEquals(attachPrivateCidrs([{ id: 'dc-b' }], cidrs)[0].privateCidrs, [])
