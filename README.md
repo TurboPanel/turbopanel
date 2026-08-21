@@ -2,7 +2,7 @@
 
 **Open-source control plane for deploying and operating apps, databases, and servers.**
 
-[![Release](https://img.shields.io/github/v/release/turbopanel/turbopanel?label=release)](https://github.com/turbopanel/turbopanel/releases)
+[![Release](https://img.shields.io/github/v/release/TurboPanel/turbopanel?label=release)](https://github.com/TurboPanel/turbopanel/releases)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=turbopanel_turbopanel)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=coverage)](https://sonarcloud.io/component_measures?id=turbopanel_turbopanel&metric=coverage)
 [![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=code_smells)](https://sonarcloud.io/project/issues?id=turbopanel_turbopanel&resolved=false&types=CODE_SMELL)
@@ -11,7 +11,7 @@
 
 ![TurboPanel servers overview](https://turbopanel.io/screenshots/servers-overview.png)
 
-> **Private alpha** — Neither TurboPanel High Availability nor self-hosted is publicly available yet. Foundation and fleet operations are furthest along; apps and deploy are actively improving. We're working toward a beta release — see the [roadmap](https://turbopanel.io/roadmap) and [releases](https://github.com/turbopanel/turbopanel/releases). Check the [compatibility matrix](https://turbopanel.io/docs/deployment/compatibility) before upgrading.
+> **Private alpha** — Neither TurboPanel High Availability nor self-hosted is publicly available yet. Foundation and fleet operations are furthest along; apps and deploy are actively improving. We're working toward a beta release — see the [roadmap](https://turbopanel.io/roadmap) and [releases](https://github.com/TurboPanel/turbopanel/releases). Check the [compatibility matrix](https://turbopanel.io/docs/deployment/compatibility) before upgrading.
 
 ## What TurboPanel does
 
@@ -49,8 +49,8 @@ graph LR
 ```
 
 - The **control plane** (this repo) is the Hono API on Cloudflare Workers (managed) or Deno + Unix socket (self-hosted).
-- The **daemon** ([turbopaneld](https://github.com/turbopanel/turbopaneld)) connects over authenticated WebSocket, runs Ansible locally, and executes deploy commands.
-- The **UI** ([ui](https://github.com/turbopanel/ui)) is the signed-in console — served by Caddy (self-hosted) or Workers assets (managed).
+- The **daemon** ([turbopaneld](https://github.com/TurboPanel/turbopaneld)) connects over authenticated WebSocket, runs Ansible locally, and executes deploy commands.
+- The **UI** ([ui](https://github.com/TurboPanel/ui)) is the signed-in console — served by Caddy (self-hosted) or Workers assets (managed).
 
 Architecture detail: [turbopanel.io/docs/architecture](https://turbopanel.io/docs/architecture) · [Daemon cell](https://turbopanel.io/docs/architecture/daemon-cell)
 
@@ -76,15 +76,15 @@ Canonical docs live at **[turbopanel.io/docs](https://turbopanel.io/docs)** — 
 | Questions, ideas, chat | [Discord](https://turbopanel.io/discord) |
 | Bugs | Issue on the owning repo |
 
-Full routing table: [SUPPORT.md](https://github.com/turbopanel/.github/blob/trunk/SUPPORT.md)
+Full routing table: [SUPPORT.md](https://github.com/TurboPanel/.github/blob/trunk/SUPPORT.md)
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/turbopanel/.github/blob/trunk/CONTRIBUTING.md). Contributor setup uses the [TurboPanel Development Environment](https://github.com/turbopanel/dev) — not a production install path. Pull requests are accepted under the [Contributor License Agreement](https://github.com/turbopanel/.github/blob/trunk/CLA.md).
+See [CONTRIBUTING.md](https://github.com/TurboPanel/.github/blob/trunk/CONTRIBUTING.md). Contributor setup uses the [TurboPanel Development Environment](https://github.com/TurboPanel/dev) — not a production install path. Pull requests are accepted under the [Contributor License Agreement](https://github.com/TurboPanel/.github/blob/trunk/CLA.md).
 
 ## Security
 
-Report vulnerabilities privately: [turbopanel.io/security](https://turbopanel.io/security) · [GitHub private reporting](https://github.com/turbopanel/turbopanel/security/advisories/new)
+Report vulnerabilities privately: [turbopanel.io/security](https://turbopanel.io/security) · [GitHub private reporting](https://github.com/TurboPanel/turbopanel/security/advisories/new)
 
 ## License
 

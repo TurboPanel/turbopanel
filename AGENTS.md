@@ -7,12 +7,12 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and
 
 | Public name              | GitHub                                                            | Internal term (this repo)              |
 | ------------------------ | ----------------------------------------------------------------- | -------------------------------------- |
-| TurboPanel Control Plane | [turbopanel/turbopanel](https://github.com/turbopanel/turbopanel) | `instance` (runtime/architecture only) |
+| TurboPanel Control Plane | [TurboPanel/turbopanel](https://github.com/TurboPanel/turbopanel) | `instance` (runtime/architecture only) |
 
 - **License:** AGPL-3.0-only ([`LICENSE`](./LICENSE), `package.json` /
   `deno.json`). Trademarks are not granted by the software license
   ([`TRADEMARKS.md`](./TRADEMARKS.md)). Contributions require the
-  [CLA](https://github.com/turbopanel/.github/blob/trunk/CLA.md).
+  [CLA](https://github.com/TurboPanel/.github/blob/trunk/CLA.md).
 - **Maturity label:** **Private alpha** (README, roadmap, site banner — keep
   identical).
 - **README** is product-facing; **AGENTS.md** is maintainer-facing. Do not use
@@ -277,7 +277,7 @@ vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/node/current/bin:/opt/turbop
 - **Node.js** and **openssl** — required for cert generation (`scripts/*.mjs`);
   Node.js also used for Caddy download
 - Run `./console` from the
-  [TurboPanel Development Environment](https://github.com/turbopanel/dev)
+  [TurboPanel Development Environment](https://github.com/TurboPanel/dev)
   checkout. The console installs Deno, clones the daemon, and drives the full
   dev stack via `scripts/bootstrap-orchestration.ts` +
   `scripts/install-daemon-systemd.sh` (shared orchestration under
