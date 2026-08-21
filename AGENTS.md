@@ -827,8 +827,10 @@ deliberately-unversioned probe.
   `{$KEY}` / `{$scope.KEY}` refs compile to Compose standalone `secrets:` files
   under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (YAML
   holds paths only). Preview **Prepared** shows that snapshot (plus `servers[]`
-  when scheduled across hosts), redacted `.env`, and `secretPlan[]`. Preview
-  **Merged** stays the user-authored merge (including `{$…}`).
+  only when scheduled across more than one host), redacted `.env`, and
+  `secretPlan[]`. Runtime YAML includes `x-turbopanel.placement.server_id` as
+  compile-time audit metadata. Preview **Merged** stays the user-authored merge
+  (including `{$…}`) plus the live pin for review.
   `POST /api/daemon/v1/deployments/secrets/rehydrate` reseals current registry
   values after daemon boot because `/run` is tmpfs.
 - **Org server seat capacity:** `organization.options.maxServers`
@@ -952,7 +954,7 @@ represented as `container` rows.
 | PostgreSQL                                                        | `docker run turbopanel-database`     | Compose service `database`                                      | service + container row                  |
 | RabbitMQ                                                          | `docker run turbopanel-queue`        | Compose service `queue`                                         | service + container row                  |
 | ClickHouse                                                        | `docker run turbopanel-analytics`    | Compose service `analytics`                                     | service + container row                  |
-| ProxySQL (managed DB ingress)                                     | daemon compose `turbopanel-proxysql` | Compose service `proxysql` / system component `managed-ingress` | service + container row when provisioned |
+| ProxySQL (managed DB ingress)                                     | daemon compose `turbopanel-proxysql` | Compose service `proxysql` / system component `managed-ingress` | service + container row when provisioned (`role: 'ingress'`, `<serviceId>-in`) |
 | Control plane (`turbopanel-instance.service`)                     | systemd + Deno                       | stays host-native                                               | none                                     |
 | Control-plane Caddy                                               | vendored binary                      | stays host-native                                               | none                                     |
 | Hosting Caddy                                                     | vendored binary + systemd            | stays host-native                                               | none                                     |
@@ -978,13 +980,26 @@ stops, or self-heals them (no restart-via-`system.reconcile` path — see
 `turbopanel-managed` network). The **daemon** writes `docker-compose.yml` and
 the durable dynamic config on `managed.ingress.reconcile` and can self-heal via
 `system.reconcile` (`selfHeal: proxysql`). It is **not** part of
-`turbopanel-system` and is **not** inspect-only. Client SQL enters ProxySQL's
-published `15432`/`13306` listeners; managed engines never publish arbitrary host
-ports. When a binding consumer is not co-resident, ProxySQL also joins
-`turbopanel-managed` **plus each consuming environment's spanning `tpn_*`
+`turbopanel-system` and is **not** inspect-only. The inventory container is
+`role: 'ingress'` named `<serviceId>-in` — distinct from the bare-uuid
+`turbopanel-system` rows and from the `-ha` Orchestrator. Client SQL enters
+ProxySQL's published `15432`/`13306` listeners; managed engines never publish
+arbitrary host ports. When a binding consumer is not co-resident, ProxySQL also
+joins `turbopanel-managed` **plus each consuming environment's spanning `tpn_*`
 network** (pinned to the reserved last-usable host address). Tenant
 docker-compose raw TCP/UDP Traefik remains a separate pattern
 (`turbopanel-ingress-<serviceId>`).
+
+### Container name suffix contract
+
+Canonical mapping (implementation: `src/lib/naming.ts`):
+
+| Container name | Who | `container.role` |
+| --- | --- | --- |
+| `<serviceId>` | single-instance tenant service; self-host stack (`database` / `queue` / `analytics`) | `service` / `turbopanel` |
+| `<serviceId>-<ordinal>` | multi-instance tenant service; **all** managed engine members (including a lone primary) | `service` |
+| `<serviceId>-in` | per-service/hosting Traefik **and** shared ProxySQL `managed-ingress` | `ingress` |
+| `<serviceId>-ha` | per-org Orchestrator `managed-ha` (documented exception) | `turbopanel` |
 
 **Why instance/Caddy/daemon/Redis stay host-native rather than joining the
 compose stack:**

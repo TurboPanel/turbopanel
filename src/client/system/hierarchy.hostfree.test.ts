@@ -7,7 +7,6 @@ import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   ingressContainerNameFromService,
-  managedIngressContainerNameFromService,
 } from '../../lib/naming.ts'
 import {
   deleteSystemEnvironmentSubtree,
@@ -407,8 +406,9 @@ test('ensureComposeService missing after upsert throws', async () => {
   )
 })
 
-test('ensureManagedIngressHierarchy provisions proxysql system container', async () => {
-  const track = { deletes: 0, updates: 0, inserts: 0, executes: 0 }
+test('ensureManagedIngressHierarchy provisions proxysql ingress container', async () => {
+  const track = { deletes: 0, updates: 0, inserts: 0, replaces: 0 }
+  const ingressName = ingressContainerNameFromService(SVC)
   const tx = createSequencedDb({
     track,
     execute: [
@@ -420,11 +420,12 @@ test('ensureManagedIngressHierarchy provisions proxysql system container', async
       [{ name: 'DB Host' }],
       [], // no env
       [{ id: SVC }], // proxysql service
-      // nested allocateServiceContainers select
       [{
         id: CTR,
         serverId: SERVER,
-        containerName: 'pending',
+        containerName: ingressName,
+        status: 'pending',
+        containerId: null,
         composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
       }],
     ],
@@ -437,7 +438,7 @@ test('ensureManagedIngressHierarchy provisions proxysql system container', async
   })
   assertEquals(result.serviceId, SVC)
   assertEquals(result.containerRowId, CTR)
-  assertEquals(result.containerName, managedIngressContainerNameFromService(SVC))
+  assertEquals(result.containerName, ingressName)
   assertEquals(result.workspaceId, WS)
   assertEquals(SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME.length > 0, true)
   assertEquals(track.inserts! >= 2, true)
@@ -464,10 +465,6 @@ test('ensureManagedIngressProject race miss throws', async () => {
 })
 
 test('ensureManagedIngressHierarchy throws when allocation empty', async () => {
-  // Force allocateEnvironmentContainers to skip by making nested select miss —
-  // actually that throws inside allocateServiceContainers. Instead stub
-  // containerNaming path by making the nested select fail after insert so
-  // allocate throws "container allocation missing".
   const tx = createSequencedDb({
     execute: [
       [{ id: WS }],
@@ -478,7 +475,7 @@ test('ensureManagedIngressHierarchy throws when allocation empty', async () => {
       [], // server missing → managed display fallback
       [{ id: ENV }],
       [{ id: SVC }],
-      [], // allocation select empty → allocateServiceContainers throws
+      [], // allocation select empty → ensureServiceIngressContainerAllocation throws
     ],
   })
 
@@ -489,7 +486,7 @@ test('ensureManagedIngressHierarchy throws when allocation empty', async () => {
         serverId: SERVER,
       }),
     Error,
-    'container allocation missing after upsert',
+    'service ingress container allocation missing after upsert',
   )
 })
 

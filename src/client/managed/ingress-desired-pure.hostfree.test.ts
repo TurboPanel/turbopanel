@@ -400,7 +400,7 @@ test("reservedIngressHostsForServer maps listener name to reserved segment addre
   const segmentsByServer = new Map([
     ["s-a", [{ name: hostName, subnet: "203.0.113.0/24" }]],
   ]);
-  const listenerNameByServer = new Map([["s-a", "svc-sql"]]);
+  const listenerNameByServer = new Map([["s-a", "svc-in"]]);
   assertEquals(
     reservedIngressHostsForServer({
       thisServerId: "s-b",
@@ -410,7 +410,7 @@ test("reservedIngressHostsForServer maps listener name to reserved segment addre
       segmentsByServer,
       listenerNameByServer,
     }),
-    new Map([["web", [{ name: "svc-sql", address: "203.0.113.254" }]]]),
+    new Map([["web", [{ name: "svc-in", address: "203.0.113.254" }]]]),
   );
   assertEquals(
     reservedIngressHostsForServer({
@@ -460,14 +460,14 @@ test("reservedIngressHostsForServer scopes the reserved address to each consumer
     consumers,
     spanning,
     segmentsByServer,
-    listenerNameByServer: new Map([["s-a", "svc-sql"]]),
+    listenerNameByServer: new Map([["s-a", "svc-in"]]),
   });
   assertEquals(hosts.get("web"), [{
-    name: "svc-sql",
+    name: "svc-in",
     address: "203.0.113.254",
   }]);
   assertEquals(hosts.get("api"), [{
-    name: "svc-sql",
+    name: "svc-in",
     address: "198.51.100.254",
   }]);
   assertEquals(hosts.has("worker"), false);

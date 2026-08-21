@@ -38,6 +38,7 @@ import type {
 } from "../../lib/commands/schemas.ts";
 import {
   buildDeployPreviewContainers,
+  buildDeployPreviewServers,
   buildTraditionalWebSitesForDeploy,
   composeProjectName,
   deployMaterialsErrorResponse,
@@ -1254,28 +1255,24 @@ export function registerEnvironmentDeployPreviewRoutes(
 
     const first = preparedByServer[0];
     const serverRows = planned.plan.serverIds.length === 0 ? [] : await db
-      .select({ id: server.id, name: server.name })
+      .select({ id: server.id, name: server.name, hostname: server.hostname })
       .from(server)
       .where(inArray(server.id, planned.plan.serverIds));
-    const nameById = new Map(serverRows.map((row) => [row.id, row.name]));
+    const labelById = new Map(
+      serverRows.map((row) => [row.id, { name: row.name, hostname: row.hostname }]),
+    );
     const projectName = composeProjectName(planned.projectId);
     const ingress = preparedByServer.flatMap((row) =>
       row.prepared.ingressServices
     );
     const appContainers = first?.prepared.containers ?? [];
+    const servers = buildDeployPreviewServers(preparedByServer, labelById);
 
     return c.json({
       ok: true as const,
       composeFiles: first?.prepared.composeFiles ?? [],
       projectName,
-      servers: preparedByServer.map((row) => ({
-        serverId: row.serverId,
-        name: nameById.get(row.serverId) ?? row.serverId,
-        composeFiles: row.prepared.composeFiles,
-        services: Object.keys(row.prepared.replicaCounts).sort((a, b) =>
-          a.localeCompare(b)
-        ),
-      })),
+      ...(servers === undefined ? {} : { servers }),
       containers: buildDeployPreviewContainers({
         appContainers,
         ingressServices: ingress,

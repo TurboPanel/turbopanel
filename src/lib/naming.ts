@@ -51,9 +51,10 @@ export function managedContainerName(serviceId: string, ordinal = 1): string {
 export const INGRESS_CONTAINER_NAME_SUFFIX = '-in'
 
 /**
- * Docker `container_name` for a service's dedicated Traefik ingress row
- * (`role='ingress'`, always `ordinal = 1`). Used by tenant deploy and system
- * reconcile — managed engines no longer allocate an ingress row.
+ * Docker `container_name` for an ingress-role row (`role='ingress'`, always
+ * `ordinal = 1`): the per-service/hosting Traefik frontend **or** the shared
+ * per-server ProxySQL managed-ingress frontend. Both use `<serviceId>-in`.
+ * Managed engines no longer allocate a Traefik ingress row.
  */
 export function ingressContainerNameFromService(serviceId: string): string {
   const name = `${serviceId}${INGRESS_CONTAINER_NAME_SUFFIX}`
@@ -65,33 +66,13 @@ export function ingressContainerNameFromService(serviceId: string): string {
   return name
 }
 
-/** Suffix for managed-ingress (ProxySQL) container names (`<serviceId>-sql`). */
-export const MANAGED_INGRESS_CONTAINER_NAME_SUFFIX = '-sql'
-
-/**
- * Docker `container_name` for the shared per-server ProxySQL managed-ingress
- * row (`role='turbopanel'`, always ordinal 1). Distinct from the bare-uuid
- * self-host `database`/`queue`/`analytics` system rows.
- */
-export function managedIngressContainerNameFromService(
-  serviceId: string,
-): string {
-  const name = `${serviceId}${MANAGED_INGRESS_CONTAINER_NAME_SUFFIX}`
-  if (!isValidDockerResourceName(name)) {
-    throw new TypeError(
-      `Invalid managed ingress container name for service id: ${serviceId}`,
-    )
-  }
-  return name
-}
-
 /** Suffix for managed-ha (Orchestrator) container names (`<serviceId>-ha`). */
 export const MANAGED_HA_CONTAINER_NAME_SUFFIX = '-ha'
 
 /**
  * Docker `container_name` for the shared per-server Orchestrator managed-ha
- * row (`role='turbopanel'`, always ordinal 1). Distinct from `-sql` ProxySQL
- * and `-in` Traefik.
+ * row (`role='turbopanel'`, always ordinal 1). Distinct from `-in` Traefik /
+ * ProxySQL ingress rows.
  */
 export function managedHaContainerNameFromService(
   serviceId: string,

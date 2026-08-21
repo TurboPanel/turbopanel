@@ -18,6 +18,8 @@
  * - `service.composeServiceName = 'orchestrator'` — managed HA service
  * - hosting container via `ensureServiceIngressContainerAllocation` (`role='ingress'`,
  *   name `<serviceId>-in`)
+ * - managed-ingress container via `ensureServiceIngressContainerAllocation` (`role='ingress'`,
+ *   name `<serviceId>-in`)
  * - managed-ha container via `allocateEnvironmentContainers` (`role='turbopanel'`,
  *   name `<serviceId>-ha`)
  *
@@ -55,7 +57,7 @@ import {
   type ContainerServiceSpec,
   ensureServiceIngressContainerAllocation,
 } from '../environments/allocate-containers.ts'
-import { managedHaContainerNameFromService, managedIngressContainerNameFromService } from '../../lib/naming.ts'
+import { managedHaContainerNameFromService } from '../../lib/naming.ts'
 
 export const SYSTEM_HOSTING_INGRESS_COMPONENT = 'hosting-ingress'
 export const SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME = 'traefik'
@@ -448,12 +450,12 @@ async function ensureManagedIngressProject(
 
 /**
  * Idempotently ensure workspace(kind=system) → project(managed-ingress) →
- * environment(server) → service(proxysql) → container(role=system, `-sql` suffix).
+ * environment(server) → service(proxysql) → container(role='ingress',
+ * `<serviceId>-in`).
  *
- * Does **not** allocate an ingress-role Traefik row — ProxySQL is the
- * protocol frontend and uses the `-sql` suffix via
- * {@link managedIngressContainerNameFromService} (distinct from bare-uuid
- * self-host stack services).
+ * Uses the same ingress allocation helper as hosting Traefik — ProxySQL is the
+ * protocol frontend and shares `role='ingress'` + the `-in` name suffix
+ * (distinct from bare-uuid self-host stack services).
  */
 async function ensureManagedIngressHierarchyImpl(
   db: Db,
@@ -481,27 +483,11 @@ async function ensureManagedIngressHierarchyImpl(
       SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
     )
 
-    const allocations = await allocateEnvironmentContainers(tx, {
-      environmentId,
+    const allocation = await ensureServiceIngressContainerAllocation(tx, {
+      serviceId,
       serverId: params.serverId,
-      containerServices: [
-        {
-          serviceId,
-          composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
-          instances: 1,
-          role: 'turbopanel',
-          explicitContainerName: managedIngressContainerNameFromService(serviceId),
-        },
-      ],
-      containerNaming: 'uuid',
-      environmentServiceIds: [serviceId],
+      composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
     })
-    const allocation = allocations[0]
-    if (!allocation) {
-      throw new Error(
-        `managed-ingress container allocation missing (service=${serviceId})`,
-      )
-    }
 
     return {
       workspaceId,
@@ -558,6 +544,7 @@ export async function findManagedIngressHierarchy(
         eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
         sql`${project.metadata}->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}`,
         eq(service.composeServiceName, SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME),
+        eq(container.role, 'ingress'),
       ),
     )
     .limit(1)

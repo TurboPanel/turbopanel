@@ -776,7 +776,7 @@ async function applyManagedIngressReconcileSideEffect(
     const expectedAllocations = [
       {
         serviceId: hierarchy.serviceId,
-        role: 'turbopanel' as const,
+        role: 'ingress' as const,
         ordinal: 1,
       },
     ]

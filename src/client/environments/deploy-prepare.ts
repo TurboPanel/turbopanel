@@ -2148,11 +2148,14 @@ export async function prepareDeployCompose(
   const effective = split.containerDocument;
   const compiled = compileRuntimeCompose(
     effective,
-    compileRuntimeOptionsForServer(
-      params.environmentId,
-      pipeline,
-      params.schedule,
-    ),
+    {
+      ...compileRuntimeOptionsForServer(
+        params.environmentId,
+        pipeline,
+        params.schedule,
+      ),
+      placementServerId: params.serverId,
+    },
   );
   const expansion = overlayCompiledExpansion(
     pipeline.expansion,

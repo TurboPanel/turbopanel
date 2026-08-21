@@ -8,6 +8,7 @@
 
 import { serviceDnsName } from "../naming.ts";
 import { pruneUnreferencedComposeNetworks } from "./docker-external-networks.ts";
+import { applyComposePlacement } from "./placement.ts";
 import { type ComposeDocument, emptyComposeDocument } from "./types.ts";
 
 /** Scheduler-only keys never copied into compiled runtime YAML. */
@@ -21,6 +22,11 @@ const SCHEDULER_ONLY_DEPLOY_KEYS = new Set([
 ]);
 
 export type CompileRuntimeOptions = {
+  /**
+   * Server this compiled snapshot will run on. Emitted as
+   * `x-turbopanel.placement.server_id` (audit only — Docker ignores `x-*`).
+   */
+  placementServerId?: string;
   /** When set, identity labels include this environment id. */
   environmentId?: string;
   /** When set, drop services not in this set (per-server compile). */
@@ -51,7 +57,7 @@ export type CompileRuntimeOptions = {
   }>;
   /**
    * Per-service static `extra_hosts` for the ProxySQL listener
-   * (`<serviceId>-sql`) on hosts that are not co-resident with it.
+   * (`<serviceId>-in`) on hosts that are not co-resident with it.
    * Merged only into the bound consumer (and expanded clones that share
    * that spanning network). Co-resident consumers join
    * `turbopanel-managed` instead and must not receive these entries.
@@ -851,14 +857,18 @@ export function compileRuntimeCompose(
   ) {
     return { document: emptyComposeDocument(), expansion: compiled.expansion };
   }
-  return {
-    document: {
-      version: 1,
-      data,
-      presentation: { keyOrder: Object.keys(data), comments: {} },
-    },
-    expansion: compiled.expansion,
+  let compiledDocument: ComposeDocument = {
+    version: 1,
+    data,
+    presentation: { keyOrder: Object.keys(data), comments: {} },
   };
+  if (resolved.placementServerId) {
+    compiledDocument = applyComposePlacement(
+      compiledDocument,
+      resolved.placementServerId,
+    );
+  }
+  return { document: compiledDocument, expansion: compiled.expansion };
 }
 
 /**

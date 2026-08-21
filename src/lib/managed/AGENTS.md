@@ -337,12 +337,15 @@ outside of the retention-keep pruning that runs on every successful backup.
 One engine `service` row per managed cluster; each **member** owns one
 `role='service'` container at `ordinal = member.ordinal`, named
 `managedContainerName(serviceId, ordinal)` → `<service.id>-<ordinal>`. There is
-**no** per-managed Traefik / `-in` ingress container row on the engine service.
-Shared ProxySQL is the **`managed-ingress`** system component (project
-`turbopanel-proxysql`, compose service `proxysql`) and lives in the system
-inventory path when provisioned — not as an ordinal on the engine service. Apply
-writes `service.options.instances` to the member count so reconcile keeps
-pending ordinal-2/3 rows.
+**no** per-managed Traefik / `-in` ingress container row **on the engine
+service** — `-in` is not retired platform-wide; it now names the shared ProxySQL
+row on the `managed-ingress` system service. Shared ProxySQL is the
+**`managed-ingress`** system component (project `turbopanel-proxysql`, compose
+service `proxysql`, container `<serviceId>-in`, `role: 'ingress'`) and lives in
+the system inventory path when provisioned — not as an ordinal on the engine
+service. Suffix contract: repo-root `AGENTS.md` → **Container name suffix
+contract**. Apply writes `service.options.instances` to the member count so
+reconcile keeps pending ordinal-2/3 rows.
 
 `prepareManagedApplyPayloads` (`src/client/managed/apply-prepare.ts`) allocates
 one container per member via `ensureManagedContainerAllocation`, stamps

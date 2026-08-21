@@ -33,7 +33,6 @@ import { parseServerOptions } from '../../lib/db/server-metadata.ts'
 import {
   ingressContainerNameFromService,
   managedHaContainerNameFromService,
-  managedIngressContainerNameFromService,
 } from '../../lib/naming.ts'
 import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
 import {
@@ -178,8 +177,8 @@ function buildSystemReconcileComponents(
         component: SYSTEM_MANAGED_INGRESS_COMPONENT,
         serviceId: proxysql.serviceId,
         composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
-        containerName: managedIngressContainerNameFromService(proxysql.serviceId),
-        role: 'turbopanel',
+        containerName: ingressContainerNameFromService(proxysql.serviceId),
+        role: 'ingress',
         desired: resolveManagedIngressDesired({
           hasManagedMembers: entry.hasManagedMembers,
           hasBoundManagedConsumers: entry.hasBoundManagedConsumers,
@@ -369,7 +368,7 @@ export async function buildSystemReconcilePayload(
       AND c.ordinal = 1
       AND (
         (p.metadata->>'component' = ${SYSTEM_HOSTING_INGRESS_COMPONENT} AND c.role = 'ingress')
-        OR (p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT} AND c.role = 'turbopanel')
+        OR (p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT} AND c.role = 'ingress')
         OR (p.metadata->>'component' = ${SYSTEM_MANAGED_HA_COMPONENT} AND c.role = 'turbopanel')
         OR (p.metadata->>'component' = ${SYSTEM_SELF_HOST_COMPONENT} AND c.role = 'turbopanel')
       )
@@ -555,7 +554,7 @@ export async function runSystemReconcileSweep(
         OR (
           p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
           AND s.name = ${SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME}
-          AND c.role = 'turbopanel'
+          AND c.role = 'ingress'
           AND EXISTS (
             SELECT 1
             FROM node mm

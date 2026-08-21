@@ -32,7 +32,7 @@ export const containerSchemas = {
         enum: ['service', 'ingress', 'turbopanel'],
         default: 'service',
         description:
-          "Allocator-owned; `'service'` is the ordinary workload/engine replica, `'ingress'` is the per-service Traefik container named `<service.id>-in` at ordinal 1, and `'turbopanel'` is the platform `turbopanel-system` stack (`database` / `queue` / `analytics`).",
+          "Allocator-owned; `'service'` is the ordinary workload/engine replica, `'ingress'` is the per-service Traefik container or the shared per-server ProxySQL managed-ingress frontend (both named `<service.id>-in` at ordinal 1), and `'turbopanel'` is the platform `turbopanel-system` stack (`database` / `queue` / `analytics`) plus Orchestrator (`-ha`).",
       },
       composeServiceName: { type: 'string' },
       ordinal: {

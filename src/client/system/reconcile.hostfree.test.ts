@@ -9,7 +9,6 @@ import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import {
   ingressContainerNameFromService,
-  managedIngressContainerNameFromService,
 } from '../../lib/naming.ts'
 import {
   SYSTEM_HOSTING_INGRESS_COMPONENT,
@@ -224,8 +223,9 @@ test('buildSystemReconcilePayload builds hosting/managed/self-host components', 
   assertEquals(managed.components[0]?.composeServiceName, SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME)
   assertEquals(
     managed.components[0]?.containerName,
-    managedIngressContainerNameFromService(SVC_PROXY),
+    ingressContainerNameFromService(SVC_PROXY),
   )
+  assertEquals(managed.components[0]?.role, 'ingress')
 
   const selfHost = payloads.find((p) => p.environmentId === ENV_SELF)!
   assertEquals(selfHost.components.length, 2)

@@ -297,7 +297,7 @@ test("reservedIngressHostsForServer skips missing listener / attachment / cidr",
       }],
       spanning: new Map([["frontend", "tpn_x"]]),
       segmentsByServer: new Map(),
-      listenerNameByServer: new Map([["s-a", "svc-sql"]]),
+      listenerNameByServer: new Map([["s-a", "svc-in"]]),
     }),
     new Map(),
   );
@@ -315,7 +315,7 @@ test("reservedIngressHostsForServer skips missing listener / attachment / cidr",
       segmentsByServer: new Map([
         ["s-a", [{ name: "tpn_other", subnet: "203.0.113.0/24" }]],
       ]),
-      listenerNameByServer: new Map([["s-a", "svc-sql"]]),
+      listenerNameByServer: new Map([["s-a", "svc-in"]]),
     }),
     new Map(),
   );

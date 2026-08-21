@@ -156,7 +156,7 @@ export const deploySchemas = {
               type: 'string',
               enum: ['service', 'ingress', 'turbopanel'],
               description:
-                "Workload replica (`service`), per-service Traefik container (`ingress`, named `<serviceId>-in` at ordinal 1), or platform `turbopanel-system` stack container (`turbopanel`).",
+                "Workload replica (`service`), ingress frontend (`ingress` — per-service Traefik or shared per-server ProxySQL managed-ingress, both named `<serviceId>-in` at ordinal 1), or platform `turbopanel-system` stack / Orchestrator container (`turbopanel`).",
             },
           },
         },

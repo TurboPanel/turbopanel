@@ -1,5 +1,7 @@
 import { assertEquals } from '@std/assert'
+import { composeDocumentToRuntimeYaml } from './convert.ts'
 import {
+  applyComposePlacement,
   isPlacementServerId,
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
@@ -66,4 +68,47 @@ test('stripComposePlacement preserves presentation metadata when stripping place
   assertEquals(stripped.presentation.documentCommentBefore, 'before doc')
   assertEquals(stripped.presentation.documentComment, 'after doc')
   assertEquals(stripped.presentation.editorView, 'visual')
+})
+
+test('applyComposePlacement annotates compiled runtime compose', () => {
+  const doc = normalizeCompose({
+    version: 1,
+    data: { services: { api: { image: 'node:22' } } },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  const applied = applyComposePlacement(doc, PLACEMENT_UUID)
+  assertEquals(applied.data[TURBOPANEL_EXTENSION_KEY], {
+    placement: { server_id: PLACEMENT_UUID },
+  })
+  assertEquals(
+    applied.presentation.keyOrder.at(-1),
+    TURBOPANEL_EXTENSION_KEY,
+  )
+  const runtime = composeDocumentToRuntimeYaml(applied)
+  assertEquals(
+    runtime.lastIndexOf('x-turbopanel:') > runtime.indexOf('services:'),
+    true,
+  )
+})
+
+test('applyComposePlacement is a no-op for an invalid server id', () => {
+  const doc = emptyComposeDocument()
+  doc.data = { services: { api: { image: 'node:22' } } }
+  assertEquals(applyComposePlacement(doc, 'au1'), doc)
+})
+
+test('applyComposePlacement preserves unrelated extension fields', () => {
+  const doc = normalizeCompose({
+    version: 1,
+    data: {
+      services: { api: { image: 'node:22' } },
+      [TURBOPANEL_EXTENSION_KEY]: { future: { keep: true } },
+    },
+    presentation: { keyOrder: ['services', TURBOPANEL_EXTENSION_KEY], comments: {} },
+  })
+  const applied = applyComposePlacement(doc, PLACEMENT_UUID)
+  assertEquals(applied.data[TURBOPANEL_EXTENSION_KEY], {
+    future: { keep: true },
+    placement: { server_id: PLACEMENT_UUID },
+  })
 })

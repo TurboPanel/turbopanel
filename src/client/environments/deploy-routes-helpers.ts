@@ -1,6 +1,7 @@
 import { attachWebMetadataToTraditionalSites } from '../../lib/hosting-web-env.ts'
 import { assignTraditionalWebListenPorts } from '../../lib/compose/traditional-web.ts'
 import type {
+  EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTraditionalWebSite,
@@ -413,4 +414,52 @@ export function buildDeployPreviewContainers(input: {
     role: 'ingress' as const,
   }))
   return [...appContainers, ...ingressContainers]
+}
+
+export type DeployPreviewServerRow = {
+  serverId: string
+  name: string
+  composeFiles: EnvironmentDeployComposeFile[]
+  services: string[]
+}
+
+/** Display name, then hostname, then the server id. */
+export function deployPreviewServerLabel(
+  name: string | null | undefined,
+  hostname: string | null | undefined,
+  serverId: string,
+): string {
+  const displayName = name?.trim()
+  if (displayName) return displayName
+  const host = hostname?.trim()
+  if (host) return host
+  return serverId
+}
+
+/**
+ * Per-host compiled snapshots. Omitted for a whole-environment pin /
+ * single-server plan so the UI does not duplicate the top-level compose.yaml.
+ */
+export function buildDeployPreviewServers(
+  preparedByServer: ReadonlyArray<{
+    serverId: string
+    prepared: {
+      composeFiles: EnvironmentDeployComposeFile[]
+      replicaCounts: Record<string, number>
+    }
+  }>,
+  labelById: ReadonlyMap<string, { name: string | null; hostname: string | null }>,
+): DeployPreviewServerRow[] | undefined {
+  if (preparedByServer.length <= 1) return undefined
+  return preparedByServer.map((row) => {
+    const label = labelById.get(row.serverId)
+    return {
+      serverId: row.serverId,
+      name: deployPreviewServerLabel(label?.name, label?.hostname, row.serverId),
+      composeFiles: row.prepared.composeFiles,
+      services: Object.keys(row.prepared.replicaCounts).sort((a, b) =>
+        a.localeCompare(b)
+      ),
+    }
+  })
 }

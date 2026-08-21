@@ -2,13 +2,15 @@
  * Host-free coverage for environment deploy route pure helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { DeployPrepareError } from './deploy-prepare.ts'
 import {
   buildDeployPreviewContainers,
+  buildDeployPreviewServers,
   buildTraditionalWebSitesForDeploy,
   composeProjectName,
   deployMaterialsErrorResponse,
+  deployPreviewServerLabel,
   expandHostingsForComposeInstances,
   fabricGateErrorResponse,
   mapPrepareErrorResponse,
@@ -102,7 +104,15 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
     { kind: 'datacenter_ip_required', serverId: projectId },
     { kind: 'docker_external_network_unregistered', names: ['external-net'] },
     { kind: 'traditional_web_principal_ambiguous', composeServiceName: 'php' },
-    { kind: 'resource_limit', violations: [{ resource: 'cpu', limit: 1, requested: 2 }] },
+    {
+      kind: 'resource_limit',
+      violations: [{
+        scope: 'organization',
+        field: 'maxCpus',
+        limit: 1,
+        requested: 2,
+      }],
+    },
     { kind: 'binding_endpoint_unavailable' },
     { kind: 'variable_unresolved', message: 'missing {$project.x}', ref: '{$project.x}' },
     { kind: 'variable_ref_invalid', message: 'bad ref' },
@@ -290,7 +300,10 @@ test('deployMaterialsErrorResponse returns 400 for invalid materials', async () 
     [],
   )
   assertEquals(denied?.status, 400)
-  assertEquals((await denied?.json())?.error, 'invalid_deploy_hosting')
+  assertEquals(
+    ((await denied?.json()) as { error?: string } | undefined)?.error,
+    'invalid_deploy_hosting',
+  )
 })
 
 test('scheduleErrorResponse maps placement and other schedule failures', () => {
@@ -362,8 +375,8 @@ test('buildTraditionalWebSitesForDeploy attaches listen ports from hostings', ()
     [{
       composeServiceName: 'static',
       engine: 'nginx',
-      documentRoot: 'public',
-      hostnames: ['site.example.com'],
+      root: 'public',
+      listenPort: 8080,
     }],
     [{
       hostingId: 'h1',
@@ -374,4 +387,53 @@ test('buildTraditionalWebSitesForDeploy attaches listen ports from hostings', ()
     }],
   )
   assertEquals(sites[0]?.listenPort, 8080)
+})
+
+test('deployPreviewServerLabel prefers name then hostname', () => {
+  const serverId = '01989d42-9adb-7e65-bc2e-f38792c53691'
+  assertEquals(deployPreviewServerLabel('au1', 'host.lan', serverId), 'au1')
+  assertEquals(deployPreviewServerLabel('  ', 'host.lan', serverId), 'host.lan')
+  assertEquals(deployPreviewServerLabel(null, null, serverId), serverId)
+})
+
+test('buildDeployPreviewServers omits a single-server plan', () => {
+  const serverId = '01989d42-9adb-7e65-bc2e-f38792c53691'
+  const files = [{
+    filename: 'compose.yaml',
+    role: 'runtime' as const,
+    source: 'inline' as const,
+    content: 'services: {}\n',
+  }]
+  assertEquals(
+    buildDeployPreviewServers(
+      [{ serverId, prepared: { composeFiles: files, replicaCounts: { web: 1 } } }],
+      new Map([[serverId, { name: 'au1', hostname: 'host.lan' }]]),
+    ),
+    undefined,
+  )
+})
+
+test('buildDeployPreviewServers emits per-host blocks when split', () => {
+  const alpha = '01989d42-9adb-7e65-bc2e-f38792c53691'
+  const bravo = '01989d42-9adb-7e65-bc2e-f38792c53692'
+  const files = [{
+    filename: 'compose.yaml',
+    role: 'runtime' as const,
+    source: 'inline' as const,
+    content: 'services: {}\n',
+  }]
+  const rows = buildDeployPreviewServers(
+    [
+      { serverId: alpha, prepared: { composeFiles: files, replicaCounts: { web: 1 } } },
+      { serverId: bravo, prepared: { composeFiles: files, replicaCounts: { api: 1 } } },
+    ],
+    new Map([
+      [alpha, { name: 'au1', hostname: 'au1.lan' }],
+      [bravo, { name: '  ', hostname: 'bravo.lan' }],
+    ]),
+  )
+  assertEquals(rows?.map((row) => ({ name: row.name, services: row.services })), [
+    { name: 'au1', services: ['web'] },
+    { name: 'bravo.lan', services: ['api'] },
+  ])
 })

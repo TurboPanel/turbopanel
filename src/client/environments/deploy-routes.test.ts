@@ -704,6 +704,12 @@ test("GET /environments/:id/deploy-preview returns containers for a service", as
     assertEquals(body.projectName, projectId);
     const runtimeYaml = body.composeFiles[0]?.content ?? "";
     assertEquals(runtimeYaml.includes("web:"), true);
+    assertEquals(runtimeYaml.includes("x-turbopanel:"), true);
+    assertEquals(runtimeYaml.includes(serverId), true);
+    assertEquals(
+      (body as { servers?: unknown }).servers,
+      undefined,
+    );
     assertEquals(body.containers.length >= 1, true);
     assertEquals(body.containers[0]!.composeServiceName, "web");
     assertEquals(body.containers[0]!.ordinal, 1);

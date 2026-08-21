@@ -1,5 +1,7 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { compileRuntimeComposeDocument } from "./compile-runtime.ts";
+import { composeDocumentToRuntimeYaml } from "./convert.ts";
+import { TURBOPANEL_EXTENSION_KEY } from "./placement.ts";
 import { type ComposeDocument, emptyComposeDocument } from "./types.ts";
 
 /**
@@ -264,7 +266,7 @@ test("compileRuntimeComposeDocument merges managed ingress extra_hosts when not 
       managedIngressHostsByService: new Map([
         ["web", [
           {
-            name: "00000000-0000-4000-8000-0000000000aa-sql",
+            name: "00000000-0000-4000-8000-0000000000aa-in",
             address: "203.0.113.254",
           },
         ]],
@@ -274,7 +276,7 @@ test("compileRuntimeComposeDocument merges managed ingress extra_hosts when not 
   const web =
     (compiled.data.services as Record<string, Record<string, unknown>>).web;
   assertEquals(web?.extra_hosts, [
-    "00000000-0000-4000-8000-0000000000aa-sql:203.0.113.254",
+    "00000000-0000-4000-8000-0000000000aa-in:203.0.113.254",
   ]);
 });
 
@@ -311,8 +313,8 @@ test("compileRuntimeComposeDocument scopes managed ingress extra_hosts to the bo
         ["backend", "tpn_net2"],
       ]),
       managedIngressHostsByService: new Map([
-        ["web", [{ name: "svc-sql", address: "203.0.113.254" }]],
-        ["api", [{ name: "svc-sql", address: "198.51.100.254" }]],
+        ["web", [{ name: "svc-in", address: "203.0.113.254" }]],
+        ["api", [{ name: "svc-in", address: "198.51.100.254" }]],
       ]),
     },
   );
@@ -320,8 +322,8 @@ test("compileRuntimeComposeDocument scopes managed ingress extra_hosts to the bo
     string,
     Record<string, unknown>
   >;
-  assertEquals(services.web?.extra_hosts, ["svc-sql:203.0.113.254"]);
-  assertEquals(services.api?.extra_hosts, ["svc-sql:198.51.100.254"]);
+  assertEquals(services.web?.extra_hosts, ["svc-in:203.0.113.254"]);
+  assertEquals(services.api?.extra_hosts, ["svc-in:198.51.100.254"]);
   assertEquals("extra_hosts" in (services.worker ?? {}), false);
 });
 
@@ -465,4 +467,29 @@ test("compileRuntimeComposeDocument prunes secrets not referenced by remaining s
   assertEquals(compiled.data.secrets, {
     web_token: { file: "/run/secrets/web" },
   });
+});
+
+test("compileRuntimeComposeDocument annotates x-turbopanel placement", () => {
+  const serverId = "01989d42-9adb-7e65-bc2e-f38792c53691";
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: { web: { image: "nginx" } },
+    }),
+    { placementServerId: serverId },
+  );
+  assertEquals(compiled.data[TURBOPANEL_EXTENSION_KEY], {
+    placement: { server_id: serverId },
+  });
+  const yaml = composeDocumentToRuntimeYaml(compiled);
+  assertEquals(yaml.lastIndexOf("x-turbopanel:") > yaml.indexOf("services:"), true);
+  assertEquals(yaml.includes(serverId), true);
+});
+
+test("compileRuntimeComposeDocument omits placement without a server id", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: { web: { image: "nginx" } },
+    }),
+  );
+  assertEquals(compiled.data[TURBOPANEL_EXTENSION_KEY], undefined);
 });

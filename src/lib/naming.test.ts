@@ -1,7 +1,6 @@
-import { assertEquals, assertThrows } from 'jsr:@std/assert'
+import { assertEquals, assertThrows } from '@std/assert'
 import {
   INGRESS_CONTAINER_NAME_SUFFIX,
-  MANAGED_INGRESS_CONTAINER_NAME_SUFFIX,
   PRINCIPAL_HOME_ROOT,
   PRINCIPAL_RESERVED_UID_MAX,
   PRINCIPAL_RESERVED_UID_MIN,
@@ -21,7 +20,6 @@ import {
   isReservedPrincipalUsername,
   isValidDockerResourceName,
   managedContainerName,
-  managedIngressContainerNameFromService,
   principalHomeDir,
   principalSshDir,
   principalVolumePath,
@@ -104,25 +102,11 @@ test('ingressContainerNameFromService rejects invalid service ids', () => {
   )
 })
 
-test('MANAGED_INGRESS_CONTAINER_NAME_SUFFIX is -sql', () => {
-  assertEquals(MANAGED_INGRESS_CONTAINER_NAME_SUFFIX, '-sql')
-})
-
-test('managedIngressContainerNameFromService appends -sql to a valid service id', () => {
-  const id = '01936b3e-8c7a-7b2d-a1f0-123456789abc'
-  assertEquals(managedIngressContainerNameFromService(id), `${id}-sql`)
-})
-
-test('managedIngressContainerNameFromService rejects invalid service ids', () => {
-  assertThrows(
-    () => managedIngressContainerNameFromService('has space'),
-    TypeError,
-    'Invalid managed ingress container name for service id',
-  )
-  assertThrows(
-    () => managedIngressContainerNameFromService('-bad'),
-    TypeError,
-    'Invalid managed ingress container name for service id',
+test('managed-ingress container name is ingressContainerNameFromService (shared -in contract)', () => {
+  const serviceId = '01936b3e-8c7a-7b2d-a1f0-123456789abc'
+  assertEquals(
+    ingressContainerNameFromService(serviceId),
+    `${serviceId}-in`,
   )
 })
 

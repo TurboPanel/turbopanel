@@ -1467,7 +1467,7 @@ test('processCommandEnvelope reconciles containers on managed.ingress.reconcile 
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
-    const containerName = `${serviceId}-sql`
+    const containerName = `${serviceId}-in`
     const [containerRow] = await db
       .insert(container)
       .values({
@@ -1476,7 +1476,7 @@ test('processCommandEnvelope reconciles containers on managed.ingress.reconcile 
         containerId: null,
         containerName,
         status: 'pending',
-        role: 'turbopanel',
+        role: 'ingress',
         composeServiceName: 'proxysql',
         ordinal: 1,
       })
@@ -1515,7 +1515,7 @@ test('processCommandEnvelope reconciles containers on managed.ingress.reconcile 
                 containerId: 'proxysql-cid-1',
                 containerName,
                 status: 'running',
-                role: 'turbopanel',
+                role: 'ingress',
               },
             ],
           },
@@ -1591,7 +1591,7 @@ test('processCommandEnvelope clears pins when managed.ingress.reconcile reports 
       })
       .returning({ id: service.id })
     const serviceId = serviceRow!.id
-    const containerName = `${serviceId}-sql`
+    const containerName = `${serviceId}-in`
     const [containerRow] = await db
       .insert(container)
       .values({
@@ -1600,7 +1600,7 @@ test('processCommandEnvelope clears pins when managed.ingress.reconcile reports 
         containerId: 'old-proxysql-cid',
         containerName,
         status: 'running',
-        role: 'turbopanel',
+        role: 'ingress',
         composeServiceName: 'proxysql',
         ordinal: 1,
       })

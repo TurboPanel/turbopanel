@@ -502,7 +502,7 @@ test("exposure disabled omits bindAddresses — no public ProxySQL publish", asy
       assertEquals("bindAddresses" in built, false);
       assertEquals(built.clusters.length, 1);
       assertEquals(built.identity?.composeServiceName, "proxysql");
-      assertEquals(built.identity?.containerName.endsWith("-sql"), true);
+      assertEquals(built.identity?.containerName.endsWith("-in"), true);
       const mintedLeaves = await db
         .select({ id: leaf.id })
         .from(leaf)

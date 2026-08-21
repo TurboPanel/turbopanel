@@ -69,6 +69,7 @@ export {
   type ComposeLintLevel,
 } from './lint.ts'
 export {
+  applyComposePlacement,
   isPlacementServerId,
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,

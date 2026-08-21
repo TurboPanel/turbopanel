@@ -1730,9 +1730,11 @@ export const container = pgTable(
     status: text('status').default('pending').notNull(),
     /**
      * `role='ingress'` rows always use `ordinal = 1` and are named
-     * `<service.id>-in` via `ingressContainerNameFromService`.
-     * `role='turbopanel'` is the platform `turbopanel-system` compose stack
-     * (`database` / `queue` / `analytics`). `role='service'` is the ordinary
+     * `<service.id>-in` via `ingressContainerNameFromService` — both the
+     * per-service Traefik frontend and the shared per-server ProxySQL
+     * managed-ingress frontend. `role='turbopanel'` is the platform
+     * `turbopanel-system` compose stack (`database` / `queue` / `analytics`)
+     * plus Orchestrator (`-ha`). `role='service'` is the ordinary
      * workload/engine replica. A service may hold N service replicas plus
      * exactly one ingress row.
      */

@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { managedContainerName } from '../../lib/naming.ts'
 import {
@@ -262,39 +262,48 @@ test('ensureManagedContainerAllocation creates service + pending ordinal-1 conta
 
 test('ensureManagedContainerAllocation supports ordinals 2 and 3', async () => {
   const handle = createManagedAllocationDb()
-  const { db, containers } = handle
+  const { db, containers, services } = handle
 
-  await ensureManagedContainerAllocation(db, {
+  const first = await ensureManagedContainerAllocation(db, {
     environmentId: 'env-1',
     serverId: 'srv-1',
     composeServiceName: 'postgres',
     ordinal: 1,
   })
-  await ensureManagedContainerAllocation(db, {
+  const second = await ensureManagedContainerAllocation(db, {
     environmentId: 'env-1',
     serverId: 'srv-2',
     composeServiceName: 'postgres',
     ordinal: 2,
   })
-  await ensureManagedContainerAllocation(db, {
+  const third = await ensureManagedContainerAllocation(db, {
     environmentId: 'env-1',
     serverId: 'srv-3',
     composeServiceName: 'postgres',
     ordinal: 3,
   })
 
+  // One shared service row; members are ordinals on that service id.
+  assertEquals(services.length, 1)
+  assertEquals(second.serviceId, first.serviceId)
+  assertEquals(third.serviceId, first.serviceId)
   assertEquals(containers.length, 3)
   assertEquals(
     containers.map((r) => r.ordinal).sort((a, b) => a - b),
     [1, 2, 3],
   )
+  const serviceId = first.serviceId
+  assertEquals(
+    containers.find((r) => r.ordinal === 1)?.containerName,
+    managedContainerName(serviceId, 1),
+  )
   assertEquals(
     containers.find((r) => r.ordinal === 2)?.containerName,
-    managedContainerName(handle.services[0]!.id, 2),
+    managedContainerName(serviceId, 2),
   )
   assertEquals(
     containers.find((r) => r.ordinal === 3)?.containerName,
-    managedContainerName(handle.services[0]!.id, 3),
+    managedContainerName(serviceId, 3),
   )
 })
 

@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "jsr:@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { describe, it } from "@std/testing/bdd";
 import {
   buildServiceOptionsMap,
@@ -96,7 +96,7 @@ describe("deploy-prepare helpers", () => {
 
   it("keeps local turbopanel-managed attachment when another service uses remote extra_hosts", () => {
     const remote = new Map([
-      ["remote-app", [{ name: "svc-sql", address: "203.0.113.254" }]],
+      ["remote-app", [{ name: "svc-in", address: "203.0.113.254" }]],
     ]);
     assertEquals(
       localManagedNetworkServiceNames(["local-app", "remote-app"], remote),
@@ -175,15 +175,15 @@ function createIpLookupDb(
               return {
                 orderBy() {
                   return {
-                    async limit() {
-                      return rows.slice(0, 1);
+                    limit() {
+                      return Promise.resolve(rows.slice(0, 1));
                     },
                   };
                 },
-                async limit() {
+                limit() {
                   // Caller chains `.where(...).limit(1)`; return first matching
                   // row. Public-by-id and datacenter-by-server (via orderBy) end here.
-                  return rows.slice(0, 1);
+                  return Promise.resolve(rows.slice(0, 1));
                 },
               };
             },
@@ -191,7 +191,7 @@ function createIpLookupDb(
         },
       };
     },
-  } as Parameters<typeof resolveHostingBindAddress>[0];
+  } as unknown as Parameters<typeof resolveHostingBindAddress>[0];
 }
 
 describe("resolveHostingBindAddress", () => {
@@ -683,14 +683,14 @@ describe("readHostingProxyFromOptions", () => {
           forceHttps: false,
           gzip: false,
           brotli: true,
-          stripPrefix: true,
+          stripPrefix: "/api",
         },
       }),
       {
         forceHttps: false,
         gzip: false,
         brotli: true,
-        stripPrefix: true,
+        stripPrefix: "/api",
       },
     );
   });
@@ -713,8 +713,8 @@ describe("verifyServerInOrg", () => {
             return {
               where() {
                 return {
-                  async limit() {
-                    return [{ id: "srv-1" }];
+                  limit() {
+                    return Promise.resolve([{ id: "srv-1" }]);
                   },
                 };
               },
@@ -734,8 +734,8 @@ describe("verifyServerInOrg", () => {
             return {
               where() {
                 return {
-                  async limit() {
-                    return [];
+                  limit() {
+                    return Promise.resolve([]);
                   },
                 };
               },
@@ -989,8 +989,8 @@ describe("resolveHostingBindAddress edge cases", () => {
                 return {
                   orderBy() {
                     return {
-                      async limit() {
-                        return [{ address: 10 }];
+                      limit() {
+                        return Promise.resolve([{ address: 10 }]);
                       },
                     };
                   },
@@ -1000,7 +1000,7 @@ describe("resolveHostingBindAddress edge cases", () => {
           },
         };
       },
-    } as Parameters<typeof resolveHostingBindAddress>[0];
+    } as unknown as Parameters<typeof resolveHostingBindAddress>[0];
     const result = await resolveHostingBindAddress(db, {
       serverId: "srv-1",
       options: { bind: "datacenter" },
@@ -1170,7 +1170,7 @@ describe("warningFromPrepareError and soft-error absorb", () => {
     );
     assertEquals(warnings.length, 1);
     assertEquals(absorbSoftPrepareError("preview", warnings, null), null);
-    assertEquals(absorbSoftPrepareError("deploy", warnings), null);
+    assertEquals(absorbSoftPrepareError("deploy", warnings, null), null);
   });
 
   it("emptyComposePrepareResult differs by mode", async () => {
@@ -1415,6 +1415,7 @@ describe("compose list/split/expansion helpers", () => {
           containerName: "web-name",
           ordinal: 1,
           instances: 1,
+          serverId: "srv-1",
         }],
       ]),
     });
@@ -1850,7 +1851,7 @@ describe("compileRuntimeOptionsForServer", () => {
       networks: new Set(["app"]),
     }]]);
     const managedIngressHostsByService = new Map([["api", [{
-      name: "db-sql",
+      name: "db-in",
       address: "203.0.113.5",
     }]]]);
     const options = compileRuntimeOptionsForServer(

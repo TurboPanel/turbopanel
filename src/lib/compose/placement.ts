@@ -128,3 +128,31 @@ export function stripComposePlacement(document: ComposeDocument): ComposeDocumen
     presentation: clonePresentation(normalized.presentation, keyOrder),
   }
 }
+
+/**
+ * Annotate a compiled runtime document with the server this snapshot is for.
+ * Stored project/environment compose still never holds placement — this is
+ * compile-time audit metadata Docker ignores (`x-*`).
+ */
+export function applyComposePlacement(
+  document: ComposeDocument,
+  serverId: string,
+): ComposeDocument {
+  if (!isPlacementServerId(serverId)) return document
+  const normalized = normalizeCompose(document)
+  const existing = normalized.data[TURBOPANEL_EXTENSION_KEY]
+  const rest = isPlainObject(existing) ? { ...existing } : {}
+  rest.placement = { server_id: serverId }
+
+  const { [TURBOPANEL_EXTENSION_KEY]: _existing, ...restData } = normalized.data
+  const data = { ...restData, [TURBOPANEL_EXTENSION_KEY]: rest }
+  const keyOrder = normalized.presentation.keyOrder.filter(
+    (key) => key !== TURBOPANEL_EXTENSION_KEY,
+  )
+  keyOrder.push(TURBOPANEL_EXTENSION_KEY)
+  return {
+    version: 1,
+    data,
+    presentation: clonePresentation(normalized.presentation, keyOrder),
+  }
+}

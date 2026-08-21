@@ -24,7 +24,6 @@ import {
   isValidDockerResourceName,
   managedContainerName,
   managedHaContainerNameFromService,
-  managedIngressContainerNameFromService,
 } from "../naming.ts";
 import {
   HA_PROMOTION_RULE_MUST_NOT,
@@ -2268,7 +2267,7 @@ export type SystemReconcileAction = "reconcile" | "restart" | "stop";
  * Role per system component — never a free-form wire value.
  * Container naming is resolved separately via
  * {@link expectedSystemComponentContainerName} (`hosting-ingress` → `-in`,
- * `managed-ingress` → `-sql`, `managed-ha` → `-ha`, self-host stack → bare serviceId).
+ * `managed-ingress` → `-in`, `managed-ha` → `-ha`, self-host stack → bare serviceId).
  * Keep in parity with daemon `contracts.ts` system-reconcile component roles.
  */
 export const SYSTEM_COMPONENT_ROLES: Record<
@@ -2276,7 +2275,7 @@ export const SYSTEM_COMPONENT_ROLES: Record<
   "service" | "ingress" | "turbopanel"
 > = {
   "hosting-ingress": "ingress",
-  "managed-ingress": "turbopanel",
+  "managed-ingress": "ingress",
   "managed-ha": "turbopanel",
   database: "turbopanel",
   queue: "turbopanel",
@@ -2292,7 +2291,7 @@ function expectedSystemComponentContainerName(
     case "hosting-ingress":
       return ingressContainerNameFromService(serviceId);
     case "managed-ingress":
-      return managedIngressContainerNameFromService(serviceId);
+      return ingressContainerNameFromService(serviceId);
     case "managed-ha":
       return managedHaContainerNameFromService(serviceId);
     case "database":
@@ -4375,7 +4374,7 @@ function parseManagedIngressIdentity(
     value.composeServiceName !== "proxysql" ||
     !isString(value.containerName) ||
     value.containerName !==
-      managedIngressContainerNameFromService(value.serviceId)
+      ingressContainerNameFromService(value.serviceId)
   ) {
     throw new TypeError("Invalid managed.ingress.reconcile identity");
   }

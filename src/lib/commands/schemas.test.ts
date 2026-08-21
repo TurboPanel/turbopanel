@@ -500,7 +500,7 @@ test("parseSystemReconcilePayload accepts the widened database/queue/analytics c
   }
 });
 
-test("parseSystemReconcilePayload accepts managed-ingress with system role and -sql containerName", () => {
+test("parseSystemReconcilePayload accepts managed-ingress with ingress role and -in containerName", () => {
   const serviceId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
   const environmentId = "11111111-2222-3333-4444-555555555555";
   assertEquals(
@@ -511,8 +511,8 @@ test("parseSystemReconcilePayload accepts managed-ingress with system role and -
           component: "managed-ingress",
           serviceId,
           composeServiceName: "proxysql",
-          containerName: `${serviceId}-sql`,
-          role: "turbopanel",
+          containerName: `${serviceId}-in`,
+          role: "ingress",
           desired: "present",
         },
       ],
@@ -521,8 +521,8 @@ test("parseSystemReconcilePayload accepts managed-ingress with system role and -
       component: "managed-ingress",
       serviceId,
       composeServiceName: "proxysql",
-      containerName: `${serviceId}-sql`,
-      role: "turbopanel",
+      containerName: `${serviceId}-in`,
+      role: "ingress",
       desired: "present",
     },
   );
@@ -588,7 +588,7 @@ test("parseSystemReconcilePayload rejects role/containerName mismatches across t
     Error,
     "Invalid system.reconcile payload",
   );
-  // managed-ingress requires the -sql suffix — bare serviceId is rejected.
+  // managed-ingress requires the -in suffix — bare serviceId is rejected.
   assertThrows(
     () =>
       parseSystemReconcilePayload({
@@ -599,7 +599,7 @@ test("parseSystemReconcilePayload rejects role/containerName mismatches across t
             serviceId,
             composeServiceName: "proxysql",
             containerName: serviceId,
-            role: "turbopanel",
+            role: "ingress",
             desired: "present",
           },
         ],
@@ -607,7 +607,26 @@ test("parseSystemReconcilePayload rejects role/containerName mismatches across t
     Error,
     "Invalid system.reconcile payload",
   );
-  // managed-ingress must not use the hosting-ingress -in suffix.
+  // managed-ingress must not use the retired -sql suffix.
+  assertThrows(
+    () =>
+      parseSystemReconcilePayload({
+        environmentId,
+        components: [
+          {
+            component: "managed-ingress",
+            serviceId,
+            composeServiceName: "proxysql",
+            containerName: `${serviceId}-sql`,
+            role: "ingress",
+            desired: "present",
+          },
+        ],
+      }),
+    Error,
+    "Invalid system.reconcile payload",
+  );
+  // managed-ingress must be role: 'ingress' — declaring 'turbopanel' is rejected.
   assertThrows(
     () =>
       parseSystemReconcilePayload({
@@ -2742,10 +2761,10 @@ test("parseManagedIngressReconcilePayload round-trips ProxySQL identity", () => 
     identity: {
       serviceId,
       composeServiceName: "proxysql",
-      containerName: `${serviceId}-sql`,
+      containerName: `${serviceId}-in`,
     },
   });
-  assertEquals(payload.identity?.containerName, `${serviceId}-sql`);
+  assertEquals(payload.identity?.containerName, `${serviceId}-in`);
   assertThrows(
     () =>
       parseManagedIngressReconcilePayload({
