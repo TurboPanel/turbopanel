@@ -19,7 +19,6 @@ import { sumServiceResourceUsage } from "../../lib/resource-limits.ts";
 import type { Db } from "../../db.ts";
 import {
   absorbSoftPrepareError,
-  appendPlatformVariablesToEntries,
   attachPrincipalsToTraditionalWebSites,
   buildCloneNamesByServiceId,
   buildExpandedServiceOptionsMap,
@@ -47,6 +46,7 @@ import {
   resourceLimitPrepareError,
   sitesOnScheduledServer,
   splitTraditionalWebFromDocument,
+  stripReservedKeysFromEntries,
   toApplyVariablesPrepareError,
   toPreparedDeployResult,
   verifyServerInOrg,
@@ -1382,7 +1382,7 @@ describe("compose list/split/expansion helpers", () => {
     assertEquals(instances.get("site"), 1);
   });
 
-  it("appends platform variables after stripping reserved keys", () => {
+  it("strips reserved keys without injecting platform variables", () => {
     const perService = new Map([
       ["web", [{
         key: "TURBOPANEL_PROJECT_ID",
@@ -1400,40 +1400,9 @@ describe("compose list/split/expansion helpers", () => {
         forRuntime: true,
       }]],
     ]);
-    const next = appendPlatformVariablesToEntries(perService, {
-      projectId: "proj-1",
-      environmentId: "env-1",
-      serviceRowByCloneName: new Map([
-        ["web", { id: "svc-web", composeServiceName: "web", options: {} }],
-      ]),
-      allocationByClone: new Map([
-        ["web", {
-          serviceId: "svc-web",
-          composeServiceName: "web",
-          cloneComposeServiceName: "web",
-          containerRowId: "ctr-1",
-          containerName: "web-name",
-          ordinal: 1,
-          instances: 1,
-          serverId: "srv-1",
-        }],
-      ]),
-    });
+    const next = stripReservedKeysFromEntries(perService);
     const keys = (next.get("web") ?? []).map((entry) => entry.key);
-    assertEquals(keys.includes("APP_ENV"), true);
-    assertEquals(keys.includes("TURBOPANEL_PROJECT_ID"), true);
-    assertEquals(
-      (next.get("web") ?? []).filter((entry) =>
-        entry.key === "TURBOPANEL_PROJECT_ID"
-      ).length,
-      1,
-    );
-    assertEquals(
-      (next.get("web") ?? []).find((entry) =>
-        entry.key === "TURBOPANEL_PROJECT_ID"
-      )?.value,
-      "proj-1",
-    );
+    assertEquals(keys, ["APP_ENV"]);
   });
 });
 
@@ -1670,8 +1639,8 @@ describe("resourceLimitPrepareError server scope", () => {
   });
 });
 
-describe("appendPlatformVariablesToEntries without service row", () => {
-  it("strips reserved keys and skips platform vars when clone has no service row", () => {
+describe("stripReservedKeysFromEntries without service row", () => {
+  it("strips reserved keys for clones that have no service row", () => {
     const perService = new Map([
       ["orphan", [{
         key: "TURBOPANEL_ENVIRONMENT_ID",
@@ -1689,15 +1658,9 @@ describe("appendPlatformVariablesToEntries without service row", () => {
         forRuntime: true,
       }]],
     ]);
-    const next = appendPlatformVariablesToEntries(perService, {
-      projectId: "proj-1",
-      environmentId: "env-1",
-      serviceRowByCloneName: new Map(),
-      allocationByClone: new Map(),
-    });
+    const next = stripReservedKeysFromEntries(perService);
     const keys = (next.get("orphan") ?? []).map((entry) => entry.key);
     assertEquals(keys, ["CUSTOM"]);
-    assertEquals(keys.includes("TURBOPANEL_ENVIRONMENT_ID"), false);
   });
 });
 

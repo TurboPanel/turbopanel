@@ -50,10 +50,7 @@ import {
   PROJECT_COMPOSE_FILENAME,
   renderRuntimeComposeFiles,
 } from "./deploy-layers.ts";
-import {
-  buildPlatformDeployVariables,
-  stripReservedDeployVariableKeys,
-} from "../../lib/compose/platform-variables.ts";
+import { stripReservedDeployVariableKeys } from "../../lib/compose/platform-variables.ts";
 import { renameComposeVolumes } from "../../lib/compose/rename-volumes.ts";
 import {
   collectComposeExternalDockerNetworkNames,
@@ -1171,34 +1168,17 @@ function buildContainerNameByComposeName(
   return map;
 }
 
-function appendPlatformVariablesToEntries(
+/**
+ * Drop reserved `TURBOPANEL_*` keys from user variables. The platform no longer
+ * auto-injects identity variables into prepared compose; the keys stay reserved
+ * for a future opt-in variable feature.
+ */
+function stripReservedKeysFromEntries(
   perServiceEntries: Map<string, DeployVariableEntry[]>,
-  params: {
-    projectId: string;
-    environmentId: string;
-    serviceRowByCloneName: Map<string, ServiceRow>;
-    allocationByClone: Map<string, ContainerAllocation>;
-  },
 ): Map<string, DeployVariableEntry[]> {
   const next = new Map<string, DeployVariableEntry[]>();
   for (const [cloneName, userEntries] of perServiceEntries) {
-    const stripped = stripReservedDeployVariableKeys(userEntries);
-    const row = params.serviceRowByCloneName.get(cloneName);
-    const allocation = params.allocationByClone.get(cloneName);
-    const platform = row
-      ? buildPlatformDeployVariables({
-        projectId: params.projectId,
-        environmentId: params.environmentId,
-        serviceId: row.id,
-        ...(allocation
-          ? {
-            containerId: allocation.containerRowId,
-            containerName: allocation.containerName,
-          }
-          : {}),
-      })
-      : [];
-    next.set(cloneName, [...stripped, ...platform]);
+    next.set(cloneName, stripReservedDeployVariableKeys(userEntries));
   }
   return next;
 }
@@ -2017,15 +1997,7 @@ export async function prepareDeployCompose(
       dataEncryptionSecrets: c.get("dataEncryptionSecrets"),
     });
 
-  const allocationByClone = new Map(
-    pipeline.containers.map((row) => [row.cloneComposeServiceName, row]),
-  );
-  const perServiceEntries = appendPlatformVariablesToEntries(userPerService, {
-    projectId: envRow.projectId,
-    environmentId: params.environmentId,
-    serviceRowByCloneName,
-    allocationByClone,
-  });
+  const perServiceEntries = stripReservedKeysFromEntries(userPerService);
 
   const withVariables = applyVariablesToComposeDocument(
     pipeline.expandedDocument,
@@ -2381,7 +2353,6 @@ export { extractComposeFromOptions };
 /** Pure helpers exported for host-free unit coverage of prepare gates. */
 export {
   absorbSoftPrepareError,
-  appendPlatformVariablesToEntries,
   buildCloneNamesByServiceId,
   buildExpandedServiceOptionsMap,
   buildInstancesByComposeName,
@@ -2401,6 +2372,7 @@ export {
   resourceLimitPrepareError,
   sitesOnScheduledServer,
   splitTraditionalWebFromDocument,
+  stripReservedKeysFromEntries,
   toApplyVariablesPrepareError,
   toPreparedDeployResult,
   warningFromPrepareError,
