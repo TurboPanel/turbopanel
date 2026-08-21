@@ -287,7 +287,8 @@ hosting enable (`PATCH /servers/:id` → `reconcile`), hosting disable (`PATCH` 
 `stop` scoped to hosting-ingress), operate restart
 (`POST /servers/:id/system/:component/restart` — hosting-ingress only, see
 `SYSTEM_OPERATE_COMPONENTS`), and a storage-free drift sweep (Workers
-offline-sweep cron + Deno maintenance timer) that enqueues for connected servers
+offline-sweep cron + Deno maintenance timer, including an immediate tick on
+Deno boot) that enqueues for connected servers
 where either the hosting-ingress row needs heal **because demand/observation
 exists** (and is not running, missing a Docker id, or the server recently
 reconnected), **or** a self-host `database`/`queue`/`analytics` system-role
@@ -295,8 +296,10 @@ container is not running or missing a Docker id, throttled to one enqueue per
 **server** (not per environment — one sweep hit still fans out to every system
 environment) per **5 minutes** via the `command` table itself
 (`actorType: 'system'`, `actorId = serverId` for sweep-driven rows —
-`command.actor_id` is a uuid with no FK). Never enqueue from `onDaemonConnected`
-/ Durable Object handlers. See `../../client/system/hierarchy.ts` (provisioning)
+`command.actor_id` is a uuid with no FK). Install (`completeInstanceInstall`)
+also enqueues from the request isolate when the colocated daemon is already
+connected. Never enqueue from `onDaemonConnected` / Durable Object handlers.
+See `../../client/system/hierarchy.ts` (provisioning)
 and `../../client/system/reconcile.ts` (payload/sweep); production inventory
 rationale lives in `../../../AGENTS.md` → "Self-host system inventory".
 

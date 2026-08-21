@@ -35,6 +35,9 @@ import {
   findSystemEnvironmentForServer,
   SYSTEM_SELF_HOST_COMPONENT,
 } from "../system/hierarchy.ts";
+import { enqueueSystemReconcileIfConnected } from "../system/reconcile.ts";
+import type { CommandQueue } from "../../lib/commands/queue.ts";
+import { isNoopCommandQueue } from "../../lib/commands/noop-command-queue.ts";
 import { WORKSPACE_KIND_USER } from "../../lib/db/workspace-kind.ts";
 import {
   DISPLAY_NAME_MAX_LENGTH,
@@ -1351,6 +1354,7 @@ export async function createOrganizationForUser(
 export async function completeInstanceInstall(
   db: Db,
   input: CompleteInstallInput,
+  commandQueue?: CommandQueue,
 ): Promise<{ organizationId: string; userId: string; licenseId: string }> {
   // Preflight only — friendly fast-fail. The authoritative guard is the unique
   // install sentinel acquired inside the transaction below.
@@ -1518,6 +1522,31 @@ export async function completeInstanceInstall(
       "install",
       `failed to ensure self-host system hierarchy: ${err}`,
     );
+  }
+
+  // Observe the already-running turbopanel-system stack as soon as the
+  // colocated daemon is connected. Skip when it has not hello'd yet — a
+  // fail-fast offline command would trip the 5-minute sweep throttle.
+  // Hello/DO must not enqueue; runSystemReconcileSweep covers that path.
+  if (commandQueue && !isNoopCommandQueue(commandQueue)) {
+    try {
+      const reconcile = await enqueueSystemReconcileIfConnected(
+        db,
+        commandQueue,
+        colocatedServerId,
+      );
+      if (!reconcile.ok && reconcile.reason !== "not_connected") {
+        compatLogWarn(
+          "install",
+          `self-host system reconcile not enqueued: ${reconcile.reason}`,
+        );
+      }
+    } catch (err) {
+      compatLogWarn(
+        "install",
+        `failed to enqueue self-host system reconcile: ${err}`,
+      );
+    }
   }
 
   return {

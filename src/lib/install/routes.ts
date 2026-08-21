@@ -95,10 +95,14 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   }
 
   try {
-    const result = await completeInstanceInstall(db, {
-      superadminEmail,
-      superadminPassword,
-    })
+    const result = await completeInstanceInstall(
+      db,
+      {
+        superadminEmail,
+        superadminPassword,
+      },
+      c.get('commandQueue'),
+    )
 
     const { token } = await createSession(db, result.userId, {
       ipAddress: resolveClientIp(c, opts.runtime) ?? undefined,

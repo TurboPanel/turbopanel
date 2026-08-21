@@ -21,6 +21,7 @@ import {
 import {
   buildSystemReconcilePayload,
   enqueueSystemReconcile,
+  enqueueSystemReconcileIfConnected,
   resolveHostingIngressDesired,
   resolveManagedIngressDesired,
   runSystemReconcileSweep,
@@ -367,6 +368,76 @@ test('enqueueSystemReconcile returns not_provisioned when no payloads', async ()
   })
   assertEquals(result, { ok: false, reason: 'not_provisioned' })
   assertEquals(queue.envelopes.length, 0)
+})
+
+test('enqueueSystemReconcileIfConnected skips when is_connected is false', async () => {
+  const db = {
+    execute: () => Promise.resolve([{ is_connected: false }]),
+  } as unknown as Db
+  const queue = createRecordingQueue()
+  const result = await enqueueSystemReconcileIfConnected(db, queue, SERVER)
+  assertEquals(result, { ok: false, reason: 'not_connected' })
+  assertEquals(queue.envelopes.length, 0)
+})
+
+test('enqueueSystemReconcileIfConnected enqueues when is_connected is true', async () => {
+  let executeCalls = 0
+  let insertCount = 0
+  const db = {
+    execute: () => {
+      executeCalls += 1
+      if (executeCalls === 1) {
+        return Promise.resolve([{ is_connected: true }])
+      }
+      return Promise.resolve([
+        {
+          environment_id: ENV_SELF,
+          project_component: SYSTEM_SELF_HOST_COMPONENT,
+          service_id: SVC_DB,
+          name: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
+          server_options: {},
+          has_http_ingress_demand: false,
+          has_managed_members: false,
+          ingress_container_id: null,
+          ingress_status: null,
+        },
+      ])
+    },
+    insert: () => ({
+      values: (values: Record<string, unknown>) => {
+        insertCount += 1
+        return {
+          returning: () =>
+            Promise.resolve([
+              {
+                id: `cmd-${insertCount}`,
+                createdAt: '2020-01-01T00:00:00.000Z',
+                updatedAt: '2020-01-01T00:00:00.000Z',
+                serverId: values.serverId,
+                actorType: values.actorType,
+                actorId: values.actorId,
+                name: values.name,
+                status: 'queued',
+                attempts: 0,
+                payload: values.payload,
+                result: null,
+                metadata: { queuedAt: '2020-01-01T00:00:00.000Z' },
+              },
+            ]),
+        }
+      },
+    }),
+  } as unknown as Db
+
+  const queue = createRecordingQueue()
+  const result = await enqueueSystemReconcileIfConnected(db, queue, SERVER)
+  assertEquals(result.ok, true)
+  if (result.ok) {
+    assertEquals(result.commandIds, ['cmd-1'])
+    assertEquals(result.serverId, SERVER)
+  }
+  assertEquals(queue.envelopes.length, 1)
+  assertEquals(queue.envelopes[0]?.type, 'system.reconcile')
 })
 
 test('enqueueSystemReconcile scopes to environmentId and enqueues', async () => {

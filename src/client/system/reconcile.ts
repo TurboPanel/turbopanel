@@ -403,6 +403,10 @@ export type EnqueueSystemReconcileResult =
     }
   | { ok: false; reason: 'not_provisioned' | 'enqueue_failed' }
 
+export type EnqueueSystemReconcileIfConnectedResult =
+  | EnqueueSystemReconcileResult
+  | { ok: false; reason: 'not_connected' }
+
 /**
  * Create + enqueue one `system.reconcile` command per resolved system
  * environment (or the single environment matching `params.environmentId`
@@ -469,6 +473,36 @@ export async function enqueueSystemReconcile(
 }
 
 /**
+ * Request-isolate enqueue for self-host inventory after install (or any other
+ * non-DO caller). Skips when the colocated daemon has not hello'd yet so a
+ * fail-fast offline command cannot trip the 5-minute sweep throttle.
+ *
+ * Never call this from `onDaemonConnected` / Durable Object handlers — those
+ * wait for {@link runSystemReconcileSweep}.
+ */
+export async function enqueueSystemReconcileIfConnected(
+  db: Db,
+  commandQueue: CommandQueue,
+  serverId: string,
+): Promise<EnqueueSystemReconcileIfConnectedResult> {
+  const rows = await db.execute<{ is_connected: boolean }>(sql`
+    SELECT is_connected
+    FROM server
+    WHERE id = ${serverId}::uuid
+    LIMIT 1
+  `)
+  if (rows[0]?.is_connected !== true) {
+    return { ok: false, reason: 'not_connected' }
+  }
+  return enqueueSystemReconcile(db, commandQueue, {
+    serverId,
+    actorType: 'system',
+    actorId: serverId,
+    action: 'reconcile',
+  })
+}
+
+/**
  * Drift trigger: enqueue `system.reconcile` for connected servers whose
  * system-managed containers need observation and have no recent
  * system.reconcile command (5-minute throttle via the command table itself,
@@ -489,7 +523,9 @@ export async function enqueueSystemReconcile(
  * Never enqueue solely because hierarchy stamped a pending `-in` row —
  * bare server enroll / hosting-enabled inventory must not pull Traefik up.
  *
- * Enqueue stays outside Durable Object handlers (cron / Deno timer only).
+ * Enqueue stays outside Durable Object handlers: request isolates (install,
+ * hosting PATCH / operate), Workers cron, and the Deno maintenance timer
+ * (immediate tick on boot, then every cell-maintain interval).
  */
 export async function runSystemReconcileSweep(
   db: Db,

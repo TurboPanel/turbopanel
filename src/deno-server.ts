@@ -319,6 +319,15 @@ export async function startDenoServer(
   const socketPath = resolveInstanceSocket()
 
   const abort = new AbortController()
+  const runSystemReconcileSweepTick = (): void => {
+    if (isNoopCommandQueue(commandQueue)) return
+    void runSystemReconcileSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `system reconcile sweep error: ${String(err)}`)
+    })
+  }
+  // Observe pending self-host inventory on boot, not only after the first
+  // 60s cell tick. Hello/DO still must not enqueue; this is the Deno timer path.
+  runSystemReconcileSweepTick()
   // Deno process timer (not a Durable Object) — cost-safe. Both backends demote
   // stale presence at DAEMON_OFFLINE_SWEEP_MS; Redis uses this timer-driven
   // maintain() + sweepStalePresence loop. Workers is disconnect-first (no periodic
@@ -330,11 +339,7 @@ export async function startDenoServer(
     void sweepStalePresence(db, daemonCellRegistry).catch((err) => {
       logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
     })
-    if (!isNoopCommandQueue(commandQueue)) {
-      void runSystemReconcileSweep(db, commandQueue).catch((err) => {
-        logWarn('daemon-cell', `system reconcile sweep error: ${String(err)}`)
-      })
-    }
+    runSystemReconcileSweepTick()
   }, DAEMON_CELL_MAINTAIN_MS)
 
   // First Deno-side scheduled surface besides cell maintain: Organization CA

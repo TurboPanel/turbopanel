@@ -1033,6 +1033,19 @@ compose service's container name) to the daemon → the daemon inspects
 identity/status back by container name. Inventory rows exist before the daemon
 ever inspects the stack; the daemon never invents ids.
 
+The first reconcile is **not** operator-driven. After hierarchy is created,
+`completeInstanceInstall` enqueues `system.reconcile` from the install request
+when the colocated daemon is already connected (typical co-located / Vagrant
+dev: daemon hello'd before the wizard). It must **not** enqueue while
+`server.is_connected` is false — a fail-fast offline command would trip the
+5-minute sweep throttle. Deno boot also runs `runSystemReconcileSweep`
+immediately (then every `DAEMON_CELL_MAINTAIN_MS`) so a daemon that hello's
+after install is observed on the next tick without waiting a full minute.
+Never enqueue from `onDaemonConnected` / Durable Object handlers. Until that
+inspect lands, client rows stay allocator `pending` with no Docker id — the UI
+shows **Not started yet** / **Unknown** even when `turbopanel-database` is
+already up.
+
 **Co-located delete / license revoke:** Server delete and license revoke are
 guarded by the durable self-host environment pin (the server that owns the
 `turbopanel` system environment), not only live registry / machine-id probes —

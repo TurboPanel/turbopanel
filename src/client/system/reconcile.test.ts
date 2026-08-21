@@ -23,6 +23,7 @@ import {
 import {
   buildSystemReconcilePayload,
   enqueueSystemReconcile,
+  enqueueSystemReconcileIfConnected,
   resolveHostingIngressDesired,
   runSystemReconcileSweep,
   SYSTEM_RECONCILE_MIN_INTERVAL_MS,
@@ -427,6 +428,31 @@ test('enqueueSystemReconcile scoped to environmentId enqueues exactly one comman
     if (!result.ok) return
     assertEquals(result.commandIds.length, 1)
     assertEquals(queue.envelopes.length, 1)
+  })
+})
+
+test('enqueueSystemReconcileIfConnected skips when the daemon is offline', async () => {
+  await withReconcileFixtures(
+    { connected: false, selfHost: true },
+    async ({ db, serverId, queue }) => {
+      const result = await enqueueSystemReconcileIfConnected(db, queue, serverId)
+      assertEquals(result, { ok: false, reason: 'not_connected' })
+      assertEquals(queue.envelopes.length, 0)
+    },
+  )
+})
+
+test('enqueueSystemReconcileIfConnected enqueues when the daemon is connected', async () => {
+  await withReconcileFixtures({ selfHost: true }, async ({ db, serverId, queue }) => {
+    const result = await enqueueSystemReconcileIfConnected(db, queue, serverId)
+    assertEquals(result.ok, true)
+    if (!result.ok) return
+    assertEquals(result.commandIds.length > 0, true)
+    assertEquals(queue.envelopes.length, result.commandIds.length)
+    for (const envelope of queue.envelopes) {
+      assertEquals(envelope.serverId, serverId)
+      assertEquals(envelope.type, 'system.reconcile')
+    }
   })
 })
 
