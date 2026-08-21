@@ -26,6 +26,10 @@ import {
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 import {
+  planEnvironmentTeardown,
+  reclaimDeletedEnvironmentHosts,
+} from './teardown.ts'
+import {
   parseCreateEnvironmentJsonb,
   parseCreateEnvironmentNames,
   parseEnvironmentPatchMetadata,
@@ -378,6 +382,10 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       return c.json({ error: MANAGED_RUNTIME_PRESENT_ERROR }, 409)
     }
 
+    // Planned before the delete: the payload is built from rows the delete
+    // removes. Dispatched after it commits.
+    const teardownPlan = await planEnvironmentTeardown(db, id)
+
     const result = await runHierarchyDelete(db, async (tx) => {
       await applyStorageRetentionOnParentDelete(tx, { environmentIds: [id] })
       await purgeEnvironmentComposeNetworks(tx, id)
@@ -386,6 +394,13 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (result === 'has_children') {
       return hierarchyDeleteHasChildrenResponse(c)
     }
+
+    await reclaimDeletedEnvironmentHosts(
+      c,
+      db,
+      teardownPlan ? [teardownPlan] : [],
+      session.userId,
+    )
 
     return c.json({ ok: true as const })
   })

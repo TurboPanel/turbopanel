@@ -332,8 +332,8 @@ principal UUID), the reserved-only DNS shape (`serviceDnsName`), and the
 reserved `TURBOPANEL_*` deploy variable keys (`RESERVED_DEPLOY_VARIABLE_KEYS`).
 Option parsers (`project-options.ts` `containerNaming`, `service-options.ts`
 `instances`, `principal-options.ts` `shell` + optional `uid`/`gid` override)
-feed those helpers; deploy-prepare owns allocation (reading explicit names from
-compose `container_name`), multi-instance expansion, compose-volume
+feed those helpers; deploy-prepare owns allocation (`uuid` mode ignores authored
+compose `container_name`; `custom` still reads them), multi-instance expansion, compose-volume
 registration, and compose emission via `apply-service-options.ts` (sole writer
 of allocated `container_name` values).
 
@@ -375,7 +375,13 @@ RESTRICT — then drop `retention='delete'` storage; `retain` rows stay org-owne
 via SET NULL), then deletes in order `container` → `hosting` → `service` →
 `environment` → `project` (variables/`managed` cascade via FK). Active
 containers return **409** `project_has_running_services` — stop stacks first via
-`environment.stop`. Restrictive FKs stay in place as a safety net. Workspace /
+`environment.stop`. The cascade itself is Postgres-only; the route wraps it with
+`planEnvironmentsTeardown` / `reclaimDeletedEnvironmentHosts`
+(`client/environments/teardown.ts`) so the host's deployment dir, hosting Caddy
+site, per-service tcp/udp Traefik and `tpn_*` bridges are reclaimed even when
+the environment was stopped with `environment.lifecycle` (which leaves them in
+place) rather than `environment.stop`. Restrictive FKs stay in place as a safety
+net. Workspace /
 environment / service delete paths use the same retention helper.
 
 Authorization ancestry and `listVisible()` resolve organization through this

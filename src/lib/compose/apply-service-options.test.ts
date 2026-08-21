@@ -7,6 +7,7 @@ import {
   buildServiceOptionsMap,
   collectHealthCheckWarnings,
   serviceHasComposeHealthCheck,
+  TURBOPANEL_NAME_LABEL,
 } from './apply-service-options.ts'
 
 /**
@@ -420,4 +421,128 @@ test('buildServiceOptionsMap keeps last row for duplicate compose names', () => 
 test('buildServiceOptionsMap accepts empty input', () => {
   const map = buildServiceOptionsMap([])
   assertEquals(map.size, 0)
+})
+
+const SERVICE_UUID = '01a025f1-850c-705d-a7c2-1833d01cda9f'
+
+test('renaming a container to the service id keeps the authored name as alias + label', () => {
+  const doc = emptyComposeDocument()
+  doc.data.services = {
+    adminer: {
+      image: 'adminer:latest',
+      restart: 'unless-stopped',
+      container_name: 'adminer',
+    },
+  }
+
+  const result = applyServiceOptionsToComposeDocument(
+    doc,
+    new Map(),
+    new Map([['adminer', SERVICE_UUID]]),
+  )
+
+  const adminer = (result.document.data.services as Record<string, unknown>).adminer
+  assertServiceRecord(adminer, 'adminer')
+  assertEquals(adminer.container_name, SERVICE_UUID)
+  // No `networks:` authored — the implicit default is named so the alias lands.
+  assertEquals(adminer.networks, { default: { aliases: ['adminer'] } })
+  assertEquals(
+    (adminer.labels as Record<string, string>)[TURBOPANEL_NAME_LABEL],
+    'adminer',
+  )
+})
+
+test('friendly name falls back to the compose service key', () => {
+  const doc = emptyComposeDocument()
+  doc.data.services = { web: { image: 'nginx:alpine' } }
+
+  const result = applyServiceOptionsToComposeDocument(
+    doc,
+    new Map(),
+    new Map([['web', SERVICE_UUID]]),
+  )
+
+  const web = (result.document.data.services as Record<string, unknown>).web
+  assertServiceRecord(web, 'web')
+  assertEquals(web.container_name, SERVICE_UUID)
+  assertEquals(web.networks, { default: { aliases: ['web'] } })
+  assertEquals((web.labels as Record<string, string>)[TURBOPANEL_NAME_LABEL], 'web')
+})
+
+test('aliases land on every declared network and keep existing entries', () => {
+  const doc = emptyComposeDocument()
+  doc.data.services = {
+    api: {
+      image: 'node:22',
+      networks: {
+        frontend: { aliases: ['api-internal'] },
+        backend: {},
+      },
+      labels: ['owner=team'],
+    },
+  }
+
+  const result = applyServiceOptionsToComposeDocument(
+    doc,
+    new Map(),
+    new Map([['api', SERVICE_UUID]]),
+  )
+
+  const api = (result.document.data.services as Record<string, unknown>).api
+  assertServiceRecord(api, 'api')
+  assertEquals(api.networks, {
+    frontend: { aliases: ['api-internal', 'api'] },
+    backend: { aliases: ['api'] },
+  })
+  assertEquals(api.labels, ['owner=team', `${TURBOPANEL_NAME_LABEL}=api`])
+})
+
+test('list-form networks are normalized to a mapping carrying the alias', () => {
+  const doc = emptyComposeDocument()
+  doc.data.services = {
+    api: { image: 'node:22', networks: ['frontend'] },
+  }
+
+  const result = applyServiceOptionsToComposeDocument(
+    doc,
+    new Map(),
+    new Map([['api', SERVICE_UUID]]),
+  )
+
+  const api = (result.document.data.services as Record<string, unknown>).api
+  assertServiceRecord(api, 'api')
+  assertEquals(api.networks, { frontend: { aliases: ['api'] } })
+})
+
+test('no allocated name (custom mode / scaled service) leaves compose untouched', () => {
+  const doc = emptyComposeDocument()
+  doc.data.services = {
+    adminer: { image: 'adminer:latest', container_name: 'adminer' },
+  }
+
+  const result = applyServiceOptionsToComposeDocument(doc, new Map(), new Map())
+
+  const adminer = (result.document.data.services as Record<string, unknown>).adminer
+  assertServiceRecord(adminer, 'adminer')
+  assertEquals(adminer.container_name, 'adminer')
+  assertEquals(adminer.networks, undefined)
+  assertEquals(adminer.labels, undefined)
+})
+
+test('an allocated name equal to the authored name adds no alias', () => {
+  const doc = emptyComposeDocument()
+  doc.data.services = {
+    adminer: { image: 'adminer:latest', container_name: 'adminer' },
+  }
+
+  const result = applyServiceOptionsToComposeDocument(
+    doc,
+    new Map(),
+    new Map([['adminer', 'adminer']]),
+  )
+
+  const adminer = (result.document.data.services as Record<string, unknown>).adminer
+  assertServiceRecord(adminer, 'adminer')
+  assertEquals(adminer.container_name, 'adminer')
+  assertEquals(adminer.networks, undefined)
 })

@@ -26,6 +26,10 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { deleteProjectCascade } from '../../lib/db/project-delete.ts'
+import {
+  planEnvironmentsTeardown,
+  reclaimDeletedEnvironmentHosts,
+} from '../environments/teardown.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { reconcileServicesForProject } from '../environments/reconcile-after-compose-save.ts'
 import {
@@ -781,10 +785,28 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const immutable = await assertNotSystemOwnedOr403(c, 'project', id)
     if (immutable) return immutable
 
+    // Capture host teardown material while the service / hosting / segment
+    // rows still exist; the commands go out after the cascade commits.
+    const environmentIds = await db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    const teardownPlans = await planEnvironmentsTeardown(
+      db,
+      environmentIds.map((row) => row.id),
+    )
+
     const result = await deleteProjectCascade(db, id)
     if (!result.ok) {
       return c.json({ error: result.error }, 409)
     }
+
+    await reclaimDeletedEnvironmentHosts(
+      c,
+      db,
+      teardownPlans,
+      session.userId,
+    )
 
     return c.json({ ok: true as const })
   })

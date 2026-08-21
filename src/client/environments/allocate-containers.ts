@@ -5,9 +5,11 @@
  * (`(service, role, ordinal)`). Placement changes re-home the same service row
  * (update `server_id`) so previewed UUID names stay stable and stale pending
  * rows on a previous server are not left behind.
- * Names come from {@link containerNameFromService} (service UUID) or an
- * explicit compose `services.<key>.container_name` — applied in every project
- * naming mode, with `-<ordinal>` suffixes when `instances > 1`.
+ * Names come from {@link containerNameFromService} (service UUID). Authored
+ * compose `services.<key>.container_name` is applied only in `custom` naming
+ * mode (see {@link authoredContainerNamesForAllocation}). Specs that pass
+ * `explicitContainerName` still win (managed-ha `-ha` suffix). Multi-instance
+ * names append `-<ordinal>`.
  */
 
 import { and, eq, gt, inArray, isNull, ne, notInArray } from 'drizzle-orm'
@@ -332,7 +334,7 @@ export async function ensureServiceIngressContainerAllocation(
  * Idempotently allocate container rows for container compose services.
  *
  * Skips allocation when `containerNaming === 'custom'` and the service has no
- * explicit compose `container_name` (Compose-default names; rows come from
+ * authored compose `container_name` (Compose-default names; rows come from
  * reconcile after the daemon report).
  */
 export async function allocateEnvironmentContainers(
@@ -409,6 +411,21 @@ export function readComposeContainerNames(
     map.set(name, trimmed)
   }
   return map
+}
+
+/**
+ * Authored compose `container_name` values to feed allocation.
+ *
+ * Default `uuid` mode always uses the service UUID, so YAML names (typical
+ * Adminer snippets, leftover Services-tab fields) are ignored. `custom`
+ * ("Keep original container names") still passes those values through.
+ */
+export function authoredContainerNamesForAllocation(
+  containerNaming: ContainerNamingMode,
+  document: ComposeDocument,
+): Map<string, string> | undefined {
+  if (containerNaming === 'uuid') return undefined
+  return readComposeContainerNames(document)
 }
 
 /** Build {@link ContainerServiceSpec} list from service rows + compose names. */

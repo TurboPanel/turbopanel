@@ -131,13 +131,107 @@ export type ApplyServiceOptionsResult = {
   hooks: ServiceDeployHook[]
 }
 
+/** Compose label key carrying the authored/friendly name of a renamed container. */
+export const TURBOPANEL_NAME_LABEL = 'com.turbopanel.name'
+
+/**
+ * Friendly name the container answers to after allocation renames it to the
+ * service UUID: the authored `container_name` when the operator typed one,
+ * else the compose service key.
+ */
+export function friendlyContainerName(
+  service: Record<string, unknown>,
+  composeServiceName: string,
+): string {
+  const authored = service.container_name
+  if (typeof authored === 'string' && authored.trim().length > 0) {
+    return authored.trim()
+  }
+  return composeServiceName
+}
+
+function mergeAliases(existing: unknown, alias: string): string[] {
+  const aliases: string[] = []
+  if (Array.isArray(existing)) {
+    for (const entry of existing) {
+      if (typeof entry === 'string' && entry.length > 0 && !aliases.includes(entry)) {
+        aliases.push(entry)
+      }
+    }
+  }
+  if (!aliases.includes(alias)) aliases.push(alias)
+  return aliases
+}
+
+/**
+ * Docker allows exactly one container name, so the friendly name comes back as
+ * a **network alias** on every network the service joins — a service that
+ * declares none joins the implicit `default`, which is named explicitly here so
+ * the alias has somewhere to live. Mapping form is deliberate: the daemon
+ * overlay unions platform networks in the same shape, so aliases survive the
+ * `-f compose.yaml -f daemon.yaml` merge.
+ */
+function applyNetworkAlias(
+  service: Record<string, unknown>,
+  alias: string,
+): void {
+  const networks = service.networks
+  const next: Record<string, unknown> = {}
+
+  if (Array.isArray(networks)) {
+    for (const key of networks) {
+      if (typeof key === 'string' && key.length > 0) next[key] = {}
+    }
+  } else if (isRecord(networks)) {
+    for (const [key, value] of Object.entries(networks)) {
+      next[key] = isRecord(value) ? { ...value } : {}
+    }
+  }
+  if (Object.keys(next).length === 0) next.default = {}
+
+  for (const [key, value] of Object.entries(next)) {
+    const entry = isRecord(value) ? { ...value } : {}
+    entry.aliases = mergeAliases(entry.aliases, alias)
+    next[key] = entry
+  }
+  service.networks = next
+}
+
+/** Stamp the friendly name as a label, in whichever shape `labels` already uses. */
+function applyNameLabel(
+  service: Record<string, unknown>,
+  friendlyName: string,
+): void {
+  const labels = service.labels
+  if (Array.isArray(labels)) {
+    const prefix = `${TURBOPANEL_NAME_LABEL}=`
+    const next = labels.filter(
+      (entry) => !(typeof entry === 'string' && entry.startsWith(prefix)),
+    )
+    next.push(`${prefix}${friendlyName}`)
+    service.labels = next
+    return
+  }
+  const map = isRecord(labels) ? { ...labels } : {}
+  map[TURBOPANEL_NAME_LABEL] = friendlyName
+  service.labels = map
+}
+
 function applyParsedOptionsToService(
   service: Record<string, unknown>,
   parsed: ServiceOptions,
   containerName: string | undefined,
+  composeServiceName: string,
 ): void {
   if (containerName !== undefined && containerName.length > 0) {
+    // Allocation renames the container to the service UUID; give the operator's
+    // name back as an alias + label so it stays reachable and legible.
+    const friendlyName = friendlyContainerName(service, composeServiceName)
     service.container_name = containerName
+    if (friendlyName !== containerName) {
+      applyNetworkAlias(service, friendlyName)
+      applyNameLabel(service, friendlyName)
+    }
   }
 
   if (service.stop_grace_period === undefined) {
@@ -191,6 +285,7 @@ export function applyServiceOptionsToComposeDocument(
       service,
       parsed,
       containerNameByComposeName?.get(composeServiceName),
+      composeServiceName,
     )
 
     const hook = buildServiceDeployHook(composeServiceName, parsed)

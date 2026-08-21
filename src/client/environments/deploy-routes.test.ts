@@ -31,6 +31,7 @@ import {
   environment,
   fabric,
   grant,
+  hosting,
   network,
   organization,
   project,
@@ -74,6 +75,7 @@ import {
   validateDeployMaterials,
 } from "./deploy-routes.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
+import { systemHierarchyProvision } from "../system/hierarchy.ts";
 
 const dbUrl = getDatabaseUrl();
 
@@ -398,6 +400,18 @@ function composeWithWebService(): ComposeDocument {
     data: {
       services: {
         web: { image: "nginx:alpine" },
+      },
+    },
+    presentation: { keyOrder: ["services"], comments: {} },
+  };
+}
+
+function composeWithNamedWebService(): ComposeDocument {
+  return {
+    version: 1,
+    data: {
+      services: {
+        web: { image: "adminer:latest", container_name: "adminer" },
       },
     },
     presentation: { keyOrder: ["services"], comments: {} },
@@ -731,6 +745,69 @@ test("GET /environments/:id/deploy-preview returns containers for a service", as
   });
 });
 
+test("GET /environments/:id/deploy-preview uses service UUID over authored container_name", async () => {
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+    serverId,
+  }) => {
+    await db
+      .update(environment)
+      .set({
+        serverId,
+        options: { compose: emptyComposeDocument() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(environment.id, environmentId));
+    await db
+      .update(project)
+      .set({
+        options: { compose: composeWithNamedWebService() },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(project.id, projectId));
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request(
+      `/environments/${environmentId}/deploy-preview`,
+      {
+        method: "GET",
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      },
+    );
+
+    assertEquals(res.status, 200);
+    const body = await res.json() as {
+      ok: boolean;
+      composeFiles: Array<{ content: string }>;
+      containers: Array<{
+        serviceId: string;
+        containerName: string;
+      }>;
+    };
+    assertEquals(body.ok, true);
+    assertEquals(body.containers.length >= 1, true);
+    assertEquals(
+      body.containers[0]!.containerName,
+      body.containers[0]!.serviceId,
+    );
+    const runtimeYaml = body.composeFiles[0]?.content ?? "";
+    assertEquals(
+      runtimeYaml.includes(`container_name: ${body.containers[0]!.serviceId}`),
+      true,
+    );
+    assertEquals(runtimeYaml.includes("container_name: adminer"), false);
+  });
+});
+
 test("POST /environments/:id/deploy payload carries runtime composeFiles", async () => {
   await withDeployFixtures(async ({
     db,
@@ -789,6 +866,104 @@ test("POST /environments/:id/deploy payload carries runtime composeFiles", async
     assertEquals(payload.composeFiles[0]!.role, "runtime");
     assertEquals(payload.composeFiles[0]!.filename, "compose.yaml");
     assertEquals(payload.composeFiles[0]!.content.includes("web:"), true);
+  });
+});
+
+test("POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames", async () => {
+  const traefikServiceId = "00000000-0000-4000-8000-0000000000aa";
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    const originalEnsure = systemHierarchyProvision.ensure;
+    systemHierarchyProvision.ensure = () =>
+      Promise.resolve({
+        workspaceId: "00000000-0000-4000-8000-0000000000bb",
+        projectId: "00000000-0000-4000-8000-0000000000cc",
+        environmentId: "00000000-0000-4000-8000-0000000000dd",
+        serviceId: traefikServiceId,
+        containerRowId: "00000000-0000-4000-8000-0000000000ee",
+        containerName: `${traefikServiceId}-in`,
+      });
+    let hostingServiceId: string | undefined;
+    try {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          name: "Production",
+          options: { compose: emptyComposeDocument() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId));
+      await db
+        .update(project)
+        .set({
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId));
+
+      const [svc] = await db
+        .insert(service)
+        .values({
+          environmentId,
+          name: "web",
+          composeServiceName: "web",
+        })
+        .returning({ id: service.id });
+      hostingServiceId = svc!.id;
+      await db.insert(hosting).values({
+        serviceId: svc!.id,
+        options: { hostnames: ["adminer.example.test"] },
+      });
+
+      const cookie = await sessionCookie(db, secrets, userId);
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: "POST",
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+
+      assertEquals(res.status, 200);
+      const body = await res.json() as { ok: boolean; commandId: string };
+      assertEquals(body.ok, true);
+      assertEquals(commandQueue.envelopes.length, 1);
+
+      const [row] = await db
+        .select({ payload: command.payload })
+        .from(command)
+        .where(eq(command.id, body.commandId))
+        .limit(1);
+      const payload = row?.payload as {
+        hostingIngress?: {
+          serviceId: string;
+          composeServiceName: string;
+          containerName: string;
+        };
+      };
+      assertEquals(payload.hostingIngress, {
+        serviceId: traefikServiceId,
+        composeServiceName: "traefik",
+        containerName: `${traefikServiceId}-in`,
+      });
+    } finally {
+      if (hostingServiceId) {
+        await db.delete(hosting).where(eq(hosting.serviceId, hostingServiceId));
+      }
+      systemHierarchyProvision.ensure = originalEnsure;
+    }
   });
 });
 

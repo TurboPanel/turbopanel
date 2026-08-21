@@ -36,6 +36,7 @@ import {
 } from '../../lib/naming.ts'
 import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
 import {
+  findSystemEnvironmentForServer,
   isSystemSelfHostComposeServiceName,
   SYSTEM_HOSTING_INGRESS_COMPONENT,
   SYSTEM_MANAGED_HA_COMPONENT,
@@ -469,6 +470,72 @@ export async function enqueueSystemReconcile(
     commandId: commandIds[0],
     commandIds,
     serverId: params.serverId,
+  }
+}
+
+/**
+ * True when at least one HTTP hosting with hostnames is still placed on this
+ * server — the same demand test `buildSystemReconcilePayload` derives
+ * `hosting-ingress` desired state from.
+ */
+export async function hasHttpIngressDemand(
+  db: Db,
+  serverId: string,
+): Promise<boolean> {
+  const rows = await db.execute<{ has_demand: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1
+      FROM hosting h
+      JOIN service hs ON hs.id = h.service_id
+      JOIN environment he ON he.id = hs.environment_id
+      WHERE he.server_id = ${serverId}::uuid
+        AND COALESCE(h.options->>'protocol', 'http') = 'http'
+        AND jsonb_typeof(h.options->'hostnames') = 'array'
+        AND jsonb_array_length(h.options->'hostnames') > 0
+    ) AS has_demand
+  `)
+  return rows[0]?.has_demand === true
+}
+
+/**
+ * Retire the shared HTTP Traefik once the last hostname hosting leaves a
+ * server (project / environment delete). Bring-up is demand-driven, so
+ * tear-down has to be too — `desired: 'absent'` drift alone stays report-only
+ * on the daemon, which would otherwise leave the proxy resident forever.
+ *
+ * Scoped `action: 'stop'` on the hosting-ingress environment, matching the
+ * hosting-disable PATCH. Best effort: never throws, no-op when demand remains
+ * or the server has no system hierarchy yet.
+ */
+export async function retireHostingIngressIfIdle(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: Readonly<{
+    serverId: string
+    actorType: 'user' | 'system'
+    actorId: string
+  }>,
+): Promise<'stopped' | 'demand_remains' | 'skipped'> {
+  try {
+    if (await hasHttpIngressDemand(db, params.serverId)) return 'demand_remains'
+
+    const environmentId = await findSystemEnvironmentForServer(
+      db,
+      params.serverId,
+      SYSTEM_HOSTING_INGRESS_COMPONENT,
+    )
+    if (!environmentId) return 'skipped'
+
+    const enqueued = await enqueueSystemReconcile(db, commandQueue, {
+      serverId: params.serverId,
+      actorType: params.actorType,
+      actorId: params.actorId,
+      action: 'stop',
+      environmentId,
+    })
+    return enqueued.ok ? 'stopped' : 'skipped'
+  } catch {
+    return 'skipped'
   }
 }
 

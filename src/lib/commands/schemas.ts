@@ -1045,6 +1045,13 @@ export type EnvironmentDeployCommandPayload = {
    * hosts every `ports[]` for the service. HTTP hostings never appear here.
    */
   ingressServices?: EnvironmentDeployIngressService[];
+  /**
+   * Shared HTTP loopback Traefik identity (`turbopanel-ingress` / compose
+   * service `traefik`). Present when this deploy routes HTTP hostnames.
+   * `containerName` must equal `<serviceId>-in` (platform hosting-ingress
+   * service, not the tenant Adminer/web service).
+   */
+  hostingIngress?: EnvironmentDeployIngressService;
   /** External Docker networks referenced in compose — ensured on the host before compose up. */
   dockerExternalNetworks?: string[];
   /**
@@ -2013,6 +2020,25 @@ function parseDeployIngressServices(
   return value.map(parseDeployIngressServiceEntry);
 }
 
+/** Shared HTTP Traefik compose key — must match SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME. */
+const SHARED_HTTP_TRAEFIK_COMPOSE_SERVICE_NAME = "traefik";
+
+function parseDeployHostingIngress(
+  value: unknown,
+): EnvironmentDeployIngressService | undefined {
+  if (value === undefined) return undefined;
+  let entry: EnvironmentDeployIngressService;
+  try {
+    entry = parseDeployIngressServiceEntry(value);
+  } catch (cause) {
+    throw new Error("Invalid environment.deploy hostingIngress", { cause });
+  }
+  if (entry.composeServiceName !== SHARED_HTTP_TRAEFIK_COMPOSE_SERVICE_NAME) {
+    throw new Error("Invalid environment.deploy hostingIngress");
+  }
+  return entry;
+}
+
 export function parseEnvironmentDeployPayload(
   value: unknown,
 ): EnvironmentDeployCommandPayload {
@@ -2029,6 +2055,7 @@ export function parseEnvironmentDeployPayload(
         value.traditionalWebSites,
       ),
       ingressServices: parseDeployIngressServices(value.ingressServices),
+      hostingIngress: parseDeployHostingIngress(value.hostingIngress),
       dockerExternalNetworks: parseDeployDockerExternalNetworks(
         value.dockerExternalNetworks,
       ),

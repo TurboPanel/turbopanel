@@ -13,6 +13,7 @@ import {
   deployPreviewServerLabel,
   expandHostingsForComposeInstances,
   fabricGateErrorResponse,
+  hostingsNeedSharedHttpIngress,
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
   parseLifecycleAction,
@@ -231,6 +232,39 @@ test('preferredListenPortsFromHostings collects target ports', () => {
     },
   ])
   assertEquals(ports.get('web'), 3000)
+})
+
+test('hostingsNeedSharedHttpIngress requires HTTP hostnames', () => {
+  assertEquals(hostingsNeedSharedHttpIngress([]), false)
+  assertEquals(
+    hostingsNeedSharedHttpIngress([{
+      hostingId: 'h1',
+      serviceId: 's1',
+      composeServiceName: 'web',
+      hostnames: [],
+      protocol: 'tcp',
+      ports: [{ published: 5432, target: 5432 }],
+    }]),
+    false,
+  )
+  assertEquals(
+    hostingsNeedSharedHttpIngress([{
+      hostingId: 'h1',
+      serviceId: 's1',
+      composeServiceName: 'web',
+      hostnames: [],
+    }]),
+    false,
+  )
+  assertEquals(
+    hostingsNeedSharedHttpIngress([{
+      hostingId: 'h1',
+      serviceId: 's1',
+      composeServiceName: 'web',
+      hostnames: ['app.example.test'],
+    }]),
+    true,
+  )
 })
 
 test('buildDeployPreviewContainers merges app and ingress rows', () => {

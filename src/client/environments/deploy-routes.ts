@@ -44,6 +44,7 @@ import {
   deployMaterialsErrorResponse,
   expandHostingsForComposeInstances,
   fabricGateErrorResponse,
+  hostingsNeedSharedHttpIngress,
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
   parseLifecycleAction,
@@ -110,7 +111,11 @@ import {
 } from "../managed/ingress-attachments.ts";
 import { loadManagedIngressPorts } from "../managed/org-defaults.ts";
 import type { ManagedIngressPorts } from "../../lib/managed/ingress-ports.ts";
-import { ensureManagedIngressHierarchy } from "../system/hierarchy.ts";
+import {
+  ensureManagedIngressHierarchy,
+  ensureSystemHierarchy,
+  SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+} from "../system/hierarchy.ts";
 import {
   composeServiceNetworkKeys,
   type PlatformAttachment,
@@ -823,6 +828,7 @@ type DeployCommandCreateParams = {
   hostings: DeployHostingPayload[];
   traditionalWebSites: EnvironmentDeployTraditionalWebSite[];
   ingressServices: EnvironmentDeployIngressService[];
+  hostingIngress?: EnvironmentDeployIngressService;
   tlsMaterial: EnvironmentDeployTlsMaterial[];
   variableMaterial: EnvironmentDeployVariableMaterial[];
   storageMaterial: EnvironmentDeployStorageMaterial[];
@@ -846,6 +852,7 @@ type PreparedServerDeploy = {
   hostings: DeployHostingPayload[];
   tlsMaterial: EnvironmentDeployTlsMaterial[];
   listenerPorts: ManagedIngressPorts;
+  hostingIngress?: EnvironmentDeployIngressService;
 };
 
 async function createDeployCommand(
@@ -874,6 +881,9 @@ async function createDeployCommand(
         : {}),
       ...(params.ingressServices.length > 0
         ? { ingressServices: params.ingressServices }
+        : {}),
+      ...(params.hostingIngress
+        ? { hostingIngress: params.hostingIngress }
         : {}),
       ...(params.tlsMaterial.length > 0
         ? { tlsMaterial: params.tlsMaterial }
@@ -982,6 +992,7 @@ function createParamsForPreparedServer(
       row.hostings,
     ),
     ingressServices: row.prepared.ingressServices,
+    ...(row.hostingIngress ? { hostingIngress: row.hostingIngress } : {}),
     tlsMaterial: row.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: row.prepared.storageMaterial,
@@ -1450,6 +1461,24 @@ function scheduleSliceForPreparedServer(
   );
 }
 
+async function resolveSharedHttpHostingIngress(
+  db: Db,
+  organizationId: string,
+  serverId: string,
+  hostings: readonly DeployHostingPayload[],
+): Promise<EnvironmentDeployIngressService | undefined> {
+  if (!hostingsNeedSharedHttpIngress(hostings)) return undefined;
+  const hierarchy = await ensureSystemHierarchy(db, {
+    organizationId,
+    serverId,
+  });
+  return {
+    serviceId: hierarchy.serviceId,
+    composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+    containerName: hierarchy.containerName,
+  };
+}
+
 async function prepareOneServerDeploy(
   c: Context<AppEnv>,
   db: Db,
@@ -1518,12 +1547,20 @@ async function prepareOneServerDeploy(
     serverRow?.organizationId ?? params.auth.organizationId,
   );
 
+  const hostingIngress = await resolveSharedHttpHostingIngress(
+    db,
+    params.auth.organizationId,
+    params.serverId,
+    hostings,
+  );
+
   return {
     serverId: params.serverId,
     prepared,
     hostings,
     tlsMaterial,
     listenerPorts,
+    ...(hostingIngress ? { hostingIngress } : {}),
   };
 }
 

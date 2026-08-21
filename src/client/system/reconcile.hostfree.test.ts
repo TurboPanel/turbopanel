@@ -22,8 +22,10 @@ import {
   buildSystemReconcilePayload,
   enqueueSystemReconcile,
   enqueueSystemReconcileIfConnected,
+  hasHttpIngressDemand,
   resolveHostingIngressDesired,
   resolveManagedIngressDesired,
+  retireHostingIngressIfIdle,
   runSystemReconcileSweep,
 } from './reconcile.ts'
 
@@ -651,4 +653,143 @@ test('runSystemReconcileSweep returns zero when no candidates', async () => {
   } as unknown as Db
   const queue = createRecordingQueue()
   assertEquals(await runSystemReconcileSweep(db, queue), { enqueued: 0 })
+})
+
+/** Sequenced `db.execute` double: one queued result set per query, in order. */
+function sequencedExecuteDb(
+  resultSets: readonly unknown[][],
+  onInsert?: (values: Record<string, unknown>) => void,
+): Db {
+  const queue = [...resultSets]
+  return {
+    execute: () => Promise.resolve(queue.shift() ?? []),
+    insert: () => ({
+      values: (values: Record<string, unknown>) => ({
+        returning: () => {
+          onInsert?.(values)
+          return Promise.resolve([
+            {
+              id: 'cmd-1',
+              serverId: values.serverId,
+              type: values.type,
+              status: 'queued',
+              createdAt: '2026-01-01T00:00:00.000Z',
+              queuedAt: '2026-01-01T00:00:00.000Z',
+            },
+          ])
+        },
+      }),
+    }),
+  } as unknown as Db
+}
+
+function hostingIngressRow() {
+  return {
+    environment_id: ENV_HOSTING,
+    project_component: SYSTEM_HOSTING_INGRESS_COMPONENT,
+    service_id: SVC_TRAEFIK,
+    name: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+    server_options: { hosting: { enabled: true } },
+    has_http_ingress_demand: false,
+    has_managed_members: false,
+    ingress_container_id: 'abc123',
+    ingress_status: 'running',
+  }
+}
+
+test('hasHttpIngressDemand reads the EXISTS projection', async () => {
+  assertEquals(
+    await hasHttpIngressDemand(
+      sequencedExecuteDb([[{ has_demand: true }]]),
+      SERVER,
+    ),
+    true,
+  )
+  assertEquals(
+    await hasHttpIngressDemand(
+      sequencedExecuteDb([[{ has_demand: false }]]),
+      SERVER,
+    ),
+    false,
+  )
+  assertEquals(
+    await hasHttpIngressDemand(sequencedExecuteDb([[]]), SERVER),
+    false,
+  )
+})
+
+test('retireHostingIngressIfIdle leaves the proxy up while demand remains', async () => {
+  const queue = createRecordingQueue()
+  assertEquals(
+    await retireHostingIngressIfIdle(
+      sequencedExecuteDb([[{ has_demand: true }]]),
+      queue,
+      { serverId: SERVER, actorType: 'user', actorId: ACTOR },
+    ),
+    'demand_remains',
+  )
+  assertEquals(queue.envelopes.length, 0)
+})
+
+test('retireHostingIngressIfIdle skips servers with no hosting-ingress hierarchy', async () => {
+  const queue = createRecordingQueue()
+  assertEquals(
+    await retireHostingIngressIfIdle(
+      sequencedExecuteDb([[{ has_demand: false }], []]),
+      queue,
+      { serverId: SERVER, actorType: 'user', actorId: ACTOR },
+    ),
+    'skipped',
+  )
+  assertEquals(queue.envelopes.length, 0)
+})
+
+test('retireHostingIngressIfIdle stops the shared proxy once demand is gone', async () => {
+  const queue = createRecordingQueue()
+  const inserted: Array<Record<string, unknown>> = []
+  const db = sequencedExecuteDb(
+    [
+      [{ has_demand: false }],
+      [{ id: ENV_HOSTING }],
+      [hostingIngressRow()],
+    ],
+    (values) => inserted.push(values),
+  )
+
+  assertEquals(
+    await retireHostingIngressIfIdle(db, queue, {
+      serverId: SERVER,
+      actorType: 'user',
+      actorId: ACTOR,
+    }),
+    'stopped',
+  )
+  assertEquals(queue.envelopes.length, 1)
+  assertEquals(queue.envelopes[0]?.type, 'system.reconcile')
+  const payload = inserted[0]?.payload as {
+    action: string
+    environmentId: string
+    components: Array<{ containerName: string }>
+  }
+  assertEquals(payload.action, 'stop')
+  assertEquals(payload.environmentId, ENV_HOSTING)
+  assertEquals(
+    payload.components[0]?.containerName,
+    ingressContainerNameFromService(SVC_TRAEFIK),
+  )
+})
+
+test('retireHostingIngressIfIdle swallows query failures', async () => {
+  const queue = createRecordingQueue()
+  const db = {
+    execute: () => Promise.reject(new Error('db down')),
+  } as unknown as Db
+  assertEquals(
+    await retireHostingIngressIfIdle(db, queue, {
+      serverId: SERVER,
+      actorType: 'system',
+      actorId: SERVER,
+    }),
+    'skipped',
+  )
 })

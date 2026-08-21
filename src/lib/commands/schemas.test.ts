@@ -3020,6 +3020,38 @@ test("parseEnvironmentDeployPayload parses rich hostings and optional material",
   );
 });
 
+test("parseEnvironmentDeployPayload parses hostingIngress for shared HTTP Traefik", () => {
+  const result = parseEnvironmentDeployPayload({
+    ...BASE_ENVIRONMENT_DEPLOY,
+    hostingIngress: {
+      serviceId: INGRESS_SERVICE_ID,
+      composeServiceName: "traefik",
+      containerName: `${INGRESS_SERVICE_ID}-in`,
+    },
+  });
+  assertEquals(result.hostingIngress, {
+    serviceId: INGRESS_SERVICE_ID,
+    composeServiceName: "traefik",
+    containerName: `${INGRESS_SERVICE_ID}-in`,
+  });
+});
+
+test("parseEnvironmentDeployPayload rejects hostingIngress that is not traefik", () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        hostingIngress: {
+          serviceId: INGRESS_SERVICE_ID,
+          composeServiceName: "web",
+          containerName: `${INGRESS_SERVICE_ID}-in`,
+        },
+      }),
+    Error,
+    "Invalid environment.deploy hostingIngress",
+  );
+});
+
 test("parseEnvironmentDeployPayload round-trips runtime composeFiles", () => {
   const composeFiles = [{
     filename: "compose.yaml",

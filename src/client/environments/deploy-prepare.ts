@@ -83,11 +83,11 @@ import {
 import type { SpanningHostsForService } from "../../lib/schedule/task-addresses.ts";
 import {
   allocateEnvironmentContainers,
+  authoredContainerNamesForAllocation,
   buildContainerServiceSpecs,
   type ContainerAllocation,
   type ContainerServiceSpec,
   ensureServiceIngressContainerAllocation,
-  readComposeContainerNames,
 } from "./allocate-containers.ts";
 import { resolveTcpUdpIngressServices } from "./tcp-udp-ingress.ts";
 import {
@@ -1435,7 +1435,7 @@ async function allocateExpandDeployPipeline(
     buildContainerServiceSpecs(
       params.serviceRows,
       containerComposeNames,
-      readComposeContainerNames(params.merged),
+      authoredContainerNamesForAllocation(containerNaming, params.merged),
     ),
     params.schedule,
   );

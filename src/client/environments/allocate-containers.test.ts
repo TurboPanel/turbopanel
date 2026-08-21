@@ -13,6 +13,7 @@ import {
 } from '../../lib/db/schema.ts'
 import {
   allocateEnvironmentContainers,
+  authoredContainerNamesForAllocation,
   buildContainerServiceSpecs,
   ensureServiceIngressContainerAllocation,
   pruneUnexpectedPendingContainers,
@@ -28,6 +29,23 @@ const dbUrl = getDatabaseUrl()
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+test('authoredContainerNamesForAllocation ignores YAML names in uuid mode', () => {
+  const document = {
+    version: 1 as const,
+    data: {
+      services: {
+        web: { image: 'adminer', container_name: 'adminer' },
+      },
+    },
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
+  assertEquals(authoredContainerNamesForAllocation('uuid', document), undefined)
+  assertEquals(
+    authoredContainerNamesForAllocation('custom', document)?.get('web'),
+    'adminer',
+  )
+})
 
 test('resolveAllocatedContainerName prefers explicit name in every naming mode', () => {
   assertEquals(
