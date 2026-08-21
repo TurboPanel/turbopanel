@@ -325,6 +325,7 @@ async function resolveRotatedOrganizationCa(
 
   const material = await materialFromOrganizationCa(
     params.dataEncryptionSecrets,
+    { organizationId: params.organizationId },
   );
   if (isCreateTlsFailure(material)) {
     await markRotationFailed(db, params.journal.id);
@@ -627,7 +628,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       }, 503);
     }
 
-    const material = await materialFromOrganizationCa(dataEncryptionSecrets);
+    const material = await materialFromOrganizationCa(dataEncryptionSecrets, {
+      organizationId,
+    });
     if (isCreateTlsFailure(material)) {
       return createTlsFailureResponse(c, material);
     }
@@ -882,6 +885,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       source,
       body,
       dataEncryptionSecrets,
+      organizationId,
     );
     if (isCreateTlsFailure(material)) {
       return createTlsFailureResponse(c, material);

@@ -113,10 +113,6 @@ export const tlsSchemas = {
         items: { type: "string" },
         description: "Required for lets_encrypt and self_signed",
       },
-      commonName: {
-        type: "string",
-        description: "Optional CN for source=organization_ca",
-      },
       prefer: { type: "number" },
       autoRenew: { type: "boolean" },
       challengeType: { type: "string", enum: ["http-01", "dns-01"] },

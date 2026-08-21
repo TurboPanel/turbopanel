@@ -97,6 +97,16 @@ function bitString(bits: Uint8Array, unusedBits = 0): Uint8Array {
 }
 
 const OID_CN = Uint8Array.of(0x55, 0x04, 0x03)
+/** 2.5.4.10 organizationName */
+const OID_O = Uint8Array.of(0x55, 0x04, 0x0a)
+/** 2.5.4.11 organizationalUnitName */
+const OID_OU = Uint8Array.of(0x55, 0x04, 0x0b)
+
+/** Branding in Organization CA `O=` — CN is the organization id. */
+export const ORGANIZATION_CA_ORG_NAME = 'TurboPanel'
+/** Branding in Organization CA `OU=` — CN is the organization id. */
+export const ORGANIZATION_CA_ORG_UNIT = 'Organization CA'
+
 const OID_SHA256_RSA = Uint8Array.of(
   0x2a,
   0x86,
@@ -126,8 +136,23 @@ export const KEY_USAGE_KEY_ENCIPHERMENT = 2
 export const KEY_USAGE_KEY_CERT_SIGN = 5
 export const KEY_USAGE_CRL_SIGN = 6
 
+function rdn(oidBytes: Uint8Array, value: string): Uint8Array {
+  return set(seq(concat(oid(oidBytes), utf8(value))))
+}
+
 function rdnCn(cn: string): Uint8Array {
-  return set(seq(concat(oid(OID_CN), utf8(cn))))
+  return rdn(OID_CN, cn)
+}
+
+/** `O=TurboPanel, OU=Organization CA, CN={organizationId}` */
+function organizationCaNameDer(organizationId: string): Uint8Array {
+  return seq(
+    concat(
+      rdn(OID_O, ORGANIZATION_CA_ORG_NAME),
+      rdn(OID_OU, ORGANIZATION_CA_ORG_UNIT),
+      rdn(OID_CN, organizationId),
+    ),
+  )
 }
 
 function algorithmIdentifier(oidBytes: Uint8Array): Uint8Array {
@@ -551,25 +576,33 @@ export async function mintSelfSignedCertificate(
 
 /**
  * Mint a self-signed organization CA (RSA-2048, CA:TRUE, 3650-day default).
+ *
+ * Subject is unique per organization: `O=TurboPanel, OU=Organization CA,
+ * CN={organizationId}`. Already-issued Organization CAs keep their original
+ * subject until rotated.
  */
-export async function mintOrganizationCa(opts?: {
-  commonName?: string
+export async function mintOrganizationCa(opts: {
+  organizationId: string
   validDays?: number
 }): Promise<SelfSignedMaterial> {
+  const organizationId = opts.organizationId.trim()
+  if (organizationId.length === 0) {
+    throw new TypeError('organizationId is required')
+  }
+
   const keyPair = await generateRsaKeyPair()
   const spki = new Uint8Array(await crypto.subtle.exportKey('spki', keyPair.publicKey))
   const pkcs8 = new Uint8Array(
     await crypto.subtle.exportKey('pkcs8', keyPair.privateKey),
   )
 
-  const validDays = opts?.validDays ?? 3650
+  const validDays = opts.validDays ?? 3650
   const { notBefore, notAfter } = validityWindow(validDays)
-  const cn = opts?.commonName ?? 'TurboPanel Organization CA'
 
   const version = context(0, integer(Uint8Array.of(0x02)))
   const serialInt = integer(randomSerial())
   const sigAlg = algorithmIdentifier(OID_SHA256_RSA)
-  const nameDer = seq(rdnCn(cn))
+  const nameDer = organizationCaNameDer(organizationId)
   const validity = seq(concat(utctime(notBefore), utctime(notAfter)))
   const extensions = context(
     3,

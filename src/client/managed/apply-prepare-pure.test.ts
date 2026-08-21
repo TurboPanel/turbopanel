@@ -271,7 +271,7 @@ test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', asy
   const keyId = '22222222-2222-4222-8222-222222222222'
   const managedId = '33333333-3333-4333-8333-333333333333'
 
-  const ca = await mintOrganizationCa({ commonName: 'Org CA Test' })
+  const ca = await mintOrganizationCa({ organizationId: 'Org CA Test' })
   const material = await buildManagedOrgTlsMaterial(
     secretsConfig,
     dataEncryptionSecrets,
@@ -315,9 +315,9 @@ test('buildManagedOrgTlsMaterial org A leaf does not validate against org B CA b
     serverId: '55555555-5555-4555-8555-555555555555',
     keyId: '66666666-6666-4666-8666-666666666666',
   }
-  const orgA = await mintOrganizationCa({ commonName: 'Org A CA' })
-  const orgBActive = await mintOrganizationCa({ commonName: 'Org B CA Active' })
-  const orgBRetired = await mintOrganizationCa({ commonName: 'Org B CA Retired' })
+  const orgA = await mintOrganizationCa({ organizationId: 'Org A CA' })
+  const orgBActive = await mintOrganizationCa({ organizationId: 'Org B CA Active' })
+  const orgBRetired = await mintOrganizationCa({ organizationId: 'Org B CA Retired' })
   const orgBBundle = `${orgBActive.certificatePem}${orgBRetired.certificatePem}`
 
   const leafA = await buildManagedOrgTlsMaterial(
@@ -368,8 +368,8 @@ test('buildManagedOrgTlsMaterial ships trustBundlePem as caCertPem and signs wit
     secretsConfig,
     'data-encryption',
   )
-  const active = await mintOrganizationCa({ commonName: 'Org CA Active' })
-  const retired = await mintOrganizationCa({ commonName: 'Org CA Retired' })
+  const active = await mintOrganizationCa({ organizationId: 'Org CA Active' })
+  const retired = await mintOrganizationCa({ organizationId: 'Org CA Retired' })
   const trustBundlePem = `${active.certificatePem}${retired.certificatePem}`
   const material = await buildManagedOrgTlsMaterial(
     secretsConfig,
@@ -401,7 +401,7 @@ test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replica
     'data-encryption',
   )
   const managedId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
-  const ca = await mintOrganizationCa({ commonName: 'Org CA Remote Primary' })
+  const ca = await mintOrganizationCa({ organizationId: 'Org CA Remote Primary' })
   const material = await buildManagedOrgTlsMaterial(
     secretsConfig,
     dataEncryptionSecrets,
@@ -429,7 +429,7 @@ test('buildManagedOrgTlsMaterial dedupes managed leaf name and localhost from ex
     'data-encryption',
   )
   const managedId = 'dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb'
-  const ca = await mintOrganizationCa({ commonName: 'Org CA Dedupe Test' })
+  const ca = await mintOrganizationCa({ organizationId: 'Org CA Dedupe Test' })
   const material = await buildManagedOrgTlsMaterial(
     secretsConfig,
     dataEncryptionSecrets,

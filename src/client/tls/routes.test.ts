@@ -380,6 +380,7 @@ test("GET /tls/ca ensure-or-create is idempotent", async () => {
           trustBundlePem?: string;
           notAfter: string | null;
           caGeneration: number | null;
+          metadata: { subject: string };
         };
         trustBundlePem: string;
         leafHealth: {
@@ -390,6 +391,10 @@ test("GET /tls/ca ensure-or-create is idempotent", async () => {
       };
       assertEquals(firstBody.tls.source, "organization_ca");
       assertEquals(typeof firstBody.tls.certificatePem, "string");
+      assertEquals(
+        firstBody.tls.metadata.subject,
+        `O=TurboPanel, OU=Organization CA, CN=${organizationId}`,
+      );
       assertEquals(typeof firstBody.trustBundlePem, "string");
       assertEquals(
         firstBody.trustBundlePem.includes("BEGIN CERTIFICATE"),

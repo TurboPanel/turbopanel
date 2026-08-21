@@ -223,11 +223,11 @@ test("toPublicTlsRow refreshes metadata and rejects unassemblable rows", () => {
       notAfter: "2099-01-01T00:00:00.000Z",
       fingerprintSha256: "a".repeat(64),
       metadata: {
-        dnsNames: ["TurboPanel Organization CA"],
+        dnsNames: [],
         hasWildcard: false,
         notBefore: "2026-01-01T00:00:00.000Z",
-        subject: "CN=TurboPanel Organization CA",
-        issuer: "CN=TurboPanel Organization CA",
+        subject: "O=TurboPanel, OU=Organization CA, CN=22222222-2222-4222-8222-222222222222",
+        issuer: "O=TurboPanel, OU=Organization CA, CN=22222222-2222-4222-8222-222222222222",
       },
       options: null,
       certificatePem:
@@ -313,7 +313,7 @@ test("materialFromSelfSigned and organization CA seal private keys", async () =>
   assertTpSecretPrivateKey(selfSigned.privateKeyPemSealed!);
 
   const ca = await materialFromOrganizationCa(secrets, {
-    commonName: "Org CA",
+    organizationId: "org-ca-test",
   });
   if (isCreateTlsFailure(ca)) {
     throw new TypeError("expected organization CA material");
@@ -327,6 +327,7 @@ test("buildCreateTlsMaterial dispatches by source", async () => {
     "lets_encrypt",
     { hostnames: ["le.example.com"] },
     secrets,
+    "org-1",
   );
   if (isCreateTlsFailure(le)) {
     throw new TypeError("expected lets encrypt material");
@@ -337,6 +338,7 @@ test("buildCreateTlsMaterial dispatches by source", async () => {
     "self_signed",
     { hostnames: ["a.example.com"] },
     secrets,
+    "org-1",
   );
   assertEquals(isCreateTlsFailure(selfSigned), false);
 });

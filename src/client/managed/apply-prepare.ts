@@ -485,7 +485,7 @@ export async function ensureActiveOrganizationCa(
   const existingSet = await loadOrganizationCaSet(db, organizationId)
   if (existingSet) return organizationCaSetOrSealedError(existingSet)
 
-  const material = await mintOrganizationCa()
+  const material = await mintOrganizationCa({ organizationId })
   const privateKeyPemSealed = await encryptSecret(
     dataEncryptionSecrets,
     material.privateKeyPem,

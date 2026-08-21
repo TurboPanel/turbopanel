@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { CertificateParseError, parseCertificatePem } from './parse.ts'
 import { issueLeafCertificate, mintOrganizationCa } from './self-signed.ts'
 
@@ -18,7 +18,7 @@ test('parseCertificatePem rejects non-PEM input', async () => {
 })
 
 test('parseCertificatePem extracts DNS and IP SANs from a minted leaf', async () => {
-  const ca = await mintOrganizationCa({ commonName: 'Parse CA' })
+  const ca = await mintOrganizationCa({ organizationId: 'Parse CA' })
   const leaf = await issueLeafCertificate(
     ca.certificatePem,
     ca.privateKeyPem,
@@ -40,8 +40,11 @@ test('parseCertificatePem extracts DNS and IP SANs from a minted leaf', async ()
 })
 
 test('parseCertificatePem reads the organization CA subject as self-issued', async () => {
-  const ca = await mintOrganizationCa({ commonName: 'Org Parse CA' })
+  const orgId = 'Org Parse CA'
+  const ca = await mintOrganizationCa({ organizationId: orgId })
   const parsed = await parseCertificatePem(ca.certificatePem)
   assertEquals(parsed.issuer, parsed.subject)
-  assertEquals(parsed.subject.includes('Org Parse CA'), true)
+  assertEquals(parsed.subject.includes(`CN=${orgId}`), true)
+  assertEquals(parsed.subject.includes('O=TurboPanel'), true)
+  assertEquals(parsed.subject.includes('OU=Organization CA'), true)
 })

@@ -434,14 +434,12 @@ export async function materialFromSelfSigned(
 
 export async function materialFromOrganizationCa(
   secrets: DerivedSecretsConfig,
-  opts?: { commonName?: string },
+  opts: { organizationId: string },
 ): Promise<CreateTlsResult> {
   try {
-    const material = await mintOrganizationCa(
-      opts?.commonName === undefined
-        ? undefined
-        : { commonName: opts.commonName },
-    );
+    const material = await mintOrganizationCa({
+      organizationId: opts.organizationId,
+    });
     const privateKeyPemSealed = await encryptSecret(
       secrets,
       material.privateKeyPem,
@@ -465,6 +463,7 @@ export async function buildCreateTlsMaterial(
   source: TlsSource,
   body: Record<string, unknown>,
   secrets: DerivedSecretsConfig,
+  organizationId: string,
 ): Promise<CreateTlsResult> {
   switch (source) {
     case "upload":
@@ -474,11 +473,6 @@ export async function buildCreateTlsMaterial(
     case "lets_encrypt":
       return materialFromLetsEncrypt(body);
     case "organization_ca":
-      return await materialFromOrganizationCa(
-        secrets,
-        typeof body.commonName === "string"
-          ? { commonName: body.commonName }
-          : undefined,
-      );
+      return await materialFromOrganizationCa(secrets, { organizationId });
   }
 }

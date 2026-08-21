@@ -18,7 +18,15 @@ import { decodeFirstCertificate, PemError } from './pem.ts'
 import type { ParsedCertificate } from './types.ts'
 
 const OID_COMMON_NAME = '2.5.4.3'
+const OID_ORGANIZATION_NAME = '2.5.4.10'
+const OID_ORGANIZATIONAL_UNIT = '2.5.4.11'
 const OID_SUBJECT_ALT_NAME = '2.5.29.17'
+
+const NAME_OID_LABELS: Record<string, string> = {
+  [OID_COMMON_NAME]: 'CN',
+  [OID_ORGANIZATION_NAME]: 'O',
+  [OID_ORGANIZATIONAL_UNIT]: 'OU',
+}
 
 export class CertificateParseError extends Error {
   constructor(message: string) {
@@ -48,11 +56,8 @@ function readNameString(nameNode: Asn1Node): string {
       if (atvChildren.length < 2) continue
       const oid = readOid(atvChildren[0]!)
       const value = readUtf8OrPrintable(atvChildren[1]!)
-      if (oid === OID_COMMON_NAME) {
-        parts.push(`CN=${value}`)
-      } else {
-        parts.push(`${oid}=${value}`)
-      }
+      const label = NAME_OID_LABELS[oid] ?? oid
+      parts.push(`${label}=${value}`)
     }
   }
   return parts.join(', ')

@@ -23,7 +23,7 @@ link here rather than restating the table.
 |---|---|---|
 | Scope | one per control plane | one active per organization |
 | Storage | files under `<stateDir>/tls/` (`ca.crt`, `ca.key`, `ca-bundle.pem`) | `tls` row, `source='organization_ca'`, `ca_state` / `ca_generation`, key sealed `tpsecret` |
-| Minted by | `turbopanel/scripts/generate-self-signed-cert.mjs` (`ensureCa()`) | `mintOrganizationCa` in `turbopanel/src/lib/tls/self-signed.ts` |
+| Minted by | `turbopanel/scripts/generate-self-signed-cert.mjs` (`ensureCa()`) | `mintOrganizationCa({ organizationId })` in `turbopanel/src/lib/tls/self-signed.ts` (`O=TurboPanel, OU=Organization CA, CN={org.id}`) |
 | Signs | the control-plane Caddy leaf only | managed-database / ProxySQL / replication leaves for that org |
 | Consumed by | daemons (`/etc/turbopanel/instance-ca.pem` via `GET /api/daemon/v1/instance/ca`) | ProxySQL, managed engines, binding `<PREFIX>_CA_CERT`, SQL clients |
 | Rotation | `TURBOPANEL_TLS_CA_ROTATE=1` + `server.tls.trust.reconcile` | `POST /api/client/v1/tls/ca/rotate` then `POST /tls/ca/retire` |
@@ -35,7 +35,7 @@ All of this package is Web-Crypto-only and Workers-safe.
 
 | File | Role |
 | --- | --- |
-| `self-signed.ts` | `mintOrganizationCa`, `issueLeafCertificate` (`ORGANIZATION_CA_LEAF_VALID_DAYS` = 90), `mintSelfSignedCertificate`, `verifyCertificateSignature` |
+| `self-signed.ts` | `mintOrganizationCa` (subject `O=TurboPanel, OU=Organization CA, CN={organizationId}`), `issueLeafCertificate` (`ORGANIZATION_CA_LEAF_VALID_DAYS` = 90), `mintSelfSignedCertificate`, `verifyCertificateSignature` |
 | `parse.ts` | Certificate PEM parse |
 | `pem.ts` | PEM encode / decode |
 | `keys.ts` | Private-key / certificate match |

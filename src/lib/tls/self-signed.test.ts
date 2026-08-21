@@ -2,12 +2,14 @@
  * Organization CA mint + leaf issue unit tests.
  */
 
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import {
   issueLeafCertificate,
   KEY_USAGE_CRL_SIGN,
   KEY_USAGE_KEY_CERT_SIGN,
   mintOrganizationCa,
+  ORGANIZATION_CA_ORG_NAME,
+  ORGANIZATION_CA_ORG_UNIT,
   parseCertificatePem,
   readBasicConstraintsCa,
   readKeyUsageBits,
@@ -23,7 +25,7 @@ import {
 const test = Deno.test.bind(Deno)
 
 test('mintOrganizationCa produces CA:TRUE with keyCertSign keyUsage', async () => {
-  const material = await mintOrganizationCa({ commonName: 'Test Org CA' })
+  const material = await mintOrganizationCa({ organizationId: 'Test Org CA' })
   const parsed = await parseCertificatePem(material.certificatePem)
 
   assertEquals(readBasicConstraintsCa(material.certificatePem), true)
@@ -35,8 +37,27 @@ test('mintOrganizationCa produces CA:TRUE with keyCertSign keyUsage', async () =
   assertEquals(material.privateKeyPem.includes('BEGIN PRIVATE KEY'), true)
 })
 
+test('mintOrganizationCa subject is unique per organization', async () => {
+  const orgId = '11111111-1111-4111-8111-111111111111'
+  const material = await mintOrganizationCa({ organizationId: orgId })
+  const parsed = await parseCertificatePem(material.certificatePem)
+  assertEquals(
+    parsed.subject,
+    `O=${ORGANIZATION_CA_ORG_NAME}, OU=${ORGANIZATION_CA_ORG_UNIT}, CN=${orgId}`,
+  )
+  assertEquals(parsed.issuer, parsed.subject)
+})
+
+test('mintOrganizationCa rejects a blank organizationId', async () => {
+  await assertRejects(
+    () => mintOrganizationCa({ organizationId: '  ' }),
+    TypeError,
+    'organizationId is required',
+  )
+})
+
 test('issueLeafCertificate is signed by CA with CA:FALSE and SANs', async () => {
-  const ca = await mintOrganizationCa({ commonName: 'Issuer Org CA' })
+  const ca = await mintOrganizationCa({ organizationId: 'Issuer Org CA' })
   const leaf = await issueLeafCertificate(
     ca.certificatePem,
     ca.privateKeyPem,
@@ -58,7 +79,7 @@ test('issueLeafCertificate is signed by CA with CA:FALSE and SANs', async () => 
 })
 
 test('issueLeafCertificate embeds IP SANs for private listener verify-identity', async () => {
-  const ca = await mintOrganizationCa({ commonName: 'Org CA IP SAN' })
+  const ca = await mintOrganizationCa({ organizationId: 'Org CA IP SAN' })
   const leaf = await issueLeafCertificate(
     ca.certificatePem,
     ca.privateKeyPem,
@@ -74,7 +95,7 @@ test('issueLeafCertificate embeds IP SANs for private listener verify-identity',
 })
 
 test('issueLeafCertificate rejects empty dns names', async () => {
-  const ca = await mintOrganizationCa()
+  const ca = await mintOrganizationCa({ organizationId: 'org-empty-dns' })
   await assertRejects(
     () => issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, []),
     TypeError,
