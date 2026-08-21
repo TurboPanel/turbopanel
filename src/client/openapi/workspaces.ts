@@ -11,7 +11,7 @@ export const workspaceSchemas = {
         type: 'string',
         enum: ['user', 'turbopanel'],
         description:
-          'Authorization-sensitive discriminator. TurboPanel Platform workspaces (`turbopanel`) are platform-managed and immutable through the public API.',
+          'Authorization-sensitive discriminator. TurboPanel workspaces (`turbopanel`) are platform-managed and immutable through the public API.',
       },
       organizationId: { type: 'string' },
       createdAt: { type: 'string', format: 'date-time' },

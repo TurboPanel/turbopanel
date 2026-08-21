@@ -7,20 +7,31 @@ import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   ingressContainerNameFromService,
+  managedHaContainerNameFromService,
 } from '../../lib/naming.ts'
 import {
   deleteSystemEnvironmentSubtree,
+  ensureManagedHaHierarchy,
   ensureManagedIngressHierarchy,
   ensureSelfHostSystemHierarchy,
   ensureSystemHierarchy,
   ensureSystemWorkspace,
   findSystemEnvironmentForServer,
   isSystemSelfHostComposeServiceName,
+  SYSTEM_HOSTING_INGRESS_COMPONENT,
+  SYSTEM_MANAGED_HA_COMPONENT,
+  SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME,
+  SYSTEM_MANAGED_INGRESS_COMPONENT,
   SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME,
+  SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
   SYSTEM_PROJECT_DISPLAY_NAME,
+  SYSTEM_PROJECT_METADATA_TYPE,
   SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
+  SYSTEM_SELF_HOST_COMPONENT,
   SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
+  SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+  SYSTEM_WORKSPACE_DISPLAY_NAME,
 } from './hierarchy.ts'
 
 /**
@@ -59,6 +70,7 @@ function createSequencedDb(opts: {
     updates?: number
     inserts?: number
     executes?: number
+    updateSets?: unknown[]
   }
 }): Db {
   let executeI = 0
@@ -98,9 +110,12 @@ function createSequencedDb(opts: {
     update: () => {
       track.updates = (track.updates ?? 0) + 1
       return {
-        set: () => ({
-          where: () => Promise.resolve([]),
-        }),
+        set: (values: unknown) => {
+          track.updateSets = [...(track.updateSets ?? []), values]
+          return {
+            where: () => Promise.resolve([]),
+          }
+        },
       }
     },
     delete: () => {
@@ -121,6 +136,43 @@ function wrapDb(tx: Db): Db {
   return {
     transaction: async (fn: (inner: Db) => Promise<unknown>) => await fn(tx),
   } as unknown as Db
+}
+
+function staleSystemProjectRow(
+  id: string,
+  name: string,
+  component: string,
+): { id: string; name: string; metadata: Record<string, unknown> } {
+  return {
+    id,
+    name,
+    metadata: { type: 'docker-compose', component, extra: 'keep' },
+  }
+}
+
+function namedUpdate(
+  updateSets: unknown[] | undefined,
+  displayName: string,
+): Record<string, unknown> | undefined {
+  return (updateSets ?? []).find((row): row is Record<string, unknown> =>
+    typeof row === 'object' &&
+    row !== null &&
+    !Array.isArray(row) &&
+    (row as Record<string, unknown>).name === displayName,
+  )
+}
+
+function assertNormalizedProjectUpdate(
+  updateSets: unknown[] | undefined,
+  displayName: string,
+  component: string,
+): void {
+  const patch = namedUpdate(updateSets, displayName)
+  assertEquals(patch?.name, displayName)
+  const metadata = patch?.metadata as Record<string, unknown> | undefined
+  assertEquals(metadata?.type, SYSTEM_PROJECT_METADATA_TYPE)
+  assertEquals(metadata?.component, component)
+  assertEquals(metadata?.extra, 'keep')
 }
 
 test('isSystemSelfHostComposeServiceName allowlists only stack services', () => {
@@ -162,10 +214,16 @@ test('ensureSystemWorkspace returns insert id or existing row', async () => {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve([{ id: 'ws-existing' }]),
+          limit: () =>
+            Promise.resolve([
+              { id: 'ws-existing', name: SYSTEM_WORKSPACE_DISPLAY_NAME },
+            ]),
         }),
       }),
     }),
+    update: () => {
+      throw new TypeError('should not update a current workspace name')
+    },
   } as unknown as Db
   assertEquals(await ensureSystemWorkspace(raced, 'org'), 'ws-existing')
 
@@ -620,5 +678,213 @@ test('ensureSelfHostSystemHierarchy throws when a container allocation is missin
       }),
     Error,
     'container allocation missing after upsert',
+  )
+})
+
+test('ensureSystemWorkspace renames a stale existing workspace', async () => {
+  const track = { updateSets: [] as unknown[] }
+  const db = {
+    execute: () => [],
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve([
+              { id: WS, name: 'TurboPanel Platform' },
+            ]),
+        }),
+      }),
+    }),
+    update: () => {
+      return {
+        set: (values: unknown) => {
+          track.updateSets.push(values)
+          return { where: () => Promise.resolve([]) }
+        },
+      }
+    },
+  } as unknown as Db
+
+  assertEquals(await ensureSystemWorkspace(db, ORG), WS)
+  const patch = namedUpdate(track.updateSets, SYSTEM_WORKSPACE_DISPLAY_NAME)
+  assertEquals(patch?.name, SYSTEM_WORKSPACE_DISPLAY_NAME)
+})
+
+test('ensureSystemHierarchy normalizes a stale hosting-ingress project', async () => {
+  const track = { updateSets: [] as unknown[] }
+  const ingressName = ingressContainerNameFromService(SVC)
+  const tx = createSequencedDb({
+    track,
+    execute: [
+      [{ id: WS }],
+      [],
+      [staleSystemProjectRow(PROJ, 'Server Ingress', SYSTEM_HOSTING_INGRESS_COMPONENT)],
+      [],
+    ],
+    select: [
+      [{ name: 'Host' }],
+      [{ id: ENV }],
+      [{ id: SVC }],
+      [{
+        id: CTR,
+        serverId: SERVER,
+        containerName: ingressName,
+        status: 'pending',
+        containerId: null,
+        composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+      }],
+    ],
+  })
+
+  const result = await ensureSystemHierarchy(wrapDb(tx), {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
+  assertEquals(result.projectId, PROJ)
+  assertNormalizedProjectUpdate(
+    track.updateSets,
+    SYSTEM_PROJECT_DISPLAY_NAME,
+    SYSTEM_HOSTING_INGRESS_COMPONENT,
+  )
+})
+
+test('ensureManagedIngressHierarchy normalizes a stale managed-ingress project', async () => {
+  const track = { updateSets: [] as unknown[] }
+  const ingressName = ingressContainerNameFromService(SVC)
+  const tx = createSequencedDb({
+    track,
+    execute: [
+      [{ id: WS }],
+      [],
+      [staleSystemProjectRow(
+        PROJ,
+        'Managed Ingress',
+        SYSTEM_MANAGED_INGRESS_COMPONENT,
+      )],
+      [],
+    ],
+    select: [
+      [{ name: 'DB Host' }],
+      [{ id: ENV }],
+      [{ id: SVC }],
+      [{
+        id: CTR,
+        serverId: SERVER,
+        containerName: ingressName,
+        status: 'pending',
+        containerId: null,
+        composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
+      }],
+    ],
+  })
+
+  const result = await ensureManagedIngressHierarchy(wrapDb(tx), {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
+  assertEquals(result.projectId, PROJ)
+  assertNormalizedProjectUpdate(
+    track.updateSets,
+    SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME,
+    SYSTEM_MANAGED_INGRESS_COMPONENT,
+  )
+})
+
+test('ensureManagedHaHierarchy normalizes a stale managed-ha project', async () => {
+  const track = { updateSets: [] as unknown[] }
+  const haName = managedHaContainerNameFromService(SVC)
+  const tx = createSequencedDb({
+    track,
+    execute: [
+      [{ id: WS }],
+      [],
+      [staleSystemProjectRow(PROJ, 'Database HA', SYSTEM_MANAGED_HA_COMPONENT)],
+      [],
+    ],
+    select: [
+      [{ name: 'HA Host' }],
+      [{ id: ENV }],
+      [{ id: SVC }],
+      [{
+        id: CTR,
+        serverId: SERVER,
+        containerName: haName,
+        composeServiceName: SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
+      }],
+    ],
+  })
+
+  const result = await ensureManagedHaHierarchy(wrapDb(tx), {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
+  assertEquals(result.projectId, PROJ)
+  assertEquals(result.containerName, haName)
+  assertNormalizedProjectUpdate(
+    track.updateSets,
+    SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME,
+    SYSTEM_MANAGED_HA_COMPONENT,
+  )
+})
+
+test('ensureSelfHostSystemHierarchy normalizes a stale self-host project', async () => {
+  const track = { updateSets: [] as unknown[] }
+  const serviceIds = [
+    '00000000-0000-4000-8000-0000000000a1',
+    '00000000-0000-4000-8000-0000000000a2',
+    '00000000-0000-4000-8000-0000000000a3',
+  ]
+  const containerIds = [
+    '00000000-0000-4000-8000-0000000000c1',
+    '00000000-0000-4000-8000-0000000000c2',
+    '00000000-0000-4000-8000-0000000000c3',
+  ]
+  const tx = createSequencedDb({
+    track,
+    execute: [
+      [{ id: WS }],
+      [],
+      [staleSystemProjectRow(
+        PROJ,
+        'TurboPanel System',
+        SYSTEM_SELF_HOST_COMPONENT,
+      )],
+      [],
+    ],
+    select: [
+      [{ id: ENV }],
+      [{ id: serviceIds[0] }],
+      [{ id: serviceIds[1] }],
+      [{ id: serviceIds[2] }],
+      [{
+        id: containerIds[0],
+        serverId: SERVER,
+        containerName: serviceIds[0],
+        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
+      }],
+      [{
+        id: containerIds[1],
+        serverId: SERVER,
+        containerName: serviceIds[1],
+        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
+      }],
+      [{
+        id: containerIds[2],
+        serverId: SERVER,
+        containerName: serviceIds[2],
+        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[2],
+      }],
+    ],
+  })
+
+  const result = await ensureSelfHostSystemHierarchy(wrapDb(tx), {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
+  assertEquals(result.projectId, PROJ)
+  assertNormalizedProjectUpdate(
+    track.updateSets,
+    SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME,
+    SYSTEM_SELF_HOST_COMPONENT,
   )
 })

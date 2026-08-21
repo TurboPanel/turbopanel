@@ -16,8 +16,10 @@ import {
   parseProjectPatchOptionsBody,
   resolveCatalogEntryForCreate,
   resolveCreateProjectType,
+  stampCreateProjectMetadata,
 } from './routes-helpers.ts'
 import type { CatalogEntry } from './catalog/index.ts'
+import { SYSTEM_PROJECT_METADATA_TYPE } from '../system/hierarchy.ts'
 import { emptyComposeDocument, type ComposeDocument } from '../../lib/compose/index.ts'
 
 /**
@@ -34,6 +36,7 @@ test('resolveCreateProjectType rejects missing and invalid types', () => {
   assertEquals(resolveCreateProjectType({}), 'invalid')
   assertEquals(resolveCreateProjectType({ type: '' }), 'invalid')
   assertEquals(resolveCreateProjectType({ type: 'not-a-type' }), 'invalid')
+  assertEquals(resolveCreateProjectType({ type: SYSTEM_PROJECT_METADATA_TYPE }), 'invalid')
   assertEquals(resolveCreateProjectType({ type: 'empty' }), 'empty')
   assertEquals(resolveCreateProjectType({ type: 'docker-compose' }), 'docker-compose')
 })
@@ -109,13 +112,32 @@ test('parseCreateProjectOptions accepts valid compose documents', () => {
   assertEquals(services.web?.image, 'nginx:alpine')
 })
 
-test('parseCreateProjectMetadata strips reserved component key', () => {
+test('parseCreateProjectMetadata strips reserved component and type keys', () => {
   const parsed = parseCreateProjectMetadata({
-    metadata: { component: 'hosting-ingress', note: 'keep' },
+    metadata: {
+      component: 'hosting-ingress',
+      type: SYSTEM_PROJECT_METADATA_TYPE,
+      note: 'keep',
+    },
   })
   if (!parsed.ok) throw new TypeError('expected valid metadata')
   assertEquals(parsed.metadata?.component, undefined)
+  assertEquals(parsed.metadata?.type, undefined)
   assertEquals(parsed.metadata?.note, 'keep')
+})
+
+test('stampCreateProjectMetadata lets canonical type win over caller metadata', () => {
+  assertEquals(
+    stampCreateProjectMetadata(
+      { type: SYSTEM_PROJECT_METADATA_TYPE, note: 'keep' },
+      { type: 'docker-compose' },
+    ),
+    { type: 'docker-compose', note: 'keep' },
+  )
+  assertEquals(
+    stampCreateProjectMetadata(null, { type: 'managed', code: 'postgres' }),
+    { type: 'managed', code: 'postgres' },
+  )
 })
 
 test('parseCreateProjectServerIdField accepts omitted, null, and uuid', () => {
@@ -171,6 +193,7 @@ test('assertDefaultServerIdShape rejects malformed server ids', () => {
 
 test('parseConfigureProjectBody requires catalog codes for template and managed', () => {
   assertEquals(parseConfigureProjectBody({ type: 'docker-compose' }).ok, true)
+  assertEquals(parseConfigureProjectBody({ type: SYSTEM_PROJECT_METADATA_TYPE }).ok, false)
   assertEquals(parseConfigureProjectBody({ type: 'template' }).ok, false)
   const managed = parseConfigureProjectBody({ type: 'managed', code: 'postgres' })
   if (!managed.ok) throw new TypeError('expected managed configure body')

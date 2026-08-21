@@ -8,6 +8,7 @@ import {
 
 export { MANAGED_ENGINE_CODES, type ManagedEngineCode }
 
+/** Platform-only `system` metadata type is deliberately excluded — see `SYSTEM_PROJECT_METADATA_TYPE`. */
 export const CREATE_PROJECT_TYPES = ['docker-compose', 'template', 'managed'] as const
 export type CreateProjectType = (typeof CREATE_PROJECT_TYPES)[number]
 

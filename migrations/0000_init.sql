@@ -120,7 +120,7 @@ CREATE TABLE "environment" (
 	"generation" integer DEFAULT 0 NOT NULL,
 	"name" varchar(255),
 	"description" varchar(255),
-	CONSTRAINT "environment_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "environment_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._/-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "fabric" (
@@ -387,7 +387,7 @@ CREATE TABLE "project" (
 	"workspace_id" uuid NOT NULL,
 	"name" varchar(255),
 	"description" varchar(255),
-	CONSTRAINT "project_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+	CONSTRAINT "project_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._/-]+$'::text)))
 );
 --> statement-breakpoint
 CREATE TABLE "recovery" (

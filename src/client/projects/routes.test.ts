@@ -45,6 +45,7 @@ import { registerStorageRoutes } from '../storage/routes.ts'
 import {
   ensureSelfHostSystemHierarchy,
   ensureSystemHierarchy,
+  SYSTEM_PROJECT_METADATA_TYPE,
 } from '../system/hierarchy.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
@@ -495,6 +496,73 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
     assertEquals(envs[0]!.name, 'Live')
+  })
+})
+
+test('POST /projects cannot persist nested metadata.type system', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const composeRes = await app.request('/projects', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        type: 'docker-compose',
+        workspaceId,
+        name: 'Nested System Compose',
+        metadata: { type: SYSTEM_PROJECT_METADATA_TYPE, note: 'keep' },
+      }),
+    })
+    assertEquals(composeRes.status, 200)
+    const composeBody = await composeRes.json() as { ok: boolean; id: string }
+    const [composeRow] = await db
+      .select({ metadata: project.metadata })
+      .from(project)
+      .where(eq(project.id, composeBody.id))
+      .limit(1)
+    const composeMetadata = composeRow?.metadata as {
+      type?: string
+      note?: string
+    } | null
+    assertEquals(composeMetadata?.type, 'docker-compose')
+    assertEquals(composeMetadata?.note, 'keep')
+
+    const managedRes = await app.request('/projects', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        type: 'managed',
+        code: 'postgres',
+        workspaceId,
+        name: 'Nested System Managed',
+        metadata: { type: SYSTEM_PROJECT_METADATA_TYPE },
+      }),
+    })
+    assertEquals(managedRes.status, 200)
+    const managedBody = await managedRes.json() as { ok: boolean; id: string }
+    const [managedRow] = await db
+      .select({ metadata: project.metadata })
+      .from(project)
+      .where(eq(project.id, managedBody.id))
+      .limit(1)
+    const managedMetadata = managedRow?.metadata as {
+      type?: string
+      code?: string
+    } | null
+    assertEquals(managedMetadata?.type, 'managed')
+    assertEquals(managedMetadata?.code, 'postgres')
   })
 })
 

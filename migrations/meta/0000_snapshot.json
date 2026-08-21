@@ -1,5 +1,5 @@
 {
-  "id": "ec2fc58b-5557-490b-ad13-a8ad7dd81551",
+  "id": "95f6266d-d845-4973-8ae4-f411d449a33c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1231,7 +1231,7 @@
       "checkConstraints": {
         "environment_name_format_check": {
           "name": "environment_name_format_check",
-          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._/-]+$'::text))"
         }
       },
       "isRLSEnabled": false
@@ -3998,7 +3998,7 @@
       "checkConstraints": {
         "project_name_format_check": {
           "name": "project_name_format_check",
-          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
+          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._/-]+$'::text))"
         }
       },
       "isRLSEnabled": false

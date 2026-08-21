@@ -927,7 +927,7 @@ export const project = pgTable(
     }).onDelete('restrict'),
     check(
       'project_name_format_check',
-      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._/-]+$'::text))`
     ),
     /**
      * One project per system component per workspace (system hierarchy).
@@ -986,7 +986,7 @@ export const environment = pgTable(
     }).onDelete('restrict'),
     check(
       'environment_name_format_check',
-      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._/-]+$'::text))`
     ),
   ]
 )

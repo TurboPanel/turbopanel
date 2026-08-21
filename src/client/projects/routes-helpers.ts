@@ -152,6 +152,9 @@ export function parseCreateProjectOptions(
   return { ok: true, options: optionsResult }
 }
 
+/** Reserved keys the public create path must not persist from caller metadata. */
+export const CREATE_PROJECT_PROMOTED_METADATA_KEYS = ['component', 'type'] as const
+
 export function parseCreateProjectMetadata(
   body: Record<string, unknown>,
 ):
@@ -163,8 +166,19 @@ export function parseCreateProjectMetadata(
   }
   const metadata = metadataResult === null
     ? null
-    : stripPromotedMetadataKeys(metadataResult, ['component'])
+    : stripPromotedMetadataKeys(metadataResult, CREATE_PROJECT_PROMOTED_METADATA_KEYS)
   return { ok: true, metadata }
+}
+
+/**
+ * Merge sanitized caller metadata under canonical project-type fields so
+ * custom keys cannot erase `type` (or catalog `code` when supplied).
+ */
+export function stampCreateProjectMetadata(
+  metadata: Record<string, unknown> | null,
+  canonical: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...metadata, ...canonical }
 }
 
 export function parseCreateProjectServerIdField(

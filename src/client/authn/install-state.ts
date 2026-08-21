@@ -60,7 +60,7 @@ function isSimpleEmailShape(email: string): boolean {
 
 /**
  * Self-hosted install creates exactly one org that owns the colocated control
- * plane server and TurboPanel Platform hierarchy.
+ * plane server and TurboPanel hierarchy.
  */
 export const ROOT_ORGANIZATION_NAME = "Root Organization";
 /** @deprecated Prefer {@link ROOT_ORGANIZATION_NAME} — kept as the install alias. */

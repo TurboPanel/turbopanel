@@ -8,7 +8,27 @@ export const projectSchemas = {
       name: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       workspaceId: { type: 'string' },
-      metadata: { type: 'object', nullable: true },
+      metadata: {
+        type: 'object',
+        nullable: true,
+        additionalProperties: true,
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['docker-compose', 'template', 'managed', 'system'],
+            description:
+              'Project kind. `system` is platform-owned (TurboPanel workspace projects) and read-only — never accepted on create or configure.',
+          },
+          code: {
+            type: 'string',
+            description: 'Catalog code when type is template or managed',
+          },
+          component: {
+            type: 'string',
+            description: 'Platform system component key (hosting-ingress, managed-ingress, …)',
+          },
+        },
+      },
       options: {
         type: 'object',
         nullable: true,
@@ -40,7 +60,7 @@ export const projectSchemas = {
         type: 'string',
         enum: ['empty', 'docker-compose', 'template', 'managed'],
         description:
-          'empty creates an untyped project with Production once; type is chosen later via POST …/configure. Omitting type defaults to docker-compose for compatibility.',
+          'empty creates an untyped project with Production once; type is chosen later via POST …/configure. Omitting type defaults to docker-compose for compatibility. The platform-only `system` type is never accepted.',
       },
       code: { type: 'string', description: 'Catalog code when type is template or managed' },
       serverId: {

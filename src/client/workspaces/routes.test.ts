@@ -405,7 +405,7 @@ test('workspace reads expose kind and system workspace is immutable', async () =
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ name: 'TurboPanel Platform' }),
+      body: JSON.stringify({ name: 'TurboPanel' }),
     })
     assertEquals(namedSystem.status, 409)
     assertEquals(await namedSystem.json(), { error: 'workspace_name_in_use' })
@@ -417,7 +417,7 @@ test('workspace reads expose kind and system workspace is immutable', async () =
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ name: 'TurboPanel Platform' }),
+      body: JSON.stringify({ name: 'TurboPanel' }),
     })
     assertEquals(renameOntoSystem.status, 409)
     assertEquals(await renameOntoSystem.json(), { error: 'workspace_name_in_use' })

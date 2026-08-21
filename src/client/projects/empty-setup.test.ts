@@ -184,6 +184,7 @@ test('projectNeedsSetup is false once a real type is set', () => {
   assertEquals(projectNeedsSetup({ type: 'docker-compose' }), false)
   assertEquals(projectNeedsSetup({ type: 'template', code: 'static-site' }), false)
   assertEquals(projectNeedsSetup({ type: 'managed', code: 'postgres' }), false)
+  assertEquals(projectNeedsSetup({ type: 'system' }), false)
 })
 
 test('isConfiguredProjectType accepts only configure targets', () => {
@@ -191,6 +192,7 @@ test('isConfiguredProjectType accepts only configure targets', () => {
   assertEquals(isConfiguredProjectType('template'), true)
   assertEquals(isConfiguredProjectType('managed'), true)
   assertEquals(isConfiguredProjectType('empty'), false)
+  assertEquals(isConfiguredProjectType('system'), false)
   assertEquals(isConfiguredProjectType('other'), false)
 })
 

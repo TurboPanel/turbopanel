@@ -7,6 +7,9 @@
  * metadata — these keys are the source of truth):
  *
  * - `workspace.kind = 'turbopanel'` — one machine workspace per organization
+ * - `project.metadata.type = 'system'` (`SYSTEM_PROJECT_METADATA_TYPE`) — shared
+ *   platform stamp on all four projects; presentation-only, never an
+ *   authorization source
  * - `project.metadata.component = 'hosting-ingress'` — shared Traefik project
  * - `project.metadata.component = 'managed-ingress'` — shared ProxySQL project
  * - `environment.server_id` under that project — one environment per enrolled
@@ -31,7 +34,7 @@
  * - `service.composeServiceName` in `database` / `queue` / `analytics`
  * - `container` via `allocateEnvironmentContainers` (`role='turbopanel'`, uuid naming)
  *
- * The TurboPanel Platform workspace (`kind='turbopanel'`) is provisioned at
+ * The TurboPanel workspace (`kind='turbopanel'`) is provisioned at
  * self-hosted install time (`completeInstanceInstall`), before any server
  * enrolls. Hierarchy functions below only *ensure* it (race-safe upsert) for
  * Workers/HA orgs and pre-existing installs. Full project/environment/service
@@ -59,10 +62,16 @@ import {
 } from '../environments/allocate-containers.ts'
 import { managedHaContainerNameFromService } from '../../lib/naming.ts'
 
+/**
+ * Platform-owned project metadata type — never accepted by `POST /projects` or
+ * `…/configure`; not an authorization source.
+ */
+export const SYSTEM_PROJECT_METADATA_TYPE = 'system'
+
 export const SYSTEM_HOSTING_INGRESS_COMPONENT = 'hosting-ingress'
 export const SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME = 'traefik'
-export const SYSTEM_WORKSPACE_DISPLAY_NAME = 'TurboPanel Platform'
-export const SYSTEM_PROJECT_DISPLAY_NAME = 'Server Ingress'
+export const SYSTEM_WORKSPACE_DISPLAY_NAME = 'TurboPanel'
+export const SYSTEM_PROJECT_DISPLAY_NAME = 'HTTP/HTTPS Ingress'
 
 /** Per-server ProxySQL shared frontend (managed engine ingress). */
 export const SYSTEM_MANAGED_INGRESS_COMPONENT = 'managed-ingress'
@@ -72,11 +81,11 @@ export const SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME = 'Database Ingress'
 /** Per-org Orchestrator Raft group (managed SQL HA). */
 export const SYSTEM_MANAGED_HA_COMPONENT = 'managed-ha'
 export const SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME = 'orchestrator'
-export const SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME = 'Database HA'
+export const SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME = 'Database High-Availability'
 
 /** Self-host project/environment identity key — not a wire `SystemComponentKey`. */
 export const SYSTEM_SELF_HOST_COMPONENT = 'turbopanel'
-export const SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME = 'TurboPanel'
+export const SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME = 'Self Hosted TurboPanel Instance'
 export const SYSTEM_SELF_HOST_ENVIRONMENT_DISPLAY_NAME = 'Production'
 
 export const SYSTEM_SELF_HOST_DATABASE_COMPOSE_SERVICE_NAME = 'database'
@@ -186,7 +195,7 @@ export async function ensureSystemWorkspace(
   if (inserted[0]?.id) return inserted[0].id
 
   const [existing] = await tx
-    .select({ id: workspace.id })
+    .select({ id: workspace.id, name: workspace.name })
     .from(workspace)
     .where(
       and(
@@ -201,7 +210,114 @@ export async function ensureSystemWorkspace(
       `system workspace missing after insert race (organization=${organizationId})`,
     )
   }
+  if (existing.name !== SYSTEM_WORKSPACE_DISPLAY_NAME) {
+    await tx
+      .update(workspace)
+      .set({
+        name: SYSTEM_WORKSPACE_DISPLAY_NAME,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(workspace.id, existing.id))
+  }
   return existing.id
+}
+
+function isMetadataRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function projectMetadataRecord(value: unknown): Record<string, unknown> {
+  return isMetadataRecord(value) ? { ...value } : {}
+}
+
+type ExistingSystemProjectRow = {
+  id: string
+  name: string | null
+  metadata: unknown
+}
+
+type SystemComponentProjectParams = {
+  workspaceId: string
+  component: string
+  displayName: string
+  missingLabel: string
+}
+
+/**
+ * Normalize a reused system project: current display name + reserved
+ * `metadata.type`, preserving `component` and any other existing keys.
+ */
+async function normalizeExistingSystemProject(
+  tx: Db,
+  existing: ExistingSystemProjectRow,
+  displayName: string,
+): Promise<void> {
+  const metadata = projectMetadataRecord(existing.metadata)
+  const nameStale = existing.name !== displayName
+  const typeStale = metadata.type !== SYSTEM_PROJECT_METADATA_TYPE
+  if (!nameStale && !typeStale) return
+
+  const patch: {
+    name?: string
+    metadata?: Record<string, unknown>
+    updatedAt: string
+  } = { updatedAt: new Date().toISOString() }
+  if (nameStale) patch.name = displayName
+  if (typeStale) {
+    patch.metadata = { ...metadata, type: SYSTEM_PROJECT_METADATA_TYPE }
+  }
+
+  await tx
+    .update(project)
+    .set(patch)
+    .where(eq(project.id, existing.id))
+}
+
+async function reuseExistingSystemProject(
+  tx: Db,
+  params: SystemComponentProjectParams,
+): Promise<string> {
+  const rows = await tx.execute<ExistingSystemProjectRow>(sql`
+    SELECT id, name, metadata
+    FROM project
+    WHERE workspace_id = ${params.workspaceId}::uuid
+      AND metadata->>'component' = ${params.component}
+    LIMIT 1
+  `)
+  const existing = rows[0]
+  if (!existing) {
+    throw new Error(
+      `${params.missingLabel} project missing after insert race (workspace=${params.workspaceId})`,
+    )
+  }
+  await normalizeExistingSystemProject(tx, existing, params.displayName)
+  return existing.id
+}
+
+async function ensureSystemComponentProject(
+  tx: Db,
+  params: SystemComponentProjectParams,
+): Promise<string> {
+  const metadataJson = JSON.stringify({
+    type: SYSTEM_PROJECT_METADATA_TYPE,
+    component: params.component,
+  })
+
+  const inserted = await tx.execute<{ id: string }>(sql`
+    INSERT INTO project (workspace_id, name, metadata)
+    VALUES (
+      ${params.workspaceId}::uuid,
+      ${params.displayName},
+      ${metadataJson}::jsonb
+    )
+    ON CONFLICT (workspace_id, (metadata->>'component'))
+      WHERE (metadata->>'component') IS NOT NULL
+    DO NOTHING
+    RETURNING id
+  `)
+  if (inserted[0]?.id) return inserted[0].id
+
+  return await reuseExistingSystemProject(tx, params)
 }
 
 /**
@@ -213,39 +329,12 @@ async function ensureHostingIngressProject(
   tx: Db,
   workspaceId: string,
 ): Promise<string> {
-  const metadataJson = JSON.stringify({
-    type: 'docker-compose',
+  return await ensureSystemComponentProject(tx, {
+    workspaceId,
     component: SYSTEM_HOSTING_INGRESS_COMPONENT,
+    displayName: SYSTEM_PROJECT_DISPLAY_NAME,
+    missingLabel: 'hosting-ingress',
   })
-
-  const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO project (workspace_id, name, metadata)
-    VALUES (
-      ${workspaceId}::uuid,
-      ${SYSTEM_PROJECT_DISPLAY_NAME},
-      ${metadataJson}::jsonb
-    )
-    ON CONFLICT (workspace_id, (metadata->>'component'))
-      WHERE (metadata->>'component') IS NOT NULL
-    DO NOTHING
-    RETURNING id
-  `)
-  if (inserted[0]?.id) return inserted[0].id
-
-  const rows = await tx.execute<{ id: string }>(sql`
-    SELECT id
-    FROM project
-    WHERE workspace_id = ${workspaceId}::uuid
-      AND metadata->>'component' = ${SYSTEM_HOSTING_INGRESS_COMPONENT}
-    LIMIT 1
-  `)
-  const existing = rows[0]?.id
-  if (!existing) {
-    throw new Error(
-      `hosting-ingress project missing after insert race (workspace=${workspaceId})`,
-    )
-  }
-  return existing
 }
 
 /**
@@ -413,39 +502,12 @@ async function ensureManagedIngressProject(
   tx: Db,
   workspaceId: string,
 ): Promise<string> {
-  const metadataJson = JSON.stringify({
-    type: 'docker-compose',
+  return await ensureSystemComponentProject(tx, {
+    workspaceId,
     component: SYSTEM_MANAGED_INGRESS_COMPONENT,
+    displayName: SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME,
+    missingLabel: 'managed-ingress',
   })
-
-  const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO project (workspace_id, name, metadata)
-    VALUES (
-      ${workspaceId}::uuid,
-      ${SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME},
-      ${metadataJson}::jsonb
-    )
-    ON CONFLICT (workspace_id, (metadata->>'component'))
-      WHERE (metadata->>'component') IS NOT NULL
-    DO NOTHING
-    RETURNING id
-  `)
-  if (inserted[0]?.id) return inserted[0].id
-
-  const rows = await tx.execute<{ id: string }>(sql`
-    SELECT id
-    FROM project
-    WHERE workspace_id = ${workspaceId}::uuid
-      AND metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
-    LIMIT 1
-  `)
-  const existing = rows[0]?.id
-  if (!existing) {
-    throw new Error(
-      `managed-ingress project missing after insert race (workspace=${workspaceId})`,
-    )
-  }
-  return existing
 }
 
 /**
@@ -569,39 +631,12 @@ async function ensureManagedHaProject(
   tx: Db,
   workspaceId: string,
 ): Promise<string> {
-  const metadataJson = JSON.stringify({
-    type: 'docker-compose',
+  return await ensureSystemComponentProject(tx, {
+    workspaceId,
     component: SYSTEM_MANAGED_HA_COMPONENT,
+    displayName: SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME,
+    missingLabel: 'managed-ha',
   })
-
-  const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO project (workspace_id, name, metadata)
-    VALUES (
-      ${workspaceId}::uuid,
-      ${SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME},
-      ${metadataJson}::jsonb
-    )
-    ON CONFLICT (workspace_id, (metadata->>'component'))
-      WHERE (metadata->>'component') IS NOT NULL
-    DO NOTHING
-    RETURNING id
-  `)
-  if (inserted[0]?.id) return inserted[0].id
-
-  const rows = await tx.execute<{ id: string }>(sql`
-    SELECT id
-    FROM project
-    WHERE workspace_id = ${workspaceId}::uuid
-      AND metadata->>'component' = ${SYSTEM_MANAGED_HA_COMPONENT}
-    LIMIT 1
-  `)
-  const existing = rows[0]?.id
-  if (!existing) {
-    throw new Error(
-      `managed-ha project missing after insert race (workspace=${workspaceId})`,
-    )
-  }
-  return existing
 }
 
 async function ensureManagedHaHierarchyImpl(
@@ -727,39 +762,12 @@ async function ensureSelfHostProject(
   tx: Db,
   workspaceId: string,
 ): Promise<string> {
-  const metadataJson = JSON.stringify({
-    type: 'docker-compose',
+  return await ensureSystemComponentProject(tx, {
+    workspaceId,
     component: SYSTEM_SELF_HOST_COMPONENT,
+    displayName: SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME,
+    missingLabel: 'self-host',
   })
-
-  const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO project (workspace_id, name, metadata)
-    VALUES (
-      ${workspaceId}::uuid,
-      ${SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME},
-      ${metadataJson}::jsonb
-    )
-    ON CONFLICT (workspace_id, (metadata->>'component'))
-      WHERE (metadata->>'component') IS NOT NULL
-    DO NOTHING
-    RETURNING id
-  `)
-  if (inserted[0]?.id) return inserted[0].id
-
-  const rows = await tx.execute<{ id: string }>(sql`
-    SELECT id
-    FROM project
-    WHERE workspace_id = ${workspaceId}::uuid
-      AND metadata->>'component' = ${SYSTEM_SELF_HOST_COMPONENT}
-    LIMIT 1
-  `)
-  const existing = rows[0]?.id
-  if (!existing) {
-    throw new Error(
-      `self-host project missing after insert race (workspace=${workspaceId})`,
-    )
-  }
-  return existing
 }
 
 /**

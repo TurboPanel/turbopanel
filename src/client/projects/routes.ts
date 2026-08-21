@@ -52,6 +52,7 @@ import {
   parseJsonbField,
   resolveCatalogEntryForCreate,
   resolveCreateProjectType,
+  stampCreateProjectMetadata,
 } from './routes-helpers.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -426,7 +427,9 @@ async function insertDockerComposeProject(
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
-      metadata: fields.metadata ?? { type: 'docker-compose' },
+      metadata: stampCreateProjectMetadata(fields.metadata, {
+        type: 'docker-compose',
+      }),
       options: fields.options ?? { compose },
     })
     .returning({ id: project.id })
@@ -464,10 +467,10 @@ async function insertCatalogProject(
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
-      metadata: fields.metadata ?? {
+      metadata: stampCreateProjectMetadata(fields.metadata, {
         type: fields.projectType,
         ...(isEngine ? { code: fields.entry.code } : {}),
-      },
+      }),
       options: catalogProjectOptions(fields, isEngine),
     })
     .returning({ id: project.id })

@@ -962,6 +962,8 @@ represented as `container` rows.
 | Redis                                                             | vendored `.deb`, unix socket         | stays host-native                                               | none                                     |
 | Mailer, dbstudio, Expo UI, website, mailpit, tabix, redis-insight | systemd / dev-only                   | excluded                                                        | none                                     |
 
+`project.metadata.component` maps to project display names (`src/client/system/hierarchy.ts` — single source of truth): `hosting-ingress` → HTTP/HTTPS Ingress, `managed-ingress` → Database Ingress, `managed-ha` → Database High-Availability, `turbopanel` → Self Hosted TurboPanel Instance.
+
 The three databases/brokers above are provisioned into the `turbopanel-system`
 Compose project (see daemon `src/deploy/AGENTS.md` → **Shared HTTP ingress
 identity**) so their container identity/status is inspectable through the same
@@ -1019,7 +1021,7 @@ compose stack:**
   the dev user / `tpcache` group — a socket-permission model that is simpler to
   keep host-native than to thread through a container network.
 
-**Bootstrap ordering:** Self-hosted install creates the **TurboPanel Platform**
+**Bootstrap ordering:** Self-hosted install creates the **TurboPanel**
 workspace (`kind='turbopanel'`) inside the install transaction — before any
 daemon enrolls. Self-host project/environment/services still wait on the
 colocated server (`ensureSelfHostSystemHierarchy`). Then `docker compose up`
@@ -1117,8 +1119,11 @@ sequenceDiagram
   `GET /permissions` lists grantable keys only. Organization-wide subject
   grants (`actor_type=organization`) apply to every teammate in that org.
   Mutation routes on workspace-tree entities call `assertNotSystemOwnedOr403`
-  after the org check (`403` `system_resource_immutable`). Client workspace
-  responses include `workspace.kind` (`user` \| `system`).
+  after the org check (`403` `system_resource_immutable`); that guard keys on
+  **workspace kind**, never on project type. Client workspace responses include
+  `workspace.kind` (`user` \| `turbopanel`; `WORKSPACE_KIND_SYSTEM` is only a
+  deprecated alias). `project.metadata.type = 'system'` is a
+  presentation/classification stamp only — never an authorization source.
 - `src/daemon/api-routes.ts` / `src/daemon/deno-ws.ts` /
   `src/daemon/workers-ws.ts` — daemon REST + WS (cell-backed)
 - `src/daemon/cell/contracts.ts` — `DaemonCell` interface, `DaemonCellRegistry`,
