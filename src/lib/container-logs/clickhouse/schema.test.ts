@@ -39,6 +39,7 @@ describe('buildContainerLogSchemaStatements', () => {
     )
     assertEquals(ddl.includes('PARTITION BY toYYYYMM(timestamp)'), true)
     assertEquals(ddl.includes('ENGINE = MergeTree'), true)
+    assertEquals(ddl.includes('SETTINGS allow_nullable_key = 1'), true)
   })
 
   it('embeds configured retentionDays in the TTL on create and alter', () => {

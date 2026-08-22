@@ -13,7 +13,10 @@
  * and doubles as the partition/column plan for the Iceberg backend that comes
  * next. `service_id` sits before `timestamp` even though it is nullable —
  * ClickHouse sorts NULL consistently, and putting the time column last is what
- * makes a per-service tail a range read instead of a scan.
+ * makes a per-service tail a range read instead of a scan. MergeTree disables
+ * nullable sorting keys by default (`allow_nullable_key = 0`); the CREATE must
+ * set `SETTINGS allow_nullable_key = 1` or ClickHouse 26.x rejects the table
+ * with `ILLEGAL_COLUMN`.
  */
 
 /** Physical container-logs table name. */
@@ -41,6 +44,7 @@ function buildContainerLogsTableDdl(retentionDays: number): string {
     `PARTITION BY toYYYYMM(timestamp)`,
     `ORDER BY (organization_id, server_id, service_id, timestamp)`,
     `TTL timestamp + INTERVAL ${retentionDays} DAY DELETE`,
+    `SETTINGS allow_nullable_key = 1`,
   ].join('\n')
 }
 

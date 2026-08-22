@@ -189,7 +189,11 @@ PARTITION BY toYYYYMM(timestamp)
 Most-selective-first, with `timestamp` **last** so a per-service tail is a
 range read rather than a scan. `service_id` sits ahead of `timestamp` even
 though it is `Nullable(UUID)` — ClickHouse orders NULL consistently, and moving
-time earlier in the key would trade the common query for a rare one.
+time earlier in the key would trade the common query for a rare one. MergeTree
+defaults `allow_nullable_key = 0`, so both `schema.ts` and the Ansible
+`bootstrap.yml` CREATE must set `SETTINGS allow_nullable_key = 1` or ClickHouse
+26.x fails the table with `ILLEGAL_COLUMN` (`Sorting key contains nullable
+columns`).
 
 The same tuple is the **Iceberg partition/column plan** for the next backend,
 which is why the predicate set is fixed now. Widening it later is a storage
