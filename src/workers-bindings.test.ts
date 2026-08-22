@@ -17,9 +17,13 @@ import {
 import type { Db } from './db.ts'
 import type { HyperdriveBinding } from './db.ts'
 // Vite inlines these as strings so source-scan guards work inside workerd
-// (host `node:fs` paths are not on the Workers VFS).
-import workersSource from './workers.ts?raw'
-import offlineSweepSource from './daemon/cell/offline-sweep.ts?raw'
+// (host `node:fs` paths are not on the Workers VFS). Deno strips `?raw` and
+// types the real module, so take the namespace and assert the Vite default.
+import * as workersRaw from './workers.ts?raw'
+import * as offlineSweepRaw from './daemon/cell/offline-sweep.ts?raw'
+
+const workersSource = (workersRaw as unknown as { default: string }).default
+const offlineSweepSource = (offlineSweepRaw as unknown as { default: string }).default
 
 /** Stub wrangler.jsonc fragment — real-looking ids (not the committed testing placeholder). */
 const STUB_EXERCISED_WRANGLER_JSONC = `
@@ -136,7 +140,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
     } as CloudflareBindings
 
     const db = resolveWorkersDb(env)
-    expect((db as { label: string }).label).toBe('postgres://hyperdrive')
+    expect((db as unknown as { label: string }).label).toBe('postgres://hyperdrive')
   })
 
   it('resolveWorkersDb uses TURBOPANEL_DATABASE_URL when HYPERDRIVE is absent', () => {
@@ -149,7 +153,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
     } as CloudflareBindings
 
     const db = resolveWorkersDb(env)
-    expect((db as { label: string }).label).toBe('postgres://fallback')
+    expect((db as unknown as { label: string }).label).toBe('postgres://fallback')
   })
 
   it('resolveWorkersDb returns undefined when no database binding or URL is configured', () => {
@@ -508,6 +512,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
         DAEMON_CONNECT_RATE_LIMITER: noopLimiter,
         DAEMON_REST_RATE_LIMITER: noopLimiter,
         DAEMON_METRICS_RATE_LIMITER: noopLimiter,
+        CONTAINER_LOGS_RATE_LIMITER: noopLimiter,
       } as unknown as CloudflareBindings)
       expect(messages).toHaveLength(0)
     } finally {

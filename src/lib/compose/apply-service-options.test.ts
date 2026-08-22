@@ -7,7 +7,6 @@ import {
   buildServiceOptionsMap,
   collectHealthCheckWarnings,
   serviceHasComposeHealthCheck,
-  TURBOPANEL_NAME_LABEL,
 } from './apply-service-options.ts'
 
 /**
@@ -425,7 +424,7 @@ test('buildServiceOptionsMap accepts empty input', () => {
 
 const SERVICE_UUID = '01a025f1-850c-705d-a7c2-1833d01cda9f'
 
-test('renaming a container to the service id keeps the authored name as alias + label', () => {
+test('renaming a container to the service id keeps the authored name as an alias', () => {
   const doc = emptyComposeDocument()
   doc.data.services = {
     adminer: {
@@ -446,10 +445,8 @@ test('renaming a container to the service id keeps the authored name as alias + 
   assertEquals(adminer.container_name, SERVICE_UUID)
   // No `networks:` authored — the implicit default is named so the alias lands.
   assertEquals(adminer.networks, { default: { aliases: ['adminer'] } })
-  assertEquals(
-    (adminer.labels as Record<string, string>)[TURBOPANEL_NAME_LABEL],
-    'adminer',
-  )
+  // Renaming stamps no labels — the alias is the whole mechanism.
+  assertEquals(adminer.labels, undefined)
 })
 
 test('friendly name falls back to the compose service key', () => {
@@ -466,7 +463,7 @@ test('friendly name falls back to the compose service key', () => {
   assertServiceRecord(web, 'web')
   assertEquals(web.container_name, SERVICE_UUID)
   assertEquals(web.networks, { default: { aliases: ['web'] } })
-  assertEquals((web.labels as Record<string, string>)[TURBOPANEL_NAME_LABEL], 'web')
+  assertEquals(web.labels, undefined)
 })
 
 test('aliases land on every declared network and keep existing entries', () => {
@@ -494,7 +491,8 @@ test('aliases land on every declared network and keep existing entries', () => {
     frontend: { aliases: ['api-internal', 'api'] },
     backend: { aliases: ['api'] },
   })
-  assertEquals(api.labels, ['owner=team', `${TURBOPANEL_NAME_LABEL}=api`])
+  // Operator-authored labels survive untouched.
+  assertEquals(api.labels, ['owner=team'])
 })
 
 test('list-form networks are normalized to a mapping carrying the alias', () => {

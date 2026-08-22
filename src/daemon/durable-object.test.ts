@@ -223,6 +223,13 @@ function createProjectionRecordingDb(
     select: () => ({
       from: () => ({
         where: () => ({ limit: selectLimit }),
+        // Presence-ack cache warm (server ⋈ organization) — do not count
+        // toward getSelectCallCount(); that tracks daemon-status reads.
+        innerJoin: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{ options: {} }]),
+          }),
+        }),
       }),
     }),
     update: () => ({

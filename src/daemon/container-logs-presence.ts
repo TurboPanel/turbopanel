@@ -79,14 +79,27 @@ const MAX_CACHED_SERVERS = 2_000;
 
 const flagCache = new Map<string, { value: boolean; expiresAtMs: number }>();
 
+/**
+ * In-memory flag only. `null` is a miss; a cached `false` is a hit.
+ * Does not consult backend availability.
+ */
+function readFlagCache(
+  serverId: string,
+  nowMs: number,
+): boolean | null {
+  const cached = flagCache.get(serverId);
+  if (cached && cached.expiresAtMs > nowMs) return cached.value;
+  return null;
+}
+
 /** Cached {@link loadServerContainerLogsEnabled} for the presence paths. */
 export async function loadServerContainerLogsEnabledCached(
   db: Db,
   serverId: string,
   nowMs: number = Date.now(),
 ): Promise<boolean> {
-  const cached = flagCache.get(serverId);
-  if (cached && cached.expiresAtMs > nowMs) return cached.value;
+  const cached = readFlagCache(serverId, nowMs);
+  if (cached !== null) return cached;
 
   const value = await loadServerContainerLogsEnabled(db, serverId);
   flagCache.delete(serverId);
@@ -122,6 +135,23 @@ export function resetContainerLogsFlagCacheForTests(): void {
  * degrades to today's behaviour instead of silently switching every tenant off.
  */
 let backendAvailable = true;
+
+/**
+ * Presence-ack flag without opening a database.
+ *
+ * `null` means a projection read is required. When the platform backend is
+ * unavailable this returns `false` without a read; otherwise it returns the
+ * cached org switch. Workers `#sendPresenceAck` must call this *before*
+ * `#withProjectionDbResult` — a cache hit that still mints a postgres.js
+ * client keeps the Durable Object non-hibernatable.
+ */
+export function peekDaemonContainerLogsFlag(
+  serverId: string,
+  nowMs: number = Date.now(),
+): boolean | null {
+  if (!backendAvailable) return false;
+  return readFlagCache(serverId, nowMs);
+}
 
 /** Record the resolved backend's availability at boot. */
 export function setContainerLogBackendAvailable(available: boolean): void {

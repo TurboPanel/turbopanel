@@ -24,6 +24,7 @@ import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { handleManagedHaEvent } from "../../client/managed/ha-event.ts";
 import {
   buildPresenceAck,
+  peekDaemonContainerLogsFlag,
   resolveDaemonContainerLogsFlag,
 } from "../container-logs-presence.ts";
 import { touchServerMetadata } from "../../server-registry.ts";
@@ -1070,6 +1071,9 @@ export class DaemonCellObject {
         geo,
         keyId,
       );
+      // Warm the presence-ack cache on this already-open client so a
+      // fact-free heartbeat does not mint a second Hyperdrive socket.
+      await resolveDaemonContainerLogsFlag(db, serverId);
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: connected (${serverId})`);
       }
@@ -1172,6 +1176,7 @@ export class DaemonCellObject {
         this.#projectionCell(serverId),
         { at, daemonBuild, geo },
       );
+      await resolveDaemonContainerLogsFlag(db, serverId);
     });
     const atMs = at ? Date.parse(at) : Date.now();
     this.#lastProjectedAtMs = Number.isNaN(atMs) ? Date.now() : atMs;
@@ -1662,14 +1667,18 @@ export class DaemonCellObject {
    * answered by `setWebSocketAutoResponse` and never wakes this object, so a
    * presence frame is the only place the flag can ride. The projection read is
    * TTL-cached so that refresh floor cannot turn into a query per frame.
+   * Peek the cache *before* opening Hyperdrive: a cache hit that still mints
+   * a postgres.js client keeps this object non-hibernatable.
    * Best effort: a failed ack never fails the presence frame.
    */
   async #sendPresenceAck(ws: WebSocket, serverId: string): Promise<void> {
-    const enabled = await this.#withProjectionDbResult(
-      "presence-ack",
-      serverId,
-      (db) => resolveDaemonContainerLogsFlag(db, serverId),
-    );
+    // `??` short-circuits, so a cache hit never reaches the projection read.
+    const enabled = peekDaemonContainerLogsFlag(serverId) ??
+      await this.#withProjectionDbResult(
+        "presence-ack",
+        serverId,
+        (db) => resolveDaemonContainerLogsFlag(db, serverId),
+      );
     try {
       ws.send(JSON.stringify(buildPresenceAck(enabled === true)));
     } catch {

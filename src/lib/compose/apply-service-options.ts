@@ -131,9 +131,6 @@ export type ApplyServiceOptionsResult = {
   hooks: ServiceDeployHook[]
 }
 
-/** Compose label key carrying the authored/friendly name of a renamed container. */
-export const TURBOPANEL_NAME_LABEL = 'com.turbopanel.name'
-
 /**
  * Friendly name the container answers to after allocation renames it to the
  * service UUID: the authored `container_name` when the operator typed one,
@@ -150,17 +147,58 @@ export function friendlyContainerName(
   return composeServiceName
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function cloneNetworkEntry(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? { ...value } : {}
+}
+
 function mergeAliases(existing: unknown, alias: string): string[] {
   const aliases: string[] = []
   if (Array.isArray(existing)) {
     for (const entry of existing) {
-      if (typeof entry === 'string' && entry.length > 0 && !aliases.includes(entry)) {
-        aliases.push(entry)
-      }
+      if (isNonEmptyString(entry) && !aliases.includes(entry)) aliases.push(entry)
     }
   }
   if (!aliases.includes(alias)) aliases.push(alias)
   return aliases
+}
+
+function listFormNetworksToMapping(networks: unknown[]): Record<string, unknown> {
+  const next: Record<string, unknown> = {}
+  for (const key of networks) {
+    if (isNonEmptyString(key)) next[key] = {}
+  }
+  return next
+}
+
+function mappingFormNetworks(networks: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(networks)) {
+    next[key] = cloneNetworkEntry(value)
+  }
+  return next
+}
+
+function composeNetworksAsMapping(networks: unknown): Record<string, unknown> {
+  if (Array.isArray(networks)) return listFormNetworksToMapping(networks)
+  if (isRecord(networks)) return mappingFormNetworks(networks)
+  return {}
+}
+
+function attachAliasToNetworkMapping(
+  mapping: Record<string, unknown>,
+  alias: string,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(mapping)) {
+    const entry = cloneNetworkEntry(value)
+    entry.aliases = mergeAliases(entry.aliases, alias)
+    next[key] = entry
+  }
+  return next
 }
 
 /**
@@ -175,46 +213,9 @@ function applyNetworkAlias(
   service: Record<string, unknown>,
   alias: string,
 ): void {
-  const networks = service.networks
-  const next: Record<string, unknown> = {}
-
-  if (Array.isArray(networks)) {
-    for (const key of networks) {
-      if (typeof key === 'string' && key.length > 0) next[key] = {}
-    }
-  } else if (isRecord(networks)) {
-    for (const [key, value] of Object.entries(networks)) {
-      next[key] = isRecord(value) ? { ...value } : {}
-    }
-  }
-  if (Object.keys(next).length === 0) next.default = {}
-
-  for (const [key, value] of Object.entries(next)) {
-    const entry = isRecord(value) ? { ...value } : {}
-    entry.aliases = mergeAliases(entry.aliases, alias)
-    next[key] = entry
-  }
-  service.networks = next
-}
-
-/** Stamp the friendly name as a label, in whichever shape `labels` already uses. */
-function applyNameLabel(
-  service: Record<string, unknown>,
-  friendlyName: string,
-): void {
-  const labels = service.labels
-  if (Array.isArray(labels)) {
-    const prefix = `${TURBOPANEL_NAME_LABEL}=`
-    const next = labels.filter(
-      (entry) => !(typeof entry === 'string' && entry.startsWith(prefix)),
-    )
-    next.push(`${prefix}${friendlyName}`)
-    service.labels = next
-    return
-  }
-  const map = isRecord(labels) ? { ...labels } : {}
-  map[TURBOPANEL_NAME_LABEL] = friendlyName
-  service.labels = map
+  const mapping = composeNetworksAsMapping(service.networks)
+  if (Object.keys(mapping).length === 0) mapping.default = {}
+  service.networks = attachAliasToNetworkMapping(mapping, alias)
 }
 
 function applyParsedOptionsToService(
@@ -225,12 +226,11 @@ function applyParsedOptionsToService(
 ): void {
   if (containerName !== undefined && containerName.length > 0) {
     // Allocation renames the container to the service UUID; give the operator's
-    // name back as an alias + label so it stays reachable and legible.
+    // name back as a network alias so it stays reachable.
     const friendlyName = friendlyContainerName(service, composeServiceName)
     service.container_name = containerName
     if (friendlyName !== containerName) {
       applyNetworkAlias(service, friendlyName)
-      applyNameLabel(service, friendlyName)
     }
   }
 

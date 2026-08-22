@@ -2,14 +2,17 @@
   // Standalone-only: ignored while Connected Mode is bound (see AGENTS.md).
   // Migrations must also be excluded in SonarCloud Analysis Scope.
   // Workers Vitest files import the virtual `cloudflare:test` module; Deno
-  // treats `cloudflare:` as a remote URL scheme (`no-cache`). Leave them to
-  // tsc / vitest-pool-workers (triple-slash refs in those files).
+  // treats `cloudflare:` as a remote URL scheme (`no-cache`). Vite `?raw`
+  // imports are the same class: Deno strips the query and types the real
+  // module (no default export / not a string). Leave them to tsc /
+  // vitest-pool-workers (triple-slash refs in those files).
   // `ts-deno-globals.d.ts` is a tsc-only shim (see that file); Deno already
   // has `lib.deno.ns.d.ts` and would report merge conflicts.
   "deno.disablePaths": [
     "./src/daemon/durable-object.test.ts",
     "./src/daemon/cell/do-registry.test.ts",
     "./src/workers.entry.test.ts",
+    "./src/workers-bindings.test.ts",
     "./vitest.config.ts",
     "./ts-deno-globals.d.ts"
   ],

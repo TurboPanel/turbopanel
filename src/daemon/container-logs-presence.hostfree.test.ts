@@ -4,6 +4,7 @@ import type { Db } from "../db.ts";
 import {
   buildPresenceAck,
   loadServerContainerLogsEnabled,
+  peekDaemonContainerLogsFlag,
   resetContainerLogBackendAvailabilityForTests,
   resetContainerLogsFlagCacheForTests,
   resolveDaemonContainerLogsFlag,
@@ -93,6 +94,22 @@ describe("resolveDaemonContainerLogsFlag", () => {
       await resolveDaemonContainerLogsFlag(disabledOrg, SERVER_ID),
       false,
     );
+    resetContainerLogsFlagCacheForTests();
+  });
+
+  it("peekDaemonContainerLogsFlag misses until a resolve warms the cache", async () => {
+    resetContainerLogsFlagCacheForTests();
+    resetContainerLogBackendAvailabilityForTests();
+    assertEquals(peekDaemonContainerLogsFlag(SERVER_ID, 0), null);
+
+    const db = fakeDb([{ options: { containerLogsEnabled: true } }]);
+    assertEquals(await resolveDaemonContainerLogsFlag(db, SERVER_ID, 0), true);
+    assertEquals(peekDaemonContainerLogsFlag(SERVER_ID, 1_000), true);
+
+    setContainerLogBackendAvailable(false);
+    assertEquals(peekDaemonContainerLogsFlag(SERVER_ID, 1_000), false);
+
+    resetContainerLogBackendAvailabilityForTests();
     resetContainerLogsFlagCacheForTests();
   });
 

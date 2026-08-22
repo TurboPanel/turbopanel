@@ -48,17 +48,20 @@ sends a bare refresh `heartbeat` on a floor cadence
 (`turbopaneld/src/instance/idle-presence.ts` → `PRESENCE_REFRESH_MS`, the only
 option on Workers, where the cell ping is auto-responded without waking the DO),
 and the Deno transport additionally acks the once-a-minute cell ping. The
-projection read is TTL-cached (`loadServerContainerLogsEnabledCached`,
-`CONTAINER_LOGS_FLAG_TTL_MS`) so neither path becomes a query per frame.
+projection read is TTL-cached (`loadServerContainerLogsEnabledCached` /
+`peekDaemonContainerLogsFlag`, `CONTAINER_LOGS_FLAG_TTL_MS`) so neither path
+becomes a query per frame. On Workers the Durable Object peeks the cache
+**before** opening Hyperdrive and warms it during connect/inbound projection
+on the already-open client.
 
 A command would have needed queueing, leasing, an outcome, and a retry story for
 **one boolean that is already re-sent on the next presence frame**. The ack
 costs one frame on a socket that is already open, and converges by construction
 after a daemon restart, a control-plane restart, or a toggle the daemon was
 offline for. It is outbound-only and is deliberately absent from
-`DAEMON_INBOUND_ALLOWED`. One projection query per presence frame is affordable
-because presence frames stay rare (change-detected plus the refresh floor) and
-the read is TTL-cached — see `../../daemon/cell/AGENTS.md` → Presence model. Any
+`DAEMON_INBOUND_ALLOWED`. Presence-ack Hyperdrive work is a cache miss only
+(connect/inbound already warm the cache on an open client) — see
+`../../daemon/cell/AGENTS.md` → Presence ack. Any
 failure resolves to `false`: off is the safe direction for a billed,
 high-volume feature.
 
