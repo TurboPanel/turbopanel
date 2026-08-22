@@ -485,6 +485,25 @@ test('serializeCommandRecord maps the full lifecycle column set', () => {
   assertEquals(record.errorMessage, null)
 })
 
+test('serializeCommandRecord normalizes postgres.js timestamptz strings to ISO-8601', () => {
+  const record = serializeCommandRecord({
+    ...baseRow,
+    createdAt: '2020-01-01 00:00:00+00',
+    updatedAt: new Date('2020-01-01T00:00:01.000Z'),
+    queuedAt: new Date('not-a-timestamp'),
+    ackedAt: '2020-01-01 00:00:00.15+00',
+    finishedAt: '2020-01-01 00:00:00.25+00',
+    expiresAt: 'not-a-timestamp',
+  } as never)
+
+  assertEquals(record.createdAt, '2020-01-01T00:00:00.000Z')
+  assertEquals(record.updatedAt, '2020-01-01T00:00:01.000Z')
+  assertEquals(record.queuedAt, null)
+  assertEquals(record.ackedAt, '2020-01-01T00:00:00.150Z')
+  assertEquals(record.finishedAt, '2020-01-01T00:00:00.250Z')
+  assertEquals(record.expiresAt, 'not-a-timestamp')
+})
+
 test('listCommandRecordsByIds returns empty for no ids and maps matches', async () => {
   assertEquals(await listCommandRecordsByIds({} as Db, []), [])
 

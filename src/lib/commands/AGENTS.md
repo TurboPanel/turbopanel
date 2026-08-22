@@ -46,7 +46,8 @@ row. `transitionCommand` `.set()`s them directly — a `CommandTransitionPatch`
 lifecycle timestamp) maps one-to-one onto columns, auto-stamping the timestamp
 that belongs to the new status; nothing merges into `metadata`.
 `serializeCommandRecord` maps those columns onto the flat `CommandRecord`
-(`result` ← `result_summary`, `error` ← `error_message`) and **never exposes a
+(`result` ← `result_summary`, `error` ← `error_message`), normalizes
+postgres.js timestamptz strings to ISO-8601, and **never exposes a
 dispatch payload**. `metadata` survives only as the follow-up-chain blob
 (`pendingStandbyApplies`, `followUpPromote`, `pendingTlsLeaf`, `desiredHash`),
 read through `getCommandMetadata`. `context` is a small **non-secret**

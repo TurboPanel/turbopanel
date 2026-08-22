@@ -865,7 +865,8 @@ derived from the server — no `organization_id` column on `command`.
 `transitionCommand` `.set()`s them directly; nothing merges into `metadata`
 any more. `serializeCommandRecord` in `command-records.ts` maps those columns
 onto the stable `CommandRecord` type (`result` ← `result_summary`, `error` ←
-`error_message`); it never exposes a dispatch payload.
+`error_message`) and normalizes postgres.js timestamptz strings (`YYYY-MM-DD
+HH:mm:ss+00`) to ISO-8601; it never exposes a dispatch payload.
 
 Server delete cascades to command rows (`ON DELETE CASCADE` on `server_id`).
 

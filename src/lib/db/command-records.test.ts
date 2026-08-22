@@ -71,6 +71,37 @@ test('serializeCommandRecord maps lifecycle columns and never exposes payload', 
   assertEquals(Object.hasOwn(record, 'payload'), false)
 })
 
+test('serializeCommandRecord normalizes postgres.js timestamptz strings to ISO-8601', () => {
+  const record = serializeCommandRecord({
+    id: '00000000-0000-4000-8000-000000000010',
+    createdAt: '2020-01-01 00:00:00+00',
+    updatedAt: '2020-01-01 00:00:01+00',
+    serverId: '00000000-0000-4000-8000-000000000011',
+    actorType: 'user',
+    actorId: '00000000-0000-4000-8000-000000000012',
+    name: 'daemon.ping',
+    status: 'succeeded',
+    attempts: 1,
+    context: null,
+    resultSummary: null,
+    errorCode: null,
+    errorMessage: null,
+    queuedAt: '2030-01-01 00:00:00+00',
+    dispatchStartedAt: null,
+    sentAt: null,
+    ackedAt: '2020-01-01 00:00:00.15+00',
+    startedAt: null,
+    finishedAt: '2020-01-01 00:00:00.25+00',
+    expiresAt: '2030-01-01 00:00:00+00',
+  })
+
+  assertEquals(record.createdAt, '2020-01-01T00:00:00.000Z')
+  assertEquals(record.queuedAt, '2030-01-01T00:00:00.000Z')
+  assertEquals(record.ackedAt, '2020-01-01T00:00:00.150Z')
+  assertEquals(record.finishedAt, '2020-01-01T00:00:00.250Z')
+  assertEquals(record.expiresAt, '2030-01-01T00:00:00.000Z')
+})
+
 test('serializeCommandRecord defaults missing lifecycle columns to nulls', () => {
   const row = {
     id: '00000000-0000-4000-8000-000000000020',

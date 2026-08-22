@@ -129,6 +129,20 @@ const LIFECYCLE_TIMESTAMP_FIELDS = [
 
 type LifecycleTimestampField = (typeof LIFECYCLE_TIMESTAMP_FIELDS)[number]
 
+/**
+ * postgres.js `mode: 'string'` timestamptz values arrive as Postgres text
+ * (`YYYY-MM-DD HH:mm:ss.ss+00`), not ISO-8601. {@link CommandRecord} timestamps
+ * are a public API contract (same shape as {@link nowIso}).
+ */
+function toIsoTimestamp(value: string | Date | null | undefined): string | null {
+  if (value == null) return null
+  const parsed = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(parsed.getTime())) {
+    return typeof value === 'string' ? value : null
+  }
+  return parsed.toISOString()
+}
+
 export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
   return {
     id: row.id,
@@ -143,15 +157,15 @@ export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
     errorMessage: row.errorMessage ?? null,
     error: row.errorMessage ?? null,
     attempts: row.attempts ?? 0,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    queuedAt: row.queuedAt ?? null,
-    dispatchStartedAt: row.dispatchStartedAt ?? null,
-    sentAt: row.sentAt ?? null,
-    ackedAt: row.ackedAt ?? null,
-    startedAt: row.startedAt ?? null,
-    finishedAt: row.finishedAt ?? null,
-    expiresAt: row.expiresAt ?? null,
+    createdAt: toIsoTimestamp(row.createdAt) ?? row.createdAt,
+    updatedAt: toIsoTimestamp(row.updatedAt) ?? row.updatedAt,
+    queuedAt: toIsoTimestamp(row.queuedAt),
+    dispatchStartedAt: toIsoTimestamp(row.dispatchStartedAt),
+    sentAt: toIsoTimestamp(row.sentAt),
+    ackedAt: toIsoTimestamp(row.ackedAt),
+    startedAt: toIsoTimestamp(row.startedAt),
+    finishedAt: toIsoTimestamp(row.finishedAt),
+    expiresAt: toIsoTimestamp(row.expiresAt),
   }
 }
 
