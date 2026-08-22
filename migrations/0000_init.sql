@@ -42,8 +42,17 @@ CREATE TABLE "command" (
 	"name" text NOT NULL,
 	"status" text DEFAULT 'queued' NOT NULL,
 	"attempts" integer DEFAULT 0 NOT NULL,
-	"payload" jsonb NOT NULL,
-	"result" jsonb
+	"context" jsonb,
+	"result_summary" jsonb,
+	"error_code" text,
+	"error_message" text,
+	"queued_at" timestamp(3) with time zone,
+	"dispatch_started_at" timestamp(3) with time zone,
+	"sent_at" timestamp(3) with time zone,
+	"acked_at" timestamp(3) with time zone,
+	"started_at" timestamp(3) with time zone,
+	"finished_at" timestamp(3) with time zone,
+	"expires_at" timestamp(3) with time zone
 );
 --> statement-breakpoint
 CREATE TABLE "container" (
@@ -104,9 +113,20 @@ CREATE TABLE "deployment" (
 	"desired_hash" text,
 	"status" text DEFAULT 'pending' NOT NULL,
 	"last_command_id" uuid,
+	"finished_at" timestamp(3) with time zone,
+	"duration_ms" integer,
+	"outcome" text,
 	CONSTRAINT "uniq_deployment_environment_server" UNIQUE("environment_id","server_id"),
 	CONSTRAINT "deployment_status_check" CHECK ("deployment"."status" IN ('pending','applying','applied','failed','draining')),
-	CONSTRAINT "deployment_generation_check" CHECK ("deployment"."desired_generation" >= 0 AND ("deployment"."applied_generation" IS NULL OR "deployment"."applied_generation" >= 0))
+	CONSTRAINT "deployment_generation_check" CHECK ("deployment"."desired_generation" >= 0 AND ("deployment"."applied_generation" IS NULL OR "deployment"."applied_generation" >= 0)),
+	CONSTRAINT "deployment_outcome_check" CHECK ("deployment"."outcome" IS NULL OR "deployment"."outcome" IN ('applied','failed','timed_out'))
+);
+--> statement-breakpoint
+CREATE TABLE "dispatch" (
+	"command_id" uuid PRIMARY KEY NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"payload" jsonb NOT NULL,
+	"expires_at" timestamp(3) with time zone
 );
 --> statement-breakpoint
 CREATE TABLE "environment" (
@@ -702,6 +722,7 @@ ALTER TABLE "credential" ADD CONSTRAINT "credential_principal_id_principal_id_fk
 ALTER TABLE "datacenter" ADD CONSTRAINT "datacenter_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deployment" ADD CONSTRAINT "deployment_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deployment" ADD CONSTRAINT "deployment_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "dispatch" ADD CONSTRAINT "dispatch_command_id_command_id_fk" FOREIGN KEY ("command_id") REFERENCES "public"."command"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "environment" ADD CONSTRAINT "environment_project_id_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."project"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "environment" ADD CONSTRAINT "environment_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "fabric" ADD CONSTRAINT "fabric_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -778,6 +799,7 @@ CREATE INDEX "idx_binding_service_id" ON "binding" USING btree ("service_id" uui
 CREATE UNIQUE INDEX "uniq_binding_service_engine_defaults" ON "binding" USING btree ("service_id") WHERE "binding"."is_emit_engine_defaults";--> statement-breakpoint
 CREATE INDEX "idx_command_server_id_created_at" ON "command" USING btree ("server_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "idx_command_status" ON "command" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "idx_command_deploy_environment_created" ON "command" USING btree (((context ->> 'environmentId')),"created_at" DESC NULLS LAST) WHERE name = 'environment.deploy';--> statement-breakpoint
 CREATE INDEX "idx_container_service_id" ON "container" USING btree ("service_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_container_server_id" ON "container" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_container_status" ON "container" USING btree ("status" text_ops);--> statement-breakpoint
@@ -788,6 +810,7 @@ CREATE INDEX "idx_credential_principal_id" ON "credential" USING btree ("princip
 CREATE INDEX "idx_datacenter_organization_id" ON "datacenter" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_deployment_environment_id" ON "deployment" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_deployment_server_id" ON "deployment" USING btree ("server_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_dispatch_expires_at" ON "dispatch" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "idx_environment_project_id" ON "environment" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_environment_server_id" ON "environment" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_fabric_organization_id" ON "fabric" USING btree ("organization_id");--> statement-breakpoint

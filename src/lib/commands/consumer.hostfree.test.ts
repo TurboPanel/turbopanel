@@ -10,6 +10,7 @@ import type {
   DaemonCellRegistry,
   PendingRequestRecord,
 } from '../../daemon/cell/contracts.ts'
+import { COMMAND_DISPATCH_FAILURE_RETENTION_MS } from '../db/command-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import {
   commandTimeoutMs,
@@ -182,9 +183,17 @@ type CommandRow = {
   name: string
   status: string
   attempts: number
-  payload: unknown
-  result: unknown
-  metadata: Record<string, unknown> | null
+  context: unknown
+  resultSummary: unknown
+  errorCode: string | null
+  errorMessage: string | null
+  queuedAt: string | null
+  dispatchStartedAt: string | null
+  sentAt: string | null
+  ackedAt: string | null
+  startedAt: string | null
+  finishedAt: string | null
+  expiresAt: string | null
 }
 
 function baseCommandRow(overrides: Partial<CommandRow> = {}): CommandRow {
@@ -198,9 +207,17 @@ function baseCommandRow(overrides: Partial<CommandRow> = {}): CommandRow {
     name: 'daemon.ping',
     status: 'queued',
     attempts: 0,
-    payload: {},
-    result: null,
-    metadata: { queuedAt: '2020-01-01T00:00:00.000Z' },
+    context: null,
+    resultSummary: null,
+    errorCode: null,
+    errorMessage: null,
+    queuedAt: '2020-01-01T00:00:00.000Z',
+    dispatchStartedAt: null,
+    sentAt: null,
+    ackedAt: null,
+    startedAt: null,
+    finishedAt: null,
+    expiresAt: null,
     ...overrides,
   }
 }
@@ -209,13 +226,20 @@ type ConsumerFakeDbOptions = Readonly<{
   commandRow?: CommandRow | null
   serverExists?: boolean
   serverConnected?: boolean
+  /** `null` simulates a dispatch payload that is already cleaned up. */
+  dispatchPayload?: unknown
 }>
 
 function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
   db: Db
   transitions: Array<{ status: string; error?: string }>
+  dispatchDeletes: number
+  dispatchRetentions: string[]
 } {
   const transitions: Array<{ status: string; error?: string }> = []
+  const dispatchState = { deletes: 0, retentions: [] as string[] }
+  const dispatchPayload =
+    options.dispatchPayload === undefined ? {} : options.dispatchPayload
   const commandRow = options.commandRow === undefined ? baseCommandRow() : options.commandRow
   const serverExists = options.serverExists ?? true
   const serverConnected = options.serverConnected ?? false
@@ -224,7 +248,16 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
     select: (fields?: Record<string, unknown>) => ({
       from: () => ({
         where: () => {
-          // getCommandRecord: select() with no field map
+          // getCommandRecord / listServerCommands: explicit command columns
+          if (fields && 'name' in fields && 'attempts' in fields) {
+            return queryResult(commandRow ? [commandRow] : [])
+          }
+          // getCommandDispatchPayload
+          if (fields && 'payload' in fields) {
+            return queryResult(
+              dispatchPayload === null ? [] : [{ payload: dispatchPayload }],
+            )
+          }
           if (fields === undefined) {
             return queryResult(commandRow ? [commandRow] : [])
           }
@@ -268,24 +301,24 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
         },
       }),
     }),
+    delete: () => ({
+      where: () => {
+        dispatchState.deletes += 1
+        return Promise.resolve(undefined)
+      },
+    }),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
         if (typeof patch.status === 'string') {
           transitions.push({
             status: patch.status,
-            ...(typeof patch.error === 'string' ? { error: patch.error } : {}),
+            ...(typeof patch.errorMessage === 'string'
+              ? { error: patch.errorMessage }
+              : {}),
           })
-        }
-        // transitionCommand merges metadata via sql`…` — tolerate any shape.
-        const meta = patch.metadata
-        if (
-          meta &&
-          typeof meta === 'object' &&
-          'error' in (meta as object) &&
-          typeof (meta as { error?: unknown }).error === 'string'
-        ) {
-          const last = transitions[transitions.length - 1]
-          if (last) last.error = (meta as { error: string }).error
+        } else if (typeof patch.expiresAt === 'string') {
+          // retainCommandDispatch — failure-retention stamp.
+          dispatchState.retentions.push(patch.expiresAt)
         }
         return {
           where: () => ({
@@ -297,11 +330,12 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
                         ...commandRow,
                         status: (patch.status as string) ?? commandRow.status,
                         updatedAt: new Date().toISOString(),
-                        metadata: {
-                          ...(commandRow.metadata ?? {}),
-                          ...(typeof patch.error === 'string' ? { error: patch.error } : {}),
-                        },
-                        ...(patch.result !== undefined ? { result: patch.result } : {}),
+                        ...(typeof patch.errorMessage === 'string'
+                          ? { errorMessage: patch.errorMessage }
+                          : {}),
+                        ...(patch.resultSummary !== undefined
+                          ? { resultSummary: patch.resultSummary }
+                          : {}),
                         ...(typeof patch.attempts === 'number' ? { attempts: patch.attempts } : {}),
                       }
                     : undefined,
@@ -313,7 +347,16 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
     }),
   } as unknown as Db
 
-  return { db, transitions }
+  return {
+    db,
+    transitions,
+    get dispatchDeletes() {
+      return dispatchState.deletes
+    },
+    get dispatchRetentions() {
+      return dispatchState.retentions
+    },
+  }
 }
 
 function emptyRegistry(): DaemonCellRegistry {
@@ -356,12 +399,7 @@ test('processCommandEnvelope no-ops for already-terminal commands', async () => 
 
 test('processCommandEnvelope marks expired commands timed_out', async () => {
   const { db, transitions } = createConsumerFakeDb({
-    commandRow: baseCommandRow({
-      metadata: {
-        queuedAt: '2020-01-01T00:00:00.000Z',
-        expiresAt: '2020-01-01T00:00:01.000Z',
-      },
-    }),
+    commandRow: baseCommandRow({ expiresAt: '2020-01-01T00:00:01.000Z' }),
   })
   await processCommandEnvelope(db, emptyRegistry(), {
     commandId: COMMAND_ID,
@@ -429,6 +467,185 @@ test('processCommandEnvelope fails fast when the daemon is offline', async () =>
   )
   assertEquals(
     transitions.some((t) => t.status === 'failed'),
+    true
+  )
+})
+
+function onlineRegistry(pending: PendingRequestRecord | null): {
+  registry: DaemonCellRegistry
+  enqueued: Array<{ commandId: string; payload: unknown }>
+} {
+  const enqueued: Array<{ commandId: string; payload: unknown }> = []
+  const cell: DaemonCell = {
+    attachDaemonSocket: () =>
+      Promise.resolve({
+        connectionId: 'conn',
+        lease: {
+          holder: 'conn',
+          expiresAt: '2020-01-01T00:01:00.000Z',
+        },
+      }),
+    detachDaemonSocket: () => Promise.resolve(),
+    recordInbound: () => Promise.resolve(),
+    getSnapshot: () =>
+      Promise.resolve({
+        serverId: SERVER_ID,
+        version: 1,
+        updatedAt: '2020-01-01T00:00:00.000Z',
+        connected: true,
+      }),
+    putSnapshot: (patch) =>
+      Promise.resolve({
+        serverId: SERVER_ID,
+        version: 1,
+        updatedAt: '2020-01-01T00:00:00.000Z',
+        connected: true,
+        ...patch,
+      }),
+    enqueue: (outbound) => {
+      enqueued.push({
+        commandId: (outbound as { commandId: string }).commandId,
+        payload: (outbound as { payload: unknown }).payload,
+      })
+      return Promise.resolve({
+        serverId: SERVER_ID,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'queued',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      })
+    },
+    markSent: () => Promise.resolve(),
+    handleInbound: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(null),
+    listRequests: () => Promise.resolve([]),
+    waitForRequest: () => Promise.resolve(pending),
+    createRequestAndWait: (outbound) =>
+      Promise.resolve({
+        serverId: SERVER_ID,
+        requestId: outbound.requestId,
+        requestKind: outbound.kind,
+        status: 'done',
+        createdAt: outbound.at,
+        expiresAt: outbound.at,
+      }),
+    readOutboxBatch: () => Promise.resolve([]),
+    ackOutbox: () => Promise.resolve(),
+    claimDeliveryLease: () => Promise.resolve(null),
+    renewDeliveryLease: () => Promise.resolve(null),
+    releaseDeliveryLease: () => Promise.resolve(),
+    prune: () => Promise.resolve([]),
+    clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
+    purge: () => Promise.resolve(),
+  }
+
+  return {
+    registry: {
+      getCell: () => cell,
+      listOnlineServerIds: () => Promise.resolve([SERVER_ID]),
+      getSnapshots: () => Promise.resolve(new Map()),
+      purge: () => Promise.resolve(),
+    },
+    enqueued,
+  }
+}
+
+function donePending(): PendingRequestRecord {
+  return {
+    serverId: SERVER_ID,
+    requestId: COMMAND_ID,
+    requestKind: 'command-dispatch',
+    status: 'done',
+    createdAt: '2020-01-01T00:00:00.000Z',
+    expiresAt: '2020-01-01T00:10:00.000Z',
+    sentAt: '2020-01-01T00:00:01.000Z',
+    result: { daemonHostname: 'edge-1' },
+  }
+}
+
+const pingEnvelope: CommandEnvelope = {
+  commandId: COMMAND_ID,
+  serverId: SERVER_ID,
+  type: 'daemon.ping',
+  attempt: 1,
+  queuedAt: '2020-01-01T00:00:00.000Z',
+}
+
+test('processCommandEnvelope dispatches the dispatch payload and drops it on success', async () => {
+  const fake = createConsumerFakeDb({
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: { ping: true },
+  })
+  const { db, transitions } = fake
+  const { registry, enqueued } = onlineRegistry(donePending())
+
+  await processCommandEnvelope(db, registry, pingEnvelope)
+
+  assertEquals(
+    transitions.some((t) => t.status === 'dispatching'),
+    true
+  )
+  assertEquals(
+    transitions.some((t) => t.status === 'sent'),
+    true
+  )
+  assertEquals(
+    transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  // The daemon envelope carries the `dispatch` payload verbatim.
+  assertEquals(enqueued.length, 1)
+  assertEquals(enqueued[0]?.payload, { ping: true })
+  // Success deletes the payload immediately; nothing is retained.
+  assertEquals(fake.dispatchDeletes, 1)
+  assertEquals(fake.dispatchRetentions.length, 0)
+})
+
+test('processCommandEnvelope retains the dispatch payload ~24h after a failure', async () => {
+  const fake = createConsumerFakeDb({
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: { ping: true },
+  })
+  const { db, transitions } = fake
+  const { registry } = onlineRegistry({
+    ...donePending(),
+    status: 'failed',
+    error: 'daemon exploded',
+    result: undefined,
+  })
+
+  await processCommandEnvelope(db, registry, pingEnvelope)
+
+  assertEquals(
+    transitions.some((t) => t.status === 'failed' && t.error === 'daemon exploded'),
+    true
+  )
+  assertEquals(fake.dispatchDeletes, 0)
+  assertEquals(fake.dispatchRetentions.length, 1)
+  const retainedMs = Date.parse(fake.dispatchRetentions[0]!)
+  const expectedMs = Date.now() + COMMAND_DISPATCH_FAILURE_RETENTION_MS
+  assertEquals(Math.abs(retainedMs - expectedMs) < 60_000, true)
+})
+
+test('processCommandEnvelope fails cleanly when the dispatch payload is gone', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: null,
+  })
+  const { registry, enqueued } = onlineRegistry(donePending())
+
+  await processCommandEnvelope(db, registry, pingEnvelope)
+
+  // Never dispatched an empty envelope; the command failed instead.
+  assertEquals(enqueued.length, 0)
+  assertEquals(
+    transitions.some(
+      (t) => t.status === 'failed' && t.error === 'Command dispatch payload unavailable',
+    ),
     true
   )
 })

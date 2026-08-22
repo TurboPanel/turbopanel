@@ -2,7 +2,7 @@
  * Host-free coverage for co-located daemon checkout version helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import { DAEMON_API_PREFIX } from '../surfaces.ts'
 import {

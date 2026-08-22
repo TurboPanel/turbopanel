@@ -6,6 +6,7 @@ import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import {
   command,
+  dispatch,
   container,
   environment,
   hosting,
@@ -564,9 +565,9 @@ test('enqueueSystemReconcile passes restart action into the command payload', as
     assertEquals(result.commandIds.length, 1)
 
     const [record] = await db
-      .select({ payload: command.payload })
-      .from(command)
-      .where(eq(command.id, result.commandId))
+      .select({ payload: dispatch.payload })
+      .from(dispatch)
+      .where(eq(dispatch.commandId, result.commandId))
       .limit(1)
     const payload = record?.payload as { action?: string } | null
     assertEquals(payload?.action, 'restart')

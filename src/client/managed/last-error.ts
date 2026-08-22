@@ -16,7 +16,8 @@ export type ManagedFailureCommand = {
   type: string
   status: string
   error: string | null
-  payload: unknown
+  /** Non-secret identifier bag from the command row (`managedId`, …). */
+  context: unknown
   createdAt?: string
 }
 
@@ -34,11 +35,11 @@ export function mergeManagedFailureMessages(
   return out.length > 0 ? out.join('\n') : null
 }
 
-function commandManagedId(payload: unknown): string | null {
-  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+function commandManagedId(context: unknown): string | null {
+  if (typeof context !== 'object' || context === null || Array.isArray(context)) {
     return null
   }
-  const id = (payload as { managedId?: unknown }).managedId
+  const id = (context as { managedId?: unknown }).managedId
   return typeof id === 'string' ? id : null
 }
 
@@ -66,7 +67,7 @@ export function pickManagedFailureMessage(
     isFailedCommand(row) &&
     hasCommandError(row) &&
     MANAGED_ENGINE_FAILURE_TYPES.has(row.type) &&
-    commandManagedId(row.payload) === managedId
+    commandManagedId(row.context) === managedId
   )
   const latestIngress = newestFirst.find((row) =>
     row.type === MANAGED_INGRESS_FAILURE_TYPE

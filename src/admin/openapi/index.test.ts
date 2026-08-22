@@ -1,4 +1,4 @@
-import { assertEquals, assertExists } from 'jsr:@std/assert'
+import { assertEquals, assertExists } from '@std/assert'
 import { ADMIN_API_PREFIX } from '../../surfaces.ts'
 import { getAdminOpenApiSpec } from './index.ts'
 

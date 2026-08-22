@@ -9,6 +9,13 @@ export const DEPLOYMENT_STATUSES = Object.freeze(
 
 export type DeploymentStatus = (typeof DEPLOYMENT_STATUSES)[number]
 
+/** Terminal outcome of the last apply attempt recorded on a `deployment` row. */
+export const DEPLOYMENT_OUTCOMES = Object.freeze(
+  ['applied', 'failed', 'timed_out'] as const,
+)
+
+export type DeploymentOutcome = (typeof DEPLOYMENT_OUTCOMES)[number]
+
 type DeploymentDbRow = typeof deployment.$inferSelect
 
 export type DeploymentTargetRecord = {
@@ -24,6 +31,12 @@ export type DeploymentTargetRecord = {
   desiredHash: string | null
   status: DeploymentStatus
   lastCommandId: string | null
+  /** When the last apply attempt reached a terminal state. */
+  finishedAt: string | null
+  /** Wall-clock duration of the last apply attempt, in milliseconds. */
+  durationMs: number | null
+  /** Terminal outcome of the last apply attempt; `null` until one finishes. */
+  outcome: DeploymentOutcome | null
 }
 
 export type DeploymentTargetInput = {
@@ -42,10 +55,17 @@ type DeploymentTransitionParams = {
   appliedGeneration?: number
   commandId?: string
   metadataPatch?: Record<string, unknown>
+  finishedAt?: string
+  durationMs?: number | null
+  outcome?: DeploymentOutcome
 }
 
 function isDeploymentStatus(value: string): value is DeploymentStatus {
   return (DEPLOYMENT_STATUSES as readonly string[]).includes(value)
+}
+
+function isDeploymentOutcome(value: string): value is DeploymentOutcome {
+  return (DEPLOYMENT_OUTCOMES as readonly string[]).includes(value)
 }
 
 export function serializeDeploymentTarget(row: DeploymentDbRow): DeploymentTargetRecord {
@@ -63,7 +83,30 @@ export function serializeDeploymentTarget(row: DeploymentDbRow): DeploymentTarge
     desiredHash: row.desiredHash ?? null,
     status,
     lastCommandId: row.lastCommandId ?? null,
+    finishedAt: row.finishedAt ?? null,
+    durationMs: row.durationMs ?? null,
+    outcome:
+      typeof row.outcome === 'string' && isDeploymentOutcome(row.outcome)
+        ? row.outcome
+        : null,
   }
+}
+
+/**
+ * Wall-clock duration of one apply attempt. `startedAt` is preferred; the
+ * queue wait is included only when the daemon never stamped a start.
+ */
+export function deploymentDurationMs(params: {
+  startedAt?: string | null
+  queuedAt?: string | null
+  finishedAt: string
+}): number | null {
+  const start = params.startedAt ?? params.queuedAt ?? null
+  if (!start) return null
+  const startMs = Date.parse(start)
+  const endMs = Date.parse(params.finishedAt)
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) return null
+  return Math.max(0, endMs - startMs)
 }
 
 function sortDeploymentTargets(
@@ -146,6 +189,15 @@ async function transitionDeploymentStatus(
   if (params.commandId !== undefined) {
     patch.lastCommandId = params.commandId
   }
+  if (params.finishedAt !== undefined) {
+    patch.finishedAt = params.finishedAt
+  }
+  if (params.durationMs !== undefined) {
+    patch.durationMs = params.durationMs
+  }
+  if (params.outcome !== undefined) {
+    patch.outcome = params.outcome
+  }
   if (params.metadataPatch !== undefined) {
     patch.metadata = sql`coalesce(${deployment.metadata}, '{}'::jsonb) || ${JSON.stringify(params.metadataPatch)}::jsonb`
   }
@@ -165,6 +217,11 @@ async function transitionDeploymentStatus(
   return row ? serializeDeploymentTarget(row) : null
 }
 
+/**
+ * Record a successful apply. `finishedAt`/`durationMs` summarize *this*
+ * attempt only — the row is overwritten by the next deploy. Per-attempt
+ * history is read from `command` (see `deployment-history.ts`).
+ */
 export async function markDeploymentApplied(
   db: Db,
   params: {
@@ -172,18 +229,30 @@ export async function markDeploymentApplied(
     serverId: string
     generation: number
     commandId?: string
+    finishedAt?: string
+    durationMs?: number | null
   },
 ): Promise<DeploymentTargetRecord | null> {
+  const finishedAt = params.finishedAt ?? nowIso()
   return transitionDeploymentStatus(db, {
     environmentId: params.environmentId,
     serverId: params.serverId,
     status: 'applied',
     appliedGeneration: params.generation,
     metadataPatch: { error: null },
+    finishedAt,
+    durationMs: params.durationMs ?? null,
+    outcome: 'applied',
     ...(params.commandId === undefined ? {} : { commandId: params.commandId }),
   })
 }
 
+/**
+ * Record a failed apply. `outcome` carries the command's actual terminal
+ * status (`failed` vs `timed_out`) so history can tell a daemon rejection
+ * apart from a consumer wait that expired; the `deployment.status` column
+ * stays `failed` for both, since convergence state is binary.
+ */
 export async function markDeploymentFailed(
   db: Db,
   params: {
@@ -191,16 +260,23 @@ export async function markDeploymentFailed(
     serverId: string
     error?: string
     commandId?: string
+    outcome?: DeploymentOutcome
+    finishedAt?: string
+    durationMs?: number | null
   },
 ): Promise<DeploymentTargetRecord | null> {
   const metadataPatch: Record<string, unknown> = {}
   if (params.error !== undefined) {
     metadataPatch.error = params.error
   }
+  const finishedAt = params.finishedAt ?? nowIso()
   return transitionDeploymentStatus(db, {
     environmentId: params.environmentId,
     serverId: params.serverId,
     status: 'failed',
+    finishedAt,
+    durationMs: params.durationMs ?? null,
+    outcome: params.outcome ?? 'failed',
     ...(Object.keys(metadataPatch).length > 0 ? { metadataPatch } : {}),
     ...(params.commandId === undefined ? {} : { commandId: params.commandId }),
   })

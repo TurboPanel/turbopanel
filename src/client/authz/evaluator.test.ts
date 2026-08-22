@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import {
@@ -691,7 +691,7 @@ test('assertCan throws ForbiddenError when access is denied', async () => {
 })
 
 test('getSubjects includes team and organization memberships', async () => {
-  await withTestFixtures(async ({ db, userId, organizationId, teamId }) => {
+  await withTestFixtures(async ({ db, userId, teamId }) => {
     await db.insert(teammate).values({ teamId, userId })
 
     const subjects = await getSubjects(db, userId)

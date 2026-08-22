@@ -2,7 +2,7 @@
  * Host-free coverage for Deno-only Drizzle Studio spawn routes.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app.ts'
 import { testOnlyPostgresTcpUrl } from '../test-fixtures/database-url.ts'

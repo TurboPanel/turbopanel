@@ -1,5 +1,5 @@
 import { and, eq, inArray, type SQL } from "drizzle-orm";
-import { type Context, Hono } from "hono";
+import type { Context, Hono } from "hono";
 import type { AppEnv } from "../../app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";

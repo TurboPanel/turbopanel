@@ -1,6 +1,15 @@
 import { assert, assertEquals } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
+
+/**
+ * Metadata as it exists in the `server.metadata` jsonb column, which can carry
+ * keys `ServerMetadata` no longer models (facts older daemons wrote before
+ * `os` / `timeSync` moved to dedicated columns and `ips` moved under
+ * `resources`). The projection must round-trip them untouched, so the fixtures
+ * below deliberately keep them.
+ */
+type StoredServerMetadata = ServerMetadata & Record<string, unknown>;
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";
 import {
   buildDefaultDaemonStatus,
@@ -46,7 +55,7 @@ const RAW_MACHINE_ID = "0123456789abcdef0123456789abcdef";
  */
 type MockRow = {
   daemon: ServerDaemonState;
-  metadata: ServerMetadata | null;
+  metadata: StoredServerMetadata | null;
   hostname: string | null;
   machineKey: string | null;
   connected: boolean;
@@ -58,7 +67,7 @@ function buildMockRow(
   statusOverrides: Partial<
     Pick<ServerDaemonStatus, "connected" | "statusChangedAt">
   > = {},
-  metadata: ServerMetadata | null = null,
+  metadata: StoredServerMetadata | null = null,
   identity: { hostname?: string | null; machineKey?: string | null } = {},
 ): MockRow {
   const status = { ...buildDefaultDaemonStatus(), ...statusOverrides };
@@ -135,14 +144,14 @@ function createMockDb(
   statusOverrides: Partial<
     Pick<ServerDaemonStatus, "connected" | "statusChangedAt">
   > = {},
-  initialMetadata: ServerMetadata | null = null,
+  initialMetadata: StoredServerMetadata | null = null,
   identity: { hostname?: string | null; machineKey?: string | null } = {},
 ): {
   db: Db;
   updateCalls: Array<Record<string, unknown>>;
   getStatus: () => ServerDaemonStatus;
   getDaemon: () => ServerDaemonState;
-  getMetadata: () => ServerMetadata | null;
+  getMetadata: () => StoredServerMetadata | null;
   getIdentity: () => { hostname: string | null; machineKey: string | null };
 } {
   const updateCalls: Array<Record<string, unknown>> = [];
@@ -172,8 +181,8 @@ function createMockDb(
 /** Simulates a stale metadata read while the live column holds fresher hello facts. */
 function createStaleReadMockDb(
   initialDaemon: ServerDaemonState,
-  liveMetadata: ServerMetadata,
-  staleMetadata: ServerMetadata,
+  liveMetadata: StoredServerMetadata,
+  staleMetadata: StoredServerMetadata,
   statusOverrides: Partial<
     Pick<ServerDaemonStatus, "connected" | "statusChangedAt">
   > = {},
@@ -181,7 +190,7 @@ function createStaleReadMockDb(
 ): {
   db: Db;
   updateCalls: Array<Record<string, unknown>>;
-  getMetadata: () => ServerMetadata | null;
+  getMetadata: () => StoredServerMetadata | null;
   getIdentity: () => { hostname: string | null; machineKey: string | null };
 } {
   const updateCalls: Array<Record<string, unknown>> = [];
@@ -462,13 +471,13 @@ test("stale identity projection does not clobber fresh timeSync, ips, os, or geo
     versionId: "12",
     prettyName: "Debian GNU/Linux 12 (bookworm)",
   };
-  const liveMetadata: ServerMetadata = {
+  const liveMetadata: StoredServerMetadata = {
     geo: testGeoUpdated,
     os: freshOs,
     timeSync: freshTimeSync,
     ips: freshIps,
   };
-  const staleMetadata: ServerMetadata = {
+  const staleMetadata: StoredServerMetadata = {
     geo: testGeo,
     os: staleOs,
     timeSync: staleTimeSync,

@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -41,8 +41,13 @@ const CONTAINER_SELECT = {
 } as const
 
 export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
-  router.use('/containers', createSessionMiddleware(opts.secrets))
-  router.use('/containers/:id', createSessionMiddleware(opts.secrets))
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for container routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/containers', createSessionMiddleware(secrets))
+  router.use('/containers/:id', createSessionMiddleware(secrets))
 
   router.get('/containers', async (c) => {
     const db = getDb(c)

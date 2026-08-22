@@ -2,7 +2,7 @@
  * Host-free coverage for binding collision helpers, serializers, and wire maps.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
 import {

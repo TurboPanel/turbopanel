@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { DisabledServerMetricsStore } from "./disabled-store.ts";
 import { METRICS_SCHEMA_VERSION } from "./contract.ts";
 import type { AuthenticatedHostMetricsSample } from "./types.ts";

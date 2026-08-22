@@ -2,7 +2,7 @@
  * Host-free coverage for server label records (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { DESCRIPTION_MAX_LENGTH } from '../display-name-format.ts'
 import { label } from './schema.ts'

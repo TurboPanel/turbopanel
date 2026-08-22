@@ -187,6 +187,39 @@ change. Future agents read `AGENTS.md` first.
   Update binding / reconnect) or IDE will still raise `plsql:*` on drizzle-kit
   SQL.
 
+### Type-checking
+
+- `deno task check:types` type-checks the Deno surface **including the test
+  files**. The `deno task test:*` tasks all run `--no-check`, so without it
+  nothing catches type drift in tests. It runs first in `pnpm test:hook`.
+- Two kinds of test file are excluded from it, both owned by the Workers
+  toolchain (`pnpm test:do`): anything importing `vitest` / `cloudflare:test`,
+  and anything tagged **`@needs-workers-globals`** in its header — a file that
+  reaches a module typed against Workers ambient globals (`CloudflareBindings`,
+  `DurableObjectStub`, …).
+- **Do not try to give Deno those globals.** `@cloudflare/workers-types`
+  redeclares `Request` / `Response` / `fetch` and collides with `lib.deno.ns`;
+  hand-declaring the names instead collides with the real workers-types in the
+  editor, because `DurableObjectStub` is a **type alias** there and
+  `DurableObjectNamespace` is a **class** — neither merges with a local
+  interface, and augmenting `Response.webSocket` trips "identical modifiers".
+- The supported way to keep a shared module inside the Deno check is the
+  narrowing pattern: a local structural type (`PipelineLike`,
+  `HyperdriveBinding`, `R2BucketLike`, `CommandQueueBinding`) instead of the
+  Workers global. Prefer that over widening the exclusion list.
+
+### Deno lint
+
+- `require-await` is excluded in `deno.json`. Async-without-await is
+  load-bearing across this codebase: interface implementations
+  (`fake-redis-cell-client.ts`, the noop email/command queues, rate-limit
+  contracts, query caches) and object-literal test doubles must return a
+  Promise to satisfy their contract, so dropping `async` breaks callers at
+  runtime rather than tidying them. Do not re-enable it.
+- Import `@std/*` by the **bare specifier** mapped in `deno.json` imports
+  (`from '@std/assert'`), never an inline `jsr:` / `npm:` URL — inline
+  specifiers trip `no-import-prefix` and `no-unversioned-import`.
+
 ### TypeScript style (SonarQube)
 
 - Prefer **`String#replaceAll()`** over **`String#replace()` with a global
@@ -921,6 +954,30 @@ deliberately-unversioned probe.
   `private_family_mismatch` (alongside existing `datacenter_has_members` /
   `datacenter_has_networks`).
 
+## Storage classification (five workloads)
+
+Storage is chosen by **the question asked of the data**, not by the shape of the
+data. Two subsystems can both be called "logs" and still belong in opposite
+classes. Before adding, moving, or "unifying" a store, place it in this table
+first — and read the linked doc.
+
+| # | Workload | Access pattern | Hosted (Workers) | Self-hosted (Deno) | Read before editing |
+| - | -------- | -------------- | ---------------- | ------------------ | ------------------- |
+| 1 | **Command state** — `command` rows, status, timings, `context` | Relational, transactional, filtered/joined; source of truth | Postgres via Hyperdrive | Postgres (co-located) | `src/lib/commands/AGENTS.md` |
+| 2 | **Command execution material** — the one-shot daemon payload | Written once, read once, then deleted (~24 h on failure) | Postgres `dispatch` side table | Postgres `dispatch` side table | `src/lib/db/AGENTS.md` |
+| 3 | **Deploy/build transcript** — a command's stdout/stderr | `GET` by known `commandId`, whole or resumed from an offset — **never scanned across commands** | R2 keyed objects (`EXECUTION_LOGS`) | Filesystem under the state tree (or S3) | `src/lib/execution-logs/AGENTS.md` |
+| 4 | **Container log stream** — running-container stdout/stderr | Scan with a fixed predicate set across orgs/servers/services/time | Pipelines → Iceberg in R2 Data Catalog, read via R2 SQL | ClickHouse `container_logs` | `src/lib/container-logs/AGENTS.md` |
+| 5 | **Analytics** — host metrics + connection-status events | Aggregate over time buckets; sampled, disposable | Analytics Engine | ClickHouse `turbopanel_server_metrics` | `src/daemon/metrics/AGENTS.md` |
+
+Classes 1–2 are canonical business data; 3–5 are retained telemetry and are
+never load-bearing for a control-plane decision. **Postgres holds no log bytes**
+— no execution-log column, no container-log table; `hasLog` is resolved
+store-side. Every telemetry store resolves to a **safe no-op disabled store**
+when unconfigured (`resolveExecutionLogStore` / `resolveContainerLogStore` /
+`resolveServerMetricsStore`), so callers never branch on availability. Public
+docs: `../website/docs/architecture/storage-architecture.mdx` (plus
+`deployment-logs.mdx` and `container-logs.mdx`).
+
 ## Subsystem docs (nested `AGENTS.md`)
 
 Large subsystems live in focused `AGENTS.md` files next to their code — Cursor
@@ -933,6 +990,8 @@ orientation; the detail moved to:
 | **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`                         | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.is_connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column)                                                                                                                                                                          |
 | **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                                                                                                                                                                                                |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                                                                                                                                                                                              |
+| **Execution logs**                | `src/lib/execution-logs/AGENTS.md`                  | Command transcripts (daemon stdout/stderr): the `ExecutionLogStore` contract, R2 (Workers) / filesystem + S3 (Deno) drivers, seq/seal/truncation semantics, retention on the shared maintenance tick. **Keyed-object GET, not an analytics table** — nothing queries across transcripts. Postgres holds no execution-log column; `hasLog` is resolved store-side |
+| **Container logs**                | `src/lib/container-logs/AGENTS.md`                  | Running-container stdout/stderr: the `ContainerLogStore` contract with **two backends behind one API — parity of contract, not of technology**: ClickHouse (Deno) and Pipelines → Iceberg in R2 Data Catalog, read via R2 SQL (Workers, public beta — degrades to `503` rather than `500`). **An analytics table, not keyed objects** — the exact opposite of execution logs, because container output is queried across servers/services/time. `ORDER BY (organization_id, server_id, service_id, timestamp)` doubles as the future Iceberg partition plan. **Default-off**, per organization (`organization.options.containerLogsEnabled`, toggled via `PUT /api/client/v1/organizations/:id/container-logs-settings`) — the daemon learns the switch from the `presence-ack` reply to its own hello/heartbeat, **not** from a command. Daemon writes land on `POST /api/daemon/v1/logs/containers` (own `CONTAINER_LOGS_RATE_LIMITER`, org stamped server-side from the JWT `sub`); clients read `GET /api/client/v1/organizations/:id/container-logs`. Shares the `turbopanel_metrics` database + `turbopanel_app` grant, so no Ansible change |
 | **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/lib/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                                                                                                          |
 | **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL and `managed.ha.reconcile` for per-org Orchestrator (lazy: HA only on servers that host a primary or `failover` replica). Promote / DR / auto-failover journal in `recovery`; detection is unsolicited `managed-ha-event`. All status reads are Postgres-backed (`GET …/managed/status` includes `error` when status is `failed`); logs use cell `managed-logs-request` |
 | **Bindings**                      | `src/client/bindings/`                              | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                                                                                                     |

@@ -1,3 +1,11 @@
+/**
+ * @needs-workers-globals — reaches `offline-sweep.ts` → `workers-bindings.ts` /
+ * `do-registry.ts`, which are typed against the Workers ambient globals
+ * (`CloudflareBindings`, `DurableObjectStub`, …). Those cannot be loaded under
+ * Deno: `@cloudflare/workers-types` redeclares `Request` / `Response` / `fetch`
+ * and collides with `lib.deno.ns` + DOM. Excluded from `deno task check:types`;
+ * the Workers toolchain owns this file's types.
+ */
 import { assertEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import type {
@@ -12,10 +20,12 @@ import {
   OFFLINE_SWEEP_STALE_MS,
   resetOfflineSweepNullGraceForTests,
   SELF_HEAL_SWEEP_BUDGET,
+  sweepExpiredCommandDispatchSafely,
   sweepOnce,
   updateNullGraceBookkeeping,
 } from "./offline-sweep.ts";
 import type { Db } from "../../db.ts";
+import { COMMAND_DISPATCH_SWEEP_LIMIT } from "../../lib/db/command-records.ts";
 
 const serverId = "srv-offline-sweep-null-grace";
 
@@ -478,3 +488,36 @@ it(
     assertEquals(probedHealed, []);
   },
 );
+
+it("dispatch-expiry sweep runs on the passed db, bounded per tick", async () => {
+  let limit: number | undefined;
+  let deleteCalls = 0;
+  const db = {
+    delete: () => ({
+      where: (condition: { queryChunks?: unknown[] }) => {
+        deleteCalls += 1;
+        // The bounded limit rides in the delete's subquery parameters.
+        limit = (condition.queryChunks ?? []).find(
+          (chunk) => typeof chunk === "number",
+        ) as number | undefined;
+        return { returning: () => Promise.resolve([{ commandId: "cmd-1" }]) };
+      },
+    }),
+  } as unknown as Db;
+
+  await sweepExpiredCommandDispatchSafely(db);
+
+  assertEquals(deleteCalls, 1);
+  assertEquals(limit, COMMAND_DISPATCH_SWEEP_LIMIT);
+});
+
+it("dispatch-expiry sweep failures stay isolated from the rest of the tick", async () => {
+  const db = {
+    delete: () => {
+      throw new Error("postgres unavailable");
+    },
+  } as unknown as Db;
+
+  // Resolves instead of throwing — the cron's other sweeps must still run.
+  await sweepExpiredCommandDispatchSafely(db);
+});

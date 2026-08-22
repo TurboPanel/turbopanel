@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import {
   bucketFloor,
@@ -88,9 +88,11 @@ it("parseMaxPoints: rejects values above MAX_METRICS_POINTS", () => {
   if (!parsed.ok) {
     assertEquals(parsed.message.includes(String(MAX_METRICS_POINTS)), true);
   }
-  assertEquals(parseMaxPoints("100").ok, true);
-  if (parseMaxPoints("100").ok) {
-    assertEquals(parseMaxPoints("100").value, 100);
+  // One call, then narrow it — a fresh call expression re-widens the union.
+  const hundred = parseMaxPoints("100");
+  assertEquals(hundred.ok, true);
+  if (hundred.ok) {
+    assertEquals(hundred.value, 100);
   }
 });
 

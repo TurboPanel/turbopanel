@@ -18,12 +18,18 @@ import { compatLogWarn } from '../../log-compat.ts'
 import {
   type CommandRecord,
   createCommandRecord,
+  getCommandDispatchPayload,
   getCommandMetadata,
   getCommandRecord,
   transitionCommand,
 } from '../db/command-records.ts'
 import { reconcileEnvironmentContainers } from '../db/container-records.ts'
-import { markDeploymentApplied, markDeploymentFailed } from '../db/deployment-records.ts'
+import {
+  type DeploymentOutcome,
+  deploymentDurationMs,
+  markDeploymentApplied,
+  markDeploymentFailed,
+} from '../db/deployment-records.ts'
 import { stampRelayPublicKey, stampRelayReconcileSuccess, clearRelayAppliedPayloadHash, getFabricById } from '../db/fabric-records.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
 import { managed, node, server } from '../db/schema.ts'
@@ -129,6 +135,14 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'managed.ha.failover': 600_000,
   'system.reconcile': 300_000,
 }
+
+/**
+ * A command plus its daemon execution payload, loaded once from `dispatch` at
+ * the start of processing. The payload never lives on the permanent `command`
+ * row, and `transitionCommand` cleans it up on any terminal transition
+ * (deleted on success, retained ~24h on failure — see `command-records.ts`).
+ */
+export type DispatchableCommandRecord = CommandRecord & { payload: unknown }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000
 
@@ -236,10 +250,15 @@ export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/**
+ * Load the permanent command row plus its one-shot `dispatch` payload.
+ * The payload is read exactly once per processing attempt and kept in memory for
+ * the side effects that need it — it is never re-read from `command`.
+ */
 async function loadDispatchableRecord(
   db: Db,
   envelope: CommandEnvelope
-): Promise<CommandRecord | null> {
+): Promise<DispatchableCommandRecord | null> {
   const record = await getCommandRecord(db, envelope.commandId)
   if (!record) {
     return null
@@ -262,12 +281,26 @@ async function loadDispatchableRecord(
     return null
   }
 
-  return record
+  const payload = await getCommandDispatchPayload(db, record.id)
+  if (payload === null) {
+    compatLogWarn(
+      'command-consumer',
+      `missing dispatch payload for command ${envelope.commandId}`
+    )
+    await transitionCommand(db, record.id, {
+      status: 'failed',
+      error: 'Command dispatch payload unavailable',
+      errorCode: 'dispatch_payload_missing',
+    })
+    return null
+  }
+
+  return { ...record, payload }
 }
 
 async function markDispatching(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope
 ): Promise<void> {
   commandConsumerTrace('dispatch-start', {
@@ -286,7 +319,7 @@ async function markDispatching(
 async function ensureServerAndDaemonOnline(
   db: Db,
   registry: DaemonCellRegistry,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope
 ): Promise<boolean> {
   const serverBinding = await getServerLicenseBinding(db, envelope.serverId)
@@ -324,7 +357,7 @@ async function ensureServerAndDaemonOnline(
 async function enqueueAndAwaitOutcome(
   db: Db,
   registry: DaemonCellRegistry,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   deps?: CommandConsumerDeps,
 ): Promise<PendingRequestRecord | null> {
@@ -365,26 +398,41 @@ async function enqueueAndAwaitOutcome(
       resultStatus: 'timed_out',
     })
     await applyManagedFailedSideEffect(db, record, deps, 'Command timed out')
-    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
+    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out')
     await applyFabricFailedSideEffect(db, record, envelope)
   }
   return pending
 }
 
+/**
+ * `outcome` carries the command's real terminal status so deploy history can
+ * distinguish a daemon-reported failure from an expired consumer wait; callers
+ * pass `'timed_out'` on the timeout paths. `deployment.status` stays `failed`
+ * for both.
+ */
 async function applyEnvironmentDeployFailedSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
-  error: string
+  error: string,
+  outcome: DeploymentOutcome = 'failed'
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
+    const finishedAt = nowIso()
     await markDeploymentFailed(db, {
       environmentId: payload.environmentId,
       serverId: envelope.serverId,
       error,
       commandId: record.id,
+      outcome,
+      finishedAt,
+      durationMs: deploymentDurationMs({
+        startedAt: record.startedAt,
+        queuedAt: record.queuedAt ?? record.createdAt,
+        finishedAt,
+      }),
     })
   } catch (err) {
     const message = errorMessage(err)
@@ -397,7 +445,7 @@ async function applyEnvironmentDeployFailedSideEffect(
 
 async function applyHostnameSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown
 ): Promise<void> {
@@ -411,7 +459,7 @@ async function applyHostnameSideEffect(
 
 async function applyTimeSyncSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown
 ): Promise<void> {
@@ -477,7 +525,7 @@ function consumerFabricSecretFields(deps?: CommandConsumerDeps): {
 
 async function stampFabricSuccessFromResult(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   fabricId: string,
   fabricResult: ReturnType<typeof parseFabricReconcileResult>,
@@ -496,7 +544,7 @@ async function stampFabricSuccessFromResult(
 
 async function reconcileFabricAfterFilledKey(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   fabricId: string,
   deps?: CommandConsumerDeps,
 ): Promise<void> {
@@ -516,7 +564,7 @@ async function reconcileFabricAfterFilledKey(
 
 async function applyEnabledFabricReconcileSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
   deps?: CommandConsumerDeps,
@@ -543,7 +591,7 @@ async function applyEnabledFabricReconcileSideEffect(
 
 async function applyFabricSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
   deps?: CommandConsumerDeps,
@@ -561,7 +609,7 @@ async function applyFabricSideEffect(
 
 async function applyFabricFailedSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
 ): Promise<void> {
   if (record.type !== 'server.fabric.reconcile') return
@@ -582,7 +630,7 @@ async function applyFabricFailedSideEffect(
 
 async function reconcileContainersSafely(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   environmentId: string,
   containers: Parameters<typeof reconcileEnvironmentContainers>[1]['containers'],
@@ -613,7 +661,7 @@ async function reconcileContainersSafely(
 
 async function applyEnvironmentDeploySideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown
 ): Promise<void> {
@@ -621,11 +669,18 @@ async function applyEnvironmentDeploySideEffect(
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
     if (payload.generation !== undefined) {
+      const finishedAt = nowIso()
       await markDeploymentApplied(db, {
         environmentId: payload.environmentId,
         serverId: envelope.serverId,
         generation: payload.generation,
         commandId: record.id,
+        finishedAt,
+        durationMs: deploymentDurationMs({
+          startedAt: record.startedAt,
+          queuedAt: record.queuedAt ?? record.createdAt,
+          finishedAt,
+        }),
       })
     }
     const deployResult = parseEnvironmentDeployResult(result)
@@ -657,7 +712,7 @@ async function applyEnvironmentDeploySideEffect(
 
 async function applyEnvironmentStopSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown
 ): Promise<void> {
@@ -685,7 +740,7 @@ async function applyEnvironmentStopSideEffect(
 
 async function applyEnvironmentLifecycleSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown
 ): Promise<void> {
@@ -714,7 +769,7 @@ async function applyEnvironmentLifecycleSideEffect(
 
 async function applySystemReconcileSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown
 ): Promise<void> {
@@ -758,7 +813,7 @@ async function applySystemReconcileSideEffect(
 
 async function applyManagedIngressReconcileSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
 ): Promise<void> {
@@ -806,7 +861,7 @@ async function applyManagedIngressReconcileSideEffect(
 
 async function applyManagedHaReconcileSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
 ): Promise<void> {
@@ -852,7 +907,7 @@ async function applyManagedHaReconcileSideEffect(
 
 async function applyManagedApplySideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
   deps?: CommandConsumerDeps
@@ -928,7 +983,7 @@ type PendingStandbyApply = {
 
 async function enqueuePendingStandbyApplies(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   deps: CommandConsumerDeps
 ): Promise<void> {
   const meta = await getCommandMetadata(db, record.id)
@@ -1062,7 +1117,7 @@ async function projectManagedObservedStatus(
 
 async function applyManagedLifecycleSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   _envelope: CommandEnvelope,
   result: unknown,
   deps?: CommandConsumerDeps
@@ -1138,7 +1193,7 @@ const MAX_BACKUP_RECORDS = 200
 
 async function applyManagedBackupSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   _envelope: CommandEnvelope,
   result: unknown
 ): Promise<void> {
@@ -1205,7 +1260,7 @@ async function applyManagedBackupSideEffect(
 
 async function applyManagedRestoreSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   _envelope: CommandEnvelope,
   result: unknown
 ): Promise<void> {
@@ -1248,7 +1303,7 @@ export function hasManagedFollowUpDeps(
 /** Primary re-apply for slot cleanup is stamped on metadata as `pendingPrimaryReapply`. */
 async function reapplyPrimaryAfterMemberDestroy(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   deps: CommandConsumerDeps & { commandQueue: CommandQueue }
 ): Promise<void> {
   const meta = await getCommandMetadata(db, record.id)
@@ -1286,7 +1341,7 @@ async function reapplyPrimaryAfterMemberDestroy(
  */
 async function cleanupDestroyedMember(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   payload: ManagedDestroyCommandPayload,
   deps: CommandConsumerDeps | undefined
 ): Promise<void> {
@@ -1316,7 +1371,7 @@ async function reconcileManagedIngressAfterDestroy(
 
 async function applyManagedDestroySideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
   deps?: CommandConsumerDeps
@@ -1436,7 +1491,7 @@ function payloadEngine(payload: unknown): unknown {
  */
 async function applyManagedRecoveryFailedSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   meta: Record<string, unknown> | null | undefined,
   deps?: CommandConsumerDeps,
 ): Promise<boolean> {
@@ -1477,7 +1532,7 @@ function shouldMarkManagedFailedOnCommandType(type: string): boolean {
 
 async function markManagedRowsFailedFromCommand(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   error?: string,
 ): Promise<void> {
   try {
@@ -1532,7 +1587,7 @@ async function markManagedRowsFailedFromCommand(
  */
 async function applyManagedFailedSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   deps?: CommandConsumerDeps,
   error?: string,
 ): Promise<void> {
@@ -1542,12 +1597,16 @@ async function applyManagedFailedSideEffect(
   }
   if (!shouldMarkManagedFailedOnCommandType(record.type)) return
   const fromMeta = typeof meta?.error === 'string' ? meta.error : undefined
-  await markManagedRowsFailedFromCommand(db, record, error ?? fromMeta ?? record.error ?? undefined)
+  await markManagedRowsFailedFromCommand(
+    db,
+    record,
+    error ?? fromMeta ?? record.errorMessage ?? undefined,
+  )
 }
 
 async function applyPendingTlsLeafSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
 ): Promise<void> {
   if (
     record.type !== 'managed.apply' &&
@@ -1569,7 +1628,7 @@ async function applyPendingTlsLeafSideEffect(
 
 async function applySucceededSideEffects(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
   deps?: CommandConsumerDeps
@@ -1602,7 +1661,7 @@ async function applySucceededSideEffects(
  */
 async function applyManagedPromoteSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
   deps?: CommandConsumerDeps
@@ -1788,7 +1847,7 @@ async function applyManagedRoleFlip(
 
 async function applyManagedHaFailoverSideEffect(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   result: unknown,
   deps?: CommandConsumerDeps,
@@ -1842,7 +1901,7 @@ async function applyManagedHaFailoverSideEffect(
 
 async function handlePendingDone(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   pending: PendingRequestRecord,
   deps?: CommandConsumerDeps
@@ -1866,7 +1925,7 @@ async function handlePendingDone(
 
 async function handlePendingFailed(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   pending: PendingRequestRecord,
   deps?: CommandConsumerDeps,
@@ -1891,7 +1950,7 @@ async function handlePendingFailed(
 
 async function handlePendingExpired(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   pending: PendingRequestRecord,
   deps?: CommandConsumerDeps,
@@ -1905,13 +1964,13 @@ async function handlePendingExpired(
     resultStatus: 'timed_out',
   })
   await applyManagedFailedSideEffect(db, record, deps, pending.error ?? 'Command timed out')
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out')
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out')
   await applyFabricFailedSideEffect(db, record, envelope)
 }
 
 async function handlePendingUnexpected(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   pending: PendingRequestRecord
 ): Promise<void> {
@@ -1933,7 +1992,7 @@ async function handlePendingUnexpected(
 
 async function applyPendingOutcome(
   db: Db,
-  record: CommandRecord,
+  record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   pending: PendingRequestRecord,
   deps?: CommandConsumerDeps

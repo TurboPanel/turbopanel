@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import { ORG_ID_HEADER, parseOrgIdFromRequest } from './org-context.ts'
 

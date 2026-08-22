@@ -17,7 +17,7 @@ import { it } from "@std/testing/bdd";
  * ```
  */
 
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { METRICS_SCHEMA_VERSION } from "../contract.ts";
 import { HOST_METRIC_KEYS } from "../contract.ts";
 import type { AuthenticatedHostMetricsSample } from "../types.ts";

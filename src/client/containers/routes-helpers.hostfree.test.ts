@@ -2,7 +2,7 @@
  * Host-free coverage for container route pure validation helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   parseCreateContainerFields,
   parsePatchContainerFields,

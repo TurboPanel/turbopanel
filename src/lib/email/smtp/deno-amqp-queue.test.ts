@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import amqplib from 'amqplib'
 import {
@@ -120,6 +120,7 @@ test('createDenoAmqpQueue enqueue is a no-op when broker connection fails', asyn
 
 test('createDenoAmqpQueue close is safe when never connected', async () => {
   const queue = createDenoAmqpQueue({ amqpUrl: 'amqp://unused' })
+  if (!queue.close) throw new TypeError('expected a closable email queue')
   await queue.close()
 })
 
@@ -162,6 +163,7 @@ test('createDenoAmqpQueue close closes an open channel and connection', async ()
 
   try {
     const queue = createDenoAmqpQueue({ amqpUrl: 'amqp://test' })
+    if (!queue.close) throw new TypeError('expected a closable email queue')
     await queue.enqueue(sampleJob)
     await queue.close()
     assertEquals(connectionClosed, true)

@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   TERMINAL_UPDATE_RETENTION_MS,
   TRUNK_MANIFEST_CACHE_MS,

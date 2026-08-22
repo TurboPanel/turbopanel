@@ -2,7 +2,7 @@
  * Host-free coverage for settings resolver DB helpers (mock Db).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   createSettingsResolver,

@@ -2,7 +2,7 @@
  * Host-free coverage for compose service reconcile helpers (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { assertComposeDocument } from '../../lib/compose/index.ts'
 import {

@@ -2,7 +2,7 @@
  * Host-free coverage for TurboFabric relay/segment DB helpers (no Postgres).
  */
 
-import { assertEquals, assertRejects } from "jsr:@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { ComposeDocument } from "../compose/types.ts";
 import {

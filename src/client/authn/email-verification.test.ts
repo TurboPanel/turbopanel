@@ -23,7 +23,7 @@ async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
     c.set('db', db)
     return next()
   })
-  const client = new Hono()
+  const client = new Hono<AppEnv>()
   registerAuthRoutes(client, {
     secrets,
     runtime: 'deno',

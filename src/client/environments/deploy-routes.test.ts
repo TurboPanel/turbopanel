@@ -26,6 +26,7 @@ import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
 import type { CommandQueue } from "../../lib/commands/queue.ts";
 import {
   command,
+  dispatch,
   container,
   deployment,
   environment,
@@ -854,9 +855,9 @@ test("POST /environments/:id/deploy payload carries runtime composeFiles", async
     assertEquals(commandQueue.envelopes.length, 1);
 
     const [row] = await db
-      .select({ payload: command.payload })
-      .from(command)
-      .where(eq(command.id, body.commandId))
+      .select({ payload: dispatch.payload })
+      .from(dispatch)
+      .where(eq(dispatch.commandId, body.commandId))
       .limit(1);
     const payload = row?.payload as {
       composeFiles: Array<{ filename: string; role: string; content: string }>;
@@ -942,9 +943,9 @@ test("POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames", a
       assertEquals(commandQueue.envelopes.length, 1);
 
       const [row] = await db
-        .select({ payload: command.payload })
-        .from(command)
-        .where(eq(command.id, body.commandId))
+        .select({ payload: dispatch.payload })
+        .from(dispatch)
+        .where(eq(dispatch.commandId, body.commandId))
         .limit(1);
       const payload = row?.payload as {
         hostingIngress?: {

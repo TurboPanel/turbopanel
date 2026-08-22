@@ -2,7 +2,7 @@ import { it } from "@std/testing/bdd";
 import {
   assertEquals,
   assertThrows,
-} from "jsr:@std/assert";
+} from "@std/assert";
 import {
   HOST_METRIC_KEYS,
   METRICS_SCHEMA_VERSION,

@@ -2,7 +2,7 @@
  * Host-free coverage for variable route pure helpers (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {

@@ -36,6 +36,7 @@ import {
   getCommandRecord,
   transitionCommand,
 } from '../../lib/db/command-records.ts'
+import { COMMAND_STATUS_BATCH_LIMIT } from './commands-routes-helpers.ts'
 
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
@@ -793,6 +794,57 @@ it('GET /servers/:id/commands/:commandId returns latency for terminal ping', asy
   })
 })
 
+it('GET /servers/:id/commands exposes both error and errorMessage for failures', async () => {
+  await withCommandRouteFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const record = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: userId,
+      type: 'daemon.ping',
+      payload: {},
+    })
+
+    await transitionCommand(db, record.id, {
+      status: 'failed',
+      error: 'Daemon not connected',
+      errorCode: 'daemon_offline',
+    })
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { Cookie: cookie, [ORG_ID_HEADER]: organizationId }
+
+    const detailRes = await app.request(
+      `/servers/${serverId}/commands/${record.id}`,
+      { headers },
+    )
+    assertEquals(detailRes.status, 200)
+    const detail = await detailRes.json() as {
+      error: string | null
+      errorMessage: string | null
+      errorCode: string | null
+    }
+    assertEquals(detail.error, 'Daemon not connected')
+    assertEquals(detail.errorMessage, 'Daemon not connected')
+    assertEquals(detail.errorCode, 'daemon_offline')
+
+    const listRes = await app.request(`/servers/${serverId}/commands`, { headers })
+    assertEquals(listRes.status, 200)
+    const list = await listRes.json() as {
+      commands: { id: string; error: string | null; errorMessage: string | null }[]
+    }
+    const listed = list.commands.find((entry) => entry.id === record.id)
+    assertEquals(listed?.error, 'Daemon not connected')
+    assertEquals(listed?.errorMessage, 'Daemon not connected')
+  })
+})
+
 it('GET /servers/:id/commands/:commandId returns 404 for cross-org or unknown ids', async () => {
   await withCommandRouteFixtures({}, async ({
     db,
@@ -901,5 +953,189 @@ it('command routes return 503 when dispatch infrastructure is unavailable', asyn
 
     const rows = await db.select().from(command).where(eq(command.serverId, serverId))
     assertEquals(rows.length, 0)
+  })
+})
+
+it('POST /commands/status returns lean statuses for many ids in one request', async () => {
+  await withCommandRouteFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const queued = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: userId,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const finished = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: userId,
+      type: 'server.reboot',
+      payload: {},
+    })
+    await transitionCommand(db, finished.id, {
+      status: 'failed',
+      error: 'Daemon not connected',
+      errorCode: 'daemon_offline',
+      finishedAt: '2020-01-01T00:00:00.000Z',
+    })
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/commands/status', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ids: [queued.id, finished.id] }),
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      ok: boolean
+      commands: Record<string, unknown>[]
+    }
+    assertEquals(body.ok, true)
+    assertEquals(body.commands.length, 2)
+
+    const byId = new Map(body.commands.map((row) => [row.id as string, row]))
+    const queuedRow = byId.get(queued.id)!
+    assertEquals(queuedRow.serverId, serverId)
+    assertEquals(queuedRow.status, 'queued')
+    assertEquals(queuedRow.type, 'daemon.ping')
+    assertEquals(queuedRow.hasLog, false)
+
+    const failedRow = byId.get(finished.id)!
+    assertEquals(failedRow.status, 'failed')
+    assertEquals(failedRow.errorMessage, 'Daemon not connected')
+    assertEquals(failedRow.errorCode, 'daemon_offline')
+
+    // The batched projection stays lean — dispatch internals never ship.
+    for (const row of body.commands) {
+      assertEquals('payload' in row, false)
+      assertEquals('result' in row, false)
+      assertEquals('context' in row, false)
+      assertEquals('dispatch' in row, false)
+    }
+  })
+})
+
+it('POST /commands/status omits invisible and cross-org ids instead of 403ing the batch', async () => {
+  await withCommandRouteFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const visible = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: userId,
+      type: 'daemon.ping',
+      payload: {},
+    })
+
+    const [otherOrg] = await db
+      .insert(organization)
+      .values({ name: 'Other Org Status' })
+      .returning({ id: organization.id })
+
+    const now = new Date().toISOString()
+    const [otherServer] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId: otherOrg!.id,
+        name: 'Other Server Status',
+      })
+      .returning({ id: server.id })
+
+    const crossOrgCommand = await createCommandRecord(db, {
+      serverId: otherServer!.id,
+      actorType: 'user',
+      actorId: userId,
+      type: 'daemon.ping',
+      payload: {},
+    })
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/commands/status', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ids: [visible.id, crossOrgCommand.id, crypto.randomUUID()],
+      }),
+    })
+
+    assertEquals(res.status, 200)
+    const body = await res.json() as { ok: boolean; commands: { id: string }[] }
+    assertEquals(body.ok, true)
+    assertEquals(body.commands.map((row) => row.id), [visible.id])
+
+    await db.delete(command).where(eq(command.id, crossOrgCommand.id))
+    await db.delete(server).where(eq(server.id, otherServer!.id))
+    await db.delete(organization).where(eq(organization.id, otherOrg!.id))
+  })
+})
+
+it('POST /commands/status rejects oversize and malformed bodies with 400', async () => {
+  await withCommandRouteFixtures({}, async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const post = (body: unknown) =>
+      app.request('/commands/status', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      })
+
+    const oversize = await post({
+      ids: Array.from(
+        { length: COMMAND_STATUS_BATCH_LIMIT + 1 },
+        () => crypto.randomUUID(),
+      ),
+    })
+    assertEquals(oversize.status, 400)
+    assertEquals(
+      (await oversize.json() as { error: string }).error,
+      'Too many command ids',
+    )
+
+    const empty = await post({ ids: [] })
+    assertEquals(empty.status, 400)
+
+    const notAnArray = await post({ ids: 'cmd-1' })
+    assertEquals(notAnArray.status, 400)
+
+    const nonStringId = await post({ ids: [crypto.randomUUID(), 42] })
+    assertEquals(nonStringId.status, 400)
+
+    const missingIds = await post({})
+    assertEquals(missingIds.status, 400)
   })
 })

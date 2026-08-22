@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 

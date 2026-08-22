@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import { HOST_METRIC_KEYS } from "./contract.ts";
 import {

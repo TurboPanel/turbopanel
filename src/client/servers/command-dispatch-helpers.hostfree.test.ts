@@ -2,7 +2,7 @@
  * Host-free coverage for command-dispatch pure helpers (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   buildUserCommandExpiresAt,
   buildCommandEnqueueEnvelope,

@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { getCookie } from 'hono/cookie'
 import { Hono, type Context } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import {
   buildSignedCookie,
   resolveRequestTls,
@@ -523,8 +524,8 @@ async function deliverSignupVerification(
   }
 }
 
-export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
-  const auth = new Hono()
+export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
+  const auth = new Hono<AppEnv>()
 
   auth.post('/sign-in', async (c) => {
     const db = getDb(c)
@@ -790,8 +791,8 @@ export function registerAuthRoutes(app: Hono, opts: AuthRouteOpts) {
   return app
 }
 
-export function registerAuthnRoutes(app: Hono, opts: AuthRouteOpts) {
-  const authn = new Hono()
+export function registerAuthnRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
+  const authn = new Hono<AppEnv>()
 
   authn.get('/session', async (c) => {
     const db = getDb(c)

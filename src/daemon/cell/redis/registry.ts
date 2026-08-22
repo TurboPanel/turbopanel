@@ -5,8 +5,11 @@ import type {
   DaemonCellSnapshot,
 } from "../contracts.ts";
 import { logWarn } from "../../../logger.ts";
-import type { RedisClientOptions } from "./client.ts";
-import { createRedisCellClient, RedisCellClient } from "./client.ts";
+import {
+  createRedisCellClient,
+  type RedisCellClient,
+  type RedisClientOptions,
+} from "./client.ts";
 import { RedisDaemonCell } from "./cell.ts";
 import { onlineSetKey } from "./keys.ts";
 import { listServerIdsWithUpdatingProjection } from "../postgres-projection.ts";

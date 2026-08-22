@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Context, Next } from "hono";
+import type { Context, Env, Next } from "hono";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
 import { lookupActiveLicense } from "../client/authn/license.ts";
 import type {
@@ -14,7 +14,12 @@ import {
   parseDaemonSecretEnvelope,
 } from "../client/authn/data-encryption.ts";
 import type { Db } from "../db.ts";
-import { getDb, getServerMetricsStore } from "../db.ts";
+import {
+  getContainerLogStore,
+  getDb,
+  getExecutionLogStore,
+  getServerMetricsStore,
+} from "../db.ts";
 import {
   MAX_METRICS_PAYLOAD_BYTES,
   metricsPayloadByteLength,
@@ -38,6 +43,16 @@ import {
   type FabricMembershipDeps,
 } from "../server-registry.ts";
 import { getCommandQueue } from "../lib/commands/queue.ts";
+import {
+  loadExecutionLogCommandTarget,
+  MAX_EXECUTION_LOG_CHUNK_BODY_BYTES,
+  parseExecutionLogChunkBody,
+} from "./execution-log-ingest.ts";
+import {
+  ExecutionLogGapError,
+  ExecutionLogSealedError,
+} from "../lib/execution-logs/types.ts";
+import { sealExecutionLogOnTerminal } from "../lib/execution-logs/seal-on-terminal.ts";
 import { isNoopCommandQueue } from "../lib/commands/noop-command-queue.ts";
 import { verifyDaemonLicense } from "./authn/license.ts";
 import { issueDaemonJwt, verifyDaemonJwt } from "./authn/daemon-jwt.ts";
@@ -58,11 +73,17 @@ import {
 import type { RateLimiter } from "./rate-limit/contracts.ts";
 import { createNoopRateLimiter } from "./rate-limit/contracts.ts";
 import {
+  daemonContainerLogsRateLimitKey,
   daemonEnrollChallengeRateLimitKey,
   daemonMetricsRateLimitKey,
   daemonRestRateLimitKey,
   type DaemonRestRateLimitRoute,
 } from "./rate-limit/keys.ts";
+import {
+  loadContainerLogIngestTarget,
+  MAX_CONTAINER_LOG_BATCH_BODY_BYTES,
+  parseContainerLogBatchBody,
+} from "./container-log-ingest.ts";
 
 function normalizeRequiredString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -443,20 +464,36 @@ async function checkServerLicenseActive(
  * Daemon-facing surface: endpoints remote daemons and the node installer call.
  * Mounted under {@link DAEMON_API_PREFIX} (`/api/daemon/v1`).
  */
-export function registerDaemonApiRoutes(
-  app: Hono,
+/**
+ * Variables published by the daemon JWT middleware chain. Declared here (not in
+ * `AppEnv`) because only the daemon surface sets them — `requireDaemonJwt` runs
+ * before every route that reads them, so they are non-optional for handlers.
+ */
+type DaemonApiEnv = {
+  Variables: {
+    daemonServerId: string;
+    daemonKeyId: string;
+    daemonTokenId: string;
+  };
+};
+
+export function registerDaemonApiRoutes<E extends Env>(
+  app: Hono<E>,
   options: {
     secrets?: DaemonJwtKeyring;
     challengeSigningSecrets?: DerivedSecretsConfig;
     secretsConfig?: SecretsConfig;
     restLimiter?: RateLimiter;
     metricsLimiter?: RateLimiter;
+    containerLogsLimiter?: RateLimiter;
   } = {},
 ) {
-  const daemon = new Hono();
+  const daemon = new Hono<DaemonApiEnv>();
   const { secrets, challengeSigningSecrets, secretsConfig } = options;
   const restLimiter = options.restLimiter ?? createNoopRateLimiter();
   const metricsLimiter = options.metricsLimiter ?? createNoopRateLimiter();
+  const containerLogsLimiter = options.containerLogsLimiter ??
+    createNoopRateLimiter();
   const enrollStore = challengeSigningSecrets
     ? createStatelessChallengeStore(
       challengeSigningSecrets,
@@ -487,6 +524,19 @@ export function registerDaemonApiRoutes(
   ): Promise<Response | null> {
     const { success } = await metricsLimiter.limit({
       key: daemonMetricsRateLimitKey(serverId),
+    });
+    if (!success) {
+      return c.json({ ok: false, error: "rate_limited" }, 429);
+    }
+    return null;
+  }
+
+  async function enforceDaemonContainerLogsLimit(
+    c: Context,
+    serverId: string,
+  ): Promise<Response | null> {
+    const { success } = await containerLogsLimiter.limit({
+      key: daemonContainerLogsRateLimitKey(serverId),
     });
     if (!success) {
       return c.json({ ok: false, error: "rate_limited" }, 429);
@@ -534,7 +584,7 @@ export function registerDaemonApiRoutes(
     }, 200);
   }
 
-  const requireDaemonJwt = async (c: Context, next: Next) => {
+  const requireDaemonJwt = async (c: Context<DaemonApiEnv>, next: Next) => {
     if (!secrets) {
       return c.json({ ok: false, error: "unauthorized" }, 401);
     }
@@ -549,9 +599,9 @@ export function registerDaemonApiRoutes(
     if (!payload) {
       return c.json({ ok: false, error: "unauthorized" }, 401);
     }
-    (c as Context<any>).set("daemonServerId", payload.sub);
-    (c as Context<any>).set("daemonKeyId", payload.kid);
-    (c as Context<any>).set("daemonTokenId", payload.jti);
+    c.set("daemonServerId", payload.sub);
+    c.set("daemonKeyId", payload.kid);
+    c.set("daemonTokenId", payload.jti);
     return next();
   };
 
@@ -561,13 +611,13 @@ export function registerDaemonApiRoutes(
    * and rate limiting so limiter tests can still exercise 429 without a DB.
    * When no DB is bound (unit tests), JWT signature/expiry alone gate the route.
    */
-  const requireActiveDaemonKey = async (c: Context, next: Next) => {
+  const requireActiveDaemonKey = async (c: Context<DaemonApiEnv>, next: Next) => {
     const db = getDb(c);
     if (db === undefined) {
       return next();
     }
-    const serverId = c.get("daemonServerId") as string;
-    const keyId = c.get("daemonKeyId") as string;
+    const serverId = c.get("daemonServerId");
+    const keyId = c.get("daemonKeyId");
     const keyState = await loadActiveDaemonKeyState(db, serverId, keyId);
     if (!keyState.ok) {
       return c.json({ ok: false, error: "unauthorized" }, 401);
@@ -878,8 +928,9 @@ export function registerDaemonApiRoutes(
   });
 
   const enforceJwtRestLimit =
-    (route: DaemonRestRateLimitRoute) => async (c: Context, next: Next) => {
-      const daemonServerId = c.get("daemonServerId") as string;
+    (route: DaemonRestRateLimitRoute) =>
+    async (c: Context<DaemonApiEnv>, next: Next) => {
+      const daemonServerId = c.get("daemonServerId");
       const limited = await enforceDaemonRestLimit(
         c,
         daemonRestRateLimitKey(daemonServerId, route),
@@ -888,9 +939,19 @@ export function registerDaemonApiRoutes(
       return next();
     };
 
-  const enforceJwtMetricsLimit = async (c: Context, next: Next) => {
-    const daemonServerId = c.get("daemonServerId") as string;
+  const enforceJwtMetricsLimit = async (c: Context<DaemonApiEnv>, next: Next) => {
+    const daemonServerId = c.get("daemonServerId");
     const limited = await enforceDaemonMetricsLimit(c, daemonServerId);
+    if (limited) return limited;
+    return next();
+  };
+
+  const enforceJwtContainerLogsLimit = async (
+    c: Context<DaemonApiEnv>,
+    next: Next,
+  ) => {
+    const daemonServerId = c.get("daemonServerId");
+    const limited = await enforceDaemonContainerLogsLimit(c, daemonServerId);
     if (limited) return limited;
     return next();
   };
@@ -904,6 +965,92 @@ export function registerDaemonApiRoutes(
     },
   );
 
+  /**
+   * Command transcript ingest. The daemon streams stdout/stderr here in
+   * `(seq, base64 bytes)` chunks while a command runs; the store compacts them
+   * into one gzipped object when the command reaches a terminal status.
+   *
+   * Shares `DAEMON_REST_RATE_LIMITER` (per-server scoped) with the other JWT
+   * REST routes — transcripts are bursty but always attributable to one server.
+   */
+  daemon.post(
+    "/commands/:commandId/log",
+    requireDaemonJwt,
+    enforceJwtRestLimit("commands-log"),
+    requireActiveDaemonKey,
+    async (c) => {
+      const daemonServerId = c.get("daemonServerId");
+      const commandId = normalizeRequiredString(c.req.param("commandId"));
+      if (!commandId) {
+        return c.json({ ok: false, error: "Missing commandId" }, 400);
+      }
+
+      const store = getExecutionLogStore(c);
+      if (!store) {
+        return c.json({ ok: false, error: "execution logs unavailable" }, 503);
+      }
+
+      const db = getDb(c);
+      if (db === undefined) {
+        return c.json({ ok: false, error: "Database unavailable" }, 503);
+      }
+
+      const target = await loadExecutionLogCommandTarget(db, commandId);
+      // 403 (not 404) for both unknown and foreign commands: a daemon must not
+      // be able to probe which command ids exist on other servers.
+      if (target?.serverId !== daemonServerId) {
+        return c.json({ ok: false, error: "forbidden" }, 403);
+      }
+
+      const bodyRead = await readBoundedJsonBody(
+        c,
+        MAX_EXECUTION_LOG_CHUNK_BODY_BYTES,
+      );
+      if (!bodyRead.ok) return bodyRead.response;
+
+      let body: unknown;
+      try {
+        body = JSON.parse(bodyRead.text);
+      } catch {
+        return c.json({ ok: false, error: "invalid json" }, 400);
+      }
+
+      const parsed = parseExecutionLogChunkBody(body);
+      if (!parsed.ok) {
+        return c.json({ ok: false, error: parsed.error }, 400);
+      }
+
+      try {
+        // A terminal-but-unsealed command still accepts the final chunk it
+        // raced with; the store's sealed check is the real gate.
+        const result = await store.appendChunk(commandId, {
+          seq: parsed.seq,
+          bytes: parsed.bytes,
+        });
+        if (target.terminal) {
+          // The transition already ran `sealExecutionLogOnTerminal()`, which
+          // no-ops when no index exists yet. A chunk that lands afterwards
+          // would otherwise stay unsealed forever, so compact it here —
+          // best effort, exactly like the transition path: a storage failure
+          // must not reject an accepted chunk.
+          await sealExecutionLogOnTerminal(commandId, store);
+        }
+        return c.json({ ok: true, nextSeq: result.nextSeq }, 202);
+      } catch (err) {
+        if (err instanceof ExecutionLogGapError) {
+          return c.json(
+            { ok: false, error: "seq gap", nextSeq: err.expectedSeq },
+            409,
+          );
+        }
+        if (err instanceof ExecutionLogSealedError) {
+          return c.json({ ok: false, error: "log sealed" }, 409);
+        }
+        throw err;
+      }
+    },
+  );
+
   // Must never call env.DAEMON_CELL.getByName or touch the Durable Object —
   // metrics writes go straight to the Analytics Engine / ClickHouse store.
   daemon.post(
@@ -912,7 +1059,7 @@ export function registerDaemonApiRoutes(
     enforceJwtMetricsLimit,
     requireActiveDaemonKey,
     async (c) => {
-      const serverId = c.get("daemonServerId") as string;
+      const serverId = c.get("daemonServerId");
 
       const lengthReject = rejectIfContentLengthTooLarge(
         c,
@@ -979,6 +1126,85 @@ export function registerDaemonApiRoutes(
     },
   );
 
+  /**
+   * Container log ingest. The daemon's collector batches redacted stdout/stderr
+   * lines across every container on the host and posts them here.
+   *
+   * Like `/metrics`, this must never touch the Durable Object — writes go
+   * straight to the container-log store. Nothing identifying is read from the
+   * body: `serverId` comes from the verified JWT `sub` and `organizationId`
+   * from that server's row (see `container-log-ingest.ts`).
+   *
+   * Uses its own limiter (`CONTAINER_LOGS_RATE_LIMITER`) rather than the shared
+   * daemon REST budget — container output is far burstier than enroll/session/
+   * decrypt and must not be able to starve them.
+   */
+  daemon.post(
+    "/logs/containers",
+    requireDaemonJwt,
+    enforceJwtContainerLogsLimit,
+    requireActiveDaemonKey,
+    async (c) => {
+      const serverId = c.get("daemonServerId");
+
+      const bodyRead = await readBoundedJsonBody(
+        c,
+        MAX_CONTAINER_LOG_BATCH_BODY_BYTES,
+      );
+      if (!bodyRead.ok) return bodyRead.response;
+
+      let body: unknown;
+      try {
+        body = JSON.parse(bodyRead.text);
+      } catch {
+        return c.json({ ok: false, error: "invalid json" }, 400);
+      }
+
+      const db = getDb(c);
+      if (db === undefined) {
+        return c.json({ ok: false, error: "Database unavailable" }, 503);
+      }
+      const target = await loadContainerLogIngestTarget(db, serverId);
+      if (!target) {
+        // An unowned server has no tenant to attribute output to. 403 (not
+        // 404) so a daemon cannot probe server rows.
+        return c.json({ ok: false, error: "forbidden" }, 403);
+      }
+
+      // The org switch is the authoritative retention gate, re-checked on
+      // every write. A daemon that has not yet seen the "off" presence ack
+      // keeps posting for up to a heartbeat; those batches are accepted and
+      // dropped rather than 4xx'd, because a retry would not help it either.
+      if (!target.retentionEnabled) {
+        return c.json({ ok: true, accepted: 0 }, 202);
+      }
+
+      const parsed = parseContainerLogBatchBody(body, {
+        serverId,
+        organizationId: target.organizationId,
+      });
+      if (!parsed.ok) {
+        return c.json({ ok: false, error: parsed.error }, 400);
+      }
+
+      // Container output is disposable telemetry: a store failure is warned
+      // about and the batch is dropped, never retried into the daemon as a 5xx
+      // it would only re-send. Mirrors the metrics route's await-then-202.
+      const store = getContainerLogStore(c);
+      if (store && parsed.events.length > 0) {
+        try {
+          await store.ingest(parsed.events);
+        } catch (err) {
+          console.warn(
+            `container log write failed for ${serverId}: ${String(err)}`,
+          );
+        }
+      }
+
+      return c.json({ ok: true, accepted: parsed.events.length }, 202);
+    },
+  );
+
   // Recipient-bound daemon envelopes only — JWT sub/kid must match envelope metadata.
   daemon.post(
     "/secrets/decrypt",
@@ -990,8 +1216,8 @@ export function registerDaemonApiRoutes(
         return c.json({ ok: false, error: "decryption unavailable" }, 503);
       }
 
-      const daemonServerId = c.get("daemonServerId") as string;
-      const daemonKeyId = c.get("daemonKeyId") as string;
+      const daemonServerId = c.get("daemonServerId");
+      const daemonKeyId = c.get("daemonKeyId");
 
       const bodyRead = await readBoundedJsonBody(
         c,

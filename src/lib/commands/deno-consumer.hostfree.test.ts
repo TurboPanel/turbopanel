@@ -2,7 +2,7 @@
  * Host-free coverage for deno-consumer disposition / deps helpers (no AMQP).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   applyCommandMessageDisposition,
   buildCommandConsumerDeps,

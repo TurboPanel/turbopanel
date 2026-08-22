@@ -1,4 +1,4 @@
-import type { Hono } from 'hono'
+import type { Env, Hono } from 'hono'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import type { Db } from '../db.ts'
 import {
@@ -11,8 +11,8 @@ import { registerDatabaseStudioRoutes } from './database-studio-routes.ts'
  * Full developer console for Deno (includes Drizzle Studio spawn routes).
  * Workers use {@link registerDeveloperRoutesCore} directly — see workers.ts.
  */
-export function registerDeveloperRoutes(
-  app: Hono,
+export function registerDeveloperRoutes<E extends Env>(
+  app: Hono<E>,
   opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
 ) {
   const developer = buildDeveloperRouter(opts)

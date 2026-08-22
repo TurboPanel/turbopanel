@@ -447,6 +447,10 @@ function createMembershipFabricDb(
         select: (f: Record<string, unknown>) => unknown;
       }).select(fields);
     },
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert() {
       return {
         values(
@@ -518,6 +522,10 @@ test("enqueueFabricReconcileForServers reports queue unavailable after create", 
   const db = {
     select: (base as unknown as { select: (f: Record<string, unknown>) => unknown })
       .select.bind(base),
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: (base as unknown as { insert: () => unknown }).insert.bind(base),
     update() {
       return {
@@ -578,6 +586,10 @@ test("enqueueFabricReconcileForServers reports enqueue_failed when create throws
   const db = {
     select: (base as unknown as { select: (f: Record<string, unknown>) => unknown })
       .select.bind(base),
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert() {
       throw new Error("insert exploded");
     },
@@ -973,6 +985,10 @@ test("enqueueFabricReconcileForServers loads one snapshot not per-relay full-sta
         fields,
       );
     },
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: (inner as unknown as { insert: () => unknown }).insert.bind(inner),
   } as unknown as Db;
 
@@ -1031,7 +1047,12 @@ function createConvergenceFabricDb(
   const base = createEndpointlessFabricDb(relays);
   return {
     select(fields?: Record<string, unknown>) {
-      if (fields === undefined || Object.keys(fields).length === 0) {
+      // listCommandRecordsByIds selects the explicit `command` column list.
+      if (
+        fields === undefined ||
+        Object.keys(fields).length === 0 ||
+        ("name" in fields && "attempts" in fields)
+      ) {
         return {
           from() {
             return {
@@ -1081,6 +1102,10 @@ function createConvergenceFabricDb(
         fields,
       );
     },
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert() {
       return {
         values(values: {
@@ -1088,12 +1113,13 @@ function createConvergenceFabricDb(
           actorType: string;
           actorId: string;
           name: string;
-          payload: { peers?: unknown[] };
+          payload?: { peers?: unknown[] };
           metadata: { desiredHash?: string } | null;
         }) {
+          // Only the `dispatch` insert carries the payload.
+          if (values.payload !== undefined) fabricPayloads.push(values.payload);
           return {
             returning() {
-              fabricPayloads.push(values.payload);
               const relay = relays.find((row) =>
                 row.serverId === values.serverId
               );

@@ -1,5 +1,3 @@
-import type { Response } from 'hono'
-
 export type LicenseRuntime = 'deno' | 'workers'
 
 /**

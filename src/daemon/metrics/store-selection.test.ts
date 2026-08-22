@@ -1,4 +1,4 @@
-import { assertEquals, assertInstanceOf } from "jsr:@std/assert";
+import { assertEquals, assertInstanceOf } from "@std/assert";
 import { AnalyticsEngineServerMetricsStore } from "./analytics-engine/store.ts";
 import { AE_DEFAULT_MAX_RANGE_SECONDS } from "./analytics-engine/sql-api.ts";
 import { ClickHouseServerMetricsStore } from "./clickhouse/store.ts";

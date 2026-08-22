@@ -19,7 +19,7 @@ const OTP_INTROS: Record<OtpType, string> = {
 }
 
 export function createEmailVerificationLinkEmail(
-  recipientEmail: string,
+  _recipientEmail: string,
   verifyUrl: string,
 ): TemplateResult {
   const subject = 'Verify your TurboPanel email'

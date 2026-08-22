@@ -131,6 +131,28 @@ export function resolveStateDir(
   return stripTrailingSlash(env.TURBOPANEL_STATE_DIR?.trim() || DEFAULT_STATE_DIR)
 }
 
+/**
+ * Default execution-log (command transcript) root.
+ *
+ * Under the **state** tree, not the log tree: transcripts are durable product
+ * data read back by the UI, not rotatable process logs.
+ */
+export const DEFAULT_EXECUTION_LOG_DIR = `${DEFAULT_STATE_DIR}/execution-logs`
+
+/**
+ * Resolve the execution-log root, honoring `TURBOPANEL_EXECUTION_LOG_DIR`.
+ *
+ * Falls back to `<stateDir>/execution-logs` so relocating `TURBOPANEL_STATE_DIR`
+ * moves transcripts with the rest of the durable state.
+ */
+export function resolveExecutionLogDir(
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string {
+  const override = env.TURBOPANEL_EXECUTION_LOG_DIR?.trim()
+  if (override) return stripTrailingSlash(override)
+  return `${resolveStateDir(env)}/execution-logs`
+}
+
 /** Resolve the instance log directory, honoring `TURBOPANEL_LOG_DIR`. */
 export function resolveLogDir(
   env: Record<string, string | undefined> = Deno.env.toObject(),

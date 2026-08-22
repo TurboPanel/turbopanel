@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { CommandRecord } from '../../lib/db/command-records.ts'
 import { computePingLatency } from './commands-ping-latency.ts'
 
@@ -18,7 +18,7 @@ function pingRecord(
     actorEntityId: 'user-1',
     type: 'daemon.ping',
     status: 'succeeded',
-    payload: {},
+    context: null,
     createdAt: '2020-01-01T00:00:00.000Z',
     updatedAt: '2020-01-01T00:00:01.000Z',
     attempts: 1,
@@ -30,6 +30,8 @@ function pingRecord(
     startedAt: null,
     finishedAt: null,
     expiresAt: null,
+    errorCode: null,
+    errorMessage: null,
     error: null,
     ...partial,
   }

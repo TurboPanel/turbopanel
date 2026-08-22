@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import { AE_DATASET_NAME } from "../analytics-engine/field-map.ts";
 import {

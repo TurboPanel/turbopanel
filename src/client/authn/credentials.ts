@@ -9,7 +9,6 @@ import { compatLogWarn } from '../../log-compat.ts'
 export const PAM_ROOT_USERNAME = 'root'
 
 const HOST_USERNAME_RE = /^[a-zA-Z0-9._-]+$/
-const INSTALL_SUDO_GROUPS = ['sudo', 'wheel', 'admin']
 
 export type AuthRuntime = 'deno' | 'workers'
 

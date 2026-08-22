@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   assembleTlsMetadata,
   metadataFromParsed,
@@ -17,6 +17,7 @@ const test = Deno.test.bind(Deno)
 
 const parsed: ParsedCertificate = {
   dnsNames: ['app.example.com', '*.example.com'],
+  ipAddresses: [],
   hasWildcard: true,
   notBefore: new Date('2026-01-01T00:00:00.000Z'),
   notAfter: new Date('2027-01-01T00:00:00.000Z'),

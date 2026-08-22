@@ -39,7 +39,7 @@ describe('authRateLimitKeys', () => {
 
 describe('createAuthRateLimiter', () => {
   it('allows attempts up to the limit then blocks with retry-after', async () => {
-    let now = 1_000_000
+    const now = 1_000_000
     const limiter = createAuthRateLimiter({
       defaultPolicy: { limit: 3, windowMs: 60_000 },
       policies: {},
@@ -71,7 +71,7 @@ describe('createAuthRateLimiter', () => {
   })
 
   it('enforces independent identity and IP buckets (both must pass)', async () => {
-    let now = 0
+    const now = 0
     const limiter = createAuthRateLimiter({
       defaultPolicy: { limit: 1, windowMs: 60_000 },
       now: () => now,
@@ -95,7 +95,7 @@ describe('createAuthRateLimiter', () => {
   })
 
   it('same-account attempts from different IPs cannot bypass the account cap', async () => {
-    let now = 0
+    const now = 0
     const limiter = createAuthRateLimiter({
       defaultPolicy: { limit: 2, windowMs: 60_000 },
       now: () => now,
@@ -117,7 +117,7 @@ describe('createAuthRateLimiter', () => {
   })
 
   it('normalizes identity casing/whitespace and missing IP', async () => {
-    let now = 0
+    const now = 0
     const limiter = createAuthRateLimiter({
       defaultPolicy: { limit: 1, windowMs: 60_000 },
       now: () => now,
@@ -135,7 +135,7 @@ describe('createAuthRateLimiter', () => {
   })
 
   it('reset clears all counters', async () => {
-    let now = 0
+    const now = 0
     const limiter = createAuthRateLimiter({
       defaultPolicy: { limit: 1, windowMs: 60_000 },
       now: () => now,

@@ -2,7 +2,7 @@
  * Host-free coverage for server metrics route pure helpers (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { AnalyticsEngineServerMetricsStore } from '../../daemon/metrics/analytics-engine/store.ts'
 import { ClickHouseServerMetricsStore } from '../../daemon/metrics/clickhouse/store.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
@@ -54,12 +54,22 @@ test('resolveStoreBackendKind covers store types and runtime fallbacks', () => {
     writeHostSample() {},
     writeStatusEvent() {},
     async queryHostSeries() {
-      return { kind: 'disabled' as const, available: false, points: [], sampleCount: 0 }
+      return {
+        kind: 'disabled' as const,
+        available: false,
+        serverId: 'srv-1',
+        metrics: [],
+        points: [],
+        resolutionSeconds: null,
+        gapCount: 0,
+        sampleCount: 0,
+      }
     },
     async queryHostSummary() {
       return {
         kind: 'disabled' as const,
         available: false,
+        serverId: 'srv-1',
         sampleCount: 0,
         latestAt: null,
       }
@@ -68,6 +78,7 @@ test('resolveStoreBackendKind covers store types and runtime fallbacks', () => {
       return {
         kind: 'disabled' as const,
         available: false,
+        serverId: 'srv-1',
         initialConnected: null,
         uptimeSeconds: 0,
         downtimeSeconds: 0,
@@ -75,6 +86,14 @@ test('resolveStoreBackendKind covers store types and runtime fallbacks', () => {
         uptimePercent: null,
         truncated: false,
         events: [],
+      }
+    },
+    async queryFleetHostSnapshot() {
+      return {
+        kind: 'disabled' as const,
+        available: false,
+        metrics: [],
+        servers: [],
       }
     },
   }
@@ -121,6 +140,7 @@ test('connection history payload and cacheability', () => {
   const empty: StatusHistoryResult = {
     kind: 'clickhouse',
     available: true,
+    serverId: 'srv-1',
     initialConnected: null,
     uptimeSeconds: 0,
     downtimeSeconds: 0,
@@ -136,7 +156,7 @@ test('connection history payload and cacheability', () => {
 
   const withEvents = {
     ...empty,
-    events: [{ at: FROM, connected: true }],
+    events: [{ at: FROM, connected: true, reason: 'connect' as const }],
   }
   assertEquals(connectionHistoryHasCacheableData(withEvents), true)
 

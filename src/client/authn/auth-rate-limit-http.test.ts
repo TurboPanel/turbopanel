@@ -40,7 +40,7 @@ async function buildApp(
       return next()
     })
   }
-  registerAuthRoutes(client as unknown as Hono, {
+  registerAuthRoutes(client, {
     secrets,
     otpVerifierSecrets,
     runtime,

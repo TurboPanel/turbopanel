@@ -35,6 +35,23 @@ import {
   registerDaemonWebSocket,
   wsMessageDataToString,
 } from "./deno-ws.ts";
+
+/**
+ * Workers / Miniflare put the client half of a 101 upgrade on
+ * `response.webSocket`; Deno's `Response` has no such field, so these tests
+ * skip themselves when it is absent.
+ *
+ * Read through a local structural type rather than a global `Response`
+ * augmentation — augmenting `Response` (or declaring `DurableObjectStub` and
+ * friends) globally collides with the real `@cloudflare/workers-types` that the
+ * Workers-pool suites pull in.
+ */
+type UpgradedWebSocket = WebSocket & { accept(): void };
+
+function upgradedWebSocket(response: Response): UpgradedWebSocket | null {
+  return (response as { webSocket?: UpgradedWebSocket | null }).webSocket ??
+    null;
+}
 import {
   CLIENT_WS_PATH,
   DAEMON_WS_PATH,
@@ -495,12 +512,12 @@ it("over-limit inbound messages close websocket before unbounded queuing", async
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn("Skipping flood test: response.webSocket unavailable");
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -544,12 +561,12 @@ it("oversized inbound frames close websocket with policy violation", async () =>
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn("Skipping oversize frame test: response.webSocket unavailable");
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -661,7 +678,7 @@ it("WS lifecycle attaches, handles hello, and detaches through cell backend", as
   });
   assertEquals(response.status, 101);
 
-  const ws = response.webSocket;
+  const ws = upgradedWebSocket(response);
   if (!ws) {
     console.warn(
       "Skipping WS lifecycle assertions: response.webSocket unavailable in Deno test runtime",
@@ -756,8 +773,8 @@ async function openTestWebSocket(
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) return null;
-  const ws = response.webSocket;
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) return null;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
   return { ws, tracking };
@@ -839,14 +856,14 @@ it("cell ping over WS sends pong, refreshes cell liveness, skips Postgres", asyn
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping cell ping WS test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -893,14 +910,14 @@ it("hello over WS with daemonBuild projects commit for update status", async () 
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping heartbeat daemonBuild WS test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -949,14 +966,14 @@ it("heartbeat over WS without daemonBuild does not write Postgres status", async
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping heartbeat no-daemonBuild WS test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1013,14 +1030,14 @@ it("coalesced heartbeat over WS performs no Postgres update", async () => {
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping coalesced heartbeat WS test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1064,14 +1081,14 @@ it("WS close projects disconnected to Postgres", async () => {
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping WS disconnect projection test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1127,14 +1144,14 @@ it("update-result over WS projects update summary to Postgres", async () => {
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping update-result WS test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1215,14 +1232,14 @@ it("hello over WS clears stale updating when daemonBuild matches trunk", async (
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping hello repair WS test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1340,14 +1357,14 @@ it("revoked daemon key closes the socket on the next inbound ping", async () => 
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping revoked-key ping test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1396,14 +1413,14 @@ it("cell ping re-projects online when Redis snapshot is disconnected", async () 
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping redis-offline ping repair test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -1442,14 +1459,14 @@ it("heartbeat with timeSync writes timezone columns without requiring daemonBuil
       ...WS_UPGRADE_HEADERS,
     },
   });
-  if (response.status !== 101 || !response.webSocket) {
+  const ws = upgradedWebSocket(response);
+  if (response.status !== 101 || !ws) {
     console.warn(
       "Skipping heartbeat timeSync test: response.webSocket unavailable",
     );
     return;
   }
 
-  const ws = response.webSocket;
   ws.accept();
   await new Promise((resolve) => setTimeout(resolve, 50));
   const updatesBefore = getUpdateCallCount();

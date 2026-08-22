@@ -481,8 +481,28 @@ export const command = pgTable(
     name: text().notNull(),
     status: text().notNull().default('queued'),
     attempts: integer().default(0).notNull(),
-    payload: jsonb().notNull(),
-    result: jsonb(),
+    /**
+     * Small, non-secret identifier bag (`managedId`, `environmentId`,
+     * `generation`, …) kept on the permanent row so UI/projection reads never
+     * need the daemon execution payload. Never put secrets, compose YAML,
+     * credentials, or TLS material here.
+     */
+    context: jsonb(),
+    /** Bounded daemon result summary (was `result`). */
+    resultSummary: jsonb('result_summary'),
+    errorCode: text('error_code'),
+    errorMessage: text('error_message'),
+    queuedAt: timestamp('queued_at', { precision: 3, withTimezone: true, mode: 'string' }),
+    dispatchStartedAt: timestamp('dispatch_started_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    sentAt: timestamp('sent_at', { precision: 3, withTimezone: true, mode: 'string' }),
+    ackedAt: timestamp('acked_at', { precision: 3, withTimezone: true, mode: 'string' }),
+    startedAt: timestamp('started_at', { precision: 3, withTimezone: true, mode: 'string' }),
+    finishedAt: timestamp('finished_at', { precision: 3, withTimezone: true, mode: 'string' }),
+    expiresAt: timestamp('expires_at', { precision: 3, withTimezone: true, mode: 'string' }),
   },
   (table) => [
     index('idx_command_server_id_created_at').using(
@@ -491,10 +511,50 @@ export const command = pgTable(
       table.createdAt.desc()
     ),
     index('idx_command_status').using('btree', table.status.asc()),
+    /**
+     * Backs the environment deploy-history read
+     * (`GET /environments/:id/deployments`). Deploy history is sourced from
+     * the append-only `command` table — one row per attempt — not from
+     * `deployment`, which is an upsert-per-(environment, server) current-state
+     * table. Partial + expression so it stays small: only
+     * `environment.deploy` rows, keyed on the allowlisted
+     * `context->>'environmentId'` rather than a denormalized column.
+     */
+    index('idx_command_deploy_environment_created').using(
+      'btree',
+      sql`((context ->> 'environmentId'))`,
+      table.createdAt.desc()
+    ).where(sql`name = 'environment.deploy'`),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
       name: 'command_server_id_server_id_fk',
+    }).onDelete('cascade'),
+  ]
+)
+/**
+ * Daemon execution payload for a command (`dispatch`) — the only place
+ * secret-bearing command input lives. Written in the same transaction as its `command` row,
+ * read once by the consumer immediately before dispatch, deleted as soon as the
+ * command succeeds, and retained ~24h (`expires_at`) after a terminal failure
+ * for debugging. Expired rows are removed by the shared maintenance sweep.
+ */
+export const dispatch = pgTable(
+  'dispatch',
+  {
+    commandId: uuid('command_id').primaryKey().notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    payload: jsonb().notNull(),
+    expiresAt: timestamp('expires_at', { precision: 3, withTimezone: true, mode: 'string' }),
+  },
+  (table) => [
+    index('idx_dispatch_expires_at').using('btree', table.expiresAt.asc()),
+    foreignKey({
+      columns: [table.commandId],
+      foreignColumns: [command.id],
+      name: 'dispatch_command_id_command_id_fk',
     }).onDelete('cascade'),
   ]
 )
@@ -1491,6 +1551,12 @@ export const service = pgTable(
 /**
  * One row per participating `(environment, server)` in a deploy. Unique on
  * that pair; `server_id` RESTRICT mirrors `container.server_id`.
+ *
+ * This is **current desired/applied state**, upserted on every redeploy — not
+ * a history table. `finished_at` / `duration_ms` / `outcome` summarize only the
+ * **last** apply attempt. Per-attempt history lives in the append-only
+ * `command` table (`name = 'environment.deploy'`, scoped by
+ * `context->>'environmentId'`).
  */
 export const deployment = pgTable(
   'deployment',
@@ -1515,8 +1581,18 @@ export const deployment = pgTable(
     /** sha256 of that server's compiled runtime `compose.yaml`. */
     desiredHash: text('desired_hash'),
     status: text().default('pending').notNull(),
-    /** No FK — mirrors `command.actor_id`. */
+    /**
+     * Back-reference to the `command` row for the most recent apply attempt on
+     * this `(environment, server)`. No FK — mirrors `command.actor_id`. This is
+     * the join key from current state into the append-only command history.
+     */
     lastCommandId: uuid('last_command_id'),
+    /** When the last apply attempt reached a terminal state. */
+    finishedAt: timestamp('finished_at', { precision: 3, withTimezone: true, mode: 'string' }),
+    /** Wall-clock duration of the last apply attempt, in milliseconds. */
+    durationMs: integer('duration_ms'),
+    /** Terminal outcome of the last apply attempt; NULL until one finishes. */
+    outcome: text(),
   },
   (table) => [
     unique('uniq_deployment_environment_server').on(table.environmentId, table.serverId),
@@ -1545,6 +1621,10 @@ export const deployment = pgTable(
     check(
       'deployment_generation_check',
       sql`${table.desiredGeneration} >= 0 AND (${table.appliedGeneration} IS NULL OR ${table.appliedGeneration} >= 0)`,
+    ),
+    check(
+      'deployment_outcome_check',
+      sql`${table.outcome} IS NULL OR ${table.outcome} IN ('applied','failed','timed_out')`,
     ),
   ],
 )

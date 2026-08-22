@@ -22,10 +22,6 @@ import type {
 const MAX_WEB_ENV_ENTRIES = 64
 const MAX_WEB_ENV_VALUE_LENGTH = 4096
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 export function sanitizeHostingWebEnv(
   raw: Record<string, string> | undefined,
 ): Record<string, string> | undefined {

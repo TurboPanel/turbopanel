@@ -2,7 +2,7 @@
  * Host-free coverage for verifyDaemonLicense (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   generateLicenseToken,

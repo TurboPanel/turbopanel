@@ -1,4 +1,4 @@
-import { assertEquals, assertExists } from 'jsr:@std/assert'
+import { assertEquals, assertExists } from '@std/assert'
 import type { Db } from '../db.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../daemon/cell/contracts.ts'
 import { REENCRYPT_BATCH_SIZE } from './reencrypt-secrets.ts'

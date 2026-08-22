@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { getTableColumns } from 'drizzle-orm'
 import { pgTable } from 'drizzle-orm/pg-core'
 import { cidr, inet } from './net-types.ts'

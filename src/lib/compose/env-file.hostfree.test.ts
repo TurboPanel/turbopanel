@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { encodeEnvFile, serviceEnvInterpolationKey } from './env-file.ts'
 import {
   buildSecretPlanEntry,

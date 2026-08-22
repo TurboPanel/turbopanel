@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "jsr:@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { METRICS_SCHEMA_VERSION } from "../contract.ts";
 import { HOST_METRIC_KEYS } from "../contract.ts";
 import {
@@ -9,7 +9,7 @@ import {
 import { MAX_STATUS_EVENTS } from "../analytics-engine/sql-api.ts";
 import type { AuthenticatedHostMetricsSample } from "../types.ts";
 import {
-  ClickHouseHttpClient,
+  type ClickHouseHttpClient,
   ClickHouseHttpTimeoutError,
 } from "./client.ts";
 import { it } from "@std/testing/bdd";

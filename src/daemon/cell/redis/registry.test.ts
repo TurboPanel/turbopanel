@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import type { Db } from "../../../db.ts";
 import {
   cellKeyPattern,

@@ -676,7 +676,6 @@ test("POST /tls/ca/retire waits for tracked command success then revokes the ret
           actorId: userId,
           name: "managed.ingress.reconcile",
           status: "queued",
-          payload: {},
         })
         .returning({ id: command.id });
       const commandId = commandRow!.id;

@@ -2,7 +2,7 @@
  * Host-free get/set for public URL settings (also pure parsers for Deno LCOV).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../db.ts'
 import {
   getPublicUrls,

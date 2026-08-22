@@ -3,7 +3,7 @@
  * and RedisCellClient method wiring (via an injectable redisFactory).
  */
 
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Redis } from 'ioredis'
 import {
   createRedisCellClient,

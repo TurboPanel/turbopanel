@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { validateRegisteredExternalDockerNetworks } from './validate-docker-external-networks.ts'
 
 /**
@@ -30,7 +30,7 @@ function createNetworkLookupDb(
         },
       }
     },
-  } as Parameters<typeof validateRegisteredExternalDockerNetworks>[0]
+  } as unknown as Parameters<typeof validateRegisteredExternalDockerNetworks>[0]
 }
 
 test('validateRegisteredExternalDockerNetworks returns null when empty', async () => {

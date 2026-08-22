@@ -23,6 +23,7 @@ import { principalPaths, principalSchemas } from './principals.ts'
 import { deployPaths, deploySchemas } from './deploy.ts'
 import { managedPaths, managedSchemas } from './managed.ts'
 import { systemPaths, systemSchemas } from './system.ts'
+import { commandPaths, commandSchemas } from './commands.ts'
 
 /** Hand-authored OpenAPI 3.1 spec for documented client/install/health routes. */
 export type ClientOpenApiOptions = {
@@ -73,6 +74,7 @@ export function getClientOpenApiSpec(
       { name: 'Containers', description: 'Container CRUD' },
       { name: 'TLS', description: 'Organization TLS certificate library' },
       { name: 'Servers', description: 'Server fleet and update management' },
+      { name: 'Commands', description: 'Command lifecycle status polling' },
       { name: 'Networks', description: 'Organization network registry' },
       { name: 'Datacenters', description: 'Datacenter CRUD' },
       { name: 'IPs', description: 'Managed IP address registry' },
@@ -85,7 +87,7 @@ export function getClientOpenApiSpec(
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
       { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Bindings', 'Storage', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
-      { name: 'Infrastructure', tags: ['Servers', 'Networks', 'Datacenters', 'IPs', 'Licenses'] },
+      { name: 'Infrastructure', tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'] },
       { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
     components: {
@@ -116,6 +118,7 @@ export function getClientOpenApiSpec(
         ...deploySchemas,
         ...managedSchemas,
         ...systemSchemas,
+        ...commandSchemas,
         ...serviceSchemas,
         ...hostingSchemas,
         ...containerSchemas,
@@ -142,6 +145,7 @@ export function getClientOpenApiSpec(
       ...deployPaths,
       ...managedPaths,
       ...systemPaths,
+      ...commandPaths,
       ...servicePaths,
       ...hostingPaths,
       ...containerPaths,

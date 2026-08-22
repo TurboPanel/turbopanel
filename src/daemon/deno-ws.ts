@@ -1,4 +1,4 @@
-import type { Context, Hono } from "hono";
+import type { Context, Env, Hono } from "hono";
 import { upgradeWebSocket } from "hono/deno";
 import type { WSContext } from "hono/ws";
 import type { DaemonCellRegistry } from "./cell/contracts.ts";
@@ -32,6 +32,10 @@ import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
 import { resourcesFromDaemonPresence } from "../lib/db/server-metadata.ts";
 import { touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
+import {
+  buildPresenceAck,
+  resolveDaemonContainerLogsFlag,
+} from "./container-logs-presence.ts";
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
@@ -181,10 +185,14 @@ function detachDaemonSocketSafe(
 }
 
 /**
- * Handle the wire cell ping: pong immediately, refresh presence, and repair a
- * Postgres-only false-offline that can linger after a prior Redis demotion.
+ * Handle the wire cell ping: pong immediately, ack the org's opt-in flags,
+ * refresh presence, and repair a Postgres-only false-offline that can linger
+ * after a prior Redis demotion.
+ *
+ * Exported for tests — this is the only frame an idle daemon sends, so it is
+ * also the tightest convergence path for a mid-session org toggle.
  */
-async function handleDaemonCellPing(params: {
+export async function handleDaemonCellPing(params: {
   cell: ReturnType<DaemonCellRegistry["getCell"]>;
   db: Db;
   serverId: string;
@@ -196,6 +204,11 @@ async function handleDaemonCellPing(params: {
   cellTrace("ping", { serverId, conn: connectionId });
   ws.send(DAEMON_CELL_PONG);
   cellTrace("pong", { serverId, conn: connectionId });
+  // The ping is the only frame an otherwise-idle daemon sends, so it is also
+  // where an org toggle has to reach it: presence facts can sit unchanged for
+  // hours, and a daemon that never hears an ack keeps collecting (or keeps not
+  // collecting) until something unrelated moves. See container-logs-presence.ts.
+  await sendDaemonPresenceAck(db, serverId, ws);
   // Snapshot before recordInbound: after a false Redis demotion the cell may
   // still show connected=0 so we can re-project Postgres online. recordInbound
   // alone self-heals Redis and would make a later inbound hit
@@ -249,6 +262,8 @@ async function handleDaemonPresenceInbound(params: {
   serverId: string;
   connectionId: string | undefined;
   message: Extract<DaemonMessage, { type: "hello" | "heartbeat" }>;
+  /** Socket the ack goes back on; omitted only by tests. */
+  ws?: { send(data: string): void };
 }): Promise<void> {
   const { cell, db, serverId, connectionId, message } = params;
   const presence = message as unknown as Record<string, unknown>;
@@ -280,6 +295,35 @@ async function handleDaemonPresenceInbound(params: {
     at: message.at,
     daemonBuild: message.daemonBuild,
   });
+
+  await sendDaemonPresenceAck(db, serverId, params.ws);
+}
+
+/**
+ * Answer a presence frame — or a cell ping — with the org's opt-in flags.
+ *
+ * Best effort on purpose: an ack that cannot be built or sent must never fail
+ * the frame that already updated liveness — the next ping carries the same
+ * flag. The read is TTL-cached (`loadServerContainerLogsEnabledCached`) because
+ * the ping path runs once a minute per daemon, and it is ANDed with the
+ * platform-level backend availability so a daemon never streams into a
+ * control plane that can only drop what it sends.
+ */
+async function sendDaemonPresenceAck(
+  db: Db,
+  serverId: string,
+  ws: { send(data: string): void } | undefined,
+): Promise<void> {
+  if (!ws) return;
+  try {
+    const containerLogsEnabled = await resolveDaemonContainerLogsFlag(
+      db,
+      serverId,
+    );
+    ws.send(JSON.stringify(buildPresenceAck(containerLogsEnabled)));
+  } catch (err) {
+    compatLogWarn("ws", `presence ack failed for ${serverId}: ${String(err)}`);
+  }
 }
 
 async function handleDaemonManagedHaInbound(params: {
@@ -334,8 +378,8 @@ export type DaemonWebSocketOptions = {
   commandQueue?: CommandQueue;
 };
 
-export function registerDaemonWebSocket(
-  app: Hono,
+export function registerDaemonWebSocket<E extends Env>(
+  app: Hono<E>,
   options: DaemonWebSocketOptions,
 ): void {
   const inboundMessageLimit = options.inboundMessageLimit ?? 120;
@@ -471,6 +515,7 @@ export function registerDaemonWebSocket(
             serverId: payload.sub,
             connectionId,
             message,
+            ws,
           });
           return;
         }
@@ -728,8 +773,8 @@ async function authorizeDeveloperUpgrade(
  * there is no live streaming yet — an authorized peer is greeted once and then
  * immediately closed so placeholder sockets cannot accumulate idle connections.
  */
-function registerStubWebSocket(
-  app: Hono,
+function registerStubWebSocket<E extends Env>(
+  app: Hono<E>,
   path: string,
   surface: string,
   authorize: StubUpgradeGuard,

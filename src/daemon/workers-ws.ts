@@ -1,4 +1,4 @@
-import type { Hono } from "hono";
+import type { Env, Hono } from "hono";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { getDb } from "../db.ts";
 import { DAEMON_WS_PATH } from "../surfaces.ts";
@@ -66,8 +66,8 @@ export function buildWorkersDaemonCellForwardHeaders(
  * the resolved server id onto the forwarded request so the cell resolves its
  * identity consistently across the WS and RPC entry paths.
  */
-export function registerWorkersDaemonWebSocket(
-  app: Hono,
+export function registerWorkersDaemonWebSocket<E extends Env>(
+  app: Hono<E>,
   options: WorkersDaemonWebSocketOptions,
 ): void {
   app.get(DAEMON_WS_PATH, async (c) => {

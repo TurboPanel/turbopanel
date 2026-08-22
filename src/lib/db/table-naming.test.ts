@@ -3,8 +3,8 @@
  * (no underscores). Squashed baseline lives at migrations/0000_init.sql.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
-import { dirname, fromFileUrl, join } from 'jsr:@std/path'
+import { assertEquals } from '@std/assert'
+import { dirname, fromFileUrl, join } from '@std/path'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

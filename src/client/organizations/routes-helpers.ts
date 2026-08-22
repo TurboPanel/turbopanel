@@ -13,6 +13,16 @@ import {
   parseSshPortInput,
 } from "../../lib/host-defaults.ts";
 import {
+  containerLogSettingsResponse,
+  parseContainerLogsEnabledInput,
+} from "../../lib/container-logs/org-settings.ts";
+import {
+  type ContainerLogQuery,
+  type ContainerLogStream,
+  DEFAULT_CONTAINER_LOG_QUERY_LIMIT,
+  MAX_CONTAINER_LOG_QUERY_LIMIT,
+} from "../../lib/container-logs/types.ts";
+import {
   type ManagedIngressPortsPatch,
   type ManagedOrganizationDefaults,
   parseManagedIngressPortsInput,
@@ -40,6 +50,11 @@ export type OrganizationRouteValidationError = {
 export type DefaultTimezonePatch = {
   defaultServerTimezone?: string | null;
   enforceServerTimezone?: boolean;
+};
+
+/** `null` clears the option, returning the organization to the platform default (off). */
+export type ContainerLogSettingsPatch = {
+  containerLogsEnabled?: boolean | null;
 };
 
 export type HostDefaultsPatch = {
@@ -249,6 +264,159 @@ export function parseHostDefaultsPatch(
   }
 
   return { ok: true, patch };
+}
+
+export function parseContainerLogSettingsPatch(
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: ContainerLogSettingsPatch }
+  | OrganizationRouteValidationError {
+  const patch: ContainerLogSettingsPatch = {};
+
+  if ("containerLogsEnabled" in body) {
+    const parsed = parseContainerLogsEnabledInput(body.containerLogsEnabled);
+    if (!parsed.ok) {
+      return { ok: false, error: "Invalid containerLogsEnabled", status: 400 };
+    }
+    patch.containerLogsEnabled = parsed.value;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return { ok: false, error: "Invalid request", status: 400 };
+  }
+
+  return { ok: true, patch };
+}
+
+export function containerLogSettingsGetResponse(options: {
+  containerLogsEnabled?: boolean;
+}) {
+  return containerLogSettingsResponse(options);
+}
+
+export function containerLogSettingsPutResponse(options: {
+  containerLogsEnabled?: boolean;
+}) {
+  return {
+    ok: true as const,
+    ...containerLogSettingsGetResponse(options),
+  };
+}
+
+/** Default read window when the caller supplies neither bound. */
+export const DEFAULT_CONTAINER_LOG_QUERY_WINDOW_MS = 60 * 60 * 1000;
+
+function parseIsoInstant(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function optionalFilter(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+/** Keys copied straight from the query string when non-blank. */
+const OPTIONAL_CONTAINER_LOG_FILTERS = [
+  "serverId",
+  "environmentId",
+  "serviceId",
+  "containerId",
+  "search",
+  "cursor",
+] as const;
+
+/**
+ * Resolve the `[from, to)` window, defaulting `to` to now and `from` to one
+ * default window before `to`.
+ */
+function parseContainerLogWindow(
+  params: Record<string, string | undefined>,
+  now: () => number,
+):
+  | { ok: true; from: string; to: string }
+  | OrganizationRouteValidationError {
+  const to = params.to === undefined
+    ? new Date(now()).toISOString()
+    : parseIsoInstant(params.to);
+  if (!to) return { ok: false, error: "Invalid to", status: 400 };
+
+  const from = params.from === undefined
+    ? new Date(
+      new Date(to).getTime() - DEFAULT_CONTAINER_LOG_QUERY_WINDOW_MS,
+    ).toISOString()
+    : parseIsoInstant(params.from);
+  if (!from) return { ok: false, error: "Invalid from", status: 400 };
+  if (new Date(from).getTime() >= new Date(to).getTime()) {
+    return { ok: false, error: "from must be before to", status: 400 };
+  }
+  return { ok: true, from, to };
+}
+
+function parseContainerLogStream(
+  value: string | undefined,
+):
+  | { ok: true; stream: ContainerLogStream | undefined }
+  | OrganizationRouteValidationError {
+  if (value === undefined) return { ok: true, stream: undefined };
+  if (value !== "stdout" && value !== "stderr") {
+    return { ok: false, error: "Invalid stream", status: 400 };
+  }
+  return { ok: true, stream: value };
+}
+
+function parseContainerLogLimit(
+  value: string | undefined,
+): { ok: true; limit: number } | OrganizationRouteValidationError {
+  if (value === undefined) {
+    return { ok: true, limit: DEFAULT_CONTAINER_LOG_QUERY_LIMIT };
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return { ok: false, error: "Invalid limit", status: 400 };
+  }
+  // Clamp rather than reject: the store clamps too, and a caller asking for
+  // more rows than exist is not making a mistake worth a 400.
+  return { ok: true, limit: Math.min(parsed, MAX_CONTAINER_LOG_QUERY_LIMIT) };
+}
+
+/**
+ * Build a {@link ContainerLogQuery} from the request's query string.
+ *
+ * `organizationId` is **not** parsed here and cannot be: the caller passes the
+ * *authorized* organization id, so no query-string value can widen the read.
+ * See `../../lib/container-logs/AGENTS.md` → Tenancy.
+ */
+export function parseContainerLogQueryParams(
+  params: Record<string, string | undefined>,
+  organizationId: string,
+  now: () => number = Date.now,
+):
+  | { ok: true; query: ContainerLogQuery }
+  | OrganizationRouteValidationError {
+  const window = parseContainerLogWindow(params, now);
+  if (!window.ok) return window;
+
+  const stream = parseContainerLogStream(params.stream);
+  if (!stream.ok) return stream;
+
+  const limit = parseContainerLogLimit(params.limit);
+  if (!limit.ok) return limit;
+
+  const query: ContainerLogQuery = {
+    organizationId,
+    from: window.from,
+    to: window.to,
+    limit: limit.limit,
+  };
+  for (const key of OPTIONAL_CONTAINER_LOG_FILTERS) {
+    const value = optionalFilter(params[key]);
+    if (value) query[key] = value;
+  }
+  if (stream.stream) query.stream = stream.stream;
+
+  return { ok: true, query };
 }
 
 export function parseDefaultEnvironmentPutBody(

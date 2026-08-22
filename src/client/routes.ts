@@ -17,6 +17,7 @@ import {
   registerEnvironmentLifecycleRoutes,
   registerEnvironmentStopRoutes,
 } from './environments/deploy-routes.ts'
+import { registerEnvironmentDeploymentHistoryRoutes } from './environments/deployment-history-routes.ts'
 import { registerManagedRoutes } from './managed/routes.ts'
 import { registerEnvironmentRoutes } from './environments/routes.ts'
 import { registerVariableRoutes } from './variables/routes.ts'
@@ -88,6 +89,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   registerEnvironmentRoutes(client, opts)
   registerEnvironmentDeployPreviewRoutes(client, opts)
   registerEnvironmentDeployRoutes(client, opts)
+  registerEnvironmentDeploymentHistoryRoutes(client, opts)
   registerEnvironmentStopRoutes(client, opts)
   registerEnvironmentLifecycleRoutes(client, opts)
   registerManagedRoutes(client, opts)

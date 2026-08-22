@@ -2,7 +2,7 @@
  * Host-free coverage for system-component operate dispatch (Db doubles only).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
@@ -65,6 +65,10 @@ test('systemComponentOperations.restart maps enqueue failure to transport_unavai
         ingress_status: 'running',
       },
     ],
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: () => ({
       values: (values: Record<string, unknown>) => ({
         returning: () =>
@@ -145,6 +149,10 @@ test('systemComponentOperations.restart returns commandId on success', async () 
         ingress_status: 'running',
       },
     ],
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: () => ({
       values: (values: Record<string, unknown>) => ({
         returning: () =>

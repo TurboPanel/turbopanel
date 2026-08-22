@@ -8,13 +8,13 @@ import {
   normalizeDisplayName,
 } from "./display-name-format.ts";
 import {
+  type NtpDefaults,
   parseNtpDefaults,
   parseSshPort,
-  type NtpDefaults,
 } from "./host-defaults.ts";
 import {
-  parseManagedOrganizationDefaults,
   type ManagedOrganizationDefaults,
+  parseManagedOrganizationDefaults,
 } from "./managed/org-defaults.ts";
 
 /** Platform fallback when `defaultEnvironmentName` is unset. */
@@ -52,6 +52,13 @@ export type OrganizationOptions = {
    * down the mesh — `PUT /organizations/:id/fabric` remains the enable path.
    */
   defaultFabricEnabled?: boolean;
+  /**
+   * Whether this organization retains its containers' stdout/stderr.
+   * Default-off (container output is high-volume and billed). Resolved value
+   * rides the daemon presence ack and starts/stops the daemon collector — see
+   * `container-logs/org-settings.ts`.
+   */
+  containerLogsEnabled?: boolean;
   /**
    * Org-wide managed-database defaults inherited by services that set no
    * override. See `managed/org-defaults.ts`.
@@ -166,6 +173,9 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (ntp) options.ntp = ntp;
   if (typeof value.defaultFabricEnabled === "boolean") {
     options.defaultFabricEnabled = value.defaultFabricEnabled;
+  }
+  if (typeof value.containerLogsEnabled === "boolean") {
+    options.containerLogsEnabled = value.containerLogsEnabled;
   }
   assignManagedDatabase(options, value);
   return options;

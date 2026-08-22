@@ -1,6 +1,5 @@
 import { assertEquals } from '@std/assert'
 import {
-  emptyComposeDocument,
   isBlankComposeData,
   isComposeDocument,
   isComposeEditorView,

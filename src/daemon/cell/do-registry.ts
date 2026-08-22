@@ -7,6 +7,7 @@ import type {
   DaemonCellLiveness,
   DaemonCellRegistry,
   DaemonCellSnapshot,
+  ExpiredUpdateRequest,
   PendingRequestRecord,
   PendingRequestStatus,
 } from "./contracts.ts";
@@ -43,10 +44,6 @@ function jitteredSleep(): Promise<void> {
   const [byte] = crypto.getRandomValues(new Uint8Array(1));
   const delay = POLL_BASE_MS + ((byte ?? 0) % POLL_JITTER_MS);
   return new Promise((resolve) => setTimeout(resolve, delay));
-}
-
-function nowIso(now = Date.now()): string {
-  return new Date(now).toISOString();
 }
 
 function isOverloadedError(err: unknown): boolean {
@@ -108,11 +105,14 @@ class DurableObjectStubDaemonCell implements DaemonCell {
       this.#serverId,
     );
 
-    this.#stub = locationHint
+    // Return the local binding, not the field: `#stub` is declared nullable and
+    // TS does not carry the assignment's narrowing back out through it.
+    const stub = locationHint
       ? this.#env.DAEMON_CELL.getByName(logicalName, { locationHint })
       : this.#env.DAEMON_CELL.getByName(logicalName);
+    this.#stub = stub;
 
-    return this.#stub;
+    return stub;
   }
 
   async #resetStub(): Promise<DurableObjectStub> {
@@ -390,7 +390,7 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     });
   }
 
-  prune(): Promise<import("../contracts.ts").ExpiredUpdateRequest[]> {
+  prune(): Promise<ExpiredUpdateRequest[]> {
     return Promise.resolve([]);
   }
 

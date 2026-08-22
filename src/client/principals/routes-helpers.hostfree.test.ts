@@ -2,7 +2,7 @@
  * Host-free coverage for project principal route pure helpers.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   mergeTopLevelPrincipalIdsIntoOptions,
   optionsRecordFromJsonb,

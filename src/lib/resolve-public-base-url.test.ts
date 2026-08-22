@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app.ts'
 import { parseInstallBaseUrl, resolvePublicBaseUrl } from './resolve-public-base-url.ts'

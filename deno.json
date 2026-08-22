@@ -25,7 +25,7 @@
   "exclude": ["ts-deno-globals.d.ts"],
   "lint": {
     "rules": {
-      "exclude": ["no-slow-types"]
+      "exclude": ["no-slow-types", "require-await"]
     },
     "exclude": ["scripts/", "ts-deno-globals.d.ts"]
   },
@@ -37,6 +37,7 @@
   "tasks": {
     "compile": "deno compile --allow-env --allow-sys=networkInterfaces,hostname --allow-read=/run/turbopanel,/etc/turbopanel,/var/lib/turbopanel,/opt/turbopanel/vendor,/opt/turbopanel/share/ui,/opt/turbopanel/lib/daemon,/opt/turbopanel/lib/instance --allow-write=/run/turbopanel,/var/lib/turbopanel --allow-net=127.0.0.1:5672,127.0.0.1:8123,dl.trbp.nl:443,unix:/run/turbopanel/instance.sock,unix:/var/run/turbopanel/postgres/.s.PGSQL.5432,unix:/run/turbopanel/redis.sock --allow-run=sudo,/usr/bin/sudo,/bin/sh,pamtester,/usr/bin/pamtester -o dist/turbopanel-instance src/deno.ts",
     "compile:dev": "deno compile --allow-env --allow-sys=networkInterfaces,hostname --allow-read=/run/turbopanel,/etc/turbopanel,/var/lib/turbopanel,/opt/turbopanel/vendor,/opt/turbopanel/share/ui,/opt/turbopanel/lib/daemon,/opt/turbopanel/lib/instance --allow-write=/run/turbopanel,/var/lib/turbopanel --allow-net=127.0.0.1:4983,127.0.0.1:5672,127.0.0.1:1025,127.0.0.1:8123,dl.trbp.nl:443,unix:/run/turbopanel/instance.sock,unix:/var/run/turbopanel/postgres/.s.PGSQL.5432,unix:/run/turbopanel/redis.sock --allow-run=git,systemctl,tar,sudo,/usr/bin/sudo,/bin/sh,mkfifo,/usr/bin/mkfifo,pamtester,/usr/bin/pamtester,/opt/turbopanel/vendor/node/current/bin/node -o dist/turbopanel-instance-dev src/deno-dev.ts",
+    "check:types": "sh scripts/check-types.sh",
     "test:permissions": "deno test --allow-read --allow-env=TURBOPANEL_DAEMON_REPO src/deno-compile-permissions.test.ts",
     "test:authz": "deno test --allow-env --allow-net --allow-read src/client/authz/",
     "test:authn": "deno test --no-check --allow-env --allow-net --allow-read src/client/authn/workers-onboarding.test.ts src/client/authn/install-state.test.ts",

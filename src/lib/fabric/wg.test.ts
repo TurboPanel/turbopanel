@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   WIREGUARD_DEFAULT_LISTEN_PORT,
   WIREGUARD_PERSISTENT_KEEPALIVE,

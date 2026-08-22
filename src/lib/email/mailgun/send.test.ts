@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { EmailJob } from '../types.ts'
 import { sendMailgunJob } from './send.ts'
 
@@ -22,7 +22,7 @@ test('sendMailgunJob rejects unknown job types as permanent failures', async () 
       type: 'not-a-real-type',
       to: 'ops@example.com',
       from: 'noreply@example.com',
-    } as EmailJob,
+    } as unknown as EmailJob,
     mailgunConfig,
   )
   assertEquals(outcome.ok, false)

@@ -2,7 +2,7 @@
  * Host-free stubs for resolveWorkspaceKindForEntity (DB suites still cover real joins).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   WORKSPACE_KIND_SYSTEM,

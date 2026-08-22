@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
 import { ip, network, server } from '../../lib/db/schema.ts'

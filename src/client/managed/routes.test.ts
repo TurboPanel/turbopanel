@@ -25,6 +25,7 @@ import { getManagedEngineSpec } from '../../lib/managed/index.ts'
 import {
   binding,
   command,
+  dispatch,
   container,
   environment,
   grant,
@@ -1079,9 +1080,9 @@ test('POST /environments/:id/managed/backups enqueues managed.backup create with
     assertEquals(envelope?.type, 'managed.backup')
 
     const [commandRow] = await db
-      .select({ payload: command.payload })
-      .from(command)
-      .where(eq(command.id, envelope!.commandId))
+      .select({ payload: dispatch.payload })
+      .from(dispatch)
+      .where(eq(dispatch.commandId, envelope!.commandId))
       .limit(1)
     const payload = commandRow?.payload as Record<string, unknown>
     assertEquals(payload.managedId, created.managed.id)
@@ -1623,9 +1624,9 @@ test('DELETE /environments/:id/managed marks the enqueued destroy payload delete
     assertEquals(envelope?.type, 'managed.destroy')
 
     const [commandRow] = await db
-      .select({ payload: command.payload })
-      .from(command)
-      .where(eq(command.id, envelope!.commandId))
+      .select({ payload: dispatch.payload })
+      .from(dispatch)
+      .where(eq(dispatch.commandId, envelope!.commandId))
       .limit(1)
     const payload = commandRow?.payload as Record<string, unknown>
     assertEquals(payload.managedId, created.managed.id)

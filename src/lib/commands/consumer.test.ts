@@ -15,6 +15,7 @@ import {
   command,
   container,
   datacenter,
+  dispatch,
   environment,
   fabric,
   ip,
@@ -33,15 +34,19 @@ import {
 import { createManagedPrincipal } from '../../client/principals/store.ts'
 import { ensureManagedIngressHierarchy } from '../../client/system/hierarchy.ts'
 import {
+  COMMAND_DISPATCH_FAILURE_RETENTION_MS,
   createCommandRecord,
+  deleteCommandDispatch,
+  getCommandDispatchPayload,
   getCommandRecord,
+  sweepExpiredCommandDispatch,
   transitionCommand,
 } from '../db/command-records.ts'
 import {
   enableOrganizationFabric,
   listFabricRelays,
 } from '../db/fabric-records.ts'
-import { processCommandEnvelope, isTransientError } from './consumer.ts'
+import { isTransientError, processCommandEnvelope } from './consumer.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { parseManagedResidual } from '../../client/managed/serialize.ts'
 
@@ -349,6 +354,84 @@ test('processCommandEnvelope succeeds for online ping command', async () => {
     assertEquals(updated?.ackedAt, ackAt)
     assertEquals(updated?.finishedAt, finishedAt)
     assertEquals((updated?.result as Record<string, unknown>).daemonHostname, 'web-01')
+    // Success drops the dispatch payload immediately.
+    assertEquals(await getCommandDispatchPayload(db, record.id), null)
+  })
+})
+
+test('processCommandEnvelope dispatches the stored payload and retains it after failure', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'server.hostname.set',
+      payload: { hostname: 'web-77' },
+    })
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'failed',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        finishedAt: new Date().toISOString(),
+        error: 'hostnamectl failed',
+      },
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    // The daemon envelope carries the `dispatch` payload, not a `command` column.
+    const outbound = registry.capturedOutbound as Record<string, unknown>
+    assertEquals(outbound.payload, { hostname: 'web-77' })
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'failed')
+    assertEquals(updated?.error, 'hostnamectl failed')
+
+    // Failure keeps the payload for ~24h instead of deleting it.
+    assertEquals(await getCommandDispatchPayload(db, record.id), {
+      hostname: 'web-77',
+    })
+    const [dispatchRow] = await db
+      .select({ expiresAt: dispatch.expiresAt })
+      .from(dispatch)
+      .where(eq(dispatch.commandId, record.id))
+      .limit(1)
+    const retainedMs = Date.parse(dispatchRow!.expiresAt!)
+    const expectedMs = Date.now() + COMMAND_DISPATCH_FAILURE_RETENTION_MS
+    assertEquals(Math.abs(retainedMs - expectedMs) < 60_000, true)
+
+    // Nothing expired yet, so the bounded sweep leaves it alone.
+    assertEquals(await sweepExpiredCommandDispatch(db, { limit: 50 }), 0)
+  })
+})
+
+test('processCommandEnvelope fails cleanly when the dispatch payload is gone', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    await deleteCommandDispatch(db, record.id)
+
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    assertEquals(registry.enqueueCalled, false)
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'failed')
+    assertEquals(updated?.error, 'Command dispatch payload unavailable')
+    assertEquals(updated?.errorCode, 'dispatch_payload_missing')
   })
 })
 

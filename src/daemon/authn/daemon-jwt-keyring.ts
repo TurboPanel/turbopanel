@@ -87,7 +87,7 @@ async function deriveEd25519KeyPairFromSecret(rootSecret: string): Promise<{
 export type DaemonJwtKeyring = {
   active: { kid: string; privateKey: CryptoKey };
   verifiers: Map<string, CryptoKey>;
-  publicJwks: JsonWebKey[];
+  publicJwks: DaemonPublicJwk[];
 };
 
 export async function deriveDaemonJwtKeyring(
@@ -106,7 +106,7 @@ export async function deriveDaemonJwtKeyring(
   );
 
   const verifiers = new Map<string, CryptoKey>();
-  const publicJwks: JsonWebKey[] = entries.map(
+  const publicJwks: DaemonPublicJwk[] = entries.map(
     ({ kid, verifyKey, publicJwk }) => {
       verifiers.set(kid, verifyKey);
       return {
@@ -128,8 +128,15 @@ export async function deriveDaemonJwtKeyring(
   };
 }
 
+/**
+ * A published verification key. Always carries `kid` — the JWKS is keyed by it
+ * and `verifyDaemonJwt` selects on it — which the WebCrypto `JsonWebKey`
+ * dictionary does not guarantee.
+ */
+export type DaemonPublicJwk = JsonWebKey & { kid: string };
+
 export function buildJwksDocument(
   keyring: DaemonJwtKeyring,
-): { keys: JsonWebKey[] } {
+): { keys: DaemonPublicJwk[] } {
   return { keys: keyring.publicJwks };
 }

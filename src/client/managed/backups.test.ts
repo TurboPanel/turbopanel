@@ -294,6 +294,10 @@ function mockBackupContext(): Context<AppEnv> {
 test('enqueueManagedBackup and enqueueManagedRestore delegate to enqueueTypedCommand', async () => {
   const c = mockBackupContext()
   const db = {
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: () => ({
       values: () => ({
         returning: () =>

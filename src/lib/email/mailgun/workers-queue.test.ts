@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { resolveEmailSettings } from '../../settings/email-settings.ts'
 import { createNoopQueue, isNoopEmailQueue } from '../noop-queue.ts'
 import {

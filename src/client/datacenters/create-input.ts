@@ -1,5 +1,5 @@
 import { buildSeededDatacenterMetadata } from '../../lib/datacenter-metadata.ts'
-import { parseDatacenterOptions } from '../../lib/datacenter-options.ts'
+import type { parseDatacenterOptions } from '../../lib/datacenter-options.ts'
 import { suggestDatacenterDisplayNameFromGeo } from '../../lib/datacenter-name-suggestions.ts'
 import { parseServerGeo } from '../../lib/geo/server-geo.ts'
 import {

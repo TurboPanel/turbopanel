@@ -2,7 +2,7 @@
  * Host-free coverage for storage retention deletes (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   applyStorageRetentionOnParentDelete,
   type StorageRetentionScope,

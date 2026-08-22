@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import { join } from '@std/path'
 import {
   DEFAULT_CONFIG_DIR,
+  DEFAULT_EXECUTION_LOG_DIR,
   DEFAULT_LOG_DIR,
   DEFAULT_RUN_DIR,
   DEFAULT_SOCKET_DIR,
@@ -22,6 +23,7 @@ import {
   resolveInstanceTlsCaKeyPath,
   resolveInstanceTlsCaPath,
   resolveInstanceTlsCertPath,
+  resolveExecutionLogDir,
   resolveLogDir,
   resolveRunDir,
   resolveStateDir,
@@ -54,12 +56,35 @@ test('production defaults resolve the FHS tree with an empty env', () => {
   assertEquals(resolveRunDir({}), '/run/turbopanel')
   assertEquals(resolveUiRoot({}), '/opt/turbopanel/share/ui')
   assertEquals(resolveInstanceSocket({}), '/run/turbopanel/instance.sock')
+  // Command transcripts live under the **state** tree (durable product data),
+  // not the log tree (rotatable process logs).
+  assertEquals(resolveExecutionLogDir({}), '/var/lib/turbopanel/execution-logs')
+})
+
+test('execution log dir follows the state dir and its own override', () => {
+  assertEquals(
+    resolveExecutionLogDir({ TURBOPANEL_STATE_DIR: '/srv/tp-state' }),
+    '/srv/tp-state/execution-logs',
+  )
+  assertEquals(
+    resolveExecutionLogDir({ TURBOPANEL_EXECUTION_LOG_DIR: '/mnt/transcripts//' }),
+    '/mnt/transcripts',
+  )
+  // The dedicated override wins over the state-dir-derived default.
+  assertEquals(
+    resolveExecutionLogDir({
+      TURBOPANEL_STATE_DIR: '/srv/tp-state',
+      TURBOPANEL_EXECUTION_LOG_DIR: '/mnt/transcripts',
+    }),
+    '/mnt/transcripts',
+  )
 })
 
 test('exported default constants match the canonical FHS paths', () => {
   assertEquals(DEFAULT_CONFIG_DIR, '/etc/turbopanel')
   assertEquals(DEFAULT_STATE_DIR, '/var/lib/turbopanel')
   assertEquals(DEFAULT_LOG_DIR, '/var/log/turbopanel')
+  assertEquals(DEFAULT_EXECUTION_LOG_DIR, '/var/lib/turbopanel/execution-logs')
   assertEquals(DEFAULT_RUN_DIR, '/run/turbopanel')
   assertEquals(DEFAULT_SOCKET_DIR, '/run/turbopanel')
   assertEquals(DEFAULT_UI_ROOT, '/opt/turbopanel/share/ui')

@@ -9,12 +9,16 @@ import {
   type DerivedSecretsConfig,
   type SecretsConfig,
 } from './client/authn/secrets.ts'
-import { createApp } from './app.ts'
+import { type AppEnv, createApp } from './app.ts'
 import { createDenoDb, endDbConnection, type Db } from './db.ts'
 import { logInfo, logWarn } from './logger.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from './daemon/cell/control-plane-monitor.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
+import {
+  COMMAND_DISPATCH_SWEEP_LIMIT,
+  sweepExpiredCommandDispatch,
+} from './lib/db/command-records.ts'
 import { runSystemReconcileSweep } from './client/system/reconcile.ts'
 import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
@@ -34,8 +38,24 @@ import {
 } from './daemon/metrics/store-selection.ts'
 import { setServerStatusEventSink } from './daemon/metrics/status-events.ts'
 import {
+  parseExecutionLogDriver,
+  parseExecutionLogRetentionDays,
+  resolveExecutionLogStore,
+  resolveS3ExecutionLogConfig,
+} from './lib/execution-logs/store-selection.ts'
+import {
+  isDisabledContainerLogStore,
+  parseContainerLogRetentionDays,
+  parseContainerLogsEnabled,
+  resolveContainerLogStore,
+} from './lib/container-logs/store-selection.ts'
+import { setContainerLogBackendAvailable } from './daemon/container-logs-presence.ts'
+import { setExecutionLogSealSink } from './lib/execution-logs/seal-on-terminal.ts'
+import { EXECUTION_LOG_SWEEP_LIMIT } from './lib/execution-logs/types.ts'
+import {
   createRedisRateLimiter,
   resolveDaemonConnectRateLimit,
+  resolveDaemonContainerLogsRateLimit,
   resolveDaemonMetricsRateLimit,
   resolveDaemonRestRateLimit,
   resolveDaemonWsInboundLimits,
@@ -65,11 +85,12 @@ import { createRedisQueryCache } from './query-cache/redis-query-cache.ts'
 import {
   hardenInstanceSocket,
   prepareInstanceSocket,
+  resolveExecutionLogDir,
   resolveInstanceSocket,
 } from './server-paths.ts'
 
 export type DenoDeveloperSurfaceContext = {
-  routes: Hono
+  routes: Hono<AppEnv>
   sessionSecrets: DerivedSecretsConfig
   db: Db
 }
@@ -215,9 +236,45 @@ export async function startDenoServer(
     },
   })
   setServerStatusEventSink(serverMetricsStore)
+  const executionLogRetentionDays = parseExecutionLogRetentionDays(
+    Deno.env.get('TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS')
+  )
+  const executionLogStore = resolveExecutionLogStore({
+    runtime: 'deno',
+    deno: {
+      driver: parseExecutionLogDriver(Deno.env.get('TURBOPANEL_EXECUTION_LOG_DRIVER')),
+      directory: resolveExecutionLogDir(),
+      s3: resolveS3ExecutionLogConfig(Deno.env.toObject()),
+    },
+  })
+  // Backend availability only — NOT the retention switch. Whether a tenant
+  // retains container output is `organization.options.containerLogsEnabled`,
+  // re-read on every ingest write and every read route. This env var is the
+  // platform-level kill switch: without TURBOPANEL_CONTAINER_LOGS_ENABLED (or
+  // with incomplete ClickHouse config) this resolves to the disabled no-op
+  // store, and the presence ack is forced off so daemons do not stream into a
+  // backend that can only drop what they send.
+  const containerLogStore = resolveContainerLogStore({
+    runtime: 'deno',
+    enabled: parseContainerLogsEnabled(Deno.env.get('TURBOPANEL_CONTAINER_LOGS_ENABLED')),
+    clickhouse: {
+      url: Deno.env.get('TURBOPANEL_CLICKHOUSE_URL'),
+      database: Deno.env.get('TURBOPANEL_CLICKHOUSE_DATABASE'),
+      user: Deno.env.get('TURBOPANEL_CLICKHOUSE_USER'),
+      password: Deno.env.get('TURBOPANEL_CLICKHOUSE_PASSWORD'),
+      retentionDays: parseContainerLogRetentionDays(
+        Deno.env.get('TURBOPANEL_CONTAINER_LOG_RETENTION_DAYS'),
+      ),
+    },
+  })
+  setContainerLogBackendAvailable(!isDisabledContainerLogStore(containerLogStore))
+  // The AMQP command consumer transitions commands outside any Hono context —
+  // register the seal sink at boot so terminal transitions compact transcripts.
+  setExecutionLogSealSink(executionLogStore)
   const connectRate = resolveDaemonConnectRateLimit()
   const restRate = resolveDaemonRestRateLimit()
   const metricsRate = resolveDaemonMetricsRateLimit()
+  const containerLogsRate = resolveDaemonContainerLogsRateLimit()
   const inboundLimits = resolveDaemonWsInboundLimits()
   const daemonConnectLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
@@ -233,6 +290,13 @@ export async function startDenoServer(
     client: daemonCellRegistry.client,
     limit: metricsRate.limit,
     periodSeconds: metricsRate.periodSeconds,
+  })
+  // Dedicated bucket: batched container output must not be able to starve the
+  // shared REST budget enroll/session/decrypt depend on.
+  const daemonContainerLogsLimiter = createRedisRateLimiter({
+    client: daemonCellRegistry.client,
+    limit: containerLogsRate.limit,
+    periodSeconds: containerLogsRate.periodSeconds,
   })
   // Durable, globally-shared client-auth throttle over Redis (same infrastructure
   // as the daemon limiters). Auth uses onError: 'closed' so a Redis hiccup cannot
@@ -269,6 +333,8 @@ export async function startDenoServer(
     daemonCellRegistry,
     queryCache,
     serverMetricsStore,
+    executionLogStore,
+    containerLogStore,
     dataEncryptionSecrets,
     secretsConfig,
     // Inject before client routes mount — must not be registered after
@@ -282,8 +348,9 @@ export async function startDenoServer(
     c.set('platformEnv', Deno.env.toObject())
     return next()
   })
-  // Daemon registrars still take untyped Hono; install/admin use AppEnv.
-  const routes = app as unknown as Hono
+  // Daemon + developer registrars are generic over the env, so the app's own
+  // `AppEnv` typing carries through — no cast.
+  const routes = app
   registerInstallRoutes(app, {
     secrets: sessionSecrets,
     otpVerifierSecrets,
@@ -299,6 +366,7 @@ export async function startDenoServer(
     secretsConfig,
     restLimiter: daemonRestLimiter,
     metricsLimiter: daemonMetricsLimiter,
+    containerLogsLimiter: daemonContainerLogsLimiter,
   })
   registerDaemonWebSocket(routes, {
     developerSurface,
@@ -339,6 +407,23 @@ export async function startDenoServer(
     void sweepStalePresence(db, daemonCellRegistry).catch((err) => {
       logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
     })
+    // Workers parity (offline-sweep cron): bounded cleanup of expired
+    // `dispatch` failure-retention payloads on the process-long db.
+    void sweepExpiredCommandDispatch(db, {
+      limit: COMMAND_DISPATCH_SWEEP_LIMIT,
+    }).catch((err) => {
+      logWarn('daemon-cell', `command dispatch sweep error: ${String(err)}`)
+    })
+    // Workers parity (offline-sweep cron): bounded removal of command
+    // transcripts past retention. Object/filesystem only — no db involved.
+    void executionLogStore
+      .sweepExpired({
+        retentionDays: executionLogRetentionDays,
+        limit: EXECUTION_LOG_SWEEP_LIMIT,
+      })
+      .catch((err) => {
+        logWarn('daemon-cell', `execution log sweep error: ${String(err)}`)
+      })
     runSystemReconcileSweepTick()
   }, DAEMON_CELL_MAINTAIN_MS)
 

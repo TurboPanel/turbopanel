@@ -24,6 +24,15 @@ export const DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS = 60
 export const DEFAULT_DAEMON_METRICS_RATE_LIMIT = 3
 export const DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS = 60
 
+/**
+ * Defaults match Wrangler `CONTAINER_LOGS_RATE_LIMITER` (`{ limit: 60, period: 60 }`).
+ * The collector flushes on a sub-second cadence under load, so this budget is
+ * an order of magnitude above metrics — it exists to cap a runaway daemon, not
+ * to pace a healthy one.
+ */
+export const DEFAULT_DAEMON_CONTAINER_LOGS_RATE_LIMIT = 60
+export const DEFAULT_DAEMON_CONTAINER_LOGS_RATE_PERIOD_SECONDS = 60
+
 const MIN_BUCKET_TTL_MS = 1_000
 
 function parsePositiveIntEnv(
@@ -77,6 +86,21 @@ export function resolveDaemonMetricsRateLimit(env: {
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_METRICS_RATE_PERIOD'),
       DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS,
+    ),
+  }
+}
+
+export function resolveDaemonContainerLogsRateLimit(env: {
+  get(key: string): string | undefined
+} = Deno.env): { limit: number; periodSeconds: number } {
+  return {
+    limit: parsePositiveIntEnv(
+      env.get('TURBOPANEL_DAEMON_CONTAINER_LOGS_RATE_LIMIT'),
+      DEFAULT_DAEMON_CONTAINER_LOGS_RATE_LIMIT,
+    ),
+    periodSeconds: parsePositiveIntEnv(
+      env.get('TURBOPANEL_DAEMON_CONTAINER_LOGS_RATE_PERIOD'),
+      DEFAULT_DAEMON_CONTAINER_LOGS_RATE_PERIOD_SECONDS,
     ),
   }
 }

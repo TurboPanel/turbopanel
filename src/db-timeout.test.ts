@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import {
   DB_OP_TIMEOUT_MS,
@@ -13,6 +13,9 @@ import {
   type Db,
 } from "./db.ts";
 import type { Context } from "hono";
+import type { DaemonCellRegistry } from "./daemon/cell/contracts.ts";
+import type { ServerMetricsStore } from "./daemon/metrics/types.ts";
+import type { QueryCache } from "./query-cache/contracts.ts";
 
 // The projection path never inspects the Db shape when fn ignores it, so a cast
 // of a placeholder is sufficient for these timing-focused tests.
@@ -127,11 +130,13 @@ it("endDbConnection ends a present $client pool", async () => {
 });
 
 it("context getters read typed Hono variables", () => {
+  // Opaque sentinels: the getters under test only read the variable bag, they
+  // never touch the stores, so identity is all that has to survive.
   const vars = {
     db: FAKE_DB,
-    daemonCellRegistry: { kind: "registry" },
-    queryCache: { kind: "cache" },
-    serverMetricsStore: { kind: "metrics" },
+    daemonCellRegistry: { kind: "registry" } as unknown as DaemonCellRegistry,
+    queryCache: { kind: "cache" } as unknown as QueryCache,
+    serverMetricsStore: { kind: "metrics" } as unknown as ServerMetricsStore,
   };
   const c = {
     get: (key: string) => vars[key as keyof typeof vars],

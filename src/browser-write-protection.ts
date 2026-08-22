@@ -110,10 +110,10 @@ export function isSameOriginBrowserWrite(
 export function createBrowserWriteProtectionMiddleware(
   runtime: 'deno' | 'workers' = 'workers',
 ): MiddlewareHandler {
-  return (c: Context, next: Next) => {
+  return async (c: Context, next: Next) => {
     const method = c.req.method.toUpperCase()
     if (!WRITE_METHODS.has(method)) {
-      return next()
+      return await next()
     }
 
     let pathname: string
@@ -124,7 +124,7 @@ export function createBrowserWriteProtectionMiddleware(
     }
 
     if (!isProtectedWritePath(pathname)) {
-      return next()
+      return await next()
     }
 
     const expected = resolveExpectedBrowserOrigin(c, runtime)
@@ -135,7 +135,7 @@ export function createBrowserWriteProtectionMiddleware(
         expected,
       )
     ) {
-      return next()
+      return await next()
     }
 
     return c.json({ ok: false, error: 'Forbidden' }, 403)

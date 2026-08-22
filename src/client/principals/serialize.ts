@@ -1,6 +1,22 @@
 import type { principal } from '../../lib/db/schema.ts'
 
-type PrincipalRow = typeof principal.$inferSelect
+/**
+ * Only the columns the serializer reads — deliberately excludes `password` so
+ * callers can (and do) select a password-free projection.
+ */
+type PrincipalRow = Pick<
+  typeof principal.$inferSelect,
+  | 'id'
+  | 'kind'
+  | 'provider'
+  | 'username'
+  | 'projectId'
+  | 'managedId'
+  | 'metadata'
+  | 'options'
+  | 'createdAt'
+  | 'updatedAt'
+>
 
 export type SerializedProjectPrincipal = {
   id: string

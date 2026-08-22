@@ -52,10 +52,23 @@ import type {
 } from "../../client/authn/secrets.ts";
 import { createWorkersCommandQueue } from "../../lib/commands/workers-queue.ts";
 import {
+  COMMAND_DISPATCH_SWEEP_LIMIT,
+  sweepExpiredCommandDispatch,
+} from "../../lib/db/command-records.ts";
+import {
   resolveServerMetricsStore,
   type AnalyticsEngineDatasetLike,
 } from "../metrics/store-selection.ts";
 import { setServerStatusEventSink } from "../metrics/status-events.ts";
+import {
+  parseExecutionLogRetentionDays,
+  resolveExecutionLogStore,
+  type R2BucketLike,
+} from "../../lib/execution-logs/store-selection.ts";
+import {
+  EXECUTION_LOG_SWEEP_LIMIT,
+  type ExecutionLogStore,
+} from "../../lib/execution-logs/types.ts";
 import { createDurableObjectDaemonCellRegistry } from "./do-registry.ts";
 import {
   onDaemonConnected,
@@ -629,6 +642,53 @@ async function runLeafRenewalSweepTickSafely(
   }
 }
 
+/**
+ * Delete `dispatch` payloads whose failure-retention window elapsed.
+ * Reuses this cron's already-open db; isolated so a failure here never aborts
+ * the other sweeps.
+ */
+export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
+  try {
+    const deleted = await sweepExpiredCommandDispatch(db, {
+      limit: COMMAND_DISPATCH_SWEEP_LIMIT,
+    });
+    if (deleted > 0) {
+      sweepTrace("command-dispatch-swept", { deleted });
+    }
+  } catch (err) {
+    sweepTrace("command-dispatch-sweep-failed", {
+      error: sweepErrorMessage(err),
+    });
+  }
+}
+
+/**
+ * Delete command transcripts past their retention window. Rides this cron's
+ * existing tick (no new timer, no new connection) and is isolated so a storage
+ * failure never aborts the other sweeps.
+ *
+ * `retentionDays` comes from the Workers env (see `runOfflineSweep`) so hosted
+ * deployments can override the 30-day default the same way the Deno path does.
+ */
+export async function sweepExpiredExecutionLogsSafely(
+  store: ExecutionLogStore,
+  retentionDays: number,
+): Promise<void> {
+  try {
+    const deleted = await store.sweepExpired({
+      retentionDays,
+      limit: EXECUTION_LOG_SWEEP_LIMIT,
+    });
+    if (deleted > 0) {
+      sweepTrace("execution-logs-swept", { deleted, retentionDays });
+    }
+  } catch (err) {
+    sweepTrace("execution-logs-sweep-failed", {
+      error: sweepErrorMessage(err),
+    });
+  }
+}
+
 async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings["TURBOPANEL_COMMAND_QUEUE"]>,
@@ -651,6 +711,7 @@ async function runQueuedCronSweeps(
 export async function runOfflineSweep(
   env: CloudflareBindings,
   tlsRenewal?: CronTlsRenewal | null,
+  opts: { executionLogRetentionDays?: number } = {},
 ): Promise<void> {
   // Cron-only isolate never ran `initWorkerApp` — register a write-only AE
   // sink so demotions / self-heal emit status rows (no SQL config needed).
@@ -670,6 +731,22 @@ export async function runOfflineSweep(
 
   try {
     await sweepOnceSafely(env, db);
+
+    // Expired failure-retention dispatch payloads — same already-open db.
+    await sweepExpiredCommandDispatchSafely(db);
+
+    // Command transcripts past retention — object-store only, no db needed,
+    // but bounded per tick the same way so cleanup never dominates the sweep.
+    await sweepExpiredExecutionLogsSafely(
+      resolveExecutionLogStore({
+        runtime: "workers",
+        r2: (env as { EXECUTION_LOGS?: R2BucketLike }).EXECUTION_LOGS,
+      }),
+      opts.executionLogRetentionDays ??
+        parseExecutionLogRetentionDays(
+          env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS,
+        ),
+    );
 
     // System-reconcile drift sweep reuses this cron's already-open db — never
     // open a second Hyperdrive client per tick. Skip when the queue binding

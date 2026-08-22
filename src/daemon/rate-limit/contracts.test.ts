@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { createNoopRateLimiter, createFailClosedRateLimiter } from './contracts.ts'
 import { createWorkersRateLimiter } from './workers-rate-limiter.ts'
 import {

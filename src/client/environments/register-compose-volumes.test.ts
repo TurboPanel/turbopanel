@@ -1,4 +1,4 @@
-import { assertEquals, assertNotEquals } from 'jsr:@std/assert'
+import { assertEquals, assertNotEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'

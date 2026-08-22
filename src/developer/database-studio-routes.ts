@@ -1,12 +1,12 @@
-import type { Hono } from 'hono'
+import type { Env, Hono } from 'hono'
 import { postgresConfigFromContext } from './database-routes-shared.ts'
 import { startDrizzleStudio } from './drizzle-studio.ts'
 
 type StartDrizzleStudio = typeof startDrizzleStudio
 
 /** Deno-only: spawn drizzle-kit studio (not bundled in Workers). */
-export function registerDatabaseStudioRoutes(
-  developer: Hono,
+export function registerDatabaseStudioRoutes<E extends Env>(
+  developer: Hono<E>,
   opts?: { startStudio?: StartDrizzleStudio },
 ): void {
   const startStudio = opts?.startStudio ?? startDrizzleStudio

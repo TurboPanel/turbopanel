@@ -92,7 +92,8 @@ echo "==> Deno coverage profile"
 #   - Host-free unit suites (always run; no Postgres/Redis/ClickHouse).
 #   - Postgres integration suites (need TURBOPANEL_DATABASE_URL; skip gracefully
 #     when unset locally — CI build.yml starts Postgres and sets the URL).
-# Omit: redis-cell / ws-handlers (Redis), store.integration (ClickHouse),
+# Omit: redis-cell / ws-handlers (Redis), store.integration (ClickHouse — both
+#   metrics and container-logs),
 # Vitest-only Workers suites (workers-ws, durable-object, routes-core, …).
 # CI uses -A so every suite shares one profile dir (mirrors the daemon repo's
 # test:coverage grant).
@@ -242,6 +243,12 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/authn/server-key.test.ts \
   src/daemon/api-routes.test.ts \
   src/daemon/rehydrate-secrets.hostfree.test.ts \
+  src/daemon/execution-log-ingest.hostfree.test.ts \
+  src/daemon/execution-log-ingest-route.hostfree.test.ts \
+  src/daemon/container-log-ingest.hostfree.test.ts \
+  src/daemon/container-log-ingest-route.hostfree.test.ts \
+  src/daemon/container-logs-presence.hostfree.test.ts \
+  src/daemon/rate-limit/container-log-keys.hostfree.test.ts \
   src/daemon/cell/contracts.test.ts \
   src/daemon/cell/do-storage-classify.test.ts \
   src/daemon/deno-ws.test.ts \
@@ -331,6 +338,22 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/datacenter-options.test.ts \
   src/lib/daemon-install-command.deno.test.ts \
   src/lib/install-tls.deno.test.ts \
+  src/lib/container-logs/types.test.ts \
+  src/lib/container-logs/disabled-store.test.ts \
+  src/lib/container-logs/store-selection.test.ts \
+  src/lib/container-logs/clickhouse/schema.test.ts \
+  src/lib/container-logs/clickhouse/store.test.ts \
+  src/lib/container-logs/cloudflare/config.test.ts \
+  src/lib/container-logs/cloudflare/pipeline-store.test.ts \
+  src/lib/container-logs/store-conformance.test.ts \
+  src/lib/container-logs/org-settings.test.ts \
+  src/lib/execution-logs/index-model.test.ts \
+  src/lib/execution-logs/store-selection.test.ts \
+  src/lib/execution-logs/seal-on-terminal.test.ts \
+  src/lib/execution-logs/s3-sigv4.test.ts \
+  src/lib/execution-logs/s3-store.deno.test.ts \
+  src/lib/execution-logs/r2-store.deno.test.ts \
+  src/lib/execution-logs/filesystem-store.deno.test.ts \
   src/lib/db/command-records.test.ts \
   src/lib/db/command-records.hostfree.test.ts \
   src/lib/db/container-records.test.ts \
@@ -432,6 +455,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/networks/routes.hostfree.test.ts \
   src/client/organizations/routes.test.ts \
   src/client/organizations/routes.hostfree.test.ts \
+  src/client/organizations/container-log-routes.hostfree.test.ts \
+  src/client/organizations/container-log-routes-helpers.hostfree.test.ts \
   src/client/organizations/routes-helpers.hostfree.test.ts \
   src/client/organizations/fabric-routes.hostfree.test.ts \
   src/client/organizations/fabric-routes-authz.hostfree.test.ts \

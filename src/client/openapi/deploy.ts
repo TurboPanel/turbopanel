@@ -210,6 +210,154 @@ export const deploySchemas = {
       },
     },
   },
+  DeploymentHistoryEntry: {
+    type: 'object',
+    description:
+      'One deploy attempt against one server. Sourced from the append-only `command` table (`environment.deploy`), not from the upsert-per-target `deployment` table.',
+    required: [
+      'id',
+      'commandId',
+      'serverId',
+      'status',
+      'actorEntityType',
+      'actorEntityId',
+      'hasLog',
+    ],
+    properties: {
+      id: {
+        type: 'string',
+        description: 'Deployment id — this is the `command.id` of the attempt.',
+      },
+      commandId: {
+        type: 'string',
+        description:
+          'Alias of `id`; pass to `/servers/{id}/commands/{commandId}/log` for the transcript.',
+      },
+      generation: {
+        type: ['integer', 'null'],
+        description: 'Environment compose generation this attempt targeted.',
+      },
+      desiredHash: {
+        type: ['string', 'null'],
+        description: 'sha256 of the compiled runtime compose sent to this server.',
+      },
+      replicaCounts: {
+        type: ['object', 'null'],
+        additionalProperties: { type: 'integer', minimum: 1 },
+        description:
+          'Per-service replica counts this attempt asked the host to run, captured on `command.context` at enqueue time so it survives deletion of the daemon dispatch payload. Null for attempts queued before the counts were persisted.',
+      },
+      serverId: { type: 'string' },
+      serverName: { type: ['string', 'null'] },
+      status: {
+        type: 'string',
+        description: 'Command lifecycle status (`queued`, `sent`, `succeeded`, `failed`, `timed_out`, …).',
+      },
+      actorEntityType: { type: 'string' },
+      actorEntityId: { type: 'string' },
+      queuedAt: { type: ['string', 'null'], format: 'date-time' },
+      startedAt: { type: ['string', 'null'], format: 'date-time' },
+      finishedAt: { type: ['string', 'null'], format: 'date-time' },
+      durationMs: {
+        type: ['integer', 'null'],
+        description: 'Wall-clock duration of the attempt; null while still running.',
+      },
+      errorCode: { type: ['string', 'null'] },
+      errorMessage: { type: ['string', 'null'] },
+      hasLog: {
+        type: 'boolean',
+        description:
+          'Whether an execution-log transcript is retained. Resolved store-side — there is no Postgres column.',
+      },
+    },
+  },
+  DeploymentHistoryResponse: {
+    type: 'object',
+    required: ['ok', 'deployments', 'nextCursor'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      deployments: {
+        type: 'array',
+        description: 'Newest-first page of deploy attempts.',
+        items: { $ref: '#/components/schemas/DeploymentHistoryEntry' },
+      },
+      nextCursor: {
+        type: ['string', 'null'],
+        description: 'Pass back as `before` to fetch the next (older) page; null at the end.',
+      },
+    },
+  },
+  DeploymentHistoryDetail: {
+    type: 'object',
+    required: [
+      'id',
+      'environmentId',
+      'replicaCounts',
+      'totalReplicas',
+      'commands',
+      'servers',
+    ],
+    properties: {
+      id: { type: 'string' },
+      environmentId: { type: 'string' },
+      generation: { type: ['integer', 'null'] },
+      desiredHash: { type: ['string', 'null'] },
+      replicaCounts: {
+        type: 'object',
+        additionalProperties: { type: 'integer', minimum: 1 },
+        description:
+          'Per-service replica counts for the whole fan-out, summed across every participating host from each attempt\'s historical `command.context`. Empty when no attempt in the fan-out carries counts (rows queued before they were persisted).',
+      },
+      totalReplicas: {
+        type: 'integer',
+        description: 'Sum of `replicaCounts` across all services; 0 when unknown.',
+      },
+      commands: {
+        type: 'array',
+        description:
+          'Every attempt in the same fan-out — the `environment.deploy` commands sharing this generation, one per participating server. Complete and unpaginated: every participating host is listed.',
+        items: { $ref: '#/components/schemas/DeploymentHistoryEntry' },
+      },
+      servers: {
+        type: 'array',
+        description:
+          'Per-server convergence read from **current** `deployment` state, not a historical snapshot — after a newer deploy `appliedGeneration` may exceed `generation`.',
+        items: {
+          type: 'object',
+          required: ['serverId', 'status'],
+          properties: {
+            serverId: { type: 'string' },
+            serverName: { type: ['string', 'null'] },
+            status: { type: 'string', description: 'Command status for this attempt.' },
+            appliedGeneration: { type: ['integer', 'null'] },
+            desiredGeneration: { type: ['integer', 'null'] },
+            deploymentStatus: {
+              type: ['string', 'null'],
+              enum: ['pending', 'applying', 'applied', 'failed', 'draining', null],
+            },
+            replicaCounts: {
+              type: ['object', 'null'],
+              additionalProperties: { type: 'integer', minimum: 1 },
+              description:
+                'Per-service replica counts this host was asked to run by this attempt — historical, unlike the convergence fields above.',
+            },
+            totalReplicas: {
+              type: ['integer', 'null'],
+              description: 'Sum of this host\'s `replicaCounts`; null when unknown.',
+            },
+          },
+        },
+      },
+    },
+  },
+  DeploymentHistoryDetailResponse: {
+    type: 'object',
+    required: ['ok', 'deployment'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      deployment: { $ref: '#/components/schemas/DeploymentHistoryDetail' },
+    },
+  },
   HealthCheckMissingError: {
     type: 'object',
     required: ['error', 'services'],
@@ -296,6 +444,66 @@ export const deployPaths = {
             },
           },
         },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/deployments': {
+    get: {
+      tags: ['Environments'],
+      summary: 'List past deploy attempts for an environment',
+      description:
+        'Deploy history is read from the append-only `command` table (`environment.deploy` rows scoped by `context.environmentId`), not from `deployment` — that table is upserted per `(environment, server)` and only ever holds current state. Newest-first, keyset-paginated by command id (UUIDv7, so id order matches time order).',
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        {
+          name: 'limit',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+        },
+        {
+          name: 'before',
+          in: 'query',
+          required: false,
+          description: 'Return only attempts older than this deployment (command) id.',
+          schema: { type: 'string' },
+        },
+      ],
+      responses: {
+        200: {
+          description: 'Deploy history page',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeploymentHistoryResponse' },
+            },
+          },
+        },
+        400: { description: 'Invalid `limit`' },
+        403: { description: 'Caller cannot read this environment' },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/deployments/{deploymentId}': {
+    get: {
+      tags: ['Environments'],
+      summary: 'Read one deploy attempt and its multi-server fan-out',
+      description:
+        '`deploymentId` is a `command.id`. The response groups every `environment.deploy` command sharing the anchor\'s `context.generation` — the full fan-out, unpaginated and untruncated, so every participating host can be enumerated. Replica counts (`replicaCounts` / `totalReplicas`) are historical, read from each attempt\'s `command.context`. The per-server convergence figures (`appliedGeneration`, `desiredGeneration`, `deploymentStatus`) instead come from a live join to `deployment` and therefore reflect current state, not a snapshot taken at deploy time.',
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        { name: 'deploymentId', in: 'path', required: true, schema: { type: 'string' } },
+      ],
+      responses: {
+        200: {
+          description: 'Deploy attempt detail',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeploymentHistoryDetailResponse' },
+            },
+          },
+        },
+        403: { description: 'Caller cannot read this environment' },
+        404: { description: 'No such deploy attempt for this environment' },
       },
     },
   },

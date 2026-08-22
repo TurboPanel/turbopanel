@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm'
-import { Hono, type Context } from 'hono'
+import type { Hono, Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -146,8 +146,13 @@ async function insertProjectPrincipal(
 }
 
 export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
-  router.use('/projects/:projectId/principals', createSessionMiddleware(opts.secrets))
-  router.use('/projects/:projectId/principals/:id', createSessionMiddleware(opts.secrets))
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for project principal routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/projects/:projectId/principals', createSessionMiddleware(secrets))
+  router.use('/projects/:projectId/principals/:id', createSessionMiddleware(secrets))
 
   router.get('/projects/:projectId/principals', async (c) => {
     const db = getDb(c)
@@ -175,6 +180,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
         provider: principal.provider,
         username: principal.username,
         projectId: principal.projectId,
+        managedId: principal.managedId,
         metadata: principal.metadata,
         options: principal.options,
         createdAt: principal.createdAt,
@@ -318,6 +324,10 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
 }
 
 export function registerOrganizationLimitsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for organization limits routes')
+  }
+
   router.use('/organizations/:id/resource-limits', createSessionMiddleware(opts.secrets))
 
   router.get('/organizations/:id/resource-limits', async (c) => {
@@ -383,6 +393,10 @@ export function registerOrganizationLimitsRoutes(router: Hono<AppEnv>, opts: Aut
 }
 
 export function registerServerLimitsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for server limits routes')
+  }
+
   router.use('/servers/:id/resource-limits', createSessionMiddleware(opts.secrets))
 
   router.get('/servers/:id/resource-limits', async (c) => {

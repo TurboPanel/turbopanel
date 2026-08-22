@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertThrows } from 'jsr:@std/assert'
+import { assertRejects, assertThrows } from '@std/assert'
 import { createDenoDb, createToolingDb, withToolingDb } from './db.ts'
 
 /**

@@ -1,4 +1,4 @@
-import { assertEquals, assertExists } from 'jsr:@std/assert'
+import { assertEquals, assertExists } from '@std/assert'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
 import { getClientOpenApiSpec } from './index.ts'
 
@@ -47,4 +47,49 @@ test('getClientOpenApiSpec wires cookie auth and core resource paths', () => {
   assertExists(spec.paths[`${CLIENT_API_PREFIX}/servers`])
   assertExists(spec.paths[`${CLIENT_API_PREFIX}/projects`])
   assertExists(spec.paths[`${CLIENT_API_PREFIX}/environments/{id}/managed`])
+})
+
+test('getClientOpenApiSpec registers the batched command status surface', () => {
+  const spec = getClientOpenApiSpec('https://localhost:8443') as {
+    tags: { name: string; description: string }[]
+    paths: Record<string, unknown>
+    components: { schemas: Record<string, unknown> }
+  }
+
+  assertEquals(spec.tags.some((tag) => tag.name === 'Commands'), true)
+
+  const statusPath = spec.paths[`${CLIENT_API_PREFIX}/commands/status`] as {
+    post: {
+      tags: string[]
+      requestBody: {
+        content: { 'application/json': { schema: { $ref: string } } }
+      }
+      responses: Record<
+        string,
+        { content?: { 'application/json': { schema: { $ref?: string } } } }
+      >
+    }
+  }
+  assertExists(statusPath)
+  assertEquals(statusPath.post.tags, ['Commands'])
+  assertEquals(
+    statusPath.post.requestBody.content['application/json'].schema.$ref,
+    '#/components/schemas/CommandStatusRequest',
+  )
+  assertEquals(
+    statusPath.post.responses['200']?.content?.['application/json'].schema.$ref,
+    '#/components/schemas/CommandStatusResponse',
+  )
+  assertExists(statusPath.post.responses['400'])
+
+  assertExists(spec.components.schemas.CommandStatusRequest)
+  assertExists(spec.components.schemas.CommandStatusResponse)
+  const record = spec.components.schemas.CommandStatusRecord as {
+    properties: Record<string, unknown>
+  }
+  assertExists(record)
+  // The batched projection is deliberately lean.
+  assertEquals('payload' in record.properties, false)
+  assertEquals('result' in record.properties, false)
+  assertEquals('context' in record.properties, false)
 })

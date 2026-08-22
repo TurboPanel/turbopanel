@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assert, assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../db.ts'
 import {
   createRedisCellClient,

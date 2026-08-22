@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { Hono } from 'hono'
 import type { Db } from '../db.ts'
 import {

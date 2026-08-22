@@ -34,6 +34,22 @@ import {
 import { setServerStatusEventSink } from './daemon/metrics/status-events.ts'
 import type { ServerMetricsStore } from './daemon/metrics/types.ts'
 import {
+  parseExecutionLogRetentionDays,
+  resolveExecutionLogStore,
+  type R2BucketLike,
+} from './lib/execution-logs/store-selection.ts'
+import { setExecutionLogSealSink } from './lib/execution-logs/seal-on-terminal.ts'
+import type { ExecutionLogStore } from './lib/execution-logs/types.ts'
+import {
+  isDisabledContainerLogStore,
+  parseContainerLogsEnabled,
+  resolveContainerLogStore,
+  resolveContainerLogsCloudflareConfig,
+  type PipelineLike,
+} from './lib/container-logs/store-selection.ts'
+import { setContainerLogBackendAvailable } from './daemon/container-logs-presence.ts'
+import type { ContainerLogStore } from './lib/container-logs/types.ts'
+import {
   closeWorkersRequestDb,
   openWorkersRequestDb,
   resolveWorkersClientAuthRateLimiter,
@@ -59,6 +75,8 @@ let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
 let cachedSecretsConfig: SecretsConfig | null = null
 let cachedCommandQueue: CommandQueue | null = null
 let cachedServerMetricsStore: ServerMetricsStore | null = null
+let cachedExecutionLogStore: ExecutionLogStore | null = null
+let cachedContainerLogStore: ContainerLogStore | null = null
 let cachedAuthRateLimiter: AuthRateLimiter | null = null
 let cachedDaemonCellRegistryFactory:
   | ((env: CloudflareBindings, db?: ReturnType<typeof createWorkersDb>) =>
@@ -77,6 +95,8 @@ export function resetWorkerAppCachesForTests(): void {
   cachedSecretsConfig = null
   cachedCommandQueue = null
   cachedServerMetricsStore = null
+  cachedExecutionLogStore = null
+  cachedContainerLogStore = null
   cachedAuthRateLimiter = null
   cachedDaemonCellRegistryFactory = null
 }
@@ -112,6 +132,28 @@ async function initWorkerApp(env: CloudflareBindings) {
     analyticsEngineSql: resolveAnalyticsEngineSqlConfig(env),
   })
   setServerStatusEventSink(cachedServerMetricsStore)
+  cachedExecutionLogStore = resolveExecutionLogStore({
+    runtime: 'workers',
+    r2: (env as { EXECUTION_LOGS?: R2BucketLike }).EXECUTION_LOGS,
+  })
+  // Terminal command transitions run in the queue-consumer and cron isolates
+  // that never see a Hono context — register the seal sink at isolate init.
+  setExecutionLogSealSink(cachedExecutionLogStore)
+  // Backend availability only — NOT the retention switch. Whether a tenant
+  // retains container output is `organization.options.containerLogsEnabled`,
+  // re-read on every ingest write and every read route. The Pipelines binding
+  // is added to wrangler.jsonc per-env only once the Stream/sink/Iceberg table
+  // exist, so `env.CONTAINER_LOGS` is normally absent: anything incomplete
+  // yields the disabled no-op store (and a one-time warning when the operator
+  // asked for container logs but nothing can serve them), and the presence ack
+  // is forced off so daemons do not stream into a backend that only drops.
+  cachedContainerLogStore = resolveContainerLogStore({
+    runtime: 'workers',
+    enabled: parseContainerLogsEnabled(env.TURBOPANEL_CONTAINER_LOGS_ENABLED),
+    pipeline: (env as { CONTAINER_LOGS?: PipelineLike }).CONTAINER_LOGS,
+    r2Sql: resolveContainerLogsCloudflareConfig(env),
+  })
+  setContainerLogBackendAvailable(!isDisabledContainerLogStore(cachedContainerLogStore))
   // Email queue + signup force are resolved per request from current env/DB —
   // do not bake them into createApp() so dashboard/panel changes apply without
   // waiting for an isolate recycle. signupEnvOverride here is only a fallback
@@ -124,6 +166,8 @@ async function initWorkerApp(env: CloudflareBindings) {
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
     serverMetricsStore: cachedServerMetricsStore,
+    executionLogStore: cachedExecutionLogStore,
+    containerLogStore: cachedContainerLogStore,
     dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
   })
@@ -131,14 +175,16 @@ async function initWorkerApp(env: CloudflareBindings) {
   warnIfClientAuthRateLimiterMissing(env)
   cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env)
   const rateLimiters = resolveWorkersDaemonRateLimiters(env)
-  // Daemon registrars still take untyped Hono (same as deno-server.ts).
-  const daemonRoutes = cachedApp as unknown as Hono
+  // Daemon registrars are generic over the env — the app's `AppEnv` carries
+  // through without a cast (same as deno-server.ts).
+  const daemonRoutes = cachedApp
   registerDaemonApiRoutes(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     challengeSigningSecrets: cachedChallengeSigningSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
     restLimiter: rateLimiters.rest,
     metricsLimiter: rateLimiters.metrics,
+    containerLogsLimiter: rateLimiters.containerLogs,
   })
   registerWorkersDaemonWebSocket(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
@@ -220,6 +266,12 @@ export default {
         if (cachedServerMetricsStore) {
           c.set('serverMetricsStore', cachedServerMetricsStore)
         }
+        if (cachedExecutionLogStore) {
+          c.set('executionLogStore', cachedExecutionLogStore)
+        }
+        if (cachedContainerLogStore) {
+          c.set('containerLogStore', cachedContainerLogStore)
+        }
         await next()
       })
       requestApp.route('/', cachedApp!)
@@ -246,6 +298,13 @@ export default {
             dataEncryptionSecrets: cachedDataEncryptionSecrets,
           }
           : null,
+        {
+          // Hosted retention override, resolved at the entry point exactly like
+          // deno-server.ts does for the self-hosted path.
+          executionLogRetentionDays: parseExecutionLogRetentionDays(
+            env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS,
+          ),
+        },
       ),
     )
   },

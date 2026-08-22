@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertExists } from "jsr:@std/assert";
+import { assert, assertEquals, assertExists } from "@std/assert";
 import type { DaemonCellSnapshot, PendingRequestStatus } from "./contracts.ts";
 import { mergeSnapshotPresence } from "./snapshot-merge.ts";
 

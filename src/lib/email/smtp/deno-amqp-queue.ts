@@ -1,4 +1,5 @@
 import amqplib from 'amqplib'
+import { Buffer } from 'node:buffer'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_EXCHANGE,
@@ -17,7 +18,6 @@ type AmqpConnection = Awaited<ReturnType<typeof amqplib.connect>>
 type AmqpChannel = Awaited<ReturnType<AmqpConnection['createConfirmChannel']>>
 
 class DenoAmqpQueue implements EmailQueue {
-  private readonly encoder = new TextEncoder()
   private connection: AmqpConnection | null = null
   private channel: AmqpChannel | null = null
   private connectPromise: Promise<void> | null = null
@@ -49,7 +49,7 @@ class DenoAmqpQueue implements EmailQueue {
         this.channel!.publish(
           EMAIL_AMQP_EXCHANGE,
           EMAIL_AMQP_ROUTING_KEY,
-          this.encoder.encode(JSON.stringify(job)),
+          Buffer.from(JSON.stringify(job), 'utf8'),
           { persistent: true, mandatory: true },
           (error: Error | null) => {
             if (error) reject(error)

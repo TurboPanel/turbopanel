@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from "jsr:@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { RedisDaemonCell } from "./cell/redis/cell.ts";
 import { it } from "@std/testing/bdd";
 import {

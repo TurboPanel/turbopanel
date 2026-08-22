@@ -217,6 +217,20 @@ export type DaemonMessage =
     daemonRespondedAt?: string;
   };
 
+/**
+ * Control-plane acknowledgement of a `hello` / `heartbeat`.
+ *
+ * **Outbound only** — never accepted from a daemon (it is absent from
+ * {@link DAEMON_INBOUND_ALLOWED}). Carries the owning organization's opt-in
+ * flags so a daemon can start or stop container log collection without a new
+ * command type; see `../container-logs-presence.ts`.
+ */
+export type DaemonPresenceAckMessage = {
+  type: "presence-ack";
+  at: string;
+  containerLogsEnabled: boolean;
+};
+
 /** Read-time stale window when no inbound traffic is recorded on the cell. */
 export const DAEMON_STALE_MS = 60_000;
 /** Background sweep threshold for marking connected cells offline (DO alarm + Redis maintain). */

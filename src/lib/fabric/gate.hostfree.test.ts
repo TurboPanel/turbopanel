@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import type { CommandStatus } from '../commands/types.ts'
 import { composeNetworkNamesByServer, type EnvironmentComposeNetwork } from '../db/fabric-records.ts'
@@ -47,9 +47,10 @@ function commandRow(
     name: 'server.fabric.reconcile',
     status,
     attempts: 0,
-    payload: {},
-    metadata: error ? { error } : {},
-    result: null,
+    context: null,
+    errorMessage: error ?? null,
+    errorCode: null,
+    resultSummary: null,
     createdAt: '2020-01-01T00:00:00.000Z',
     updatedAt: '2020-01-01T00:00:00.000Z',
   }

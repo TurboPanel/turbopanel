@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import type { Context } from "hono";
 import type { AppEnv } from "../../app.ts";
 import {
@@ -14,6 +14,7 @@ import {
   rejectImmutableIpPatchFields,
   serializeIpRow,
 } from "./ip-create-validation.ts";
+import type { IpPatchFields } from "./ip-create-validation.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -37,7 +38,7 @@ function mockContext(query: Record<string, string> = {}): Context<AppEnv> {
 }
 
 async function expectInvalidRequest(
-  response: Response | { address: string },
+  response: Response | { address: string } | null,
 ): Promise<void> {
   if (!(response instanceof Response)) {
     throw new TypeError("expected invalid request response");
@@ -247,7 +248,7 @@ test("parseEnumQueryFilter and parseScopeFkUuid validate query and body UUIDs", 
 
 test("applyJsonbPatchFields merges metadata and options on IP patch", async () => {
   const c = mockContext();
-  const patchFields = { updatedAt: "2020-01-01T00:00:00.000Z" };
+  const patchFields: IpPatchFields = { updatedAt: "2020-01-01T00:00:00.000Z" };
   assertEquals(
     applyJsonbPatchFields(c, { metadata: { tag: "edge" } }, patchFields),
     null,

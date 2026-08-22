@@ -7,6 +7,8 @@ import { createBrowserWriteProtectionMiddleware } from './browser-write-protecti
 import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
 import type { ServerMetricsStore } from './daemon/metrics/types.ts'
+import type { ExecutionLogStore } from './lib/execution-logs/types.ts'
+import type { ContainerLogStore } from './lib/container-logs/types.ts'
 import type { Db } from './db.ts'
 import type { SignupEnvOverride } from './client/authn/install-state.ts'
 import type { CommandQueue } from './lib/commands/queue.ts'
@@ -31,6 +33,17 @@ export type AppEnv = {
      * this stays unset when no storage backend is configured for the runtime.
      */
     serverMetricsStore?: ServerMetricsStore
+    /**
+     * Command execution-log (transcript) store. Stays unset when no storage
+     * backend is configured for the runtime — reads then report "no transcript".
+     */
+    executionLogStore?: ExecutionLogStore
+    /**
+     * Container stdout/stderr store. Container logs are **default-off**, so
+     * this is normally the `DisabledContainerLogStore` no-op rather than
+     * absent — callers never branch on availability.
+     */
+    containerLogStore?: ContainerLogStore
     /**
      * Runtime serving the request. Used by session-cookie TLS resolution to
      * decide whether `X-Forwarded-Proto` is trustworthy (Deno Caddy-over-Unix
@@ -67,6 +80,8 @@ export function createApp(
     daemonCellRegistry,
     queryCache,
     serverMetricsStore,
+    executionLogStore,
+    containerLogStore,
     dataEncryptionSecrets,
     secretsConfig,
     authRateLimiter,
@@ -84,6 +99,8 @@ export function createApp(
     daemonCellRegistry?: DaemonCellRegistry
     queryCache?: QueryCache
     serverMetricsStore?: ServerMetricsStore
+    executionLogStore?: ExecutionLogStore
+    containerLogStore?: ContainerLogStore
     dataEncryptionSecrets?: DerivedSecretsConfig
     secretsConfig?: SecretsConfig
     /**
@@ -95,7 +112,7 @@ export function createApp(
     authRateLimiter?: AuthRateLimiter
     /** HMAC keyring for email OTP verifiers — forwarded to client auth routes. */
     otpVerifierSecrets?: DerivedSecretsConfig
-  } = {},
+  },
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>()
   registerCorsMiddleware(app, corsOrigins)
@@ -136,6 +153,18 @@ export function createApp(
   if (serverMetricsStore) {
     app.use('*', (c, next) => {
       c.set('serverMetricsStore', serverMetricsStore)
+      return next()
+    })
+  }
+  if (executionLogStore) {
+    app.use('*', (c, next) => {
+      c.set('executionLogStore', executionLogStore)
+      return next()
+    })
+  }
+  if (containerLogStore) {
+    app.use('*', (c, next) => {
+      c.set('containerLogStore', containerLogStore)
       return next()
     })
   }

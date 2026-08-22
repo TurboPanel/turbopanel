@@ -405,6 +405,10 @@ test('enqueueSystemReconcileIfConnected enqueues when is_connected is true', asy
         },
       ])
     },
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: () => ({
       values: (values: Record<string, unknown>) => {
         insertCount += 1
@@ -469,6 +473,10 @@ test('enqueueSystemReconcile scopes to environmentId and enqueues', async () => 
         ingress_status: null,
       },
     ]),
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: () => ({
       values: (values: Record<string, unknown>) => {
         insertCount += 1
@@ -528,6 +536,10 @@ test('enqueueSystemReconcile returns enqueue_failed when queue rejects all', asy
         ingress_status: 'running',
       },
     ]),
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: () => ({
       values: (values: Record<string, unknown>) => ({
         returning: () =>
@@ -615,6 +627,10 @@ test('runSystemReconcileSweep enqueues candidates and counts successes', async (
         },
       ])
     },
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: () => ({
       values: (values: Record<string, unknown>) => {
         insertCount += 1
@@ -663,10 +679,16 @@ function sequencedExecuteDb(
   const queue = [...resultSets]
   return {
     execute: () => Promise.resolve(queue.shift() ?? []),
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: () => ({
-      values: (values: Record<string, unknown>) => ({
+      values: (values: Record<string, unknown>) => {
+        // The dispatch row carries the payload; the command row never does.
+        if (values.payload !== undefined) onInsert?.(values)
+        return {
         returning: () => {
-          onInsert?.(values)
           return Promise.resolve([
             {
               id: 'cmd-1',
@@ -678,7 +700,8 @@ function sequencedExecuteDb(
             },
           ])
         },
-      }),
+        }
+      },
     }),
   } as unknown as Db
 }

@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import type { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -21,7 +21,11 @@ export {
 } from './routes-helpers.ts'
 
 export function registerSystemRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
-  const { secrets } = opts
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for system routes')
+  }
+  const secrets = opts.secrets
+
   router.use('/servers/:id/system/*', createSessionMiddleware(secrets))
 
   router.post('/servers/:id/system/:component/restart', async (c) => {

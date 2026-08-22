@@ -2,7 +2,7 @@
  * Host-free coverage for plan-deploy helpers + planEnvironmentDeploy (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { emptyComposeDocument } from '../compose/types.ts'
 import {

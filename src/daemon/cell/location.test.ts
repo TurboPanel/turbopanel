@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { ServerMetadata, ServerOptions } from "../../lib/db/server-metadata.ts";
 import { resolveCellLocationHint } from "./location.ts";

@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import amqplib from 'amqplib'
 import {
@@ -159,6 +159,7 @@ test('createDenoAmqpCommandQueue rejects when broker connection fails', async ()
 
 test('createDenoAmqpCommandQueue close is safe when never connected', async () => {
   const queue = createDenoAmqpCommandQueue({ amqpUrl: 'amqp://unused' })
+  if (!queue.close) throw new TypeError('expected a closable command queue')
   await queue.close()
 })
 

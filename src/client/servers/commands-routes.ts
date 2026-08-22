@@ -8,9 +8,10 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import { getDb, type Db } from '../../db.ts'
+import { getDb, getExecutionLogStore, type Db } from '../../db.ts'
 import {
   getCommandRecord,
+  listCommandRecordsByIds,
   listServerCommands,
 } from '../../lib/db/command-records.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
@@ -19,9 +20,14 @@ import {
   parseHostnameCommandBody,
   parseTimezoneCommandBody,
   parseNtpCommandBody,
+  parseCommandStatusBody,
+  parseCommandLogQuery,
   shapeCommandGetResponse,
+  shapeCommandLogResponse,
+  shapeCommandStatusResponse,
   commandNotFoundOnServer,
 } from './commands-routes-helpers.ts'
+import { listVisible } from '../authz/index.ts'
 
 type ServerCommandAccess = {
   db: Db
@@ -60,10 +66,71 @@ export function registerServerCommandRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
 ) {
-  router.use('/servers/:id/commands/*', createSessionMiddleware(opts.secrets))
-  router.use('/servers/:id/hostname', createSessionMiddleware(opts.secrets))
-  router.use('/servers/:id/timezone', createSessionMiddleware(opts.secrets))
-  router.use('/servers/:id/ntp', createSessionMiddleware(opts.secrets))
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for server command routes')
+  }
+  const secrets = opts.secrets
+
+  router.use('/commands/status', createSessionMiddleware(secrets))
+  router.use('/servers/:id/commands/*', createSessionMiddleware(secrets))
+  router.use('/servers/:id/hostname', createSessionMiddleware(secrets))
+  router.use('/servers/:id/timezone', createSessionMiddleware(secrets))
+  router.use('/servers/:id/ntp', createSessionMiddleware(secrets))
+
+  /**
+   * Batched lean status for tracked commands — one request instead of one per
+   * command id. Ids the session cannot see are silently dropped (never 403),
+   * so one org's ids cannot probe another's. Never reads `dispatch`.
+   */
+  router.post('/commands/status', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const parsed = parseCommandStatusBody(body)
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, parsed.status)
+    }
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+
+    const records = await listCommandRecordsByIds(db, parsed.ids)
+    if (records.length === 0) {
+      return c.json({ ok: true, commands: [] })
+    }
+
+    // One authz round-trip for the whole batch, then intersect.
+    const visibleIds = new Set(
+      await listVisible(db, {
+        kind: 'server',
+        userId: session.userId,
+        organizationId: orgResult,
+      }),
+    )
+
+    const visible = records.filter((record) => visibleIds.has(record.serverId))
+
+    // Transcript existence is store-side, not a column — resolve it per id in
+    // parallel. Fan-out is bounded by COMMAND_STATUS_BATCH_LIMIT (100).
+    const store = getExecutionLogStore(c)
+    const hasLogs = store
+      ? await Promise.all(
+          visible.map((record) => store.exists(record.id).catch(() => false))
+        )
+      : visible.map(() => false)
+
+    const commands = visible.map((record, index) =>
+      shapeCommandStatusResponse(record, hasLogs[index])
+    )
+
+    return c.json({ ok: true, commands })
+  })
 
   router.post('/servers/:id/commands/ping', async (c) => {
     const access = await resolveServerCommandAccess(c, c.req.param('id'), 'read')
@@ -165,6 +232,31 @@ export function registerServerCommandRoutes(
     }
 
     return c.json(shapeCommandGetResponse(record!))
+  })
+
+  /**
+   * Command transcript tail. Poll with the previous response's `nextSeq` as
+   * `from`. A command with no transcript yet returns an empty body with
+   * `exists: false` rather than 404, so the client poll loop stays uniform.
+   */
+  router.get('/servers/:id/commands/:commandId/log', async (c) => {
+    const access = await resolveServerCommandAccess(c, c.req.param('id'), 'read')
+    if (access instanceof Response) return access
+
+    const commandId = c.req.param('commandId')
+    const record = await getCommandRecord(access.db, commandId)
+    if (commandNotFoundOnServer(record, access.serverId)) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const query = parseCommandLogQuery(c.req.query('from'), c.req.query('max'))
+    const store = getExecutionLogStore(c)
+    if (!store) {
+      return c.json(shapeCommandLogResponse(null, query.from))
+    }
+
+    const result = await store.readFrom(commandId, query.from, query.max)
+    return c.json(shapeCommandLogResponse(result, query.from))
   })
 
   router.get('/servers/:id/commands', async (c) => {

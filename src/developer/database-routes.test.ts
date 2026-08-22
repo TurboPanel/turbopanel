@@ -1,5 +1,6 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
+import type { AppEnv } from '../app.ts'
 import type { Db } from '../db.ts'
 import { getDatabaseUrl } from '../db-url.ts'
 import { createDenoDb } from '../db.ts'
@@ -15,7 +16,7 @@ import { testOnlyPostgresTcpUrl } from '../test-fixtures/database-url.ts'
 const test = Deno.test.bind(Deno)
 
 function buildDatabaseApp(db: Db | undefined, postgresConnectionString?: string) {
-  const app = new Hono()
+  const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     if (db) c.set('db', db)
     if (postgresConnectionString) {

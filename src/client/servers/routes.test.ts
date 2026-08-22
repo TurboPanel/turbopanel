@@ -14,6 +14,7 @@ import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   container,
   command,
+  dispatch,
   environment,
   fabric,
   grant,
@@ -2429,11 +2430,11 @@ test('DELETE /servers/:id succeeds after enable → disable → reconcile lifecy
 
     const [stopCommand] = await db
       .select({
-        id: command.id,
-        payload: command.payload,
+        id: dispatch.commandId,
+        payload: dispatch.payload,
       })
-      .from(command)
-      .where(eq(command.id, envelopes[0]!.commandId))
+      .from(dispatch)
+      .where(eq(dispatch.commandId, envelopes[0]!.commandId))
       .limit(1)
     const stopPayload = stopCommand?.payload as {
       action?: string

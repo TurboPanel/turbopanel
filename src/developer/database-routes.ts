@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import type { Hono } from 'hono'
+import type { Env, Hono } from 'hono'
 import {
   drizzleStudioProbeStatus,
   postgresConfigFromContext,
@@ -16,7 +16,7 @@ import {
 export type { DatabaseStatus } from './database-routes-helpers.ts'
 
 /** Workers-safe database diagnostics (status + studio probe). */
-export function registerDatabaseRoutes(developer: Hono): void {
+export function registerDatabaseRoutes<E extends Env>(developer: Hono<E>): void {
   developer.get('/database/status', async (c) => {
     const meta = postgresConfigFromContext(c)
     if (!meta.configured) {

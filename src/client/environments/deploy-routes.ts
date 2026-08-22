@@ -60,6 +60,7 @@ import {
 } from "./deploy-routes-helpers.ts";
 import { resolveTcpUdpIngressServices } from "./tcp-udp-ingress.ts";
 import { isNoopCommandQueue } from "../../lib/commands/noop-command-queue.ts";
+import { normalizeReplicaCounts } from "../../lib/commands/context.ts";
 import {
   type CommandQueue,
   getCommandQueue,
@@ -860,6 +861,7 @@ async function createDeployCommand(
   params: DeployCommandCreateParams,
 ): Promise<CreatedDeployCommand> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString();
+  const replicaCounts = normalizeReplicaCounts(params.replicaCounts);
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
     actorType: "user",
@@ -911,6 +913,19 @@ async function createDeployCommand(
         : {}),
       ...(params.noCache ? { noCache: true } : {}),
       listenerPorts: params.listenerPorts,
+    },
+    // Durable, non-secret read model for deploy history. `dispatch.payload` is
+    // deleted once the command reaches a terminal state, and the `deployment`
+    // row is overwritten by the next redeploy, so the per-service replica
+    // counts a past deploy asked for only survive if they are written onto the
+    // permanent `command.context` here.
+    context: {
+      environmentId: params.environmentId,
+      projectId: params.projectId,
+      serverId: params.serverId,
+      generation: params.generation,
+      desiredHash: params.desiredHash,
+      ...(replicaCounts ? { replicaCounts } : {}),
     },
     expiresAt,
   });

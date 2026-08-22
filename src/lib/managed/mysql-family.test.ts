@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   MYSQL_ACCOUNT_MAX_LENGTH,
   MYSQL_SCHEMA_MAX_LENGTH,

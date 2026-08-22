@@ -1,10 +1,11 @@
-import { assert, assertEquals, assertExists } from "jsr:@std/assert";
+import { assert, assertEquals, assertExists } from "@std/assert";
 import { decodeBase64Url, encodeBase64Url } from "@std/encoding/base64url";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv } from "../app.ts";
 import { deriveSecretsConfig } from "../client/authn/secrets.ts";
 import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
+import type { DaemonPublicJwk } from "./authn/daemon-jwt-keyring.ts";
 import { encryptSecretForDaemon } from "../client/authn/data-encryption.ts";
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
@@ -266,31 +267,11 @@ function createSnapshotTrackingCell(
     releaseDeliveryLease: noopAsync,
     readOutboxBatch: async () => [],
     ackOutbox: noopAsync,
-    prune: async () => false,
+    prune: async () => [],
     clearUpdateStatus: async () => ({ cleared: 0 }),
     purge: noopAsync,
   };
   return { cell, putSnapshotPatches };
-}
-
-function wrapDbWithUpdateSpy(db: ReturnType<typeof createDenoDb>): {
-  db: ReturnType<typeof createDenoDb>;
-  updateCalls: number;
-} {
-  let updateCalls = 0;
-  const originalUpdate = db.update.bind(db);
-  const spiedDb = Object.assign(db, {
-    update: (...args: Parameters<typeof db.update>) => {
-      updateCalls += 1;
-      return originalUpdate(...args);
-    },
-  });
-  return {
-    db: spiedDb,
-    get updateCalls() {
-      return updateCalls;
-    },
-  };
 }
 
 async function createTestAppWithRegistry(
@@ -506,7 +487,7 @@ test("GET /jwks.json returns public OKP keys only", async () => {
     false,
   );
 
-  const body = JSON.parse(bodyText) as { keys: JsonWebKey[] };
+  const body = JSON.parse(bodyText) as { keys: DaemonPublicJwk[] };
   assert(body.keys.length > 0);
   for (const key of body.keys) {
     assertEquals(key.kty, "OKP");

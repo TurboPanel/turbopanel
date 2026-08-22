@@ -2,7 +2,7 @@
  * Host-free inherited variable resolution coverage.
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import {
   mergeHostingVariablesForService,

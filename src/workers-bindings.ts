@@ -149,7 +149,8 @@ export async function closeWorkersRequestDb(
 }
 
 /**
- * Resolve Workers Rate Limit bindings for daemon WS-upgrade, REST, and metrics.
+ * Resolve Workers Rate Limit bindings for daemon WS-upgrade, REST, metrics, and
+ * container-log ingest.
  *
  * - Binding present → durable limiter over the Cloudflare `RateLimit` binding.
  * - Binding absent on a **dev** surface / tests → noop (routes stay usable).
@@ -158,7 +159,12 @@ export async function closeWorkersRequestDb(
  */
 export function resolveWorkersDaemonRateLimiters(
   env: CloudflareBindings,
-): { connect: RateLimiter; rest: RateLimiter; metrics: RateLimiter } {
+): {
+  connect: RateLimiter
+  rest: RateLimiter
+  metrics: RateLimiter
+  containerLogs: RateLimiter
+} {
   const allowNoop = isWorkersDevSurface(env)
   return {
     connect: resolveDaemonLimiterBinding(
@@ -168,6 +174,10 @@ export function resolveWorkersDaemonRateLimiters(
     rest: resolveDaemonLimiterBinding(env.DAEMON_REST_RATE_LIMITER, allowNoop),
     metrics: resolveDaemonLimiterBinding(
       env.DAEMON_METRICS_RATE_LIMITER,
+      allowNoop,
+    ),
+    containerLogs: resolveDaemonLimiterBinding(
+      env.CONTAINER_LOGS_RATE_LIMITER,
       allowNoop,
     ),
   }
@@ -243,7 +253,8 @@ export function warnIfDaemonRateLimitersMissing(env: CloudflareBindings): void {
   if (
     env.DAEMON_CONNECT_RATE_LIMITER &&
     env.DAEMON_REST_RATE_LIMITER &&
-    env.DAEMON_METRICS_RATE_LIMITER
+    env.DAEMON_METRICS_RATE_LIMITER &&
+    env.CONTAINER_LOGS_RATE_LIMITER
   ) {
     return
   }
@@ -251,7 +262,8 @@ export function warnIfDaemonRateLimitersMissing(env: CloudflareBindings): void {
 
   daemonRateLimiterWarningLogged = true
   console.warn(
-    'DAEMON_CONNECT_RATE_LIMITER / DAEMON_REST_RATE_LIMITER / DAEMON_METRICS_RATE_LIMITER binding(s) missing; daemon rate limits fail closed (429) until bound.',
+    'DAEMON_CONNECT_RATE_LIMITER / DAEMON_REST_RATE_LIMITER / DAEMON_METRICS_RATE_LIMITER / ' +
+      'CONTAINER_LOGS_RATE_LIMITER binding(s) missing; daemon rate limits fail closed (429) until bound.',
   )
 }
 

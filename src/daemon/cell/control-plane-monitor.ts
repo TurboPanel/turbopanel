@@ -21,7 +21,7 @@ import {
 import { resolveTrunkManifest } from "../../lib/update/manifest.ts";
 import { isStaleProjectedUpdating } from "../../client/servers/update-status.ts";
 import { UPDATE_REQUEST_TTL_MS } from "../../lib/update/constants.ts";
-import { RedisDaemonCell } from "./redis/cell.ts";
+import type { RedisDaemonCell } from "./redis/cell.ts";
 import type { RedisDaemonCellRegistry } from "./redis/registry.ts";
 
 export async function onDaemonConnected(

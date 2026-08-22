@@ -153,10 +153,14 @@ function fakeCommandDb(
   captured: { payloads: unknown[]; transitions: string[] },
 ): Db {
   return {
+    // createCommandRecord writes command + dispatch in one transaction.
+    transaction(fn: (tx: unknown) => Promise<unknown>) {
+      return fn(this)
+    },
     insert: () => ({
       values: (values: Record<string, unknown>) => ({
+        // Dispatch payload rows carry `commandId`; command rows carry `serverId`.
         returning: () => {
-          captured.payloads.push(values.payload)
           return Promise.resolve([
             {
               id: `cmd-${captured.payloads.length}`,
@@ -167,6 +171,10 @@ function fakeCommandDb(
               queuedAt: '2026-01-01T00:00:00.000Z',
             },
           ])
+        },
+        then: (resolve: (value: unknown) => unknown) => {
+          if (values.payload !== undefined) captured.payloads.push(values.payload)
+          return Promise.resolve(undefined).then(resolve)
         },
       }),
     }),

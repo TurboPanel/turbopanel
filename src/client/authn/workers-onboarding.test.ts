@@ -117,7 +117,7 @@ async function createAuthRouteApp(
     }
     return next()
   })
-  const client = new Hono()
+  const client = new Hono<AppEnv>()
   registerAuthRoutes(client, {
     secrets,
     otpVerifierSecrets,

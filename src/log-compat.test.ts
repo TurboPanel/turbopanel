@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import { compatLogError, compatLogInfo, compatLogWarn } from './log-compat.ts'
 

@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   DAEMON_CHALLENGE_TTL_MS,
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,

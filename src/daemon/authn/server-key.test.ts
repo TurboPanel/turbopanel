@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert";
+import { assertEquals } from "@std/assert";
 import { encodeBase64Url } from "@std/encoding/base64url";
 import {
   buildAuthPayload,

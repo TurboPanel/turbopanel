@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   ADMIN_API_PREFIX,
   CLIENT_API_PREFIX,

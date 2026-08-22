@@ -2,7 +2,7 @@
  * Host-free coverage for environment generation bumps (no Postgres).
  */
 
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { bumpEnvironmentGeneration } from './environment-generation.ts'
 

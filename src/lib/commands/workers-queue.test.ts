@@ -1,6 +1,7 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { CommandType } from './types.ts'
 import { createWorkersCommandQueue } from './workers-queue.ts'
+import type { CommandQueueBinding } from './workers-queue.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -16,7 +17,7 @@ test('createWorkersCommandQueue forwards envelopes to the Workers Queue binding'
     send: async (body: unknown) => {
       sent.push(body)
     },
-  } as Queue
+  } as CommandQueueBinding
 
   const commandQueue = createWorkersCommandQueue(queue)
   const envelope = {

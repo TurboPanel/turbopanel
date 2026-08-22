@@ -20,7 +20,7 @@ export async function generateLicenseToken(): Promise<{
   plaintext: string
   hashed: string
 }> {
-  const plaintext = generatePassword(48)
+  const plaintext = generatePassword()
   const hashed = await hashPassword(plaintext)
   return { plaintext, hashed }
 }

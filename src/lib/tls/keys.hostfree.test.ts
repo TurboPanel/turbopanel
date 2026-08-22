@@ -2,7 +2,7 @@
  * Host-free EC / Ed25519 private-key match paths (RSA covered by tls.test.ts).
  */
 
-import { assertEquals, assertRejects } from 'jsr:@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { privateKeyMatchesCertificate, TlsKeyError } from './keys.ts'
 import { encodePemBlock } from './pem.ts'
 import type { ParsedCertificate } from './types.ts'

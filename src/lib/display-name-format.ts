@@ -18,6 +18,7 @@ export const DESCRIPTION_MAX_LENGTH = 255;
  * line/paragraph separators. Nothing else is disallowed.
  */
 const DISPLAY_NAME_CONTROL_CHARS_RE =
+  // deno-lint-ignore no-control-regex -- matching control characters is the point
   /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
 
 const LEFT_SINGLE_QUOTE = "\u2018";

@@ -1,4 +1,4 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { DesiredTaskInput } from '../db/task-records.ts'
 import { assignTaskAddresses, buildCompileAddressMaps } from './task-addresses.ts'
 

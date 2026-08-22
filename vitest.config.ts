@@ -56,6 +56,9 @@ export default defineConfig({
       'src/workers.entry.test.ts',
       'src/wrangler-hyperdrive-bindings.test.ts',
       'src/lib/machine-key.workers.test.ts',
+      // Execution-log conformance under workerd — exercises workerd's
+      // CompressionStream/DecompressionStream, which the Deno run cannot.
+      'src/lib/execution-logs/r2-store.workers.test.ts',
     ],
     coverage: {
       // Istanbul instruments source at build time, so — unlike the default

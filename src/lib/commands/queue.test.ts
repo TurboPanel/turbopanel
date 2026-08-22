@@ -1,5 +1,6 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import type { CommandQueue } from './queue.ts'
 import { getCommandQueue } from './queue.ts'
 
@@ -16,7 +17,7 @@ test('getCommandQueue reads the Hono context binding', async () => {
     enqueue: async () => {},
   } satisfies CommandQueue
 
-  const app = new Hono()
+  const app = new Hono<AppEnv>()
   app.use('*', async (c, next) => {
     c.set('commandQueue', queue)
     await next()

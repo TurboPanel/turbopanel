@@ -55,7 +55,7 @@
       }
     ]
   },
-  // Daemon WS-upgrade / REST / metrics rate limits — distinct namespace_ids per env (account-global counters).
+  // Daemon WS-upgrade / REST / metrics / container-log rate limits — distinct namespace_ids per env (account-global counters).
   "ratelimits": [
     {
       "name": "DAEMON_CONNECT_RATE_LIMITER",
@@ -78,6 +78,13 @@
       "name": "DAEMON_METRICS_RATE_LIMITER",
       "namespace_id": "1004",
       "simple": { "limit": 3, "period": 60 }
+    },
+    {
+      // Container-log ingest. Dedicated so batched container output cannot
+      // spend the shared REST budget enroll/session/decrypt depend on.
+      "name": "CONTAINER_LOGS_RATE_LIMITER",
+      "namespace_id": "1005",
+      "simple": { "limit": 60, "period": 60 }
     }
   ],
   // Offline sweep (see src/daemon/cell/offline-sweep.ts) — 1 minute is Cloudflare's
@@ -95,8 +102,54 @@
       "dataset": "turbopanel_server_metrics"
     }
   ],
+  // Command execution logs (transcripts). Buckets are NOT auto-created — create
+  // each one before the first deploy to that env (`wrangler r2 bucket create <name>`),
+  // same manual-prerequisite convention as the Hyperdrive ids above.
+  // Keyed-object storage, not an analytics table: a transcript is only ever
+  // fetched by command id. See src/lib/execution-logs/AGENTS.md.
+  "r2_buckets": [
+    {
+      "binding": "EXECUTION_LOGS",
+      "bucket_name": "dev-turbopanel-execution-logs"
+    }
+  ],
+  // Container logs (stdout/stderr of running containers) — Pipelines in,
+  // R2 SQL out. The Pipeline (Stream) sinks into an Apache Iceberg table in R2
+  // Data Catalog; reads go through the R2 SQL HTTP API. NOT auto-created —
+  // provision the stream, sink and Data Catalog table before the first deploy
+  // to that env (`wrangler pipelines setup`), same manual-prerequisite
+  // convention as the r2_buckets and Hyperdrive ids above.
+  // Reads need the secret TURBOPANEL_CONTAINER_LOGS_R2_SQL_API_TOKEN (R2 SQL +
+  // R2 Data Catalog + R2 storage read) plus CLOUDFLARE_ACCOUNT_ID and the
+  // TURBOPANEL_CONTAINER_LOGS_R2_SQL_* vars below.
+  // Default-off: nothing is written unless TURBOPANEL_CONTAINER_LOGS_ENABLED is
+  // truthy. See src/lib/container-logs/AGENTS.md.
+  //
+  // There is deliberately NO `pipelines` binding checked in here. Wrangler
+  // resolves bindings at deploy time, so a committed placeholder stream id
+  // would put this beta backend on the deploy critical path for every env —
+  // including envs that have container logs switched off or not yet
+  // provisioned. Instead, add the binding to this env block only once the real
+  // stream exists:
+  //
+  //   "pipelines": [{ "binding": "CONTAINER_LOGS", "stream": "<real stream id>" }]
+  //
+  // Until then `env.CONTAINER_LOGS` is simply absent and
+  // `resolveContainerLogStore` falls back to `DisabledContainerLogStore` —
+  // the runtime resolver is the only activation gate.
   "vars": {
-    "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
+    "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+    // Container logs (default-off; set to 1/true/yes/on to retain container
+    // stdout/stderr). See src/lib/container-logs/AGENTS.md.
+    "TURBOPANEL_CONTAINER_LOGS_ENABLED": "0",
+    // R2 bucket backing the Data Catalog warehouse the Iceberg table lives in.
+    "TURBOPANEL_CONTAINER_LOGS_R2_SQL_BUCKET": "dev-turbopanel-container-logs",
+    // Catalog identifier of the table, as `namespace.table`.
+    "TURBOPANEL_CONTAINER_LOGS_ICEBERG_TABLE": "default.container_logs",
+    // Transcript retention window in days (positive integer). Anything else
+    // falls back to the 30-day default — parity with the Deno
+    // TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS env var.
+    "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "30"
   },
   "exports": {
     "DaemonCellObject": {
@@ -148,6 +201,11 @@
           "name": "DAEMON_METRICS_RATE_LIMITER",
           "namespace_id": "2004",
           "simple": { "limit": 3, "period": 60 }
+        },
+        {
+          "name": "CONTAINER_LOGS_RATE_LIMITER",
+          "namespace_id": "2005",
+          "simple": { "limit": 60, "period": 60 }
         }
       ],
       "triggers": { "crons": ["* * * * *"] },
@@ -157,6 +215,36 @@
           "dataset": "turbopanel_server_metrics"
         }
       ],
+      "r2_buckets": [
+        {
+          "binding": "EXECUTION_LOGS",
+          "bucket_name": "testing-turbopanel-execution-logs"
+        }
+      ],
+      // Container logs (stdout/stderr of running containers) — Pipelines in,
+      // R2 SQL out. The Pipeline (Stream) sinks into an Apache Iceberg table in R2
+      // Data Catalog; reads go through the R2 SQL HTTP API. NOT auto-created —
+      // provision the stream, sink and Data Catalog table before the first deploy
+      // to that env (`wrangler pipelines setup`), same manual-prerequisite
+      // convention as the r2_buckets and Hyperdrive ids above.
+      // Reads need the secret TURBOPANEL_CONTAINER_LOGS_R2_SQL_API_TOKEN (R2 SQL +
+      // R2 Data Catalog + R2 storage read) plus CLOUDFLARE_ACCOUNT_ID and the
+      // TURBOPANEL_CONTAINER_LOGS_R2_SQL_* vars below.
+      // Default-off: nothing is written unless TURBOPANEL_CONTAINER_LOGS_ENABLED is
+      // truthy. See src/lib/container-logs/AGENTS.md.
+      //
+      // There is deliberately NO `pipelines` binding checked in here. Wrangler
+      // resolves bindings at deploy time, so a committed placeholder stream id
+      // would put this beta backend on the deploy critical path for every env —
+      // including envs that have container logs switched off or not yet
+      // provisioned. Instead, add the binding to this env block only once the real
+      // stream exists:
+      //
+      //   "pipelines": [{ "binding": "CONTAINER_LOGS", "stream": "<real stream id>" }]
+      //
+      // Until then `env.CONTAINER_LOGS` is simply absent and
+      // `resolveContainerLogStore` falls back to `DisabledContainerLogStore` —
+      // the runtime resolver is the only activation gate.
       "hyperdrive": [
         {
           "binding": "HYPERDRIVE",
@@ -183,7 +271,15 @@
         "TURBOPANEL_BASE_URL": "https://testing.turbopanel.dev",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://testing.turbopanel.io",
         "TURBOPANEL_IS_SIGNUP_ENABLED": "1",
-        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
+        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+        "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "30",
+        // Container logs (default-off; set to 1/true/yes/on to retain container
+        // stdout/stderr). See src/lib/container-logs/AGENTS.md.
+        "TURBOPANEL_CONTAINER_LOGS_ENABLED": "0",
+        // R2 bucket backing the Data Catalog warehouse the Iceberg table lives in.
+        "TURBOPANEL_CONTAINER_LOGS_R2_SQL_BUCKET": "testing-turbopanel-container-logs",
+        // Catalog identifier of the table, as `namespace.table`.
+        "TURBOPANEL_CONTAINER_LOGS_ICEBERG_TABLE": "default.container_logs"
       }
     },
     "live": {
@@ -228,6 +324,11 @@
           "name": "DAEMON_METRICS_RATE_LIMITER",
           "namespace_id": "3004",
           "simple": { "limit": 3, "period": 60 }
+        },
+        {
+          "name": "CONTAINER_LOGS_RATE_LIMITER",
+          "namespace_id": "3005",
+          "simple": { "limit": 60, "period": 60 }
         }
       ],
       "triggers": { "crons": ["* * * * *"] },
@@ -237,6 +338,36 @@
           "dataset": "turbopanel_server_metrics"
         }
       ],
+      "r2_buckets": [
+        {
+          "binding": "EXECUTION_LOGS",
+          "bucket_name": "turbopanel-execution-logs"
+        }
+      ],
+      // Container logs (stdout/stderr of running containers) — Pipelines in,
+      // R2 SQL out. The Pipeline (Stream) sinks into an Apache Iceberg table in R2
+      // Data Catalog; reads go through the R2 SQL HTTP API. NOT auto-created —
+      // provision the stream, sink and Data Catalog table before the first deploy
+      // to that env (`wrangler pipelines setup`), same manual-prerequisite
+      // convention as the r2_buckets and Hyperdrive ids above.
+      // Reads need the secret TURBOPANEL_CONTAINER_LOGS_R2_SQL_API_TOKEN (R2 SQL +
+      // R2 Data Catalog + R2 storage read) plus CLOUDFLARE_ACCOUNT_ID and the
+      // TURBOPANEL_CONTAINER_LOGS_R2_SQL_* vars below.
+      // Default-off: nothing is written unless TURBOPANEL_CONTAINER_LOGS_ENABLED is
+      // truthy. See src/lib/container-logs/AGENTS.md.
+      //
+      // There is deliberately NO `pipelines` binding checked in here. Wrangler
+      // resolves bindings at deploy time, so a committed placeholder stream id
+      // would put this beta backend on the deploy critical path for every env —
+      // including envs that have container logs switched off or not yet
+      // provisioned. Instead, add the binding to this env block only once the real
+      // stream exists:
+      //
+      //   "pipelines": [{ "binding": "CONTAINER_LOGS", "stream": "<real stream id>" }]
+      //
+      // Until then `env.CONTAINER_LOGS` is simply absent and
+      // `resolveContainerLogStore` falls back to `DisabledContainerLogStore` —
+      // the runtime resolver is the only activation gate.
       "routes": [
         {
           "pattern": "turbopanel.app/api/*",
@@ -260,7 +391,15 @@
       "vars": {
         "TURBOPANEL_BASE_URL": "https://turbopanel.app",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://turbopanel.io",
-        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c"
+        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+        "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "30",
+        // Container logs (default-off; set to 1/true/yes/on to retain container
+        // stdout/stderr). See src/lib/container-logs/AGENTS.md.
+        "TURBOPANEL_CONTAINER_LOGS_ENABLED": "0",
+        // R2 bucket backing the Data Catalog warehouse the Iceberg table lives in.
+        "TURBOPANEL_CONTAINER_LOGS_R2_SQL_BUCKET": "turbopanel-container-logs",
+        // Catalog identifier of the table, as `namespace.table`.
+        "TURBOPANEL_CONTAINER_LOGS_ICEBERG_TABLE": "default.container_logs"
       }
     }
   }

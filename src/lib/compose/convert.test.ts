@@ -51,7 +51,7 @@ test('yaml round-trip preserves blankLines before keys through composeDocumentTo
   assertEquals(doc.presentation.blankLines?.services, 1)
 
   const roundTrip = composeDocumentToYaml(doc)
-  assertEquals(/^services:\n\n  web:/.test(roundTrip), true)
+  assertEquals(/^services:\n\n {2}web:/.test(roundTrip), true)
 
   const restored = yamlToComposeDocument(roundTrip)
   assertEquals(restored.presentation.blankLines?.services, 1)

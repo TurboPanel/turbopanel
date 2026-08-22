@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   COMPARE_AND_DELETE,
   COMPARE_AND_RENEW,

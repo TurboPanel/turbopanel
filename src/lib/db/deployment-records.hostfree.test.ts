@@ -2,7 +2,7 @@
  * Host-free coverage for deployment target records (no Postgres).
  */
 
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { deployment } from './schema.ts'
 import {
@@ -12,6 +12,7 @@ import {
   pruneDrainedDeployments,
   serializeDeploymentTarget,
   upsertDeploymentTargets,
+  type DeploymentOutcome,
   type DeploymentTargetRecord,
 } from './deployment-records.ts'
 
@@ -52,6 +53,9 @@ const baseRow = {
   desiredHash: 'abc',
   status: 'applied',
   lastCommandId: null as string | null,
+  finishedAt: null as string | null,
+  durationMs: null as number | null,
+  outcome: null as DeploymentOutcome | null,
 }
 
 function createDeploymentDb(opts?: {

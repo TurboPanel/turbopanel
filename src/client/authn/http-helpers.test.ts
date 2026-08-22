@@ -82,7 +82,7 @@ async function buildAuthApp(
     }))
     return next()
   })
-  registerAuthRoutes(client as unknown as Hono, {
+  registerAuthRoutes(client, {
     secrets: opts.secrets ?? derived.secrets,
     otpVerifierSecrets: opts.otpVerifierSecrets ?? derived.otpVerifierSecrets,
     runtime: opts.runtime ?? 'workers',
@@ -175,7 +175,7 @@ test('sign-in returns 503 when session secrets are not configured', async () => 
   })
   // registerAuthRoutes always gets secrets in buildAuthApp — test without secrets:
   const bare = new Hono<AppEnv>()
-  const client = new Hono()
+  const client = new Hono<AppEnv>()
   registerAuthRoutes(client, {
     runtime: 'workers',
     signupEnvOverride: undefined,
@@ -289,7 +289,7 @@ test('sign-out clears HTTP and HTTPS session cookies', async () => {
   assertEquals(httpRes.headers.get('Set-Cookie')?.includes('Max-Age=0'), true)
 
   const httpsApp = new Hono<AppEnv>()
-  const client = new Hono()
+  const client = new Hono<AppEnv>()
   const derived = await authSecrets()
   registerAuthRoutes(client, {
     secrets: derived.secrets,
@@ -322,7 +322,7 @@ test('verify-email requires token query param', async () => {
 test('sign-up returns 503 when database is unavailable', async () => {
   const derived = await authSecrets()
   const app = new Hono<AppEnv>()
-  const client = new Hono()
+  const client = new Hono<AppEnv>()
   registerAuthRoutes(client, {
     secrets: derived.secrets,
     otpVerifierSecrets: derived.otpVerifierSecrets,
@@ -483,7 +483,7 @@ test('Workers sign-up queues verification email when mail is configured', async 
 test('registerAuthnRoutes session returns 401 without cookie', async () => {
   const derived = await authSecrets()
   const app = new Hono<AppEnv>()
-  const client = new Hono()
+  const client = new Hono<AppEnv>()
   registerAuthnRoutes(client, {
     secrets: derived.secrets,
     runtime: 'workers',
@@ -514,7 +514,7 @@ test('registerAuthnRoutes session returns user payload for signed cookie', async
     c.set('db', db)
     return next()
   })
-  const client = new Hono()
+  const client = new Hono<AppEnv>()
   registerAuthnRoutes(client, {
     secrets: derived.secrets,
     runtime: 'workers',

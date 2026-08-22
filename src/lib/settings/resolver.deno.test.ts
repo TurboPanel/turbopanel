@@ -1,10 +1,11 @@
-import { assertEquals } from 'jsr:@std/assert'
+import { assertEquals } from '@std/assert'
 import {
   normalizeSettingFullKey,
   normalizeSettingPrefix,
   normalizeSettingShortKey,
   SettingsResolver,
 } from './resolver.ts'
+import type { SettingValue } from './resolver.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -48,7 +49,7 @@ test('SettingsResolver falls back to db then schema defaults', () => {
     prefix: PREFIX,
     keys: SCHEMA,
     env: {},
-    dbValues: new Map([
+    dbValues: new Map<string, SettingValue>([
       ['TURBOPANEL_EXAMPLE__PORT', 9443],
       ['TURBOPANEL_EXAMPLE__SECRET', '   '],
     ]),

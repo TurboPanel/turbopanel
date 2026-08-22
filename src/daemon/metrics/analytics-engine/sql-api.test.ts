@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { METRICS_SCHEMA_VERSION } from "../contract.ts";
 import { it } from "@std/testing/bdd";
 import {
