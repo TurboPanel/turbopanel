@@ -58,7 +58,7 @@ export type EnvironmentTeardownPlan = {
   /**
    * Release trees to reclaim. Generic — the same tree the Git release engine
    * publishes into and the native-runtime phase will run out of, so this is not
-   * scoped to traditional-web sites.
+   * scoped to sites.
    */
   siteReleases: EnvironmentSiteRelease[]
 }

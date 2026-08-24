@@ -4,7 +4,7 @@ import { encryptSecret } from '../client/authn/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../client/authn/secrets.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import {
-  attachWebMetadataToTraditionalSites,
+  attachWebMetadataToSites,
   formatHostingEnvFile,
   parseHostingEnvFile,
   resolveHostingDeployWeb,
@@ -159,7 +159,7 @@ test('parseHostingEnvFile ignores comments blanks and bad lines', () => {
   )
 })
 
-test('attachWebMetadataToTraditionalSites merges by compose service name', () => {
+test('attachWebMetadataToSites merges by compose service name', () => {
   const sites = [
     {
       composeServiceName: 'web',
@@ -174,21 +174,24 @@ test('attachWebMetadataToTraditionalSites merges by compose service name', () =>
       listenPort: 18081,
     },
   ]
-  const out = attachWebMetadataToTraditionalSites(sites, [
+  const out = attachWebMetadataToSites(sites, [
     {
       composeServiceName: 'web',
-      web: { env: { APP_ENV: 'staging' }, php: { version: '8.3' } },
+      web: { env: { APP_ENV: 'staging' } },
     },
     {
       composeServiceName: 'web',
-      web: { env: { DEBUG: '1' }, php: { memoryLimit: '256M' } },
+      web: { env: { DEBUG: '1' } },
     },
     { composeServiceName: 'static' },
   ])
+  // env is genuinely per hostname, so several hostings on one service merge.
   assertEquals(out[0]?.webEnv, { APP_ENV: 'staging', DEBUG: '1' })
-  assertEquals(out[0]?.php, { version: '8.3', memoryLimit: '256M' })
   assertEquals(out[1]?.webEnv, undefined)
-  assertEquals(out[1]?.php, undefined)
+  // PHP is NOT merged here any more: a pool is 1:1 with the compose service, so
+  // a per-hosting PHP setting was unrepresentable and silently last-wins merged.
+  // It now comes from the service's own x-turbopanel.php.
+  assertEquals(out[0]?.php, undefined)
 })
 
 test('formatHostingEnvFile sorts keys and escapes special characters', () => {
@@ -212,7 +215,7 @@ test('sanitizeHostingWebEnv ignores non-string values in raw map', () => {
   assertEquals(sanitizeHostingWebEnv(raw), { APP_ENV: 'prod' })
 })
 
-test('attachWebMetadataToTraditionalSites skips empty web payloads', () => {
+test('attachWebMetadataToSites skips empty web payloads', () => {
   const sites = [
     {
       composeServiceName: 'web',
@@ -221,13 +224,13 @@ test('attachWebMetadataToTraditionalSites skips empty web payloads', () => {
       listenPort: 18080,
     },
   ]
-  const out = attachWebMetadataToTraditionalSites(sites, [
+  const out = attachWebMetadataToSites(sites, [
     { composeServiceName: 'web', web: { env: {}, php: {} } },
   ])
   assertEquals(out[0], sites[0])
 })
 
-test('attachWebMetadataToTraditionalSites attaches php-only metadata', () => {
+test('attachWebMetadataToSites leaves php alone', () => {
   const sites = [
     {
       composeServiceName: 'web',
@@ -236,14 +239,17 @@ test('attachWebMetadataToTraditionalSites attaches php-only metadata', () => {
       listenPort: 18080,
     },
   ]
-  const out = attachWebMetadataToTraditionalSites(sites, [
+  // A hosting row carrying php contributes nothing: the site keeps whatever
+  // its compose service declared (here, nothing).
+  const out = attachWebMetadataToSites(sites, [
     { composeServiceName: 'web', web: { php: { version: '8.3' } } },
   ])
-  assertEquals(out[0]?.php, { version: '8.3' })
+  assertEquals(out[0]?.php, undefined)
   assertEquals(out[0]?.webEnv, undefined)
+  assertEquals(out[0], sites[0])
 })
 
-test('attachWebMetadataToTraditionalSites attaches env-only metadata', () => {
+test('attachWebMetadataToSites attaches env-only metadata', () => {
   const sites = [
     {
       composeServiceName: 'web',
@@ -252,14 +258,14 @@ test('attachWebMetadataToTraditionalSites attaches env-only metadata', () => {
       listenPort: 18080,
     },
   ]
-  const out = attachWebMetadataToTraditionalSites(sites, [
+  const out = attachWebMetadataToSites(sites, [
     { composeServiceName: 'web', web: { env: { APP_ENV: 'prod' } } },
   ])
   assertEquals(out[0]?.webEnv, { APP_ENV: 'prod' })
   assertEquals(out[0]?.php, undefined)
 })
 
-test('attachWebMetadataToTraditionalSites skips hostings without web and unmatched sites', () => {
+test('attachWebMetadataToSites skips hostings without web and unmatched sites', () => {
   const sites = [
     {
       composeServiceName: 'web',
@@ -274,7 +280,7 @@ test('attachWebMetadataToTraditionalSites skips hostings without web and unmatch
       listenPort: 18081,
     },
   ]
-  const out = attachWebMetadataToTraditionalSites(sites, [
+  const out = attachWebMetadataToSites(sites, [
     { composeServiceName: 'web' },
     {
       composeServiceName: 'unrelated',
@@ -305,37 +311,22 @@ test('resolveHostingDeployWeb returns undefined when options have no web payload
   )
 })
 
-test('resolveHostingDeployWeb builds php-only and env+php deploy web', async () => {
+test('resolveHostingDeployWeb ignores hosting php entirely', async () => {
   const secrets = await dataSecrets()
+  // `hosting.options.web.php` is dead: PHP config moved to the compose
+  // service's x-turbopanel.php, which is the entity an FPM pool belongs to.
+  // A stale value left on an old hosting row must not reach the wire.
   assertEquals(
     await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', {
-      web: {
-        php: {
-          version: '8.3',
-          memoryLimit: '256M',
-          maxExecutionTime: 30,
-        },
-      },
+      web: { php: { version: '8.3', memoryLimit: '256M' } },
     }),
-    {
-      php: {
-        version: '8.3',
-        memoryLimit: '256M',
-        maxExecutionTime: 30,
-      },
-    },
+    undefined,
   )
   assertEquals(
     await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', {
-      web: {
-        env: { APP_ENV: 'prod' },
-        php: { version: '8.4' },
-      },
+      web: { env: { APP_ENV: 'prod' }, php: { version: '8.4' } },
     }),
-    {
-      env: { APP_ENV: 'prod' },
-      php: { version: '8.4' },
-    },
+    { env: { APP_ENV: 'prod' } },
   )
 })
 

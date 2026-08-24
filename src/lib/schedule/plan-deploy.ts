@@ -3,6 +3,10 @@
  */
 
 import { eq } from 'drizzle-orm'
+import {
+  isComposeChainError,
+  resolveComposeLayerChain,
+} from '../compose/layer-chain.ts'
 import type { Db } from '../../db.ts'
 import { environment, fabric, location, mount, project, server, service, storage } from '../db/schema.ts'
 import { listServerLabelsForServers } from '../db/label-records.ts'
@@ -74,20 +78,14 @@ export function resolveMergedCompose(
   environmentOptions: unknown,
   environmentFilename: string,
 ): ComposeDocument | PlanDeployError {
+  const chain = resolveComposeLayerChain({
+    projectOptions,
+    environmentOptions,
+    environmentFilename,
+  })
+  if (isComposeChainError(chain)) return chain
   try {
-    const layers: ComposeLayer[] = [
-      {
-        role: 'project',
-        filename: PROJECT_COMPOSE_FILENAME,
-        document: assertComposeDocument(extractComposeFromOptions(projectOptions)),
-      },
-      {
-        role: 'environment',
-        filename: environmentFilename,
-        document: assertComposeDocument(extractComposeFromOptions(environmentOptions)),
-      },
-    ]
-    return mergeComposeLayers(layers)
+    return mergeComposeLayers(chain)
   } catch {
     return { kind: 'invalid_compose' }
   }

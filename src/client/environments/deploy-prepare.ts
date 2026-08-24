@@ -41,12 +41,12 @@ import {
   type ComposeLayer,
   emptyContainerComposeYaml,
   isNodeComposeService,
-  isTraditionalWebComposeService,
+  isSiteComposeService,
   mergeComposeLayers,
   type NativeAppServiceSpec,
   splitNativeAppServices,
-  splitTraditionalWebServices,
-  type TraditionalWebSiteSpec,
+  splitSiteServices,
+  type SiteSpec,
 } from "../../lib/compose/index.ts";
 import {
   environmentComposeFilename,
@@ -69,6 +69,16 @@ import {
   resolvePrincipalIdOverride,
   resolvePrincipalShell,
 } from "../../lib/principal-options.ts";
+import { loadEntitlementsByPrincipalIds } from "../principals/store.ts";
+import { renderPhpForDeploy } from "../../lib/php-settings.ts";
+import {
+  isComposeChainError,
+  resolveComposeLayerChain,
+} from "../../lib/compose/layer-chain.ts";
+import {
+  ALLOWED_PHP_EXTENSIONS,
+  SUPPORTED_PHP_SERIES,
+} from "../../lib/compose/service-kind.ts";
 import {
   parseProjectOptions,
   resolveContainerNaming,
@@ -108,8 +118,8 @@ import type {
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployStorageMount,
-  EnvironmentDeployTraditionalWebPrincipal,
-  EnvironmentDeployTraditionalWebSite,
+  EnvironmentDeploySitePrincipal,
+  EnvironmentDeploySite,
   EnvironmentDeployVariableMaterial,
 } from "../../lib/commands/schemas.ts";
 import {
@@ -193,9 +203,60 @@ export type DeployPrepareWarningCode =
   | "resource_limit_exceeded"
   | "health_check_missing"
   | "docker_external_network_unregistered"
-  | "traditional_web_principal_ambiguous"
+  | "site_principal_ambiguous"
   | "source_principal_ambiguous"
-  | "binding_endpoint_unavailable";
+  | "binding_endpoint_unavailable"
+  | "php_series_not_installed";
+
+/**
+ * Gate a deploy's PHP series against what the target host actually reports.
+ *
+ * Two outcomes, and the distinction is the whole point:
+ *
+ * - **Not supported at all** → a hard error before anything is queued. The
+ *   operator gets "PHP 8.1 is not supported; supported: 8.3, 8.4" instead of a
+ *   daemon throw halfway through an apply.
+ * - **Supported but not yet on this host** → proceed with a warning. The
+ *   Ansible run installs it. Refusing here would reject a deploy the host can
+ *   perfectly well serve — which is exactly what the old host-wide pin did.
+ *
+ * A server that has reported no inventory (an older daemon, or one that found
+ * nothing) is treated as *unknown*, never as *absent*: silence is not evidence.
+ */
+export function checkPhpSeriesAvailability(params: {
+  sites: readonly { composeServiceName: string; php?: { version?: string } }[];
+  reportedSeries: readonly string[] | null;
+}): { errors: string[]; warnings: DeployPrepareWarning[] } {
+  const errors: string[] = [];
+  const warnings: DeployPrepareWarning[] = [];
+  for (const site of params.sites) {
+    const version = site.php?.version?.trim();
+    if (!version) continue;
+    if (!SUPPORTED_PHP_SERIES.includes(version)) {
+      errors.push(
+        `Service "${site.composeServiceName}" requests PHP ${version}, which is not supported. Supported: ${
+          SUPPORTED_PHP_SERIES.join(", ")
+        }.`,
+      );
+      continue;
+    }
+    // No report at all means "unknown", not "missing" — do not warn on silence.
+    if (params.reportedSeries === null) continue;
+    if (!params.reportedSeries.includes(version)) {
+      warnings.push({
+        code: "php_series_not_installed",
+        message:
+          `PHP ${version} is not installed on the target server yet; the deploy will install it.`,
+        details: {
+          composeServiceName: site.composeServiceName,
+          series: version,
+          installed: [...params.reportedSeries],
+        },
+      });
+    }
+  }
+  return { errors, warnings };
+}
 
 export type DeployPrepareWarning = {
   code: DeployPrepareWarningCode;
@@ -292,7 +353,7 @@ export type PreparedDeployCompose = {
   variableMaterial: EnvironmentDeployVariableMaterial[];
   storageMaterial: EnvironmentDeployStorageMaterial[];
   principalMaterial: EnvironmentDeployPrincipalMaterial[];
-  traditionalWebSites: EnvironmentDeployTraditionalWebSite[];
+  sites: EnvironmentDeploySite[];
   /**
    * Host-supervised native apps (`serviceKind: node`) scheduled on this server.
    *
@@ -362,7 +423,7 @@ export type DeployPrepareError =
   | { kind: "empty_compose" }
   | { kind: "datacenter_ip_required"; serverId: string }
   | { kind: "docker_external_network_unregistered"; names: string[] }
-  | { kind: "traditional_web_principal_ambiguous"; composeServiceName: string }
+  | { kind: "site_principal_ambiguous"; composeServiceName: string }
   | { kind: "source_principal_ambiguous"; composeServiceName: string }
   | {
     kind: "source_ref_unresolved";
@@ -432,7 +493,7 @@ async function emptyPreparedCompose(
     variableMaterial: [],
     storageMaterial: [],
     principalMaterial: [],
-    traditionalWebSites: [],
+    sites: [],
     nativeAppServices: [],
     sourceMaterial: [],
     dockerExternalNetworks: [],
@@ -517,11 +578,11 @@ function warningFromPrepareError(
           "Compose references external Docker network(s) that are not registered for this server.",
         details: { names: error.names },
       };
-    case "traditional_web_principal_ambiguous":
+    case "site_principal_ambiguous":
       return {
-        code: "traditional_web_principal_ambiguous",
+        code: "site_principal_ambiguous",
         message:
-          `Traditional-web service "${error.composeServiceName}" has more than one project principal assigned.`,
+          `Site "${error.composeServiceName}" has more than one project principal assigned.`,
         details: { composeServiceName: error.composeServiceName },
       };
     case "source_principal_ambiguous":
@@ -1012,10 +1073,19 @@ export async function loadPrincipalMaterial(
     .from(principal)
     .where(inArray(principal.id, uniqueIds));
 
+  // Explicit grants. The daemon reconciles unix group membership from exactly
+  // this set — it never derives entitlements itself, because a derived grant
+  // could only ever be added and would therefore never be revocable.
+  const entitlements = await loadEntitlementsByPrincipalIds(db, uniqueIds);
+
   const material: EnvironmentDeployPrincipalMaterial[] = [];
   for (const row of rows) {
     const options = parsePrincipalOptions(row.options);
     const override = resolvePrincipalIdOverride(options);
+    const runtimes = (entitlements.get(row.id) ?? []).map((entry) => ({
+      runtime: entry.runtime,
+      series: entry.series,
+    }));
     // naming.ts is the single source of truth for home; metadata.home is a
     // mirror for display only.
     material.push({
@@ -1024,6 +1094,7 @@ export async function loadPrincipalMaterial(
       home: principalHomeDir(row.username),
       shell: resolvePrincipalShell(options),
       ...(override ? { uid: override.uid, gid: override.gid } : {}),
+      ...(runtimes.length > 0 ? { runtimes } : {}),
     });
   }
   return material;
@@ -1038,30 +1109,18 @@ export function resolveProjectEnvironmentComposeLayers(
   environmentOptions: unknown,
   environmentFilename: string,
 ): ComposeLayer[] | Response {
-  try {
-    const baseCompose = assertComposeDocument(
-      extractComposeFromOptions(projectOptions),
-    );
-    const overlayCompose = assertComposeDocument(
-      extractComposeFromOptions(environmentOptions),
-    );
-    return [
-      {
-        role: "project",
-        filename: PROJECT_COMPOSE_FILENAME,
-        document: baseCompose,
-      },
-      {
-        role: "environment",
-        filename: environmentFilename,
-        document: overlayCompose,
-      },
-    ];
-  } catch {
+  // One chain builder for every caller; this keeps only the Response mapping.
+  const chain = resolveComposeLayerChain({
+    projectOptions,
+    environmentOptions,
+    environmentFilename,
+  });
+  if (isComposeChainError(chain)) {
     return Response.json({ error: "Invalid compose document" }, {
       status: 400,
     });
   }
+  return chain;
 }
 
 export function mergeProjectEnvironmentCompose(
@@ -1269,7 +1328,7 @@ function listContainerComposeNames(document: ComposeDocument): Set<string> {
     }
     // Host-native kinds never become containers, so they must not claim a
     // container allocation, a replica count, or a container_name.
-    if (isTraditionalWebComposeService(raw) || isNodeComposeService(raw)) {
+    if (isSiteComposeService(raw) || isNodeComposeService(raw)) {
       continue;
     }
     names.add(name);
@@ -1400,7 +1459,7 @@ function buildInstancesByComposeName(
   for (const spec of containerServices) {
     instancesByComposeName.set(spec.composeServiceName, spec.instances);
   }
-  // Traditional-web keeps count 1 (expansion skips them regardless).
+  // A site keeps count 1 (expansion skips them regardless).
   for (const name of composeServiceNames) {
     if (instancesByComposeName.has(name)) continue;
     const row = serviceRows.find((serviceRow) =>
@@ -1849,21 +1908,26 @@ async function resolveBindingMaterializationOutcome(
   };
 }
 
-function resolveTraditionalWebSitesForMode(
+function resolveSitesForMode(
   mode: DeployPrepareMode,
   warnings: DeployPrepareWarning[],
   sitesOrError:
-    | EnvironmentDeployTraditionalWebSite[]
+    | EnvironmentDeploySite[]
     | {
-      kind: "traditional_web_principal_ambiguous";
+      kind: "site_principal_ambiguous";
       composeServiceName: string;
     },
-  fallbackSites: readonly TraditionalWebSiteSpec[],
-): EnvironmentDeployTraditionalWebSite[] | SoftDeployPrepareError {
+  fallbackSites: readonly SiteSpec[],
+): EnvironmentDeploySite[] | SoftDeployPrepareError {
   if (!("kind" in sitesOrError)) return sitesOrError;
   if (mode === "preview") {
     warnings.push(warningFromPrepareError(sitesOrError));
-    return fallbackSites.map((site) => ({ ...site }));
+    // Preview drops the ambiguous principal pin but must still render the same
+    // validated php the real deploy would carry.
+    return fallbackSites.map(({ php, ...rest }) => {
+      const rendered = renderPhpForDeploy(php, ALLOWED_PHP_EXTENSIONS);
+      return { ...rest, ...(rendered ? { php: rendered } : {}) };
+    });
   }
   return sitesOrError;
 }
@@ -1872,7 +1936,7 @@ function resolveTraditionalWebSitesForMode(
  * Fold the source-material stage's outcome into the mode's error policy.
  *
  * `source_principal_ambiguous` is soft (preview warns and drops the pin, the
- * same way ambiguous traditional-web ownership does). `source_ref_unresolved`
+ * same way ambiguous site ownership does). `source_ref_unresolved`
  * is hard in both modes: a release the control plane cannot pin to a commit is
  * not something to preview around.
  */
@@ -1892,7 +1956,7 @@ function resolveSourceMaterialForMode(
 /**
  * Git-backed releases for one prepare: resolve every `x-turbopanel.source`
  * binding on the *merged* document (a source may sit on a container or on a
- * traditional-web service) into clone material + a pinned commit + an allocated
+ * site service) into clone material + a pinned commit + an allocated
  * release id, then keep only the entries scheduled onto this server.
  */
 async function prepareLocalSourceMaterial(
@@ -2098,7 +2162,7 @@ async function toPreparedDeployResult(
     variableMaterial: EnvironmentDeployVariableMaterial[];
     storageMaterial: EnvironmentDeployStorageMaterial[];
     principalMaterial: EnvironmentDeployPrincipalMaterial[];
-    traditionalWebSites: EnvironmentDeployTraditionalWebSite[];
+    sites: EnvironmentDeploySite[];
     nativeAppServices: PreparedNativeAppService[];
     sourceMaterial: EnvironmentDeploySource[];
     dockerExternalNetworks: string[];
@@ -2129,7 +2193,7 @@ async function toPreparedDeployResult(
     variableMaterial: omitSecrets ? [] : parts.variableMaterial,
     storageMaterial: omitSecrets ? [] : parts.storageMaterial,
     principalMaterial: parts.principalMaterial,
-    traditionalWebSites: parts.traditionalWebSites,
+    sites: parts.sites,
     nativeAppServices: parts.nativeAppServices,
     sourceMaterial: parts.sourceMaterial,
     dockerExternalNetworks: parts.dockerExternalNetworks,
@@ -2452,23 +2516,23 @@ export async function prepareDeployCompose(
   ]);
 
   const split = splitHostNativeFromDocument(withServiceOptions.document);
-  // Drop host-native hooks — neither traditional-web sites nor native apps are
+  // Drop host-native hooks — neither sites nor native apps are
   // Docker compose services, so a compose-scoped hook has nothing to run in.
-  const traditionalNames = new Set(
+  const siteNames = new Set(
     split.sites.map((site) => site.composeServiceName),
   );
   const hostNativeNames = new Set([
-    ...traditionalNames,
+    ...siteNames,
     ...split.nativeApps.map((app) => app.composeServiceName),
   ]);
   const hooks = withServiceOptions.hooks.filter(
     (hook) => !hostNativeNames.has(hook.composeServiceName),
   );
 
-  const traditionalResolved = resolveTraditionalWebSitesForMode(
+  const siteResolved = resolveSitesForMode(
     mode,
     warnings,
-    await attachPrincipalsToTraditionalWebSites(
+    await attachPrincipalsToSites(
       db,
       params.environmentId,
       serviceRows,
@@ -2477,9 +2541,9 @@ export async function prepareDeployCompose(
     ),
     split.sites,
   );
-  if ("kind" in traditionalResolved) return traditionalResolved;
-  const localTraditional = sitesOnScheduledServer(
-    traditionalResolved,
+  if ("kind" in siteResolved) return siteResolved;
+  const localSite = sitesOnScheduledServer(
+    siteResolved,
     pipeline.localServiceNames,
   );
 
@@ -2519,7 +2583,7 @@ export async function prepareDeployCompose(
   );
   if (networkErr) return networkErr;
 
-  // Traditional-web sites and native `node` apps are host-native (stripped from
+  // Sites and native `node` apps are host-native (stripped from
   // `composeYaml` above) and never join a Docker network — exclude them even if
   // a binding was somehow attached to one.
   const boundNames = (
@@ -2567,7 +2631,7 @@ export async function prepareDeployCompose(
     variableMaterial,
     storageMaterial,
     principalMaterial,
-    traditionalWebSites: localTraditional,
+    sites: localSite,
     nativeAppServices: localNativeApps,
     sourceMaterial: localSourceMaterial,
     dockerExternalNetworks,
@@ -2586,18 +2650,18 @@ export async function prepareDeployCompose(
 }
 
 /**
- * Pin each traditional-web site to at most one assigned project principal.
+ * Pin each site to at most one assigned project principal.
  * Multiple principals on the same service is ambiguous ownership → prepare error.
  */
-export async function attachPrincipalsToTraditionalWebSites(
+export async function attachPrincipalsToSites(
   db: Db,
   environmentId: string,
   serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>,
   principalMaterial: readonly EnvironmentDeployPrincipalMaterial[],
-  sites: readonly TraditionalWebSiteSpec[],
+  sites: readonly SiteSpec[],
 ): Promise<
-  | EnvironmentDeployTraditionalWebSite[]
-  | { kind: "traditional_web_principal_ambiguous"; composeServiceName: string }
+  | EnvironmentDeploySite[]
+  | { kind: "site_principal_ambiguous"; composeServiceName: string }
 > {
   if (sites.length === 0) return [];
 
@@ -2614,7 +2678,7 @@ export async function attachPrincipalsToTraditionalWebSites(
     serviceIdByComposeName.set(row.composeServiceName, row.id);
   }
 
-  const out: EnvironmentDeployTraditionalWebSite[] = [];
+  const out: EnvironmentDeploySite[] = [];
   for (const site of sites) {
     const serviceId = serviceIdByComposeName.get(site.composeServiceName);
     const assignedIds = serviceId
@@ -2623,7 +2687,7 @@ export async function attachPrincipalsToTraditionalWebSites(
     const sole = pickSolePrincipalId(assignedIds);
     if (sole.status === "ambiguous") {
       return {
-        kind: "traditional_web_principal_ambiguous",
+        kind: "site_principal_ambiguous",
         composeServiceName: site.composeServiceName,
       };
     }
@@ -2631,19 +2695,25 @@ export async function attachPrincipalsToTraditionalWebSites(
       ? principalById.get(sole.principalId)
       : undefined;
     const principalPin = material
-      ? toTraditionalWebPrincipal(material)
+      ? toSitePrincipal(material)
       : undefined;
+    // Compose carries the *authored* php block; the wire carries the validated,
+    // rendered one. Anything that fails its spec is dropped rather than
+    // escaped — the save-time linter is what tells the operator why.
+    const { php: authoredPhp, ...rest } = site;
+    const php = renderPhpForDeploy(authoredPhp, ALLOWED_PHP_EXTENSIONS);
     out.push({
-      ...site,
+      ...rest,
+      ...(php ? { php } : {}),
       ...(principalPin ? { principal: principalPin } : {}),
     });
   }
   return out;
 }
 
-function toTraditionalWebPrincipal(
+function toSitePrincipal(
   material: EnvironmentDeployPrincipalMaterial,
-): EnvironmentDeployTraditionalWebPrincipal {
+): EnvironmentDeploySitePrincipal {
   return {
     principalId: material.principalId,
     username: material.username,
@@ -2653,7 +2723,7 @@ function toTraditionalWebPrincipal(
 }
 
 /**
- * Strip every **host-native** service out of the Docker document: traditional-web
+ * Strip every **host-native** service out of the Docker document: site
  * sites and `serviceKind: node` apps alike.
  *
  * Both lanes end up behind hosting Caddy on a loopback port, so they allocate
@@ -2665,21 +2735,21 @@ function splitHostNativeFromDocument(document: ComposeDocument): {
   composeYaml: string;
   /** Post-split / pruned container document (same body as `composeYaml`). */
   containerDocument: ComposeDocument;
-  sites: TraditionalWebSiteSpec[];
+  sites: SiteSpec[];
   nativeApps: NativeAppServiceSpec[];
 } {
   const services = isPlainObject(document.data.services)
     ? (document.data.services as Record<string, unknown>)
     : {};
   const usedPorts = new Set<number>();
-  const traditional = splitTraditionalWebServices(
+  const split = splitSiteServices(
     services,
     new Map(),
     usedPorts,
   );
-  const sites = traditional.sites;
+  const sites = split.sites;
   const { containerServices, apps: nativeApps } = splitNativeAppServices(
-    traditional.containerServices,
+    split.containerServices,
     usedPorts,
   );
 
@@ -2813,7 +2883,7 @@ export {
   listContainerComposeNames,
   localManagedNetworkServiceNames,
   nativeAppServicesForDeploy,
-  resolveTraditionalWebSitesForMode,
+  resolveSitesForMode,
   resourceLimitPrepareError,
   sitesOnScheduledServer,
   splitHostNativeFromDocument,

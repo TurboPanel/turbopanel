@@ -1,7 +1,7 @@
 /**
  * Hidden TurboPanel extension stripping (top-level + per-service).
  *
- * Ordering constraint: run **after** traditional-web detection / splitting —
+ * Ordering constraint: run **after** site detection / splitting —
  * `services.<name>.x-turbopanel` carries `serviceKind` / `engine` / `root` that
  * those steps need. Compose is not a placement store; this also removes any
  * residual top-level extension after placement strip.

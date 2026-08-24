@@ -107,14 +107,14 @@ export async function loadPrincipalIdsByServiceIdForEnvironment(
   return map
 }
 
-/** Result of picking at most one principal for a traditional-web ownership pin. */
+/** Result of picking at most one principal for a site ownership pin. */
 export type SolePrincipalPick =
   | { status: 'none' }
   | { status: 'one'; principalId: string }
   | { status: 'ambiguous' }
 
 /**
- * Pick the single principal for a traditional-web service ownership pin.
+ * Pick the single principal for a site service ownership pin.
  * Zero → `{ status: 'none' }`; one → that principal; more than one → ambiguous.
  */
 export function pickSolePrincipalId(

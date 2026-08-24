@@ -8,7 +8,7 @@ import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
   buildNativeAppServicesForDeploy,
-  buildTraditionalWebSitesForDeploy,
+  buildSitesForDeploy,
   composeProjectName,
   DEPLOY_REF_INVALID,
   deployMaterialsErrorResponse,
@@ -107,7 +107,7 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
     { kind: 'empty_compose' },
     { kind: 'datacenter_ip_required', serverId: projectId },
     { kind: 'docker_external_network_unregistered', names: ['external-net'] },
-    { kind: 'traditional_web_principal_ambiguous', composeServiceName: 'php' },
+    { kind: 'site_principal_ambiguous', composeServiceName: 'php' },
     {
       kind: 'resource_limit',
       violations: [{
@@ -136,7 +136,7 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(mapPrepareErrorResponse(cases[1]).body.error, 'compose_empty')
   assertEquals(mapPrepareErrorResponse(cases[2]).body.error, 'datacenter_ip_required')
   assertEquals(mapPrepareErrorResponse(cases[3]).body.error, 'docker_external_network_unregistered')
-  assertEquals(mapPrepareErrorResponse(cases[4]).body.error, 'traditional_web_principal_ambiguous')
+  assertEquals(mapPrepareErrorResponse(cases[4]).body.error, 'site_principal_ambiguous')
   assertEquals(mapPrepareErrorResponse(cases[5]).body.error, 'resource_limit_exceeded')
   assertEquals(mapPrepareErrorResponse(cases[6]).body.error, 'binding_endpoint_unavailable')
   assertEquals(mapPrepareErrorResponse(cases[7]).status, 422)
@@ -444,8 +444,8 @@ test('mapPrepareErrorResponse health_check is the deploy ack conflict shape', ()
   )
 })
 
-test('buildTraditionalWebSitesForDeploy attaches listen ports from hostings', () => {
-  const sites = buildTraditionalWebSitesForDeploy(
+test('buildSitesForDeploy attaches listen ports from hostings', () => {
+  const sites = buildSitesForDeploy(
     [{
       composeServiceName: 'static',
       engine: 'nginx',
@@ -537,7 +537,7 @@ test('a native app with no hosting or ingress falls back to the compose key', ()
   assertEquals(apps[0]?.serviceId, 'worker')
 })
 
-test('a native app never gets the port a traditional-web site already took', () => {
+test('a native app never gets the port a site already took', () => {
   const used = new Set<number>()
   const hostings = [{
     hostingId: 'h1',
@@ -546,7 +546,7 @@ test('a native app never gets the port a traditional-web site already took', () 
     hostnames: ['site.example.com'],
     targetPort: 18080,
   }]
-  const sites = buildTraditionalWebSitesForDeploy(
+  const sites = buildSitesForDeploy(
     [{
       composeServiceName: 'static',
       engine: 'nginx' as const,

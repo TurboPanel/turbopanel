@@ -19,7 +19,7 @@ reject anything that is not a ComposeDocument (or an intentionally empty value).
 Project/environment create and PATCH also run the compose linter
 (`lintComposeYaml` / `blockingComposeLintIssues` in `src/lib/compose/lint.ts`)
 after structural checks — unknown keys, services missing `image`/`build` (except
-**`traditional-web`** services declared under `services.<name>.x-turbopanel`),
+**`site`** services declared under `services.<name>.x-turbopanel`),
 etc. return **400** `{ error: "compose_invalid", issues }` (empty-draft “no
 services” warnings are allowed). Deploy uses `composeDocumentToRuntimeYaml`
 (presentation stripped). Deploy prep (`deploy-prepare.ts`) pipeline order: merge
@@ -47,7 +47,7 @@ friendly name — authored `container_name`, else the compose service key — co
 back as a **network alias** on every network the service joins (a service with
 no `networks:` gets an explicit `default`, mapping form), since Docker allows
 only one container name — the rename stamps **no labels**; operator-authored
-`labels:` are left untouched) → storage material → split traditional-web + prune
+`labels:` are left untouched) → storage material → split site + prune
 networks → **`compileRuntimeComposeDocument`** (`compile-runtime.ts`: strip
 scheduler-only `deploy:` keys, filter to this server's services, rewrite
 spanning networks as `external: true` + `name: tpn_<id>`; spanning services with
@@ -86,20 +86,20 @@ Compose `deploy.replicas` / `mode: global` / `placement.constraints`
 servers** requires org TurboFabric (`422 turbofabric_required`); a one-server
 schedule stays ordinary Docker standalone. Compose never stores a pin.
 Per-service **`services.<name>.x-turbopanel`** declares **`serviceKind`** —
-`container` (default), `traditional-web`, or `node` (see the native-apps section
-below). **`traditional-web`** takes required **`engine`** (`apache` | `nginx` |
+`container` (default), `site`, or `node` (see the native-apps section
+below). **`site`** takes required **`engine`** (`apache` | `nginx` |
 `openlitespeed`) and optional relative **`root`** (default `public`), plus
 optional operator **`description`** (string, max 500 chars — TurboPanel-only
 metadata, not used by Docker) — validated in `src/lib/compose/service-kind.ts` /
-`traditional-web.ts` and mirrored in the UI Visual editor + linter. Deploy prep
-**strips** traditional-web services from Docker `composeYaml` into payload
-**`traditionalWebSites[]`** (listen port + root); all three engines (`apache` /
+`site.ts` and mirrored in the UI Visual editor + linter. Deploy prep
+**strips** site services from Docker `composeYaml` into payload
+**`sites[]`** (listen port + root); all three engines (`apache` /
 `nginx` / `openlitespeed`) are deployable — the daemon vendors OpenLiteSpeed
 under `/opt/turbopanel/vendor` (never a distro package) and regenerates its
 single `httpd_config.conf` from per-site fragments on apply. After the strip,
 deploy prep **prunes** top-level `networks:` entries that no remaining container
 service references (`pruneUnreferencedComposeNetworks`) so project-internal
-networks used only by traditional-web never appear in runtime compose and never
+networks used only by site never appear in runtime compose and never
 require org `network` rows. **External Docker networks**
 (`networks.<key>.external: true` **or** Compose Spec `external: { name: "…" }` /
 `external: {}`) must be registered on the org **Networks** screen as
@@ -110,12 +110,12 @@ resolved host name (see `docker-external-networks.ts` +
 **`422 docker_external_network_unregistered`** when compose references an
 unregistered external and sends **`dockerExternalNetworks[]`** to the daemon to
 `docker network create` before compose up. Internal compose networks are not
-registered — only long-lived externals. **Docker ↔ traditional-web
+registered — only long-lived externals. **Docker ↔ site
 reachability** is daemon-owned: when a deploy carries both container services
-and `traditionalWebSites[]`, the daemon injects
+and `sites[]`, the daemon injects
 `extra_hosts: host.docker.internal:host-gateway` plus
-`TURBOPANEL_TRADITIONAL_WEB_<SERVICE>_URL` and
-`TURBOPANEL_TRADITIONAL_WEB_ENDPOINTS` on every container service (instance does
+`TURBOPANEL_SITE_<SERVICE>_URL` and
+`TURBOPANEL_SITE_ENDPOINTS` on every container service (instance does
 not duplicate those fields in the payload). Daemon applies
 nginx/apache/OpenLiteSpeed vhosts + hosting Caddy reverse_proxy to
 `127.0.0.1:<listenPort>` — see `../../../../turbopaneld/src/deploy/AGENTS.md`.
@@ -136,7 +136,7 @@ org-scoped, the ref resolves to a commit (GitHub REST for `provider: 'github'`;
 generic SSH passes the ref through until `ls-remote` resolution lands), a
 short-lived clone credential is minted/resealed as a `tpdaemon` envelope, a
 `releaseId` is allocated, and the owning principal is pinned with the same
-sole-steward rule traditional-web uses (ambiguous →
+sole-steward rule site uses (ambiguous →
 `source_principal_ambiguous`; unresolvable ref → `source_ref_unresolved`). Each
 entry's `commitSha` is folded into **`desiredHash`** (compose YAML + sorted
 `composeServiceName=commitSha` pairs) so a redeploy against an unchanged commit
@@ -174,17 +174,17 @@ ignoring them, because deploy strips the service out of runtime compose entirely
 and the image would never be pulled. Two optional hints are valid **only** on
 this kind: **`framework`** (`auto` | `node` | `next`, default `auto` — `auto`
 defers to the daemon's post-build detection) and **`nodeVersion`** (a pin like
-`24` / `24.17.0`, never a range). `node` joins `traditional-web` in the linter's
+`24` / `24.17.0`, never a range). `node` joins `site` in the linter's
 image/build exemption (`isHostNativeServiceKind`) and in the per-layer strip
-(`collectTraditionalWebServiceNames` / `stripTraditionalWebServicesFromLayer`,
+(`collectSiteServiceNames` / `stripSiteServicesFromLayer`,
 both host-native-wide despite the historical names).
 
 Deploy prep strips node services into payload **`nativeAppServices[]`**
 (`{ composeServiceName, serviceId, listenPort, framework, nodeVersion?, resources?, accountLimits? }`)
-the same way it strips traditional-web sites, and their releases ride the
+the same way it strips sites, and their releases ride the
 ordinary `sourceMaterial[]` lane unchanged. **One loopback-port ledger covers
-both lanes**: `splitTraditionalWebServices` and `splitNativeAppServices` share a
-`usedPorts` set, and so do `assignTraditionalWebListenPorts` /
+both lanes**: `splitSiteServices` and `splitNativeAppServices` share a
+`usedPorts` set, and so do `assignSiteListenPorts` /
 `assignNativeAppListenPorts` at payload-assembly time — a vhost and an app
 handed the same 127.0.0.1 port would leave whichever bound second dead with no
 diagnostic near the cause. The resolved port is folded into `desiredHash`
@@ -206,9 +206,9 @@ account. Daemon side: `../../../../turbopaneld/src/deploy/native/`.
 
 Merge semantics are now **Compose Spec–faithful** rather than a shallow deep-merge: `mergeComposeDocuments` (`merge.ts`) resolves each attribute per the [Compose Spec merge rules](https://docs.docker.com/reference/compose-file/merge/) — sequences with unique keys (`ports`, `volumes`, `secrets`/`configs`, `expose`/`extra_hosts`) **append with attribute-specific key-based / scalar dedup**, while `dns` / `dns_search` / `tmpfs` / `env_file` and other plain lists **append preserving duplicates**, map/list-dual attributes (`labels`, `environment`, `depends_on`, `extra_hosts`) are normalized then key-merged, and `command` / `entrypoint` / `services.<name>.healthcheck.test` always **fully replace** (never append) per spec. Authors can escape the default behavior with the reserved **`!reset`** (delete the key) and **`!override`** (force full replacement instead of append/merge) YAML tags — stored compose lives in Postgres jsonb, so `tags.ts` encodes them as JSON-safe `ComposeTaggedValue` sentinels (`{ __turbopanelComposeTag: 'reset' | 'override', value }`) on parse and restores the real YAML tags on stringify.
 
-`layers.ts` introduces the **`ComposeLayer`** type (`{ role: 'project' | 'environment' | 'platform', filename, document }`) and `mergeComposeLayers` (a thin left fold over `mergeComposeDocuments`, later layers win) as the **authoring** merge model (project + optional environment). Per-layer pure transforms — traditional-web strip (`stripTraditionalWebServicesFromLayer`), volume rename (`renameComposeVolumesInLayer`), and placement strip (`stripComposePlacementFromLayer`) — operate on one `ComposeLayer` at a time (looking through `!reset`/`!override` tags via `mapThroughTag` and preserving them) so each authored document stays independently valid compose. **Network pruning stays merged-view-only** (`pruneUnreferencedComposeNetworks`) and is intentionally not exposed per-layer — pruning a network from one layer could delete a network another layer still references; it only ever runs against the fully merged effective document.
+`layers.ts` introduces the **`ComposeLayer`** type (`{ role: 'project' | 'environment' | 'platform', filename, document }`) and `mergeComposeLayers` (a thin left fold over `mergeComposeDocuments`, later layers win) as the **authoring** merge model (project + optional environment). Per-layer pure transforms — site strip (`stripSiteServicesFromLayer`), volume rename (`renameComposeVolumesInLayer`), and placement strip (`stripComposePlacementFromLayer`) — operate on one `ComposeLayer` at a time (looking through `!reset`/`!override` tags via `mapThroughTag` and preserving them) so each authored document stays independently valid compose. **Network pruning stays merged-view-only** (`pruneUnreferencedComposeNetworks`) and is intentionally not exposed per-layer — pruning a network from one layer could delete a network another layer still references; it only ever runs against the fully merged effective document.
 
-Deploy does **not** send that authoring chain to daemons. After merge + schedule + allocate, `compileRuntimeComposeDocument` emits one runtime document per participating server. Managed ingress `extra_hosts` are per bound consumer service (reserved ProxySQL address on a spanning network that service joins), never server-global — co-resident bindings still join `turbopanel-managed`, and a remote extra_hosts entry on one service must not drop that attachment for others. `renderRuntimeComposeFiles` wraps it as `[{ filename: 'compose.yaml', role: 'runtime', source: 'inline', content }]`. Non-secret variables persist in a generated project `.env` (`envFile`); compiled YAML uses `${service__KEY}` interpolation. Secret `{$KEY}` / `{$scope.KEY}` refs (and binding-owned secrets) compile to Compose standalone `secrets:` with host `file:` paths under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` plus a courtesy `KEY_FILE` path — values travel as `variableMaterial[]` `tpdaemon` envelopes, never in YAML. Daemon overlay fragments (storage, Traefik, traditional-web reachability) merge **into that single file** on the host and do **not** inject secrets. The deprecated **`composeYaml`** field is the same compiled body for older daemons and for UI display; it is not a second file.
+Deploy does **not** send that authoring chain to daemons. After merge + schedule + allocate, `compileRuntimeComposeDocument` emits one runtime document per participating server. Managed ingress `extra_hosts` are per bound consumer service (reserved ProxySQL address on a spanning network that service joins), never server-global — co-resident bindings still join `turbopanel-managed`, and a remote extra_hosts entry on one service must not drop that attachment for others. `renderRuntimeComposeFiles` wraps it as `[{ filename: 'compose.yaml', role: 'runtime', source: 'inline', content }]`. Non-secret variables persist in a generated project `.env` (`envFile`); compiled YAML uses `${service__KEY}` interpolation. Secret `{$KEY}` / `{$scope.KEY}` refs (and binding-owned secrets) compile to Compose standalone `secrets:` with host `file:` paths under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` plus a courtesy `KEY_FILE` path — values travel as `variableMaterial[]` `tpdaemon` envelopes, never in YAML. Daemon overlay fragments (storage, Traefik, site reachability) merge **into that single file** on the host and do **not** inject secrets. The deprecated **`composeYaml`** field is the same compiled body for older daemons and for UI display; it is not a second file.
 
 ### Spanning networks (TurboFabric)
 

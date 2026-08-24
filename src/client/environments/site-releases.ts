@@ -4,7 +4,7 @@
  *
  * Generic on purpose: the tree is where the Git release engine publishes
  * (`releases/`, `current`, `shared/`) and where the native-runtime phase will
- * run from — it is not a traditional-web artifact. `environment.stop` is the
+ * run from — it is not a site artifact. `environment.stop` is the
  * only command that reclaims it, and by the time the daemon runs the stop the
  * rows naming it may already be gone, so this is captured up front (the same
  * "capture everything stop needs while the rows still exist" rule

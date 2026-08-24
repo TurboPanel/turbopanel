@@ -1,4 +1,4 @@
-/** Hosting-scoped web/PHP metadata merged at deploy for traditional-web sites. */
+/** Hosting-scoped web/PHP metadata merged at deploy for sites. */
 
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import { decryptSecret } from '../client/authn/data-encryption.ts'
@@ -16,7 +16,7 @@ import {
 import type {
   EnvironmentDeployHostingPhp,
   EnvironmentDeployHostingWeb,
-  EnvironmentDeployTraditionalWebSite,
+  EnvironmentDeploySite,
 } from './commands/schemas.ts'
 
 const MAX_WEB_ENV_ENTRIES = 64
@@ -36,15 +36,6 @@ export function sanitizeHostingWebEnv(
     if (Object.keys(env).length >= MAX_WEB_ENV_ENTRIES) break
   }
   return Object.keys(env).length > 0 ? env : undefined
-}
-
-function toDeployPhp(php: HostingPhpOptions | undefined): EnvironmentDeployHostingPhp | undefined {
-  if (!php) return undefined
-  const out: EnvironmentDeployHostingPhp = {}
-  if (php.version) out.version = php.version
-  if (php.memoryLimit) out.memoryLimit = php.memoryLimit
-  if (php.maxExecutionTime !== undefined) out.maxExecutionTime = php.maxExecutionTime
-  return Object.keys(out).length > 0 ? out : undefined
 }
 
 function isUsableWebEnvValue(value: string): boolean {
@@ -101,41 +92,37 @@ export async function resolveHostingDeployWeb(
   const staticEnv = sanitizeHostingWebEnv(webOpts?.env)
   if (staticEnv) Object.assign(env, staticEnv)
 
-  return buildDeployWeb(env, toDeployPhp(webOpts?.php))
+  return buildDeployWeb(env, undefined)
 }
 
-export function attachWebMetadataToTraditionalSites(
-  sites: EnvironmentDeployTraditionalWebSite[],
+/**
+ * Merge hosting `web.env` onto sites.
+ *
+ * **PHP is no longer merged here.** A php-fpm pool is keyed by
+ * `(environmentId, composeServiceName)` — 1:1 with the service — so a
+ * per-hosting PHP setting was structurally unrepresentable downstream, and this
+ * function used to shallow-merge several hostings last-wins with no warning.
+ * PHP now comes from the compose service's `x-turbopanel.php`, which is the
+ * entity the pool actually belongs to. `env` stays here because it genuinely is
+ * per hostname.
+ */
+export function attachWebMetadataToSites(
+  sites: EnvironmentDeploySite[],
   hostings: readonly { composeServiceName: string; web?: EnvironmentDeployHostingWeb }[],
-): EnvironmentDeployTraditionalWebSite[] {
-  const byService = new Map<
-    string,
-    { env: Record<string, string>; php?: EnvironmentDeployHostingPhp }
-  >()
+): EnvironmentDeploySite[] {
+  const byService = new Map<string, Record<string, string>>()
 
   for (const hosting of hostings) {
-    if (!hosting.web) continue
-    const current = byService.get(hosting.composeServiceName) ?? { env: {} }
-    if (hosting.web.env) {
-      Object.assign(current.env, hosting.web.env)
-    }
-    if (hosting.web.php) {
-      current.php = { ...current.php, ...hosting.web.php }
-    }
+    if (!hosting.web?.env) continue
+    const current = byService.get(hosting.composeServiceName) ?? {}
+    Object.assign(current, hosting.web.env)
     byService.set(hosting.composeServiceName, current)
   }
 
   return sites.map((site) => {
-    const merged = byService.get(site.composeServiceName)
-    if (!merged) return site
-    const hasEnv = Object.keys(merged.env).length > 0
-    const hasPhp = merged.php !== undefined && Object.keys(merged.php).length > 0
-    if (!hasEnv && !hasPhp) return site
-    return {
-      ...site,
-      ...(hasEnv ? { webEnv: merged.env } : {}),
-      ...(hasPhp ? { php: merged.php } : {}),
-    }
+    const env = byService.get(site.composeServiceName)
+    if (!env || Object.keys(env).length === 0) return site
+    return { ...site, webEnv: env }
   })
 }
 

@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
+  ALLOWED_PRINCIPAL_SHELLS,
   DEFAULT_PRINCIPAL_SHELL,
   isValidPrincipalIdOverride,
   parsePrincipalOptions,
@@ -21,11 +22,20 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test('parsePrincipalOptions accepts absolute shell paths', () => {
+test('parsePrincipalOptions accepts allowlisted shells', () => {
   assertEquals(parsePrincipalOptions({ shell: '/bin/bash' }), { shell: '/bin/bash' })
-  assertEquals(parsePrincipalOptions({ shell: ' /usr/bin/zsh ' }), {
-    shell: '/usr/bin/zsh',
-  })
+  assertEquals(parsePrincipalOptions({ shell: ' /bin/sh ' }), { shell: '/bin/sh' })
+  for (const shell of ALLOWED_PRINCIPAL_SHELLS) {
+    assertEquals(parsePrincipalOptions({ shell }), { shell })
+  }
+})
+
+test('parsePrincipalOptions drops a well-formed shell outside the allowlist', () => {
+  // `shell` reaches `useradd -s` on the host, so path shape is not enough:
+  // membership is the gate. /usr/bin/zsh is a perfectly valid path and is
+  // still refused because it is not on the list.
+  assertEquals(parsePrincipalOptions({ shell: '/usr/bin/zsh' }), {})
+  assertEquals(parsePrincipalOptions({ shell: '/usr/bin/python3' }), {})
 })
 
 test('parsePrincipalOptions drops invalid shells', () => {
@@ -72,10 +82,15 @@ test('parsePrincipalOptionsInput accepts a valid shell', () => {
     ok: true,
     value: { shell: '/bin/bash' },
   })
-  assertEquals(parsePrincipalOptionsInput({ shell: ' /usr/bin/zsh ' }), {
+  assertEquals(parsePrincipalOptionsInput({ shell: ' /bin/sh ' }), {
     ok: true,
-    value: { shell: '/usr/bin/zsh' },
+    value: { shell: '/bin/sh' },
   })
+})
+
+test('parsePrincipalOptionsInput rejects a shell outside the allowlist', () => {
+  assertEquals(parsePrincipalOptionsInput({ shell: '/usr/bin/zsh' }), { ok: false })
+  assertEquals(parsePrincipalOptionsInput({ shell: '/bin/nc' }), { ok: false })
 })
 
 test('parsePrincipalOptionsInput accepts uid/gid at or above the override floor', () => {

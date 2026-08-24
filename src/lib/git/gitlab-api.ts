@@ -92,6 +92,42 @@ async function gitlabGet(
   return await response.json().catch(() => null)
 }
 
+/**
+ * Raw-bytes sibling of {@link gitlabGet}.
+ *
+ * The JSON helper decodes; file contents must not be. Returns the response so
+ * the caller can distinguish 404 (a missing file, which is an answer) from a
+ * transport failure (which is not).
+ */
+export async function gitlabGetRaw(
+  baseUrl: string,
+  token: string,
+  path: string,
+): Promise<Response> {
+  try {
+    return await fetch(`${gitlabApiBase(baseUrl)}${path}`, {
+      headers: gitlabApiHeaders(token),
+    })
+  } catch (error) {
+    throw new GitlabApiError(
+      `gitlab request failed: ${
+        error instanceof Error ? error.message : 'network error'
+      }`,
+    )
+  }
+}
+
+/** JSON GET that surfaces the response instead of throwing on 404. */
+export async function gitlabGetJson(
+  baseUrl: string,
+  token: string,
+  path: string,
+): Promise<{ ok: true; payload: unknown } | { ok: false; status: number }> {
+  const response = await gitlabGetRaw(baseUrl, token, path)
+  if (!response.ok) return { ok: false, status: response.status }
+  return { ok: true, payload: await response.json().catch(() => null) }
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

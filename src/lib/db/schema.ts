@@ -1945,6 +1945,74 @@ export const principal = pgTable(
   ]
 )
 /**
+ * Which runtime series a principal may **execute** on the host.
+ *
+ * A row here becomes a unix group membership (`tpphp84`, `tpnode24`), because
+ * that is the only form the kernel enforces at `execve` — anything derived only
+ * into a generated systemd unit or an FPM pool is invisible to a shell session
+ * or a cron job, both of which run as the principal.
+ *
+ * A table rather than `principal.options` jsonb for three reasons:
+ * `parsePrincipalOptions` is drop-on-invalid, which is the wrong posture for a
+ * security grant; "which principals still hold php 8.1?" has to be answerable
+ * before a series can be retired; and per-row provenance is the audit trail.
+ *
+ * `grantedBy` distinguishes an operator's explicit grant from one deploy-prepare
+ * inserted because a service declared the runtime. Both are real grants and both
+ * are revocable — the distinction exists so the UI can say why a principal has
+ * something, not to make one of them implicit.
+ *
+ * No `organization_id`: derived through `principal`, matching that table.
+ */
+export const principalEntitlement = pgTable(
+  'principal_entitlement',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    principalId: uuid('principal_id').notNull(),
+    runtime: text().notNull(),
+    /** Exec boundary (`8.4`, `24`), never a patch pin. */
+    series: text().notNull(),
+    grantedBy: text('granted_by').default('operator').notNull(),
+  },
+  (table) => [
+    index('idx_principal_entitlement_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'principal_entitlement_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    unique('principal_entitlement_unique').on(
+      table.principalId,
+      table.runtime,
+      table.series
+    ),
+    check('principal_entitlement_runtime_check', sql`${table.runtime} IN ('php', 'node')`),
+    check(
+      'principal_entitlement_series_check',
+      // `[.]` not `\.`: a template literal eats the backslash, and a bare dot
+      // would match any character. A character class keeps it literal.
+      sql`${table.series} ~ '^[0-9]{1,3}([.][0-9]{1,3})?$'`
+    ),
+    check(
+      'principal_entitlement_granted_by_check',
+      sql`${table.grantedBy} IN ('operator', 'deploy')`
+    ),
+  ]
+)
+
+/**
  * Join edge: the Linux/system principal that stewards a service (runs as /
  * owns the site tree). Deleting a principal removes its edges (cascade); a
  * service still referenced by principals cannot be deleted (restrict),

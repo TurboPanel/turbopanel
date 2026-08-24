@@ -29,13 +29,13 @@ export {
   unwrapComposeTag,
 } from './tags.ts'
 export {
-  collectTraditionalWebServiceNames,
+  collectSiteServiceNames,
   type ComposeLayer,
   type ComposeLayerRole,
   mergeComposeLayers,
   renameComposeVolumesInLayer,
   stripComposePlacementFromLayer,
-  stripTraditionalWebServicesFromLayer,
+  stripSiteServicesFromLayer,
 } from './layers.ts'
 export { stripComposeTurbopanelExtensions } from './extensions.ts'
 export { renameComposeVolumes } from './rename-volumes.ts'
@@ -86,7 +86,7 @@ export {
   isHostNativeServiceKind,
   isNodeComposeService,
   isSafeRoot,
-  isTraditionalWebComposeService,
+  isSiteComposeService,
   type NativeRuntimeFramework,
   parseServiceSourceExtension,
   parseServiceTurbopanelExtension,
@@ -95,7 +95,7 @@ export {
   SOURCE_BRANCH_MAX_LENGTH,
   SOURCE_COMMAND_MAX_LENGTH,
   type SourceIdResolver,
-  type TraditionalWebEngine,
+  type SiteEngine,
   TURBOPANEL_SERVICE_EXTENSION_KEY,
 } from './service-kind.ts'
 export {
@@ -106,14 +106,14 @@ export {
   splitNativeAppServices,
 } from './native-app.ts'
 export {
-  allocateTraditionalWebListenPort,
-  assignTraditionalWebListenPorts,
+  allocateSiteListenPort,
+  assignSiteListenPorts,
   emptyContainerComposeYaml,
-  isSafeTraditionalWebRoot,
-  type SplitTraditionalWebResult,
-  splitTraditionalWebServices,
-  type TraditionalWebSiteSpec,
-} from './traditional-web.ts'
+  isSafeSiteRoot,
+  type SplitSiteResult,
+  splitSiteServices,
+  type SiteSpec,
+} from './site.ts'
 export {
   type ApplyVariablesError,
   type ApplyVariablesResult,

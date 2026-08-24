@@ -17,7 +17,7 @@ import {
   renameComposeVolumesInLayer,
   stripComposePlacementFromLayer,
   stripComposeTurbopanelExtensions,
-  stripTraditionalWebServicesFromLayer,
+  stripSiteServicesFromLayer,
   type ComposeDocument,
   type ComposeLayer,
 } from '../../lib/compose/index.ts'
@@ -169,59 +169,29 @@ function keepTopLevelNetworkKeys(
   }
 }
 
-function transformUserLayerDocument(
+/**
+ * The per-layer transform every user layer goes through. Exported so its
+ * behaviour is tested directly rather than through a builder — the old
+ * `buildUserComposeLayers` was the only caller and had none of its own.
+ */
+export function transformUserLayerDocument(
   document: ComposeDocument,
   removeServiceNames: ReadonlySet<string>,
   volumeRenames: ReadonlyMap<string, string>,
   keepNetworkKeys: ReadonlySet<string>,
 ): ComposeDocument {
   // 1–4: placement → TW/expanded-key removals → volume renames → hidden ext.
-  // removeServiceNames is the **union** of traditional-web names (from
-  // collectTraditionalWebServiceNames on the merged doc) and expanded origin
+  // removeServiceNames is the **union** of site names (from
+  // collectSiteServiceNames on the merged doc) and expanded origin
   // keys — merged-view-driven key removal, not per-layer detection.
   let next = stripComposePlacementFromLayer(document)
-  next = stripTraditionalWebServicesFromLayer(next, removeServiceNames)
+  next = stripSiteServicesFromLayer(next, removeServiceNames)
   next = renameComposeVolumesInLayer(next, volumeRenames)
   next = stripComposeTurbopanelExtensions(next)
   // 5: apply merged prune outcome (network keys surviving prune).
   return keepTopLevelNetworkKeys(next, keepNetworkKeys)
 }
 
-/**
- * Build the project + environment layers from their raw documents, applying
- * merged-view-driven removals so `-f` merge still yields a valid host file set.
- */
-export function buildUserComposeLayers(params: Readonly<{
-  projectDocument: ComposeDocument
-  environmentDocument: ComposeDocument
-  environmentFilename: string
-  removeServiceNames: ReadonlySet<string>
-  volumeRenames: ReadonlyMap<string, string>
-  keepNetworkKeys: ReadonlySet<string>
-}>): ComposeLayer[] {
-  return [
-    {
-      role: 'project',
-      filename: PROJECT_COMPOSE_FILENAME,
-      document: transformUserLayerDocument(
-        params.projectDocument,
-        params.removeServiceNames,
-        params.volumeRenames,
-        params.keepNetworkKeys,
-      ),
-    },
-    {
-      role: 'environment',
-      filename: params.environmentFilename,
-      document: transformUserLayerDocument(
-        params.environmentDocument,
-        params.removeServiceNames,
-        params.volumeRenames,
-        params.keepNetworkKeys,
-      ),
-    },
-  ]
-}
 
 /** One-level mapping diff: keys new or changed in effective vs base. */
 function mappingDiff(

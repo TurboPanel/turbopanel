@@ -1,11 +1,11 @@
 import { assertEquals } from '@std/assert'
 import { stripComposeTurbopanelExtensions } from './extensions.ts'
 import {
-  collectTraditionalWebServiceNames,
+  collectSiteServiceNames,
   mergeComposeLayers,
   renameComposeVolumesInLayer,
   stripComposePlacementFromLayer,
-  stripTraditionalWebServicesFromLayer,
+  stripSiteServicesFromLayer,
   type ComposeLayer,
 } from './layers.ts'
 import { TURBOPANEL_EXTENSION_KEY } from './placement.ts'
@@ -64,12 +64,12 @@ test('mergeComposeLayers empty list returns empty document', () => {
   assertEquals(mergeComposeLayers([]), emptyComposeDocument())
 })
 
-test('stripTraditionalWebServicesFromLayer uses merged-view name set', () => {
+test('stripSiteServicesFromLayer uses merged-view name set', () => {
   const project = doc({
     services: {
       site: {
         'x-turbopanel': {
-          serviceKind: 'traditional-web',
+          serviceKind: 'site',
           engine: 'nginx',
         },
       },
@@ -86,15 +86,15 @@ test('stripTraditionalWebServicesFromLayer uses merged-view name set', () => {
     { role: 'project', filename: 'compose.yml', document: project },
     { role: 'environment', filename: 'compose.env.yml', document: environment },
   ])
-  const names = collectTraditionalWebServiceNames(merged)
+  const names = collectSiteServiceNames(merged)
   assertEquals([...names], ['site'])
 
-  const strippedEnv = stripTraditionalWebServicesFromLayer(environment, names)
+  const strippedEnv = stripSiteServicesFromLayer(environment, names)
   const envServices = strippedEnv.data.services as Record<string, unknown>
   assertEquals('site' in envServices, false)
 
   // Self-detection alone on environment would miss site (no marker).
-  const selfOnly = stripTraditionalWebServicesFromLayer(environment)
+  const selfOnly = stripSiteServicesFromLayer(environment)
   assertEquals(
     'site' in (selfOnly.data.services as Record<string, unknown>),
     true,
@@ -153,26 +153,26 @@ test('no per-layer network prune export — prune remains merged-view only', () 
     },
   })
   // after strip of a hypothetical unused service, networks stay intact on the layer
-  const next = stripTraditionalWebServicesFromLayer(layerDoc, new Set())
+  const next = stripSiteServicesFromLayer(layerDoc, new Set())
   assertEquals(Object.keys(next.data.networks as object).sort(), [
     'backend',
     'frontend',
   ])
 })
 
-test('stripTraditionalWebServicesFromLayer looks through tagged services', () => {
+test('stripSiteServicesFromLayer looks through tagged services', () => {
   const document = doc({
     services: makeComposeTag('override', {
       site: {
         'x-turbopanel': {
-          serviceKind: 'traditional-web',
+          serviceKind: 'site',
           engine: 'nginx',
         },
       },
       api: { image: 'node:22' },
     }),
   })
-  const next = stripTraditionalWebServicesFromLayer(
+  const next = stripSiteServicesFromLayer(
     document,
     new Set(['site']),
   )
@@ -182,19 +182,19 @@ test('stripTraditionalWebServicesFromLayer looks through tagged services', () =>
   assertEquals((services.api as { image: string }).image, 'node:22')
 })
 
-test('stripTraditionalWebServicesFromLayer self-detects tagged service bodies', () => {
+test('stripSiteServicesFromLayer self-detects tagged service bodies', () => {
   const document = doc({
     services: {
       site: makeComposeTag('override', {
         'x-turbopanel': {
-          serviceKind: 'traditional-web',
+          serviceKind: 'site',
           engine: 'nginx',
         },
       }),
       api: { image: 'node:22' },
     },
   })
-  const next = stripTraditionalWebServicesFromLayer(document)
+  const next = stripSiteServicesFromLayer(document)
   const services = next.data.services as Record<string, unknown>
   assertEquals('site' in services, false)
   assertEquals((services.api as { image: string }).image, 'node:22')

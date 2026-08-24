@@ -23,6 +23,7 @@ import {
   servicesBelongToProject,
 } from './stewards.ts'
 import {
+  loadEntitlementsByPrincipalIds,
   isServerPrincipalUsernameTaken,
   replaceStewards,
   SERVER_PRINCIPAL_PROVIDER,
@@ -189,14 +190,23 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       .from(principal)
       .where(eq(principal.projectId, projectId))
 
+    const principalIds = rows.map((row) => row.id)
     const serviceIdsByPrincipal = await loadServiceIdsByPrincipalIds(
       db,
-      rows.map((row) => row.id),
+      principalIds,
+    )
+    const entitlementsByPrincipal = await loadEntitlementsByPrincipalIds(
+      db,
+      principalIds,
     )
 
     return c.json({
       principals: rows.map((row) =>
-        serializeProjectPrincipal(row, serviceIdsByPrincipal.get(row.id) ?? [])
+        serializeProjectPrincipal(
+          row,
+          serviceIdsByPrincipal.get(row.id) ?? [],
+          entitlementsByPrincipal.get(row.id) ?? [],
+        )
       ),
     })
   })

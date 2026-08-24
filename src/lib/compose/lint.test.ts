@@ -54,11 +54,11 @@ test('lintComposeYaml errors when service has neither image nor build', () => {
   assertEquals(missing?.message.includes('image'), true)
 })
 
-test('lintComposeYaml skips image requirement for traditional-web services', () => {
+test('lintComposeYaml skips image requirement for site services', () => {
   const source = `services:
   site:
     x-turbopanel:
-      serviceKind: traditional-web
+      serviceKind: site
       engine: apache
 `
   assertEquals(lintComposeYaml(source), [])
@@ -168,7 +168,7 @@ test('lintComposeYaml allows x-turbopanel extension keys on services', () => {
   const source = `services:
   site:
     x-turbopanel:
-      serviceKind: traditional-web
+      serviceKind: site
       engine: nginx
 `
   assertEquals(
@@ -433,11 +433,11 @@ test('lintComposeYaml sorts errors before warnings on the same line', () => {
   }
 })
 
-test('lintComposeYaml rejects traditional-web without engine via image requirement', () => {
+test('lintComposeYaml rejects site without engine via image requirement', () => {
   const source = `services:
   site:
     x-turbopanel:
-      serviceKind: traditional-web
+      serviceKind: site
 `
   const issues = lintComposeYaml(source)
   assertEquals(

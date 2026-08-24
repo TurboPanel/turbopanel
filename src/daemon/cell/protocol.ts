@@ -119,6 +119,35 @@ export type DaemonMessage =
     at: string;
   }
   | {
+    type: "repo-read-request";
+    id: string;
+    cloneUrl: string;
+    ref: string;
+    paths: string[];
+    listPath?: string;
+    maxBytesPerFile: number;
+    credential?: string;
+    credentialKind?: string;
+    credentialUsername?: string;
+    at: string;
+  }
+  | {
+    type: "repo-read-result";
+    id: string;
+    ok: boolean;
+    commitSha?: string;
+    files?: {
+      path: string;
+      found: boolean;
+      content?: string;
+      bytes?: number;
+      reason?: string;
+    }[];
+    entries?: { path: string; kind: string; bytes?: number }[];
+    error?: string;
+    at: string;
+  }
+  | {
     type: "managed-ha-event";
     managedId: string;
     sourceMemberId?: string;
@@ -245,6 +274,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "heartbeat",
     "addresses-result",
     "managed-logs-result",
+    "repo-read-result",
     "managed-ha-event",
     "fabric-paths-result",
     "dev-sync-result",
@@ -267,6 +297,21 @@ export const MAX_DAEMON_WS_ERROR_CHARS = 4 * 1024;
 
 /** Max characters for `managed-logs-result.logs`. */
 export const MAX_DAEMON_WS_LOGS_CHARS = 200 * 1024;
+
+/**
+ * Max UTF-8 bytes across every file in one `repo-read-result`.
+ *
+ * Comfortably under {@link MAX_DAEMON_WS_FRAME_BYTES} so a legitimate read
+ * cannot be mistaken for a framing violation, and small enough that a
+ * misbehaving daemon cannot push a repository through this channel.
+ */
+export const MAX_DAEMON_WS_REPO_READ_BYTES = 128 * 1024;
+
+/** Max directory entries in one `repo-read-result`. */
+export const MAX_DAEMON_WS_REPO_READ_ENTRIES = 256;
+
+/** Max paths one `repo-read-request` may ask for. */
+export const MAX_DAEMON_WS_REPO_READ_PATHS = 16;
 
 /** Max `fabric-paths-request.candidates` / `fabric-paths-result.paths` entries. */
 export const MAX_DAEMON_WS_FABRIC_PATH_ENTRIES = 256;
@@ -396,6 +441,43 @@ function validateManagedLogsResultFields(
   if (typeof record.logs !== "string") return "invalid logs";
   if (record.logs.length > MAX_DAEMON_WS_LOGS_CHARS) {
     return "logs exceed max length";
+  }
+  return null;
+}
+
+function validateRepoReadResultFields(
+  record: Record<string, unknown>,
+): string | null {
+  const base = validateResultEnvelopeFields(record);
+  if (base) return base;
+  if (typeof record.ok !== "boolean") return "invalid ok";
+  if (record.files !== undefined) {
+    if (!Array.isArray(record.files)) return "invalid files";
+    if (record.files.length > MAX_DAEMON_WS_REPO_READ_PATHS) {
+      return "files exceed max entries";
+    }
+    let bytes = 0;
+    for (const file of record.files) {
+      if (typeof file !== "object" || file === null) return "invalid file entry";
+      const entry = file as Record<string, unknown>;
+      if (typeof entry.path !== "string") return "invalid file path";
+      if (typeof entry.found !== "boolean") return "invalid file found";
+      if (entry.content !== undefined) {
+        if (typeof entry.content !== "string") return "invalid file content";
+        bytes += utf8ByteLength(entry.content);
+        // Checked here as well as in the envelope validator: this runs on the
+        // raw frame, before anything is handed onward.
+        if (bytes > MAX_DAEMON_WS_REPO_READ_BYTES) {
+          return "repo read exceeds max bytes";
+        }
+      }
+    }
+  }
+  if (record.entries !== undefined) {
+    if (!Array.isArray(record.entries)) return "invalid entries";
+    if (record.entries.length > MAX_DAEMON_WS_REPO_READ_ENTRIES) {
+      return "entries exceed max";
+    }
   }
   return null;
 }
@@ -550,6 +632,8 @@ function validateInboundMessageFields(
       return validateAddressesResultFields(record);
     case "managed-logs-result":
       return validateManagedLogsResultFields(record);
+    case "repo-read-result":
+      return validateRepoReadResultFields(record);
     case "managed-ha-event":
       return validateManagedHaEventFields(record);
     case "fabric-paths-result":
@@ -573,6 +657,28 @@ function validateManagedLogsEnvelope(
 ): string | null {
   if (inbound.logs.length > MAX_DAEMON_WS_LOGS_CHARS) {
     return "logs exceed max length";
+  }
+  return validateOptionalError(inbound.error);
+}
+
+/**
+ * Size-check a repo read before it is handed to the caller.
+ *
+ * The cap is on the **total** across files, not per file: eight files just
+ * under a per-file limit would still be a frame nobody asked for.
+ */
+function validateRepoReadEnvelope(
+  inbound: Extract<DaemonInboundEnvelope, { kind: "repo-read-result" }>,
+): string | null {
+  let bytes = 0;
+  for (const file of inbound.files ?? []) {
+    bytes += utf8ByteLength(file.content ?? "");
+    if (bytes > MAX_DAEMON_WS_REPO_READ_BYTES) {
+      return "repo read exceeds max bytes";
+    }
+  }
+  if ((inbound.entries ?? []).length > MAX_DAEMON_WS_REPO_READ_ENTRIES) {
+    return "repo read entries exceed max";
   }
   return validateOptionalError(inbound.error);
 }
@@ -605,6 +711,8 @@ function validateInboundEnvelopeKind(
   switch (inbound.kind) {
     case "managed-logs-result":
       return validateManagedLogsEnvelope(inbound);
+    case "repo-read-result":
+      return validateRepoReadEnvelope(inbound);
     case "fabric-paths-result":
       return validateFabricPathsEnvelope(inbound);
     case "command-outcome":
@@ -670,6 +778,18 @@ export type DaemonOutboundEnvelope =
     tail: number;
   })
   | (OutboundEnvelopeBase & {
+    kind: "repo-read-request";
+    cloneUrl: string;
+    ref: string;
+    paths: string[];
+    listPath?: string;
+    maxBytesPerFile: number;
+    /** `tpdaemon.…` sealed clone secret, or absent for a public repo. */
+    credential?: string;
+    credentialKind?: string;
+    credentialUsername?: string;
+  })
+  | (OutboundEnvelopeBase & {
     kind: "fabric-paths-request";
     fabricId: string;
     probeMs: number;
@@ -717,6 +837,22 @@ export type DaemonInboundEnvelope =
     requestId: string;
     at: string;
     logs: string;
+    error?: string;
+  }
+  | {
+    kind: "repo-read-result";
+    requestId: string;
+    at: string;
+    ok: boolean;
+    commitSha?: string;
+    files?: {
+      path: string;
+      found: boolean;
+      content?: string;
+      bytes?: number;
+      reason?: string;
+    }[];
+    entries?: { path: string; kind: string; bytes?: number }[];
     error?: string;
   }
   | {
@@ -803,6 +939,17 @@ export function wireMessageToInboundEnvelope(
         logs: msg.logs,
         error: msg.error,
       };
+    case "repo-read-result":
+      return {
+        kind: "repo-read-result",
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        commitSha: msg.commitSha,
+        files: msg.files,
+        entries: msg.entries,
+        error: msg.error,
+      };
     case "fabric-paths-result":
       return {
         kind: "fabric-paths-result",
@@ -878,6 +1025,24 @@ export function outboundEnvelopeToWireMessage(
         id: env.requestId,
         managedId: env.managedId,
         tail: env.tail,
+        at: env.at,
+      };
+    case "repo-read-request":
+      return {
+        type: "repo-read-request",
+        id: env.requestId,
+        cloneUrl: env.cloneUrl,
+        ref: env.ref,
+        paths: env.paths.slice(0, MAX_DAEMON_WS_REPO_READ_PATHS),
+        ...(env.listPath === undefined ? {} : { listPath: env.listPath }),
+        maxBytesPerFile: env.maxBytesPerFile,
+        ...(env.credential === undefined ? {} : { credential: env.credential }),
+        ...(env.credentialKind === undefined
+          ? {}
+          : { credentialKind: env.credentialKind }),
+        ...(env.credentialUsername === undefined
+          ? {}
+          : { credentialUsername: env.credentialUsername }),
         at: env.at,
       };
     case "fabric-paths-request":

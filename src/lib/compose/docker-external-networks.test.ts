@@ -88,7 +88,7 @@ test('collectServiceComposeNetworkKeys supports list and map forms', () => {
   )
 })
 
-test('pruneUnreferencedComposeNetworks drops networks only traditional-web used', () => {
+test('pruneUnreferencedComposeNetworks drops networks only site used', () => {
   const pruned = pruneUnreferencedComposeNetworks(
     {
       api: { image: 'node:22', networks: ['shared'] },

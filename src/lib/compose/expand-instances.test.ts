@@ -39,11 +39,11 @@ test('expandComposeServiceInstances fans multi-instance into sibling keys', () =
   assertEquals(services['web-2']!.environment, { A: '1' })
 })
 
-test('expandComposeServiceInstances skips traditional-web services', () => {
+test('expandComposeServiceInstances skips site services', () => {
   const result = expandComposeServiceInstances(
     doc({
       site: {
-        'x-turbopanel': { serviceKind: 'traditional-web', engine: 'nginx' },
+        'x-turbopanel': { serviceKind: 'site', engine: 'nginx' },
       },
     }),
     new Map([['site', 3]]),

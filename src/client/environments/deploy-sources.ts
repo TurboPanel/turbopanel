@@ -73,7 +73,7 @@ import type {
   EnvironmentDeploySource,
   EnvironmentDeploySourceBuild,
   EnvironmentDeploySourceCredentialKind,
-  EnvironmentDeployTraditionalWebPrincipal,
+  EnvironmentDeploySitePrincipal,
 } from "../../lib/commands/schemas.ts";
 import { credential, source } from "../../lib/db/schema.ts";
 import {
@@ -100,7 +100,7 @@ export type DeploySourcePrepareError =
  * not only the one being rolled back — the others to the release they are
  * already running. That is deliberate and load-bearing: `sourceMaterial[]` is
  * also what the daemon uses to decide which release trees are still in use
- * (`reclaimRemovedReleaseTrees`), which document root each traditional-web
+ * (`reclaimRemovedReleaseTrees`), which document root each site
  * site serves from, and what goes into `deployment.json`'s `releases[]`. A
  * payload carrying one entry would read on the host as "every other service
  * lost its source" and reclaim their trees. Re-promoting a service onto the
@@ -277,7 +277,7 @@ export type { ResolvedSourceCommit };
 
 function toDeploySourcePrincipal(
   material: EnvironmentDeployPrincipalMaterial,
-): EnvironmentDeployTraditionalWebPrincipal {
+): EnvironmentDeploySitePrincipal {
   return {
     principalId: material.principalId,
     username: material.username,
@@ -302,7 +302,7 @@ function toDeploySourcePrincipal(
  * `serviceKind: node` service from it (`nativeAppServices[]`). It is non-secret
  * and length-capped exactly like `buildCommand`, and services of every other
  * kind simply ignore it — the release engine itself never executes it.
- * `kind: 'static'` is still reserved for the traditional-web release phase.
+ * `kind: 'static'` is still reserved for the site release phase.
  */
 function resolveSourceBuild(
   binding: ComposeServiceSourceExtension,
@@ -383,7 +383,7 @@ function noSourceBindingsResult(
 }
 
 /**
- * Ownership: identical lookup + sole-principal rule the traditional-web pin
+ * Ownership: identical lookup + sole-principal rule the site pin
  * uses; more than one steward is ambiguous ownership, not a guess.
  */
 function resolveBindingPrincipal(

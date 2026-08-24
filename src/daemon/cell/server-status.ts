@@ -11,6 +11,7 @@ import type { Db } from "../../db.ts";
 import { parseServerDaemonState } from "../authn/daemon-state.ts";
 import type {
   ServerDockerMetadata,
+  ServerRuntimeMetadata,
   ServerMetadata,
   ServerOsMetadata,
   ServerTimeSync,
@@ -20,6 +21,7 @@ import {
   resolveServerOsForRead,
   parseServerHostResources,
   parseServerDockerMetadata,
+  parseServerRuntimeMetadata,
   timeSyncFromColumns,
 } from "../../lib/db/server-metadata.ts";
 import type { ServerReportedIp } from "../../server-addresses.ts";
@@ -68,6 +70,12 @@ export type ServerFleetPresence = {
    * Null when Docker is not installed or has not been reported.
    */
   docker: ServerDockerMetadata | null;
+  /**
+   * From `server.metadata.runtimes` — what is actually installed on the host.
+   * `null` when the daemon has not reported (an older daemon, or one that
+   * found nothing), which prepare treats as "unknown", never as "absent".
+   */
+  runtimes: ServerRuntimeMetadata | null;
 };
 
 function normalizeRemoteAddress(
@@ -217,6 +225,7 @@ export async function resolveFleetPresence(
       timeSync,
       ips,
       docker: parseServerDockerMetadata(metadata.docker) ?? null,
+      runtimes: parseServerRuntimeMetadata(metadata.runtimes) ?? null,
     });
   }
 

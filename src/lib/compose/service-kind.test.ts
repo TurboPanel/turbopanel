@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   collectServiceTurbopanelValidationIssues,
   isNodeComposeService,
-  isTraditionalWebComposeService,
+  isSiteComposeService,
   parseServiceTurbopanelExtension,
   readServiceTurbopanelExtension,
 } from './service-kind.ts'
@@ -17,24 +17,24 @@ import { lintComposeYaml } from './lint.ts'
  */
 const test = Deno.test.bind(Deno)
 
-test('parseServiceTurbopanelExtension accepts traditional-web with engine', () => {
+test('parseServiceTurbopanelExtension accepts site with engine', () => {
   assertEquals(
     parseServiceTurbopanelExtension({
-      serviceKind: 'traditional-web',
+      serviceKind: 'site',
       engine: 'nginx',
     }),
-    { serviceKind: 'traditional-web', engine: 'nginx' },
+    { serviceKind: 'site', engine: 'nginx' },
   )
 })
 
-test('parseServiceTurbopanelExtension accepts traditional-web root', () => {
+test('parseServiceTurbopanelExtension accepts site root', () => {
   assertEquals(
     parseServiceTurbopanelExtension({
-      serviceKind: 'traditional-web',
+      serviceKind: 'site',
       engine: 'nginx',
       root: 'www',
     }),
-    { serviceKind: 'traditional-web', engine: 'nginx', root: 'www' },
+    { serviceKind: 'site', engine: 'nginx', root: 'www' },
   )
 })
 
@@ -42,7 +42,7 @@ test('collectServiceTurbopanelValidationIssues rejects unsafe root', () => {
   const issues = collectServiceTurbopanelValidationIssues({
     site: {
       'x-turbopanel': {
-        serviceKind: 'traditional-web',
+        serviceKind: 'site',
         engine: 'nginx',
         root: '../etc',
       },
@@ -54,36 +54,44 @@ test('collectServiceTurbopanelValidationIssues rejects unsafe root', () => {
   )
 })
 
-test('collectServiceTurbopanelValidationIssues requires engine for traditional-web', () => {
+test('collectServiceTurbopanelValidationIssues allows a site with no engine', () => {
+  // `engine` is optional and defaults to caddy, resolved at the control-plane
+  // split. A minimum static site is therefore four lines of compose.
   const issues = collectServiceTurbopanelValidationIssues({
     site: {
-      'x-turbopanel': { serviceKind: 'traditional-web' },
+      'x-turbopanel': { serviceKind: 'site' },
     },
   })
-  assertEquals(
-    issues.some((issue) => issue.path === 'services.site.x-turbopanel.engine'),
-    true,
-  )
+  assertEquals(issues, [])
 })
 
-test('collectServiceTurbopanelValidationIssues rejects engine without traditional-web', () => {
+test('collectServiceTurbopanelValidationIssues accepts caddy as an engine', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    site: {
+      'x-turbopanel': { serviceKind: 'site', engine: 'caddy' },
+    },
+  })
+  assertEquals(issues, [])
+})
+
+test('collectServiceTurbopanelValidationIssues rejects engine without site', () => {
   const issues = collectServiceTurbopanelValidationIssues({
     site: {
       'x-turbopanel': { engine: 'apache' },
     },
   })
   assertEquals(issues.length, 1)
-  assertEquals(issues[0]?.message.includes('traditional-web'), true)
+  assertEquals(issues[0]?.message.includes('site'), true)
 })
 
-test('validateComposeDocument accepts traditional-web without image or build', () => {
+test('validateComposeDocument accepts site without image or build', () => {
   const result = validateComposeDocument({
     version: 1,
     data: {
       services: {
         site: {
           'x-turbopanel': {
-            serviceKind: 'traditional-web',
+            serviceKind: 'site',
             engine: 'openlitespeed',
           },
         },
@@ -94,7 +102,7 @@ test('validateComposeDocument accepts traditional-web without image or build', (
   assertEquals(result.ok, true)
   if (result.ok) {
     assertEquals(
-      isTraditionalWebComposeService(
+      isSiteComposeService(
         (result.document.data.services as Record<string, Record<string, unknown>>).site,
       ),
       true,
@@ -102,11 +110,11 @@ test('validateComposeDocument accepts traditional-web without image or build', (
   }
 })
 
-test('lintComposeYaml allows traditional-web service without image', () => {
+test('lintComposeYaml allows site service without image', () => {
   const source = `services:
   site:
     x-turbopanel:
-      serviceKind: traditional-web
+      serviceKind: site
       engine: nginx
 `
   const issues = lintComposeYaml(source)
@@ -141,7 +149,7 @@ test('collectServiceTurbopanelValidationIssues rejects invalid serviceKind and e
   )
 })
 
-test('collectServiceTurbopanelValidationIssues rejects root without traditional-web', () => {
+test('collectServiceTurbopanelValidationIssues rejects root without site', () => {
   const issues = collectServiceTurbopanelValidationIssues({
     api: {
       image: 'node:22',
@@ -170,7 +178,7 @@ test('validateComposeDocument surfaces service extension validation issues', () 
     data: {
       services: {
         site: {
-          'x-turbopanel': { serviceKind: 'traditional-web', engine: 'bad-engine' },
+          'x-turbopanel': { serviceKind: 'site', engine: 'bad-engine' },
         },
       },
     },
@@ -179,9 +187,9 @@ test('validateComposeDocument surfaces service extension validation issues', () 
   assertEquals(result.ok, false)
 })
 
-test('isTraditionalWebComposeService is false for invalid extension mapping', () => {
+test('isSiteComposeService is false for invalid extension mapping', () => {
   assertEquals(
-    isTraditionalWebComposeService({ 'x-turbopanel': 'bad' }),
+    isSiteComposeService({ 'x-turbopanel': 'bad' }),
     false,
   )
 })
@@ -198,11 +206,11 @@ test('collectServiceTurbopanelValidationIssues rejects invalid serviceKind types
   )
 })
 
-test('collectServiceTurbopanelValidationIssues accepts safe traditional-web roots', () => {
+test('collectServiceTurbopanelValidationIssues accepts safe site roots', () => {
   const issues = collectServiceTurbopanelValidationIssues({
     site: {
       'x-turbopanel': {
-        serviceKind: 'traditional-web',
+        serviceKind: 'site',
         engine: 'nginx',
         root: 'public/www',
       },
@@ -215,7 +223,7 @@ test('collectServiceTurbopanelValidationIssues rejects absolute and empty roots'
   const absolute = collectServiceTurbopanelValidationIssues({
     site: {
       'x-turbopanel': {
-        serviceKind: 'traditional-web',
+        serviceKind: 'site',
         engine: 'nginx',
         root: '/etc',
       },
@@ -229,7 +237,7 @@ test('collectServiceTurbopanelValidationIssues rejects absolute and empty roots'
   const empty = collectServiceTurbopanelValidationIssues({
     site: {
       'x-turbopanel': {
-        serviceKind: 'traditional-web',
+        serviceKind: 'site',
         engine: 'nginx',
         root: '   ',
       },
@@ -317,7 +325,7 @@ test('isNodeComposeService distinguishes node from the other kinds', () => {
   )
   assertEquals(
     isNodeComposeService({
-      'x-turbopanel': { serviceKind: 'traditional-web' },
+      'x-turbopanel': { serviceKind: 'site' },
     }),
     false,
   )

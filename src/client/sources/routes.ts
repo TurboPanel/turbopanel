@@ -24,6 +24,8 @@
  */
 
 import { and, eq, sql } from 'drizzle-orm'
+import { inspectRepository } from './inspect.ts'
+import { getDaemonCellRegistry } from '../../db.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -32,7 +34,12 @@ import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
-import { credential, gitProviderInstallation, source } from '../../lib/db/schema.ts'
+import {
+  credential,
+  gitProviderInstallation,
+  server,
+  source,
+} from '../../lib/db/schema.ts'
 import {
   getGithubAppConfig,
   getGithubAppConfigSummary,
@@ -171,6 +178,16 @@ async function composeReferencesSource(
       WHERE w.organization_id = ${organizationId}::uuid
         AND jsonb_path_exists(e.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
           jsonb_build_object('sid', ${sourceId}::text))
+      UNION ALL
+      -- options.composeSource.sourceId records where a project compose was
+      -- seeded from. Deleting the source would silently orphan that
+      -- provenance, and drift detection would go permanently unreadable.
+      -- (No backticks in here: this is inside a JS template literal.)
+      SELECT 1
+      FROM project p
+      JOIN workspace w ON w.id = p.workspace_id
+      WHERE w.organization_id = ${organizationId}::uuid
+        AND p.options -> 'composeSource' ->> 'sourceId' = ${sourceId}::text
     ) AS referenced
   `)
   return rows[0]?.referenced === true
@@ -828,6 +845,81 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         row,
         await resolveSourceWebhookInfo(db, row.provider),
       ),
+    })
+  })
+
+  /**
+   * Read a connected repository so the wizard can see what is in it.
+   *
+   * Provider-first with a daemon fallback — see `inspectRepository` for why the
+   * fallback rule keys on the *presence of an HTTP status* rather than on a
+   * configuration toggle.
+   *
+   * The probe set is fixed (`INSPECT_PROBE_PATHS`), not caller-supplied: this
+   * is reachable by any org member, so a fixed list bounds what a compromised
+   * session can learn to "do these filenames exist".
+   */
+  router.get('/sources/:id/inspect', async (c) => {
+    const ctx = await resolveSourceSession(c)
+    if (ctx instanceof Response) return ctx
+    const { db, organizationId } = ctx
+
+    const id = c.req.param('id')
+    if (!UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+
+    const denied = await assertCanReadOr403(c, 'organization', organizationId)
+    if (denied) return denied
+
+    const [row] = await db
+      .select(SOURCE_SELECT)
+      .from(source)
+      .where(and(eq(source.id, id), eq(source.organizationId, organizationId)))
+      .limit(1)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    const ref = (c.req.query('ref') ?? row.defaultBranch ?? '').trim()
+    if (ref.length === 0) {
+      return c.json({
+        error: 'ref_required',
+        message:
+          'This source records no default branch; name a ref to inspect.',
+      }, 400)
+    }
+
+    const outcome = await inspectRepository({
+      db,
+      registry: getDaemonCellRegistry(c) ?? null,
+      dataEncryptionSecrets: c.get('dataEncryptionSecrets') ?? null,
+      organizationId,
+      row: {
+        id: row.id,
+        provider: row.provider,
+        repositoryUrl: row.repositoryUrl,
+        defaultBranch: row.defaultBranch,
+        subdirectory: row.subdirectory,
+        installationId: row.installationId,
+        credentialId: row.credentialId,
+      },
+      ref,
+      listPath: '',
+      serverIds: (await db
+        .select({ id: server.id })
+        .from(server)
+        .where(eq(server.organizationId, organizationId)))
+        .map((entry) => entry.id),
+    })
+
+    if (!outcome.ok) {
+      return c.json(
+        { error: outcome.error, message: outcome.message },
+        outcome.status as 400,
+      )
+    }
+    return c.json({
+      commitSha: outcome.commitSha,
+      via: outcome.via,
+      files: outcome.files,
+      entries: outcome.entries,
     })
   })
 

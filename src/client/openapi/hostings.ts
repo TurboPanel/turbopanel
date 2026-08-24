@@ -25,7 +25,7 @@ export const hostingSchemas = {
       version: {
         type: 'string',
         description:
-          'Preferred mod_php package version (e.g. "8.4"); applied on Apache traditional-web deploy',
+          'PHP series for this site (e.g. "8.4"). php-fpm on nginx and Apache, LSAPI on OpenLiteSpeed.',
         pattern: String.raw`^\d+\.\d+$`,
       },
       memoryLimit: {
@@ -52,7 +52,7 @@ export const hostingSchemas = {
       php: {
         $ref: '#/components/schemas/HostingPhpOptions',
         description:
-          'PHP hints for Apache traditional-web deploy (ignored for nginx/OpenLiteSpeed static)',
+          'PHP hints for a host-served site. Applied on every engine.',
       },
     },
   },
@@ -96,7 +96,7 @@ export const hostingSchemas = {
       web: {
         $ref: '#/components/schemas/HostingWebOptions',
         description:
-          'Traditional-web / host-native stack options (env + optional Apache PHP hints)',
+          'Site / host-native stack options (env + optional Apache PHP hints)',
       },
       proxy: {
         type: 'object',

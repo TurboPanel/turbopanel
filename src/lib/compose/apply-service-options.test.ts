@@ -274,13 +274,13 @@ test('applyResourcesToComposeService empty resources object is a no-op', () => {
   assertEquals(service.deploy, undefined)
 })
 
-test('collectHealthCheckWarnings skips traditional-web and compose healthcheck', () => {
+test('collectHealthCheckWarnings skips site and compose healthcheck', () => {
   const doc = emptyComposeDocument()
   doc.data.services = {
     api: { image: 'node:22' },
     healthy: { image: 'node:22', healthcheck: { test: ['CMD', 'true'] } },
     site: {
-      'x-turbopanel': { serviceKind: 'traditional-web', engine: 'nginx' },
+      'x-turbopanel': { serviceKind: 'site', engine: 'nginx' },
     },
   }
 

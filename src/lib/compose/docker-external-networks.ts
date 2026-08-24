@@ -102,7 +102,7 @@ export function collectServiceComposeNetworkKeys(service: unknown): string[] {
 
 /**
  * Drop top-level `networks:` entries that no remaining service references.
- * Project-internal networks used only by stripped traditional-web services must
+ * Project-internal networks used only by stripped site services must
  * not stay in runtime compose (and must not require org `network` rows).
  */
 export function pruneUnreferencedComposeNetworks(

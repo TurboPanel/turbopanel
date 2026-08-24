@@ -13,7 +13,19 @@
  * `src/workers.ts`.
  */
 
+import { isGitProviderFailure } from './git-provider.ts'
+import {
+  MAX_REPOSITORY_FILE_BYTES,
+  MAX_REPOSITORY_READ_PATHS,
+} from './repository-read.ts'
 import type {
+  GitProviderSourceRow,
+  ListRepositoryEntriesParams,
+  ReadRepositoryFilesParams,
+  RepositoryEntry,
+  RepositoryFileEntry,
+  RepositoryFileSet,
+  RepositoryReadUnsupported,
   GitProvider,
   GitProviderContext,
   GitProviderFailure,
@@ -119,6 +131,110 @@ export async function listGithubInstallationRepositories(
   }
 
   return repositories
+}
+
+/** Percent-encode each path segment, keeping `/` as the separator. */
+function encodePathSegments(path: string): string {
+  return path.split('/').filter((seg) => seg.length > 0).map(encodeURIComponent)
+    .join('/')
+}
+
+function networkFailureMessage(error: unknown): string {
+  return `github request failed: ${
+    error instanceof Error ? error.message : 'network error'
+  }`
+}
+
+/**
+ * A thrown provider error carries no HTTP status, so it reads as a reachability
+ * problem and the caller falls back to the daemon. That is the right default:
+ * the alternative is refusing a read the daemon could have served.
+ */
+function githubReadFailure(error: unknown): GitProviderFailure {
+  return { failure: networkFailureMessage(error) }
+}
+
+/** Mint a short-lived installation token, or say why we cannot read. */
+async function githubReadAuth(
+  ctx: GitProviderContext,
+  row: GitProviderSourceRow,
+): Promise<
+  { token: string } | GitProviderFailure | RepositoryReadUnsupported
+> {
+  // A GitHub source with no App installation cannot be read over the API at
+  // all — the daemon clones it with the stored credential instead.
+  if (!row.installationId) return { unsupported: true }
+  if (!ctx.dataEncryptionSecrets) {
+    return { failure: 'github app credentials are unreadable' }
+  }
+  try {
+    const { token } = await mintGithubInstallationToken(
+      ctx.db,
+      ctx.dataEncryptionSecrets,
+      row.installationId,
+    )
+    return { token }
+  } catch (error) {
+    return githubReadFailure(error)
+  }
+}
+
+/**
+ * One file at a pinned commit.
+ *
+ * `Accept: application/vnd.github.raw` returns the bytes directly, skipping the
+ * base64 round-trip the JSON representation would need.
+ */
+async function readGithubFile(
+  auth: { token: string },
+  repositoryUrl: string,
+  commitSha: string,
+  path: string,
+  maxBytes: number,
+): Promise<RepositoryFileEntry | GitProviderFailure> {
+  const parsed = parseRepositoryOwnerRepo(repositoryUrl)
+  if (!parsed) return { failure: 'source repository url is not a github path' }
+  const url = `${GITHUB_API_BASE}/repos/${encodeURIComponent(parsed.owner)}/${
+    encodeURIComponent(parsed.repo)
+  }/contents/${encodePathSegments(path)}?ref=${encodeURIComponent(commitSha)}`
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: {
+        ...githubApiHeaders(auth.token, 'token'),
+        Accept: 'application/vnd.github.raw',
+      },
+    })
+  } catch (error) {
+    return { failure: networkFailureMessage(error) }
+  }
+
+  // A missing file is an ANSWER, not a failure — it is what the wizard renders.
+  if (response.status === 404) return { path, found: false, reason: 'not_found' }
+  if (!response.ok) {
+    return { failure: 'github file read failed', status: response.status }
+  }
+  // A directory comes back as a JSON array even under the raw media type.
+  const contentType = response.headers.get('content-type') ?? ''
+  if (contentType.includes('application/json')) {
+    return { path, found: false, reason: 'not_a_file' }
+  }
+
+  const buffer = new Uint8Array(await response.arrayBuffer())
+  if (buffer.byteLength > maxBytes) {
+    return { path, found: false, reason: 'too_large' }
+  }
+  // A NUL byte is the cheap, reliable binary signal; compose files never have
+  // one, and returning binary as a lossy string would be worse than refusing.
+  if (buffer.includes(0)) return { path, found: false, reason: 'binary' }
+
+  return {
+    path,
+    found: true,
+    content: new TextDecoder().decode(buffer),
+    bytes: buffer.byteLength,
+  }
 }
 
 /**
@@ -245,6 +361,104 @@ export const githubProvider: GitProvider = {
       installationId,
     )
     return await listGithubInstallationRepositories(token)
+  },
+
+  async readRepositoryFiles(
+    ctx: GitProviderContext,
+    params: ReadRepositoryFilesParams,
+  ): Promise<
+    RepositoryFileSet | GitProviderFailure | RepositoryReadUnsupported
+  > {
+    const auth = await githubReadAuth(ctx, params.row)
+    if ('unsupported' in auth || 'failure' in auth) return auth
+
+    // Resolve the commit FIRST so every file in one set comes from one commit.
+    // Reading by branch name would let a push land mid-wizard and produce a
+    // torn view — a compose file from one commit, a package.json from another.
+    let commitSha: string
+    try {
+      commitSha =
+        (await resolveGithubCommit(auth.token, params.row.repositoryUrl, params.ref))
+          .commitSha
+    } catch (error) {
+      return githubReadFailure(error)
+    }
+
+    const maxBytes = params.maxBytesPerFile ?? MAX_REPOSITORY_FILE_BYTES
+    const files: RepositoryFileEntry[] = []
+    for (const path of params.paths.slice(0, MAX_REPOSITORY_READ_PATHS)) {
+      const entry = await readGithubFile(
+        auth,
+        params.row.repositoryUrl,
+        commitSha,
+        path,
+        maxBytes,
+      )
+      // A transport failure aborts the whole read: reporting the remaining
+      // paths as `not_found` would be a lie the caller cannot detect.
+      if (isGitProviderFailure(entry)) return entry
+      files.push(entry)
+    }
+    return { commitSha, files }
+  },
+
+  async listRepositoryEntries(
+    ctx: GitProviderContext,
+    params: ListRepositoryEntriesParams,
+  ): Promise<
+    | { commitSha: string; entries: RepositoryEntry[] }
+    | GitProviderFailure
+    | RepositoryReadUnsupported
+  > {
+    const auth = await githubReadAuth(ctx, params.row)
+    if ('unsupported' in auth || 'failure' in auth) return auth
+
+    let commitSha: string
+    try {
+      commitSha =
+        (await resolveGithubCommit(auth.token, params.row.repositoryUrl, params.ref))
+          .commitSha
+    } catch (error) {
+      return githubReadFailure(error)
+    }
+
+    const parsed = parseRepositoryOwnerRepo(params.row.repositoryUrl)
+    if (!parsed) return { failure: 'source repository url is not a github path' }
+    const url = `${GITHUB_API_BASE}/repos/${encodeURIComponent(parsed.owner)}/${
+      encodeURIComponent(parsed.repo)
+    }/contents/${encodePathSegments(params.path)}?ref=${encodeURIComponent(commitSha)}`
+
+    let response: Response
+    try {
+      response = await fetch(url, {
+        headers: githubApiHeaders(auth.token, 'token'),
+      })
+    } catch (error) {
+      // No `status`: the fetch never got an HTTP answer, so this is a
+      // reachability problem the daemon may not have.
+      return { failure: networkFailureMessage(error) }
+    }
+    if (response.status === 404) return { commitSha, entries: [] }
+    if (!response.ok) {
+      return { failure: `github listing failed`, status: response.status }
+    }
+    const payload = (await response.json().catch(() => null)) as unknown
+    if (!Array.isArray(payload)) return { commitSha, entries: [] }
+
+    const maxEntries = params.maxEntries ?? 256
+    const entries: RepositoryEntry[] = []
+    for (const raw of payload.slice(0, maxEntries)) {
+      if (typeof raw !== 'object' || raw === null) continue
+      const record = raw as { path?: unknown; type?: unknown; size?: unknown }
+      if (typeof record.path !== 'string') continue
+      const kind = record.type === 'dir' ? 'dir' : 'file'
+      entries.push({
+        path: record.path,
+        kind,
+        ...(typeof record.size === 'number' ? { bytes: record.size } : {}),
+      })
+    }
+    return { commitSha, entries }
   },
 
   async prepareClone(

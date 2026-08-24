@@ -400,6 +400,7 @@ test("fleetPresenceToConnection maps presence to connection shape", () => {
     timeSync: null,
     ips: null,
     docker: null,
+    runtimes: null,
   };
 
   const connection = fleetPresenceToConnection(presence);
@@ -434,6 +435,7 @@ test("fleetPresenceToConnection uses zero lastInboundAt when absent", () => {
     timeSync: null,
     ips: null,
     docker: null,
+    runtimes: null,
   });
   assertEquals(connection.lastInboundAt, 0);
   assertEquals(connection.connectedAt, "");

@@ -96,7 +96,13 @@ function applyEnvironmentOptionsPatch(
   patchFields: EnvironmentPatchFields,
   knownSourceIds: ReadonlySet<string>,
 ): Response | undefined {
-  const optionsResult = parseEnvironmentPatchOptions(body, { knownSourceIds })
+  const optionsResult = parseEnvironmentPatchOptions(body, {
+      knownSourceIds,
+      // An environment's compose IS the overlay. Linting it as `base` produced
+      // a spurious advisory telling the operator that `!reset` / `!override`
+      // "only take effect in an overlay compose file" — about the overlay.
+      layer: 'overlay',
+    })
   if (!optionsResult.ok) {
     if ('issues' in optionsResult) {
       return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
@@ -166,7 +172,10 @@ async function parseCreateEnvironmentInput(
   }
 
   const knownSourceIds = await loadOrganizationSourceIds(db, organizationId)
-  const jsonb = parseCreateEnvironmentJsonb(body, { knownSourceIds })
+  const jsonb = parseCreateEnvironmentJsonb(body, {
+      knownSourceIds,
+      layer: 'overlay',
+    })
   if (!jsonb.ok) {
     if ('issues' in jsonb) {
       return c.json({ error: jsonb.error, issues: jsonb.issues }, 400)

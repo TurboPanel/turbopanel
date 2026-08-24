@@ -1,5 +1,5 @@
-import { attachWebMetadataToTraditionalSites } from '../../lib/hosting-web-env.ts'
-import { assignTraditionalWebListenPorts } from '../../lib/compose/traditional-web.ts'
+import { attachWebMetadataToSites } from '../../lib/hosting-web-env.ts'
+import { assignSiteListenPorts } from '../../lib/compose/site.ts'
 import { assignNativeAppListenPorts } from '../../lib/compose/native-app.ts'
 import type {
   EnvironmentDeployComposeFile,
@@ -7,7 +7,7 @@ import type {
   EnvironmentDeployIngressService,
   EnvironmentDeployNativeAppService,
   EnvironmentDeployStorageMaterial,
-  EnvironmentDeployTraditionalWebSite,
+  EnvironmentDeploySite,
   EnvironmentLifecycleAction,
 } from '../../lib/commands/schemas.ts'
 import type { DeployPrepareError, PreparedNativeAppService } from './deploy-prepare.ts'
@@ -252,14 +252,14 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
             'Compose references external Docker network(s) that are not registered for this server. Add a Docker network under Servers → Networks with matching options.dockerNetworkName.',
         },
       }
-    case 'traditional_web_principal_ambiguous':
+    case 'site_principal_ambiguous':
       return {
         status: 422,
         body: {
-          error: 'traditional_web_principal_ambiguous',
+          error: 'site_principal_ambiguous',
           composeServiceName: prepared.composeServiceName,
           message:
-            `Traditional-web service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
+            `Site "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
         },
       }
     case 'source_principal_ambiguous':
@@ -423,14 +423,14 @@ export function preferredListenPortsFromHostings(
   return preferredListenPorts
 }
 
-export function buildTraditionalWebSitesForDeploy(
-  traditionalWebSites: EnvironmentDeployTraditionalWebSite[],
+export function buildSitesForDeploy(
+  sites: EnvironmentDeploySite[],
   hostings: EnvironmentDeployHosting[],
   used: Set<number> = new Set<number>(),
-): EnvironmentDeployTraditionalWebSite[] {
-  return attachWebMetadataToTraditionalSites(
-    assignTraditionalWebListenPorts(
-      traditionalWebSites,
+): EnvironmentDeploySite[] {
+  return attachWebMetadataToSites(
+    assignSiteListenPorts(
+      sites,
       preferredListenPortsFromHostings(hostings),
       used,
     ),
@@ -474,7 +474,7 @@ export function resolveDeployReleaseServiceId(
  * hosting `targetPort` values are known, and resolve each release-tree
  * `serviceId`.
  *
- * `used` is the **same** ledger `buildTraditionalWebSitesForDeploy` was handed,
+ * `used` is the **same** ledger `buildSitesForDeploy` was handed,
  * so the two loopback lanes cannot be given the same port.
  */
 export function buildNativeAppServicesForDeploy(

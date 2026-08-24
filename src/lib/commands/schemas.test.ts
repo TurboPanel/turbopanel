@@ -1907,7 +1907,7 @@ test("parseManagedRestoreResult is lenient and never carries dump contents", () 
   );
 });
 
-test("parseCommandPayload accepts traditionalWebSites and dockerExternalNetworks", () => {
+test("parseCommandPayload accepts sites and dockerExternalNetworks", () => {
   assertEquals(
     parseCommandPayload("environment.deploy" as CommandType, {
       environmentId: "env-1",
@@ -1917,14 +1917,17 @@ test("parseCommandPayload accepts traditionalWebSites and dockerExternalNetworks
       composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
       hostings: [],
       dockerExternalNetworks: ["zeta-net", "alpha-net", "alpha-net"],
-      traditionalWebSites: [
+      sites: [
         {
           composeServiceName: "web",
           engine: "apache",
           root: "public",
           listenPort: 18080,
           webEnv: { APP_ENV: "prod" },
-          php: { version: "8.4", memoryLimit: "256M", maxExecutionTime: 30 },
+          php: {
+            version: "8.4",
+            settings: { memory_limit: "256M", max_execution_time: "30" },
+          },
           principal: {
             principalId: "00000000-0000-4000-8000-000000000099",
             username: "site_user",
@@ -1942,14 +1945,17 @@ test("parseCommandPayload accepts traditionalWebSites and dockerExternalNetworks
       composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
       hostings: [],
       dockerExternalNetworks: ["alpha-net", "zeta-net"],
-      traditionalWebSites: [
+      sites: [
         {
           composeServiceName: "web",
           engine: "apache",
           root: "public",
           listenPort: 18080,
           webEnv: { APP_ENV: "prod" },
-          php: { version: "8.4", memoryLimit: "256M", maxExecutionTime: 30 },
+          php: {
+            version: "8.4",
+            settings: { memory_limit: "256M", max_execution_time: "30" },
+          },
           principal: {
             principalId: "00000000-0000-4000-8000-000000000099",
             username: "site_user",
@@ -2000,6 +2006,64 @@ test("parseCommandPayload rejects non-boolean noCache on environment.deploy", ()
     Error,
     "Invalid environment.deploy payload",
   );
+});
+
+function deployPayloadWithPrincipal(runtimes: unknown) {
+  return {
+    environmentId: "env-1",
+    projectId: "proj-1",
+    organizationId: "org-1",
+    projectName: "tp-demo",
+    composeFiles: [{
+      filename: "compose.yaml",
+      role: "runtime" as const,
+      content: "services: {}\n",
+    }],
+    hostings: [],
+    principalMaterial: [{
+      principalId: "00000000-0000-4000-8000-000000000001",
+      username: "appuser",
+      runtimes,
+    }],
+  };
+}
+
+test("parseCommandPayload round-trips principal runtime entitlements", () => {
+  const parsed = parseCommandPayload(
+    "environment.deploy" as CommandType,
+    deployPayloadWithPrincipal([
+      { runtime: "php", series: "8.4" },
+      { runtime: "node", series: "24" },
+    ]),
+  ) as { principalMaterial: { runtimes?: unknown }[] };
+  assertEquals(parsed.principalMaterial[0]?.runtimes, [
+    { runtime: "php", series: "8.4" },
+    { runtime: "node", series: "24" },
+  ]);
+});
+
+test("parseCommandPayload rejects a malformed runtime entitlement", () => {
+  // Rejected rather than dropped: the daemon reconciles group membership from
+  // exactly this list, so silently discarding it would REVOKE every
+  // entitlement the principal should have held.
+  for (
+    const bad of [
+      [{ runtime: "php" }],
+      [{ runtime: "php", series: "8.4.1" }],
+      [{ runtime: "php", series: "latest" }],
+      "php",
+    ]
+  ) {
+    assertThrows(
+      () =>
+        parseCommandPayload(
+          "environment.deploy" as CommandType,
+          deployPayloadWithPrincipal(bad),
+        ),
+      Error,
+      "Invalid environment.deploy payload",
+    );
+  }
 });
 
 test("parseCommandPayload accepts principalMaterial with and without uid/gid", () => {
@@ -2084,7 +2148,7 @@ test("parseCommandPayload rejects negative or non-integer principal ids", () => 
         projectName: "tp-demo",
         composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
         hostings: [],
-        traditionalWebSites: [
+        sites: [
           {
             composeServiceName: "web",
             engine: "nginx",
@@ -2100,7 +2164,7 @@ test("parseCommandPayload rejects negative or non-integer principal ids", () => 
         ],
       }),
     Error,
-    "Invalid traditionalWebSites.principal entry",
+    "Invalid sites.principal entry",
   );
 });
 
@@ -2187,7 +2251,7 @@ test("parseCommandPayload rejects overlong, unsafe, or empty principal material 
     () =>
       parseCommandPayload("environment.deploy" as CommandType, {
         ...baseDeploy,
-        traditionalWebSites: [
+        sites: [
           {
             composeServiceName: "web",
             engine: "nginx",
@@ -2201,13 +2265,13 @@ test("parseCommandPayload rejects overlong, unsafe, or empty principal material 
         ],
       }),
     Error,
-    "Invalid traditionalWebSites.principal entry",
+    "Invalid sites.principal entry",
   );
   assertThrows(
     () =>
       parseCommandPayload("environment.deploy" as CommandType, {
         ...baseDeploy,
-        traditionalWebSites: [
+        sites: [
           {
             composeServiceName: "web",
             engine: "nginx",
@@ -2221,13 +2285,13 @@ test("parseCommandPayload rejects overlong, unsafe, or empty principal material 
         ],
       }),
     Error,
-    "Invalid traditionalWebSites.principal entry",
+    "Invalid sites.principal entry",
   );
   assertThrows(
     () =>
       parseCommandPayload("environment.deploy" as CommandType, {
         ...baseDeploy,
-        traditionalWebSites: [
+        sites: [
           {
             composeServiceName: "web",
             engine: "nginx",
@@ -2241,7 +2305,7 @@ test("parseCommandPayload rejects overlong, unsafe, or empty principal material 
         ],
       }),
     Error,
-    "Invalid traditionalWebSites.principal entry",
+    "Invalid sites.principal entry",
   );
 });
 

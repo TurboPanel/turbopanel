@@ -30,7 +30,18 @@
  * and never learn that GitLab exists.
  */
 
+import {
+  MAX_REPOSITORY_FILE_BYTES,
+  MAX_REPOSITORY_READ_PATHS,
+} from './repository-read.ts'
 import type {
+  GitProviderSourceRow,
+  ListRepositoryEntriesParams,
+  ReadRepositoryFilesParams,
+  RepositoryEntry,
+  RepositoryFileEntry,
+  RepositoryFileSet,
+  RepositoryReadUnsupported,
   GitProvider,
   GitProviderContext,
   GitProviderFailure,
@@ -44,6 +55,8 @@ import type {
 } from './git-provider.ts'
 import { branchFromGitRef, isCommitSha } from './clone-url.ts'
 import {
+  gitlabGetJson,
+  gitlabGetRaw,
   GitlabApiError,
   gitlabProjectId,
   listGitlabProjects,
@@ -174,6 +187,62 @@ export function parseGitlabInstallationEvent(
   return null
 }
 
+function gitlabReadFailure(error: unknown): GitProviderFailure {
+  // A GitlabApiError raised by a non-OK response carries a status; one raised
+  // by a failed fetch does not. Preserving that distinction is what lets the
+  // caller tell "GitLab said no" from "we could not reach GitLab" — only the
+  // second is worth retrying through the daemon.
+  if (error instanceof GitlabApiError && typeof error.status === 'number') {
+    return { failure: error.message, status: error.status }
+  }
+  return {
+    failure: `gitlab request failed: ${
+      error instanceof Error ? error.message : 'network error'
+    }`,
+  }
+}
+
+/**
+ * Resolve the OAuth token, base URL, and project id for a read — or say why we
+ * cannot.
+ *
+ * A deploy-key source has no OAuth connection, so there is no API to read
+ * through: `unsupported` sends the caller to the daemon, which clones with the
+ * stored credential instead.
+ */
+async function gitlabReadAuth(
+  ctx: GitProviderContext,
+  row: GitProviderSourceRow,
+): Promise<
+  | { token: string; baseUrl: string; projectId: string }
+  | GitProviderFailure
+  | RepositoryReadUnsupported
+> {
+  if (!row.installationId) return { unsupported: true }
+  if (!ctx.dataEncryptionSecrets) {
+    return { failure: 'gitlab oauth credentials are unreadable' }
+  }
+  try {
+    const config = await getGitlabOauthConfig(ctx.db, ctx.dataEncryptionSecrets)
+    if (!config) return { failure: 'gitlab oauth application is not configured' }
+    const { token } = await mintGitlabAccessToken(
+      ctx.db,
+      ctx.dataEncryptionSecrets,
+      row.installationId,
+    )
+    // `null` for the recorded id, matching `prepareClone`: GitProviderSourceRow
+    // does not carry `repositoryExternalId`, so both paths resolve the project
+    // from the clone URL. Keep the two in step if that ever changes.
+    const projectId = gitlabProjectId(null, row.repositoryUrl)
+    if (!projectId) {
+      return { failure: 'source repository url is not a gitlab project path' }
+    }
+    return { token, baseUrl: config.baseUrl, projectId }
+  } catch (error) {
+    return gitlabReadFailure(error)
+  }
+}
+
 export const gitlabProvider: GitProvider = {
   provider: 'gitlab',
 
@@ -194,6 +263,122 @@ export const gitlabProvider: GitProvider = {
       installationId,
     )
     return await listGitlabProjects(config.baseUrl, token)
+  },
+
+  async readRepositoryFiles(
+    ctx: GitProviderContext,
+    params: ReadRepositoryFilesParams,
+  ): Promise<
+    RepositoryFileSet | GitProviderFailure | RepositoryReadUnsupported
+  > {
+    const auth = await gitlabReadAuth(ctx, params.row)
+    if ('unsupported' in auth || 'failure' in auth) return auth
+
+    // One commit for the whole set — reading by branch name would let a push
+    // mid-wizard produce a torn view across files.
+    let commitSha: string
+    try {
+      commitSha = (await resolveGitlabCommit(
+        auth.baseUrl,
+        auth.token,
+        auth.projectId,
+        params.ref,
+      )).commitSha
+    } catch (error) {
+      return gitlabReadFailure(error)
+    }
+
+    const maxBytes = params.maxBytesPerFile ?? MAX_REPOSITORY_FILE_BYTES
+    const files: RepositoryFileEntry[] = []
+    for (const path of params.paths.slice(0, MAX_REPOSITORY_READ_PATHS)) {
+      // GitLab wants the whole path URL-encoded as ONE segment, slashes and
+      // all — `%2F`, not `/`. Encoding per segment 404s every nested file.
+      const url = `/projects/${encodeURIComponent(auth.projectId)}/repository/files/${
+        encodeURIComponent(path)
+      }/raw?ref=${encodeURIComponent(commitSha)}`
+      let response: Response
+      try {
+        response = await gitlabGetRaw(auth.baseUrl, auth.token, url)
+      } catch (error) {
+        return gitlabReadFailure(error)
+      }
+      if (response.status === 404) {
+        files.push({ path, found: false, reason: 'not_found' })
+        continue
+      }
+      if (!response.ok) {
+        return { failure: 'gitlab file read failed', status: response.status }
+      }
+      const buffer = new Uint8Array(await response.arrayBuffer())
+      if (buffer.byteLength > maxBytes) {
+        files.push({ path, found: false, reason: 'too_large' })
+        continue
+      }
+      if (buffer.includes(0)) {
+        files.push({ path, found: false, reason: 'binary' })
+        continue
+      }
+      files.push({
+        path,
+        found: true,
+        content: new TextDecoder().decode(buffer),
+        bytes: buffer.byteLength,
+      })
+    }
+    return { commitSha, files }
+  },
+
+  async listRepositoryEntries(
+    ctx: GitProviderContext,
+    params: ListRepositoryEntriesParams,
+  ): Promise<
+    | { commitSha: string; entries: RepositoryEntry[] }
+    | GitProviderFailure
+    | RepositoryReadUnsupported
+  > {
+    const auth = await gitlabReadAuth(ctx, params.row)
+    if ('unsupported' in auth || 'failure' in auth) return auth
+
+    let commitSha: string
+    try {
+      commitSha = (await resolveGitlabCommit(
+        auth.baseUrl,
+        auth.token,
+        auth.projectId,
+        params.ref,
+      )).commitSha
+    } catch (error) {
+      return gitlabReadFailure(error)
+    }
+
+    const maxEntries = params.maxEntries ?? 256
+    const url = `/projects/${encodeURIComponent(auth.projectId)}/repository/tree` +
+      `?ref=${encodeURIComponent(commitSha)}&per_page=${maxEntries}` +
+      (params.path ? `&path=${encodeURIComponent(params.path)}` : '')
+    let result: { ok: true; payload: unknown } | { ok: false; status: number }
+    try {
+      result = await gitlabGetJson(auth.baseUrl, auth.token, url)
+    } catch (error) {
+      return gitlabReadFailure(error)
+    }
+    if (!result.ok) {
+      if (result.status === 404) return { commitSha, entries: [] }
+      return { failure: 'gitlab listing failed', status: result.status }
+    }
+    const payload = result.payload
+    if (!Array.isArray(payload)) return { commitSha, entries: [] }
+
+    const entries: RepositoryEntry[] = []
+    for (const raw of payload.slice(0, maxEntries)) {
+      if (typeof raw !== 'object' || raw === null) continue
+      const record = raw as { path?: unknown; type?: unknown }
+      if (typeof record.path !== 'string') continue
+      entries.push({
+        path: record.path,
+        kind: record.type === 'tree' ? 'dir' : 'file',
+      })
+    }
+    return { commitSha, entries }
   },
 
   async prepareClone(

@@ -1,4 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
+import type { EnvironmentDeploySite } from "../../lib/commands/schemas.ts";
 import { describe, it } from "@std/testing/bdd";
 import {
   buildServiceOptionsMap,
@@ -6,7 +7,7 @@ import {
 } from "../../lib/compose/apply-service-options.ts";
 import {
   assertComposeDocument,
-  type TraditionalWebSiteSpec,
+  type SiteSpec,
 } from "../../lib/compose/index.ts";
 import {
   dockerVolumeNameFromStorageId,
@@ -19,7 +20,7 @@ import { sumServiceResourceUsage } from "../../lib/resource-limits.ts";
 import type { Db } from "../../db.ts";
 import {
   absorbSoftPrepareError,
-  attachPrincipalsToTraditionalWebSites,
+  attachPrincipalsToSites,
   buildCloneNamesByServiceId,
   buildExpandedServiceOptionsMap,
   buildInstancesByComposeName,
@@ -42,7 +43,7 @@ import {
   readHostingProxyFromOptions,
   resolveHostingBindAddress,
   resolveProjectEnvironmentComposeLayers,
-  resolveTraditionalWebSitesForMode,
+  resolveSitesForMode,
   resourceLimitPrepareError,
   sitesOnScheduledServer,
   splitHostNativeFromDocument,
@@ -1013,19 +1014,28 @@ describe("resolveHostingBindAddress edge cases", () => {
   });
 });
 
-describe("attachPrincipalsToTraditionalWebSites", () => {
+describe("attachPrincipalsToSites", () => {
   const principalId = "01936b3e-aaaa-bbbb-cccc-123456789abc";
   const serviceId = "01936b3e-4444-5555-6666-123456789abc";
-  const site: TraditionalWebSiteSpec = {
+  // The compose-authored shape (php is an authored block here) and the wire
+  // shape (php already validated and rendered) are deliberately different
+  // types now, so the fixture is spelled once per side.
+  const site: SiteSpec = {
+    composeServiceName: "site",
+    engine: "nginx",
+    root: "public",
+    listenPort: 18080,
+  };
+  const wireSite: EnvironmentDeploySite = {
     composeServiceName: "site",
     engine: "nginx",
     root: "public",
     listenPort: 18080,
   };
 
-  it("returns an empty list when there are no traditional-web sites", async () => {
+  it("returns an empty list when there are no sites", async () => {
     const db = createSelectWhereDb([]);
-    const result = await attachPrincipalsToTraditionalWebSites(
+    const result = await attachPrincipalsToSites(
       db,
       "env-1",
       [],
@@ -1039,7 +1049,7 @@ describe("attachPrincipalsToTraditionalWebSites", () => {
     const db = createSelectWhereDb([
       { principalId, serviceId },
     ]);
-    const result = await attachPrincipalsToTraditionalWebSites(
+    const result = await attachPrincipalsToSites(
       db,
       "env-1",
       [{ id: serviceId, composeServiceName: "site" }],
@@ -1067,7 +1077,7 @@ describe("attachPrincipalsToTraditionalWebSites", () => {
 
   it("omits principal when none are assigned", async () => {
     const db = createSelectWhereDb([]);
-    const result = await attachPrincipalsToTraditionalWebSites(
+    const result = await attachPrincipalsToSites(
       db,
       "env-1",
       [{ id: serviceId, composeServiceName: "site" }],
@@ -1085,7 +1095,7 @@ describe("attachPrincipalsToTraditionalWebSites", () => {
       { principalId, serviceId },
       { principalId: "01936b3e-bbbb-cccc-dddd-123456789abc", serviceId },
     ]);
-    const result = await attachPrincipalsToTraditionalWebSites(
+    const result = await attachPrincipalsToSites(
       db,
       "env-1",
       [{ id: serviceId, composeServiceName: "site" }],
@@ -1093,7 +1103,7 @@ describe("attachPrincipalsToTraditionalWebSites", () => {
       [site],
     );
     assertEquals(result, {
-      kind: "traditional_web_principal_ambiguous",
+      kind: "site_principal_ambiguous",
       composeServiceName: "site",
     });
   });
@@ -1142,10 +1152,10 @@ describe("warningFromPrepareError and soft-error absorb", () => {
     );
     assertEquals(
       warningFromPrepareError({
-        kind: "traditional_web_principal_ambiguous",
+        kind: "site_principal_ambiguous",
         composeServiceName: "site",
       }).code,
-      "traditional_web_principal_ambiguous",
+      "site_principal_ambiguous",
     );
     assertEquals(
       warningFromPrepareError({ kind: "binding_endpoint_unavailable" }),
@@ -1259,7 +1269,7 @@ describe("compose list/split/expansion helpers", () => {
           web: { image: "nginx:latest" },
           site: {
             "x-turbopanel": {
-              serviceKind: "traditional-web",
+              serviceKind: "site",
               engine: "nginx",
             },
           },
@@ -1278,14 +1288,14 @@ describe("compose list/split/expansion helpers", () => {
     );
   });
 
-  it("splits traditional-web sites and empties compose when only sites remain", () => {
+  it("splits sites and empties compose when only sites remain", () => {
     const sitesOnly = assertComposeDocument({
       version: 1,
       data: {
         services: {
           site: {
             "x-turbopanel": {
-              serviceKind: "traditional-web",
+              serviceKind: "site",
               engine: "apache",
               root: "html",
             },
@@ -1304,7 +1314,7 @@ describe("compose list/split/expansion helpers", () => {
     assertEquals(split.sites[0]?.root, "html");
   });
 
-  it("keeps container services and prunes networks only used by traditional-web", () => {
+  it("keeps container services and prunes networks only used by site", () => {
     const mixed = assertComposeDocument({
       version: 1,
       data: {
@@ -1315,7 +1325,7 @@ describe("compose list/split/expansion helpers", () => {
           },
           site: {
             "x-turbopanel": {
-              serviceKind: "traditional-web",
+              serviceKind: "site",
               engine: "nginx",
             },
             networks: ["tw-only"],
@@ -1330,7 +1340,7 @@ describe("compose list/split/expansion helpers", () => {
     });
     const split = splitHostNativeFromDocument(mixed);
     assertEquals(split.composeYaml.includes("nginx:latest"), true);
-    assertEquals(split.composeYaml.includes("traditional-web"), false);
+    assertEquals(split.composeYaml.includes("site"), false);
     assertEquals(split.composeYaml.includes("tw-only"), false);
     assertEquals(split.composeYaml.includes("shared"), true);
     assertEquals(split.sites[0]?.composeServiceName, "site");
@@ -1406,8 +1416,17 @@ describe("compose list/split/expansion helpers", () => {
   });
 });
 
-describe("resolveTraditionalWebSitesForMode and toPreparedDeployResult", () => {
-  const site: TraditionalWebSiteSpec = {
+describe("resolveSitesForMode and toPreparedDeployResult", () => {
+  // The compose-authored shape (php is an authored block here) and the wire
+  // shape (php already validated and rendered) are deliberately different
+  // types now, so the fixture is spelled once per side.
+  const site: SiteSpec = {
+    composeServiceName: "site",
+    engine: "nginx",
+    root: "public",
+    listenPort: 18080,
+  };
+  const wireSite: EnvironmentDeploySite = {
     composeServiceName: "site",
     engine: "nginx",
     root: "public",
@@ -1416,39 +1435,39 @@ describe("resolveTraditionalWebSitesForMode and toPreparedDeployResult", () => {
 
   it("returns sites in deploy mode and softens ambiguous in preview", () => {
     const warnings: ReturnType<typeof warningFromPrepareError>[] = [];
-    const ok = resolveTraditionalWebSitesForMode(
+    const ok = resolveSitesForMode(
       "deploy",
       warnings,
-      [{ ...site }],
+      [{ ...wireSite }],
       [site],
     );
-    assertEquals(ok, [{ ...site }]);
+    assertEquals(ok, [{ ...wireSite }]);
 
-    const err = resolveTraditionalWebSitesForMode(
+    const err = resolveSitesForMode(
       "deploy",
       warnings,
       {
-        kind: "traditional_web_principal_ambiguous",
+        kind: "site_principal_ambiguous",
         composeServiceName: "site",
       },
       [site],
     );
     assertEquals(err, {
-      kind: "traditional_web_principal_ambiguous",
+      kind: "site_principal_ambiguous",
       composeServiceName: "site",
     });
 
-    const preview = resolveTraditionalWebSitesForMode(
+    const preview = resolveSitesForMode(
       "preview",
       warnings,
       {
-        kind: "traditional_web_principal_ambiguous",
+        kind: "site_principal_ambiguous",
         composeServiceName: "site",
       },
       [site],
     );
-    assertEquals(preview, [{ ...site }]);
-    assertEquals(warnings[0]?.code, "traditional_web_principal_ambiguous");
+    assertEquals(preview, [{ ...wireSite }]);
+    assertEquals(warnings[0]?.code, "site_principal_ambiguous");
   });
 
   it("redacts secret materials in preview prepared results", async () => {
@@ -1481,7 +1500,7 @@ describe("resolveTraditionalWebSitesForMode and toPreparedDeployResult", () => {
         mounts: [],
       }],
       principalMaterial: [],
-      traditionalWebSites: [],
+      sites: [],
       nativeAppServices: [],
       sourceMaterial: [],
       dockerExternalNetworks: [],
@@ -1527,7 +1546,7 @@ describe("resolveTraditionalWebSitesForMode and toPreparedDeployResult", () => {
         mounts: [],
       }],
       principalMaterial: [],
-      traditionalWebSites: [],
+      sites: [],
       nativeAppServices: [],
       sourceMaterial: [],
       dockerExternalNetworks: ["edge"],
@@ -1597,7 +1616,7 @@ describe("resolveTraditionalWebSitesForMode and toPreparedDeployResult", () => {
       ],
       storageMaterial: [],
       principalMaterial: [],
-      traditionalWebSites: [],
+      sites: [],
       nativeAppServices: [],
       sourceMaterial: [],
       dockerExternalNetworks: [],
@@ -1670,8 +1689,17 @@ describe("stripReservedKeysFromEntries without service row", () => {
   });
 });
 
-describe("attachPrincipalsToTraditionalWebSites edge cases", () => {
-  const site: TraditionalWebSiteSpec = {
+describe("attachPrincipalsToSites edge cases", () => {
+  // The compose-authored shape (php is an authored block here) and the wire
+  // shape (php already validated and rendered) are deliberately different
+  // types now, so the fixture is spelled once per side.
+  const site: SiteSpec = {
+    composeServiceName: "site",
+    engine: "nginx",
+    root: "public",
+    listenPort: 18080,
+  };
+  const wireSite: EnvironmentDeploySite = {
     composeServiceName: "site",
     engine: "nginx",
     root: "public",
@@ -1682,7 +1710,7 @@ describe("attachPrincipalsToTraditionalWebSites edge cases", () => {
 
   it("omits principal when assigned id is missing from material map", async () => {
     const db = createSelectWhereDb([{ principalId, serviceId }]);
-    const result = await attachPrincipalsToTraditionalWebSites(
+    const result = await attachPrincipalsToSites(
       db,
       "env-1",
       [{ id: serviceId, composeServiceName: "site" }],
@@ -1697,7 +1725,7 @@ describe("attachPrincipalsToTraditionalWebSites edge cases", () => {
 
   it("handles site with no matching service row", async () => {
     const db = createSelectWhereDb([]);
-    const result = await attachPrincipalsToTraditionalWebSites(
+    const result = await attachPrincipalsToSites(
       db,
       "env-1",
       [],
@@ -1713,7 +1741,7 @@ describe("attachPrincipalsToTraditionalWebSites edge cases", () => {
 });
 
 describe("splitHostNativeFromDocument without networks key", () => {
-  it("keeps container yaml when traditional-web is absent", () => {
+  it("keeps container yaml when site is absent", () => {
     const doc = assertComposeDocument(WEB_API_COMPOSE);
     const split = splitHostNativeFromDocument(doc);
     assertEquals(split.sites.length, 0);

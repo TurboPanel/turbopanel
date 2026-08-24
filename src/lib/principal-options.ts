@@ -30,6 +30,27 @@ const MAX_SHELL_PATH_LENGTH = 255
 /** Absolute path: leading `/`, no whitespace/newline/NUL, conservative allowlist. */
 const PRINCIPAL_SHELL_RE = /^\/[A-Za-z0-9._+/-]{0,254}$/
 
+/**
+ * Shells a principal may be given. A closed list, not a path shape check.
+ *
+ * `options.shell` reaches `useradd -s` / `usermod -s` on the host, so it is a
+ * privilege decision, not a formatting one: a path-shaped value would let
+ * anyone with `organization:manage` point a tenant account at any executable on
+ * the box. That mattered less while every principal was `nologin`; it stops
+ * being theoretical the moment principals get interactive access.
+ *
+ * Keep in step with the daemon's own list — it re-validates rather than
+ * trusting the wire, because `ensurePrincipalUser` will happily `usermod -s` an
+ * adopted account to whatever it is handed.
+ */
+export const ALLOWED_PRINCIPAL_SHELLS: readonly string[] = [
+  '/usr/sbin/nologin',
+  '/sbin/nologin',
+  '/bin/false',
+  '/bin/sh',
+  '/bin/bash',
+]
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -39,7 +60,9 @@ function isValidPrincipalShell(value: string): boolean {
   if (/\s/.test(value) || value.includes('\0') || value.includes('\n')) return false
   // Match daemon `assertSafeAbsolutePath`: reject parent-directory segments.
   if (value.split('/').includes('..')) return false
-  return PRINCIPAL_SHELL_RE.test(value)
+  if (!PRINCIPAL_SHELL_RE.test(value)) return false
+  // The shape checks above stay as defence in depth; membership is the gate.
+  return ALLOWED_PRINCIPAL_SHELLS.includes(value)
 }
 
 /**

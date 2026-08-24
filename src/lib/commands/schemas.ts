@@ -1,5 +1,6 @@
 import { HOSTNAME_MAX_LENGTH, isValidHostname } from "./hostname.ts";
 import { isValidCidr, isValidIpAddress } from "../ip-address.ts";
+import { ALLOWED_PRINCIPAL_SHELLS } from "../principal-options.ts";
 import {
   isManagedIngressProtocolPort,
   type ManagedIngressFamily,
@@ -895,6 +896,13 @@ export type EnvironmentDeployPrincipalMaterial = {
    * via `useradd -s` / `usermod -s`.
    */
   shell?: string;
+  /**
+   * Runtime series this principal may execute, as the daemon's
+   * `ensurePrincipalRuntimeGroups` reconciles them into unix groups. The
+   * **effective** set, resolved here — the daemon adds *and revokes* from
+   * exactly this list rather than deriving anything itself.
+   */
+  runtimes?: { runtime: string; series: string }[];
 };
 
 export type EnvironmentDeployServiceHook = {
@@ -906,16 +914,25 @@ export type EnvironmentDeployServiceHook = {
 
 export type EnvironmentDeployHostingPhp = {
   version?: string;
-  memoryLimit?: string;
-  maxExecutionTime?: number;
+  /**
+   * Validated `php_admin_value` directives, already rendered to strings by the
+   * control plane's `php-settings.ts` table. `memoryLimit` /
+   * `maxExecutionTime` were the only two settings that ever existed; they are
+   * now `settings.memory_limit` / `settings.max_execution_time`.
+   */
+  settings?: Record<string, string>;
+  /** Validated php-fpm pool directives (`pm`, `pm.max_children`, …). */
+  pool?: Record<string, string>;
+  /** Opt-in extension names, on top of the always-installed baseline. */
+  extensions?: string[];
 };
 
 /**
- * Project principal that owns a traditional-web site tree on the host.
+ * Project principal that owns a site tree on the host.
  * Daemon `ensureSystemPrincipals` creates the Linux user before apply;
  * document roots are `chown`ed to this user with the engine group for read.
  */
-export type EnvironmentDeployTraditionalWebPrincipal = {
+export type EnvironmentDeploySitePrincipal = {
   principalId: string;
   username: string;
   /** Optional operator override — omitted when the host allocates. */
@@ -924,9 +941,9 @@ export type EnvironmentDeployTraditionalWebPrincipal = {
   gid?: number;
 };
 
-export type EnvironmentDeployTraditionalWebSite = {
+export type EnvironmentDeploySite = {
   composeServiceName: string;
-  engine: "apache" | "nginx" | "openlitespeed";
+  engine: "caddy" | "apache" | "nginx" | "openlitespeed";
   /** Relative document-root segment under the site directory. */
   root: string;
   /** Loopback port hosting Caddy reverse-proxies to. */
@@ -938,7 +955,7 @@ export type EnvironmentDeployTraditionalWebSite = {
    * When set (from a project principal ↔ service steward), the site tree
    * is owned by this principal and Apache php-fpm workers run as that user.
    */
-  principal?: EnvironmentDeployTraditionalWebPrincipal;
+  principal?: EnvironmentDeploySitePrincipal;
 };
 
 /**
@@ -957,7 +974,7 @@ export type EnvironmentDeployTraditionalWebSite = {
  * `installCommand` / `buildCommand` / `env` stay optional hints Railpack's
  * zero-config detection may or may not honor.
  *
- * `kind: 'static'` is reserved for the traditional-web release phase; only
+ * `kind: 'static'` is reserved for the site release phase; only
  * `native` and `railpack` are produced today.
  */
 export type EnvironmentDeploySourceBuild = {
@@ -987,7 +1004,7 @@ export type EnvironmentDeployNativeFramework = "auto" | "node" | "next";
  * `x-turbopanel.serviceKind: node`. The release itself rides the ordinary
  * `sourceMaterial[]` lane — this row only says how the promoted `current` tree
  * is *run*: which loopback port the process listens on (so hosting Caddy can
- * reverse-proxy it exactly like a traditional-web vhost) and which runtime
+ * reverse-proxy it exactly like a site vhost) and which runtime
  * family the daemon should assume.
  *
  * `framework: 'auto'` defers to the daemon's post-build detection; the wire
@@ -1010,7 +1027,7 @@ export type EnvironmentDeployNativeAppService = {
   resources?: { cpus?: number; memoryBytes?: number };
   /**
    * Effective org/server ceiling for the **owning principal**, repeated on
-   * every app of that principal (same repetition traditional-web uses for
+   * every app of that principal (same repetition site uses for
    * `principal`). It becomes the per-principal `turbopanel-<username>.slice`,
    * so a generous per-app limit still cannot exceed the account total.
    */
@@ -1097,7 +1114,7 @@ export type EnvironmentDeploySource = {
    * A rollback is not its own command type — it rides this same
    * `environment.deploy` entry so every downstream stage on the host (compose
    * apply, ingress, TLS, retention, `deployment.json`, the native /
-   * traditional-web promote hooks) keeps working unchanged, and the
+   * site promote hooks) keeps working unchanged, and the
    * generation-supersede rule still covers it. When set, the daemon skips fetch
    * and build entirely and cuts `current` over to
    * `releases/<rollbackToReleaseId>`, which is why `cloneUrl` / `ref` /
@@ -1106,8 +1123,8 @@ export type EnvironmentDeploySource = {
    * `releaseId`, since it becomes a path segment on the host.
    */
   rollbackToReleaseId?: string;
-  /** Principal that owns the release tree (same shape traditional-web pins). */
-  principal?: EnvironmentDeployTraditionalWebPrincipal;
+  /** Principal that owns the release tree (same shape site pins). */
+  principal?: EnvironmentDeploySitePrincipal;
   build: EnvironmentDeploySourceBuild;
 };
 
@@ -1190,7 +1207,7 @@ export type EnvironmentDeployCommandPayload = {
   /**
    * Compiled runtime snapshot the daemon writes as
    * `{ filename: 'compose.yaml', role: 'runtime' }`. May be `services: {}`
-   * when all sites are traditional-web.
+   * when all sites are site.
    */
   composeFiles: EnvironmentDeployComposeFile[];
   /** Environment desired generation this command is applying. */
@@ -1205,20 +1222,20 @@ export type EnvironmentDeployCommandPayload = {
   hostings: EnvironmentDeployHosting[];
   /**
    * Host-native web sites (nginx MVP). Compose services with
-   * `x-turbopanel.serviceKind: traditional-web` are stripped from the
+   * `x-turbopanel.serviceKind: site` are stripped from the
    * compiled runtime compose and listed here instead.
    */
-  traditionalWebSites?: EnvironmentDeployTraditionalWebSite[];
+  sites?: EnvironmentDeploySite[];
   /**
    * Host-supervised native apps (`x-turbopanel.serviceKind: node`). Like
-   * traditional-web sites these are stripped from the compiled runtime compose;
+   * sites these are stripped from the compiled runtime compose;
    * unlike them they get a generated `turbopanel-app-<serviceId>.service` unit
    * rather than a document root. Their releases ride `sourceMaterial[]`.
    */
   nativeAppServices?: EnvironmentDeployNativeAppService[];
   /**
    * Git-backed releases to check out, build, and promote on the host before
-   * the compose/traditional-web apply steps run. One entry per compose service
+   * the compose/site apply steps run. One entry per compose service
    * carrying `x-turbopanel.source`.
    */
   sourceMaterial?: EnvironmentDeploySource[];
@@ -1310,7 +1327,7 @@ export type EnvironmentDeployHosting = {
   protocol?: "http" | "tcp" | "udp";
   /** Required (non-empty) when `protocol` is `tcp` or `udp`; ignored for `http`. */
   ports?: EnvironmentDeployHostingPort[];
-  /** Merged hosting web env + PHP hints for traditional-web materialization. */
+  /** Merged hosting web env + PHP hints for site materialization. */
   web?: EnvironmentDeployHostingWeb;
 };
 
@@ -1436,12 +1453,18 @@ function parseDeployHostingPhp(
   if (!isRecord(value)) return undefined;
   const php: EnvironmentDeployHostingPhp = {};
   if (isString(value.version)) php.version = value.version;
-  if (isString(value.memoryLimit)) php.memoryLimit = value.memoryLimit;
-  if (
-    typeof value.maxExecutionTime === "number" &&
-    Number.isInteger(value.maxExecutionTime)
-  ) {
-    php.maxExecutionTime = value.maxExecutionTime;
+  for (const field of ["settings", "pool"] as const) {
+    const raw = value[field];
+    if (!isRecord(raw)) continue;
+    const kept: Record<string, string> = {};
+    for (const [key, entry] of Object.entries(raw)) {
+      if (isString(entry)) kept[key] = entry;
+    }
+    if (Object.keys(kept).length > 0) php[field] = kept;
+  }
+  if (Array.isArray(value.extensions)) {
+    const names = value.extensions.filter(isString);
+    if (names.length > 0) php.extensions = names;
   }
   return Object.keys(php).length > 0 ? php : undefined;
 }
@@ -1739,7 +1762,11 @@ const PRINCIPAL_SHELL_RE = /^\/[A-Za-z0-9._+/-]{0,254}$/;
 
 function isValidPrincipalShellPath(value: string): boolean {
   if (!isValidAbsolutePrincipalPath(value)) return false;
-  return PRINCIPAL_SHELL_RE.test(value);
+  if (!PRINCIPAL_SHELL_RE.test(value)) return false;
+  // Closed list — `shell` reaches `useradd -s` on the host. Mirrors
+  // `ALLOWED_PRINCIPAL_SHELLS` in `../principal-options.ts`; the daemon
+  // re-validates in `deploy/ensure-principal.ts` rather than trusting this.
+  return ALLOWED_PRINCIPAL_SHELLS.includes(value);
 }
 
 /** Must stay in sync with the daemon `PRINCIPAL_USERNAME_RE` / max length. */
@@ -1758,7 +1785,7 @@ function isValidPrincipalUsername(value: unknown): value is string {
 
 /**
  * Optional principal uid/gid on the wire — mirrors the daemon's
- * `parseOptionalPrincipalId` / `parseTraditionalWebOptionalId`
+ * `parseOptionalPrincipalId` / `parseSiteOptionalId`
  * (undefined OK; otherwise integer ≥ 0).
  */
 function parseOptionalPrincipalId(
@@ -1803,8 +1830,27 @@ function parseDeployPrincipalMaterialEntry(
     }
     material.shell = entry.shell;
   }
+  if (entry.runtimes !== undefined) {
+    // Rejected, not dropped: this is a grant. Silently discarding a malformed
+    // list would revoke every entitlement the principal should have held.
+    if (!Array.isArray(entry.runtimes)) {
+      throw new Error("Invalid environment.deploy payload");
+    }
+    material.runtimes = entry.runtimes.map((raw) => {
+      if (
+        !isRecord(raw) || !isString(raw.runtime) || !isString(raw.series) ||
+        !RUNTIME_SERIES_RE.test(raw.series)
+      ) {
+        throw new Error("Invalid environment.deploy payload");
+      }
+      return { runtime: raw.runtime, series: raw.series };
+    });
+  }
   return material;
 }
+
+/** `8.4` or `24` — the exec boundary a group protects, never a patch pin. */
+const RUNTIME_SERIES_RE = /^\d{1,3}(\.\d{1,3})?$/;
 
 function parseDeployPrincipalMaterial(
   value: unknown,
@@ -1847,19 +1893,19 @@ function parseDeployServiceHooks(
   return value.map(parseDeployServiceHookEntry);
 }
 
-const TRADITIONAL_WEB_ENGINES = new Set(["apache", "nginx", "openlitespeed"]);
+const SITE_ENGINES = new Set(["caddy", "apache", "nginx", "openlitespeed"]);
 
-function parseDeployTraditionalWebSiteEntry(
+function parseDeploySiteEntry(
   entry: unknown,
-): EnvironmentDeployTraditionalWebSite {
+): EnvironmentDeploySite {
   if (!isRecord(entry)) {
-    throw new Error("Invalid traditionalWebSites entry");
+    throw new Error("Invalid sites entry");
   }
   if (
     !isString(entry.composeServiceName) ||
     entry.composeServiceName.length === 0 ||
     !isString(entry.engine) ||
-    !TRADITIONAL_WEB_ENGINES.has(entry.engine) ||
+    !SITE_ENGINES.has(entry.engine) ||
     !isString(entry.root) ||
     entry.root.length === 0 ||
     typeof entry.listenPort !== "number" ||
@@ -1867,11 +1913,11 @@ function parseDeployTraditionalWebSiteEntry(
     entry.listenPort < 1024 ||
     entry.listenPort > 65_535
   ) {
-    throw new Error("Invalid traditionalWebSites entry");
+    throw new Error("Invalid sites entry");
   }
-  const site: EnvironmentDeployTraditionalWebSite = {
+  const site: EnvironmentDeploySite = {
     composeServiceName: entry.composeServiceName,
-    engine: entry.engine as EnvironmentDeployTraditionalWebSite["engine"],
+    engine: entry.engine as EnvironmentDeploySite["engine"],
     root: entry.root,
     listenPort: entry.listenPort,
   };
@@ -1879,24 +1925,24 @@ function parseDeployTraditionalWebSiteEntry(
   if (webEnv) site.webEnv = webEnv;
   const php = parseDeployHostingPhp(entry.php);
   if (php) site.php = php;
-  const principal = parseDeployTraditionalWebPrincipal(entry.principal);
+  const principal = parseDeploySitePrincipal(entry.principal);
   if (principal) site.principal = principal;
   return site;
 }
 
-function parseDeployTraditionalWebPrincipal(
+function parseDeploySitePrincipal(
   value: unknown,
-): EnvironmentDeployTraditionalWebPrincipal | undefined {
+): EnvironmentDeploySitePrincipal | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) {
-    throw new Error("Invalid traditionalWebSites.principal entry");
+    throw new Error("Invalid sites.principal entry");
   }
   if (
     !isString(value.principalId) ||
     value.principalId.length === 0 ||
     !isValidPrincipalUsername(value.username)
   ) {
-    throw new Error("Invalid traditionalWebSites.principal entry");
+    throw new Error("Invalid sites.principal entry");
   }
   let uid: number | undefined;
   let gid: number | undefined;
@@ -1904,7 +1950,7 @@ function parseDeployTraditionalWebPrincipal(
     uid = parseOptionalPrincipalId(value.uid, "uid");
     gid = parseOptionalPrincipalId(value.gid, "gid");
   } catch {
-    throw new Error("Invalid traditionalWebSites.principal entry");
+    throw new Error("Invalid sites.principal entry");
   }
   return {
     principalId: value.principalId,
@@ -2163,7 +2209,7 @@ function parseDeploySourceEntry(entry: unknown): EnvironmentDeploySource {
     build: parseDeploySourceBuild(entry.build),
   };
   applyOptionalSourceFields(entry, source);
-  const principal = parseDeployTraditionalWebPrincipal(entry.principal);
+  const principal = parseDeploySitePrincipal(entry.principal);
   if (principal) source.principal = principal;
   return source;
 }
@@ -2295,14 +2341,14 @@ function parseDeployNativeAppServices(
   return value.map(parseDeployNativeAppServiceEntry);
 }
 
-function parseDeployTraditionalWebSites(
+function parseDeploySites(
   value: unknown,
-): EnvironmentDeployTraditionalWebSite[] | undefined {
+): EnvironmentDeploySite[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
-    throw new TypeError("traditionalWebSites must be an array");
+    throw new TypeError("sites must be an array");
   }
-  return value.map(parseDeployTraditionalWebSiteEntry);
+  return value.map(parseDeploySiteEntry);
 }
 
 const DOCKER_EXTERNAL_NETWORK_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -2638,8 +2684,8 @@ export function parseEnvironmentDeployPayload(
     composeFiles: parseDeployComposeFiles(value.composeFiles),
     hostings: parseDeployHostings(value.hostings),
     ...omitUndefinedEntries({
-      traditionalWebSites: parseDeployTraditionalWebSites(
-        value.traditionalWebSites,
+      sites: parseDeploySites(
+        value.sites,
       ),
       nativeAppServices: parseDeployNativeAppServices(value.nativeAppServices),
       sourceMaterial: parseDeploySourceMaterial(value.sourceMaterial),
@@ -2748,7 +2794,7 @@ export type EnvironmentStopCommandPayload = {
    * Per-service release trees (`<principalHome>/sites/<serviceId>`) to reclaim.
    *
    * Generic on purpose — the same tree the Git release engine publishes into
-   * and the native-runtime phase will run out of, not a traditional-web detail.
+   * and the native-runtime phase will run out of, not a site detail.
    * Captured while the `service` / `steward` / `principal` rows still exist,
    * because by the time the daemon runs the stop they may be gone.
    */

@@ -4,9 +4,9 @@ import {
   splitNativeAppServices,
 } from './native-app.ts'
 import {
-  assignTraditionalWebListenPorts,
-  splitTraditionalWebServices,
-} from './traditional-web.ts'
+  assignSiteListenPorts,
+  splitSiteServices,
+} from './site.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -56,21 +56,21 @@ test('a node service with no source is dropped rather than left for Docker', () 
   assertEquals(apps, [])
 })
 
-test('traditional-web and native apps never share a loopback port', () => {
+test('site and native apps never share a loopback port', () => {
   const services: Record<string, unknown> = {
     site: {
-      'x-turbopanel': { serviceKind: 'traditional-web', engine: 'nginx' },
+      'x-turbopanel': { serviceKind: 'site', engine: 'nginx' },
     },
     web: nodeService(),
     worker: nodeService(),
   }
 
   const used = new Set<number>()
-  const traditional = splitTraditionalWebServices(services, new Map(), used)
-  const native = splitNativeAppServices(traditional.containerServices, used)
+  const split = splitSiteServices(services, new Map(), used)
+  const native = splitNativeAppServices(split.containerServices, used)
 
   const ports = [
-    ...traditional.sites.map((site) => site.listenPort),
+    ...split.sites.map((site) => site.listenPort),
     ...native.apps.map((app) => app.listenPort),
   ]
   assertEquals(ports.length, 3)
@@ -79,7 +79,7 @@ test('traditional-web and native apps never share a loopback port', () => {
 
 test('re-assignment keeps the two lanes disjoint when a hosting pins a port', () => {
   const used = new Set<number>()
-  const sites = assignTraditionalWebListenPorts(
+  const sites = assignSiteListenPorts(
     [{
       composeServiceName: 'site',
       engine: 'nginx',

@@ -11,6 +11,7 @@ import {
   principal,
   project,
   server,
+  principalEntitlement,
   steward,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -101,6 +102,92 @@ export async function replaceStewards(
         serviceId,
       })),
     )
+  }
+}
+
+/** One runtime series a principal may execute, with its provenance. */
+export type PrincipalEntitlementRow = {
+  runtime: string
+  series: string
+  grantedBy: 'operator' | 'deploy'
+}
+
+export async function loadEntitlementsByPrincipalIds(
+  tx: Db,
+  principalIds: readonly string[],
+): Promise<Map<string, PrincipalEntitlementRow[]>> {
+  const byPrincipal = new Map<string, PrincipalEntitlementRow[]>()
+  if (principalIds.length === 0) return byPrincipal
+  const rows = await tx
+    .select({
+      principalId: principalEntitlement.principalId,
+      runtime: principalEntitlement.runtime,
+      series: principalEntitlement.series,
+      grantedBy: principalEntitlement.grantedBy,
+    })
+    .from(principalEntitlement)
+    .where(inArray(principalEntitlement.principalId, [...principalIds]))
+
+  for (const row of rows) {
+    const list = byPrincipal.get(row.principalId) ?? []
+    list.push({
+      runtime: row.runtime,
+      series: row.series,
+      grantedBy: row.grantedBy as 'operator' | 'deploy',
+    })
+    byPrincipal.set(row.principalId, list)
+  }
+  return byPrincipal
+}
+
+/**
+ * Reconcile a principal's entitlements to exactly `next`.
+ *
+ * Deletes are the point: a grant that can only ever be added is not a grant,
+ * it is a ratchet. The daemon mirrors this on the host by dropping unix group
+ * membership for any registry group no longer present.
+ */
+export async function replaceEntitlements(
+  tx: Db,
+  principalId: string,
+  next: readonly PrincipalEntitlementRow[],
+): Promise<void> {
+  const key = (e: { runtime: string; series: string }) =>
+    `${e.runtime}@${e.series}`
+  const existing = await tx
+    .select({
+      runtime: principalEntitlement.runtime,
+      series: principalEntitlement.series,
+    })
+    .from(principalEntitlement)
+    .where(eq(principalEntitlement.principalId, principalId))
+
+  const current = new Set(existing.map(key))
+  const desired = new Map(next.map((entry) => [key(entry), entry]))
+
+  const toDelete = [...current].filter((k) => !desired.has(k))
+  if (toDelete.length > 0) {
+    await tx.delete(principalEntitlement).where(
+      and(
+        eq(principalEntitlement.principalId, principalId),
+        inArray(
+          sql`${principalEntitlement.runtime} || '@' || ${principalEntitlement.series}`,
+          toDelete,
+        ),
+      ),
+    )
+  }
+
+  const toInsert = [...desired.entries()]
+    .filter(([k]) => !current.has(k))
+    .map(([, entry]) => ({
+      principalId,
+      runtime: entry.runtime,
+      series: entry.series,
+      grantedBy: entry.grantedBy,
+    }))
+  if (toInsert.length > 0) {
+    await tx.insert(principalEntitlement).values(toInsert)
   }
 }
 

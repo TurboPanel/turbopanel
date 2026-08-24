@@ -327,7 +327,7 @@ snippet, reclaims listed `siteReleases[]` trees, deletes the deployment dir, and
 (`turbopaneld/src/instance/commands/stop-environment.ts`).
 
 **`siteReleases[]` (`{ serviceId, username }[]`) is generic host reclaim, not a
-traditional-web detail.** It names `<principalHome>/sites/<serviceId>` — the
+site detail.** It names `<principalHome>/sites/<serviceId>` — the
 tree the Git release engine publishes into (`releases/`, `current`, `shared/`)
 and the one the native-runtime phase will run out of. Like `fabricNetworks[]`,
 it is resolved from `service` / `steward` / `principal` rows **before** they can
@@ -481,9 +481,9 @@ download **`GET /tls/ca/download`** (concatenated active+retired bundle). **Turb
 paragraph above). **Platform CA rotation** ships via admin public-URL apply /
 explicit rotate → `server.tls.trust.reconcile` (`{ bundlePem, fingerprint,
 allowRemoval? }`) to every connected server over the existing WSS session.
-**Traditional-web deploy:** compose
-`serviceKind: traditional-web` services are stripped into
-`traditionalWebSites[]` (nginx, Apache, and OpenLiteSpeed all supported) —
+**Site deploy:** compose
+`serviceKind: site` services are stripped into
+`sites[]` (nginx, Apache, and OpenLiteSpeed all supported) —
 hosting `options.web.php` (`version` / `memoryLimit` / `maxExecutionTime`) and
 `options.web.env` merge into the site payload (`webEnv` / `php` on each site);
 all three engines run PHP: nginx/Apache apply vendors php-fpm (never mod_php)
@@ -493,8 +493,8 @@ each vhost its own LSAPI processor under suEXEC, with the same limits as
 `phpIniOverride` values. One PHP series per host across all three engines —
 conflicting `version` hints fail the deploy. `web.env` is still Apache-only
 (`SetEnv`). When a project principal is assigned to the service,
-deploy-prepare pins `traditionalWebSites[].principal` (at most one — else
-**422** `traditional_web_principal_ambiguous`); the daemon owns the site tree as
+deploy-prepare pins `sites[].principal` (at most one — else
+**422** `site_principal_ambiguous`); the daemon owns the site tree as
 that user (engine group retains read) and runs the site's PHP workers — FPM pool
 or LSAPI process — as the principal. **Git-backed releases:** compose services declaring
 `x-turbopanel.source` are resolved into payload **`sourceMaterial[]`**
@@ -512,9 +512,9 @@ out, builds, and atomically promotes `<principalHome>/sites/<serviceId>/current`
 is served or supervised. Payload **`dockerExternalNetworks[]`** lists compose
 external network host names that must already exist as org `network` rows
 (`kind: docker`, `options.dockerNetworkName`); the daemon ensures them with
-`docker network create` before compose up. Mixed container + traditional-web
+`docker network create` before compose up. Mixed container + site
 deploys rely on daemon-side `host.docker.internal` +
-`TURBOPANEL_TRADITIONAL_WEB_*` env injection — not instance payload fields. See
+`TURBOPANEL_SITE_*` env injection — not instance payload fields. See
 `../compose/AGENTS.md` and daemon `src/deploy/AGENTS.md`. Future: swarm-style
 replicas — seams only.
 

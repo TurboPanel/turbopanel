@@ -195,6 +195,19 @@ test('isReservedPrincipalUsername covers denylist and systemd- prefix', () => {
   assertEquals(isReservedPrincipalUsername('appuser'), false)
 })
 
+test('isReservedPrincipalUsername reserves the whole tp prefix', () => {
+  // Every TurboPanel-owned account and group is tp-prefixed. Enumerating them
+  // could never keep up: tpnodeapp is not in the denylist, and each
+  // runtime-entitlement group (tpphp84, tpnode24, ...) would need adding by hand.
+  assertEquals(isReservedPrincipalUsername('tpnodeapp'), true)
+  assertEquals(isReservedPrincipalUsername('tpphp84'), true)
+  assertEquals(isReservedPrincipalUsername('TPANYTHING'), true)
+  assertEquals(isReservedPrincipalUsername(' tp '), true)
+  // Names that merely start with t or contain tp are unaffected.
+  assertEquals(isReservedPrincipalUsername('teamsite'), false)
+  assertEquals(isReservedPrincipalUsername('wptp'), false)
+})
+
 test('serviceDnsName is most-specific-first (replica then service)', () => {
   assertEquals(
     serviceDnsName('web', 1, 'env-1'),

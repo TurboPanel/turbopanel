@@ -31,6 +31,11 @@
  * the caller, and is never persisted.
  */
 
+import type {
+  RepositoryEntry as _RepositoryEntry,
+  RepositoryFileSet as _RepositoryFileSet,
+  RepositoryReadUnsupported as _RepositoryReadUnsupported,
+} from './repository-read.ts'
 import type { Db } from '../../db.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import { genericGitProvider } from './generic-git-provider.ts'
@@ -209,6 +214,33 @@ export type ProviderInstallationEvent = {
   action: string
 }
 
+export type {
+  RepositoryEntry,
+  RepositoryFileEntry,
+  RepositoryFileSet,
+  RepositoryReadUnsupported,
+} from './repository-read.ts'
+export {
+  isRepositoryReadUnsupported,
+  MAX_REPOSITORY_FILE_BYTES,
+  MAX_REPOSITORY_READ_PATHS,
+} from './repository-read.ts'
+
+export type ReadRepositoryFilesParams = {
+  row: GitProviderSourceRow
+  ref: string
+  /** Relative, `isSafeRoot`-shaped paths. */
+  paths: readonly string[]
+  maxBytesPerFile?: number
+}
+
+export type ListRepositoryEntriesParams = {
+  row: GitProviderSourceRow
+  ref: string
+  path: string
+  maxEntries?: number
+}
+
 /** Headers a webhook verifier may read, lower-cased by the caller. */
 export type WebhookHeaders = {
   get(name: string): string | null | undefined
@@ -258,6 +290,34 @@ export interface GitProvider {
     event: string,
     payload: Record<string, unknown>,
   ): ProviderCheckEvent | null
+
+  /**
+   * Read file contents at a ref.
+   *
+   * Three outcomes, and the distinction is the design:
+   * - {@link RepositoryFileSet} — the read happened; per-file misses are inside.
+   * - {@link GitProviderFailure} **with** `status` — the provider answered
+   *   (401/403/404/429). Surface it; the daemon would get the same answer.
+   * - {@link GitProviderFailure} **without** `status` — the fetch never got an
+   *   HTTP answer, i.e. a reachability problem. The daemon may reach what the
+   *   instance cannot, so the caller falls back. This is the whole LAN-egress
+   *   story, and it needs no configuration toggle.
+   * - {@link RepositoryReadUnsupported} — this provider cannot read; fall back.
+   */
+  readRepositoryFiles(
+    ctx: GitProviderContext,
+    params: ReadRepositoryFilesParams,
+  ): Promise<_RepositoryFileSet | GitProviderFailure | _RepositoryReadUnsupported>
+
+  /** Directory listing at a ref, same outcome model as {@link readRepositoryFiles}. */
+  listRepositoryEntries(
+    ctx: GitProviderContext,
+    params: ListRepositoryEntriesParams,
+  ): Promise<
+    | { commitSha: string; entries: _RepositoryEntry[] }
+    | GitProviderFailure
+    | _RepositoryReadUnsupported
+  >
 }
 
 const PROVIDERS: Record<GitProviderName, GitProvider> = {

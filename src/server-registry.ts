@@ -9,8 +9,10 @@ import {
   parseServerTimeSync,
   parseServerHostResources,
   parseServerDockerMetadata,
+  parseServerRuntimeMetadata,
   serverHostResourcesEquals,
   serverDockerMetadataEquals,
+  serverRuntimeMetadataEquals,
   timeSyncColumnPatch,
   type ServerMetadata,
   type ServerOsColumns,
@@ -19,6 +21,7 @@ import {
   type ServerTimeSyncColumns,
   type ServerHostResources,
   type ServerDockerMetadata,
+  type ServerRuntimeMetadata,
 } from './lib/db/server-metadata.ts'
 import { license, server } from './lib/db/schema.ts'
 import { normalizeMachineKey } from './lib/machine-key.ts'
@@ -76,6 +79,7 @@ export type ServerHelloIdentity = {
   resources?: ServerHostResources
   timeSync?: ServerTimeSync
   docker?: ServerDockerMetadata
+  runtimes?: ServerRuntimeMetadata
 }
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
@@ -86,6 +90,8 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   }
   const docker = parseServerDockerMetadata(identity.docker)
   if (docker) patch.docker = docker
+  const runtimes = parseServerRuntimeMetadata(identity.runtimes)
+  if (runtimes) patch.runtimes = runtimes
   return patch
 }
 
@@ -174,6 +180,13 @@ export function mergeServerMetadataIdentity(
     next.docker = patch.docker
     changed = true
   }
+  if (
+    patch.runtimes !== undefined &&
+    !serverRuntimeMetadataEquals(patch.runtimes, base.runtimes)
+  ) {
+    next.runtimes = patch.runtimes
+    changed = true
+  }
 
   return changed ? next : null
 }
@@ -213,6 +226,12 @@ function buildMetadataDelta(
     !serverDockerMetadataEquals(patch.docker, base?.docker)
   ) {
     delta.docker = patch.docker
+  }
+  if (
+    patch.runtimes !== undefined &&
+    !serverRuntimeMetadataEquals(patch.runtimes, base?.runtimes)
+  ) {
+    delta.runtimes = patch.runtimes
   }
   return delta
 }

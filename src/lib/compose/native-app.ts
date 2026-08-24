@@ -6,8 +6,8 @@
  * exactly like any other release, and the daemon supervises it with a generated
  * `turbopanel-app-<serviceId>.service` unit listening on an allocated loopback
  * port. Hosting Caddy reverse-proxies to that port the same way it already does
- * for a traditional-web vhost — which is precisely why the port allocator here
- * is the traditional-web one, driven from a **shared** used-port ledger.
+ * for a site vhost — which is precisely why the port allocator here
+ * is the site one, driven from a **shared** used-port ledger.
  */
 
 import {
@@ -15,7 +15,7 @@ import {
   type NativeRuntimeFramework,
   readServiceTurbopanelExtension,
 } from './service-kind.ts'
-import { allocateTraditionalWebListenPort } from './traditional-web.ts'
+import { allocateSiteListenPort } from './site.ts'
 
 export type NativeAppServiceSpec = {
   composeServiceName: string
@@ -44,9 +44,9 @@ export type SplitNativeAppResult = {
  * Partition compose `services`, pulling `serviceKind: node` entries out into
  * {@link NativeAppServiceSpec} rows.
  *
- * `usedPorts` must be the same set the traditional-web split used — see
- * `splitTraditionalWebServices`. Passing a fresh set is only correct when the
- * caller knows there are no traditional-web sites in the same document.
+ * `usedPorts` must be the same set the site split used — see
+ * `splitSiteServices`. Passing a fresh set is only correct when the
+ * caller knows there are no sites in the same document.
  */
 export function splitNativeAppServices(
   services: Record<string, unknown>,
@@ -73,7 +73,7 @@ export function splitNativeAppServices(
     apps.push({
       composeServiceName: name,
       framework: extension.framework ?? NATIVE_APP_DEFAULT_FRAMEWORK,
-      listenPort: allocateTraditionalWebListenPort(
+      listenPort: allocateSiteListenPort(
         name,
         usedPorts,
         preferredListenPortByService.get(name),
@@ -89,7 +89,7 @@ export function splitNativeAppServices(
 
 /**
  * Re-assign listen ports once hosting `targetPort` values are known, sharing
- * `used` with {@link assignTraditionalWebListenPorts} so the two lanes cannot
+ * `used` with {@link assignSiteListenPorts} so the two lanes cannot
  * collide. Returns a new array sorted by compose service name.
  */
 export function assignNativeAppListenPorts<
@@ -104,7 +104,7 @@ export function assignNativeAppListenPorts<
   )
   return sorted.map((app) => ({
     ...app,
-    listenPort: allocateTraditionalWebListenPort(
+    listenPort: allocateSiteListenPort(
       app.composeServiceName,
       used,
       preferredListenPortByService.get(app.composeServiceName),

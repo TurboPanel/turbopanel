@@ -1,25 +1,31 @@
 /**
- * Split traditional-web services out of a compose services map for deploy.
+ * Split site services out of a compose services map for deploy.
  *
- * Container services stay in Docker Compose; traditional-web sites are
+ * Container services stay in Docker Compose; sites are
  * applied on the host (nginx, Apache, and OpenLiteSpeed — vendored under
  * `/opt/turbopanel/vendor` on the daemon).
  */
 
 import {
-  isTraditionalWebComposeService,
+  isSiteComposeService,
   readServiceTurbopanelExtension,
-  type TraditionalWebEngine,
+  type ComposeServicePhpExtension,
+  type SiteEngine,
 } from './service-kind.ts'
 
-export type TraditionalWebSiteSpec = {
+export type SiteSpec = {
   composeServiceName: string
-  engine: TraditionalWebEngine
+  engine: SiteEngine
   /** Document-root segment under the site directory (default `public`). */
   root: string
   /** Loopback listen port for hosting Caddy → nginx/apache. */
   listenPort: number
+  /** PHP config from `x-turbopanel.php`, when the service declares any. */
+  php?: ComposeServicePhpExtension
 }
+
+/** Engine a site gets when its compose block does not name one. */
+export const DEFAULT_SITE_ENGINE: SiteEngine = 'caddy'
 
 const DEFAULT_ROOT = 'public'
 const LISTEN_PORT_BASE = 18_080
@@ -30,7 +36,7 @@ function isPlainMapping(value: unknown): value is Record<string, unknown> {
 }
 
 /** Reject path traversal and absolute paths — daemon resolves under stateDir. */
-export function isSafeTraditionalWebRoot(value: string): boolean {
+export function isSafeSiteRoot(value: string): boolean {
   const trimmed = value.trim()
   if (trimmed.length === 0 || trimmed.length > 200) return false
   if (trimmed.startsWith('/') || trimmed.startsWith('\\')) return false
@@ -51,7 +57,7 @@ function hashServiceName(name: string): number {
  * Prefer hosting `targetPort` when free; otherwise a stable port in
  * 18080–18999 derived from the compose service name.
  */
-export function allocateTraditionalWebListenPort(
+export function allocateSiteListenPort(
   composeServiceName: string,
   used: Set<number>,
   preferred?: number,
@@ -77,52 +83,52 @@ export function allocateTraditionalWebListenPort(
       ? LISTEN_PORT_BASE
       : port + 1
   }
-  throw new Error('No free traditional-web listen port in 18080–18999')
+  throw new Error('No free site listen port in 18080–18999')
 }
 
-export type SplitTraditionalWebResult = {
+export type SplitSiteResult = {
   /** Services that remain for Docker Compose. */
   containerServices: Record<string, unknown>
-  sites: TraditionalWebSiteSpec[]
+  sites: SiteSpec[]
 }
 
 /**
- * Partition compose `services` into Docker containers vs traditional-web sites.
+ * Partition compose `services` into Docker containers vs sites.
  *
  * `preferredListenPortByService` comes from hosting `targetPort` when set.
  *
- * `usedPorts` is the caller's loopback-port ledger. Traditional-web vhosts and
+ * `usedPorts` is the caller's loopback-port ledger. Site vhosts and
  * native `node` apps both listen on 127.0.0.1 and are both reverse-proxied by
  * hosting Caddy, so the two lanes must allocate out of **one** set or a site
  * and an app can be handed the same port. Callers that split both kinds pass
  * the same set to `splitNativeAppServices` (`native-app.ts`).
  */
-export function splitTraditionalWebServices(
+export function splitSiteServices(
   services: Record<string, unknown>,
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
   usedPorts: Set<number> = new Set<number>(),
-): SplitTraditionalWebResult {
+): SplitSiteResult {
   const containerServices: Record<string, unknown> = {}
-  const sites: TraditionalWebSiteSpec[] = []
+  const sites: SiteSpec[] = []
 
   const names = Object.keys(services).sort((a, b) => a.localeCompare(b))
   for (const name of names) {
     const raw = services[name]
-    if (!isPlainMapping(raw) || !isTraditionalWebComposeService(raw)) {
+    if (!isPlainMapping(raw) || !isSiteComposeService(raw)) {
       containerServices[name] = raw
       continue
     }
 
     const extension = readServiceTurbopanelExtension(raw)
-    const engine = extension?.engine
-    if (!engine) {
-      // Validation should have rejected this earlier; keep out of Docker.
-      continue
-    }
+    // `engine` is optional on a site. This is the one place the default is
+    // resolved, so the wire always carries an explicit engine and the daemon
+    // never has to guess. Caddy is the default because a static site then
+    // needs no engine choice, no PHP pool, and no vhost tuning at all.
+    const engine = extension?.engine ?? DEFAULT_SITE_ENGINE
 
-    const rootRaw = extension.root?.trim() || DEFAULT_ROOT
-    const root = isSafeTraditionalWebRoot(rootRaw) ? rootRaw : DEFAULT_ROOT
-    const listenPort = allocateTraditionalWebListenPort(
+    const rootRaw = extension?.root?.trim() || DEFAULT_ROOT
+    const root = isSafeSiteRoot(rootRaw) ? rootRaw : DEFAULT_ROOT
+    const listenPort = allocateSiteListenPort(
       name,
       usedPorts,
       preferredListenPortByService.get(name),
@@ -133,6 +139,7 @@ export function splitTraditionalWebServices(
       engine,
       root,
       listenPort,
+      ...(extension?.php ? { php: extension.php } : {}),
     })
   }
 
@@ -142,7 +149,7 @@ export function splitTraditionalWebServices(
   }
 }
 
-/** Runtime compose YAML body when every service is traditional-web. */
+/** Runtime compose YAML body when every service is site. */
 export function emptyContainerComposeYaml(): string {
   return 'services: {}\n'
 }
@@ -152,20 +159,22 @@ export function emptyContainerComposeYaml(): string {
  * Preserves engine/root; returns a new array sorted by compose service name.
  *
  * `used` is shared with the native-app allocator for the same reason
- * {@link splitTraditionalWebServices} shares it — one loopback ledger per
+ * {@link splitSiteServices} shares it — one loopback ledger per
  * deploy, not one per lane.
  */
-export function assignTraditionalWebListenPorts(
-  sites: readonly TraditionalWebSiteSpec[],
+export function assignSiteListenPorts<
+  T extends { composeServiceName: string; listenPort: number },
+>(
+  sites: readonly T[],
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
   used: Set<number> = new Set<number>(),
-): TraditionalWebSiteSpec[] {
+): T[] {
   const sorted = [...sites].sort((a, b) =>
     a.composeServiceName.localeCompare(b.composeServiceName)
   )
   return sorted.map((site) => ({
     ...site,
-    listenPort: allocateTraditionalWebListenPort(
+    listenPort: allocateSiteListenPort(
       site.composeServiceName,
       used,
       preferredListenPortByService.get(site.composeServiceName),

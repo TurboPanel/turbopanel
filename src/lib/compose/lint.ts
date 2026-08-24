@@ -250,11 +250,11 @@ function isEmptyImageValue(node: Node | null | undefined): boolean {
 }
 
 /**
- * `image` / `build` is required only of Docker services. Traditional-web sites
+ * `image` / `build` is required only of Docker services. Sites
  * are served by a host engine and `node` apps are supervised from a Git
  * release, so neither declares one.
  */
-const HOST_NATIVE_SERVICE_KINDS = new Set(['traditional-web', 'node'])
+const HOST_NATIVE_SERVICE_KINDS = new Set(['site', 'node'])
 
 /** The `x-turbopanel` map on a service node, or null when absent or not a map. */
 function serviceExtensionMap(valueNode: YAMLMap): YAMLMap | null {

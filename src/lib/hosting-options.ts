@@ -27,13 +27,14 @@ export type HostingPortMapping = {
 
 export type HostingPhpOptions = {
   /**
-   * Preferred mod_php package version (e.g. `"8.4"` → `libapache2-mod-php8.4`).
-   * Applied on Apache traditional-web deploy; must match a package on the host.
+   * PHP series for this site (e.g. `"8.4"`). **Never mod_php** — nginx and
+   * Apache both reach php-fpm over a unix socket, and OpenLiteSpeed runs a
+   * per-vhost LSAPI processor. Must be a series installed on the host.
    */
   version?: string
-  /** Applied as Apache `php_admin_value memory_limit` (e.g. `"256M"`). */
+  /** `php_admin_value memory_limit` (e.g. `"256M"`), on every engine. */
   memoryLimit?: string
-  /** Applied as Apache `php_admin_value max_execution_time` (seconds). */
+  /** `php_admin_value max_execution_time` (seconds), on every engine. */
   maxExecutionTime?: number
 }
 

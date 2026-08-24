@@ -6,7 +6,7 @@
  * replicas. Single-instance services keep their original key.
  */
 
-import { isTraditionalWebComposeService } from './service-kind.ts'
+import { isSiteComposeService } from './service-kind.ts'
 import type { ComposeDocument } from './types.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -21,7 +21,7 @@ export type ExpandComposeServiceInstancesResult = {
 
 /**
  * Replace each multi-instance container service with `<name>-1` … `<name>-N`
- * shallow clones, preserving key order. Traditional-web services are skipped
+ * shallow clones, preserving key order. Sites are skipped
  * (host-native; no containers).
  */
 export function expandComposeServiceInstances(
@@ -36,7 +36,7 @@ export function expandComposeServiceInstances(
   const expansion = new Map<string, string[]>()
 
   for (const [name, raw] of Object.entries(services)) {
-    if (!isRecord(raw) || isTraditionalWebComposeService(raw)) {
+    if (!isRecord(raw) || isSiteComposeService(raw)) {
       nextServices[name] = raw
       expansion.set(name, [name])
       continue

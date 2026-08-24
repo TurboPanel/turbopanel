@@ -29,6 +29,12 @@ export type SerializedProjectPrincipal = {
   options: unknown
   /** Services this principal runs as / owns storage for (via `steward`). */
   serviceIds: string[]
+  /**
+   * Runtime series this principal may execute on the host. `grantedBy` says
+   * whether an operator granted it or a deploy inserted it because a service
+   * declared the runtime — both are real, revocable grants.
+   */
+  entitlements: { runtime: string; series: string; grantedBy: string }[]
   createdAt: string
   updatedAt: string
 }
@@ -36,6 +42,11 @@ export type SerializedProjectPrincipal = {
 export function serializeProjectPrincipal(
   row: PrincipalRow,
   serviceIds: readonly string[] = [],
+  entitlements: readonly {
+    runtime: string
+    series: string
+    grantedBy: string
+  }[] = [],
 ): SerializedProjectPrincipal {
   return {
     id: row.id,
@@ -47,6 +58,9 @@ export function serializeProjectPrincipal(
     metadata: row.metadata,
     options: row.options,
     serviceIds: [...serviceIds].sort((a, b) => a.localeCompare(b)),
+    entitlements: [...entitlements].sort((a, b) =>
+      `${a.runtime}@${a.series}`.localeCompare(`${b.runtime}@${b.series}`)
+    ),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }

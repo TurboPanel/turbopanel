@@ -4,6 +4,7 @@ import {
   type ComposeValidateOptions,
   type ComposeValidationIssue,
 } from '../../lib/compose/index.ts'
+import { parseComposeSourceInput } from '../../lib/project-options.ts'
 import { isPlacementServerId } from '../../lib/compose/placement.ts'
 import {
   parseContainerNamingInput,
@@ -139,6 +140,19 @@ export function parseCreateProjectOptions(
   if (optionsResult === 'invalid') {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
+  // Reject rather than drop: losing the provenance of a project's compose is
+  // not something the operator can notice or recover from.
+  if (optionsResult !== null && 'composeSource' in optionsResult) {
+    const parsed = parseComposeSourceInput(
+      optionsResult.composeSource,
+      validateOptions?.knownSourceIds,
+    )
+    if (!parsed.ok) {
+      return { ok: false, error: parsed.reason, status: 400 }
+    }
+    if (parsed.value === null) delete optionsResult.composeSource
+    else optionsResult.composeSource = parsed.value
+  }
   const createComposeOption = applyValidatedComposeOption(optionsResult, validateOptions)
   if (!createComposeOption.ok) {
     return {
@@ -207,6 +221,19 @@ export function normalizeProjectPatchOptions(
   | { ok: true; options: Record<string, unknown> }
   | ProjectComposeValidationError
   | ProjectRouteValidationError {
+  // Reject rather than drop: losing the provenance of a project's compose is
+  // not something the operator can notice or recover from.
+  if ('composeSource' in optionsResult) {
+    const parsed = parseComposeSourceInput(
+      optionsResult.composeSource,
+      validateOptions?.knownSourceIds,
+    )
+    if (!parsed.ok) {
+      return { ok: false, error: parsed.reason, status: 400 }
+    }
+    if (parsed.value === null) delete optionsResult.composeSource
+    else optionsResult.composeSource = parsed.value
+  }
   const composeOption = applyValidatedComposeOption(optionsResult, validateOptions)
   if (!composeOption.ok) {
     return {

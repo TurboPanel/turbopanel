@@ -65,7 +65,7 @@ export const deploySchemas = {
           'resource_limit_exceeded',
           'health_check_missing',
           'docker_external_network_unregistered',
-          'traditional_web_principal_ambiguous',
+          'site_principal_ambiguous',
         ],
       },
       message: { type: 'string' },

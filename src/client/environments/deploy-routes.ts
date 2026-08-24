@@ -43,7 +43,7 @@ import type {
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
-  EnvironmentDeployTraditionalWebSite,
+  EnvironmentDeploySite,
   EnvironmentDeployVariableMaterial,
   EnvironmentLifecycleAction,
 } from "../../lib/commands/schemas.ts";
@@ -51,7 +51,7 @@ import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
   buildNativeAppServicesForDeploy,
-  buildTraditionalWebSitesForDeploy,
+  buildSitesForDeploy,
   composeProjectName,
   deployMaterialsErrorResponse,
   expandHostingsForComposeInstances,
@@ -887,7 +887,7 @@ type DeployCommandCreateParams = DeployActor & {
   projectName: string;
   composeFiles: EnvironmentDeployComposeFile[];
   hostings: DeployHostingPayload[];
-  traditionalWebSites: EnvironmentDeployTraditionalWebSite[];
+  sites: EnvironmentDeploySite[];
   nativeAppServices: EnvironmentDeployNativeAppService[];
   sourceMaterial: EnvironmentDeploySource[];
   ingressServices: EnvironmentDeployIngressService[];
@@ -994,7 +994,7 @@ async function createDeployCommand(
       // Every list below is omitted when empty — the daemon reads an absent
       // key and an empty array the same way, and the queued row is smaller.
       ...presentFields({
-        traditionalWebSites: params.traditionalWebSites,
+        sites: params.sites,
         nativeAppServices: params.nativeAppServices,
         sourceMaterial: params.sourceMaterial,
         ingressServices: params.ingressServices,
@@ -1096,7 +1096,7 @@ function createParamsForPreparedServer(
     selection: DeploySourceSelection;
   },
 ): DeployCommandCreateParams {
-  // One loopback-port ledger for both host-native lanes: traditional-web vhosts
+  // One loopback-port ledger for both host-native lanes: site vhosts
   // and native `node` apps are both reverse-proxied on 127.0.0.1, so allocating
   // them separately could hand the same port to a site and an app.
   const usedListenPorts = new Set<number>();
@@ -1111,8 +1111,8 @@ function createParamsForPreparedServer(
     projectName: params.projectName,
     composeFiles: row.prepared.composeFiles,
     hostings: row.hostings,
-    traditionalWebSites: buildTraditionalWebSitesForDeploy(
-      row.prepared.traditionalWebSites,
+    sites: buildSitesForDeploy(
+      row.prepared.sites,
       row.hostings,
       usedListenPorts,
     ),
@@ -1287,7 +1287,7 @@ async function deliverDeployFanOut(
 
 export {
   buildNativeAppServicesForDeploy,
-  buildTraditionalWebSitesForDeploy,
+  buildSitesForDeploy,
   deployMaterialsErrorResponse,
   expandHostingsForComposeInstances,
   preferredListenPortsFromHostings,
@@ -2319,7 +2319,7 @@ async function enqueueStopCommand(
     projectName: string;
     ingressServices: Array<{ serviceId: string }>;
     fabricNetworks: string[];
-    /** Per-service release trees to reclaim (generic, not traditional-web only). */
+    /** Per-service release trees to reclaim (generic, not site only). */
     siteReleases: EnvironmentSiteRelease[];
   },
 ): Promise<QueuedCommandRef | Response> {

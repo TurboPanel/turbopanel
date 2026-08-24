@@ -124,7 +124,14 @@ export function resolveDockerVolumeName(input: {
 export const PRINCIPAL_HOME_ROOT = '/srv/users'
 /** Floor for an optional operator uid/gid override (host allocates when omitted). */
 export const PRINCIPAL_UID_START = 10001
-/** Inclusive low end of the reserved TurboPanel service-account UID band. */
+/**
+ * Inclusive low end of the reserved TurboPanel service-account UID band.
+ *
+ * Note the band check in `isValidPrincipalIdOverride` is belt-and-braces only:
+ * the whole band sits below {@link PRINCIPAL_UID_START}, so the floor check
+ * rejects these values first. Keep the band accurate anyway — it documents
+ * which ids are spoken for, and the floor is the thing that could move.
+ */
 export const PRINCIPAL_RESERVED_UID_MIN = 9989
 /** Inclusive high end of the reserved TurboPanel service-account UID band. */
 export const PRINCIPAL_RESERVED_UID_MAX = 9999
@@ -145,6 +152,12 @@ const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
 /**
  * Reserved Linux / TurboPanel account names (lowercased). Rejected on create
  * so tenant principals cannot collide with host or service accounts.
+ *
+ * The `tp*` entries here are documentation of the accounts that exist today —
+ * the actual guard is the `tp` **prefix** rule in
+ * {@link isReservedPrincipalUsername}. Enumerating them could never keep up:
+ * this list already missed `tpnodeapp`, and every runtime-entitlement group
+ * (`tpphp84`, `tpnode24`, …) would have to be added by hand.
  */
 export const RESERVED_PRINCIPAL_USERNAMES: ReadonlySet<string> = new Set([
   'root',
@@ -178,6 +191,10 @@ export const RESERVED_PRINCIPAL_USERNAMES: ReadonlySet<string> = new Set([
 export function isReservedPrincipalUsername(value: string): boolean {
   const key = value.trim().toLowerCase()
   if (RESERVED_PRINCIPAL_USERNAMES.has(key)) return true
+  // Every TurboPanel-owned account and group is `tp`-prefixed, so reserving the
+  // whole prefix closes the collision class permanently rather than one name at
+  // a time. Costs tenants a two-letter prefix they have no reason to want.
+  if (key.startsWith('tp')) return true
   return key.startsWith('systemd-')
 }
 

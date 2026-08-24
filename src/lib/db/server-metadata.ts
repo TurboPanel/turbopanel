@@ -190,6 +190,18 @@ export type ServerMetadata = {
    * reports Docker installed; omitted (not `null`) when it is not.
    */
   docker?: ServerDockerMetadata
+  /**
+   * Runtimes actually installed on the host (PHP series and their extensions,
+   * vendored tenant Node, vendored lsphp), from daemon hello / change-detected
+   * heartbeat.
+   *
+   * jsonb, so no migration. This is what lets deploy-prepare answer "is this
+   * PHP series installable here?" *before* queueing, instead of the daemon
+   * failing at apply time — which was wrong in both directions: it rejected a
+   * series the host could have installed, and reported the failure at the worst
+   * possible moment.
+   */
+  runtimes?: ServerRuntimeMetadata
 }
 
 /**
@@ -994,6 +1006,87 @@ function parseDockerVersionToken(value: unknown): string | undefined {
   }
   if (!DOCKER_VERSION_TOKEN.test(token)) return undefined
   return token
+}
+
+/**
+ * Runtimes installed on a host, as the daemon reports them.
+ *
+ * Every area is optional: a host with no PHP reports no `php` key at all, the
+ * same discipline `docker` follows.
+ */
+export type ServerRuntimeMetadata = {
+  php?: { series: string[]; extensions?: Record<string, string[]> }
+  node?: { series: string[] }
+  lsphp?: { series: string[] }
+}
+
+/** `8.4` or `24` — the exec boundary, matching the daemon's registry. */
+const RUNTIME_SERIES_TOKEN = /^\d{1,3}(\.\d{1,3})?$/
+const RUNTIME_EXTENSION_TOKEN = /^[a-z][a-z0-9_-]{0,31}$/
+const MAX_RUNTIME_SERIES = 16
+const MAX_RUNTIME_EXTENSIONS = 128
+
+function parseRuntimeSeriesList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const series = value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => RUNTIME_SERIES_TOKEN.test(entry))
+  return [...new Set(series)]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .slice(0, MAX_RUNTIME_SERIES)
+}
+
+/**
+ * Parse a best-effort runtimes block. Anything malformed is dropped rather than
+ * rejected: a host reporting nonsense should degrade to "unknown inventory",
+ * which the prepare gate treats as "will be installed", not to a hard failure
+ * that would take the server offline for every deploy.
+ */
+export function parseServerRuntimeMetadata(
+  value: unknown,
+): ServerRuntimeMetadata | undefined {
+  if (!isRecord(value)) return undefined
+  const out: ServerRuntimeMetadata = {}
+
+  if (isRecord(value.php)) {
+    const series = parseRuntimeSeriesList(value.php.series)
+    if (series.length > 0) {
+      const extensions: Record<string, string[]> = {}
+      if (isRecord(value.php.extensions)) {
+        for (const [key, raw] of Object.entries(value.php.extensions)) {
+          if (!RUNTIME_SERIES_TOKEN.test(key) || !Array.isArray(raw)) continue
+          const names = raw
+            .filter((n): n is string => typeof n === 'string')
+            .map((n) => n.trim().toLowerCase())
+            .filter((n) => RUNTIME_EXTENSION_TOKEN.test(n))
+          if (names.length > 0) {
+            extensions[key] = [...new Set(names)].sort().slice(0, MAX_RUNTIME_EXTENSIONS)
+          }
+        }
+      }
+      out.php = {
+        series,
+        ...(Object.keys(extensions).length > 0 ? { extensions } : {}),
+      }
+    }
+  }
+
+  for (const area of ['node', 'lsphp'] as const) {
+    const raw = value[area]
+    if (!isRecord(raw)) continue
+    const series = parseRuntimeSeriesList(raw.series)
+    if (series.length > 0) out[area] = { series }
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+export function serverRuntimeMetadataEquals(
+  a: ServerRuntimeMetadata | undefined,
+  b: ServerRuntimeMetadata | undefined,
+): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 }
 
 /** Parse a best-effort docker block from daemon hello / stored metadata. */

@@ -1,7 +1,8 @@
 import { assertEquals } from '@std/assert'
 import {
   buildPlatformComposeLayer,
-  buildUserComposeLayers,
+  PROJECT_COMPOSE_FILENAME,
+  transformUserLayerDocument,
   environmentComposeFilename,
   expandedOriginServiceNames,
   mergeComposeLayers,
@@ -71,85 +72,62 @@ test('expandedOriginServiceNames drops single-instance keys', () => {
   assertEquals([...names], ['web'])
 })
 
-test('buildUserComposeLayers strips traditional-web and expanded origins', () => {
+test('transformUserLayerDocument strips site and expanded origins', () => {
+  // Host-native services are applied out-of-band, so they must not reach the
+  // Docker document a layer emits.
   const project = doc({
     services: {
       web: { image: 'nginx' },
       site: {
         image: 'ignored',
-        'x-turbopanel': { serviceKind: 'traditional-web', engine: 'nginx' },
+        'x-turbopanel': { serviceKind: 'site', engine: 'nginx' },
       },
     },
   })
-  const environment = doc({
-    services: {
-      web: { restart: 'always' },
-      site: { ports: ['80:80'] },
-    },
-  })
-  const layers = buildUserComposeLayers({
-    projectDocument: project,
-    environmentDocument: environment,
-    environmentFilename: 'docker-compose.staging.yml',
-    removeServiceNames: new Set(['site', 'web']),
-    volumeRenames: new Map(),
-    keepNetworkKeys: new Set(),
-  })
-  const projectServices = isPlainObject(layers[0]!.document.data.services)
-    ? Object.keys(layers[0]!.document.data.services as Record<string, unknown>)
+  const out = transformUserLayerDocument(
+    project,
+    new Set(['site', 'web']),
+    new Map(),
+    new Set(),
+  )
+  const services = isPlainObject(out.data.services)
+    ? Object.keys(out.data.services as Record<string, unknown>)
     : []
-  const envServices = isPlainObject(layers[1]!.document.data.services)
-    ? Object.keys(layers[1]!.document.data.services as Record<string, unknown>)
-    : []
-  assertEquals(projectServices, [])
-  assertEquals(envServices, [])
+  assertEquals(services, [])
 })
 
-test('buildUserComposeLayers renames volumes in both layers identically', () => {
+test('transformUserLayerDocument renames volumes', () => {
   const project = doc({
     volumes: { data: null },
-    services: {
-      web: { image: 'nginx', volumes: ['data:/var'] },
-    },
+    services: { web: { image: 'nginx', volumes: ['data:/var'] } },
   })
-  const environment = doc({
-    volumes: { data: { name: 'custom' } },
-  })
-  const renames = new Map([['data', 'vol-uuid']])
-  const layers = buildUserComposeLayers({
-    projectDocument: project,
-    environmentDocument: environment,
-    environmentFilename: 'docker-compose.env.yml',
-    removeServiceNames: new Set(),
-    volumeRenames: renames,
-    keepNetworkKeys: new Set(),
-  })
-  const projectVolumes = layers[0]!.document.data.volumes as Record<string, unknown>
-  const envVolumes = layers[1]!.document.data.volumes as Record<string, unknown>
-  assertEquals(Object.keys(projectVolumes), ['vol-uuid'])
-  assertEquals(Object.keys(envVolumes), ['vol-uuid'])
+  const out = transformUserLayerDocument(
+    project,
+    new Set(),
+    new Map([['data', 'vol-uuid']]),
+    new Set(),
+  )
+  assertEquals(
+    Object.keys(out.data.volumes as Record<string, unknown>),
+    ['vol-uuid'],
+  )
 })
 
-test('buildUserComposeLayers prunes network keys not kept by merged view', () => {
+test('transformUserLayerDocument prunes network keys the merged view dropped', () => {
   const project = doc({
-    networks: {
-      front: { external: true },
-      onlyTw: null,
-    },
-    services: {
-      web: { image: 'nginx', networks: ['front'] },
-    },
+    networks: { front: { external: true }, onlyTw: null },
+    services: { web: { image: 'nginx', networks: ['front'] } },
   })
-  const layers = buildUserComposeLayers({
-    projectDocument: project,
-    environmentDocument: emptyComposeDocument(),
-    environmentFilename: 'docker-compose.env.yml',
-    removeServiceNames: new Set(),
-    volumeRenames: new Map(),
-    keepNetworkKeys: new Set(['front']),
-  })
-  const networks = layers[0]!.document.data.networks as Record<string, unknown>
-  assertEquals(Object.keys(networks), ['front'])
+  const out = transformUserLayerDocument(
+    project,
+    new Set(),
+    new Map(),
+    new Set(['front']),
+  )
+  assertEquals(
+    Object.keys(out.data.networks as Record<string, unknown>),
+    ['front'],
+  )
 })
 
 test('buildPlatformComposeLayer diffs injected keys and materializes expanded siblings', () => {
@@ -212,7 +190,7 @@ test('merge of user layers + platform equals effective after extension strip', (
     services: {
       web: { image: 'nginx:alpine' },
       site: {
-        'x-turbopanel': { serviceKind: 'traditional-web', engine: 'nginx', root: 'public' },
+        'x-turbopanel': { serviceKind: 'site', engine: 'nginx', root: 'public' },
       },
     },
     networks: {
@@ -238,14 +216,21 @@ test('merge of user layers + platform equals effective after extension strip', (
       front: null,
     },
   })
-  const userLayers = buildUserComposeLayers({
-    projectDocument: project,
-    environmentDocument: environment,
-    environmentFilename: 'docker-compose.prod.yml',
-    removeServiceNames: new Set(['site']),
-    volumeRenames: new Map(),
-    keepNetworkKeys: new Set(['front']),
-  })
+  const removeNames = new Set(['site'])
+  const renames = new Map()
+  const keepNetworks = new Set(['front'])
+  const userLayers = [
+    {
+      role: 'project' as const,
+      filename: PROJECT_COMPOSE_FILENAME,
+      document: transformUserLayerDocument(project, removeNames, renames, keepNetworks),
+    },
+    {
+      role: 'environment' as const,
+      filename: 'docker-compose.prod.yml',
+      document: transformUserLayerDocument(environment, removeNames, renames, keepNetworks),
+    },
+  ]
   const userMerged = mergeComposeLayers(userLayers)
   const platform = buildPlatformComposeLayer({ effective, userMerged })
   const assembled = mergeComposeLayers([
@@ -302,14 +287,26 @@ test(
       presentation: applied.document.presentation,
     }
 
-    const userLayers = buildUserComposeLayers({
-      projectDocument: project,
-      environmentDocument: emptyComposeDocument(),
-      environmentFilename: 'docker-compose.production.yml',
-      removeServiceNames: new Set(),
-      volumeRenames: new Map(),
-      keepNetworkKeys: new Set(),
-    })
+    const noRemove = new Set<string>()
+    const noRenames = new Map<string, string>()
+    const noNetworks = new Set<string>()
+    const userLayers = [
+      {
+        role: 'project' as const,
+        filename: PROJECT_COMPOSE_FILENAME,
+        document: transformUserLayerDocument(project, noRemove, noRenames, noNetworks),
+      },
+      {
+        role: 'environment' as const,
+        filename: 'docker-compose.production.yml',
+        document: transformUserLayerDocument(
+          emptyComposeDocument(),
+          noRemove,
+          noRenames,
+          noNetworks,
+        ),
+      },
+    ]
     const userMerged = mergeComposeLayers(userLayers)
     const platformDocument = buildPlatformComposeLayer({
       effective,

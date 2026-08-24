@@ -1,6 +1,8 @@
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import {
+  MAX_DAEMON_WS_REPO_READ_BYTES,
+  MAX_DAEMON_WS_REPO_READ_ENTRIES,
   type DaemonMessage,
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -891,4 +893,66 @@ it("wire mappings round-trip fabric-paths request and result", () => {
       error: undefined,
     },
   );
+});
+
+it("repo-read-result is on the inbound allowlist", () => {
+  assertEquals(DAEMON_INBOUND_ALLOWED.has("repo-read-result"), true);
+  // The request direction is outbound only — a daemon must never send one.
+  assertEquals(
+    (DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has("repo-read-request"),
+    false,
+  );
+});
+
+it("repo-read-result rejects a payload larger than its cap", () => {
+  // The cap is on the TOTAL across files: several files each just under a
+  // per-file limit would still be a frame nobody asked for.
+  const half = "a".repeat(MAX_DAEMON_WS_REPO_READ_BYTES * 0.6);
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "repo-read-result",
+      id: "req-1",
+      ok: true,
+      at: "2020-01-01T00:00:00.000Z",
+      files: [
+        { path: "a.yml", found: true, content: half },
+        { path: "b.yml", found: true, content: half },
+      ],
+    }),
+  );
+  assertEquals(result.ok, false);
+});
+
+it("repo-read-result accepts a normal read", () => {
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "repo-read-result",
+      id: "req-1",
+      ok: true,
+      commitSha: "a".repeat(40),
+      at: "2020-01-01T00:00:00.000Z",
+      files: [
+        { path: "docker-compose.yml", found: true, content: "services: {}\n" },
+        { path: "missing.yml", found: false, reason: "not_found" },
+      ],
+    }),
+  );
+  assertEquals(result.ok, true);
+});
+
+it("repo-read-result rejects too many directory entries", () => {
+  const entries = Array.from(
+    { length: MAX_DAEMON_WS_REPO_READ_ENTRIES + 1 },
+    (_, i) => ({ path: `f${i}`, kind: "file" }),
+  );
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "repo-read-result",
+      id: "req-1",
+      ok: true,
+      at: "2020-01-01T00:00:00.000Z",
+      entries,
+    }),
+  );
+  assertEquals(result.ok, false);
 });

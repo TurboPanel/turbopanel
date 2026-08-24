@@ -5,6 +5,7 @@ import {
   serverIpsEquals,
 } from '../../server-addresses.ts'
 import {
+  parseServerRuntimeMetadata,
   formatServerOsDisplay,
   osColumnsFromMetadata,
   osMetadataFromColumns,
@@ -642,4 +643,32 @@ test('parseServerHostResources keeps ips including interface', () => {
       ],
     },
   )
+})
+
+test('parseServerRuntimeMetadata keeps well-formed areas and drops the rest', () => {
+  assertEquals(
+    parseServerRuntimeMetadata({
+      php: {
+        series: ['8.4', '8.3', '8.4', 'nonsense'],
+        extensions: { '8.4': ['intl', 'REDIS', 'bad name'], 'x': ['intl'] },
+      },
+      node: { series: ['24'] },
+      lsphp: { series: [] },
+      bogus: { series: ['1'] },
+    }),
+    {
+      php: { series: ['8.3', '8.4'], extensions: { '8.4': ['intl', 'redis'] } },
+      node: { series: ['24'] },
+    },
+  )
+})
+
+test('parseServerRuntimeMetadata degrades to undefined rather than throwing', () => {
+  // A host reporting nonsense must degrade to "unknown inventory" — which the
+  // prepare gate treats as "will be installed" — not to a hard failure that
+  // would take the server offline for every deploy.
+  assertEquals(parseServerRuntimeMetadata(null), undefined)
+  assertEquals(parseServerRuntimeMetadata('php'), undefined)
+  assertEquals(parseServerRuntimeMetadata({ php: 'yes' }), undefined)
+  assertEquals(parseServerRuntimeMetadata({}), undefined)
 })

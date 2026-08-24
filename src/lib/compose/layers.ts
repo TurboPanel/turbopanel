@@ -16,7 +16,7 @@ import { stripComposePlacement } from './placement.ts'
 import { renameComposeVolumes } from './rename-volumes.ts'
 import {
   isNodeComposeService,
-  isTraditionalWebComposeService,
+  isSiteComposeService,
 } from './service-kind.ts'
 import {
   composeTagOf,
@@ -68,11 +68,11 @@ export function mergeComposeLayers(
 }
 
 /**
- * Traditional-web service keys from a **merged** compose document.
+ * Site keys from a **merged** compose document.
  * Detection must use the merged view: `x-turbopanel.serviceKind` may live only
  * in the project layer while the environment layer only overrides e.g. ports.
  */
-export function collectTraditionalWebServiceNames(
+export function collectSiteServiceNames(
   merged: ComposeDocument,
 ): Set<string> {
   const names = new Set<string>()
@@ -87,7 +87,7 @@ export function collectTraditionalWebServiceNames(
       if (isComposeTaggedValue(body)) body = body.value
       if (
         isPlainObject(body) &&
-        (isTraditionalWebComposeService(body) || isNodeComposeService(body))
+        (isSiteComposeService(body) || isNodeComposeService(body))
       ) {
         names.add(name)
       }
@@ -113,10 +113,10 @@ function stripServicesMapping(
   return { next: nextServices, removed }
 }
 
-function selfDetectTraditionalWebNames(services: unknown): Set<string> {
+function selfDetectSiteNames(services: unknown): Set<string> {
   const self = new Set<string>()
   if (isComposeTaggedValue(services)) {
-    return selfDetectTraditionalWebNames(services.value)
+    return selfDetectSiteNames(services.value)
   }
   if (!isPlainObject(services)) return self
   for (const [name, raw] of Object.entries(services)) {
@@ -124,7 +124,7 @@ function selfDetectTraditionalWebNames(services: unknown): Set<string> {
     if (isComposeTaggedValue(body)) body = body.value
     if (
       isPlainObject(body) &&
-      (isTraditionalWebComposeService(body) || isNodeComposeService(body))
+      (isSiteComposeService(body) || isNodeComposeService(body))
     ) {
       self.add(name)
     }
@@ -133,21 +133,21 @@ function selfDetectTraditionalWebNames(services: unknown): Set<string> {
 }
 
 /**
- * Remove traditional-web service keys from a single layer.
+ * Remove site service keys from a single layer.
  *
  * Prefer a name set taken from the merged view. Self-detection alone would
  * leave half-services (environment overrides without the marker) in Docker.
  * When `names` is omitted, fall back to self-detection on this document only.
  * Looks through tagged `services` mappings and preserves the tag.
  */
-export function stripTraditionalWebServicesFromLayer(
+export function stripSiteServicesFromLayer(
   document: ComposeDocument,
   names?: ReadonlySet<string>,
 ): ComposeDocument {
   const normalized = normalizeCompose(document)
   const services = normalized.data.services
 
-  const drop = names ?? selfDetectTraditionalWebNames(services)
+  const drop = names ?? selfDetectSiteNames(services)
   if (drop.size === 0) return normalized
 
   let removed = false
