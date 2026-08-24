@@ -35,6 +35,13 @@ export type ComposeLintOptions = {
    * non-blocking advisory warning.
    */
   layer?: 'base' | 'overlay'
+  /**
+   * Every `source.id` visible to the caller's organization. The linter is pure
+   * (no database), so the route layer queries the set once per request and
+   * passes it in; when omitted the `sourceId` resolution check is **skipped**
+   * entirely rather than false-flagging.
+   */
+  knownSourceIds?: ReadonlySet<string>
 }
 
 /** Top-level Compose Specification keys. `x-*` extensions are always allowed. */
@@ -148,6 +155,15 @@ const DRAFT_ALLOWED_LINT_MESSAGES = new Set([
 const BASE_LAYER_TAG_ADVISORY =
   '!reset / !override only take effect in an overlay compose file'
 
+/**
+ * Non-blocking notice. The block is no longer inert — deploy-prepare turns it
+ * into `sourceMaterial[]` and the daemon builds and promotes a release — but it
+ * still does not decide document roots or process supervision, so an author who
+ * expects it to change how the service runs needs to hear that.
+ */
+const SOURCE_INERT_ADVISORY =
+  'x-turbopanel.source builds and promotes a release, but does not yet change how this service is served or supervised'
+
 function isExtensionKey(key: string): boolean {
   return key.startsWith('x-')
 }
@@ -233,16 +249,106 @@ function isEmptyImageValue(node: Node | null | undefined): boolean {
   return typeof value === 'string' && value.trim().length === 0
 }
 
-function serviceIsTraditionalWeb(valueNode: YAMLMap): boolean {
+/**
+ * `image` / `build` is required only of Docker services. Traditional-web sites
+ * are served by a host engine and `node` apps are supervised from a Git
+ * release, so neither declares one.
+ */
+const HOST_NATIVE_SERVICE_KINDS = new Set(['traditional-web', 'node'])
+
+/** The `x-turbopanel` map on a service node, or null when absent or not a map. */
+function serviceExtensionMap(valueNode: YAMLMap): YAMLMap | null {
   for (const item of valueNode.items) {
     if (stringKey(item.key) !== TURBOPANEL_SERVICE_EXTENSION_KEY) continue
-    if (!isMap(item.value)) return false
-    for (const extItem of item.value.items) {
-      if (stringKey(extItem.key) !== 'serviceKind') continue
-      return scalarString(extItem.value as Node) === 'traditional-web'
-    }
+    return isMap(item.value) ? (item.value as YAMLMap) : null
   }
-  return false
+  return null
+}
+
+/** Value node for `key` in a YAML map, or undefined when the key is absent. */
+function mapEntryValue(node: YAMLMap, key: string): Node | null | undefined {
+  for (const item of node.items) {
+    if (stringKey(item.key) === key) return item.value as Node | null
+  }
+  return undefined
+}
+
+function serviceIsHostNative(valueNode: YAMLMap): boolean {
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return false
+  const kind = scalarString(mapEntryValue(extension, 'serviceKind'))
+  return kind !== null && HOST_NATIVE_SERVICE_KINDS.has(kind)
+}
+
+/**
+ * True when `x-turbopanel.source.buildKind` is `railpack`.
+ *
+ * Deliberately a sibling of {@link serviceIsHostNative} rather than another
+ * entry in {@link HOST_NATIVE_SERVICE_KINDS}: a Railpack service *is* a Docker
+ * service — it just gets its `image` minted by the daemon at deploy time from
+ * the built OCI image, so there is nothing for the author to type here.
+ */
+function serviceIsRailpackBuilt(valueNode: YAMLMap): boolean {
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return false
+  const sourceNode = mapEntryValue(extension, 'source')
+  if (!isMap(sourceNode)) return false
+  const buildKind = scalarString(mapEntryValue(sourceNode as YAMLMap, 'buildKind'))
+  return buildKind?.trim() === 'railpack'
+}
+
+/**
+ * Locate `x-turbopanel.source.sourceId` on a service node so the resolution
+ * check can report the author's own line number.
+ */
+function serviceSourceIdNode(
+  valueNode: YAMLMap,
+): { sourceId: string | null; node: Node | null } | null {
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return null
+  const sourceNode = mapEntryValue(extension, 'source')
+  if (sourceNode === undefined) return null
+  if (!isMap(sourceNode)) return { sourceId: null, node: sourceNode }
+  const idNode = mapEntryValue(sourceNode as YAMLMap, 'sourceId')
+  if (idNode === undefined) return { sourceId: null, node: sourceNode as Node }
+  return { sourceId: scalarString(idNode), node: idNode }
+}
+
+/**
+ * `x-turbopanel.source` checks: an advisory that the block is inert this phase,
+ * plus a blocking error when the id does not resolve for the organization.
+ */
+function lintServiceSource(
+  name: string,
+  valueNode: YAMLMap,
+  knownSourceIds: ReadonlySet<string> | undefined,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  const found = serviceSourceIdNode(valueNode)
+  if (!found) return
+
+  const path = `services.${name}.x-turbopanel.source.sourceId`
+  const line = nodeLine(found.node, lineCounter)
+
+  issues.push({
+    level: 'warning',
+    message: SOURCE_INERT_ADVISORY,
+    path: `services.${name}.x-turbopanel.source`,
+    line,
+    blocking: false,
+  })
+
+  if (!knownSourceIds || found.sourceId === null) return
+  const sourceId = found.sourceId.trim()
+  if (sourceId.length === 0 || knownSourceIds.has(sourceId)) return
+
+  issues.push({
+    level: 'error',
+    message: `source '${sourceId}' was not found for this organization`,
+    path,
+    line,
+  })
 }
 
 function pushBaseTagAdvisory(
@@ -448,6 +554,7 @@ function lintService(
   keyLine: number | undefined,
   lineCounter: LineCounter,
   layer: 'base' | 'overlay',
+  knownSourceIds: ReadonlySet<string> | undefined,
   issues: ComposeLintIssue[],
 ): void {
   const path = `services.${name}`
@@ -486,8 +593,11 @@ function lintService(
     hasBuild = hasBuild || presence.hasBuild
   }
 
-  const traditionalWeb = serviceIsTraditionalWeb(valueNode)
-  if (!traditionalWeb && !hasImage && !hasBuild) {
+  lintServiceSource(name, valueNode, knownSourceIds, lineCounter, issues)
+
+  const hostNative = serviceIsHostNative(valueNode)
+  const railpackBuilt = serviceIsRailpackBuilt(valueNode)
+  if (!hostNative && !railpackBuilt && !hasImage && !hasBuild) {
     issues.push({
       level: 'error',
       message: `Service "${name}" must define "image" or "build"`,
@@ -502,6 +612,7 @@ function lintServices(
   servicesKeyLine: number | undefined,
   lineCounter: LineCounter,
   layer: 'base' | 'overlay',
+  knownSourceIds: ReadonlySet<string> | undefined,
   issues: ComposeLintIssue[],
 ): void {
   if (isTaggedNode(servicesNode)) {
@@ -538,6 +649,7 @@ function lintServices(
       nodeLine(item.key as Node, lineCounter),
       lineCounter,
       layer,
+      knownSourceIds,
       issues,
     )
   }
@@ -547,6 +659,7 @@ function lintTopLevel(
   root: YAMLMap,
   lineCounter: LineCounter,
   layer: 'base' | 'overlay',
+  knownSourceIds: ReadonlySet<string> | undefined,
   issues: ComposeLintIssue[],
 ): void {
   let servicesItem: (typeof root.items)[number] | null = null
@@ -589,6 +702,7 @@ function lintTopLevel(
     nodeLine(servicesItem.key as Node, lineCounter),
     lineCounter,
     layer,
+    knownSourceIds,
     issues,
   )
 }
@@ -616,6 +730,7 @@ export function lintComposeYaml(
   options?: ComposeLintOptions,
 ): ComposeLintIssue[] {
   const layer = options?.layer ?? 'base'
+  const knownSourceIds = options?.knownSourceIds
   const trimmed = source.trim()
   if (!trimmed) return []
 
@@ -650,7 +765,7 @@ export function lintComposeYaml(
   }
 
   const issues: ComposeLintIssue[] = []
-  lintTopLevel(root, lineCounter, layer, issues)
+  lintTopLevel(root, lineCounter, layer, knownSourceIds, issues)
   return issues.sort(compareLintIssues)
 }
 

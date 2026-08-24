@@ -6,6 +6,7 @@ export const containerSchemas = {
     required: [
       'id',
       'serviceId',
+      'environmentId',
       'serverId',
       'containerName',
       'status',
@@ -18,6 +19,11 @@ export const containerSchemas = {
     properties: {
       id: { type: 'string' },
       serviceId: { type: 'string' },
+      environmentId: {
+        type: 'string',
+        description:
+          "Denormalized `service.environmentId` — lets a client group a project-wide list by environment without a request per environment.",
+      },
       serverId: { type: 'string' },
       containerId: {
         type: 'string',
@@ -136,5 +142,13 @@ listGet.get.parameters.push(
     required: false,
     schema: { type: 'string' },
     description: 'Filter containers linked to an environment',
+  },
+  {
+    name: 'projectId',
+    in: 'query',
+    required: false,
+    schema: { type: 'string' },
+    description:
+      "Filter containers across every environment of a project — one call instead of one per environment",
   },
 )

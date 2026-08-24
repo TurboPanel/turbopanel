@@ -40,6 +40,16 @@ import {
   setPublicUrls,
 } from "./public-urls.ts";
 import {
+  getGithubAppConfigSummary,
+  GithubAppConfigError,
+  setGithubAppConfig,
+} from "../lib/git/github-app-config.ts";
+import {
+  getGitlabOauthConfigSummary,
+  GitlabOauthConfigError,
+  setGitlabOauthConfig,
+} from "../lib/git/gitlab-oauth-config.ts";
+import {
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
   resolveEmailSettings,
@@ -54,6 +64,8 @@ import {
   extractAddresses,
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
+  parseGithubAppUpdates,
+  parseGitlabOauthUpdates,
   parsePayloadBody,
   parseReencryptRequestBody,
   parseSignupEnabledBody,
@@ -193,6 +205,106 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
 
     await setPublicUrls(db, parsed.urls);
     return c.json({ ok: true, urls: parsed.urls, applied: false });
+  });
+
+  // Instance-wide GitHub App credentials. The private key and webhook secret
+  // are sealed as `tpsecret` before persist (see `lib/git/github-app-config.ts`)
+  // and are never returned — GET reports presence only.
+  admin.get("/instance/github-app", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    const config = await getGithubAppConfigSummary(db);
+    return c.json({ ok: true, githubApp: config });
+  });
+
+  admin.put("/instance/github-app", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+    if (!dataEncryptionSecrets) {
+      return c.json({
+        ok: false,
+        error: "Encryption unavailable — no encryption key configured",
+      }, 503);
+    }
+
+    const body = await c.req.json().catch(() => null);
+    const updates = parseGithubAppUpdates(body);
+    if (!updates) {
+      return c.json({
+        ok: false,
+        error:
+          "expected { appId?, appSlug?, clientId?, privateKeyPem?, webhookSecret? }",
+      }, 400);
+    }
+
+    try {
+      await setGithubAppConfig(db, dataEncryptionSecrets, updates);
+    } catch (error) {
+      if (error instanceof GithubAppConfigError) {
+        return c.json({ ok: false, error: error.message }, 400);
+      }
+      throw error;
+    }
+
+    return c.json({ ok: true, githubApp: await getGithubAppConfigSummary(db) });
+  });
+
+  // Instance-wide GitLab OAuth application. The GitLab counterpart of the
+  // GitHub App routes above and the only supported way to turn the GitLab
+  // provider on: `/sources/gitlab/oauth`, repository discovery, and webhook
+  // verification all read this row, and every one of them reports a
+  // configuration error until it exists.
+  //
+  // GitLab has no per-repository App install, so what the operator registers is
+  // one OAuth application (on gitlab.com or their self-managed instance) and
+  // each organization then connects an account or group through it — see
+  // `lib/git/gitlab-oauth-config.ts`. The client secret and the webhook token
+  // are sealed as `tpsecret` before persist and are never returned; GET reports
+  // presence only, exactly like the GitHub App surface.
+  admin.get("/instance/gitlab-oauth", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    const config = await getGitlabOauthConfigSummary(db);
+    return c.json({ ok: true, gitlabOauth: config });
+  });
+
+  admin.put("/instance/gitlab-oauth", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+    if (!dataEncryptionSecrets) {
+      return c.json({
+        ok: false,
+        error: "Encryption unavailable — no encryption key configured",
+      }, 503);
+    }
+
+    const body = await c.req.json().catch(() => null);
+    const updates = parseGitlabOauthUpdates(body);
+    if (!updates) {
+      return c.json({
+        ok: false,
+        error:
+          "expected { clientId?, clientSecret?, baseUrl?, redirectUri?, webhookSecret? }",
+      }, 400);
+    }
+
+    try {
+      await setGitlabOauthConfig(db, dataEncryptionSecrets, updates);
+    } catch (error) {
+      if (error instanceof GitlabOauthConfigError) {
+        return c.json({ ok: false, error: error.message }, 400);
+      }
+      throw error;
+    }
+
+    return c.json({
+      ok: true,
+      gitlabOauth: await getGitlabOauthConfigSummary(db),
+    });
   });
 
   admin.get("/settings/email", async (c) => {

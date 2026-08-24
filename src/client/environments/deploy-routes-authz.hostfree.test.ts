@@ -217,16 +217,37 @@ test('authorizeDeployRequest returns flags when manage is allowed', async () => 
     bodyText: JSON.stringify({
       acknowledgeHealthCheckWarnings: true,
       noCache: true,
+      ref: 'release/1.4',
     }),
   })
   const result = await authorizeDeployRequest(c, db, environmentId)
   assertEquals(result instanceof Response, false)
   assertEquals(result, {
-    userId: 'user-1',
+    actorType: 'user',
+    actorId: 'user-1',
     organizationId,
     acknowledgeHealthCheckWarnings: true,
     noCache: true,
+    selection: { ref: 'release/1.4', commitSha: null, sourceId: null },
   })
+})
+
+test('authorizeDeployRequest rejects an unsafe ref', async () => {
+  const db = buildOrgDb({
+    organizationId,
+    manageAllowed: true,
+    workspaceKind: null,
+  })
+  const c = mockContext({
+    session: { userId: 'user-1' },
+    db,
+    headers: { [ORG_ID_HEADER]: organizationId },
+    bodyText: JSON.stringify({ ref: 'main; rm -rf /' }),
+  })
+  const result = await authorizeDeployRequest(c, db, environmentId)
+  assertEquals(result instanceof Response, true)
+  if (!(result instanceof Response)) return
+  assertEquals(result.status, 400)
 })
 
 test('POST /environments/:id/deploy returns 401 without a session cookie', async () => {
@@ -306,6 +327,90 @@ test('POST /environments/:id/deploy returns 403 when manage is denied', async ()
   })
   assertEquals(res.status, 403)
   assertEquals(await res.json(), { error: 'Forbidden' })
+})
+
+/** Session + manage-allowed doubles for a route-level deploy request. */
+async function buildManageAllowedDeployApp() {
+  const secretsConfig = parseTestSecretsConfig('deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const token = crypto.randomUUID()
+  const userId = crypto.randomUUID()
+  const state = createEmptyMockAuthState()
+  seedMockSession(state, token, {
+    sessionId: crypto.randomUUID(),
+    userId,
+    email: `deploy-ref-${crypto.randomUUID()}@example.com`,
+    role: 'superadmin',
+  })
+  seedMockUser(state, {
+    id: userId,
+    email: `deploy-ref-${crypto.randomUUID()}@example.com`,
+    isDisabled: false,
+    isEmailVerified: true,
+    role: 'superadmin',
+  })
+
+  let executePhase = 0
+  const authDb = createMockAuthDb(state)
+  const db = Object.assign(authDb, {
+    execute: () => {
+      executePhase += 1
+      if (executePhase === 1) {
+        return Promise.resolve([{ organization_id: organizationId }])
+      }
+      if (executePhase === 2) return Promise.resolve([{ allowed: true }])
+      return Promise.resolve([])
+    },
+  }) as unknown as Db
+
+  const signed = await buildSignedCookie(token, secrets)
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    return next()
+  })
+  registerEnvironmentDeployRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
+
+  return (body: unknown) =>
+    app.request(`/environments/${environmentId}/deploy`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}`,
+        [ORG_ID_HEADER]: organizationId,
+      },
+      body: JSON.stringify(body),
+    })
+}
+
+test('POST /environments/:id/deploy refuses a ref it cannot check out', async () => {
+  const request = await buildManageAllowedDeployApp()
+
+  // Accepting this would answer `queued` and deploy the environment's current
+  // state — the requested ref silently ignored — which is the one failure the
+  // caller cannot see. Refuse until the release-engine phase can honor it.
+  const res = await request({ ref: 'release/1.4' })
+  assertEquals(res.status, 501)
+  assertEquals(await res.json(), {
+    error: 'source_ref_unsupported',
+    message:
+      'Deploying an explicit ref is not supported yet; omit `ref` to deploy ' +
+      "the environment's current state.",
+    ref: 'release/1.4',
+  })
+})
+
+test('POST /environments/:id/deploy without a ref passes the source gate', async () => {
+  const request = await buildManageAllowedDeployApp()
+
+  // No ref requested: the gate above is not what stops this one — it gets as far
+  // as the command queue, which this host-free app does not provide.
+  const res = await request({ noCache: true })
+  assertEquals(res.status, 503)
 })
 
 test('deploy stop / lifecycle / preview routes return 401 without a session cookie', async () => {

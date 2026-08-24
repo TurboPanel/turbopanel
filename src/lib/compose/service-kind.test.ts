@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
   collectServiceTurbopanelValidationIssues,
+  isNodeComposeService,
   isTraditionalWebComposeService,
   parseServiceTurbopanelExtension,
   readServiceTurbopanelExtension,
@@ -292,4 +293,204 @@ test('collectServiceTurbopanelValidationIssues rejects overlong description', ()
     issues.some((issue) => issue.path === 'services.api.x-turbopanel.description'),
     true,
   )
+})
+
+const NODE_SOURCE_ID = '11111111-2222-3333-4444-555555555555'
+
+test('serviceKind node parses with its framework and version hints', () => {
+  const parsed = parseServiceTurbopanelExtension({
+    serviceKind: 'node',
+    framework: 'next',
+    nodeVersion: '24.17.0',
+    source: { sourceId: NODE_SOURCE_ID, startCommand: 'node server.js' },
+  })
+  assertEquals(parsed?.serviceKind, 'node')
+  assertEquals(parsed?.framework, 'next')
+  assertEquals(parsed?.nodeVersion, '24.17.0')
+  assertEquals(parsed?.source?.startCommand, 'node server.js')
+})
+
+test('isNodeComposeService distinguishes node from the other kinds', () => {
+  assertEquals(
+    isNodeComposeService({ 'x-turbopanel': { serviceKind: 'node' } }),
+    true,
+  )
+  assertEquals(
+    isNodeComposeService({
+      'x-turbopanel': { serviceKind: 'traditional-web' },
+    }),
+    false,
+  )
+  assertEquals(isNodeComposeService({ image: 'node:24' }), false)
+})
+
+test('a node service without a source is rejected', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    web: { 'x-turbopanel': { serviceKind: 'node' } },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.web.x-turbopanel.source' &&
+      issue.message === 'node services require source'
+    ),
+    true,
+  )
+})
+
+test('image and build are rejected on a node service', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    web: {
+      image: 'node:24',
+      build: '.',
+      'x-turbopanel': {
+        serviceKind: 'node',
+        source: { sourceId: NODE_SOURCE_ID },
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.image'),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.build'),
+    true,
+  )
+})
+
+test('framework and nodeVersion are rejected on non-node kinds', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'node:24',
+      'x-turbopanel': { framework: 'next', nodeVersion: '24' },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.api.x-turbopanel.framework'
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.api.x-turbopanel.nodeVersion'
+    ),
+    true,
+  )
+})
+
+test('an unknown framework or an unpinned nodeVersion is reported', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    web: {
+      'x-turbopanel': {
+        serviceKind: 'node',
+        framework: 'deno',
+        nodeVersion: '^24',
+        source: { sourceId: NODE_SOURCE_ID },
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.web.x-turbopanel.framework'
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.web.x-turbopanel.nodeVersion'
+    ),
+    true,
+  )
+})
+
+test('the linter does not require image or build on a node service', () => {
+  const issues = lintComposeYaml(
+    [
+      'services:',
+      '  web:',
+      '    x-turbopanel:',
+      '      serviceKind: node',
+      '      source:',
+      `        sourceId: ${NODE_SOURCE_ID}`,
+    ].join('\n'),
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.message.includes('must define "image" or "build"')
+    ),
+    false,
+  )
+})
+
+const RAILPACK_SOURCE_ID = "11111111-2222-3333-4444-555555555555"
+
+test("parseServiceSourceExtension keeps a railpack buildKind", () => {
+  const parsed = parseServiceTurbopanelExtension({
+    serviceKind: "container",
+    source: { sourceId: RAILPACK_SOURCE_ID, buildKind: "railpack" },
+  })
+  assertEquals(parsed?.source?.buildKind, "railpack")
+})
+
+test("an unknown buildKind is dropped and reported", () => {
+  const parsed = parseServiceTurbopanelExtension({
+    source: { sourceId: RAILPACK_SOURCE_ID, buildKind: "nixpacks" },
+  })
+  assertEquals(parsed?.source?.buildKind, undefined)
+
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: "nginx",
+      "x-turbopanel": {
+        source: { sourceId: RAILPACK_SOURCE_ID, buildKind: "nixpacks" },
+      },
+    },
+  })
+  assertEquals(
+    issues.map((issue) => issue.path),
+    ["services.api.x-turbopanel.source.buildKind"],
+  )
+})
+
+test("railpack is rejected on a host-native service kind", () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    site: {
+      "x-turbopanel": {
+        serviceKind: "node",
+        source: { sourceId: RAILPACK_SOURCE_ID, buildKind: "railpack" },
+      },
+    },
+  })
+  assertEquals(
+    issues.map((issue) => issue.path),
+    ["services.site.x-turbopanel.source.buildKind"],
+  )
+})
+
+test("railpack is accepted on a container service with no image", () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      "x-turbopanel": {
+        serviceKind: "container",
+        source: { sourceId: RAILPACK_SOURCE_ID, buildKind: "railpack" },
+      },
+    },
+  })
+  assertEquals(issues, [])
+})
+
+test("a railpack container service needs neither image nor build", () => {
+  const source = `services:
+  api:
+    x-turbopanel:
+      serviceKind: container
+      source:
+        sourceId: ${RAILPACK_SOURCE_ID}
+        buildKind: railpack
+`
+  const issues = lintComposeYaml(source).filter((issue) =>
+    issue.message.includes('must define "image"')
+  )
+  assertEquals(issues, [])
 })

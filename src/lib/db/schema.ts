@@ -2056,6 +2056,12 @@ export const binding = pgTable(
  * Org-owned sealed credential for storage (and later other) providers.
  * `secret_envelope` is one `tpsecret` payload of provider-specific JSON.
  * Transfer / NFS / S3 public CRUD is not in this slice.
+ *
+ * `git_deploy_key` is the exception to the JSON rule: its sealed plaintext is
+ * the OpenSSH private key **verbatim**, because deploy-prep reseals the
+ * envelope for the daemon without opening it and the daemon writes what it
+ * decrypts straight to a `0600` identity file. Wrapping it in JSON would mean
+ * one of the two sides had to parse it, and neither does.
  */
 export const credential = pgTable(
   'credential',
@@ -2104,7 +2110,8 @@ export const credential = pgTable(
     }).onDelete('restrict'),
     check(
       'credential_provider_check',
-      sql`provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav')`,
+      sql`provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
+        'git_deploy_key')`,
     ),
   ],
 )
@@ -2351,6 +2358,220 @@ export const mount = pgTable(
       name: 'mount_service_id_service_id_fk',
     }).onDelete('restrict'),
     unique('uniq_mount_service_destination').on(table.serviceId, table.destinationPath),
+  ],
+)
+/**
+ * A Git provider connection granted to one organization.
+ *
+ * Physical table name is the single lower-case word `installation` (repo rule —
+ * see `src/lib/db/table-naming.test.ts`); the exported binding keeps the
+ * fully-qualified `gitProviderInstallation` name used across the codebase.
+ *
+ * **What "installation" means depends on the provider.** For GitHub it is an
+ * App installation and `external_installation_id` is GitHub's numeric id. For
+ * GitLab there is no per-repository install: the operator connects one account
+ * or group over OAuth, and the id is that account/group's GitLab id.
+ *
+ * **No GitHub token columns.** Installation access tokens are minted on demand
+ * from the instance-wide sealed App credentials
+ * (`src/lib/git/github-app-token.ts`) and are never persisted.
+ *
+ * **GitLab is the exception, and `oauth_envelope` is why.** OAuth hands out an
+ * access + refresh pair and rotates the refresh half on every use, so the pair
+ * must be stored or the connection dies at the next deploy. It is held here as
+ * jsonb of `tpsecret` envelopes (never plaintext), scoped to
+ * `provider = 'gitlab'` — see `src/lib/git/gitlab-oauth-token.ts`.
+ */
+export const gitProviderInstallation = pgTable(
+  'installation',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    provider: text().notNull(),
+    /** Provider-side id: a GitHub App installation, or a GitLab account/group. */
+    externalInstallationId: text('external_installation_id').notNull(),
+    accountLogin: varchar('account_login', { length: 255 }),
+    accountType: text('account_type'),
+    /** Set while the provider reports the installation as suspended. */
+    suspendedAt: timestamp('suspended_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
+     * Sealed OAuth token pair for `provider = 'gitlab'` (null for GitHub).
+     *
+     * `{ accessTokenEnvelope, refreshTokenEnvelope, expiresAt, scope }`, where
+     * both envelopes are `tpsecret` strings.
+     */
+    oauthEnvelope: jsonb('oauth_envelope'),
+  },
+  (table) => [
+    index('idx_installation_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'installation_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    check('installation_provider_check', sql`provider IN ('github', 'gitlab')`),
+    unique('uniq_installation_organization_provider_external').on(
+      table.organizationId,
+      table.provider,
+      table.externalInstallationId,
+    ),
+  ],
+)
+/**
+ * A Git repository bound to an organization, optionally scoped to a single
+ * owning `service` **or** `environment` (zero = organization-wide library
+ * entry). Mirrors `storage`'s at-most-one-parent rule.
+ */
+export const source = pgTable(
+  'source',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    /** Provider connection that authorizes clones; null for deploy-key sources. */
+    installationId: uuid('installation_id'),
+    serviceId: uuid('service_id'),
+    environmentId: uuid('environment_id'),
+    /** Deploy key for generic-SSH and deploy-key-authorized GitLab sources. */
+    credentialId: uuid('credential_id'),
+    provider: text().notNull(),
+    repositoryUrl: text('repository_url').notNull(),
+    /** Provider-side repository/project id (numeric, as text) for webhook matching. */
+    repositoryExternalId: text('repository_external_id'),
+    defaultBranch: varchar('default_branch', { length: 255 }),
+    /** Relative checkout subdirectory; same rule as compose `x-turbopanel.root`. */
+    subdirectory: text(),
+    autoDeploy: text('auto_deploy').default('disabled').notNull(),
+  },
+  (table) => [
+    index('idx_source_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_source_installation_id').using(
+      'btree',
+      table.installationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_source_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_source_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_source_credential_id').using(
+      'btree',
+      table.credentialId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'source_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.installationId],
+      foreignColumns: [gitProviderInstallation.id],
+      name: 'source_installation_id_installation_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'source_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'source_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.credentialId],
+      foreignColumns: [credential.id],
+      name: 'source_credential_id_credential_id_fk',
+    }).onDelete('set null'),
+    check('source_provider_check', sql`provider IN ('github', 'gitlab', 'git')`),
+    check(
+      'source_auto_deploy_check',
+      sql`auto_deploy IN ('immediate', 'checks_passed', 'disabled')`,
+    ),
+    check(
+      'source_at_most_one_parent_check',
+      sql`((service_id IS NOT NULL)::int +
+        (environment_id IS NOT NULL)::int) <= 1`,
+    ),
+  ],
+)
+/**
+ * Inbound provider-webhook delivery ledger — replay protection only.
+ *
+ * Physical table name is the single lower-case word `delivery` (repo rule —
+ * see `src/lib/db/table-naming.test.ts`); the exported binding keeps the
+ * fully-qualified `webhookDelivery` name used across the codebase.
+ *
+ * **Deliberately org-agnostic.** A delivery id arrives in the request headers
+ * before the signature has been checked and long before the payload has been
+ * matched to an installation, so there is no organization to scope the row to.
+ * The row holds no payload, no secret, and nothing user-visible: it is the
+ * provider's delivery id plus the moment it was accepted (`createdAt`), so a
+ * redelivered webhook can be answered without re-running its side effects.
+ *
+ * Rows are pruned by the shared maintenance sweep after
+ * `WEBHOOK_DELIVERY_RETENTION_MS` (see `src/lib/db/webhook-delivery-records.ts`)
+ * — GitHub retries a failed delivery for hours, not weeks.
+ */
+export const webhookDelivery = pgTable(
+  'delivery',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    /** Moment the delivery was accepted; doubles as the sweep's age cursor. */
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    provider: text().notNull(),
+    /** Provider-side delivery id (GitHub `X-GitHub-Delivery`; GitLab's event
+     * UUID, else a digest of the body — see `src/lib/git/gitlab-webhook.ts`). */
+    externalDeliveryId: text('external_delivery_id').notNull(),
+    /** Provider event name (`push`, `check_suite`, …) — tracing only. */
+    event: text(),
+  },
+  (table) => [
+    index('idx_delivery_created_at').using('btree', table.createdAt.asc()),
+    check('delivery_provider_check', sql`provider IN ('github', 'gitlab')`),
+    unique('uniq_delivery_provider_external').on(
+      table.provider,
+      table.externalDeliveryId,
+    ),
   ],
 )
 export const grant = pgTable(

@@ -1,17 +1,20 @@
 import { attachWebMetadataToTraditionalSites } from '../../lib/hosting-web-env.ts'
 import { assignTraditionalWebListenPorts } from '../../lib/compose/traditional-web.ts'
+import { assignNativeAppListenPorts } from '../../lib/compose/native-app.ts'
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
+  EnvironmentDeployIngressService,
+  EnvironmentDeployNativeAppService,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTraditionalWebSite,
   EnvironmentLifecycleAction,
 } from '../../lib/commands/schemas.ts'
+import type { DeployPrepareError, PreparedNativeAppService } from './deploy-prepare.ts'
 import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
 } from '../../lib/commands/deploy-validation.ts'
-import type { DeployPrepareError } from './deploy-prepare.ts'
 import type { FabricGateOutcome } from '../../lib/fabric/gate.ts'
 import type { ScheduleErrorCode } from '../../lib/schedule/index.ts'
 
@@ -161,7 +164,12 @@ export function deployMaterialsErrorResponse(
 
 type VariablePrepareError = Extract<
   DeployPrepareError,
-  { kind: 'variable_unresolved' | 'variable_ref_invalid' | 'variable_secret_interpolation' }
+  {
+    kind:
+      | 'variable_unresolved'
+      | 'variable_ref_invalid'
+      | 'variable_secret_interpolation'
+  }
 >
 
 type StorageLocationUnavailableError = Extract<
@@ -254,6 +262,28 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
             `Traditional-web service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
         },
       }
+    case 'source_principal_ambiguous':
+      return {
+        status: 422,
+        body: {
+          error: 'source_principal_ambiguous',
+          composeServiceName: prepared.composeServiceName,
+          message:
+            `Git-backed service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for release ownership.`,
+        },
+      }
+    case 'source_ref_unresolved':
+      return {
+        status: 422,
+        body: {
+          error: 'source_ref_unresolved',
+          composeServiceName: prepared.composeServiceName,
+          sourceId: prepared.sourceId,
+          ref: prepared.ref,
+          message:
+            `Could not resolve a commit for "${prepared.composeServiceName}" (ref "${prepared.ref}"): ${prepared.message}`,
+        },
+      }
     case 'binding_endpoint_unavailable':
       return {
         status: 422,
@@ -280,16 +310,66 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
   }
 }
 
+/** Longest accepted `ref`; matches `SOURCE_BRANCH_MAX_LENGTH` on the source row. */
+export const DEPLOY_REF_MAX_LENGTH = 255
+
+/**
+ * A branch, tag, or commit SHA to deploy.
+ *
+ * An **allowlist**, not a denylist of the characters git forbids (`~ ^ : ? * [
+ * \\`, whitespace, control codes). The value ends up in a checkout, so the safe
+ * direction is to accept only what real ref names actually use and reject
+ * everything else — a denylist has to be complete to be correct, and this one
+ * does not have to be.
+ */
+const DEPLOY_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/+-]*$/
+
+/**
+ * Rejection sentinel for {@link parseDeployRef}.
+ *
+ * A symbol rather than the string `'invalid'`: `invalid` is itself a legal ref (it
+ * matches {@link DEPLOY_REF_RE}), so a string sentinel cannot be told apart
+ * from a branch or tag actually named that.
+ */
+export const DEPLOY_REF_INVALID: unique symbol = Symbol('deploy_ref_invalid')
+
+/**
+ * Parse the optional `ref`. Returns `null` when absent (deploy whatever each
+ * source's own branch resolves to), the trimmed value when valid, or
+ * {@link DEPLOY_REF_INVALID}.
+ */
+export function parseDeployRef(
+  value: unknown,
+): string | null | typeof DEPLOY_REF_INVALID {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string') return DEPLOY_REF_INVALID
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return null
+  if (trimmed.length > DEPLOY_REF_MAX_LENGTH) return DEPLOY_REF_INVALID
+  if (trimmed.startsWith('-') || trimmed.includes('..')) return DEPLOY_REF_INVALID
+  if (!DEPLOY_REF_RE.test(trimmed)) return DEPLOY_REF_INVALID
+  return trimmed
+}
+
 export function parseDeployRequestFlags(
   body: unknown,
-): { acknowledgeHealthCheckWarnings: boolean; noCache: boolean } | 'invalid' {
+):
+  | {
+    acknowledgeHealthCheckWarnings: boolean
+    noCache: boolean
+    ref: string | null
+  }
+  | 'invalid' {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return 'invalid'
   }
   const record = body as Record<string, unknown>
+  const ref = parseDeployRef(record.ref)
+  if (ref === DEPLOY_REF_INVALID) return 'invalid'
   return {
     acknowledgeHealthCheckWarnings: record.acknowledgeHealthCheckWarnings === true,
     noCache: record.noCache === true,
+    ref,
   }
 }
 
@@ -346,14 +426,76 @@ export function preferredListenPortsFromHostings(
 export function buildTraditionalWebSitesForDeploy(
   traditionalWebSites: EnvironmentDeployTraditionalWebSite[],
   hostings: EnvironmentDeployHosting[],
+  used: Set<number> = new Set<number>(),
 ): EnvironmentDeployTraditionalWebSite[] {
   return attachWebMetadataToTraditionalSites(
     assignTraditionalWebListenPorts(
       traditionalWebSites,
       preferredListenPortsFromHostings(hostings),
+      used,
     ),
     hostings,
   )
+}
+
+/**
+ * Release-tree directory segment for one compose service.
+ *
+ * **Must** stay identical to the daemon's `resolveReleaseServiceId`
+ * (`turbopaneld/src/deploy/release/apply-source-releases.ts`): hostings first,
+ * then tcp/udp ingress, then the compose key. The release engine picks the
+ * directory with that rule, so a native app unit whose `WorkingDirectory` were
+ * derived any other way would point at a tree nothing ever published.
+ */
+export function resolveDeployReleaseServiceId(
+  composeServiceName: string,
+  hostings: readonly EnvironmentDeployHosting[],
+  ingressServices: readonly EnvironmentDeployIngressService[],
+): string {
+  for (const hosting of hostings) {
+    if (
+      hosting.composeServiceName === composeServiceName && hosting.serviceId
+    ) {
+      return hosting.serviceId
+    }
+  }
+  for (const ingress of ingressServices) {
+    if (
+      ingress.composeServiceName === composeServiceName && ingress.serviceId
+    ) {
+      return ingress.serviceId
+    }
+  }
+  return composeServiceName
+}
+
+/**
+ * Finalize native app rows for the wire: re-assign loopback ports now that
+ * hosting `targetPort` values are known, and resolve each release-tree
+ * `serviceId`.
+ *
+ * `used` is the **same** ledger `buildTraditionalWebSitesForDeploy` was handed,
+ * so the two loopback lanes cannot be given the same port.
+ */
+export function buildNativeAppServicesForDeploy(
+  nativeAppServices: readonly PreparedNativeAppService[],
+  hostings: EnvironmentDeployHosting[],
+  ingressServices: readonly EnvironmentDeployIngressService[],
+  used: Set<number> = new Set<number>(),
+): EnvironmentDeployNativeAppService[] {
+  if (nativeAppServices.length === 0) return []
+  return assignNativeAppListenPorts(
+    nativeAppServices,
+    preferredListenPortsFromHostings(hostings),
+    used,
+  ).map((app) => ({
+    ...app,
+    serviceId: resolveDeployReleaseServiceId(
+      app.composeServiceName,
+      hostings,
+      ingressServices,
+    ),
+  }))
 }
 
 export type DeployMaterialValidationError = {

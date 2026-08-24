@@ -14,7 +14,10 @@
 import { mergeComposeDocuments } from './merge.ts'
 import { stripComposePlacement } from './placement.ts'
 import { renameComposeVolumes } from './rename-volumes.ts'
-import { isTraditionalWebComposeService } from './service-kind.ts'
+import {
+  isNodeComposeService,
+  isTraditionalWebComposeService,
+} from './service-kind.ts'
 import {
   composeTagOf,
   isComposeTaggedValue,
@@ -82,7 +85,10 @@ export function collectTraditionalWebServiceNames(
     for (const [name, raw] of Object.entries(services)) {
       let body = raw
       if (isComposeTaggedValue(body)) body = body.value
-      if (isPlainObject(body) && isTraditionalWebComposeService(body)) {
+      if (
+        isPlainObject(body) &&
+        (isTraditionalWebComposeService(body) || isNodeComposeService(body))
+      ) {
         names.add(name)
       }
     }
@@ -116,7 +122,10 @@ function selfDetectTraditionalWebNames(services: unknown): Set<string> {
   for (const [name, raw] of Object.entries(services)) {
     let body = raw
     if (isComposeTaggedValue(body)) body = body.value
-    if (isPlainObject(body) && isTraditionalWebComposeService(body)) {
+    if (
+      isPlainObject(body) &&
+      (isTraditionalWebComposeService(body) || isNodeComposeService(body))
+    ) {
       self.add(name)
     }
   }

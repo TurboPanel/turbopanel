@@ -19,6 +19,12 @@ import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
   sweepExpiredCommandDispatch,
 } from './lib/db/command-records.ts'
+import {
+  sweepExpiredWebhookDeliveries,
+  WEBHOOK_DELIVERY_SWEEP_LIMIT,
+} from './lib/db/webhook-delivery-records.ts'
+import { registerGithubWebhookRoutes } from './client/git/github-webhook-routes.ts'
+import { registerGitlabWebhookRoutes } from './client/git/gitlab-webhook-routes.ts'
 import { runSystemReconcileSweep } from './client/system/reconcile.ts'
 import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
@@ -58,6 +64,8 @@ import {
   resolveDaemonContainerLogsRateLimit,
   resolveDaemonMetricsRateLimit,
   resolveDaemonRestRateLimit,
+  resolveGithubWebhookRateLimit,
+  resolveGitlabWebhookRateLimit,
   resolveDaemonWsInboundLimits,
 } from './daemon/rate-limit/redis-rate-limiter.ts'
 import { createDurableAuthRateLimiter } from './client/authn/auth-rate-limit.ts'
@@ -275,6 +283,8 @@ export async function startDenoServer(
   const restRate = resolveDaemonRestRateLimit()
   const metricsRate = resolveDaemonMetricsRateLimit()
   const containerLogsRate = resolveDaemonContainerLogsRateLimit()
+  const githubWebhookRate = resolveGithubWebhookRateLimit()
+  const gitlabWebhookRate = resolveGitlabWebhookRateLimit()
   const inboundLimits = resolveDaemonWsInboundLimits()
   const daemonConnectLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
@@ -297,6 +307,23 @@ export async function startDenoServer(
     client: daemonCellRegistry.client,
     limit: containerLogsRate.limit,
     periodSeconds: containerLogsRate.periodSeconds,
+  })
+  // Inbound GitHub webhooks: keyed per peer address, not per server, because the
+  // caller has no identity until its HMAC has been checked (see
+  // `githubWebhookRateLimitKey`). Fail-open like the daemon limiters — a Redis
+  // hiccup must not start dropping deliveries GitHub will not resend forever.
+  const githubWebhookLimiter = createRedisRateLimiter({
+    client: daemonCellRegistry.client,
+    limit: githubWebhookRate.limit,
+    periodSeconds: githubWebhookRate.periodSeconds,
+  })
+  // GitLab gets its own bucket rather than sharing GitHub's: the two are
+  // independent senders and one flooding must not start dropping the other's
+  // deliveries.
+  const gitlabWebhookLimiter = createRedisRateLimiter({
+    client: daemonCellRegistry.client,
+    limit: gitlabWebhookRate.limit,
+    periodSeconds: gitlabWebhookRate.periodSeconds,
   })
   // Durable, globally-shared client-auth throttle over Redis (same infrastructure
   // as the daemon limiters). Auth uses onError: 'closed' so a Redis hiccup cannot
@@ -368,6 +395,16 @@ export async function startDenoServer(
     metricsLimiter: daemonMetricsLimiter,
     containerLogsLimiter: daemonContainerLogsLimiter,
   })
+  // Unversioned, session-free surface: mounted on the top-level app next to the
+  // daemon API rather than under CLIENT_API_PREFIX, and authenticated by HMAC.
+  registerGithubWebhookRoutes(app, {
+    runtime: 'deno',
+    rateLimiter: githubWebhookLimiter,
+  })
+  registerGitlabWebhookRoutes(app, {
+    runtime: 'deno',
+    rateLimiter: gitlabWebhookLimiter,
+  })
   registerDaemonWebSocket(routes, {
     developerSurface,
     db,
@@ -413,6 +450,13 @@ export async function startDenoServer(
       limit: COMMAND_DISPATCH_SWEEP_LIMIT,
     }).catch((err) => {
       logWarn('daemon-cell', `command dispatch sweep error: ${String(err)}`)
+    })
+    // Workers parity (offline-sweep cron): drop webhook delivery ids past the
+    // replay-protection retention window.
+    void sweepExpiredWebhookDeliveries(db, {
+      limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
+    }).catch((err) => {
+      logWarn('daemon-cell', `webhook delivery sweep error: ${String(err)}`)
     })
     // Workers parity (offline-sweep cron): bounded removal of command
     // transcripts past retention. Object/filesystem only — no db involved.

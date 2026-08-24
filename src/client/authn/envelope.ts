@@ -7,6 +7,7 @@
  * - `tpsession.v<version>.<token>.<sigB64u>` (2 fields) — session cookies
  * - `tpotp.v<version>.<hmacHex>` (1 field) — email OTP verifiers
  * - `tpchallenge.v<version>.<payloadB64u>.<sigB64u>` (2 fields) — daemon challenges
+ * - `tpinstall.v<version>.<payloadB64u>.<sigB64u>` (2 fields) — Git App install state
  *
  * Password hashes deliberately stay PHC Argon2id (not this grammar).
  *
@@ -19,6 +20,7 @@ export const ENVELOPE_SCHEME_DAEMON = "tpdaemon";
 export const ENVELOPE_SCHEME_SESSION = "tpsession";
 export const ENVELOPE_SCHEME_OTP = "tpotp";
 export const ENVELOPE_SCHEME_CHALLENGE = "tpchallenge";
+export const ENVELOPE_SCHEME_INSTALL_STATE = "tpinstall";
 
 export const ENVELOPE_PREFIX_SECRET = `${ENVELOPE_SCHEME_SECRET}.`;
 export const ENVELOPE_PREFIX_DAEMON = `${ENVELOPE_SCHEME_DAEMON}.`;

@@ -15,6 +15,17 @@ export const deploySchemas = {
         description:
           'Cacheless redeploy: rebuild images with `docker compose build --no-cache --pull` before `up`',
       },
+      ref: {
+        type: 'string',
+        maxLength: 255,
+        description:
+          'Branch, tag, or commit SHA to deploy for Git-backed services. Equivalent to what a ' +
+          'push webhook would trigger, for instances GitHub cannot reach. **Not honored yet**: ' +
+          'checking a ref out is the release-engine phase\'s job, so a request that sets this ' +
+          'field is refused with `501 source_ref_unsupported` rather than deploying the ' +
+          "environment's current state under a ref the caller asked for. Omit it to deploy " +
+          'current state.',
+      },
     },
   },
   DeployEnvironmentResponse: {
@@ -438,6 +449,15 @@ export const deployPaths = {
         422: {
           description:
             'Scheduler rejected the plan (`turbofabric_required`, `relay_endpoint_unavailable`, `fabric_segment_pool_exhausted`, `relay_missing`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`, `fabric_reconcile_failed`)',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        501: {
+          description:
+            '`source_ref_unsupported` — the request set `ref`, and this phase cannot check a ref out. Refused rather than silently deploying the current state.',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

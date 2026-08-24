@@ -43,6 +43,7 @@ import {
   isProjectDisplayNameTaken,
   PROJECT_NAME_IN_USE_ERROR,
 } from '../display-name-uniqueness.ts'
+import { loadOrganizationSourceIds } from '../../lib/db/source-records.ts'
 import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
@@ -277,7 +278,8 @@ async function parseCreateProjectInput(
     return c.json({ error: 'Unknown catalog code' }, 400)
   }
 
-  const optionsResult = parseCreateProjectOptions(body)
+  const knownSourceIds = await loadOrganizationSourceIds(db, organizationId)
+  const optionsResult = parseCreateProjectOptions(body, { knownSourceIds })
   if (!optionsResult.ok) {
     if ('issues' in optionsResult) {
       return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
@@ -340,6 +342,7 @@ function parseProjectMoveTarget(
 function parseProjectPatchOptions(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
+  knownSourceIds: ReadonlySet<string>,
 ): Record<string, unknown> | null | Response {
   const optionsResult = parseJsonbField(body, 'options')
   if (optionsResult === 'invalid') {
@@ -347,7 +350,7 @@ function parseProjectPatchOptions(
   }
   if (optionsResult === null) return null
 
-  const normalized = normalizeProjectPatchOptions(optionsResult)
+  const normalized = normalizeProjectPatchOptions(optionsResult, { knownSourceIds })
   if (!normalized.ok) {
     if ('issues' in normalized) {
       return c.json({ error: normalized.error, issues: normalized.issues }, 400)
@@ -369,6 +372,7 @@ function buildProjectPatchFields(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
   moveTarget: string | undefined,
+  knownSourceIds: ReadonlySet<string>,
 ): ProjectPatchFields | Response {
   let patchFields: ProjectPatchFields
   try {
@@ -377,7 +381,7 @@ function buildProjectPatchFields(
     return c.json({ error: 'Invalid request' }, 400)
   }
 
-  const optionsResult = parseProjectPatchOptions(c, body)
+  const optionsResult = parseProjectPatchOptions(c, body, knownSourceIds)
   if (optionsResult instanceof Response) return optionsResult
   if (optionsResult !== null) {
     patchFields.options = optionsResult
@@ -727,7 +731,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const moveTarget = await parseProjectMoveTarget(c, db, body, organizationId)
     if (moveTarget instanceof Response) return moveTarget
 
-    const patchFields = buildProjectPatchFields(c, body, moveTarget)
+    const knownSourceIds = await loadOrganizationSourceIds(db, organizationId)
+    const patchFields = buildProjectPatchFields(c, body, moveTarget, knownSourceIds)
     if (patchFields instanceof Response) return patchFields
 
     if (

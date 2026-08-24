@@ -29,6 +29,7 @@ import {
   planEnvironmentTeardown,
   reclaimDeletedEnvironmentHosts,
 } from './teardown.ts'
+import { loadOrganizationSourceIds } from '../../lib/db/source-records.ts'
 import {
   parseCreateEnvironmentJsonb,
   parseCreateEnvironmentNames,
@@ -93,8 +94,9 @@ function applyEnvironmentOptionsPatch(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
   patchFields: EnvironmentPatchFields,
+  knownSourceIds: ReadonlySet<string>,
 ): Response | undefined {
-  const optionsResult = parseEnvironmentPatchOptions(body)
+  const optionsResult = parseEnvironmentPatchOptions(body, { knownSourceIds })
   if (!optionsResult.ok) {
     if ('issues' in optionsResult) {
       return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
@@ -163,7 +165,8 @@ async function parseCreateEnvironmentInput(
     return c.json({ error: names.error }, names.status)
   }
 
-  const jsonb = parseCreateEnvironmentJsonb(body)
+  const knownSourceIds = await loadOrganizationSourceIds(db, organizationId)
+  const jsonb = parseCreateEnvironmentJsonb(body, { knownSourceIds })
   if (!jsonb.ok) {
     if ('issues' in jsonb) {
       return c.json({ error: jsonb.error, issues: jsonb.issues }, 400)
@@ -335,7 +338,13 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     )
     if (serverIdError) return serverIdError
 
-    const optionsError = applyEnvironmentOptionsPatch(c, body, patchFields)
+    const knownSourceIds = await loadOrganizationSourceIds(db, organizationId)
+    const optionsError = applyEnvironmentOptionsPatch(
+      c,
+      body,
+      patchFields,
+      knownSourceIds,
+    )
     if (optionsError) return optionsError
 
     await db

@@ -20,26 +20,29 @@ import {
 const test = Deno.test.bind(Deno)
 
 const validUuid = '11111111-1111-4111-8111-111111111111'
+const environmentUuid = '22222222-2222-4222-8222-222222222222'
 
-test('serializeContainer exposes role and ordinal', () => {
-  assertEquals(
-    serializeContainer({
-      id: validUuid,
-      serviceId: validUuid,
-      serverId: validUuid,
-      containerId: 'docker-id',
-      containerName: 'c1',
-      status: 'running',
-      role: 'service',
-      composeServiceName: 'web',
-      ordinal: 2,
-      metadata: null,
-      options: null,
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-    }).ordinal,
-    2,
-  )
+test('serializeContainer exposes role, ordinal, and the joined environment', () => {
+  const serialized = serializeContainer({
+    id: validUuid,
+    serviceId: validUuid,
+    environmentId: environmentUuid,
+    serverId: validUuid,
+    containerId: 'docker-id',
+    containerName: 'c1',
+    status: 'running',
+    role: 'service',
+    composeServiceName: 'web',
+    ordinal: 2,
+    metadata: null,
+    options: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  })
+
+  assertEquals(serialized.ordinal, 2)
+  // Clients group a project-wide list by this without a call per environment.
+  assertEquals(serialized.environmentId, environmentUuid)
 })
 
 test('readOptionalPositiveInt floors and rejects non-positive values', () => {

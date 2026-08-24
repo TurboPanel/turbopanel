@@ -40,8 +40,11 @@ import {
   composeDocumentToRuntimeYaml,
   type ComposeLayer,
   emptyContainerComposeYaml,
+  isNodeComposeService,
   isTraditionalWebComposeService,
   mergeComposeLayers,
+  type NativeAppServiceSpec,
+  splitNativeAppServices,
   splitTraditionalWebServices,
   type TraditionalWebSiteSpec,
 } from "../../lib/compose/index.ts";
@@ -100,13 +103,21 @@ import type {
   EnvironmentDeployFabricNetwork,
   EnvironmentDeployHosting,
   EnvironmentDeployIngressService,
+  EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
+  EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployStorageMount,
   EnvironmentDeployTraditionalWebPrincipal,
   EnvironmentDeployTraditionalWebSite,
   EnvironmentDeployVariableMaterial,
 } from "../../lib/commands/schemas.ts";
+import {
+  type DeploySourcePrepareError,
+  type DeployRollbackRequest,
+  type ReleaseIdAllocator,
+  resolveDeploySourceMaterial,
+} from "./deploy-sources.ts";
 import {
   binding,
   environment,
@@ -183,6 +194,7 @@ export type DeployPrepareWarningCode =
   | "health_check_missing"
   | "docker_external_network_unregistered"
   | "traditional_web_principal_ambiguous"
+  | "source_principal_ambiguous"
   | "binding_endpoint_unavailable";
 
 export type DeployPrepareWarning = {
@@ -190,6 +202,77 @@ export type DeployPrepareWarning = {
   message: string;
   details?: Record<string, unknown>;
 };
+
+/**
+ * Which commit a deploy should build, and **which source** that commit belongs
+ * to.
+ *
+ * `ref` is what the caller asked for (a branch, tag, or SHA); `commitSha` is a
+ * SHA a trigger already resolved — the GitHub webhook path knows the pushed head
+ * without asking GitHub again. All three are `null` for a plain "deploy whatever
+ * the environment currently holds" request.
+ *
+ * `sourceId` is what keeps a webhook-supplied `commitSha` from leaking across
+ * repositories. One push event comes from exactly one `source` row, but an
+ * environment may bind several `x-turbopanel.source` services; pinning them all
+ * to that SHA would build the wrong code (or fail outright) for every unrelated
+ * repository or branch in the same environment. Source resolution therefore
+ * applies `commitSha` **only** to the binding whose `sourceId` matches, and
+ * resolves every other binding from its own declared/default ref.
+ *
+ * It lives here, next to {@link prepareDeployCompose}, because prepare is where
+ * source resolution will read it. Callers hand it in rather than resolving it
+ * themselves so the request survives all the way to that point instead of being
+ * dropped at the route boundary.
+ */
+export type DeploySourceSelection = {
+  ref: string | null;
+  commitSha: string | null;
+  /**
+   * `source.id` the trigger fired for, or `null` when the request names no
+   * single source (the manual `POST /environments/:id/deploy` path). A
+   * `commitSha` with no `sourceId` matches nothing and is therefore ignored.
+   */
+  sourceId: string | null;
+};
+
+/**
+ * Can this phase actually build a **requested ref**?
+ *
+ * Still no, and the constant says so out loud instead of leaving every call
+ * site to assume it. {@link prepareDeployCompose} now does resolve
+ * `x-turbopanel.source` into `sourceMaterial[]`, and it honors
+ * {@link DeploySourceSelection.commitSha} — the webhook path already knows the
+ * pushed head, so pinning it costs nothing. What it does **not** honor is
+ * `ref`: the commit each service builds comes from the compose-declared
+ * `source.branch` (else the source's default branch), never from an arbitrary
+ * ref named on the request. A caller that must not silently deploy the
+ * declared branch therefore checks this first and refuses — `POST
+ * /environments/:id/deploy` does. This flips in one place when ref-directed
+ * deploys land.
+ */
+export const PREPARE_HONORS_SOURCE_SELECTION = false;
+
+/**
+ * Re-exported here because the rollback route builds one and hands it straight
+ * to {@link prepareDeployCompose} — the same way the deploy route hands over a
+ * {@link DeploySourceSelection}.
+ */
+export type { DeployRollbackRequest };
+
+/**
+ * Re-exported here because the deploy route creates the allocator *before* the
+ * per-server prepare loop and hands the same instance to every
+ * {@link prepareDeployCompose} call in that fan-out.
+ */
+export { createReleaseIdAllocator } from "./deploy-sources.ts";
+export type { ReleaseIdAllocator };
+
+/** A native app row before its release-tree `serviceId` is resolved. */
+export type PreparedNativeAppService = Omit<
+  EnvironmentDeployNativeAppService,
+  "serviceId"
+>;
 
 export type PreparedDeployCompose = {
   /**
@@ -210,6 +293,23 @@ export type PreparedDeployCompose = {
   storageMaterial: EnvironmentDeployStorageMaterial[];
   principalMaterial: EnvironmentDeployPrincipalMaterial[];
   traditionalWebSites: EnvironmentDeployTraditionalWebSite[];
+  /**
+   * Host-supervised native apps (`serviceKind: node`) scheduled on this server.
+   *
+   * `serviceId` is deliberately absent: the release-tree segment is resolved
+   * from `hostings[]` / `ingressServices[]` at payload-assembly time
+   * (`buildNativeAppServicesForDeploy`), with the same precedence the daemon's
+   * `resolveReleaseServiceId` uses — deriving it twice from different inputs
+   * would let the unit's WorkingDirectory point at a tree the release engine
+   * never published.
+   */
+  nativeAppServices: PreparedNativeAppService[];
+  /**
+   * Git-backed releases resolved from `x-turbopanel.source` (one per compose
+   * service carrying the binding, scheduled on this server). Empty in preview
+   * mode for the credential — see `deploy-sources.ts`.
+   */
+  sourceMaterial: EnvironmentDeploySource[];
   /** External Docker network names declared in compose — must be registered on the server. */
   dockerExternalNetworks: string[];
   /**
@@ -238,6 +338,15 @@ export type PreparedDeployCompose = {
   volumes: RegisteredComposeVolume[];
   /** Soft prepare issues (preview mode); empty for deploy. */
   warnings: DeployPrepareWarning[];
+  /**
+   * The {@link DeploySourceSelection} this prepare ran for, when one was given.
+   *
+   * Carried through rather than consumed: see
+   * {@link PREPARE_HONORS_SOURCE_SELECTION}. Echoing it keeps the requested
+   * commit attached to the prepared result, so the release-engine phase reads it
+   * from the same object it already reads compose material from.
+   */
+  sourceSelection?: DeploySourceSelection;
   /** Non-secret Compose project `.env` next to compose.yaml. */
   envFile?: string;
   /** File-only secret mounts (no plaintext). */
@@ -254,6 +363,14 @@ export type DeployPrepareError =
   | { kind: "datacenter_ip_required"; serverId: string }
   | { kind: "docker_external_network_unregistered"; names: string[] }
   | { kind: "traditional_web_principal_ambiguous"; composeServiceName: string }
+  | { kind: "source_principal_ambiguous"; composeServiceName: string }
+  | {
+    kind: "source_ref_unresolved";
+    composeServiceName: string;
+    sourceId: string;
+    ref: string;
+    message: string;
+  }
   | { kind: "binding_endpoint_unavailable" }
   | {
     kind: "variable_unresolved";
@@ -316,6 +433,8 @@ async function emptyPreparedCompose(
     storageMaterial: [],
     principalMaterial: [],
     traditionalWebSites: [],
+    nativeAppServices: [],
+    sourceMaterial: [],
     dockerExternalNetworks: [],
     fabricNetworks: [],
     managedNetworkServices: [],
@@ -329,6 +448,13 @@ async function emptyPreparedCompose(
 
 type HardDeployPrepareError =
   | { kind: "datacenter_ip_required"; serverId: string }
+  | {
+    kind: "source_ref_unresolved";
+    composeServiceName: string;
+    sourceId: string;
+    ref: string;
+    message: string;
+  }
   | {
     kind: "variable_unresolved";
     message: string;
@@ -396,6 +522,13 @@ function warningFromPrepareError(
         code: "traditional_web_principal_ambiguous",
         message:
           `Traditional-web service "${error.composeServiceName}" has more than one project principal assigned.`,
+        details: { composeServiceName: error.composeServiceName },
+      };
+    case "source_principal_ambiguous":
+      return {
+        code: "source_principal_ambiguous",
+        message:
+          `Git-backed service "${error.composeServiceName}" has more than one project principal assigned.`,
         details: { composeServiceName: error.composeServiceName },
       };
     case "binding_endpoint_unavailable":
@@ -1130,7 +1263,15 @@ function listContainerComposeNames(document: ComposeDocument): Set<string> {
     : {};
   const names = new Set<string>();
   for (const [name, raw] of Object.entries(services)) {
-    if (isPlainObject(raw) && isTraditionalWebComposeService(raw)) continue;
+    if (!isPlainObject(raw)) {
+      names.add(name);
+      continue;
+    }
+    // Host-native kinds never become containers, so they must not claim a
+    // container allocation, a replica count, or a container_name.
+    if (isTraditionalWebComposeService(raw) || isNodeComposeService(raw)) {
+      continue;
+    }
     names.add(name);
   }
   return names;
@@ -1224,6 +1365,14 @@ function absorbSoftPrepareError(
     return null;
   }
   return error;
+}
+
+/** Merged `services:` mapping, or `{}` when the document has none. */
+function composeServicesRecord(
+  document: ComposeDocument,
+): Record<string, unknown> {
+  if (!isPlainObject(document.data.services)) return {};
+  return document.data.services as Record<string, unknown>;
 }
 
 function listComposeServiceKeys(document: ComposeDocument): string[] {
@@ -1338,6 +1487,79 @@ function localManagedNetworkServiceNames(
     return [...boundLogicalNames];
   }
   return boundLogicalNames.filter((name) => !remoteHostsByService.has(name));
+}
+
+/**
+ * Effective (most restrictive) org ∩ server ceiling for one account.
+ *
+ * The per-principal systemd slice is generated from this, so a per-app
+ * `CPUQuota` can never add up to more than the account is entitled to. Absent
+ * fields stay absent — an unset limit means "no slice directive", not zero.
+ */
+function effectiveAccountLimits(
+  orgOptions: unknown,
+  serverOptions: unknown,
+): EnvironmentDeployNativeAppService["accountLimits"] | undefined {
+  const orgLimits = parseResourceLimits(
+    isPlainObject(orgOptions) ? orgOptions.resourceLimits : null,
+  ) ?? {};
+  const serverLimits = parseResourceLimits(
+    isPlainObject(serverOptions) ? serverOptions.resourceLimits : null,
+  ) ?? {};
+  const pick = (a?: number, b?: number): number | undefined => {
+    if (a === undefined) return b;
+    if (b === undefined) return a;
+    return Math.min(a, b);
+  };
+  const cpus = pick(orgLimits.maxCpus, serverLimits.maxCpus);
+  const memoryBytes = pick(
+    orgLimits.maxMemoryBytes,
+    serverLimits.maxMemoryBytes,
+  );
+  if (cpus === undefined && memoryBytes === undefined) return undefined;
+  return {
+    ...(cpus === undefined ? {} : { cpus }),
+    ...(memoryBytes === undefined ? {} : { memoryBytes }),
+  };
+}
+
+/**
+ * Attach per-app and per-account resource ceilings to the split native apps.
+ *
+ * Per-app values come from the same clamped service options the compose
+ * `deploy.resources` path already uses, so a `node` app and a container service
+ * are limited from one source of truth.
+ */
+function nativeAppServicesForDeploy(
+  apps: readonly NativeAppServiceSpec[],
+  optionsByComposeName: ServiceOptionsByComposeName,
+  orgOptions: unknown,
+  serverOptions: unknown,
+): PreparedNativeAppService[] {
+  if (apps.length === 0) return [];
+  const accountLimits = effectiveAccountLimits(orgOptions, serverOptions);
+  return apps.map((app) => {
+    const resources = optionsByComposeName.get(app.composeServiceName)
+      ?.resources;
+    const cpus = resources?.cpus;
+    const memoryBytes = resources?.memoryBytes;
+    const perApp = cpus === undefined && memoryBytes === undefined
+      ? undefined
+      : {
+        ...(cpus === undefined ? {} : { cpus }),
+        ...(memoryBytes === undefined ? {} : { memoryBytes }),
+      };
+    return {
+      composeServiceName: app.composeServiceName,
+      listenPort: app.listenPort,
+      framework: app.framework,
+      ...(app.nodeVersion === undefined
+        ? {}
+        : { nodeVersion: app.nodeVersion }),
+      ...(perApp === undefined ? {} : { resources: perApp }),
+      ...(accountLimits === undefined ? {} : { accountLimits }),
+    };
+  });
 }
 
 function resourceLimitPrepareError(
@@ -1573,6 +1795,19 @@ type BindingMaterializationOutcome =
   | { kind: "error"; error: DeployPrepareError };
 
 /**
+ * Apply a classified binding outcome: warnings are collected, an error is
+ * handed back for the caller to return. `null` means nothing to report.
+ */
+function absorbBindingOutcome(
+  warnings: DeployPrepareWarning[],
+  outcome: BindingMaterializationOutcome,
+): DeployPrepareError | null {
+  if (outcome.kind === "error") return outcome.error;
+  if (outcome.kind === "warn") warnings.push(outcome.warning);
+  return null;
+}
+
+/**
  * Re-materialize service bindings and classify the outcome so the caller
  * stays a flat sequence of early returns / warning pushes.
  */
@@ -1631,6 +1866,69 @@ function resolveTraditionalWebSitesForMode(
     return fallbackSites.map((site) => ({ ...site }));
   }
   return sitesOrError;
+}
+
+/**
+ * Fold the source-material stage's outcome into the mode's error policy.
+ *
+ * `source_principal_ambiguous` is soft (preview warns and drops the pin, the
+ * same way ambiguous traditional-web ownership does). `source_ref_unresolved`
+ * is hard in both modes: a release the control plane cannot pin to a commit is
+ * not something to preview around.
+ */
+function resolveSourceMaterialForMode(
+  mode: DeployPrepareMode,
+  warnings: DeployPrepareWarning[],
+  resolved: EnvironmentDeploySource[] | DeploySourcePrepareError,
+): EnvironmentDeploySource[] | DeployPrepareError {
+  if (Array.isArray(resolved)) return resolved;
+  if (resolved.kind === "source_principal_ambiguous" && mode === "preview") {
+    warnings.push(warningFromPrepareError(resolved));
+    return [];
+  }
+  return resolved;
+}
+
+/**
+ * Git-backed releases for one prepare: resolve every `x-turbopanel.source`
+ * binding on the *merged* document (a source may sit on a container or on a
+ * traditional-web service) into clone material + a pinned commit + an allocated
+ * release id, then keep only the entries scheduled onto this server.
+ */
+async function prepareLocalSourceMaterial(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: DeployPrepareMode;
+    warnings: DeployPrepareWarning[];
+    params: Parameters<typeof prepareDeployCompose>[2];
+    merged: ComposeDocument;
+    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>;
+    principalMaterial: readonly EnvironmentDeployPrincipalMaterial[];
+    localServiceNames?: ReadonlySet<string>;
+  },
+): Promise<EnvironmentDeploySource[] | DeployPrepareError | Response> {
+  const { params } = args;
+  const resolved = await resolveDeploySourceMaterial(c, db, {
+    mode: args.mode,
+    organizationId: params.organizationId,
+    environmentId: params.environmentId,
+    serverId: params.serverId,
+    services: composeServicesRecord(args.merged),
+    serviceRows: args.serviceRows,
+    principalMaterial: args.principalMaterial,
+    ...(params.sourceSelection === undefined
+      ? {}
+      : { sourceSelection: params.sourceSelection }),
+    ...(params.rollback === undefined ? {} : { rollback: params.rollback }),
+    ...(params.releaseIds === undefined
+      ? {}
+      : { releaseIds: params.releaseIds }),
+  });
+  if (resolved instanceof Response) return resolved;
+  const forMode = resolveSourceMaterialForMode(args.mode, args.warnings, resolved);
+  if (!Array.isArray(forMode)) return forMode;
+  return sitesOnScheduledServer(forMode, args.localServiceNames);
 }
 
 async function externalNetworkPrepareError(
@@ -1738,6 +2036,59 @@ function ownsIngressForService(
   );
 }
 
+/**
+ * Deploy identity = compiled runtime YAML **plus** the commit each Git-backed
+ * service will build, in stable `composeServiceName` order.
+ *
+ * Without the commits a redeploy whose compose is unchanged but whose source
+ * moved forward would hash identically to the last deploy and be skipped as a
+ * no-op; with them, an unchanged commit stays a genuine no-op. Deploys with no
+ * `sourceMaterial[]` hash exactly as before, so upgrading the instance does not
+ * invalidate every already-applied `desiredHash`.
+ */
+async function deployDesiredHash(
+  composeYaml: string,
+  sourceMaterial: readonly EnvironmentDeploySource[],
+  nativeAppServices: readonly PreparedNativeAppService[] = [],
+): Promise<string> {
+  const parts: string[] = [];
+  if (sourceMaterial.length > 0) {
+    parts.push(
+      [...sourceMaterial]
+        .sort((a, b) =>
+          a.composeServiceName.localeCompare(b.composeServiceName)
+        )
+        // A rollback re-promotes an *existing* release of a commit this
+        // environment may already have deployed, so the commit alone would hash
+        // identically to that earlier deploy and could be taken for a no-op.
+        // The release id is what actually differs, so it participates.
+        .map((entry) =>
+          `${entry.composeServiceName}=${entry.commitSha}` +
+          (entry.rollbackToReleaseId ? `@${entry.rollbackToReleaseId}` : "")
+        )
+        .join("\n"),
+    );
+  }
+  // The resolved loopback port participates for the same reason the commit
+  // does: a native app whose port moved is a different desired state even
+  // though its compose body and commit are byte-identical, and the generated
+  // systemd unit would otherwise never be re-rendered.
+  if (nativeAppServices.length > 0) {
+    parts.push(
+      [...nativeAppServices]
+        .sort((a, b) =>
+          a.composeServiceName.localeCompare(b.composeServiceName)
+        )
+        .map((app) =>
+          `${app.composeServiceName}=${app.framework}:${app.listenPort}`
+        )
+        .join("\n"),
+    );
+  }
+  if (parts.length === 0) return await sha256HexUtf8(composeYaml);
+  return await sha256HexUtf8([composeYaml, ...parts].join("\n"));
+}
+
 async function toPreparedDeployResult(
   mode: DeployPrepareMode,
   parts: {
@@ -1748,6 +2099,8 @@ async function toPreparedDeployResult(
     storageMaterial: EnvironmentDeployStorageMaterial[];
     principalMaterial: EnvironmentDeployPrincipalMaterial[];
     traditionalWebSites: EnvironmentDeployTraditionalWebSite[];
+    nativeAppServices: PreparedNativeAppService[];
+    sourceMaterial: EnvironmentDeploySource[];
     dockerExternalNetworks: string[];
     fabricNetworks?: readonly EnvironmentDeployFabricNetwork[];
     managedNetworkServices: string[];
@@ -1759,19 +2112,26 @@ async function toPreparedDeployResult(
     replicaCounts: Record<string, number>;
     envFile?: string;
     secretPlan?: DeploySecretPlanEntry[];
+    sourceSelection?: DeploySourceSelection;
   },
 ): Promise<PreparedDeployCompose> {
   const omitSecrets = mode === "preview";
   return {
     composeYaml: parts.composeYaml,
     composeFiles: parts.composeFiles,
-    desiredHash: await sha256HexUtf8(parts.composeYaml),
+    desiredHash: await deployDesiredHash(
+      parts.composeYaml,
+      parts.sourceMaterial,
+      parts.nativeAppServices,
+    ),
     replicaCounts: parts.replicaCounts,
     hooks: parts.hooks,
     variableMaterial: omitSecrets ? [] : parts.variableMaterial,
     storageMaterial: omitSecrets ? [] : parts.storageMaterial,
     principalMaterial: parts.principalMaterial,
     traditionalWebSites: parts.traditionalWebSites,
+    nativeAppServices: parts.nativeAppServices,
+    sourceMaterial: parts.sourceMaterial,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     fabricNetworks: parts.fabricNetworks ? [...parts.fabricNetworks] : [],
     managedNetworkServices: parts.managedNetworkServices,
@@ -1782,6 +2142,9 @@ async function toPreparedDeployResult(
     warnings: parts.warnings,
     ...(parts.envFile !== undefined ? { envFile: parts.envFile } : {}),
     ...(parts.secretPlan !== undefined ? { secretPlan: parts.secretPlan } : {}),
+    ...(parts.sourceSelection === undefined
+      ? {}
+      : { sourceSelection: parts.sourceSelection }),
   };
 }
 
@@ -1841,6 +2204,11 @@ function compileRuntimeOptionsForServer(
   return options;
 }
 
+/** Runtime YAML for the container document — the empty stanza when it has no services. */
+function runtimeComposeYamlOrEmpty(document: ComposeDocument): string {
+  return composeDocumentToRuntimeYaml(document) || emptyContainerComposeYaml();
+}
+
 function sitesOnScheduledServer<T extends { composeServiceName: string }>(
   sites: readonly T[],
   localNames?: ReadonlySet<string>,
@@ -1879,6 +2247,32 @@ export async function prepareDeployCompose(
     mode?: DeployPrepareMode;
     /** When set, compile and allocate from the scheduler plan instead of YAML expansion. */
     schedule?: DeployScheduleSlice;
+    /**
+     * Commit the caller asked to build. Threaded in from the deploy route and
+     * the webhook trigger so the request reaches the layer that will resolve it;
+     * this phase only carries it (see {@link PREPARE_HONORS_SOURCE_SELECTION}).
+     */
+    sourceSelection?: DeploySourceSelection;
+    /**
+     * Roll one Git-backed service back to an already-published release.
+     *
+     * Everything else about the prepare is unchanged — same compose, same
+     * placement, same principals, same hostings — because a rollback *is* a
+     * deploy of the current environment that promotes existing releases instead
+     * of building new ones. Only `sourceMaterial[]` differs: every Git-backed
+     * service is pinned to a release it already has (see `deploy-sources.ts`
+     * for why the whole set, not just the one being undone).
+     */
+    rollback?: DeployRollbackRequest;
+    /**
+     * Release ids allocated once for the whole deploy, shared by every server.
+     *
+     * Prepare runs once per participating server, so without this each host
+     * would mint its own id for the same logical release and no single id would
+     * describe the environment's release — see {@link ReleaseIdAllocator}.
+     * Omitted by preview, which resolves one host in isolation.
+     */
+    releaseIds?: ReleaseIdAllocator;
   },
 ): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
   const mode = params.mode ?? "deploy";
@@ -1936,8 +2330,8 @@ export async function prepareDeployCompose(
     serviceRows.map((r) => r.id),
     mode,
   );
-  if (bindingOutcome.kind === "error") return bindingOutcome.error;
-  if (bindingOutcome.kind === "warn") warnings.push(bindingOutcome.warning);
+  const bindingErr = absorbBindingOutcome(warnings, bindingOutcome);
+  if (bindingErr) return bindingErr;
 
   const pipeline = await allocateExpandDeployPipeline(db, {
     environmentId: params.environmentId,
@@ -2057,13 +2451,18 @@ export async function prepareDeployCompose(
     ...storagePrincipalIds,
   ]);
 
-  const split = splitTraditionalWebFromDocument(withServiceOptions.document);
-  // Drop traditional-web hooks — they are not Docker compose services.
+  const split = splitHostNativeFromDocument(withServiceOptions.document);
+  // Drop host-native hooks — neither traditional-web sites nor native apps are
+  // Docker compose services, so a compose-scoped hook has nothing to run in.
   const traditionalNames = new Set(
     split.sites.map((site) => site.composeServiceName),
   );
+  const hostNativeNames = new Set([
+    ...traditionalNames,
+    ...split.nativeApps.map((app) => app.composeServiceName),
+  ]);
   const hooks = withServiceOptions.hooks.filter(
-    (hook) => !traditionalNames.has(hook.composeServiceName),
+    (hook) => !hostNativeNames.has(hook.composeServiceName),
   );
 
   const traditionalResolved = resolveTraditionalWebSitesForMode(
@@ -2084,6 +2483,27 @@ export async function prepareDeployCompose(
     pipeline.localServiceNames,
   );
 
+  const localNativeApps = sitesOnScheduledServer(
+    nativeAppServicesForDeploy(
+      split.nativeApps,
+      pipeline.optionsByComposeName,
+      orgRow?.options,
+      serverRow?.options,
+    ),
+    pipeline.localServiceNames,
+  );
+
+  const localSourceMaterial = await prepareLocalSourceMaterial(c, db, {
+    mode,
+    warnings,
+    params,
+    merged,
+    serviceRows,
+    principalMaterial,
+    localServiceNames: pipeline.localServiceNames,
+  });
+  if (!Array.isArray(localSourceMaterial)) return localSourceMaterial;
+
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(
     split.composeYaml,
   );
@@ -2099,16 +2519,16 @@ export async function prepareDeployCompose(
   );
   if (networkErr) return networkErr;
 
-  // Traditional-web sites are host-native (stripped from `composeYaml` above)
-  // and never join a Docker network — exclude them even if a binding was
-  // somehow attached to one.
+  // Traditional-web sites and native `node` apps are host-native (stripped from
+  // `composeYaml` above) and never join a Docker network — exclude them even if
+  // a binding was somehow attached to one.
   const boundNames = (
     await resolveManagedNetworkComposeServiceNames(
       db,
       serviceRows,
       pipeline.expansion,
     )
-  ).filter((name) => !traditionalNames.has(name));
+  ).filter((name) => !hostNativeNames.has(name));
   const managedLogicalNames = localManagedNetworkServiceNames(
     boundNames,
     params.schedule?.managedIngressHostsByService,
@@ -2137,8 +2557,7 @@ export async function prepareDeployCompose(
     managedLogicalNames,
     expansion,
   );
-  const composeYaml = composeDocumentToRuntimeYaml(compiled.document) ||
-    emptyContainerComposeYaml();
+  const composeYaml = runtimeComposeYamlOrEmpty(compiled.document);
   const composeFiles = renderRuntimeComposeFiles(composeYaml);
 
   return await toPreparedDeployResult(mode, {
@@ -2149,6 +2568,8 @@ export async function prepareDeployCompose(
     storageMaterial,
     principalMaterial,
     traditionalWebSites: localTraditional,
+    nativeAppServices: localNativeApps,
+    sourceMaterial: localSourceMaterial,
     dockerExternalNetworks,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),
     managedNetworkServices,
@@ -2160,6 +2581,7 @@ export async function prepareDeployCompose(
     replicaCounts: replicaCountsFromMap(pipeline.localReplicaCounts),
     envFile: withVariables.envFileContent,
     secretPlan: withVariables.secretPlan,
+    sourceSelection: params.sourceSelection,
   });
 }
 
@@ -2230,16 +2652,36 @@ function toTraditionalWebPrincipal(
   };
 }
 
-function splitTraditionalWebFromDocument(document: ComposeDocument): {
+/**
+ * Strip every **host-native** service out of the Docker document: traditional-web
+ * sites and `serviceKind: node` apps alike.
+ *
+ * Both lanes end up behind hosting Caddy on a loopback port, so they allocate
+ * out of **one** `usedPorts` ledger — a site and an app handed the same port
+ * would leave whichever bound second dead with no diagnostic anywhere near the
+ * cause.
+ */
+function splitHostNativeFromDocument(document: ComposeDocument): {
   composeYaml: string;
   /** Post-split / pruned container document (same body as `composeYaml`). */
   containerDocument: ComposeDocument;
   sites: TraditionalWebSiteSpec[];
+  nativeApps: NativeAppServiceSpec[];
 } {
   const services = isPlainObject(document.data.services)
     ? (document.data.services as Record<string, unknown>)
     : {};
-  const { containerServices, sites } = splitTraditionalWebServices(services);
+  const usedPorts = new Set<number>();
+  const traditional = splitTraditionalWebServices(
+    services,
+    new Map(),
+    usedPorts,
+  );
+  const sites = traditional.sites;
+  const { containerServices, apps: nativeApps } = splitNativeAppServices(
+    traditional.containerServices,
+    usedPorts,
+  );
 
   if (Object.keys(containerServices).length === 0) {
     const emptyDocument: ComposeDocument = {
@@ -2251,6 +2693,7 @@ function splitTraditionalWebFromDocument(document: ComposeDocument): {
       composeYaml: emptyContainerComposeYaml(),
       containerDocument: emptyDocument,
       sites,
+      nativeApps,
     };
   }
 
@@ -2280,6 +2723,7 @@ function splitTraditionalWebFromDocument(document: ComposeDocument): {
     composeYaml: composeDocumentToRuntimeYaml(containerDocument),
     containerDocument,
     sites,
+    nativeApps,
   };
 }
 
@@ -2368,10 +2812,11 @@ export {
   listComposeServiceKeys,
   listContainerComposeNames,
   localManagedNetworkServiceNames,
+  nativeAppServicesForDeploy,
   resolveTraditionalWebSitesForMode,
   resourceLimitPrepareError,
   sitesOnScheduledServer,
-  splitTraditionalWebFromDocument,
+  splitHostNativeFromDocument,
   stripReservedKeysFromEntries,
   toApplyVariablesPrepareError,
   toPreparedDeployResult,

@@ -38,6 +38,12 @@ export type ComposeValidateOptions = {
    * unchanged). Overlay prepares later phases can pass `layer: 'overlay'`.
    */
   layer?: 'base' | 'overlay'
+  /**
+   * Source ids visible to the caller's organization, forwarded to the linter so
+   * `x-turbopanel.source.sourceId` can be checked. Omitted by callers that
+   * cannot reach the database — the check is then skipped, not failed.
+   */
+  knownSourceIds?: ReadonlySet<string>
 }
 
 /**
@@ -59,6 +65,7 @@ export function validateComposeDocument(
   options?: ComposeValidateOptions,
 ): ComposeValidationResult {
   const layer = options?.layer ?? 'base'
+  const knownSourceIds = options?.knownSourceIds
 
   if (value == null) {
     return { ok: true, document: emptyComposeDocument() }
@@ -109,7 +116,7 @@ export function validateComposeDocument(
   }
 
   const lintIssues = blockingComposeLintIssues(
-    lintComposeYaml(composeDocumentToYaml(document), { layer }),
+    lintComposeYaml(composeDocumentToYaml(document), { layer, knownSourceIds }),
   )
   if (lintIssues.length > 0) {
     return {

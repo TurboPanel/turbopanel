@@ -13,6 +13,8 @@ import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry
 import { runOfflineSweep } from './daemon/cell/offline-sweep.ts'
 import { registerAdminRoutes } from './admin/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
+import { registerGithubWebhookRoutes } from './client/git/github-webhook-routes.ts'
+import { registerGitlabWebhookRoutes } from './client/git/gitlab-webhook-routes.ts'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
@@ -55,9 +57,13 @@ import {
   resolveWorkersClientAuthRateLimiter,
   resolveWorkersDaemonRateLimiters,
   resolveWorkersDb,
+  resolveWorkersGithubWebhookRateLimiter,
+  resolveWorkersGitlabWebhookRateLimiter,
   warnIfCachedHyperdriveMissing,
   warnIfClientAuthRateLimiterMissing,
   warnIfDaemonRateLimitersMissing,
+  warnIfGithubWebhookRateLimiterMissing,
+  warnIfGitlabWebhookRateLimiterMissing,
 } from './workers-bindings.ts'
 import { endDbConnection, type createWorkersDb } from './db.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
@@ -173,6 +179,8 @@ async function initWorkerApp(env: CloudflareBindings) {
   })
   warnIfDaemonRateLimitersMissing(env)
   warnIfClientAuthRateLimiterMissing(env)
+  warnIfGithubWebhookRateLimiterMissing(env)
+  warnIfGitlabWebhookRateLimiterMissing(env)
   cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env)
   const rateLimiters = resolveWorkersDaemonRateLimiters(env)
   // Daemon registrars are generic over the env — the app's `AppEnv` carries
@@ -189,6 +197,17 @@ async function initWorkerApp(env: CloudflareBindings) {
   registerWorkersDaemonWebSocket(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     connectLimiter: rateLimiters.connect,
+  })
+  // Unversioned, session-free surface: mounted on the top-level app rather than
+  // under CLIENT_API_PREFIX, and authenticated by HMAC (see
+  // `src/client/git/AGENTS.md`).
+  registerGithubWebhookRoutes(cachedApp, {
+    runtime: 'workers',
+    rateLimiter: resolveWorkersGithubWebhookRateLimiter(env),
+  })
+  registerGitlabWebhookRoutes(cachedApp, {
+    runtime: 'workers',
+    rateLimiter: resolveWorkersGitlabWebhookRateLimiter(env),
   })
   registerAdminRoutes(cachedApp, {
     secrets: cachedSessionSecrets!,

@@ -90,14 +90,20 @@ export type SplitTraditionalWebResult = {
  * Partition compose `services` into Docker containers vs traditional-web sites.
  *
  * `preferredListenPortByService` comes from hosting `targetPort` when set.
+ *
+ * `usedPorts` is the caller's loopback-port ledger. Traditional-web vhosts and
+ * native `node` apps both listen on 127.0.0.1 and are both reverse-proxied by
+ * hosting Caddy, so the two lanes must allocate out of **one** set or a site
+ * and an app can be handed the same port. Callers that split both kinds pass
+ * the same set to `splitNativeAppServices` (`native-app.ts`).
  */
 export function splitTraditionalWebServices(
   services: Record<string, unknown>,
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
+  usedPorts: Set<number> = new Set<number>(),
 ): SplitTraditionalWebResult {
   const containerServices: Record<string, unknown> = {}
   const sites: TraditionalWebSiteSpec[] = []
-  const usedPorts = new Set<number>()
 
   const names = Object.keys(services).sort((a, b) => a.localeCompare(b))
   for (const name of names) {
@@ -144,12 +150,16 @@ export function emptyContainerComposeYaml(): string {
 /**
  * Re-assign listen ports after hosting `targetPort` values are known.
  * Preserves engine/root; returns a new array sorted by compose service name.
+ *
+ * `used` is shared with the native-app allocator for the same reason
+ * {@link splitTraditionalWebServices} shares it — one loopback ledger per
+ * deploy, not one per lane.
  */
 export function assignTraditionalWebListenPorts(
   sites: readonly TraditionalWebSiteSpec[],
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
+  used: Set<number> = new Set<number>(),
 ): TraditionalWebSiteSpec[] {
-  const used = new Set<number>()
   const sorted = [...sites].sort((a, b) =>
     a.composeServiceName.localeCompare(b.composeServiceName)
   )

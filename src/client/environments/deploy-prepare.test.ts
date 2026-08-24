@@ -45,7 +45,7 @@ import {
   resolveTraditionalWebSitesForMode,
   resourceLimitPrepareError,
   sitesOnScheduledServer,
-  splitTraditionalWebFromDocument,
+  splitHostNativeFromDocument,
   stripReservedKeysFromEntries,
   toApplyVariablesPrepareError,
   toPreparedDeployResult,
@@ -1297,7 +1297,7 @@ describe("compose list/split/expansion helpers", () => {
       },
       presentation: { keyOrder: ["services", "networks"], comments: {} },
     });
-    const split = splitTraditionalWebFromDocument(sitesOnly);
+    const split = splitHostNativeFromDocument(sitesOnly);
     assertEquals(split.composeYaml, "services: {}\n");
     assertEquals(split.sites.length, 1);
     assertEquals(split.sites[0]?.engine, "apache");
@@ -1328,7 +1328,7 @@ describe("compose list/split/expansion helpers", () => {
       },
       presentation: { keyOrder: ["services", "networks"], comments: {} },
     });
-    const split = splitTraditionalWebFromDocument(mixed);
+    const split = splitHostNativeFromDocument(mixed);
     assertEquals(split.composeYaml.includes("nginx:latest"), true);
     assertEquals(split.composeYaml.includes("traditional-web"), false);
     assertEquals(split.composeYaml.includes("tw-only"), false);
@@ -1482,6 +1482,8 @@ describe("resolveTraditionalWebSitesForMode and toPreparedDeployResult", () => {
       }],
       principalMaterial: [],
       traditionalWebSites: [],
+      nativeAppServices: [],
+      sourceMaterial: [],
       dockerExternalNetworks: [],
       managedNetworkServices: [],
       containers: [],
@@ -1526,6 +1528,8 @@ describe("resolveTraditionalWebSitesForMode and toPreparedDeployResult", () => {
       }],
       principalMaterial: [],
       traditionalWebSites: [],
+      nativeAppServices: [],
+      sourceMaterial: [],
       dockerExternalNetworks: ["edge"],
       managedNetworkServices: [],
       containers: [],
@@ -1594,6 +1598,8 @@ describe("resolveTraditionalWebSitesForMode and toPreparedDeployResult", () => {
       storageMaterial: [],
       principalMaterial: [],
       traditionalWebSites: [],
+      nativeAppServices: [],
+      sourceMaterial: [],
       dockerExternalNetworks: [],
       managedNetworkServices: [],
       containers: [],
@@ -1706,10 +1712,10 @@ describe("attachPrincipalsToTraditionalWebSites edge cases", () => {
   });
 });
 
-describe("splitTraditionalWebFromDocument without networks key", () => {
+describe("splitHostNativeFromDocument without networks key", () => {
   it("keeps container yaml when traditional-web is absent", () => {
     const doc = assertComposeDocument(WEB_API_COMPOSE);
-    const split = splitTraditionalWebFromDocument(doc);
+    const split = splitHostNativeFromDocument(doc);
     assertEquals(split.sites.length, 0);
     assertEquals(split.composeYaml.includes("nginx:latest"), true);
     assertEquals(split.composeYaml.includes("node:22"), true);

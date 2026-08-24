@@ -20,6 +20,8 @@ import {
   network,
   datacenter,
   ip,
+  gitProviderInstallation,
+  source,
 } from '../../lib/db/schema.ts'
 import {
   isGrantablePermissionKey,
@@ -214,6 +216,22 @@ export async function verifyEntityExists(
         .select({ id: storage.id })
         .from(storage)
         .where(eq(storage.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'source': {
+      const rows = await db
+        .select({ id: source.id })
+        .from(source)
+        .where(eq(source.id, entityId))
+        .limit(1)
+      return rows.length > 0
+    }
+    case 'gitProviderInstallation': {
+      const rows = await db
+        .select({ id: gitProviderInstallation.id })
+        .from(gitProviderInstallation)
+        .where(eq(gitProviderInstallation.id, entityId))
         .limit(1)
       return rows.length > 0
     }
@@ -487,6 +505,22 @@ export async function resolveEntityOrganizationId(
         .select({ organizationId: ip.organizationId })
         .from(ip)
         .where(eq(ip.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'source': {
+      const rows = await db
+        .select({ organizationId: source.organizationId })
+        .from(source)
+        .where(eq(source.id, entityId))
+        .limit(1)
+      return rows[0]?.organizationId ?? null
+    }
+    case 'gitProviderInstallation': {
+      const rows = await db
+        .select({ organizationId: gitProviderInstallation.organizationId })
+        .from(gitProviderInstallation)
+        .where(eq(gitProviderInstallation.id, entityId))
         .limit(1)
       return rows[0]?.organizationId ?? null
     }

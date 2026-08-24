@@ -1,41 +1,41 @@
 export {
+  type ComposeComment,
+  type ComposeDocument,
+  type ComposeEditorView,
+  type ComposePresentation,
   emptyComposeDocument,
   isBlankComposeData,
   isComposeDocument,
   isComposeEditorView,
   normalizeCompose,
   pruneBlankComposeData,
-  type ComposeComment,
-  type ComposeDocument,
-  type ComposeEditorView,
-  type ComposePresentation,
 } from './types.ts'
 export {
-  ComposeParseError,
   composeDocumentToRuntimeYaml,
   composeDocumentToYaml,
+  ComposeParseError,
   yamlToComposeDocument,
 } from './convert.ts'
 export { mergeComposeDocuments, mergeComposeOverlay } from './merge.ts'
 export {
   COMPOSE_CUSTOM_TAGS,
   COMPOSE_TAG_KEY,
+  type ComposeTaggedValue,
+  type ComposeTagName,
   composeTagOf,
   isComposeTaggedValue,
   makeComposeTag,
   resolveComposeTags,
   unwrapComposeTag,
-  type ComposeTagName,
-  type ComposeTaggedValue,
 } from './tags.ts'
 export {
   collectTraditionalWebServiceNames,
+  type ComposeLayer,
+  type ComposeLayerRole,
   mergeComposeLayers,
   renameComposeVolumesInLayer,
   stripComposePlacementFromLayer,
   stripTraditionalWebServicesFromLayer,
-  type ComposeLayer,
-  type ComposeLayerRole,
 } from './layers.ts'
 export { stripComposeTurbopanelExtensions } from './extensions.ts'
 export { renameComposeVolumes } from './rename-volumes.ts'
@@ -46,7 +46,7 @@ export {
   type CompileRuntimeOptions,
   type CompileRuntimeResult,
 } from './compile-runtime.ts'
-export { sha256HexUtf8, SHA256_HEX_RE } from './desired-hash.ts'
+export { SHA256_HEX_RE, sha256HexUtf8 } from './desired-hash.ts'
 export {
   collectComposeExternalDockerNetworkNames,
   collectServiceComposeNetworkKeys,
@@ -56,70 +56,88 @@ export {
 export {
   applyValidatedComposeOption,
   assertComposeDocument,
+  type ComposeValidateOptions,
+  type ComposeValidationIssue,
+  type ComposeValidationResult,
   stripComposePlacementOption,
   stripProjectComposePlacementOption,
   validateComposeDocument,
-  type ComposeValidationIssue,
-  type ComposeValidationResult,
 } from './validate.ts'
 export {
   blockingComposeLintIssues,
-  lintComposeYaml,
   type ComposeLintIssue,
   type ComposeLintLevel,
+  type ComposeLintOptions,
+  lintComposeYaml,
 } from './lint.ts'
 export {
   applyComposePlacement,
+  type ComposeTurbopanelExtension,
   isPlacementServerId,
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
-  type ComposeTurbopanelExtension,
 } from './placement.ts'
 export {
   collectServiceTurbopanelValidationIssues,
-  isTraditionalWebComposeService,
-  parseServiceTurbopanelExtension,
-  readServiceTurbopanelExtension,
-  TURBOPANEL_SERVICE_EXTENSION_KEY,
   type ComposeServiceKind,
+  type ComposeServiceSourceExtension,
   type ComposeServiceTurbopanelExtension,
+  type ComposeSourceBuildKind,
+  isHostNativeServiceKind,
+  isNodeComposeService,
+  isSafeRoot,
+  isTraditionalWebComposeService,
+  type NativeRuntimeFramework,
+  parseServiceSourceExtension,
+  parseServiceTurbopanelExtension,
+  readServiceSourceExtension,
+  readServiceTurbopanelExtension,
+  SOURCE_BRANCH_MAX_LENGTH,
+  SOURCE_COMMAND_MAX_LENGTH,
+  type SourceIdResolver,
   type TraditionalWebEngine,
+  TURBOPANEL_SERVICE_EXTENSION_KEY,
 } from './service-kind.ts'
+export {
+  assignNativeAppListenPorts,
+  NATIVE_APP_DEFAULT_FRAMEWORK,
+  type NativeAppServiceSpec,
+  type SplitNativeAppResult,
+  splitNativeAppServices,
+} from './native-app.ts'
 export {
   allocateTraditionalWebListenPort,
   assignTraditionalWebListenPorts,
   emptyContainerComposeYaml,
   isSafeTraditionalWebRoot,
-  splitTraditionalWebServices,
   type SplitTraditionalWebResult,
+  splitTraditionalWebServices,
   type TraditionalWebSiteSpec,
 } from './traditional-web.ts'
 export {
-  applyVariablesToComposeDocument,
-  escapeLiteralComposeValue,
-  trimVariableValue,
-  isApplyVariablesError,
   type ApplyVariablesError,
   type ApplyVariablesResult,
+  applyVariablesToComposeDocument,
   type DeployVariableEntry,
   type DeployVariableMaterial,
+  escapeLiteralComposeValue,
+  isApplyVariablesError,
+  trimVariableValue,
 } from './apply-variables.ts'
+export { type DeploySecretPlanEntry } from './secret-files.ts'
 export {
-  type DeploySecretPlanEntry,
-} from './secret-files.ts'
-export {
-  parseExactVariableRef,
   type ParsedVariableRef,
+  parseExactVariableRef,
   type VariableRefScope,
 } from './variable-refs.ts'
 export {
   applyResourcesToComposeService,
+  type ApplyServiceOptionsResult,
   applyServiceOptionsToComposeDocument,
   buildServiceOptionsMap,
   collectHealthCheckWarnings,
-  serviceHasComposeHealthCheck,
-  type ApplyServiceOptionsResult,
   type HealthCheckWarning,
   type ServiceDeployHook,
+  serviceHasComposeHealthCheck,
   type ServiceOptionsByComposeName,
 } from './apply-service-options.ts'

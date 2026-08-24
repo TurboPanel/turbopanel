@@ -20,6 +20,8 @@ export type ContainerRouteValidationError = {
 export type ContainerRow = {
   id: string
   serviceId: string
+  /** Denormalized from `service.environmentId` so clients can group by scope. */
+  environmentId: string
   serverId: string
   containerId: string | null
   containerName: string
@@ -37,6 +39,7 @@ export function serializeContainer(row: ContainerRow) {
   return {
     id: row.id,
     serviceId: row.serviceId,
+    environmentId: row.environmentId,
     serverId: row.serverId,
     containerId: row.containerId,
     containerName: row.containerName,

@@ -55,7 +55,8 @@
       }
     ]
   },
-  // Daemon WS-upgrade / REST / metrics / container-log rate limits — distinct namespace_ids per env (account-global counters).
+  // Daemon WS-upgrade / REST / metrics / container-log rate limits, plus the
+  // inbound GitHub webhook throttle — distinct namespace_ids per env (account-global counters).
   "ratelimits": [
     {
       "name": "DAEMON_CONNECT_RATE_LIMITER",
@@ -85,6 +86,20 @@
       "name": "CONTAINER_LOGS_RATE_LIMITER",
       "namespace_id": "1005",
       "simple": { "limit": 60, "period": 60 }
+    },
+    {
+      // Inbound GitHub webhooks. Keyed per peer address (the caller has no
+      // identity until its HMAC is verified), sized for a real delivery burst.
+      "name": "GITHUB_WEBHOOK_RATE_LIMITER",
+      "namespace_id": "1006",
+      "simple": { "limit": 120, "period": 60 }
+    },
+    {
+      // Inbound GitLab webhooks. Its own bucket, so a pipeline-hook flood from
+      // one provider cannot start dropping the other's deliveries.
+      "name": "GITLAB_WEBHOOK_RATE_LIMITER",
+      "namespace_id": "1007",
+      "simple": { "limit": 120, "period": 60 }
     }
   ],
   // Offline sweep (see src/daemon/cell/offline-sweep.ts) — 1 minute is Cloudflare's
@@ -206,6 +221,16 @@
           "name": "CONTAINER_LOGS_RATE_LIMITER",
           "namespace_id": "2005",
           "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "GITHUB_WEBHOOK_RATE_LIMITER",
+          "namespace_id": "2006",
+          "simple": { "limit": 120, "period": 60 }
+        },
+        {
+          "name": "GITLAB_WEBHOOK_RATE_LIMITER",
+          "namespace_id": "2007",
+          "simple": { "limit": 120, "period": 60 }
         }
       ],
       "triggers": { "crons": ["* * * * *"] },
@@ -329,6 +354,16 @@
           "name": "CONTAINER_LOGS_RATE_LIMITER",
           "namespace_id": "3005",
           "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "GITHUB_WEBHOOK_RATE_LIMITER",
+          "namespace_id": "3006",
+          "simple": { "limit": 120, "period": 60 }
+        },
+        {
+          "name": "GITLAB_WEBHOOK_RATE_LIMITER",
+          "namespace_id": "3007",
+          "simple": { "limit": 120, "period": 60 }
         }
       ],
       "triggers": { "crons": ["* * * * *"] },

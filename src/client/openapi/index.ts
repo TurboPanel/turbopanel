@@ -19,6 +19,7 @@ import { variablePaths, variableSchemas } from './variables.ts'
 import { bindingPaths, bindingSchemas } from './bindings.ts'
 import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
+import { sourcePaths, sourceSchemas } from './sources.ts'
 import { principalPaths, principalSchemas } from './principals.ts'
 import { deployPaths, deploySchemas } from './deploy.ts'
 import { managedPaths, managedSchemas } from './managed.ts'
@@ -67,6 +68,11 @@ export function getClientOpenApiSpec(
           'Managed-database principal → compose-service credential bindings (materialized variables)',
       },
       { name: 'Storage', description: 'Volumes, bind mounts, and file storage' },
+      {
+        name: 'Sources',
+        description:
+          'Git repository bindings and Git provider App installations',
+      },
       { name: 'Principals', description: 'Project runtime principals' },
       { name: 'Resource limits', description: 'Organization and server deploy quotas' },
       { name: 'Services', description: 'Service CRUD' },
@@ -86,7 +92,7 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Bindings', 'Storage', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
+      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Bindings', 'Storage', 'Sources', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
       { name: 'Infrastructure', tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'] },
       { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
@@ -114,6 +120,7 @@ export function getClientOpenApiSpec(
         ...variableSchemas,
         ...bindingSchemas,
         ...storageSchemas,
+        ...sourceSchemas,
         ...principalSchemas,
         ...deploySchemas,
         ...managedSchemas,
@@ -141,6 +148,7 @@ export function getClientOpenApiSpec(
       ...variablePaths,
       ...bindingPaths,
       ...storagePaths,
+      ...sourcePaths,
       ...principalPaths,
       ...deployPaths,
       ...managedPaths,

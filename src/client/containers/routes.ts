@@ -6,7 +6,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { container, server, service } from '../../lib/db/schema.ts'
+import { container, environment, server, service } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -24,9 +24,15 @@ import {
   serializeContainer,
 } from './routes-helpers.ts'
 
+/**
+ * Joined through `service` so every serialized container carries the
+ * environment it belongs to — clients group by environment and would otherwise
+ * need one request per environment to work it out.
+ */
 const CONTAINER_SELECT = {
   id: container.id,
   serviceId: container.serviceId,
+  environmentId: service.environmentId,
   serverId: container.serverId,
   containerId: container.containerId,
   containerName: container.containerName,
@@ -64,6 +70,7 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const serverId = c.req.query('serverId')
     const status = c.req.query('status')
     const environmentId = c.req.query('environmentId')
+    const projectId = c.req.query('projectId')
 
     const visibleIds = await listVisible(db, {
       kind: 'container',
@@ -85,12 +92,16 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     if (status) {
       conditions.push(eq(container.status, status))
     }
+    // `service` is already joined, so both scope filters read straight off it.
     if (environmentId) {
+      conditions.push(eq(service.environmentId, environmentId))
+    }
+    if (projectId) {
       conditions.push(
         inArray(
-          container.serviceId,
-          db.select({ id: service.id }).from(service).where(
-            eq(service.environmentId, environmentId),
+          service.environmentId,
+          db.select({ id: environment.id }).from(environment).where(
+            eq(environment.projectId, projectId),
           ),
         ),
       )
@@ -99,6 +110,7 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const rows = await db
       .select(CONTAINER_SELECT)
       .from(container)
+      .innerJoin(service, eq(container.serviceId, service.id))
       .where(and(...conditions))
       .orderBy(container.createdAt)
 
@@ -125,6 +137,7 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const rows = await db
       .select(CONTAINER_SELECT)
       .from(container)
+      .innerJoin(service, eq(container.serviceId, service.id))
       .where(eq(container.id, id))
       .limit(1)
 

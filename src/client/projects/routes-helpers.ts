@@ -1,6 +1,7 @@
 import {
   applyValidatedComposeOption,
   stripProjectComposePlacementOption,
+  type ComposeValidateOptions,
   type ComposeValidationIssue,
 } from '../../lib/compose/index.ts'
 import { isPlacementServerId } from '../../lib/compose/placement.ts'
@@ -129,6 +130,7 @@ export function parseCreateProjectNames(
 
 export function parseCreateProjectOptions(
   body: Record<string, unknown>,
+  validateOptions?: ComposeValidateOptions,
 ):
   | { ok: true; options: Record<string, unknown> | null }
   | ProjectComposeValidationError
@@ -137,7 +139,7 @@ export function parseCreateProjectOptions(
   if (optionsResult === 'invalid') {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
-  const createComposeOption = applyValidatedComposeOption(optionsResult)
+  const createComposeOption = applyValidatedComposeOption(optionsResult, validateOptions)
   if (!createComposeOption.ok) {
     return {
       ok: false,
@@ -200,11 +202,12 @@ export function parseCreateProjectServerIdField(
 
 export function normalizeProjectPatchOptions(
   optionsResult: Record<string, unknown>,
+  validateOptions?: ComposeValidateOptions,
 ):
   | { ok: true; options: Record<string, unknown> }
   | ProjectComposeValidationError
   | ProjectRouteValidationError {
-  const composeOption = applyValidatedComposeOption(optionsResult)
+  const composeOption = applyValidatedComposeOption(optionsResult, validateOptions)
   if (!composeOption.ok) {
     return {
       ok: false,
@@ -240,6 +243,7 @@ export function normalizeProjectPatchOptions(
 
 export function parseProjectPatchOptionsBody(
   body: Record<string, unknown>,
+  validateOptions?: ComposeValidateOptions,
 ):
   | { ok: true; options: Record<string, unknown> | null }
   | ProjectComposeValidationError
@@ -251,7 +255,7 @@ export function parseProjectPatchOptionsBody(
   if (optionsResult === null) {
     return { ok: true, options: null }
   }
-  return normalizeProjectPatchOptions(optionsResult)
+  return normalizeProjectPatchOptions(optionsResult, validateOptions)
 }
 
 export function assertDefaultServerIdShape(

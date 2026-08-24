@@ -1,8 +1,9 @@
 import {
   applyValidatedComposeOption,
+  type ComposeValidateOptions,
+  type ComposeValidationIssue,
   isPlacementServerId,
   stripComposePlacementOption,
-  type ComposeValidationIssue,
 } from '../../lib/compose/index.ts'
 import {
   parseDescription,
@@ -92,6 +93,7 @@ export function stripEnvironmentPromotedMetadata(
 
 export function parseCreateEnvironmentJsonb(
   body: Record<string, unknown>,
+  validateOptions?: ComposeValidateOptions,
 ):
   | {
     ok: true
@@ -104,7 +106,10 @@ export function parseCreateEnvironmentJsonb(
   if (optionsResult === 'invalid') {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
-  const composeOption = applyValidatedComposeOption(optionsResult)
+  const composeOption = applyValidatedComposeOption(
+    optionsResult,
+    validateOptions,
+  )
   if (!composeOption.ok) {
     return {
       ok: false,
@@ -166,6 +171,7 @@ export function parseEnvironmentPatchMetadata(
 
 export function parseEnvironmentPatchOptions(
   body: Record<string, unknown>,
+  validateOptions?: ComposeValidateOptions,
 ):
   | { ok: true; options: Record<string, unknown> | null | 'absent' }
   | EnvironmentComposeValidationError
@@ -178,7 +184,10 @@ export function parseEnvironmentPatchOptions(
     return { ok: true, options: 'absent' }
   }
 
-  const composeOption = applyValidatedComposeOption(optionsResult)
+  const composeOption = applyValidatedComposeOption(
+    optionsResult,
+    validateOptions,
+  )
   if (!composeOption.ok) {
     return {
       ok: false,

@@ -48,7 +48,14 @@ function isPrivateOrLoopbackIpv4(octets: number[]): boolean {
   return false
 }
 
-function isLoopbackOrPrivateHostname(hostname: string): boolean {
+/**
+ * True when the hostname resolves inside the operator's own network — loopback,
+ * RFC1918 / link-local IPv4, unique-local or link-local IPv6, or a reserved LAN
+ * TLD. Shared with `src/lib/git/webhook-reachability.ts`, which needs the same
+ * question answered for a different reason: a host the public internet cannot
+ * route to is a host GitHub cannot deliver a webhook to.
+ */
+export function isLoopbackOrPrivateHostname(hostname: string): boolean {
   const host = stripIpv6Brackets(hostname).toLowerCase()
   if (!host) return true
   if (host === 'localhost' || host.endsWith('.localhost')) return true

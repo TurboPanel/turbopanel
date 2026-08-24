@@ -7,21 +7,24 @@ import type { DeployPrepareError } from './deploy-prepare.ts'
 import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
+  buildNativeAppServicesForDeploy,
   buildTraditionalWebSitesForDeploy,
   composeProjectName,
+  DEPLOY_REF_INVALID,
   deployMaterialsErrorResponse,
   deployPreviewServerLabel,
   expandHostingsForComposeInstances,
   fabricGateErrorResponse,
   hostingsNeedSharedHttpIngress,
   mapPrepareErrorResponse,
+  parseDeployRef,
   parseDeployRequestFlags,
   parseLifecycleAction,
   preferredListenPortsFromHostings,
   queuedCommandsResponseBody,
-  readHostnames,
   readHostingPorts,
   readHostingProtocol,
+  readHostnames,
   readPathPrefix,
   readTargetPort,
   scheduleErrorResponse,
@@ -178,14 +181,51 @@ test('parseDeployRequestFlags defaults flags to false', () => {
   assertEquals(parseDeployRequestFlags({}), {
     acknowledgeHealthCheckWarnings: false,
     noCache: false,
+    ref: null,
   })
-  assertEquals(parseDeployRequestFlags({
+  assertEquals(
+    parseDeployRequestFlags({
     acknowledgeHealthCheckWarnings: true,
     noCache: true,
-  }), {
+    }),
+    {
     acknowledgeHealthCheckWarnings: true,
     noCache: true,
+      ref: null,
+    },
+  )
+})
+
+test('parseDeployRequestFlags accepts a ref and rejects unsafe ones', () => {
+  assertEquals(parseDeployRequestFlags({ ref: '  main  ' }), {
+    acknowledgeHealthCheckWarnings: false,
+    noCache: false,
+    ref: 'main',
   })
+  assertEquals(parseDeployRequestFlags({ ref: '' }), {
+    acknowledgeHealthCheckWarnings: false,
+    noCache: false,
+    ref: null,
+  })
+  assertEquals(parseDeployRequestFlags({ ref: 'feature/a-b_1' }), {
+    acknowledgeHealthCheckWarnings: false,
+    noCache: false,
+    ref: 'feature/a-b_1',
+  })
+  assertEquals(parseDeployRequestFlags({ ref: 'main; rm -rf /' }), 'invalid')
+  assertEquals(parseDeployRequestFlags({ ref: 'refs/heads/..' }), 'invalid')
+  assertEquals(parseDeployRequestFlags({ ref: '--upload-pack=x' }), 'invalid')
+  assertEquals(parseDeployRequestFlags({ ref: 42 }), 'invalid')
+})
+
+test('parseDeployRef normalizes absent and blank values to null', () => {
+  assertEquals(parseDeployRef(undefined), null)
+  assertEquals(parseDeployRef(null), null)
+  assertEquals(parseDeployRef('   '), null)
+  assertEquals(parseDeployRef('v1.2.3'), 'v1.2.3')
+  assertEquals(parseDeployRef('a'.repeat(256)), DEPLOY_REF_INVALID)
+  // `invalid` is a legal ref name, and must not read as the rejection sentinel.
+  assertEquals(parseDeployRef('invalid'), 'invalid')
 })
 
 test('parseLifecycleAction accepts start stop restart only', () => {
@@ -470,4 +510,58 @@ test('buildDeployPreviewServers emits per-host blocks when split', () => {
     { name: 'au1', services: ['web'] },
     { name: 'bravo.lan', services: ['api'] },
   ])
+})
+
+test('native app rows resolve the release serviceId from hostings', () => {
+  const apps = buildNativeAppServicesForDeploy(
+    [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
+    [{
+      hostingId: 'h1',
+      serviceId: 'svc-web',
+      composeServiceName: 'web',
+      hostnames: ['app.example.com'],
+    }],
+    [],
+  )
+  assertEquals(apps[0]?.serviceId, 'svc-web')
+})
+
+test('a native app with no hosting or ingress falls back to the compose key', () => {
+  // Same precedence the daemon's resolveReleaseServiceId uses — a worker that
+  // publishes nothing still needs a stable release-tree segment.
+  const apps = buildNativeAppServicesForDeploy(
+    [{ composeServiceName: 'worker', framework: 'auto', listenPort: 0 }],
+    [],
+    [],
+  )
+  assertEquals(apps[0]?.serviceId, 'worker')
+})
+
+test('a native app never gets the port a traditional-web site already took', () => {
+  const used = new Set<number>()
+  const hostings = [{
+    hostingId: 'h1',
+    serviceId: 'svc-site',
+    composeServiceName: 'static',
+    hostnames: ['site.example.com'],
+    targetPort: 18080,
+  }]
+  const sites = buildTraditionalWebSitesForDeploy(
+    [{
+      composeServiceName: 'static',
+      engine: 'nginx' as const,
+      root: 'public',
+      listenPort: 0,
+    }],
+    hostings,
+    used,
+  )
+  const apps = buildNativeAppServicesForDeploy(
+    [{ composeServiceName: 'web', framework: 'auto', listenPort: 0 }],
+    hostings,
+    [],
+    used,
+  )
+  assertEquals(sites[0]?.listenPort, 18080)
+  assertEquals(apps[0]?.listenPort === sites[0]?.listenPort, false)
 })

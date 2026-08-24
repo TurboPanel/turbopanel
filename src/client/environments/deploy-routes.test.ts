@@ -185,6 +185,8 @@ function stubPreparedDeployCompose(
     storageMaterial: [],
     principalMaterial: [],
     traditionalWebSites: [],
+    nativeAppServices: [],
+    sourceMaterial: [],
     dockerExternalNetworks: [],
     fabricNetworks: [],
     managedNetworkServices,

@@ -580,3 +580,127 @@ test('GET /containers?environmentId= does not leak containers the caller cannot 
     }
   })
 })
+
+test('GET /containers?projectId= spans the project environments and stamps environmentId', async () => {
+  await withContainerFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+    serviceId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+
+    const [projectRow] = await db
+      .select({ workspaceId: project.workspaceId })
+      .from(project)
+      .where(eq(project.id, projectId))
+      .limit(1)
+    const workspaceId = projectRow!.workspaceId
+
+    // A second environment of the SAME project — the project filter must span it.
+    const [secondEnv] = await db
+      .insert(environment)
+      .values({ name: 'Second Env', projectId })
+      .returning({ id: environment.id })
+    const secondEnvironmentId = secondEnv!.id
+    const [secondService] = await db
+      .insert(service)
+      .values({
+        name: 'worker',
+        composeServiceName: 'worker',
+        environmentId: secondEnvironmentId,
+      })
+      .returning({ id: service.id })
+    const secondServiceId = secondService!.id
+
+    // A different project in the same org — must stay out of the response.
+    const [otherProject] = await db
+      .insert(project)
+      .values({ name: 'Other Container Route Project', workspaceId })
+      .returning({ id: project.id })
+    const otherProjectId = otherProject!.id
+    const [otherEnv] = await db
+      .insert(environment)
+      .values({ name: 'Other Project Env', projectId: otherProjectId })
+      .returning({ id: environment.id })
+    const otherEnvironmentId = otherEnv!.id
+    const [otherService] = await db
+      .insert(service)
+      .values({
+        name: 'api',
+        composeServiceName: 'api',
+        environmentId: otherEnvironmentId,
+      })
+      .returning({ id: service.id })
+    const otherServiceId = otherService!.id
+
+    const createContainer = async (
+      targetServiceId: string,
+      containerName: string,
+      composeServiceName: string,
+    ): Promise<string> => {
+      const res = await app.request('/containers', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          serviceId: targetServiceId,
+          serverId,
+          containerId: `ctr-${crypto.randomUUID()}`,
+          containerName,
+          status: 'running',
+          composeServiceName,
+        }),
+      })
+      assertEquals(res.status, 200)
+      const body = await res.json() as { ok: true; id: string }
+      return body.id
+    }
+
+    try {
+      const firstId = await createContainer(serviceId, 'web-1', 'web')
+      const secondId = await createContainer(
+        secondServiceId,
+        'worker-1',
+        'worker',
+      )
+      await createContainer(otherServiceId, 'api-1', 'api')
+
+      const listRes = await app.request(`/containers?projectId=${projectId}`, {
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+      assertEquals(listRes.status, 200)
+      const listBody = await listRes.json() as {
+        containers: Array<{ id: string; environmentId: string }>
+      }
+      assertEquals(listBody.containers.length, 2)
+
+      const environmentById = new Map(
+        listBody.containers.map((row) => [row.id, row.environmentId]),
+      )
+      assertEquals(environmentById.get(firstId), environmentId)
+      assertEquals(environmentById.get(secondId), secondEnvironmentId)
+    } finally {
+      await db.delete(container).where(eq(container.serviceId, otherServiceId))
+      await db.delete(container).where(eq(container.serviceId, secondServiceId))
+      await db.delete(service).where(eq(service.id, otherServiceId))
+      await db.delete(service).where(eq(service.id, secondServiceId))
+      await db.delete(environment).where(eq(environment.id, otherEnvironmentId))
+      await db.delete(environment).where(
+        eq(environment.id, secondEnvironmentId),
+      )
+      await db.delete(project).where(eq(project.id, otherProjectId))
+    }
+  })
+})

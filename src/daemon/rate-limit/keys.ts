@@ -51,3 +51,40 @@ export function daemonEnrollChallengeRateLimitKey(): string {
     "auth-challenge",
   );
 }
+
+/**
+ * Key for the inbound GitHub webhook surface.
+ *
+ * The rest of this file keys on `serverId` / `licenseId` and never on IP,
+ * because an enrolled daemon always has an identity to spend. A webhook has
+ * none: the limiter has to run **before** the HMAC is verified (that is the
+ * point — verification is the expensive work being protected), and at that
+ * moment the only thing distinguishing one caller from another is where it
+ * dialed from. The bucket is therefore per-peer and deliberately generous
+ * enough for GitHub's own delivery bursts; it exists to cap a flood, not to
+ * pace a healthy sender.
+ *
+ * `peer` is the resolved client address, or the literal `unknown` when the
+ * runtime cannot report one — every anonymous caller then shares one bucket,
+ * which is the conservative direction.
+ */
+export function githubWebhookRateLimitKey(peer: string): string {
+  return gitWebhookRateLimitKey("github", peer);
+}
+
+/**
+ * Key for the inbound GitLab webhook surface.
+ *
+ * A separate bucket from GitHub's on purpose: the two surfaces are independent
+ * senders, and a burst from one must not spend the other's budget — a GitLab
+ * runner fanning out pipeline hooks should never be able to make GitHub
+ * deliveries start bouncing.
+ */
+export function gitlabWebhookRateLimitKey(peer: string): string {
+  return gitWebhookRateLimitKey("gitlab", peer);
+}
+
+function gitWebhookRateLimitKey(provider: string, peer: string): string {
+  const id = peer.trim().length > 0 ? peer.trim() : "unknown";
+  return `git:webhook:${provider}:${id}`;
+}

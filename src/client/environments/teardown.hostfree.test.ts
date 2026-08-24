@@ -76,6 +76,7 @@ function plan(
     serverIds: ['srv-a'],
     ingressServices: [],
     fabricNetworksByServer: new Map(),
+    siteReleases: [],
     ...overrides,
   }
 }
@@ -134,6 +135,28 @@ test('planEnvironmentTeardown falls back to the effective pin and collects ingre
   )
 })
 
+test('planEnvironmentTeardown still reclaims a release tree whose service left the compose', async () => {
+  // The compose no longer declares the source, so nothing derivable from the
+  // current document names the tree — `deployment.options.siteReleases`, written
+  // by the deploy that published it, is what keeps it addressable.
+  const recorded = [{ serviceId: 'svc-gone', username: 'appuser' }]
+  const db = fakeDb([
+    [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
+    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [],
+    [],
+    [],
+    // resolveEnvironmentSiteReleases: environment + project compose carry no
+    // sourced service any more…
+    [{ id: ENV_ID, projectId: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, options: {} }],
+    // …so only the recorded set names the tree.
+    [{ options: { secretPlan: [], siteReleases: recorded } }],
+  ])
+  const result = await planEnvironmentTeardown(db, ENV_ID)
+  assertEquals(result?.siteReleases, recorded)
+})
+
 test('planEnvironmentsTeardown drops environments with nothing to reclaim', async () => {
   const db = fakeDb([
     [],
@@ -173,7 +196,9 @@ function fakeCommandDb(
           ])
         },
         then: (resolve: (value: unknown) => unknown) => {
-          if (values.payload !== undefined) captured.payloads.push(values.payload)
+          if (values.payload !== undefined) {
+            captured.payloads.push(values.payload)
+          }
           return Promise.resolve(undefined).then(resolve)
         },
       }),

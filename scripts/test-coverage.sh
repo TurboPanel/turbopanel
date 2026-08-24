@@ -152,6 +152,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/environments/register-compose-volumes.hostfree.test.ts \
   src/client/environments/register-compose-mounts.hostfree.test.ts \
   src/client/environments/teardown.hostfree.test.ts \
+  src/client/environments/site-releases.hostfree.test.ts \
   src/client/environments/reconcile-services.test.ts \
   src/client/environments/reconcile-services.hostfree.test.ts \
   src/client/environments/allocate-containers.test.ts \
@@ -367,6 +368,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/net-types.test.ts \
   src/lib/db/project-delete.test.ts \
   src/lib/db/project-delete.hostfree.test.ts \
+  src/lib/db/releases.hostfree.test.ts \
   src/lib/db/server-metadata.test.ts \
   src/lib/db/storage-records.hostfree.test.ts \
   src/lib/db/table-naming.test.ts \

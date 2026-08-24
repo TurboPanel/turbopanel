@@ -183,6 +183,33 @@ export function resolveWorkersDaemonRateLimiters(
   }
 }
 
+/**
+ * Resolve the inbound GitHub webhook limiter.
+ *
+ * Same fail-closed discipline as the daemon limiters: on a production Workers
+ * surface a missing binding means 429 rather than an unthrottled, publicly
+ * reachable endpoint that performs an HMAC and a database write per request.
+ * Dev surfaces get a noop so `wrangler dev` works without the binding.
+ */
+export function resolveWorkersGithubWebhookRateLimiter(
+  env: CloudflareBindings,
+): RateLimiter {
+  return resolveDaemonLimiterBinding(
+    env.GITHUB_WEBHOOK_RATE_LIMITER,
+    isWorkersDevSurface(env),
+  )
+}
+
+/** GitLab's sibling limiter — same fail-closed discipline, separate bucket. */
+export function resolveWorkersGitlabWebhookRateLimiter(
+  env: CloudflareBindings,
+): RateLimiter {
+  return resolveDaemonLimiterBinding(
+    env.GITLAB_WEBHOOK_RATE_LIMITER,
+    isWorkersDevSurface(env),
+  )
+}
+
 function resolveDaemonLimiterBinding(
   binding: { limit(options: { key: string }): Promise<{ success: boolean }> } | undefined,
   allowNoop: boolean,
@@ -220,12 +247,16 @@ export function resolveWorkersClientAuthRateLimiter(
 let cachedHyperdriveWarningLogged = false
 let daemonRateLimiterWarningLogged = false
 let clientAuthRateLimiterWarningLogged = false
+let githubWebhookRateLimiterWarningLogged = false
+let gitlabWebhookRateLimiterWarningLogged = false
 
 /** @internal Reset one-shot production warning flags — tests only. */
 export function resetWorkersBindingWarningsForTests(): void {
   cachedHyperdriveWarningLogged = false
   daemonRateLimiterWarningLogged = false
   clientAuthRateLimiterWarningLogged = false
+  githubWebhookRateLimiterWarningLogged = false
+  gitlabWebhookRateLimiterWarningLogged = false
 }
 
 /**
@@ -279,6 +310,36 @@ export function warnIfClientAuthRateLimiterMissing(env: CloudflareBindings): voi
   clientAuthRateLimiterWarningLogged = true
   console.warn(
     'CLIENT_AUTH_RATE_LIMITER binding missing; client auth endpoints fail closed (429) until it is bound.',
+  )
+}
+
+/**
+ * Warn once when a production-like Workers env is missing the GitHub webhook
+ * rate limit binding — the webhook surface fails closed until it is bound.
+ */
+export function warnIfGithubWebhookRateLimiterMissing(env: CloudflareBindings): void {
+  if (githubWebhookRateLimiterWarningLogged) return
+  if (env.GITHUB_WEBHOOK_RATE_LIMITER) return
+  if (isWorkersDevSurface(env)) return
+
+  githubWebhookRateLimiterWarningLogged = true
+  console.warn(
+    'GITHUB_WEBHOOK_RATE_LIMITER binding missing; the GitHub webhook surface fails closed (429) until it is bound.',
+  )
+}
+
+/**
+ * Warn once when a production-like Workers env is missing the GitLab webhook
+ * rate limit binding — that webhook surface fails closed until it is bound.
+ */
+export function warnIfGitlabWebhookRateLimiterMissing(env: CloudflareBindings): void {
+  if (gitlabWebhookRateLimiterWarningLogged) return
+  if (env.GITLAB_WEBHOOK_RATE_LIMITER) return
+  if (isWorkersDevSurface(env)) return
+
+  gitlabWebhookRateLimiterWarningLogged = true
+  console.warn(
+    'GITLAB_WEBHOOK_RATE_LIMITER binding missing; the GitLab webhook surface fails closed (429) until it is bound.',
   )
 }
 

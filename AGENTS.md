@@ -82,6 +82,14 @@ allocation table below, and the systemd table for ownership, ACLs, and
 | `tpapache`   | 9991    | Apache (optional)                                              |
 | `tpols`      | 9990    | OpenLiteSpeed (optional)                                       |
 | `tplsws`     | 9989    | LiteSpeed Enterprise (reserved)                                |
+| `tpnodeapp`  | 9988    | group only — read+traverse on the vendored tenant Node tree    |
+
+`tpnodeapp` is a **group with no user**: tenant principals join it when their
+first native (`serviceKind: node`) app deploys, and it means only "may execute
+`/opt/turbopanel/vendor/node-app/<series>/current/bin/node`". Principals are
+deliberately never added to `tp`, and `/opt/turbopanel` + `vendor/` stay
+`tp:tp 0750` — the group reaches the tree through a traverse-only POSIX ACL on
+those two directories (`node-app-runtime` role), never through world bits.
 
 **Application logins are unchanged** — `postgres_user`/`postgres_db` =
 `turbopanel`, RabbitMQ user = `turbopanel`, `clickhouse_app_user` =
@@ -899,10 +907,13 @@ deliberately-unversioned probe.
   `stop` / `restart`) is non-destructive (`environment.lifecycle`);
   `POST /environments/:id/stop` tears down compose including volumes
   (`environment.stop`). Canonical detail: `src/lib/commands/AGENTS.md`.
-- **Containers list filter:** `GET /api/client/v1/containers?environmentId=`
-  narrows already-visible rows to containers whose `service.environmentId`
-  matches (AND with `serviceId` / `serverId` / `status`); does not widen
-  `listVisible`.
+- **Containers list filters:** `GET /api/client/v1/containers` joins `service`,
+  so every serialized row carries **`environmentId`** (denormalized
+  `service.environmentId`). `?environmentId=` narrows already-visible rows to
+  that environment; `?projectId=` narrows to every environment of a project, so
+  a client scoping a whole project makes **one** call instead of one per
+  environment. Both AND with `serviceId` / `serverId` / `status` and neither
+  widens `listVisible`.
 - **Datacenters (routing domains, many subnets):** There is no singular
   `server.datacenter_id`. Membership is an `ip` pin (`scope='datacenter'` +
   `serverId` + `datacenterId` + **required** `networkId`), unrestricted count

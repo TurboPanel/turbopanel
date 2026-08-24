@@ -551,6 +551,51 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         SELECT 'organization'::text, i.organization_id, 1
         FROM ip i WHERE i.id = ${entityId}::uuid
       `
+    case 'source':
+      return sql`
+        SELECT 'source'::text AS entity_type, src.id AS entity_id, 0 AS depth
+        FROM source src WHERE src.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'organization'::text, src.organization_id, 1
+        FROM source src WHERE src.id = ${entityId}::uuid
+        UNION ALL
+        SELECT 'service'::text, src.service_id, 1
+        FROM source src
+        WHERE src.id = ${entityId}::uuid AND src.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'environment'::text, s.environment_id, 2
+        FROM source src
+        JOIN service s ON s.id = src.service_id
+        WHERE src.id = ${entityId}::uuid AND src.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'project'::text, e.project_id, 3
+        FROM source src
+        JOIN service s ON s.id = src.service_id
+        JOIN environment e ON e.id = s.environment_id
+        WHERE src.id = ${entityId}::uuid AND src.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 4
+        FROM source src
+        JOIN service s ON s.id = src.service_id
+        JOIN environment e ON e.id = s.environment_id
+        JOIN project p ON p.id = e.project_id
+        WHERE src.id = ${entityId}::uuid AND src.service_id IS NOT NULL
+        UNION ALL
+        SELECT 'environment'::text, src.environment_id, 1
+        FROM source src
+        WHERE src.id = ${entityId}::uuid AND src.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'project'::text, e.project_id, 2
+        FROM source src
+        JOIN environment e ON e.id = src.environment_id
+        WHERE src.id = ${entityId}::uuid AND src.environment_id IS NOT NULL
+        UNION ALL
+        SELECT 'workspace'::text, p.workspace_id, 3
+        FROM source src
+        JOIN environment e ON e.id = src.environment_id
+        JOIN project p ON p.id = e.project_id
+        WHERE src.id = ${entityId}::uuid AND src.environment_id IS NOT NULL
+      `
     default:
       throw new Error(`Unknown entity type for ancestry: ${entityType}`)
   }
@@ -676,6 +721,8 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
       return sql`SELECT id FROM datacenter WHERE organization_id = ${organizationId}::uuid`
     case 'ip':
       return sql`SELECT id FROM ip WHERE organization_id = ${organizationId}::uuid`
+    case 'source':
+      return sql`SELECT id FROM source WHERE organization_id = ${organizationId}::uuid`
     default:
       throw new Error(`Unknown entity kind for visibility leaves: ${kind}`)
   }

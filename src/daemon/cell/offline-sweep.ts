@@ -56,6 +56,10 @@ import {
   sweepExpiredCommandDispatch,
 } from "../../lib/db/command-records.ts";
 import {
+  sweepExpiredWebhookDeliveries,
+  WEBHOOK_DELIVERY_SWEEP_LIMIT,
+} from "../../lib/db/webhook-delivery-records.ts";
+import {
   resolveServerMetricsStore,
   type AnalyticsEngineDatasetLike,
 } from "../metrics/store-selection.ts";
@@ -663,6 +667,26 @@ export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
 }
 
 /**
+ * Drop webhook delivery ids past their replay-protection retention window.
+ * Rides this cron's already-open db and is isolated the same way, so a failure
+ * here never aborts the other sweeps.
+ */
+export async function sweepExpiredWebhookDeliveriesSafely(db: Db): Promise<void> {
+  try {
+    const deleted = await sweepExpiredWebhookDeliveries(db, {
+      limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
+    });
+    if (deleted > 0) {
+      sweepTrace("webhook-deliveries-swept", { deleted });
+    }
+  } catch (err) {
+    sweepTrace("webhook-delivery-sweep-failed", {
+      error: sweepErrorMessage(err),
+    });
+  }
+}
+
+/**
  * Delete command transcripts past their retention window. Rides this cron's
  * existing tick (no new timer, no new connection) and is isolated so a storage
  * failure never aborts the other sweeps.
@@ -734,6 +758,9 @@ export async function runOfflineSweep(
 
     // Expired failure-retention dispatch payloads — same already-open db.
     await sweepExpiredCommandDispatchSafely(db);
+
+    // Webhook delivery ids past their replay-protection window — same db.
+    await sweepExpiredWebhookDeliveriesSafely(db);
 
     // Command transcripts past retention — object-store only, no db needed,
     // but bounded per tick the same way so cleanup never dominates the sweep.

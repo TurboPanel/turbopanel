@@ -33,6 +33,20 @@ export const DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS = 60
 export const DEFAULT_DAEMON_CONTAINER_LOGS_RATE_LIMIT = 60
 export const DEFAULT_DAEMON_CONTAINER_LOGS_RATE_PERIOD_SECONDS = 60
 
+/**
+ * Defaults match Wrangler `GITHUB_WEBHOOK_RATE_LIMITER` /
+ * `GITLAB_WEBHOOK_RATE_LIMITER` (`{ limit: 120, period: 60 }` each).
+ * A single `git push` can fan out into a handful of deliveries (push +
+ * check_suite + check_run), and an organization-wide App can be pushed to by
+ * many repositories at once, so the budget is sized for a legitimate burst.
+ * It is an abuse cap, not a pacing mechanism.
+ */
+export const DEFAULT_GITHUB_WEBHOOK_RATE_LIMIT = 120
+export const DEFAULT_GITHUB_WEBHOOK_RATE_PERIOD_SECONDS = 60
+/** GitLab's own bucket — same sizing, independent budget. */
+export const DEFAULT_GITLAB_WEBHOOK_RATE_LIMIT = 120
+export const DEFAULT_GITLAB_WEBHOOK_RATE_PERIOD_SECONDS = 60
+
 const MIN_BUCKET_TTL_MS = 1_000
 
 function parsePositiveIntEnv(
@@ -101,6 +115,36 @@ export function resolveDaemonContainerLogsRateLimit(env: {
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_CONTAINER_LOGS_RATE_PERIOD'),
       DEFAULT_DAEMON_CONTAINER_LOGS_RATE_PERIOD_SECONDS,
+    ),
+  }
+}
+
+export function resolveGithubWebhookRateLimit(env: {
+  get(key: string): string | undefined
+} = Deno.env): { limit: number; periodSeconds: number } {
+  return {
+    limit: parsePositiveIntEnv(
+      env.get('TURBOPANEL_GITHUB_WEBHOOK_RATE_LIMIT'),
+      DEFAULT_GITHUB_WEBHOOK_RATE_LIMIT,
+    ),
+    periodSeconds: parsePositiveIntEnv(
+      env.get('TURBOPANEL_GITHUB_WEBHOOK_RATE_PERIOD'),
+      DEFAULT_GITHUB_WEBHOOK_RATE_PERIOD_SECONDS,
+    ),
+  }
+}
+
+export function resolveGitlabWebhookRateLimit(env: {
+  get(key: string): string | undefined
+} = Deno.env): { limit: number; periodSeconds: number } {
+  return {
+    limit: parsePositiveIntEnv(
+      env.get('TURBOPANEL_GITLAB_WEBHOOK_RATE_LIMIT'),
+      DEFAULT_GITLAB_WEBHOOK_RATE_LIMIT,
+    ),
+    periodSeconds: parsePositiveIntEnv(
+      env.get('TURBOPANEL_GITLAB_WEBHOOK_RATE_PERIOD'),
+      DEFAULT_GITLAB_WEBHOOK_RATE_PERIOD_SECONDS,
     ),
   }
 }

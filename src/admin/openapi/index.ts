@@ -177,6 +177,69 @@ export function getAdminOpenApiSpec(
             },
           },
         },
+        GitlabOauthConfig: {
+          type: "object",
+          description:
+            "Non-secret view of the instance GitLab OAuth application. The client " +
+            "secret and webhook token are sealed at rest and never returned — only " +
+            "their presence is reported.",
+          required: ["clientId", "redirectUri", "baseUrl", "hasClientSecret", "hasWebhookSecret"],
+          properties: {
+            clientId: {
+              oneOf: [{ type: "string" }, { type: "null" }],
+              description: "Application id from the GitLab OAuth application",
+            },
+            redirectUri: {
+              oneOf: [{ type: "string" }, { type: "null" }],
+              description:
+                "Absolute callback URL registered on the GitLab application",
+            },
+            baseUrl: {
+              type: "string",
+              description:
+                "GitLab instance root; defaults to https://gitlab.com when unset",
+            },
+            hasClientSecret: { type: "boolean" },
+            hasWebhookSecret: { type: "boolean" },
+          },
+        },
+        GitlabOauthResponse: {
+          type: "object",
+          required: ["ok", "gitlabOauth"],
+          properties: {
+            ok: { type: "boolean", const: true },
+            gitlabOauth: { $ref: "#/components/schemas/GitlabOauthConfig" },
+          },
+        },
+        GitlabOauthPutBody: {
+          type: "object",
+          description:
+            "Partial update — omitted keys keep their stored value, so a PUT that " +
+            "omits clientSecret keeps the sealed one. Send null to clear a nullable field.",
+          properties: {
+            clientId: { type: "string", minLength: 1 },
+            clientSecret: {
+              type: "string",
+              minLength: 1,
+              description: "Sealed before persist and never returned",
+            },
+            baseUrl: {
+              oneOf: [{ type: "string" }, { type: "null" }],
+              description:
+                "Self-managed GitLab origin; null reverts to https://gitlab.com",
+            },
+            redirectUri: {
+              oneOf: [{ type: "string" }, { type: "null" }],
+            },
+            webhookSecret: {
+              oneOf: [{ type: "string" }, { type: "null" }],
+              description:
+                "Shared token every GitLab delivery must present in X-Gitlab-Token. " +
+                "GitLab does not sign deliveries, so this is the whole credential. " +
+                "Sealed before persist and never returned.",
+            },
+          },
+        },
         SecretsReencryptCursor: {
           type: "object",
           required: ["stage"],
@@ -289,6 +352,74 @@ export function getAdminOpenApiSpec(
                   },
                 },
               },
+            },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/instance/gitlab-oauth`]: {
+        get: {
+          tags: ["Instance"],
+          summary: "Read the instance GitLab OAuth application (presence only)",
+          description:
+            "The GitLab provider is off until this application is configured: the " +
+            "connect flow, repository discovery, and webhook verification all read " +
+            "this row. Secrets are never returned — the response reports only " +
+            "whether the sealed material is present.",
+          security: [...cookieSecurity],
+          responses: {
+            "200": {
+              description: "Non-secret GitLab OAuth application summary",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/GitlabOauthResponse" },
+                },
+              },
+            },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "503": { description: "Database unavailable" },
+          },
+        },
+        put: {
+          tags: ["Instance"],
+          summary: "Persist the instance GitLab OAuth application",
+          description:
+            "Register one OAuth application on gitlab.com or a self-managed " +
+            "instance, then point this at it. Unlike GitHub there is no " +
+            "per-repository install: each organization connects an account or " +
+            "group through this single application. The client secret and webhook " +
+            "token are sealed (tpsecret) before persist and are never returned.",
+          security: [...cookieSecurity],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/GitlabOauthPutBody" },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Updated GitLab OAuth application summary",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/GitlabOauthResponse" },
+                },
+              },
+            },
+            "400": {
+              description:
+                "Invalid request body, or a rejected field (empty clientId, non-http(s) baseUrl)",
+            },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "503": {
+              description:
+                "Database unavailable, or no encryption key configured to seal the secrets",
             },
           },
         },

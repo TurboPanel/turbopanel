@@ -3340,6 +3340,46 @@ test("parseEnvironmentStopPayload accepts and validates ingressServices", () => 
   );
 });
 
+test("parseEnvironmentStopPayload round-trips siteReleases and rejects unsafe segments", () => {
+  assertEquals(
+    parseEnvironmentStopPayload({
+      environmentId: "env-1",
+      projectId: "proj-1",
+      projectName: "tp-demo",
+      siteReleases: [{ serviceId: "svc-1", username: "appuser" }],
+    }),
+    {
+      environmentId: "env-1",
+      projectId: "proj-1",
+      projectName: "tp-demo",
+      siteReleases: [{ serviceId: "svc-1", username: "appuser" }],
+    },
+  );
+  // Both fields become path segments on the host; neither may traverse.
+  assertThrows(
+    () =>
+      parseEnvironmentStopPayload({
+        environmentId: "env-1",
+        projectId: "proj-1",
+        projectName: "tp-demo",
+        siteReleases: [{ serviceId: "../etc", username: "appuser" }],
+      }),
+    Error,
+    "Invalid environment.stop siteReleases entry",
+  );
+  assertThrows(
+    () =>
+      parseEnvironmentStopPayload({
+        environmentId: "env-1",
+        projectId: "proj-1",
+        projectName: "tp-demo",
+        siteReleases: "svc-1",
+      }),
+    TypeError,
+    "siteReleases must be an array",
+  );
+});
+
 test("parseEnvironmentStopPayload round-trips tpn_ fabricNetworks and rejects other names", () => {
   assertEquals(
     parseEnvironmentStopPayload({
@@ -3389,4 +3429,157 @@ test("parseEnvironmentStopResult round-trips summary and containers", () => {
     { projectName: "tp-demo", summary: "stopped", containers: [] },
   );
   assertEquals(parseEnvironmentStopResult(null), { projectName: "" });
+});
+
+const NATIVE_APP_BASE = {
+  environmentId: "env-1",
+  projectId: "proj-1",
+  organizationId: "org-1",
+  projectName: "tp-demo",
+  composeFiles: [{
+    filename: "compose.yaml",
+    role: "runtime" as const,
+    content: "services: {}\n",
+  }],
+  hostings: [],
+};
+
+test("parseEnvironmentDeployPayload round-trips nativeAppServices", () => {
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [
+      {
+        composeServiceName: "web",
+        serviceId: "svc-web",
+        listenPort: 18100,
+        framework: "next",
+        nodeVersion: "24.17.0",
+        resources: { cpus: 1.5, memoryBytes: 536870912 },
+        accountLimits: { cpus: 4, memoryBytes: 2147483648, tasksMax: 512 },
+      },
+    ],
+  });
+  assertEquals(parsed.nativeAppServices, [
+    {
+      composeServiceName: "web",
+      serviceId: "svc-web",
+      listenPort: 18100,
+      framework: "next",
+      nodeVersion: "24.17.0",
+      resources: { cpus: 1.5, memoryBytes: 536870912 },
+      accountLimits: { cpus: 4, memoryBytes: 2147483648, tasksMax: 512 },
+    },
+  ]);
+});
+
+test("parseEnvironmentDeployPayload rejects an unsafe nativeAppServices serviceId", () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        nativeAppServices: [
+          {
+            composeServiceName: "web",
+            // A path separator here would escape the release tree when the
+            // daemon joins it into the unit's WorkingDirectory.
+            serviceId: "../../etc",
+            listenPort: 18100,
+            framework: "auto",
+          },
+        ],
+      }),
+    Error,
+    "Invalid nativeAppServices entry",
+  );
+});
+
+test("parseEnvironmentDeployPayload rejects an unknown nativeAppServices framework", () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        nativeAppServices: [
+          {
+            composeServiceName: "web",
+            serviceId: "svc-web",
+            listenPort: 18100,
+            framework: "deno",
+          },
+        ],
+      }),
+    Error,
+    "Invalid nativeAppServices entry",
+  );
+});
+
+test("sourceMaterial build round-trips startCommand", () => {
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [
+      {
+        sourceId: "00000000-0000-4000-8000-000000000001",
+        composeServiceName: "web",
+        provider: "github",
+        cloneUrl: "https://github.test/acme/app.git",
+        ref: "main",
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        releaseId: "rel-1",
+        build: {
+          kind: "native",
+          installCommand: "pnpm install",
+          buildCommand: "pnpm build",
+          startCommand: "node server.js",
+        },
+      },
+    ],
+  });
+  assertEquals(
+    parsed.sourceMaterial?.[0]?.build.startCommand,
+    "node server.js",
+  );
+});
+
+const GITLAB_SOURCE_ENTRY = {
+  sourceId: "00000000-0000-4000-8000-000000000001",
+  composeServiceName: "web",
+  provider: "gitlab",
+  cloneUrl: "https://gitlab.test/acme/app.git",
+  ref: "main",
+  commitSha: "0123456789abcdef0123456789abcdef01234567",
+  releaseId: "rel-1",
+  credential: "tpdaemon.sealed",
+  credentialKind: "token",
+  build: { kind: "native" },
+} as const;
+
+test("sourceMaterial carries the HTTPS credential username opaquely", () => {
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, credentialUsername: "oauth2" }],
+  });
+  assertEquals(parsed.sourceMaterial?.[0]?.credentialUsername, "oauth2");
+
+  // Absent stays absent — the host applies its own default rather than
+  // receiving one the control plane never stated.
+  const withoutUsername = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY }],
+  });
+  assertEquals(withoutUsername.sourceMaterial?.[0]?.credentialUsername, undefined);
+});
+
+test("sourceMaterial rejects a credentialUsername that could break the askpass script", () => {
+  for (
+    const bad of ["", "oauth2\nUsername", "oauth2\u0000", "x".repeat(201), 2]
+  ) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, credentialUsername: bad }],
+        }),
+      Error,
+      "Invalid sourceMaterial credentialUsername",
+    );
+  }
 });

@@ -3,13 +3,19 @@
  *
  * Deleting a project or an environment drops Postgres rows, but the host still
  * carries the deployment dir, hosting Caddy site, per-service tcp/udp Traefik
- * projects and `tpn_*` bridges from the last deploy. `environment.stop` is the
- * only command that reclaims them, so delete plans it **before** the rows go
- * away (the payload is built from service / hosting / segment rows) and
- * enqueues it **after** the delete commits.
+ * projects, `tpn_*` bridges, and per-service release trees
+ * (`<principalHome>/sites/<serviceId>`) from the last deploy.
+ * `environment.stop` is the only command that reclaims them, so delete plans it
+ * **before** the rows go away (the payload is built from service / hosting /
+ * steward / segment rows) and enqueues it **after** the delete commits.
  *
  * Reclaim is best effort: a never-deployed environment has no target server and
  * plans to `null`, and an unavailable queue must not block the delete.
+ *
+ * `siteReleases` comes from `resolveEnvironmentSiteReleases`, which unions the
+ * trees the current compose declares with the ones the environment's `deployment`
+ * rows recorded — so a Git-backed service that was removed from the compose
+ * before the delete is still named here, rather than orphaned on the host.
  */
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
@@ -34,6 +40,10 @@ import { compatLogWarn } from '../../log-compat.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { retireHostingIngressIfIdle } from '../system/reconcile.ts'
 import { composeProjectName } from './deploy-routes-helpers.ts'
+import {
+  type EnvironmentSiteRelease,
+  resolveEnvironmentSiteReleases,
+} from './site-releases.ts'
 import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 
 export type EnvironmentTeardownPlan = {
@@ -45,6 +55,12 @@ export type EnvironmentTeardownPlan = {
   ingressServices: Array<{ serviceId: string }>
   /** `tpn_*` compose bridge names to reclaim, per server. */
   fabricNetworksByServer: Map<string, string[]>
+  /**
+   * Release trees to reclaim. Generic — the same tree the Git release engine
+   * publishes into and the native-runtime phase will run out of, so this is not
+   * scoped to traditional-web sites.
+   */
+  siteReleases: EnvironmentSiteRelease[]
 }
 
 /** Servers holding this environment's deployment, else its effective pin. */
@@ -107,6 +123,7 @@ export async function planEnvironmentTeardown(
     db,
     environmentId,
   )
+  const siteReleases = await resolveEnvironmentSiteReleases(db, environmentId)
 
   return {
     environmentId,
@@ -115,6 +132,7 @@ export async function planEnvironmentTeardown(
     serverIds,
     ingressServices: tcpUdpServices.map((svc) => ({ serviceId: svc.serviceId })),
     fabricNetworksByServer: composeNetworkNamesByServer(composeNetworks),
+    siteReleases,
   }
 }
 
@@ -155,6 +173,9 @@ async function enqueueTeardownStop(
         ? { ingressServices: plan.ingressServices }
         : {}),
       ...(fabricNetworks.length > 0 ? { fabricNetworks } : {}),
+      ...(plan.siteReleases.length > 0
+        ? { siteReleases: plan.siteReleases }
+        : {}),
     },
     expiresAt: new Date(Date.now() + 120_000).toISOString(),
   })

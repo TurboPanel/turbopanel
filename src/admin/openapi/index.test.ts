@@ -56,6 +56,32 @@ test('getAdminOpenApiSpec documents public URL and reencrypt paths', () => {
   assertEquals((publicUrls?.properties?.applied as SchemaObject).const, false)
 })
 
+test('getAdminOpenApiSpec documents the GitLab OAuth configuration path', () => {
+  const spec = getAdminOpenApiSpec('https://localhost:8443') as {
+    paths: Record<string, Record<string, unknown>>
+    components: { schemas: Record<string, SchemaObject> }
+  }
+  const path = spec.paths[`${ADMIN_API_PREFIX}/instance/gitlab-oauth`]
+  assertExists(path)
+  assertExists(path.get)
+  assertExists(path.put)
+
+  // The write surface has to expose every field the runtime reads, or the
+  // provider stays unconfigurable without direct database access.
+  const body = spec.components.schemas.GitlabOauthPutBody
+  assertEquals(
+    Object.keys(body?.properties ?? {}).sort((a, b) => a.localeCompare(b)),
+    ['baseUrl', 'clientId', 'clientSecret', 'redirectUri', 'webhookSecret'],
+  )
+
+  // Secrets are reported as presence only; the sealed values never come back.
+  const config = spec.components.schemas.GitlabOauthConfig
+  assertEquals(
+    Object.keys(config?.properties ?? {}).sort((a, b) => a.localeCompare(b)),
+    ['baseUrl', 'clientId', 'hasClientSecret', 'hasWebhookSecret', 'redirectUri'],
+  )
+})
+
 test('getAdminOpenApiSpec accepts devSurface option without changing core paths', () => {
   const withDev = getAdminOpenApiSpec('https://localhost:8443', { devSurface: true }) as {
     paths: Record<string, unknown>

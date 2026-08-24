@@ -13,14 +13,23 @@ import {
   isDaemonKeyActive,
 } from "../../daemon/authn/server-identity-db.ts";
 import {
+  createReleaseIdAllocator,
   type DeployPrepareError,
+  type DeployRollbackRequest,
   type DeployScheduleSlice,
+  type DeploySourceSelection,
+  PREPARE_HONORS_SOURCE_SELECTION,
   type PreparedDeployCompose,
   prepareDeployCompose,
+  type ReleaseIdAllocator,
   readHostingProxyFromOptions,
   resolveHostingBindAddress,
 } from "./deploy-prepare.ts";
 import { resolveHostingDeployWeb } from "../../lib/hosting-web-env.ts";
+import {
+  definedFields,
+  presentFields,
+} from "../../lib/optional-fields.ts";
 import type { DerivedSecretsConfig } from "../authn/secrets.ts";
 import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
 import type {
@@ -28,8 +37,10 @@ import type {
   EnvironmentDeployFabricNetwork,
   EnvironmentDeployHosting,
   EnvironmentDeployIngressService,
+  EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployServiceHook,
+  EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
   EnvironmentDeployTraditionalWebSite,
@@ -39,6 +50,7 @@ import type {
 import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
+  buildNativeAppServicesForDeploy,
   buildTraditionalWebSitesForDeploy,
   composeProjectName,
   deployMaterialsErrorResponse,
@@ -48,8 +60,8 @@ import {
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
   parseLifecycleAction,
-  queuedCommandsResponseBody,
   type QueuedCommandRef,
+  queuedCommandsResponseBody,
   readHostingPorts,
   readHostingProtocol,
   readHostnames,
@@ -59,8 +71,17 @@ import {
   tlsPinErrorCode,
 } from "./deploy-routes-helpers.ts";
 import { resolveTcpUdpIngressServices } from "./tcp-udp-ingress.ts";
+import {
+  type EnvironmentSiteRelease,
+  resolveEnvironmentSiteReleases,
+  resolveSourcedEnvironmentSiteReleases,
+} from "./site-releases.ts";
 import { isNoopCommandQueue } from "../../lib/commands/noop-command-queue.ts";
-import { normalizeReplicaCounts } from "../../lib/commands/context.ts";
+import {
+  type CommandContextRelease,
+  normalizeContextReleases,
+  normalizeReplicaCounts,
+} from "../../lib/commands/context.ts";
 import {
   type CommandQueue,
   getCommandQueue,
@@ -785,6 +806,38 @@ export async function authorizeEnvironmentManage(
 }
 
 /**
+ * Who a deploy is attributed to.
+ *
+ * A deploy is no longer always a person pressing a button: the GitHub webhook
+ * surface (`src/client/git/github-webhook-routes.ts`) drives the *same*
+ * pipeline with `actorType: 'system'` and the triggering `source.id` as the
+ * actor. Carrying the pair explicitly — rather than a bare `userId` — is what
+ * lets the two entry points share one enqueue path, so the generation-supersede
+ * guarantee holds for webhook-driven deploys exactly as it does for manual ones.
+ */
+export type DeployActor = {
+  actorType: "user" | "system";
+  actorId: string;
+};
+
+/**
+ * Which commit a deploy should build — defined next to
+ * {@link prepareDeployCompose}, which is where source resolution reads it, and
+ * re-exported here because the deploy route and the webhook trigger are what
+ * populate it.
+ *
+ * This route records the selection on the deploy command's `metadata` *and*
+ * hands it to the prepare layer, which now turns compose-declared sources into
+ * `sourceMaterial[]` and honors a supplied `commitSha` — but only for the
+ * binding whose `sourceId` the selection names, so a push to one repository
+ * never pins the other repositories in the same environment. What it still does
+ * not honor is an explicit `ref`: `PREPARE_HONORS_SOURCE_SELECTION` is `false`,
+ * so such a request is refused rather than quietly deployed as the declared
+ * branch.
+ */
+export type { DeploySourceSelection };
+
+/**
  * Deploy-only authz: {@link authorizeEnvironmentManage} plus deploy request flags.
  * Exported for host-free unit coverage without full orchestration.
  */
@@ -794,10 +847,12 @@ export async function authorizeDeployRequest(
   environmentId: string,
 ): Promise<
   {
-    userId: string;
+    actorType: "user";
+    actorId: string;
     organizationId: string;
     acknowledgeHealthCheckWarnings: boolean;
     noCache: boolean;
+    selection: DeploySourceSelection;
   } | Response
 > {
   const auth = await authorizeEnvironmentManage(c, db, environmentId);
@@ -812,15 +867,20 @@ export async function authorizeDeployRequest(
   }
 
   return {
-    ...auth,
+    actorType: "user",
+    actorId: auth.userId,
+    organizationId: auth.organizationId,
     acknowledgeHealthCheckWarnings: flags.acknowledgeHealthCheckWarnings,
     noCache: flags.noCache,
+    // A session deploy names no single source: it is "deploy this environment",
+    // not "deploy this repository's commit". `sourceId` stays `null`, so no
+    // source binding is pinned to a caller-supplied SHA.
+    selection: { ref: flags.ref, commitSha: null, sourceId: null },
   };
 }
 
-type DeployCommandCreateParams = {
+type DeployCommandCreateParams = DeployActor & {
   serverId: string;
-  userId: string;
   environmentId: string;
   projectId: string;
   organizationId: string;
@@ -828,6 +888,8 @@ type DeployCommandCreateParams = {
   composeFiles: EnvironmentDeployComposeFile[];
   hostings: DeployHostingPayload[];
   traditionalWebSites: EnvironmentDeployTraditionalWebSite[];
+  nativeAppServices: EnvironmentDeployNativeAppService[];
+  sourceMaterial: EnvironmentDeploySource[];
   ingressServices: EnvironmentDeployIngressService[];
   hostingIngress?: EnvironmentDeployIngressService;
   tlsMaterial: EnvironmentDeployTlsMaterial[];
@@ -843,6 +905,7 @@ type DeployCommandCreateParams = {
   desiredHash: string;
   replicaCounts: Record<string, number>;
   listenerPorts: ManagedIngressPorts;
+  selection: DeploySourceSelection;
 };
 
 type CreatedDeployCommand = QueuedCommandRef & { queuedAt: string };
@@ -856,16 +919,66 @@ type PreparedServerDeploy = {
   hostingIngress?: EnvironmentDeployIngressService;
 };
 
+/**
+ * The requested ref / pre-resolved SHA, as durable command metadata.
+ *
+ * This rides on `metadata` in addition to the payload's `sourceMaterial[]`:
+ * the payload is deleted once the command reaches a terminal state, but the
+ * attribution has to stay durable so a webhook-driven deploy can be traced back
+ * to the commit that caused it. `undefined` when the request named nothing —
+ * there is no attribution to keep.
+ */
+function deploySelectionMetadata(
+  selection: DeploySourceSelection,
+): {
+  sourceSelection: { ref?: string; commitSha?: string; sourceId?: string };
+} | undefined {
+  const sourceSelection = definedFields({
+    ref: selection.ref ?? undefined,
+    commitSha: selection.commitSha ?? undefined,
+    // Which source the commit came from — without it the attribution cannot
+    // say *what* was deployed when the environment binds more than one
+    // repository.
+    sourceId: selection.sourceId ?? undefined,
+  });
+  if (Object.keys(sourceSelection).length === 0) return undefined;
+  return { sourceSelection };
+}
+
+/** One `sourceMaterial[]` entry as the durable `command.context` records it. */
+function contextReleaseFromSource(
+  entry: EnvironmentDeploySource,
+): CommandContextRelease {
+  return definedFields({
+    composeServiceName: entry.composeServiceName,
+    releaseId: entry.releaseId,
+    sourceId: entry.sourceId,
+    commitSha: entry.commitSha,
+    // Display metadata rides the durable row alongside the SHA: the payload
+    // that carries it is deleted at terminal state, and re-resolving a commit
+    // message months later would need a provider round trip (and a credential)
+    // the read path does not have.
+    commitMessage: entry.commitMessage,
+    commitAuthor: entry.commitAuthor,
+    rollbackToReleaseId: entry.rollbackToReleaseId,
+  }) satisfies CommandContextRelease;
+}
+
 async function createDeployCommand(
   db: Db,
   params: DeployCommandCreateParams,
 ): Promise<CreatedDeployCommand> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString();
   const replicaCounts = normalizeReplicaCounts(params.replicaCounts);
+  const releases = normalizeContextReleases(
+    params.sourceMaterial.map(contextReleaseFromSource),
+  );
+  const metadata = deploySelectionMetadata(params.selection);
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
-    actorType: "user",
-    actorId: params.userId,
+    actorType: params.actorType,
+    actorId: params.actorId,
+    ...(metadata === undefined ? {} : { metadata }),
     type: "environment.deploy",
     payload: {
       environmentId: params.environmentId,
@@ -878,55 +991,45 @@ async function createDeployCommand(
       serverId: params.serverId,
       replicaCounts: params.replicaCounts,
       hostings: params.hostings,
-      ...(params.traditionalWebSites.length > 0
-        ? { traditionalWebSites: params.traditionalWebSites }
-        : {}),
-      ...(params.ingressServices.length > 0
-        ? { ingressServices: params.ingressServices }
-        : {}),
-      ...(params.hostingIngress
-        ? { hostingIngress: params.hostingIngress }
-        : {}),
-      ...(params.tlsMaterial.length > 0
-        ? { tlsMaterial: params.tlsMaterial }
-        : {}),
-      ...(params.variableMaterial.length > 0
-        ? { variableMaterial: params.variableMaterial }
-        : {}),
-      ...(params.storageMaterial.length > 0
-        ? { storageMaterial: params.storageMaterial }
-        : {}),
-      ...(params.principalMaterial.length > 0
-        ? { principalMaterial: params.principalMaterial }
-        : {}),
-      ...(params.serviceHooks.length > 0
-        ? { serviceHooks: params.serviceHooks }
-        : {}),
-      ...(params.dockerExternalNetworks.length > 0
-        ? { dockerExternalNetworks: params.dockerExternalNetworks }
-        : {}),
-      ...(params.fabricNetworks.length > 0
-        ? { fabricNetworks: params.fabricNetworks }
-        : {}),
-      ...(params.managedNetworkServices.length > 0
-        ? { managedNetworkServices: params.managedNetworkServices }
-        : {}),
-      ...(params.noCache ? { noCache: true } : {}),
+      // Every list below is omitted when empty — the daemon reads an absent
+      // key and an empty array the same way, and the queued row is smaller.
+      ...presentFields({
+        traditionalWebSites: params.traditionalWebSites,
+        nativeAppServices: params.nativeAppServices,
+        sourceMaterial: params.sourceMaterial,
+        ingressServices: params.ingressServices,
+        hostingIngress: params.hostingIngress,
+        tlsMaterial: params.tlsMaterial,
+        variableMaterial: params.variableMaterial,
+        storageMaterial: params.storageMaterial,
+        principalMaterial: params.principalMaterial,
+        serviceHooks: params.serviceHooks,
+        dockerExternalNetworks: params.dockerExternalNetworks,
+        fabricNetworks: params.fabricNetworks,
+        managedNetworkServices: params.managedNetworkServices,
+        noCache: params.noCache ? true : undefined,
+      }),
       listenerPorts: params.listenerPorts,
     },
-    // Durable, non-secret read model for deploy history. `dispatch.payload` is
-    // deleted once the command reaches a terminal state, and the `deployment`
-    // row is overwritten by the next redeploy, so the per-service replica
-    // counts a past deploy asked for only survive if they are written onto the
-    // permanent `command.context` here.
-    context: {
+    // Durable, non-secret read model for deploy history *and* for the release
+    // list. `dispatch.payload` is deleted once the command reaches a terminal
+    // state, and the `deployment` row is overwritten by the next redeploy, so
+    // the per-service replica counts and release ids a past deploy produced
+    // only survive if they are written onto the permanent `command.context`
+    // here.
+    //
+    // The Git-backed releases go with them for the same reason: this row is the
+    // only durable record of which release ids exist for a service — which is
+    // exactly the list a rollback picks from. See `db/releases.ts`.
+    context: definedFields({
       environmentId: params.environmentId,
       projectId: params.projectId,
       serverId: params.serverId,
       generation: params.generation,
       desiredHash: params.desiredHash,
-      ...(replicaCounts ? { replicaCounts } : {}),
-    },
+      replicaCounts: replicaCounts ?? undefined,
+      releases: releases ?? undefined,
+    }),
     expiresAt,
   });
 
@@ -983,19 +1086,25 @@ async function deliverDeployCommand(
 
 function createParamsForPreparedServer(
   row: PreparedServerDeploy,
-  params: {
-    userId: string;
+  params: DeployActor & {
     environmentId: string;
     projectId: string;
     organizationId: string;
     projectName: string;
     generation: number;
     noCache: boolean;
+    selection: DeploySourceSelection;
   },
 ): DeployCommandCreateParams {
+  // One loopback-port ledger for both host-native lanes: traditional-web vhosts
+  // and native `node` apps are both reverse-proxied on 127.0.0.1, so allocating
+  // them separately could hand the same port to a site and an app.
+  const usedListenPorts = new Set<number>();
   return {
     serverId: row.serverId,
-    userId: params.userId,
+    actorType: params.actorType,
+    actorId: params.actorId,
+    selection: params.selection,
     environmentId: params.environmentId,
     projectId: params.projectId,
     organizationId: params.organizationId,
@@ -1005,7 +1114,15 @@ function createParamsForPreparedServer(
     traditionalWebSites: buildTraditionalWebSitesForDeploy(
       row.prepared.traditionalWebSites,
       row.hostings,
+      usedListenPorts,
     ),
+    nativeAppServices: buildNativeAppServicesForDeploy(
+      row.prepared.nativeAppServices,
+      row.hostings,
+      row.prepared.ingressServices,
+      usedListenPorts,
+    ),
+    sourceMaterial: row.prepared.sourceMaterial,
     ingressServices: row.prepared.ingressServices,
     ...(row.hostingIngress ? { hostingIngress: row.hostingIngress } : {}),
     tlsMaterial: row.tlsMaterial,
@@ -1024,6 +1141,13 @@ function createParamsForPreparedServer(
   };
 }
 
+/**
+ * `deployment.options` is the control plane's durable record of what a deploy
+ * put on each host, and `siteReleases` is the part that outlives the compose:
+ * once a Git-backed service is removed, nothing derivable from the current
+ * document names its `<principalHome>/sites/<serviceId>` tree any more, so a
+ * later stop or delete would leave it behind. See `site-releases.ts`.
+ */
 function deploymentTargetsForFanOut(
   params: {
     preparedByServer: readonly PreparedServerDeploy[];
@@ -1031,6 +1155,8 @@ function deploymentTargetsForFanOut(
     drainedIds: readonly string[];
     generation: number;
     created: readonly CreatedDeployCommand[];
+    /** Release trees the current compose declares, recorded per target. */
+    siteReleases: readonly EnvironmentSiteRelease[];
   },
 ): DeploymentTargetInput[] {
   const preparedByServerId = new Map(
@@ -1050,6 +1176,7 @@ function deploymentTargetsForFanOut(
         lastCommandId: commandByServer.get(serverId) ?? null,
         options: {
           secretPlan: prepared?.secretPlan ?? [],
+          siteReleases: params.siteReleases,
         },
       };
     }),
@@ -1069,17 +1196,19 @@ function deploymentTargetsForFanOut(
  */
 async function persistDeployFanOut(
   db: Db,
-  params: {
+  params: DeployActor & {
     preparedByServer: readonly PreparedServerDeploy[];
     planServerIds: readonly string[];
     drainedIds: readonly string[];
-    userId: string;
     environmentId: string;
     projectId: string;
     organizationId: string;
     projectName: string;
     tasks: readonly DesiredTaskInput[];
     noCache: boolean;
+    selection: DeploySourceSelection;
+    /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
+    siteReleases: readonly EnvironmentSiteRelease[];
   },
 ): Promise<CreatedDeployCommand[]> {
   return await db.transaction(async (tx) => {
@@ -1096,13 +1225,15 @@ async function persistDeployFanOut(
         await createDeployCommand(
           tx,
           createParamsForPreparedServer(row, {
-            userId: params.userId,
+            actorType: params.actorType,
+            actorId: params.actorId,
             environmentId: params.environmentId,
             projectId: params.projectId,
             organizationId: params.organizationId,
             projectName: params.projectName,
             generation,
             noCache: params.noCache,
+            selection: params.selection,
           }),
         ),
       );
@@ -1116,6 +1247,7 @@ async function persistDeployFanOut(
         drainedIds: params.drainedIds,
         generation,
         created,
+        siteReleases: params.siteReleases,
       }),
     });
     return created;
@@ -1154,6 +1286,7 @@ async function deliverDeployFanOut(
 }
 
 export {
+  buildNativeAppServicesForDeploy,
   buildTraditionalWebSitesForDeploy,
   deployMaterialsErrorResponse,
   expandHostingsForComposeInstances,
@@ -1167,6 +1300,127 @@ export {
   scheduleErrorResponse,
   validateDeployMaterials,
 } from "./deploy-routes-helpers.ts";
+
+/** One Git-backed release a preview reports the deploy would publish. */
+type DeployPreviewSource = {
+  composeServiceName: string;
+  sourceId: string;
+  provider: string;
+  cloneUrl: string;
+  ref: string;
+  commitSha: string;
+  releaseId: string;
+  subdirectory?: string;
+};
+
+/**
+ * Preview prepare for every scheduled server, sharing one release-id allocator.
+ *
+ * Shared for the same reason the deploy fan-out shares one: a service scheduled
+ * onto several servers is one release, so the preview must not show it as
+ * several. The ids themselves are throwaway — preview publishes nothing — but
+ * the *shape* it reports has to be the shape a deploy produces.
+ */
+async function preparePreviewByServer(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    environmentId: string;
+    organizationId: string;
+    planned: SuccessfulPlannedDeploy;
+    networks: Awaited<ReturnType<typeof loadSpanningNetworks>>;
+    enriched: Awaited<ReturnType<typeof enrichPlannedTaskAddresses>>;
+    serviceIdToName: ReturnType<typeof serviceIdToNameMap>;
+    listenerNames: Awaited<ReturnType<typeof listenerNamesForAttachments>>;
+  },
+): Promise<
+  Array<{ serverId: string; prepared: PreparedDeployCompose }> | Response
+> {
+  const { planned, enriched } = args;
+  const { spanning, attachments, consumers } = args.networks;
+  const spanningHostNames = new Set(spanning.values());
+  const releaseIds = createReleaseIdAllocator();
+  const preparedByServer: Array<{
+    serverId: string;
+    prepared: PreparedDeployCompose;
+  }> = [];
+  for (const serverId of planned.plan.serverIds) {
+    const prepared = await prepareDeployCompose(c, db, {
+      environmentId: args.environmentId,
+      serverId,
+      organizationId: args.organizationId,
+      mode: "preview",
+      releaseIds,
+      schedule: scheduleSliceForServer(
+        planned,
+        serverId,
+        spanning,
+        enriched.tasks,
+        buildCompileAddressMaps({
+          tasks: enriched.tasks,
+          serviceIdToName: args.serviceIdToName,
+          serverId,
+          networkServiceIds: enriched.networkServiceIds,
+        }),
+        fabricNetworksForServer(
+          enriched.segmentsByServer.get(serverId),
+          spanningHostNames,
+        ),
+        reservedIngressHostsForServer({
+          thisServerId: serverId,
+          attachments,
+          consumers,
+          spanning,
+          segmentsByServer: enriched.segmentsByServer,
+          listenerNameByServer: args.listenerNames,
+        }),
+      ),
+    });
+    if (prepared instanceof Response) return prepared;
+    if ("kind" in prepared) return responseForPrepareError(c, prepared);
+    preparedByServer.push({ serverId, prepared });
+  }
+  return preparedByServer;
+}
+
+/**
+ * What each Git-backed service *would* build, from the already-resolved
+ * `sourceMaterial[]`.
+ *
+ * Preview never mints a token or seals a credential (see `deploy-sources.ts`),
+ * so this is shape only — and the fields here are precisely the non-secret
+ * ones: which source, which ref, which commit, and the release id the deploy
+ * would publish under.
+ *
+ * One row per release, not per (release, server): a service placed on three
+ * hosts is one release, and listing it three times would suggest three builds
+ * are about to run.
+ */
+function deployPreviewSources(
+  preparedByServer: ReadonlyArray<{ prepared: PreparedDeployCompose }>,
+): DeployPreviewSource[] {
+  const byRelease = new Map<string, DeployPreviewSource>();
+  for (const row of preparedByServer) {
+    for (const entry of row.prepared.sourceMaterial) {
+      const key = `${entry.composeServiceName} ${entry.releaseId}`;
+      if (byRelease.has(key)) continue;
+      byRelease.set(
+        key,
+        definedFields({
+          composeServiceName: entry.composeServiceName,
+          sourceId: entry.sourceId,
+          provider: entry.provider,
+          cloneUrl: entry.cloneUrl,
+          ref: entry.ref,
+          commitSha: entry.commitSha,
+          releaseId: entry.releaseId,
+          subdirectory: entry.subdirectory,
+        }),
+      );
+    }
+  }
+  return [...byRelease.values()];
+}
 
 /**
  * GET /environments/:id/deploy-preview — exact compose YAML the daemon would
@@ -1199,25 +1453,15 @@ export function registerEnvironmentDeployPreviewRoutes(
     const auth = await authorizeEnvironmentManage(c, db, environmentId);
     if (auth instanceof Response) return auth;
 
-    const planned = await planEnvironmentDeploy(db, {
+    const planned = await resolveSuccessfulPlan(
+      c,
+      db,
       environmentId,
-      organizationId: auth.organizationId,
-    });
-    if ("kind" in planned) {
-      if (planned.kind === "not_found") {
-        return c.json({ error: "Not found" }, 404);
-      }
-      return c.json({ error: "Invalid compose document" }, 400);
-    }
-    if (!planned.plan.ok) {
-      return responseForScheduleError(
-        c,
-        planned.plan.error,
-        planned.plan.message,
-      );
-    }
+      auth.organizationId,
+    );
+    if (planned instanceof Response) return planned;
 
-    const { spanning, attachments, consumers } = await loadSpanningNetworks(
+    const networks = await loadSpanningNetworks(
       db,
       planned,
       auth.organizationId,
@@ -1226,58 +1470,24 @@ export function registerEnvironmentDeployPreviewRoutes(
     const enriched = await enrichPlannedTaskAddresses(
       db,
       planned,
-      spanning,
+      networks.spanning,
       environmentId,
-      attachments.map((row) => row.serverId),
+      networks.attachments.map((row) => row.serverId),
     );
-    const spanningHostNames = new Set(spanning.values());
-    const serviceIdToName = serviceIdToNameMap(planned.serviceRows);
-    const listenerNames = await listenerNamesForAttachments(
-      db,
-      auth.organizationId,
-      attachments,
-    );
-    const preparedByServer: Array<{
-      serverId: string;
-      prepared: PreparedDeployCompose;
-    }> = [];
-    for (const serverId of planned.plan.serverIds) {
-      const prepared = await prepareDeployCompose(c, db, {
-        environmentId,
-        serverId,
-        organizationId: auth.organizationId,
-        mode: "preview",
-        schedule: scheduleSliceForServer(
-          planned,
-          serverId,
-          spanning,
-          enriched.tasks,
-          buildCompileAddressMaps({
-            tasks: enriched.tasks,
-            serviceIdToName,
-            serverId,
-            networkServiceIds: enriched.networkServiceIds,
-          }),
-          fabricNetworksForServer(
-            enriched.segmentsByServer.get(serverId),
-            spanningHostNames,
-          ),
-          reservedIngressHostsForServer({
-            thisServerId: serverId,
-            attachments,
-            consumers,
-            spanning,
-            segmentsByServer: enriched.segmentsByServer,
-            listenerNameByServer: listenerNames,
-          }),
-        ),
-      });
-      if (prepared instanceof Response) return prepared;
-      if ("kind" in prepared) {
-        return responseForPrepareError(c, prepared);
-      }
-      preparedByServer.push({ serverId, prepared });
-    }
+    const preparedByServer = await preparePreviewByServer(c, db, {
+      environmentId,
+      organizationId: auth.organizationId,
+      planned,
+      networks,
+      enriched,
+      serviceIdToName: serviceIdToNameMap(planned.serviceRows),
+      listenerNames: await listenerNamesForAttachments(
+        db,
+        auth.organizationId,
+        networks.attachments,
+      ),
+    });
+    if (preparedByServer instanceof Response) return preparedByServer;
 
     const first = preparedByServer[0];
     const serverRows = planned.plan.serverIds.length === 0 ? [] : await db
@@ -1293,12 +1503,13 @@ export function registerEnvironmentDeployPreviewRoutes(
     );
     const appContainers = first?.prepared.containers ?? [];
     const servers = buildDeployPreviewServers(preparedByServer, labelById);
+    const sources = deployPreviewSources(preparedByServer);
 
     return c.json({
       ok: true as const,
       composeFiles: first?.prepared.composeFiles ?? [],
       projectName,
-      ...(servers === undefined ? {} : { servers }),
+      ...presentFields({ servers, sources }),
       containers: buildDeployPreviewContainers({
         appContainers,
         ingressServices: ingress,
@@ -1319,10 +1530,29 @@ type SuccessfulPlannedDeploy = PlannedDeploy & {
   plan: Extract<PlannedDeploy["plan"], { ok: true }>;
 };
 
-type DeployRequestAuth = Exclude<
-  Awaited<ReturnType<typeof authorizeDeployRequest>>,
-  Response
->;
+/**
+ * Everything {@link runEnvironmentDeploy} needs that is *not* derivable from
+ * the environment itself. Written out rather than inferred from
+ * {@link authorizeDeployRequest} because the session path always yields
+ * `actorType: 'user'`, while the webhook path
+ * ({@link runEnvironmentDeployForActor}) supplies `'system'`.
+ */
+export type DeployRequestAuth = DeployActor & {
+  organizationId: string;
+  acknowledgeHealthCheckWarnings: boolean;
+  noCache: boolean;
+  selection: DeploySourceSelection;
+  /**
+   * Present only for `POST /environments/:id/rollback`.
+   *
+   * A rollback deliberately reuses this whole pipeline rather than forking a
+   * second enqueue path: that is where `environment.generation` is bumped, and
+   * the daemon's newer-generation supersede rule only covers commands that went
+   * through it. All the field changes is which releases the prepare layer pins
+   * into `sourceMaterial[]` (see `deploy-sources.ts`).
+   */
+  rollback?: DeployRollbackRequest;
+};
 
 type EnrichedTaskAddresses = Awaited<
   ReturnType<typeof enrichPlannedTaskAddresses>
@@ -1420,8 +1650,8 @@ async function awaitDeployFabricGate(
   const fabricGate = await awaitParticipatingFabricConvergence({
     db,
     commandQueue,
-    actorType: "user",
-    actorId: params.auth.userId,
+    actorType: params.auth.actorType,
+    actorId: params.auth.actorId,
     fabric: fabricRow,
     serverIds: fabricServerIds,
     ...(secretsConfig ? { secretsConfig } : {}),
@@ -1509,6 +1739,15 @@ async function prepareOneServerDeploy(
     listenerNames: Map<string, string>;
     spanningHostNames: Set<string>;
     serverId: string;
+    /** Commit this deploy was asked to build; `prepareDeployCompose` consumes it. */
+    selection: DeploySourceSelection;
+    /**
+     * Release ids for this deploy, allocated once for the whole fan-out. Every
+     * server's prepare gets the *same* allocator, which is what makes one
+     * release id describe one release of the environment rather than one per
+     * host — see {@link ReleaseIdAllocator}.
+     */
+    releaseIds: ReleaseIdAllocator;
   },
 ): Promise<PreparedServerDeploy | Response> {
   const prepared = await prepareDeployCompose(c, db, {
@@ -1517,6 +1756,11 @@ async function prepareOneServerDeploy(
     organizationId: params.auth.organizationId,
     acknowledgeHealthCheckWarnings: params.auth.acknowledgeHealthCheckWarnings,
     schedule: scheduleSliceForPreparedServer(params),
+    sourceSelection: params.selection,
+    releaseIds: params.releaseIds,
+    ...(params.auth.rollback === undefined
+      ? {}
+      : { rollback: params.auth.rollback }),
   });
   if (prepared instanceof Response) return prepared;
   if ("kind" in prepared) return responseForPrepareError(c, prepared);
@@ -1587,15 +1831,24 @@ async function prepareAllServerDeploys(
     environmentId: string;
     auth: DeployRequestAuth;
     dataEncryptionSecrets: DerivedSecretsConfig;
+    selection: DeploySourceSelection;
   } & DeploySpanningContext,
 ): Promise<PreparedServerDeploy[] | Response> {
   const spanningHostNames = new Set(params.spanning.values());
+  // One allocator for the whole fan-out, created *before* the loop: every
+  // server below resolves the same compose services, and each of them must come
+  // out carrying the same release id for a given service. Creating it per
+  // iteration (or letting the resolver mint ids on its own) is precisely the bug
+  // that makes an environment release un-rollbackable — see
+  // {@link ReleaseIdAllocator}.
+  const releaseIds = createReleaseIdAllocator();
   const preparedByServer: PreparedServerDeploy[] = [];
   for (const serverId of params.planned.plan.serverIds) {
     const row = await prepareOneServerDeploy(c, db, {
       ...params,
       spanningHostNames,
       serverId,
+      releaseIds,
     });
     if (row instanceof Response) return row;
     preparedByServer.push(row);
@@ -1606,10 +1859,9 @@ async function prepareAllServerDeploys(
 async function stopDrainedDeployments(
   db: Db,
   commandQueue: CommandQueue,
-  params: {
+  params: DeployActor & {
     drainedIds: readonly string[];
     attachmentServers: ReadonlySet<string>;
-    userId: string;
     environmentId: string;
     projectId: string;
     projectName: string;
@@ -1627,15 +1879,24 @@ async function stopDrainedDeployments(
   );
   const namesByServer = composeNetworkNamesByServer(composeNetworks);
   const ingressServices = tcpUdpIngressServiceRefs(tcpUdpServices);
+  // A drained server no longer runs this environment, so its release trees go
+  // with the rest of the stack — the rows still describe them because the
+  // environment lives on elsewhere.
+  const siteReleases = await resolveEnvironmentSiteReleases(
+    db,
+    params.environmentId,
+  );
   for (const serverId of params.drainedIds) {
     const stopped = await enqueueStopCommand(db, commandQueue, {
       serverId,
-      userId: params.userId,
+      actorType: params.actorType,
+      actorId: params.actorId,
       environmentId: params.environmentId,
       projectId: params.projectId,
       projectName: params.projectName,
       ingressServices,
       fabricNetworks: namesByServer.get(serverId) ?? [],
+      siteReleases,
     });
     if (stopped instanceof Response) return stopped;
     if (!params.attachmentServers.has(serverId)) {
@@ -1748,8 +2009,8 @@ async function enqueueIngressReconcileAfterDeploy(
   for (const serverId of ingressServerIds) {
     await enqueueManagedIngressReconcile(db, commandQueue, {
       serverId,
-      actorType: "user",
-      actorId: params.auth.userId,
+      actorType: params.auth.actorType,
+      actorId: params.auth.actorId,
       secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     });
@@ -1827,6 +2088,7 @@ async function runEnvironmentDeploy(
       planned,
       environmentId,
       auth,
+      selection: auth.selection,
       dataEncryptionSecrets,
       ...spanningCtx,
     });
@@ -1836,25 +2098,35 @@ async function runEnvironmentDeploy(
       db,
       environmentId,
     );
-    const { attachmentServers, participating, drainedIds } = deployParticipation(
+    const { attachmentServers, participating, drainedIds } =
+      deployParticipation(
       {
         planServerIds: planned.plan.serverIds,
         attachments: spanningCtx.attachments,
         previous,
       },
-    );
+      );
     const projectName = composeProjectName(planned.projectId);
+    // Recorded, not consumed, here: the current compose still names these, so
+    // this is the snapshot a later stop/delete falls back to once it does not.
+    const siteReleases = await resolveSourcedEnvironmentSiteReleases(
+      db,
+      environmentId,
+    );
     const created = await persistDeployFanOut(db, {
       preparedByServer,
       planServerIds: planned.plan.serverIds,
       drainedIds,
-      userId: auth.userId,
+      actorType: auth.actorType,
+      actorId: auth.actorId,
       environmentId,
       projectId: planned.projectId,
       organizationId: auth.organizationId,
       projectName,
       tasks: spanningCtx.enriched.tasks,
       noCache: auth.noCache,
+      selection: auth.selection,
+      siteReleases,
     });
     spanningCommitted = true;
     const { queued, enqueueError } = await deliverDeployFanOut(
@@ -1867,7 +2139,8 @@ async function runEnvironmentDeploy(
     const drainedError = await stopDrainedDeployments(db, commandQueue, {
       drainedIds,
       attachmentServers,
-      userId: auth.userId,
+      actorType: auth.actorType,
+      actorId: auth.actorId,
       environmentId,
       projectId: planned.projectId,
       projectName,
@@ -1900,6 +2173,36 @@ async function runEnvironmentDeploy(
   }
 }
 
+/**
+ * Run a deploy for an already-authorized, non-session actor.
+ *
+ * The GitHub webhook path has no session, no `getOrgId`, and no manage grant to
+ * evaluate — its authority is the HMAC signature plus the `source` row's own
+ * organization. It must nevertheless land in exactly the same pipeline
+ * (`persistDeployFanOut` → `deliverDeployFanOut`), because that is where
+ * `environment.generation` is bumped and where the daemon's newer-generation
+ * supersede rule gets its guarantee. Forking a second enqueue path would
+ * silently opt webhook deploys out of it.
+ *
+ * Callers are responsible for authorization: this function performs none.
+ */
+export async function runEnvironmentDeployForActor(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  environmentId: string,
+  auth: DeployRequestAuth,
+): Promise<Response> {
+  return await runEnvironmentDeploy(c, db, commandQueue, environmentId, auth);
+}
+
+/** Shared with the webhook trigger so it fails the same way on missing infra. */
+export function assertDeployDispatchInfrastructure(
+  c: Context<AppEnv>,
+): CommandQueue | Response {
+  return assertDispatchInfrastructure(c);
+}
+
 export function registerEnvironmentDeployRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
@@ -1918,6 +2221,20 @@ export function registerEnvironmentDeployRoutes(
     const environmentId = c.req.param("id");
     const auth = await authorizeDeployRequest(c, db, environmentId);
     if (auth instanceof Response) return auth;
+
+    // Prepare pins each service to its compose-declared branch, not to a ref
+    // named on the request. Accepting one would answer `queued` to "deploy
+    // release/1.4" and build the declared branch instead — the one outcome a
+    // caller reaching for this field cannot detect. Refuse loudly.
+    if (!PREPARE_HONORS_SOURCE_SELECTION && auth.selection.ref !== null) {
+      return c.json({
+        error: "source_ref_unsupported",
+        message:
+          "Deploying an explicit ref is not supported yet; omit `ref` to deploy " +
+          "the environment's current state.",
+        ref: auth.selection.ref,
+      }, 501);
+    }
 
     const commandQueue = assertDispatchInfrastructure(c);
     if (commandQueue instanceof Response) return commandQueue;
@@ -1995,21 +2312,22 @@ async function loadLifecycleTargets(
 async function enqueueStopCommand(
   db: Db,
   commandQueue: CommandQueue,
-  params: {
+  params: DeployActor & {
     serverId: string;
-    userId: string;
     environmentId: string;
     projectId: string;
     projectName: string;
     ingressServices: Array<{ serviceId: string }>;
     fabricNetworks: string[];
+    /** Per-service release trees to reclaim (generic, not traditional-web only). */
+    siteReleases: EnvironmentSiteRelease[];
   },
 ): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString();
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
-    actorType: "user",
-    actorId: params.userId,
+    actorType: params.actorType,
+    actorId: params.actorId,
     type: "environment.stop",
     payload: {
       environmentId: params.environmentId,
@@ -2020,6 +2338,9 @@ async function enqueueStopCommand(
         : {}),
       ...(params.fabricNetworks.length > 0
         ? { fabricNetworks: params.fabricNetworks }
+        : {}),
+      ...(params.siteReleases.length > 0
+        ? { siteReleases: params.siteReleases }
         : {}),
     },
     expiresAt,
@@ -2090,11 +2411,19 @@ export function registerEnvironmentStopRoutes(
       environmentId,
     );
     const namesByServer = composeNetworkNamesByServer(composeNetworks);
+    // Captured before the daemon runs: an explicit stop leaves the rows in
+    // place, but this is the same set delete teardown has to snapshot, so both
+    // paths resolve it the same way.
+    const siteReleases = await resolveEnvironmentSiteReleases(
+      db,
+      environmentId,
+    );
     const queued: QueuedCommandRef[] = [];
     for (const serverId of loaded.serverIds) {
       const enqueued = await enqueueStopCommand(db, commandQueue, {
         serverId,
-        userId: auth.userId,
+        actorType: "user",
+        actorId: auth.userId,
         environmentId,
         projectId: loaded.projectId,
         projectName: loaded.projectName,
@@ -2102,6 +2431,7 @@ export function registerEnvironmentStopRoutes(
           serviceId: svc.serviceId,
         })),
         fabricNetworks: namesByServer.get(serverId) ?? [],
+        siteReleases,
       });
       if (enqueued instanceof Response) return enqueued;
       queued.push(enqueued);

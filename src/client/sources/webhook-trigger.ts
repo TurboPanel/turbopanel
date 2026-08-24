@@ -1,0 +1,795 @@
+/**
+ * Turn a verified provider webhook into zero or more `environment.deploy`
+ * enqueues.
+ *
+ * The whole job is resolution: `(installation, repository, branch, sha)` is
+ * provider vocabulary, and it has to become a set of environments plus the
+ * commit each of them should build. Once that is settled the work is handed
+ * straight to {@link runEnvironmentDeployForActor} — the *same* pipeline the
+ * `POST /environments/:id/deploy` route uses. That is deliberate: generation
+ * bump, task replacement, fan-out, and the daemon's newer-generation supersede
+ * rule all live in that path, so a second push landing on an environment whose
+ * previous deploy is still queued is handled by machinery that already exists
+ * rather than by new cancellation logic here.
+ *
+ * Nothing in this module throws for an unroutable delivery. A provider reads a
+ * non-2xx as "retry me", and retrying will not conjure a server placement or
+ * un-suspend an installation, so every dead end is reported as a `skipped`
+ * outcome the caller can log and answer 2xx to.
+ *
+ * An instance-side fault is the opposite case and is reported separately, as a
+ * `failed` outcome. A queue that is down or a deploy that could not be enqueued
+ * *would* succeed on a retry, and the provider's redelivery is the only
+ * mechanism that brings the commit back — answering 2xx there loses the push
+ * permanently. The caller checks {@link triggerSummaryNeedsRetry} and answers
+ * 5xx instead.
+ *
+ * **Everything below is provider-agnostic.** Both webhook surfaces hand it the
+ * same `(provider, installation, repository, branch, sha)` tuple, and the only
+ * thing the provider discriminant changes is which installation rows are
+ * candidates — see {@link loadInstallations}.
+ */
+
+import { and, eq, inArray, sql } from 'drizzle-orm'
+import type { Context } from 'hono'
+import type { AppEnv } from '../../app.ts'
+import type { Db } from '../../db.ts'
+import {
+  environment,
+  gitProviderInstallation,
+  project,
+  service,
+  source,
+  workspace,
+} from '../../lib/db/schema.ts'
+import { resolveEffectivePlacementServerId } from '../../lib/project-options.ts'
+import type { ProjectOptions } from '../../lib/project-options.ts'
+import type { CommandQueue } from '../../lib/commands/queue.ts'
+import { logInfo, logWarn } from '../../logger.ts'
+import {
+  type DeployRequestAuth,
+  runEnvironmentDeployForActor,
+} from '../environments/deploy-routes.ts'
+import type { WebhookGitProviderName } from '../../lib/git/git-provider.ts'
+import { COMPOSE_SOURCE_JSONPATH } from './routes-helpers.ts'
+
+/** Why a matched source did not produce a deploy. */
+export type TriggerSkipReason =
+  /** No `installation` row for this provider installation id. */
+  | 'installation_unknown'
+  /** The installation is marked suspended; clones would fail anyway. */
+  | 'installation_suspended'
+  /** `autoDeploy: 'disabled'` — the source is wired up but not armed. */
+  | 'auto_deploy_disabled'
+  /** The push was on a branch this source does not watch. */
+  | 'branch_not_watched'
+  /** `autoDeploy: 'checks_passed'` — the SHA is parked until checks report. */
+  | 'awaiting_checks'
+  /** The source is attached to nothing deployable (library entry). */
+  | 'no_environment'
+  /** No environment pin and no project default — nothing to deploy onto. */
+  | 'server_placement_required'
+  /** The push deleted the branch: no head commit to build. */
+  | 'branch_deleted'
+  /**
+   * The shared deploy pipeline refused for a reason a retry cannot fix —
+   * invalid compose, unknown environment, a gate the operator has to clear.
+   */
+  | 'deploy_rejected'
+
+/**
+ * Why a matched source failed in a way a redelivery could still fix.
+ *
+ * Kept apart from {@link TriggerSkipReason} because the two get opposite HTTP
+ * answers: a skip is final and answers 2xx, a failure answers 5xx so GitHub
+ * redelivers.
+ */
+export type TriggerFailureReason =
+  /** The deploy pipeline answered 5xx — command queue, database, or encryption. */
+  | 'deploy_unavailable'
+
+export type TriggerOutcome =
+  | {
+    kind: 'queued'
+    sourceId: string
+    environmentId: string
+    commitSha: string | null
+  }
+  | {
+    kind: 'skipped'
+    sourceId: string | null
+    environmentId: string | null
+    reason: TriggerSkipReason
+    /** Status the deploy pipeline returned, when `reason` is `deploy_rejected`. */
+    status?: number
+  }
+  | {
+    kind: 'failed'
+    sourceId: string
+    environmentId: string
+    reason: TriggerFailureReason
+    /** Status the deploy pipeline returned (always 5xx). */
+    status: number
+  }
+
+export type TriggerSummary = {
+  matchedSources: number
+  queued: number
+  skipped: number
+  /** Instance-side failures — non-zero means the delivery must be retried. */
+  failed: number
+  outcomes: TriggerOutcome[]
+}
+
+function summarize(outcomes: TriggerOutcome[], matchedSources: number): TriggerSummary {
+  return {
+    matchedSources,
+    queued: outcomes.filter((o) => o.kind === 'queued').length,
+    skipped: outcomes.filter((o) => o.kind === 'skipped').length,
+    failed: outcomes.filter((o) => o.kind === 'failed').length,
+    outcomes,
+  }
+}
+
+/**
+ * Should the delivery be answered 5xx so the provider redelivers it?
+ *
+ * Only an instance-side fault qualifies. Everything else — auto-deploy off, an
+ * unwatched branch, a missing placement — looks exactly the same on the retry,
+ * and answering 5xx to it would put the provider into a retry loop against a
+ * configuration gap.
+ */
+export function triggerSummaryNeedsRetry(summary: TriggerSummary): boolean {
+  return summary.failed > 0
+}
+
+const SOURCE_TRIGGER_SELECT = {
+  id: source.id,
+  organizationId: source.organizationId,
+  serviceId: source.serviceId,
+  environmentId: source.environmentId,
+  defaultBranch: source.defaultBranch,
+  autoDeploy: source.autoDeploy,
+  options: source.options,
+}
+
+type TriggerSourceRow = {
+  id: string
+  organizationId: string
+  serviceId: string | null
+  environmentId: string | null
+  defaultBranch: string | null
+  autoDeploy: string
+  options: unknown
+}
+
+/**
+ * Sources this installation + repository could drive.
+ *
+ * Matching is on `repositoryExternalId` (the provider's numeric repo id), never
+ * on `repositoryUrl`: a repository can be renamed or transferred, and the id is
+ * the only field that survives it.
+ */
+async function findSourcesForRepository(
+  db: Db,
+  installationIds: readonly string[],
+  repositoryExternalId: string,
+): Promise<TriggerSourceRow[]> {
+  if (installationIds.length === 0) return []
+  return await db
+    .select(SOURCE_TRIGGER_SELECT)
+    .from(source)
+    .where(
+      and(
+        inArray(source.installationId, [...installationIds]),
+        eq(source.repositoryExternalId, repositoryExternalId),
+      ),
+    )
+    .orderBy(source.createdAt)
+}
+
+/**
+ * Branch policy.
+ *
+ * A source with `defaultBranch` set watches exactly that branch. A source that
+ * left it blank never picked one, so it watches **every** branch the repository
+ * pushes — the alternative (guessing the repository's own default) would need a
+ * live GitHub call on the hot path of every delivery and would silently change
+ * behavior when someone renames the default branch upstream.
+ */
+export function sourceWatchesBranch(
+  defaultBranch: string | null,
+  pushedBranch: string,
+): boolean {
+  if (defaultBranch === null || defaultBranch.trim().length === 0) return true
+  return defaultBranch.trim() === pushedBranch
+}
+
+/** Parked `checks_passed` state, stored on `source.options`. */
+export type PendingChecks = {
+  commitSha: string
+  ref: string | null
+  recordedAt: string
+}
+
+function readOptions(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  return { ...(value as Record<string, unknown>) }
+}
+
+export function readPendingChecks(options: unknown): PendingChecks | null {
+  const pending = readOptions(options).pendingChecks
+  if (typeof pending !== 'object' || pending === null || Array.isArray(pending)) {
+    return null
+  }
+  const record = pending as Record<string, unknown>
+  if (typeof record.commitSha !== 'string' || record.commitSha.length === 0) return null
+  return {
+    commitSha: record.commitSha,
+    ref: typeof record.ref === 'string' ? record.ref : null,
+    recordedAt: typeof record.recordedAt === 'string'
+      ? record.recordedAt
+      : new Date().toISOString(),
+  }
+}
+
+/**
+ * Park a SHA on the source until its checks report success.
+ *
+ * `source.options` is reused rather than a side table: this is one small,
+ * short-lived field per source that only ever matters between a push and the
+ * matching `check_suite`, and it is overwritten (not appended to) by the next
+ * push, so the newest commit is always the one that eventually deploys.
+ */
+async function setPendingChecks(
+  db: Db,
+  row: TriggerSourceRow,
+  pending: PendingChecks | null,
+): Promise<void> {
+  const options = readOptions(row.options)
+  if (pending === null) delete options.pendingChecks
+  else options.pendingChecks = pending
+
+  await db
+    .update(source)
+    .set({
+      options: Object.keys(options).length > 0 ? options : null,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(source.id, row.id))
+}
+
+/**
+ * Environments a source can deploy, from **both** attachment models.
+ *
+ * A source is "attached" either by the `source.service_id` / `source.environment_id`
+ * columns, or by a compose document naming it at
+ * `services.<name>.x-turbopanel.source.sourceId`. Those are independent — the
+ * Services form writes the compose reference and nothing else — so a resolver
+ * that only read the columns would silently ignore most real bindings.
+ *
+ * A project-level compose reference fans out to every environment of that
+ * project, because the project document is the base every environment overlays.
+ */
+export async function resolveSourceEnvironmentIds(
+  db: Db,
+  row: TriggerSourceRow,
+): Promise<string[]> {
+  const ids = new Set<string>()
+
+  if (row.environmentId) ids.add(row.environmentId)
+
+  if (row.serviceId) {
+    const [svc] = await db
+      .select({ environmentId: service.environmentId })
+      .from(service)
+      .where(eq(service.id, row.serviceId))
+      .limit(1)
+    if (svc?.environmentId) ids.add(svc.environmentId)
+  }
+
+  const referenced = await db.execute<{ environment_id: string }>(sql`
+    SELECT e.id AS environment_id
+    FROM environment e
+    JOIN project p ON p.id = e.project_id
+    JOIN workspace w ON w.id = p.workspace_id
+    WHERE w.organization_id = ${row.organizationId}::uuid
+      AND (
+        jsonb_path_exists(e.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
+          jsonb_build_object('sid', ${row.id}::text))
+        OR jsonb_path_exists(p.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
+          jsonb_build_object('sid', ${row.id}::text))
+      )
+  `)
+  for (const found of referenced) ids.add(found.environment_id)
+
+  return [...ids]
+}
+
+/**
+ * Effective placement for one environment, or `null` when it has none.
+ *
+ * Same rule the manual deploy route applies (`loadLifecycleTargets`): the
+ * environment's own pin wins, otherwise the project default. An unplaced
+ * environment is a configuration gap, not a transient failure, so the caller
+ * records it and moves on instead of retrying.
+ */
+async function resolveEnvironmentPlacement(
+  db: Db,
+  environmentId: string,
+): Promise<{ serverId: string | null; organizationId: string } | null> {
+  const [row] = await db
+    .select({
+      serverId: environment.serverId,
+      projectOptions: project.options,
+      organizationId: workspace.organizationId,
+    })
+    .from(environment)
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  if (!row) return null
+
+  return {
+    serverId: resolveEffectivePlacementServerId(
+      row.serverId,
+      row.projectOptions as ProjectOptions | null,
+    ),
+    organizationId: row.organizationId,
+  }
+}
+
+/**
+ * Enqueue one environment through the shared deploy path.
+ *
+ * `acknowledgeHealthCheckWarnings` is `true` on purpose. That flag exists so a
+ * person is shown warn-level health-check gaps before they deploy; there is no
+ * person on a webhook, and leaving it false would mean a repository with one
+ * warn-level gap silently stops auto-deploying with no surface anywhere to
+ * acknowledge it. Enabling auto-deploy on the source is the acknowledgement.
+ */
+async function deployEnvironmentForSource(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    row: TriggerSourceRow
+    environmentId: string
+    commitSha: string | null
+    ref: string | null
+  },
+): Promise<TriggerOutcome> {
+  const placement = await resolveEnvironmentPlacement(db, params.environmentId)
+  if (!placement) {
+    return {
+      kind: 'skipped',
+      sourceId: params.row.id,
+      environmentId: params.environmentId,
+      reason: 'no_environment',
+    }
+  }
+  if (!placement.serverId) {
+    return {
+      kind: 'skipped',
+      sourceId: params.row.id,
+      environmentId: params.environmentId,
+      reason: 'server_placement_required',
+    }
+  }
+
+  const auth: DeployRequestAuth = {
+    actorType: 'system',
+    actorId: params.row.id,
+    organizationId: placement.organizationId,
+    acknowledgeHealthCheckWarnings: true,
+    noCache: false,
+    // `sourceId` is what scopes the pinned commit. The event came from exactly
+    // this source row; an environment that also binds other repositories must
+    // resolve those from their own declared/default ref, not from this SHA.
+    selection: {
+      ref: params.ref,
+      commitSha: params.commitSha,
+      sourceId: params.row.id,
+    },
+  }
+
+  const response = await runEnvironmentDeployForActor(
+    c,
+    db,
+    commandQueue,
+    params.environmentId,
+    auth,
+  )
+  if (!response.ok) {
+    // 5xx from the shared pipeline is this instance failing (queue down,
+    // database or encryption unavailable), not the request being wrong. The
+    // commit is still deployable, so it is reported as a failure and the
+    // delivery is answered 5xx — GitHub's redelivery is the only thing that can
+    // bring it back.
+    if (response.status >= 500) {
+      return {
+        kind: 'failed',
+        sourceId: params.row.id,
+        environmentId: params.environmentId,
+        reason: 'deploy_unavailable',
+        status: response.status,
+      }
+    }
+    return {
+      kind: 'skipped',
+      sourceId: params.row.id,
+      environmentId: params.environmentId,
+      reason: 'deploy_rejected',
+      status: response.status,
+    }
+  }
+
+  return {
+    kind: 'queued',
+    sourceId: params.row.id,
+    environmentId: params.environmentId,
+    commitSha: params.commitSha,
+  }
+}
+
+async function deployAllEnvironmentsForSource(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    row: TriggerSourceRow
+    commitSha: string | null
+    ref: string | null
+  },
+): Promise<TriggerOutcome[]> {
+  const environmentIds = await resolveSourceEnvironmentIds(db, params.row)
+  if (environmentIds.length === 0) {
+    return [{
+      kind: 'skipped',
+      sourceId: params.row.id,
+      environmentId: null,
+      reason: 'no_environment',
+    }]
+  }
+
+  const outcomes: TriggerOutcome[] = []
+  for (const environmentId of environmentIds) {
+    outcomes.push(
+      await deployEnvironmentForSource(c, db, commandQueue, {
+        row: params.row,
+        environmentId,
+        commitSha: params.commitSha,
+        ref: params.ref,
+      }),
+    )
+  }
+  return outcomes
+}
+
+/**
+ * Live installation rows that could own this delivery.
+ *
+ * Plural on purpose: the unique index is
+ * `(organization_id, provider, external_installation_id)`, so the same GitHub
+ * installation can legitimately be registered by more than one organization on
+ * a shared instance, and each of them gets its own sources.
+ *
+ * **`externalInstallationId` may be `null`, and that is not a failure.** GitHub
+ * names the installation on every delivery; GitLab names only the project,
+ * because its webhook has no idea which OAuth connection an operator registered
+ * the project under. A `null` therefore means "every live connection for this
+ * provider is a candidate", and the repository id does the narrowing in
+ * {@link findSourcesForRepository} — which is safe because it matches on the
+ * provider-side project id, and a source can only carry an id the connection
+ * that created it could see.
+ */
+async function loadInstallations(
+  db: Db,
+  provider: WebhookGitProviderName,
+  externalInstallationId: string | null,
+): Promise<{ live: string[]; suspended: number }> {
+  const conditions = [eq(gitProviderInstallation.provider, provider)]
+  if (externalInstallationId) {
+    conditions.push(
+      eq(gitProviderInstallation.externalInstallationId, externalInstallationId),
+    )
+  }
+
+  const rows = await db
+    .select({
+      id: gitProviderInstallation.id,
+      suspendedAt: gitProviderInstallation.suspendedAt,
+    })
+    .from(gitProviderInstallation)
+    .where(and(...conditions))
+
+  return {
+    live: rows.filter((row) => row.suspendedAt === null).map((row) => row.id),
+    suspended: rows.filter((row) => row.suspendedAt !== null).length,
+  }
+}
+
+export type PushTrigger = {
+  /** Which provider delivered it — decides the candidate installation set. */
+  provider: WebhookGitProviderName
+  /** `null` when the delivery names no connection (GitLab). */
+  externalInstallationId: string | null
+  repositoryExternalId: string
+  /** Full git ref as delivered (`refs/heads/main`). */
+  ref: string
+  branch: string
+  /** Head commit after the push. */
+  commitSha: string | null
+}
+
+/** Resolve and act on one `push` delivery, from any provider. */
+export async function resolvePushTrigger(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  push: PushTrigger,
+): Promise<TriggerSummary> {
+  const installations = await loadInstallations(
+    db,
+    push.provider,
+    push.externalInstallationId,
+  )
+  if (installations.live.length === 0) {
+    return summarize([{
+      kind: 'skipped',
+      sourceId: null,
+      environmentId: null,
+      reason: installations.suspended > 0
+        ? 'installation_suspended'
+        : 'installation_unknown',
+    }], 0)
+  }
+
+  const rows = await findSourcesForRepository(
+    db,
+    installations.live,
+    push.repositoryExternalId,
+  )
+
+  const outcomes: TriggerOutcome[] = []
+  for (const row of rows) {
+    if (row.autoDeploy === 'disabled') {
+      outcomes.push({
+        kind: 'skipped',
+        sourceId: row.id,
+        environmentId: null,
+        reason: 'auto_deploy_disabled',
+      })
+      continue
+    }
+    if (!sourceWatchesBranch(row.defaultBranch, push.branch)) {
+      outcomes.push({
+        kind: 'skipped',
+        sourceId: row.id,
+        environmentId: null,
+        reason: 'branch_not_watched',
+      })
+      continue
+    }
+    if (row.autoDeploy === 'checks_passed') {
+      // Park the SHA and wait for the matching check_suite / check_run. A push
+      // that carried no head SHA (a branch delete) has nothing to park and
+      // nothing a later check could match, so it is simply dropped.
+      if (push.commitSha) {
+        await setPendingChecks(db, row, {
+          commitSha: push.commitSha,
+          ref: push.ref,
+          recordedAt: new Date().toISOString(),
+        })
+      }
+      outcomes.push({
+        kind: 'skipped',
+        sourceId: row.id,
+        environmentId: null,
+        reason: 'awaiting_checks',
+      })
+      continue
+    }
+
+    if (!push.commitSha) {
+      // Mirrors the `checks_passed` guard above: a branch delete carries no head
+      // SHA, so there is nothing to build and an immediate deploy would either
+      // redeploy the previous state or fail at checkout. The webhook route
+      // short-circuits these before they reach here; this is the same rule for
+      // any other caller.
+      outcomes.push({
+        kind: 'skipped',
+        sourceId: row.id,
+        environmentId: null,
+        reason: 'branch_deleted',
+      })
+      continue
+    }
+
+    outcomes.push(
+      ...await deployAllEnvironmentsForSource(c, db, commandQueue, {
+        row,
+        commitSha: push.commitSha,
+        ref: push.ref,
+      }),
+    )
+  }
+
+  const summary = summarize(outcomes, rows.length)
+  logInfo(
+    'git-webhook',
+    `push ${push.repositoryExternalId}@${push.branch}: ` +
+      `${summary.queued} queued, ${summary.skipped} skipped, ${summary.failed} failed`,
+  )
+  return summary
+}
+
+export type CheckTrigger = {
+  provider: WebhookGitProviderName
+  /** `null` when the delivery names no connection (GitLab). */
+  externalInstallationId: string | null
+  repositoryExternalId: string
+  commitSha: string
+}
+
+/**
+ * Resolve and act on a completed, successful CI signal — GitHub's
+ * `check_suite` / `check_run`, or GitLab's `pipeline`.
+ *
+ * Only sources that actually parked *this* SHA are released. A success for a
+ * commit nobody is waiting on (an older run finishing late, a branch nothing
+ * watches) is a no-op, which is what keeps a burst of check events from
+ * deploying the same commit repeatedly.
+ */
+export async function resolveCheckTrigger(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  check: CheckTrigger,
+): Promise<TriggerSummary> {
+  const installations = await loadInstallations(
+    db,
+    check.provider,
+    check.externalInstallationId,
+  )
+  if (installations.live.length === 0) {
+    return summarize([{
+      kind: 'skipped',
+      sourceId: null,
+      environmentId: null,
+      reason: installations.suspended > 0
+        ? 'installation_suspended'
+        : 'installation_unknown',
+    }], 0)
+  }
+
+  const rows = await findSourcesForRepository(
+    db,
+    installations.live,
+    check.repositoryExternalId,
+  )
+
+  const outcomes: TriggerOutcome[] = []
+  let matched = 0
+  for (const row of rows) {
+    if (row.autoDeploy !== 'checks_passed') continue
+    const pending = readPendingChecks(row.options)
+    if (pending?.commitSha !== check.commitSha) continue
+    matched += 1
+
+    // Clear first: a deploy that fails to enqueue must not leave the SHA parked
+    // so a later unrelated success replays it.
+    await setPendingChecks(db, row, null)
+    const results = await deployAllEnvironmentsForSource(c, db, commandQueue, {
+      row,
+      commitSha: pending.commitSha,
+      ref: pending.ref,
+    })
+    // ...but an instance-side failure is not a replay risk, it is lost work: the
+    // delivery is about to be answered 5xx, and GitHub's redelivery has nothing
+    // to release unless the SHA goes back. Restore exactly what was parked.
+    if (results.some((outcome) => outcome.kind === 'failed')) {
+      await setPendingChecks(db, row, pending)
+    }
+    outcomes.push(...results)
+  }
+
+  const summary = summarize(outcomes, matched)
+  if (matched > 0) {
+    logInfo(
+      'git-webhook',
+      `checks passed ${check.repositoryExternalId}@${check.commitSha.slice(0, 7)}: ` +
+        `${summary.queued} queued, ${summary.skipped} skipped, ${summary.failed} failed`,
+    )
+  }
+  return summary
+}
+
+/**
+ * Apply an `installation` lifecycle event.
+ *
+ * Suspension is the provider telling us its tokens will stop working; recording
+ * it here is what makes {@link loadInstallations} (and the per-provider token
+ * minters) refuse further work instead of failing at clone time. Deletion is
+ * treated as suspension rather than a row delete: the `source` rows that
+ * reference the installation stay intact, so re-installing the App — or
+ * re-authorizing the OAuth grant — restores them instead of orphaning every
+ * repository binding.
+ *
+ * Only GitHub delivers these. GitLab has no installation-lifecycle webhook: a
+ * revoked grant surfaces as a failing token refresh, which the deploy path
+ * reports as a prepare error rather than as a suspension recorded up front.
+ */
+export async function applyProviderInstallationEvent(
+  db: Db,
+  params: {
+    provider: WebhookGitProviderName
+    externalInstallationId: string
+    action: string
+  },
+): Promise<{ updated: number }> {
+  const suspendActions = new Set(['suspend', 'deleted'])
+  const resumeActions = new Set(['unsuspend', 'created', 'new_permissions_accepted'])
+
+  let suspendedAt: string | null
+  if (suspendActions.has(params.action)) suspendedAt = new Date().toISOString()
+  else if (resumeActions.has(params.action)) suspendedAt = null
+  else return { updated: 0 }
+
+  const updated = await db
+    .update(gitProviderInstallation)
+    .set({ suspendedAt, updatedAt: new Date().toISOString() })
+    .where(
+      and(
+        eq(gitProviderInstallation.provider, params.provider),
+        eq(
+          gitProviderInstallation.externalInstallationId,
+          params.externalInstallationId,
+        ),
+      ),
+    )
+    .returning({ id: gitProviderInstallation.id })
+
+  if (updated.length === 0) {
+    logWarn(
+      'git-webhook',
+      `installation ${params.action} for unknown installation ` +
+        params.externalInstallationId,
+    )
+  }
+  return { updated: updated.length }
+}
+
+/**
+ * GitHub-named aliases.
+ *
+ * The resolvers above are provider-agnostic; these keep the GitHub webhook
+ * route (and its tests) reading in its own vocabulary while binding the
+ * discriminant once, so a GitHub delivery can never be resolved against a
+ * GitLab connection by omission.
+ */
+export function resolveGithubPushTrigger(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  push: Omit<PushTrigger, 'provider'>,
+): Promise<TriggerSummary> {
+  return resolvePushTrigger(c, db, commandQueue, { provider: 'github', ...push })
+}
+
+export function resolveGithubCheckTrigger(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  check: Omit<CheckTrigger, 'provider'>,
+): Promise<TriggerSummary> {
+  return resolveCheckTrigger(c, db, commandQueue, { provider: 'github', ...check })
+}
+
+export function applyGithubInstallationEvent(
+  db: Db,
+  params: { externalInstallationId: string; action: string },
+): Promise<{ updated: number }> {
+  return applyProviderInstallationEvent(db, { provider: 'github', ...params })
+}
