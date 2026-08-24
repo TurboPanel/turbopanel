@@ -62,3 +62,11 @@ test('gitlabEventName normalizes the display-name header', () => {
   assertEquals(gitlabEventName('  Pipeline Hook '), 'pipeline_hook')
   assertEquals(gitlabEventName(null), '')
 })
+
+test('comparison HMAC key is not minted at module load', async () => {
+  // Workers error 10021: getRandomValues / SubtleCrypto at isolate global
+  // scope fails deploy. The key must be created inside a function body.
+  const source = await Deno.readTextFile(new URL('./gitlab-webhook.ts', import.meta.url))
+  assertEquals(source.includes('crypto.getRandomValues'), true)
+  assertEquals(/^const comparisonKeyPromise/m.test(source), false)
+})

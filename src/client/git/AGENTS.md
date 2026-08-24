@@ -42,9 +42,12 @@ taken here:
 
 The GitLab token is not itself a MAC, so a naive `===` on it would be a timing
 oracle. `timingSafeSecretEquals` MACs both sides under one ephemeral
-per-process key and compares the two fixed-length tags, which is the same
+per-isolate key and compares the two fixed-length tags, which is the same
 primitive GitHub's path leans on applied to a value that did not arrive as a
-tag.
+tag. That key is minted on first use — never at module load — because
+Cloudflare Workers reject `crypto.getRandomValues` (and async SubtleCrypto)
+in isolate global scope (error 10021), and `src/workers.ts` imports this
+module on boot.
 
 ## The gate, in order
 

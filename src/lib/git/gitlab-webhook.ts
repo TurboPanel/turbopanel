@@ -35,14 +35,25 @@ export const GITLAB_EVENT_HEADER = 'x-gitlab-event'
  */
 export const GITLAB_EVENT_UUID_HEADER = 'x-gitlab-event-uuid'
 
-/** Random per-process key: only ever used to compare two local digests. */
-const comparisonKeyPromise: Promise<CryptoKey> = crypto.subtle.importKey(
-  'raw',
-  crypto.getRandomValues(new Uint8Array(32)) as BufferSource,
-  { name: 'HMAC', hash: 'SHA-256' },
-  false,
-  ['sign', 'verify'],
-)
+/**
+ * Random per-isolate key: only ever used to compare two local digests.
+ *
+ * Minted on first use, never at module load. Cloudflare Workers reject
+ * `crypto.getRandomValues` and async SubtleCrypto I/O in isolate global
+ * scope (error 10021), and `src/workers.ts` imports this module on boot.
+ */
+let comparisonKeyPromise: Promise<CryptoKey> | undefined
+
+function comparisonKey(): Promise<CryptoKey> {
+  comparisonKeyPromise ??= crypto.subtle.importKey(
+    'raw',
+    crypto.getRandomValues(new Uint8Array(32)) as BufferSource,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign', 'verify'],
+  )
+  return comparisonKeyPromise
+}
 
 /**
  * Constant-time equality for two secrets of unequal, attacker-visible length.
@@ -57,7 +68,7 @@ export async function timingSafeSecretEquals(
   expected: string,
   presented: string,
 ): Promise<boolean> {
-  const key = await comparisonKeyPromise
+  const key = await comparisonKey()
   const expectedTag = await crypto.subtle.sign(
     'HMAC',
     key,

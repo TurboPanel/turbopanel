@@ -285,9 +285,12 @@ Wrangler/esbuild. **Do not** use Deno import-map-only specifiers there —
 `@std/*`, bare `jsr:…`, or other Deno-only APIs — unless there is a matching
 `wrangler.jsonc` `alias` (see the SMTP shims). Prefer Web Crypto and small local
 helpers (e.g. hex in `src/lib/machine-key.ts` /
-`src/daemon/authn/server-key.ts`). Deno-only entrypoints (`src/deno.ts`,
-developer drizzle studio, Redis cell) may keep `@std/*`. Guard:
-`pnpm check:workers-bundle`.
+`src/daemon/authn/server-key.ts`). **Do not** call `crypto.getRandomValues`,
+`crypto.subtle.*`, `fetch`, or `setTimeout` at module load — Cloudflare
+startup validation fails with error 10021 (`Disallowed operation called
+within global scope`); mint keys and do I/O inside a handler. Deno-only
+entrypoints (`src/deno.ts`, developer drizzle studio, Redis cell) may keep
+`@std/*`. Guard: `pnpm check:workers-bundle`.
 
 ### Ansible style (SonarQube)
 

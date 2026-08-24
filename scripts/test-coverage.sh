@@ -389,6 +389,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/email/validate-address.test.ts \
   src/lib/geo/server-geo.test.ts \
   src/lib/geo/self-hosted-geo-provider.test.ts \
+  src/lib/git/ \
   src/lib/hosting-options.test.ts \
   src/lib/hosting-web-env.test.ts \
   src/lib/install/parse-body.test.ts \

@@ -1797,7 +1797,7 @@
         "npm:@cloudflare/vitest-pool-workers@0.22",
         "npm:@cloudflare/workers-types@^5.20260818.1",
         "npm:@noble/hashes@1.8.0",
-        "npm:@types/node@^24.13.3",
+        "npm:@types/node@^26.2.0",
         "npm:@vitest/coverage-istanbul@^4.1.0",
         "npm:amqplib@^2.0.1",
         "npm:drizzle-kit@~0.31.1",
