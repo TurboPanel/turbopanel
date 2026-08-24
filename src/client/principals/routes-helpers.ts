@@ -123,3 +123,43 @@ export function resourceLimitsFromOptions(options: unknown) {
 export function patchRequiresServiceIds(body: Record<string, unknown>): boolean {
   return 'serviceIds' in body
 }
+
+/** A PATCH must change something: stewards, entitlements, or both. */
+export function patchTouchesPrincipal(body: Record<string, unknown>): boolean {
+  return 'serviceIds' in body || 'entitlements' in body
+}
+
+/**
+ * Parse an `entitlements` field into rows.
+ *
+ * `null` means invalid — rejected rather than dropped, because silently
+ * discarding a malformed grant list would **revoke** every entitlement the
+ * principal should hold. Absent means "leave them alone", which is why the
+ * caller distinguishes `undefined` from `[]`.
+ */
+export function parseEntitlementsField(
+  body: Record<string, unknown>,
+  supported: { runtimes: readonly string[]; series: readonly string[] },
+): { runtime: string; series: string; grantedBy: 'operator' }[] | null | undefined {
+  if (!('entitlements' in body)) return undefined
+  const raw = body.entitlements
+  if (!Array.isArray(raw)) return null
+  const out: { runtime: string; series: string; grantedBy: 'operator' }[] = []
+  const seen = new Set<string>()
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) return null
+    const record = entry as Record<string, unknown>
+    const runtime = record.runtime
+    const series = record.series
+    if (typeof runtime !== 'string' || typeof series !== 'string') return null
+    if (!supported.runtimes.includes(runtime)) return null
+    if (!supported.series.includes(series)) return null
+    const key = `${runtime}@${series}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    // Anything set through the API is an operator grant by definition; a
+    // deploy-derived one is inserted by deploy-prepare, not by a client.
+    out.push({ runtime, series, grantedBy: 'operator' })
+  }
+  return out
+}

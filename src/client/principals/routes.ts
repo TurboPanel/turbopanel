@@ -1,4 +1,8 @@
 import { eq } from 'drizzle-orm'
+import {
+  SUPPORTED_RUNTIME_SERIES,
+  SUPPORTED_RUNTIMES,
+} from '../../lib/runtime-registry.ts'
 import type { Hono, Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -25,6 +29,7 @@ import {
 import {
   loadEntitlementsByPrincipalIds,
   isServerPrincipalUsernameTaken,
+  replaceEntitlements,
   replaceStewards,
   SERVER_PRINCIPAL_PROVIDER,
   USERNAME_IN_USE_ERROR,
@@ -34,7 +39,9 @@ import {
   optionsRecordFromJsonb,
   parseCreatePrincipalOptions,
   parsePrincipalUsernameValue,
+  parseEntitlementsField,
   patchRequiresServiceIds,
+  patchTouchesPrincipal,
   projectPrincipalCreateResponse,
   resourceLimitsFromOptions,
   type InsertedProjectPrincipal,
@@ -52,6 +59,7 @@ type ParsedCreateProjectPrincipal = {
   options: PrincipalOptionsPersisted
   override: { uid: number; gid: number } | null
   serviceIds: string[]
+  entitlements: { runtime: string; series: string; grantedBy: 'operator' }[]
 }
 
 function parseCreatePrincipalUsername(
@@ -76,6 +84,13 @@ async function parseCreateProjectPrincipalRequest(
   const username = parseCreatePrincipalUsername(c, body)
   if (username instanceof Response) return username
 
+  const entitlements = parseEntitlementsField(body, {
+    runtimes: SUPPORTED_RUNTIMES,
+    series: SUPPORTED_RUNTIME_SERIES,
+  })
+  if (entitlements === null) {
+    return c.json({ error: 'invalid_entitlements' }, 400)
+  }
   const serviceIds = parseServiceIdsField(body)
   if (serviceIds === null) {
     return c.json({ error: 'invalid_service_ids' }, 400)
@@ -94,6 +109,7 @@ async function parseCreateProjectPrincipalRequest(
     options: parsedOptions.options,
     override: parsedOptions.override,
     serviceIds,
+    entitlements: entitlements ?? [],
   }
 }
 
@@ -136,6 +152,9 @@ async function insertProjectPrincipal(
 
     if (input.serviceIds.length > 0) {
       await replaceStewards(tx, row.id, input.serviceIds)
+    }
+    if (input.entitlements.length > 0) {
+      await replaceEntitlements(tx, row.id, input.entitlements)
     }
     return {
       id: row.id,
@@ -282,20 +301,37 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    if (!patchRequiresServiceIds(body)) {
+    if (!patchTouchesPrincipal(body)) {
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const serviceIds = parseServiceIdsField(body)
+    // Absent means "leave them alone"; `[]` means "revoke everything". Both
+    // are real requests, so the two must stay distinguishable.
+    const entitlements = parseEntitlementsField(body, {
+      runtimes: SUPPORTED_RUNTIMES,
+      series: SUPPORTED_RUNTIME_SERIES,
+    })
+    if (entitlements === null) {
+      return c.json({ error: 'invalid_entitlements' }, 400)
+    }
+
+    const patchesStewards = patchRequiresServiceIds(body)
+    const serviceIds = patchesStewards ? parseServiceIdsField(body) : []
     if (serviceIds === null) {
       return c.json({ error: 'invalid_service_ids' }, 400)
     }
-    if (!(await servicesBelongToProject(db, projectId, serviceIds))) {
+    if (
+      patchesStewards &&
+      !(await servicesBelongToProject(db, projectId, serviceIds))
+    ) {
       return c.json({ error: 'invalid_service_ids' }, 400)
     }
 
     await db.transaction(async (tx) => {
-      await replaceStewards(tx, id, serviceIds)
+      if (patchesStewards) await replaceStewards(tx, id, serviceIds)
+      if (entitlements !== undefined) {
+        await replaceEntitlements(tx, id, entitlements)
+      }
       await tx.update(principal).set({
         updatedAt: new Date().toISOString(),
       }).where(eq(principal.id, id))

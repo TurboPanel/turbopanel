@@ -4,6 +4,8 @@
 
 import { assertEquals } from '@std/assert'
 import {
+  parseEntitlementsField,
+  patchTouchesPrincipal,
   mergeTopLevelPrincipalIdsIntoOptions,
   optionsRecordFromJsonb,
   parseCreatePrincipalOptions,
@@ -83,4 +85,70 @@ test('resourceLimitsFromOptions parses jsonb options', () => {
   assertEquals(resourceLimitsFromOptions({}), {})
   assertEquals(patchRequiresServiceIds({ serviceIds: [] }), true)
   assertEquals(patchRequiresServiceIds({}), false)
+})
+
+const RUNTIMES = { runtimes: ['php', 'node'], series: ['8.3', '8.4', '22', '24'] }
+
+test('parseEntitlementsField distinguishes absent from empty', () => {
+  // Absent means "leave them alone"; [] means "revoke everything". Collapsing
+  // the two would make a steward-only PATCH silently strip every grant.
+  assertEquals(parseEntitlementsField({}, RUNTIMES), undefined)
+  assertEquals(parseEntitlementsField({ entitlements: [] }, RUNTIMES), [])
+})
+
+test('parseEntitlementsField rejects rather than dropping a bad grant', () => {
+  // Silently discarding a malformed list would REVOKE every entitlement the
+  // principal should have held.
+  assertEquals(parseEntitlementsField({ entitlements: 'php' }, RUNTIMES), null)
+  assertEquals(
+    parseEntitlementsField({ entitlements: [{ runtime: 'php' }] }, RUNTIMES),
+    null,
+  )
+  assertEquals(
+    parseEntitlementsField(
+      { entitlements: [{ runtime: 'ruby', series: '3.3' }] },
+      RUNTIMES,
+    ),
+    null,
+  )
+  assertEquals(
+    parseEntitlementsField(
+      { entitlements: [{ runtime: 'php', series: '8.1' }] },
+      RUNTIMES,
+    ),
+    null,
+  )
+})
+
+test('parseEntitlementsField marks API grants as operator, never deploy', () => {
+  // `deploy` provenance is inserted by deploy-prepare when a service declares a
+  // runtime; a client must not be able to forge that distinction.
+  assertEquals(
+    parseEntitlementsField(
+      { entitlements: [{ runtime: 'php', series: '8.4', grantedBy: 'deploy' }] },
+      RUNTIMES,
+    ),
+    [{ runtime: 'php', series: '8.4', grantedBy: 'operator' }],
+  )
+})
+
+test('parseEntitlementsField folds duplicates', () => {
+  assertEquals(
+    parseEntitlementsField(
+      {
+        entitlements: [
+          { runtime: 'php', series: '8.4' },
+          { runtime: 'php', series: '8.4' },
+        ],
+      },
+      RUNTIMES,
+    ),
+    [{ runtime: 'php', series: '8.4', grantedBy: 'operator' }],
+  )
+})
+
+test('patchTouchesPrincipal accepts an entitlements-only patch', () => {
+  assertEquals(patchTouchesPrincipal({ entitlements: [] }), true)
+  assertEquals(patchTouchesPrincipal({ serviceIds: [] }), true)
+  assertEquals(patchTouchesPrincipal({ username: 'x' }), false)
 })
