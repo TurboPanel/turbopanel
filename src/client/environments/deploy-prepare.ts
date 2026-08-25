@@ -206,6 +206,7 @@ export type DeployPrepareWarningCode =
   | "health_check_missing"
   | "docker_external_network_unregistered"
   | "site_principal_ambiguous"
+  | "site_managed_directory_unowned"
   | "source_principal_ambiguous"
   | "binding_endpoint_unavailable"
   | "php_series_not_installed";
@@ -426,6 +427,7 @@ export type DeployPrepareError =
   | { kind: "datacenter_ip_required"; serverId: string }
   | { kind: "docker_external_network_unregistered"; names: string[] }
   | { kind: "site_principal_ambiguous"; composeServiceName: string }
+  | { kind: "site_managed_directory_unowned"; composeServiceName: string }
   | { kind: "source_principal_ambiguous"; composeServiceName: string }
   | {
     kind: "source_ref_unresolved";
@@ -585,6 +587,13 @@ function warningFromPrepareError(
         code: "site_principal_ambiguous",
         message:
           `Site "${error.composeServiceName}" has more than one project principal assigned.`,
+        details: { composeServiceName: error.composeServiceName },
+      };
+    case "site_managed_directory_unowned":
+      return {
+        code: "site_managed_directory_unowned",
+        message:
+          `Site "${error.composeServiceName}" serves an uploaded directory but has no project principal to own it.`,
         details: { composeServiceName: error.composeServiceName },
       };
     case "source_principal_ambiguous":
@@ -1926,7 +1935,9 @@ function resolveSitesForMode(
   sitesOrError:
     | EnvironmentDeploySite[]
     | {
-      kind: "site_principal_ambiguous";
+      kind:
+        | "site_principal_ambiguous"
+        | "site_managed_directory_unowned";
       composeServiceName: string;
     },
   fallbackSites: readonly SiteSpec[],
@@ -2673,7 +2684,10 @@ export async function attachPrincipalsToSites(
   sites: readonly SiteSpec[],
 ): Promise<
   | EnvironmentDeploySite[]
-  | { kind: "site_principal_ambiguous"; composeServiceName: string }
+  | {
+    kind: "site_principal_ambiguous" | "site_managed_directory_unowned";
+    composeServiceName: string;
+  }
 > {
   if (sites.length === 0) return [];
 
@@ -2712,6 +2726,17 @@ export async function attachPrincipalsToSites(
     // Compose carries the *authored* php block; the wire carries the validated,
     // rendered one. Anything that fails its spec is dropped rather than
     // escaped — the save-time linter is what tells the operator why.
+    // "A directory and a principal" needs both. Caught here rather than at
+    // payload validation so the operator gets a sentence naming the service
+    // instead of a generic "Invalid sites entry" during enqueue — and caught at
+    // all rather than falling back to the daemon-owned tree, which would serve
+    // fine and be unreachable over SFTP forever.
+    if (site.sourceKind === "managed-directory" && !principalPin) {
+      return {
+        kind: "site_managed_directory_unowned",
+        composeServiceName: site.composeServiceName,
+      };
+    }
     const { php: authoredPhp, ...rest } = site;
     const php = renderPhpForDeploy(authoredPhp, ALLOWED_PHP_EXTENSIONS);
     out.push({

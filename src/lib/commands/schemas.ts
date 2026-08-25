@@ -1055,6 +1055,15 @@ export type EnvironmentDeploySite = {
   root: string;
   /** Loopback port hosting Caddy reverse-proxies to. */
   listenPort: number;
+  /**
+   * Where the content comes from. Omitted means `release` — a Git-backed
+   * immutable tree the daemon publishes and only asserts.
+   *
+   * `managed-directory` is a principal-writable `webroot/` the tenant fills
+   * over SFTP, and requires a `principal`: "a directory and a principal" needs
+   * both, and without an owner there is no account to write into it.
+   */
+  sourceKind?: "release" | "managed-directory";
   /** Merged hosting web env (variables + options.web.env). */
   webEnv?: Record<string, string>;
   php?: EnvironmentDeployHostingPhp;
@@ -2026,6 +2035,7 @@ function parseDeployServiceHooks(
 }
 
 const SITE_ENGINES = new Set(["caddy", "apache", "nginx", "openlitespeed"]);
+const SITE_SOURCE_KINDS = new Set(["release", "managed-directory"]);
 
 function parseDeploySiteEntry(
   entry: unknown,
@@ -2053,12 +2063,28 @@ function parseDeploySiteEntry(
     root: entry.root,
     listenPort: entry.listenPort,
   };
+  if (entry.sourceKind !== undefined) {
+    if (
+      !isString(entry.sourceKind) || !SITE_SOURCE_KINDS.has(entry.sourceKind)
+    ) {
+      throw new Error("Invalid sites entry");
+    }
+    site.sourceKind = entry.sourceKind as EnvironmentDeploySite["sourceKind"];
+  }
   const webEnv = parseEnvRecord(entry.webEnv);
   if (webEnv) site.webEnv = webEnv;
   const php = parseDeployHostingPhp(entry.php);
   if (php) site.php = php;
   const principal = parseDeploySitePrincipal(entry.principal);
   if (principal) site.principal = principal;
+  // A managed directory is "a directory **and a principal**". Without an owner
+  // there is no account to write into it, and the daemon would silently fall
+  // back to the unreachable daemon-owned tree — which looks like it worked.
+  if (site.sourceKind === "managed-directory" && !site.principal) {
+    throw new Error(
+      `Invalid sites entry: ${site.composeServiceName} is a managed directory with no principal`,
+    );
+  }
   return site;
 }
 

@@ -3781,3 +3781,80 @@ test("server.principals.reconcile validates principals the same way a deploy doe
     "principals must be an array",
   );
 });
+
+function deployPayloadWithSite(site: Record<string, unknown>) {
+  return {
+    environmentId: "env-1",
+    projectId: "proj-1",
+    organizationId: "org-1",
+    projectName: "tp-demo",
+    composeFiles: [{
+      filename: "compose.yaml",
+      role: "runtime" as const,
+      content: "services: {}\n",
+    }],
+    hostings: [],
+    sites: [{
+      composeServiceName: "blog",
+      engine: "caddy",
+      root: "public",
+      listenPort: 18080,
+      ...site,
+    }],
+  };
+}
+
+const SITE_PRINCIPAL = {
+  principalId: "00000000-0000-4000-8000-000000000001",
+  username: "appuser",
+};
+
+test("a site's sourceKind round-trips, and absent stays absent", () => {
+  const managed = parseCommandPayload(
+    "environment.deploy" as CommandType,
+    deployPayloadWithSite({
+      sourceKind: "managed-directory",
+      principal: SITE_PRINCIPAL,
+    }),
+  ) as { sites: { sourceKind?: unknown }[] };
+  assertEquals(managed.sites[0]?.sourceKind, "managed-directory");
+
+  // Absent means `release` on both sides, so emitting it explicitly would churn
+  // the wire for every site that never opted in.
+  const plain = parseCommandPayload(
+    "environment.deploy" as CommandType,
+    deployPayloadWithSite({}),
+  ) as { sites: { sourceKind?: unknown }[] };
+  assertEquals(plain.sites[0]?.sourceKind, undefined);
+});
+
+test("a managed directory with no principal is refused", () => {
+  // "A directory and a principal" needs both. Without an owner the daemon would
+  // fall back to the unreachable daemon-owned tree, which looks like it worked.
+  assertThrows(
+    () =>
+      parseCommandPayload(
+        "environment.deploy" as CommandType,
+        deployPayloadWithSite({ sourceKind: "managed-directory" }),
+      ),
+    Error,
+    "managed directory with no principal",
+  );
+});
+
+test("an unknown sourceKind is refused rather than defaulted", () => {
+  for (const bad of ["directory", "", 7, null]) {
+    assertThrows(
+      () =>
+        parseCommandPayload(
+          "environment.deploy" as CommandType,
+          deployPayloadWithSite({
+            sourceKind: bad,
+            principal: SITE_PRINCIPAL,
+          }),
+        ),
+      Error,
+      "Invalid sites entry",
+    );
+  }
+});

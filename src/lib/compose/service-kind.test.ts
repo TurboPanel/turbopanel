@@ -502,3 +502,58 @@ test("a railpack container service needs neither image nor build", () => {
   )
   assertEquals(issues, [])
 })
+
+test('sourceKind is rejected on a service that is not a site', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'nginx',
+      'x-turbopanel': { serviceKind: 'container', sourceKind: 'managed-directory' },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.message.includes('sourceKind is only valid when serviceKind is site')
+    ),
+    true,
+  )
+})
+
+test('a site cannot both track a repository and serve an uploaded directory', () => {
+  // The daemon takes the release branch, so the flag would be a lie. Rejected
+  // at save rather than ignored at deploy: an operator who sets both has a
+  // belief about where their content comes from, and one of the two is wrong.
+  const issues = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        root: 'public',
+        sourceKind: 'managed-directory',
+        source: { sourceId: '11111111-2222-4333-8444-555555555555' },
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.message.includes('remove the source to serve an uploaded directory')
+    ),
+    true,
+  )
+})
+
+test('an uploaded-directory site with no repository validates clean', () => {
+  // The Hosting card seeds exactly this; a card that seeds a document the
+  // validator rejects is a card that cannot be used.
+  assertEquals(
+    collectServiceTurbopanelValidationIssues({
+      blog: {
+        'x-turbopanel': {
+          serviceKind: 'site',
+          engine: 'caddy',
+          root: 'public',
+          sourceKind: 'managed-directory',
+        },
+      },
+    }),
+    [],
+  )
+})

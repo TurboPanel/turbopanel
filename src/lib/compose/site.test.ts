@@ -124,3 +124,40 @@ test('splitSiteServices defaults a missing engine to caddy and an unsafe root to
   const unsafe = result.sites.find((s) => s.composeServiceName === 'unsafe')
   assertEquals(unsafe?.root, 'public')
 })
+
+test("splitSiteServices carries sourceKind through to the site spec", () => {
+  const { sites } = splitSiteServices({
+    blog: {
+      "x-turbopanel": {
+        serviceKind: "site",
+        root: "public",
+        sourceKind: "managed-directory",
+      },
+    },
+    app: { "x-turbopanel": { serviceKind: "site", root: "public" } },
+  })
+  assertEquals(sites.length, 2)
+  // Absent stays absent rather than being resolved to an explicit `release`:
+  // the daemon reads an absent value the same way, and emitting it would churn
+  // the wire for every site that never opted in.
+  assertEquals(sites.find((s) => s.composeServiceName === "app")?.sourceKind, undefined)
+  assertEquals(
+    sites.find((s) => s.composeServiceName === "blog")?.sourceKind,
+    "managed-directory",
+  )
+})
+
+test("an unknown sourceKind is dropped rather than carried", () => {
+  const { sites } = splitSiteServices({
+    blog: {
+      "x-turbopanel": {
+        serviceKind: "site",
+        root: "public",
+        sourceKind: "whatever",
+      },
+    },
+  })
+  // Falls back to the release lane, which is the safe default: it asserts a
+  // tree rather than creating a principal-writable one.
+  assertEquals(sites[0]?.sourceKind, undefined)
+})

@@ -66,6 +66,7 @@ export const deploySchemas = {
           'health_check_missing',
           'docker_external_network_unregistered',
           'site_principal_ambiguous',
+          'site_managed_directory_unowned',
         ],
       },
       message: { type: 'string' },

@@ -11,6 +11,7 @@ import {
   readServiceTurbopanelExtension,
   type ComposeServicePhpExtension,
   type SiteEngine,
+  type SiteSourceKind,
 } from './service-kind.ts'
 
 export type SiteSpec = {
@@ -22,6 +23,15 @@ export type SiteSpec = {
   listenPort: number
   /** PHP config from `x-turbopanel.php`, when the service declares any. */
   php?: ComposeServicePhpExtension
+  /**
+   * Where the content comes from. Omitted means `release`, which is what every
+   * site had before the managed-directory lane existed.
+   *
+   * Carried rather than resolved to a default here: the daemon reads an absent
+   * value as `release` too, and emitting an explicit `release` on every site
+   * would churn the wire for services that never opted in.
+   */
+  sourceKind?: SiteSourceKind
 }
 
 /** Engine a site gets when its compose block does not name one. */
@@ -140,6 +150,7 @@ export function splitSiteServices(
       root,
       listenPort,
       ...(extension?.php ? { php: extension.php } : {}),
+      ...(extension?.sourceKind ? { sourceKind: extension.sourceKind } : {}),
     })
   }
 

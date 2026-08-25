@@ -100,6 +100,22 @@ export type ComposeServiceTurbopanelExtension = {
    */
   root?: string
   /**
+   * Where a `site` service's content comes from. Omitted means `release`.
+   *
+   * `release` is a Git-backed immutable tree the daemon publishes and only ever
+   * asserts. `managed-directory` is a principal-writable `webroot/` the tenant
+   * fills over SFTP — "a directory and a principal", which is what a WordPress
+   * or plain-PHP site actually wants.
+   *
+   * An explicit field rather than an inference from whether `source` is set,
+   * because the two differ in a property worth stating out loud: a managed
+   * directory gives up the immutable-release guarantee, so the tree the engine
+   * executes is writable by the account running it. That is the right trade for
+   * an application that writes to itself by design and the wrong one for a
+   * built application.
+   */
+  sourceKind?: SiteSourceKind
+  /**
    * Optional human description (TurboPanel-only metadata; not used by Docker).
    */
   description?: string
@@ -182,6 +198,14 @@ const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>([
   "railpack",
 ])
 
+/** Where a site's content comes from. Omitted means `release`. */
+export type SiteSourceKind = "release" | "managed-directory"
+
+export const SITE_SOURCE_KINDS = new Set<SiteSourceKind>([
+  "release",
+  "managed-directory",
+])
+
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -202,6 +226,13 @@ function readSiteEngine(
     return undefined
   }
   return trimmed as SiteEngine
+}
+
+function readSiteSourceKind(value: unknown): SiteSourceKind | undefined {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  if (!SITE_SOURCE_KINDS.has(trimmed as SiteSourceKind)) return undefined
+  return trimmed as SiteSourceKind
 }
 
 function readNativeRuntimeFramework(
@@ -329,6 +360,8 @@ export function parseServiceTurbopanelExtension(
   if (nodeVersion) extension.nodeVersion = nodeVersion
   const root = readTrimmedString(value.root)
   if (root) extension.root = root
+  const sourceKind = readSiteSourceKind(value.sourceKind)
+  if (sourceKind) extension.sourceKind = sourceKind
   const description = readTrimmedString(
     value.description,
     SERVICE_DESCRIPTION_MAX_LENGTH,
@@ -649,6 +682,26 @@ function validateEngineConsistency(
     issues.push({
       path: `${basePath}.engine`,
       message: "engine is only valid when serviceKind is site",
+    })
+  }
+
+  if (parsed.sourceKind && parsed.serviceKind !== "site") {
+    issues.push({
+      path: `${basePath}.sourceKind`,
+      message: "sourceKind is only valid when serviceKind is site",
+    })
+  }
+
+  // A repository-backed site serves the tree the release engine published, so
+  // the daemon takes the release branch and the flag would be a lie. Rejected
+  // at save rather than silently ignored at deploy: an operator who sets both
+  // has a belief about where their content comes from, and one of the two is
+  // wrong.
+  if (parsed.sourceKind === "managed-directory" && parsed.source) {
+    issues.push({
+      path: `${basePath}.sourceKind`,
+      message:
+        "a site with a repository serves its published release; remove the source to serve an uploaded directory instead",
     })
   }
 

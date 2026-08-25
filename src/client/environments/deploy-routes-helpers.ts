@@ -262,6 +262,16 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
             `Site "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
         },
       }
+    case 'site_managed_directory_unowned':
+      return {
+        status: 422,
+        body: {
+          error: 'site_managed_directory_unowned',
+          composeServiceName: prepared.composeServiceName,
+          message:
+            `Site "${prepared.composeServiceName}" serves an uploaded directory but has no project principal to own it. Assign a principal to the service — the directory is the account's, and without one there is nobody to upload as.`,
+        },
+      }
     case 'source_principal_ambiguous':
       return {
         status: 422,
