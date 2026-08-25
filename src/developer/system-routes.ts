@@ -81,13 +81,13 @@ async function git(
 
 const RUNTIME_DIR_PREFIXES = ['.config/', '.local/', '.cache/'] as const
 
-function porcelainPath(line: string): string {
+export function porcelainPath(line: string): string {
   const raw = line.slice(3).trim()
   const arrow = raw.indexOf(' -> ')
   return (arrow >= 0 ? raw.slice(arrow + 4) : raw).trim()
 }
 
-function isRuntimePorcelainLine(line: string): boolean {
+export function isRuntimePorcelainLine(line: string): boolean {
   const path = porcelainPath(line)
   return RUNTIME_DIR_PREFIXES.some((prefix) => path.startsWith(prefix))
 }
@@ -125,7 +125,7 @@ async function collectDirtyRepos(): Promise<
   return { ok: true, dirty }
 }
 
-function dirtyUpgradeError(dirty: DirtyRepo[]): string {
+export function dirtyUpgradeError(dirty: DirtyRepo[]): string {
   const names = dirty.map((entry) => entry.repo).join(', ')
   return `cannot upgrade: uncommitted changes in ${names} (commit or stash first)`
 }

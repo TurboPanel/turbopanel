@@ -493,3 +493,395 @@ test("compileRuntimeComposeDocument omits placement without a server id", () => 
   );
   assertEquals(compiled.data[TURBOPANEL_EXTENSION_KEY], undefined);
 });
+
+test("compileRuntimeComposeDocument filters depends_on list form to local services", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          depends_on: ["db", "cache", 42],
+        },
+        db: { image: "postgres" },
+        cache: { image: "redis" },
+      },
+    }),
+    { localServiceNames: new Set(["web", "db"]) },
+  );
+  const services = compiled.data.services as Record<
+    string,
+    Record<string, unknown>
+  >;
+  assertEquals(services.web?.depends_on, ["db"]);
+  assertEquals(services.cache, undefined);
+});
+
+test("compileRuntimeComposeDocument merges identity labels when scale is greater than one", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          labels: ["com.example=keep", "com.turbopanel.service=stale"],
+          container_name: "custom-web",
+        },
+      },
+    }),
+    {
+      localReplicaCounts: new Map([["web", 3]]),
+      environmentId: "env-1",
+    },
+  );
+  const services = compiled.data.services as Record<
+    string,
+    Record<string, unknown>
+  >;
+  assertEquals(services.web?.scale, 3);
+  assertEquals("container_name" in (services.web ?? {}), false);
+  assertEquals(services.web?.labels, [
+    "com.example=keep",
+    "com.turbopanel.service=web",
+    "com.turbopanel.environment=env-1",
+  ]);
+});
+
+test("compileRuntimeComposeDocument prunes volumes not referenced by remaining services", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      volumes: {
+        web_data: {},
+        db_data: {},
+      },
+      services: {
+        web: {
+          image: "nginx",
+          volumes: ["web_data:/var/www", "/host:/bind"],
+        },
+        db: {
+          image: "postgres",
+          volumes: ["db_data:/var/lib/postgresql/data"],
+        },
+      },
+    }),
+    { localServiceNames: new Set(["web"]) },
+  );
+  assertEquals(compiled.data.volumes, { web_data: {} });
+});
+
+test("compileRuntimeComposeDocument prunes build secrets referenced only on filtered services", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      secrets: {
+        build_token: { file: "/run/secrets/build" },
+        web_token: { file: "/run/secrets/web" },
+      },
+      services: {
+        web: {
+          image: "nginx",
+          secrets: ["web_token"],
+        },
+        builder: {
+          build: {
+            context: ".",
+            secrets: [{ source: "build_token" }],
+          },
+        },
+      },
+    }),
+    { localServiceNames: new Set(["web"]) },
+  );
+  assertEquals(compiled.data.secrets, {
+    web_token: { file: "/run/secrets/web" },
+  });
+});
+
+test("compileRuntimeComposeDocument rewrites depends_on map when a dependency expands", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          networks: ["frontend"],
+        },
+        api: {
+          image: "node",
+          networks: ["frontend"],
+          depends_on: {
+            web: { condition: "service_started" },
+            ghost: { condition: "service_started" },
+          },
+          extra_hosts: { "legacy.local": "203.0.113.1" },
+        },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      localServiceNames: new Set(["web", "api"]),
+      localReplicaCounts: new Map([["web", 2], ["api", 1]]),
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      taskAddressesByService: new Map([
+        ["web", new Map([[0, "203.0.113.10"], [1, "203.0.113.11"]])],
+        ["api", new Map([[0, "203.0.113.20"]])],
+      ]),
+      environmentId: "env-1",
+    },
+  );
+  const services = compiled.data.services as Record<
+    string,
+    Record<string, unknown>
+  >;
+  assertEquals(services.api?.depends_on, {
+    "web-1": { condition: "service_started" },
+    "web-2": { condition: "service_started" },
+  });
+  assertEquals(
+    (services.api?.extra_hosts as Record<string, string>)["legacy.local"],
+    "203.0.113.1",
+  );
+});
+
+test("compileRuntimeComposeDocument ignores non-object network attachments for spanning keys", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          networks: 12,
+        },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      taskAddressesByService: new Map([
+        ["web", new Map([[0, "203.0.113.10"]])],
+      ]),
+    },
+  );
+  const services = compiled.data.services as Record<
+    string,
+    Record<string, unknown>
+  >;
+  assertEquals(services.web?.networks, 12);
+});
+
+test("compileRuntimeComposeDocument drops networks when no remaining service references them", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+        worker: { image: "busybox", networks: ["backend"] },
+      },
+      networks: {
+        frontend: {},
+        backend: {},
+      },
+    }),
+    { localServiceNames: new Set(["web"]) },
+  );
+  assertEquals(compiled.data.networks, { frontend: {} });
+
+  const empty = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx" },
+        worker: { image: "busybox", networks: ["backend"] },
+      },
+      networks: { backend: {} },
+    }),
+    { localServiceNames: new Set(["web"]) },
+  );
+  assertEquals(empty.data.networks, undefined);
+});
+
+test("compileRuntimeComposeDocument keeps non-mapping services and skips zero replica counts", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: "not-a-mapping",
+        api: { image: "node" },
+      },
+    }),
+    {
+      localServiceNames: new Set(["web", "api"]),
+      localReplicaCounts: new Map([["api", 0]]),
+    },
+  );
+  const services = compiled.data.services as Record<string, unknown>;
+  assertEquals(services.web, "not-a-mapping");
+  assertEquals(services.api, undefined);
+});
+
+test("compileRuntimeComposeDocument merges map-form extra_hosts without duplicating names", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          networks: ["frontend"],
+          extra_hosts: {
+            "api.env-1": "198.51.100.9",
+            "keep.local": "203.0.113.50",
+          },
+        },
+        api: {
+          image: "node",
+          networks: ["frontend"],
+        },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      taskAddressesByService: new Map([
+        ["web", new Map([[0, "203.0.113.10"]])],
+        ["api", new Map([[0, "203.0.113.20"]])],
+      ]),
+      environmentId: "env-1",
+      spanningHostsByService: new Map([
+        [
+          "api",
+          {
+            primary: "203.0.113.20",
+            replicas: new Map(),
+            networks: new Set(["frontend"]),
+          },
+        ],
+        [
+          "web",
+          {
+            primary: "203.0.113.10",
+            replicas: new Map(),
+            networks: new Set(["frontend"]),
+          },
+        ],
+      ]),
+    },
+  );
+  const services = compiled.data.services as Record<
+    string,
+    Record<string, unknown>
+  >;
+  assertEquals(services.web?.extra_hosts, {
+    "api.env-1": "198.51.100.9",
+    "keep.local": "203.0.113.50",
+  });
+});
+
+test("compileRuntimeComposeDocument drops depends_on when every dependency is remote", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          depends_on: ["db", "cache"],
+        },
+      },
+    }),
+    { localServiceNames: new Set(["web"]) },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals("depends_on" in (web ?? {}), false);
+});
+
+test("compileRuntimeComposeDocument expands spanning replicas without pre-assigned addresses", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      environmentId: "env-1",
+      localReplicaCounts: new Map([["web", 2]]),
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+    },
+  );
+  const services = compiled.data.services as Record<
+    string,
+    Record<string, unknown>
+  >;
+  assertEquals("web-1" in services, true);
+  assertEquals("web-2" in services, true);
+  assertEquals(services["web-1"]?.networks, ["frontend"]);
+});
+
+test("compileRuntimeComposeDocument skips non-string extra_hosts entries when merging", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          networks: ["frontend"],
+          extra_hosts: [12, "legacy.local:192.0.2.1"],
+        },
+        api: { image: "node", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      environmentId: "env-1",
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      taskAddressesByService: new Map([
+        ["web", new Map([[0, "203.0.113.10"]])],
+        ["api", new Map([[0, "203.0.113.20"]])],
+      ]),
+      spanningHostsByService: new Map([
+        ["web", {
+          primary: "203.0.113.10",
+          replicas: new Map(),
+          networks: new Set(["frontend"]),
+        }],
+        ["api", {
+          primary: "203.0.113.20",
+          replicas: new Map(),
+          networks: new Set(["frontend"]),
+        }],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.extra_hosts, [
+    12,
+    "legacy.local:192.0.2.1",
+    "api.env-1:203.0.113.20",
+  ]);
+});
+
+test("compileRuntimeComposeDocument omits peer extra_hosts when peer networks are empty", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+        api: { image: "node", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      environmentId: "env-1",
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      taskAddressesByService: new Map([
+        ["web", new Map([[0, "203.0.113.10"]])],
+        ["api", new Map([[0, "203.0.113.20"]])],
+      ]),
+      spanningHostsByService: new Map([
+        ["web", {
+          primary: "203.0.113.10",
+          replicas: new Map([[1, "203.0.113.10"]]),
+          networks: new Set(["frontend"]),
+        }],
+        ["api", {
+          primary: "203.0.113.20",
+          replicas: new Map([[1, "203.0.113.20"]]),
+          networks: new Set(),
+        }],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals("extra_hosts" in (web ?? {}), false);
+});

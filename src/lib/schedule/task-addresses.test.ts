@@ -185,3 +185,142 @@ test('assignTaskAddresses never allocates the reserved managed-ingress address',
   })
   assertEquals(assigned[0]?.address, '203.0.113.1')
 })
+
+test('assignTaskAddresses skips networks with empty service membership', () => {
+  const assigned = assignTaskAddresses({
+    tasks: [task(SERVICE_A, SERVER_A, 0)],
+    existing: [],
+    networkSegments: segmentsFor(FRONTEND, [[SERVER_A, SEGMENT_A]]),
+    networkServiceIds: new Map([[FRONTEND, new Set()]]),
+  })
+  assertEquals(assigned[0]?.address, null)
+})
+
+test('assignTaskAddresses ignores blank and malformed sticky addresses', () => {
+  const assigned = assignTaskAddresses({
+    tasks: [task(SERVICE_A, SERVER_A, 0)],
+    existing: [
+      {
+        serviceId: SERVICE_A,
+        slot: 0,
+        serverId: SERVER_A,
+        address: '',
+      },
+    ],
+    networkSegments: segmentsFor(FRONTEND, [[SERVER_A, SEGMENT_A]]),
+    networkServiceIds: new Map([[FRONTEND, new Set([SERVICE_A])]]),
+  })
+  assertEquals(assigned[0]?.address, '203.0.113.1')
+})
+
+test('buildCompileAddressMaps works without network membership and skips unknown services', () => {
+  const maps = buildCompileAddressMaps({
+    tasks: [
+      { ...task(SERVICE_A, SERVER_A, 0), address: '203.0.113.10' },
+      { ...task(SERVICE_B, SERVER_A, 0), address: '203.0.113.11' },
+      { ...task(SERVICE_A, SERVER_A, 1), address: '' },
+    ],
+    serviceIdToName: new Map([[SERVICE_A, 'web']]),
+    serverId: SERVER_A,
+  })
+  assertEquals(maps.taskAddressesByService.get('web')?.get(0), '203.0.113.10')
+  assertEquals(maps.taskAddressesByService.has('cache'), false)
+  assertEquals(maps.spanningHostsByService.get('web')?.networks.size, 0)
+  assertEquals(maps.spanningHostsByService.has('cache'), false)
+})
+
+test('assignTaskAddresses drops sticky addresses outside the segment host range', () => {
+  const assigned = assignTaskAddresses({
+    tasks: [task(SERVICE_A, SERVER_A, 0)],
+    existing: [
+      {
+        serviceId: SERVICE_A,
+        slot: 0,
+        serverId: SERVER_A,
+        address: '198.51.100.7',
+      },
+    ],
+    networkSegments: segmentsFor(FRONTEND, [[SERVER_A, SEGMENT_A]]),
+    networkServiceIds: new Map([[FRONTEND, new Set([SERVICE_A])]]),
+  })
+  assertEquals(assigned[0]?.address, '203.0.113.1')
+})
+
+test('assignTaskAddresses drops sticky addresses that are not parseable IPs', () => {
+  const assigned = assignTaskAddresses({
+    tasks: [task(SERVICE_A, SERVER_A, 0)],
+    existing: [
+      {
+        serviceId: SERVICE_A,
+        slot: 0,
+        serverId: SERVER_A,
+        address: 'not-an-ip',
+      },
+    ],
+    networkSegments: segmentsFor(FRONTEND, [[SERVER_A, SEGMENT_A]]),
+    networkServiceIds: new Map([[FRONTEND, new Set([SERVICE_A])]]),
+  })
+  assertEquals(assigned[0]?.address, '203.0.113.1')
+})
+
+test('assignTaskAddresses skips reserved seeding when the CIDR is too small', () => {
+  const tiny = '203.0.113.0/31'
+  const assigned = assignTaskAddresses({
+    tasks: [
+      task(SERVICE_A, SERVER_A, 0),
+      task(SERVICE_A, SERVER_A, 1),
+    ],
+    existing: [],
+    networkSegments: segmentsFor(FRONTEND, [[SERVER_A, tiny]]),
+    networkServiceIds: new Map([[FRONTEND, new Set([SERVICE_A])]]),
+  })
+  assertEquals(
+    assigned.map((row) => row.address),
+    ['203.0.113.0', '203.0.113.1'],
+  )
+})
+
+test('assignTaskAddresses leaves address null when the segment host range is exhausted', () => {
+  const single = '203.0.113.8/32'
+  const assigned = assignTaskAddresses({
+    tasks: [
+      task(SERVICE_A, SERVER_A, 0),
+      task(SERVICE_A, SERVER_A, 1),
+    ],
+    existing: [],
+    networkSegments: segmentsFor(FRONTEND, [[SERVER_A, single]]),
+    networkServiceIds: new Map([[FRONTEND, new Set([SERVICE_A])]]),
+  })
+  assertEquals(assigned[0]?.address, '203.0.113.8')
+  assertEquals(assigned[1]?.address, null)
+})
+
+test('assignTaskAddresses skips compose keys without service membership metadata', () => {
+  const assigned = assignTaskAddresses({
+    tasks: [task(SERVICE_A, SERVER_A, 0)],
+    existing: [],
+    networkSegments: new Map([
+      [FRONTEND, new Map([[SERVER_A, SEGMENT_A]])],
+      ['orphan', new Map([[SERVER_A, SEGMENT_B]])],
+    ]),
+    networkServiceIds: new Map([[FRONTEND, new Set([SERVICE_A])]]),
+  })
+  assertEquals(assigned[0]?.address, '203.0.113.1')
+})
+
+test('assignTaskAddresses keeps the first network address when a task joins two spanning nets', () => {
+  const assigned = assignTaskAddresses({
+    tasks: [task(SERVICE_A, SERVER_A, 0)],
+    existing: [],
+    networkSegments: new Map([
+      ['backend', new Map([[SERVER_A, SEGMENT_B]])],
+      [FRONTEND, new Map([[SERVER_A, SEGMENT_A]])],
+    ]),
+    networkServiceIds: new Map([
+      ['backend', new Set([SERVICE_A])],
+      [FRONTEND, new Set([SERVICE_A])],
+    ]),
+  })
+  // compose keys sort: backend before frontend → 198.51.100.1 wins
+  assertEquals(assigned[0]?.address, '198.51.100.1')
+})

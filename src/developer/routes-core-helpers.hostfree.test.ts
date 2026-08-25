@@ -42,6 +42,8 @@ test('parseDisplayNameInput trims and validates length', () => {
     error: 'displayName must not contain control characters',
   })
   assertEquals(parseDisplayNameInput('Café 东京'), { ok: true, value: 'Café 东京' })
+  assertEquals(parseDisplayNameInput(''), { ok: true, value: '' })
+  assertEquals(parseDisplayNameInput('   '), { ok: true, value: '' })
 })
 
 test('parseOrganizationIdInput validates UUID and org existence', async () => {
@@ -85,6 +87,10 @@ test('parseOrganizationIdInput validates UUID and org existence', async () => {
     }),
   } as unknown as Db
   assertEquals(await parseOrganizationIdInput(foundDb, ORG_ID), { ok: true, value: ORG_ID })
+  assertEquals(
+    await parseOrganizationIdInput(foundDb, `  ${ORG_ID}  `),
+    { ok: true, value: ORG_ID },
+  )
 })
 
 test('extractAddresses and addressesFetchErrorStatus mirror admin behavior', () => {
@@ -96,9 +102,48 @@ test('extractAddresses and addressesFetchErrorStatus mirror admin behavior', () 
   assertEquals(addressesFetchErrorStatus('timeout waiting for addresses'), 500)
 })
 
+test('extractAddresses rejects expired, failed, and missing ips', () => {
+  let expired: unknown
+  try {
+    extractAddresses({ status: 'expired' })
+  } catch (err) {
+    expired = err
+  }
+  if (!(expired instanceof Error)) throw new TypeError('expected Error')
+  assertEquals(expired.message, 'timeout waiting for addresses')
+
+  let failed: unknown
+  try {
+    extractAddresses({ status: 'failed' })
+  } catch (err) {
+    failed = err
+  }
+  if (!(failed instanceof Error)) throw new TypeError('expected Error')
+  assertEquals(failed.message, 'failed to fetch addresses')
+
+  let missing: unknown
+  try {
+    extractAddresses({ status: 'done', result: {} })
+  } catch (err) {
+    missing = err
+  }
+  if (!(missing instanceof Error)) throw new TypeError('expected Error')
+  assertEquals(missing.message, 'missing ips in daemon response')
+})
+
 test('parsePayloadBody and resolvePerServerLimit', () => {
   assertEquals(parsePayloadBody({ payload: 'x' }), { ok: true, payload: 'x' })
   assertEquals(parsePayloadBody(undefined).ok, false)
+  assertEquals(parsePayloadBody(null).ok, false)
+  assertEquals(parsePayloadBody([]).ok, false)
+  assertEquals(parsePayloadBody({}).ok, false)
+  assertEquals(parsePayloadBody({ payload: undefined }), {
+    ok: true,
+    payload: undefined,
+  })
   assertEquals(resolvePerServerLimit('25'), 25)
   assertEquals(resolvePerServerLimit(undefined), 50)
+  assertEquals(resolvePerServerLimit(''), 0)
+  assertEquals(resolvePerServerLimit('not-a-number'), 50)
+  assertEquals(resolvePerServerLimit('0'), 0)
 })

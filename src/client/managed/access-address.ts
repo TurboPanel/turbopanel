@@ -41,6 +41,26 @@ export function isManagedAccessAddressError(
 }
 
 /**
+ * Optional loaders for host-free tests. Production callers omit this and the
+ * module uses the private-endpoint helpers plus a hostname column read.
+ */
+export type ManagedAddressLoaders = {
+  loadDatacenterAddress?: typeof loadServerDatacenterAddress
+  loadFabricAddress?: typeof loadServerFabricAddress
+  loadPublicAddress?: typeof loadServerPublicAddress
+  loadHostname?: (db: Db, serverId: string) => Promise<string | null>
+}
+
+async function loadServerHostname(db: Db, serverId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ hostname: server.hostname })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  return row?.hostname?.trim() || null
+}
+
+/**
  * Host address the ProxySQL frontend publishes on for one scope.
  *
  * A scope that cannot resolve is an **error, not a fallback**: quietly widening
@@ -50,19 +70,23 @@ export function isManagedAccessAddressError(
 export async function resolveManagedBindAddress(
   db: Db,
   params: Readonly<{ serverId: string; scope: ManagedSqlAccessScope }>,
+  loaders: ManagedAddressLoaders = {},
 ): Promise<string | ManagedAccessAddressError> {
+  const loadDatacenter = loaders.loadDatacenterAddress ??
+    loadServerDatacenterAddress
+  const loadFabric = loaders.loadFabricAddress ?? loadServerFabricAddress
   switch (params.scope) {
     case 'local':
       return LOOPBACK_BIND
     case 'datacenter': {
-      const address = await loadServerDatacenterAddress(db, params.serverId)
+      const address = await loadDatacenter(db, params.serverId)
       if (!address) {
         return { kind: 'datacenter_ip_required', serverId: params.serverId }
       }
       return address
     }
     case 'turbofabric': {
-      const address = await loadServerFabricAddress(db, params.serverId)
+      const address = await loadFabric(db, params.serverId)
       if (!address) {
         return { kind: 'fabric_address_required', serverId: params.serverId }
       }
@@ -83,23 +107,24 @@ export async function resolveManagedBindAddress(
 export async function resolveManagedDialHost(
   db: Db,
   params: Readonly<{ serverId: string; scope: ManagedSqlAccessScope }>,
+  loaders: ManagedAddressLoaders = {},
 ): Promise<string | null> {
+  const loadDatacenter = loaders.loadDatacenterAddress ??
+    loadServerDatacenterAddress
+  const loadFabric = loaders.loadFabricAddress ?? loadServerFabricAddress
+  const loadPublic = loaders.loadPublicAddress ?? loadServerPublicAddress
+  const loadHostname = loaders.loadHostname ?? loadServerHostname
   switch (params.scope) {
     case 'local':
       return LOOPBACK_BIND
     case 'datacenter':
-      return await loadServerDatacenterAddress(db, params.serverId)
+      return await loadDatacenter(db, params.serverId)
     case 'turbofabric':
-      return await loadServerFabricAddress(db, params.serverId)
+      return await loadFabric(db, params.serverId)
     case 'public': {
-      const pinned = await loadServerPublicAddress(db, params.serverId)
+      const pinned = await loadPublic(db, params.serverId)
       if (pinned) return pinned
-      const [row] = await db
-        .select({ hostname: server.hostname })
-        .from(server)
-        .where(eq(server.id, params.serverId))
-        .limit(1)
-      return row?.hostname?.trim() || null
+      return await loadHostname(db, params.serverId)
     }
   }
 }

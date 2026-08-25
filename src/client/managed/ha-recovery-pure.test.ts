@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
+  blockedCopy,
   nextStateAfterFence,
   nextStateAfterIngressReconcile,
   nextStateAfterPromoteSuccess,
@@ -72,4 +73,8 @@ test('promote then ingress then exactly-one-writer completes', () => {
   assertEquals(nextStateAfterIngressReconcile({}).state, 'verifying')
   assertEquals(nextStateAfterVerify({ writerCount: 1, metadata: {} }).state, 'completed')
   assertEquals(nextStateAfterVerify({ writerCount: 2, metadata: {} }).state, 'failed')
+})
+
+test('blockedCopy is the automatic-failover operator sentence', () => {
+  assertEquals(blockedCopy(), AUTOMATIC_FAILOVER_BLOCKED_MESSAGE)
 })

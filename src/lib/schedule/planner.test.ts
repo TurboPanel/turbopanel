@@ -338,4 +338,60 @@ test('localReplicaCounts and localServiceNames filter by server', () => {
   assertEquals(localReplicaCounts(tasks, names, SERVER_A), new Map([['web', 2]]))
   assertEquals(localServiceNames(tasks, names, SERVER_B), new Set(['db']))
   assertEquals(localServiceNames(tasks, names, SERVER_C), new Set())
+  assertEquals(
+    localReplicaCounts(
+      tasks,
+      new Map([[SERVICE_WEB, 'web']]),
+      SERVER_B,
+    ),
+    new Map(),
+  )
+})
+
+test('planEnvironmentSchedule honors neq placement constraints', () => {
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: true,
+      defaultServerId: null,
+      services: [
+        planned(SERVICE_WEB, 'web', {
+          constraints: [{ key: 'tier', op: 'neq', value: 'front' }],
+        }),
+      ],
+      servers: [
+        server(SERVER_A, { labels: { tier: 'front' } }),
+        server(SERVER_B, { labels: { tier: 'data' } }),
+      ],
+    }),
+  )
+  assertEquals(plan.ok && plan.tasks[0]?.serverId, SERVER_B)
+})
+
+test('planEnvironmentSchedule rejects zero-replica services', () => {
+  const plan = planEnvironmentSchedule(
+    input({
+      services: [planned(SERVICE_WEB, 'web', { replicas: 0 })],
+    }),
+  )
+  assertEquals(plan.ok, false)
+  if (!plan.ok) {
+    assertEquals(plan.error, 'no_eligible_server')
+    assertEquals(plan.message.includes('web'), true)
+  }
+})
+
+test('planEnvironmentSchedule includes a shared offline pin and default once', () => {
+  const plan = planEnvironmentSchedule(
+    input({
+      pinServerId: SERVER_A,
+      defaultServerId: SERVER_A,
+      servers: [server(SERVER_A, { connected: false })],
+      services: [planned(SERVICE_WEB, 'web')],
+    }),
+  )
+  assertEquals(plan.ok, true)
+  if (plan.ok) {
+    assertEquals(plan.tasks[0]?.serverId, SERVER_A)
+    assertEquals(plan.serverIds, [SERVER_A])
+  }
 })

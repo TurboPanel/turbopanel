@@ -807,3 +807,181 @@ test('depends_on: bare duplicate service name lets overlay win keyed slot', () =
   const dependsOn = servicesOf(mergeComposeOverlay(base, overlay)).web.depends_on
   assertEquals(dependsOn, ['db', 'cache'])
 })
+
+test('mergeComposeDocuments([]) yields empty compose document', () => {
+  const merged = mergeComposeDocuments([])
+  assertEquals(merged.data, {})
+  assertEquals(merged.presentation.keyOrder, [])
+})
+
+test('document whose data is a non-mapping override tag resolves to empty data', () => {
+  const tagged = makeComposeTag('override', 'not-a-mapping')
+  const doc: ComposeDocument = {
+    version: 1,
+    data: tagged as unknown as Record<string, unknown>,
+    presentation: { keyOrder: [], comments: {} },
+  }
+  assertEquals(mergeComposeDocuments([doc]).data, {})
+})
+test('merge unwraps a tagged base scalar when overlay visits the same leaf', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: makeComposeTag('override', 'nginx'),
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        image: 'httpd',
+      },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.image, 'httpd')
+})
+
+test('ports: number published/target stringify; non-port entries keep a null unique key', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        ports: [{ published: 80, target: 8080 }],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        ports: [
+          true,
+          { published: { nested: true }, target: 9 },
+          { published: 81, target: 8081 },
+        ],
+      },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.ports, [
+    { published: 80, target: 8080 },
+    true,
+    { published: { nested: true }, target: 9 },
+    { published: 81, target: 8081 },
+  ])
+})
+
+test('ports: short form without host; slash protocol; bare IPv6 host', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        ports: ['80'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        ports: ['8080:80/udp', '[::1]', '90'],
+      },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.ports, [
+    '80',
+    '8080:80/udp',
+    '[::1]',
+    '90',
+  ])
+})
+
+test('volumes / secrets: skip non-objects; target-less volume; source-only secret', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        volumes: [{ type: 'volume', source: 'data', target: '/data' }],
+        secrets: [{ source: 'db' }],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        volumes: [
+          12,
+          { type: 'volume', source: 'logs' },
+          { type: 'bind', source: './a', target: '/a' },
+        ],
+        secrets: [true, { source: 'api' }, { source: 'db' }],
+      },
+    },
+  })
+  const web = servicesOf(mergeComposeOverlay(base, overlay)).web
+  assertEquals(web.volumes, [
+    { type: 'volume', source: 'data', target: '/data' },
+    12,
+    { type: 'volume', source: 'logs' },
+    { type: 'bind', source: './a', target: '/a' },
+  ])
+  assertEquals(web.secrets, [{ source: 'db' }, true, { source: 'api' }])
+})
+
+test('labels / environment list: non-strings append; colon separator keys', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        labels: ['app=web'],
+        environment: ['FOO=1'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        labels: [42, 'role:api', 'app=web'],
+        environment: [null, 'BAR:2', 'FOO=1'],
+      },
+    },
+  })
+  const web = servicesOf(mergeComposeOverlay(base, overlay)).web
+  assertEquals(web.labels, ['app=web', 42, 'role:api'])
+  assertEquals(web.environment, ['FOO=1', null, 'BAR:2'])
+})
+
+test('expose: non-primitive entries dedup via JSON.stringify', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        expose: ['80', { port: 81 }],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        expose: [{ port: 81 }, { port: 82 }, '80'],
+      },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.expose, [
+    '80',
+    { port: 81 },
+    { port: 82 },
+  ])
+})
+
+test('presentation blankLines: indexed path without a finite index is left alone', () => {
+  const base = docFrom({ services: { web: { image: 'nginx' } } })
+  const overlay = docFrom({ services: { web: { image: 'httpd' } } })
+  overlay.presentation = {
+    keyOrder: [],
+    comments: {},
+    blankLines: { 'services.web[not-an-index].image': 2 },
+  }
+  const merged = mergeComposeOverlay(base, overlay)
+  assertEquals(
+    merged.presentation.blankLines?.['services.web[not-an-index].image'],
+    2,
+  )
+})

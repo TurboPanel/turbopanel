@@ -17,6 +17,21 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
+function directAttachDaemonState() {
+  return {
+    key: {
+      id: 'key-1',
+      algorithm: 'Ed25519' as const,
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      fingerprint: 'fp-1',
+      createdAt: '2020-01-01T00:00:00.000Z',
+    },
+    projection: {
+      remoteAddress: '__direct__',
+    },
+  }
+}
+
 function fakeContext(vars: Record<string, unknown>): Context {
   return {
     get: (key: string) => vars[key],
@@ -160,6 +175,105 @@ test('cachedServersListReadModel skips enrichment when cached rows are empty', a
   )
 
   assertEquals(payload, { rows: [], presence: [], colocatedIds: [] })
+})
+
+test('cachedServersListReadModel works without query cache in context', async () => {
+  const listRows: ServersListRow[] = [{
+    id: 'srv-a',
+    name: 'A',
+    organizationId: 'org-1',
+    licenseId: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  }]
+  const db = createStubDb({
+    listRows,
+    presenceRows: [{
+      id: 'srv-a',
+      daemon: null,
+      metadata: null,
+      hostname: 'a',
+      machineKey: null,
+      connected: false,
+      statusChangedAt: null,
+    }],
+  })
+
+  const payload = await cachedServersListReadModel(
+    fakeContext({ db }),
+    {
+      userId: 'user-1',
+      organizationId: 'org-1',
+      visibleIds: ['srv-a'],
+    },
+  )
+
+  assertEquals(payload.rows, listRows)
+  assertEquals(payload.presence.length, 1)
+})
+
+test('cachedServersListReadModel marks __direct__ servers as colocated', async () => {
+  const listRows: ServersListRow[] = [{
+    id: 'srv-colocated',
+    name: 'Colocated',
+    organizationId: 'org-1',
+    licenseId: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  }]
+  const presenceRows = [{
+    id: 'srv-colocated',
+    daemon: directAttachDaemonState(),
+    metadata: null,
+    hostname: 'colocated',
+    machineKey: null,
+    connected: true,
+    statusChangedAt: '2024-01-01T00:00:00.000Z',
+  }]
+  const db = createStubDb({ listRows, presenceRows })
+  const cache = createPassthroughQueryCache(db)
+
+  const payload = await cachedServersListReadModel(
+    fakeContext({ db, queryCache: cache }),
+    {
+      userId: 'user-1',
+      organizationId: 'org-1',
+      visibleIds: ['srv-colocated'],
+    },
+  )
+
+  assertEquals(payload.colocatedIds, ['srv-colocated'])
+  assertEquals(payload.presence[0]?.connected, true)
+})
+
+test('cachedServersListReadModel uses empty visibleIdsKey when visibleIds is empty', async () => {
+  const db = createStubDb({})
+  const store = new Map<string, string>()
+  const cache = createRedisQueryCache({
+    client: {
+      get: (key: string) => Promise.resolve(store.get(key) ?? null),
+      set: (key: string, value: string) => {
+        store.set(key, value)
+        return Promise.resolve()
+      },
+    } as unknown as RedisCellClient,
+    db,
+  })
+
+  const payload = await cachedServersListReadModel(
+    fakeContext({ db, queryCache: cache }),
+    {
+      userId: 'user-1',
+      organizationId: 'org-203.0.113.1',
+      visibleIds: [],
+    },
+  )
+
+  assertEquals(payload, { rows: [], presence: [], colocatedIds: [] })
+  assertEquals(
+    store.has('tp:qcache:servers-list:org-203.0.113.1:'),
+    true,
+  )
 })
 
 test('cachedServersListReadModel uses redis cache key with sorted visible ids', async () => {

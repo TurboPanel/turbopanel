@@ -16,10 +16,12 @@ import type {
   RepositoryReadUnsupported,
   GitProvider,
   GitProviderContext,
+  ListRepositoryEntriesParams,
   PreparedClone,
   PrepareCloneParams,
   ProviderCheckEvent,
   ProviderPushEvent,
+  ReadRepositoryFilesParams,
   RepositorySummary,
   WebhookHeaders,
 } from './git-provider.ts'
@@ -70,11 +72,17 @@ export const genericGitProvider: GitProvider = {
    * A bare git remote has no read API at all — only the wire protocol, which
    * needs a clone. `unsupported` routes the caller to the daemon, which can.
    */
-  readRepositoryFiles(): Promise<RepositoryReadUnsupported> {
+  readRepositoryFiles(
+    _ctx: GitProviderContext,
+    _params: ReadRepositoryFilesParams,
+  ): Promise<RepositoryReadUnsupported> {
     return Promise.resolve({ unsupported: true })
   },
 
-  listRepositoryEntries(): Promise<RepositoryReadUnsupported> {
+  listRepositoryEntries(
+    _ctx: GitProviderContext,
+    _params: ListRepositoryEntriesParams,
+  ): Promise<RepositoryReadUnsupported> {
     return Promise.resolve({ unsupported: true })
   },
 }

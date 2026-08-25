@@ -1,6 +1,9 @@
 import { assertEquals } from '@std/assert'
 import {
+  GITLAB_OAUTH_HTTPS_USERNAME,
+  gitlabProvider,
   gitlabRepositoryExternalId,
+  parseGitlabInstallationEvent,
   parseGitlabPipeline,
   parseGitlabPush,
 } from './gitlab-provider.ts'
@@ -111,4 +114,53 @@ test('gitlabRepositoryExternalId reads either shape GitLab sends', () => {
   assertEquals(gitlabRepositoryExternalId({ project_id: 15 }), '15')
   assertEquals(gitlabRepositoryExternalId({ project: { id: 15 } }), '15')
   assertEquals(gitlabRepositoryExternalId({ project: {} }), null)
+})
+
+test('parseGitlabInstallationEvent is always null', () => {
+  assertEquals(parseGitlabInstallationEvent({}), null)
+})
+
+test('gitlab prepareClone preview and deploy-key lanes', async () => {
+  const ctx = { db: null as never }
+  const row = {
+    id: 'src-1',
+    provider: 'gitlab' as const,
+    repositoryUrl: 'https://gitlab.com/group/app.git',
+    defaultBranch: 'main',
+    subdirectory: null,
+    installationId: null,
+    credentialId: 'cred-1',
+  }
+
+  assertEquals(
+    await gitlabProvider.prepareClone(ctx, {
+      row,
+      ref: 'main',
+      needsCredential: false,
+      requestedCommitSha: SHA,
+    }),
+    { commit: { commitSha: SHA } },
+  )
+
+  assertEquals(
+    await gitlabProvider.prepareClone(ctx, {
+      row,
+      ref: 'main',
+      needsCredential: true,
+    }),
+    { commit: { commitSha: 'main' } },
+  )
+
+  assertEquals(
+    await gitlabProvider.prepareClone(ctx, {
+      row: { ...row, credentialId: null },
+      ref: 'main',
+      needsCredential: true,
+    }),
+    { failure: 'gitlab source has neither an oauth connection nor a deploy key' },
+  )
+})
+
+test('gitlab oauth username is the documented basic-auth user', () => {
+  assertEquals(GITLAB_OAUTH_HTTPS_USERNAME, 'oauth2')
 })

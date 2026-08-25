@@ -5,29 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1787410237886,
+      "when": 1787674471750,
       "tag": "0000_init",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1787488330387,
-      "tag": "0001_git_provider_sources",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1787595164417,
-      "tag": "0002_yummy_silver_surfer",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1787654978351,
-      "tag": "0003_outstanding_monster_badoon",
       "breakpoints": true
     }
   ]

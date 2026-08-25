@@ -165,9 +165,9 @@ async function loadLocalEngineContainerNames(
   return names
 }
 
-type HaEndpointMap = Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>
+export type HaEndpointMap = Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>
 
-type HaMemberDial = {
+export type HaMemberDial = {
   host: string
   port: number
   containerName?: string
@@ -179,11 +179,11 @@ type HaSecretsParams = {
   dataEncryptionSecrets: DerivedSecretsConfig
 }
 
-function haClusterMemberRole(role: string): ManagedHaClusterMember['role'] {
+export function haClusterMemberRole(role: string): ManagedHaClusterMember['role'] {
   return role === 'primary' ? 'primary' : 'replica'
 }
 
-function haClusterReplicaClass(
+export function haClusterReplicaClass(
   replicaClass: string | null,
 ): ManagedHaClusterMember['replicaClass'] {
   if (replicaClass === 'read' || replicaClass === 'failover') return replicaClass
@@ -206,7 +206,7 @@ function loadHaRemoteEndpoints(
   })
 }
 
-function resolveLocalHaMemberDial(
+export function resolveLocalHaMemberDial(
   member: ManagedMemberRow,
   localNames: ReadonlyMap<number, string>,
   defaultPort: number,
@@ -219,7 +219,7 @@ function resolveLocalHaMemberDial(
   }
 }
 
-function resolveRemoteHaMemberDial(
+export function resolveRemoteHaMemberDial(
   member: ManagedMemberRow,
   endpoints: HaEndpointMap,
 ): HaMemberDial | null {
@@ -229,7 +229,7 @@ function resolveRemoteHaMemberDial(
   return { host: resolved.address, port: member.privatePort }
 }
 
-function resolveHaMemberDial(
+export function resolveHaMemberDial(
   member: ManagedMemberRow,
   thisServerId: string,
   localNames: ReadonlyMap<number, string>,
@@ -242,7 +242,7 @@ function resolveHaMemberDial(
   return resolveRemoteHaMemberDial(member, endpoints)
 }
 
-function toHaClusterMember(
+export function toHaClusterMember(
   member: ManagedMemberRow,
   dial: HaMemberDial,
 ): ManagedHaClusterMember {
@@ -401,7 +401,7 @@ async function buildHaClustersForServer(
   return clusters
 }
 
-function haIdentity(
+export function haIdentity(
   serviceId: string,
   containerName: string,
 ): ManagedHaReconcileCommandPayload['identity'] {
@@ -412,7 +412,7 @@ function haIdentity(
   }
 }
 
-function haTeardownIfPresent(
+export function haTeardownIfPresent(
   serverId: string,
   existing: SystemHierarchyIds | null,
 ): ManagedHaReconcileCommandPayload | null {

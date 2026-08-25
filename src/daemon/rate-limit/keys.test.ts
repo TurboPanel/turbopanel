@@ -2,9 +2,12 @@ import { assertEquals } from '@std/assert'
 import {
   DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID,
   daemonConnectRateLimitKey,
+  daemonContainerLogsRateLimitKey,
   daemonEnrollChallengeRateLimitKey,
   daemonMetricsRateLimitKey,
   daemonRestRateLimitKey,
+  githubWebhookRateLimitKey,
+  gitlabWebhookRateLimitKey,
 } from './keys.ts'
 import {
   createFailClosedRateLimiter,
@@ -55,6 +58,20 @@ test('daemon rate-limit keys are stable and id-scoped', () => {
     `daemon:rest:auth-challenge:${DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID}`,
   )
   assertEquals(DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID, 'enroll-challenge')
+  assertEquals(
+    daemonContainerLogsRateLimitKey('srv-1'),
+    'daemon:container-logs:srv-1',
+  )
+  assertEquals(
+    githubWebhookRateLimitKey('203.0.113.10'),
+    'git:webhook:github:203.0.113.10',
+  )
+  assertEquals(githubWebhookRateLimitKey('  '), 'git:webhook:github:unknown')
+  assertEquals(
+    gitlabWebhookRateLimitKey('203.0.113.11'),
+    'git:webhook:gitlab:203.0.113.11',
+  )
+  assertEquals(gitlabWebhookRateLimitKey(''), 'git:webhook:gitlab:unknown')
 })
 
 test('noop limiter always allows and fail-closed always denies', async () => {

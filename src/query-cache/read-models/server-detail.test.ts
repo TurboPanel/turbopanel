@@ -1,7 +1,9 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
+import type { RedisCellClient } from '../../daemon/cell/redis/client.ts'
 import { createPassthroughQueryCache } from '../passthrough-query-cache.ts'
+import { createRedisQueryCache } from '../redis-query-cache.ts'
 import {
   cachedServerDetailReadModel,
   type ServerDetailRow,
@@ -14,6 +16,21 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+function directAttachDaemonState() {
+  return {
+    key: {
+      id: 'key-1',
+      algorithm: 'Ed25519' as const,
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      fingerprint: 'fp-1',
+      createdAt: '2020-01-01T00:00:00.000Z',
+    },
+    projection: {
+      remoteAddress: '__direct__',
+    },
+  }
+}
 
 function fakeContext(vars: Record<string, unknown>): Context {
   return {
@@ -116,6 +133,103 @@ test('cachedServerDetailReadModel returns row plus presence enrichment', async (
   assertEquals(result?.presence?.serverId, 'srv-1')
   assertEquals(result?.presence?.connected, true)
   assertEquals(typeof result?.colocatedWithInstance, 'boolean')
+})
+
+test('cachedServerDetailReadModel works without query cache in context', async () => {
+  const row: ServerDetailRow = {
+    id: 'srv-1',
+    name: 'Primary',
+    organizationId: 'org-1',
+    licenseId: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  }
+  const db = createStubDb({
+    detailRows: [row],
+    presenceRows: [{
+      id: 'srv-1',
+      daemon: null,
+      metadata: null,
+      hostname: 'primary',
+      machineKey: null,
+      connected: false,
+      statusChangedAt: null,
+    }],
+  })
+
+  const result = await cachedServerDetailReadModel(
+    fakeContext({ db }),
+    { organizationId: 'org-1', serverId: 'srv-1' },
+  )
+
+  assertEquals(result?.row, row)
+  assertEquals(result?.presence?.serverId, 'srv-1')
+})
+
+test('cachedServerDetailReadModel reports colocated when projection is __direct__', async () => {
+  const row: ServerDetailRow = {
+    id: 'srv-1',
+    name: 'Primary',
+    organizationId: 'org-1',
+    licenseId: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  }
+  const presenceRows = [{
+    id: 'srv-1',
+    daemon: directAttachDaemonState(),
+    metadata: null,
+    hostname: 'primary',
+    machineKey: null,
+    connected: true,
+    statusChangedAt: '2024-01-01T00:00:00.000Z',
+  }]
+  const db = createStubDb({ detailRows: [row], presenceRows })
+  const cache = createPassthroughQueryCache(db)
+
+  const result = await cachedServerDetailReadModel(
+    fakeContext({ db, queryCache: cache }),
+    { organizationId: 'org-1', serverId: 'srv-1' },
+  )
+
+  assertEquals(result?.colocatedWithInstance, true)
+  assertEquals(result?.presence?.connected, true)
+})
+
+test('cachedServerDetailReadModel uses redis cache key for org and server', async () => {
+  const row: ServerDetailRow = {
+    id: 'srv-1',
+    name: 'Primary',
+    organizationId: 'org-203.0.113.2',
+    licenseId: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  }
+  const db = createStubDb({ detailRows: [row], presenceRows: [] })
+  const store = new Map<string, string>()
+  const cache = createRedisQueryCache({
+    client: {
+      get: (key: string) => Promise.resolve(store.get(key) ?? null),
+      set: (key: string, value: string) => {
+        store.set(key, value)
+        return Promise.resolve()
+      },
+    } as unknown as RedisCellClient,
+    db,
+  })
+
+  const ctx = fakeContext({ db, queryCache: cache })
+  const opts = { organizationId: 'org-203.0.113.2', serverId: 'srv-1' }
+
+  const first = await cachedServerDetailReadModel(ctx, opts)
+  assertEquals(first?.row, row)
+  assertEquals(
+    store.has('tp:qcache:server-detail:org-203.0.113.2:srv-1'),
+    true,
+  )
+
+  const second = await cachedServerDetailReadModel(ctx, opts)
+  assertEquals(second?.row, row)
 })
 
 test('cachedServerDetailReadModel returns null presence when preload is empty', async () => {

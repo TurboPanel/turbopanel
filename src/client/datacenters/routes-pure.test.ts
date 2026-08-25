@@ -1,11 +1,13 @@
 import { assertEquals } from '@std/assert'
 import {
   attachPrivateCidrs,
+  groupMembersByDerivedCidr,
   mergeDatacenterMetadata,
   parseMemberPins,
   parseNameSuggestionsQuery,
   parseOptionalUuid,
   parseRequiredCidr,
+  resolveOrCreateSubnetForAddress,
   resolveSeededFields,
 } from './create-input.ts'
 
@@ -48,6 +50,7 @@ test('parseMemberPins validates UUID + address pairs and rejects duplicates', ()
   )
   assertEquals(parseMemberPins(undefined), { ok: false })
   assertEquals(parseMemberPins([]), { ok: false })
+  assertEquals(parseMemberPins([[]]), { ok: false })
   assertEquals(parseMemberPins([{ serverId: 'not-a-uuid', address: '10.0.0.1' }]), {
     ok: false,
   })
@@ -137,6 +140,19 @@ test('resolveSeededFields fills name and metadata from source server geo', () =>
   )
   assertEquals(passthrough.name, 'Custom DC')
   assertEquals(passthrough.metadata, null)
+
+  const noGeo = resolveSeededFields(
+    {
+      name: 'Kept',
+      description: null,
+      metadata: { note: 'ops' },
+      options: null,
+      sourceServerId: 'server-b',
+      members: [{ serverId: 'server-b', address: '203.0.113.10' }],
+    },
+    [{ id: 'server-b', metadata: {} }],
+  )
+  assertEquals(noGeo, { name: 'Kept', metadata: { note: 'ops' } })
 })
 
 test('parseOptionalUuid accepts null and valid UUIDs only', () => {
@@ -168,4 +184,112 @@ test('parseNameSuggestionsQuery validates limit and unassignedOnly flag', () => 
   })
   assertEquals(parseNameSuggestionsQuery(undefined, '-1'), 'invalid')
   assertEquals(parseNameSuggestionsQuery(undefined, '33'), 'invalid')
+})
+
+const SERVER_A = '550e8400-e29b-41d4-a716-446655440000'
+const SERVER_B = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
+
+function privateIpMetadata(address: string, cidr: string) {
+  return {
+    ips: [{ address, version: 4, scope: 'private', cidr }],
+  }
+}
+
+test('groupMembersByDerivedCidr collapses identical prefixes and fails closed', () => {
+  const grouped = groupMembersByDerivedCidr(
+    [
+      { serverId: SERVER_A, address: '203.0.113.10' },
+      { serverId: SERVER_B, address: '203.0.113.11' },
+    ],
+    [
+      {
+        id: SERVER_A,
+        metadata: privateIpMetadata('203.0.113.10', '203.0.113.10/24'),
+      },
+      {
+        id: SERVER_B,
+        metadata: privateIpMetadata('203.0.113.11', '203.0.113.11/24'),
+      },
+    ],
+  )
+  assertEquals(grouped.ok, true)
+  if (!grouped.ok) {
+    throw new TypeError('expected grouped CIDRs')
+  }
+  assertEquals(grouped.groups.length, 1)
+  assertEquals(grouped.groups[0]?.cidr, '203.0.113.0/24')
+  assertEquals(grouped.groups[0]?.members.length, 2)
+
+  const split = groupMembersByDerivedCidr(
+    [
+      { serverId: SERVER_A, address: '203.0.113.10' },
+      { serverId: SERVER_B, address: '198.51.100.20' },
+    ],
+    [
+      {
+        id: SERVER_A,
+        metadata: privateIpMetadata('203.0.113.10', '203.0.113.10/24'),
+      },
+      {
+        id: SERVER_B,
+        metadata: privateIpMetadata('198.51.100.20', '198.51.100.20/24'),
+      },
+    ],
+  )
+  assertEquals(split.ok, true)
+  if (!split.ok) {
+    throw new TypeError('expected split CIDRs')
+  }
+  assertEquals(split.groups.length, 2)
+
+  assertEquals(
+    groupMembersByDerivedCidr(
+      [{ serverId: SERVER_A, address: '203.0.113.10' }],
+      [],
+    ),
+    { ok: false, status: 404 },
+  )
+  assertEquals(
+    groupMembersByDerivedCidr(
+      [{ serverId: SERVER_A, address: '203.0.113.10' }],
+      [{ id: SERVER_A, metadata: { ips: [] } }],
+    ),
+    {
+      ok: false,
+      status: 400,
+      error: 'address_cidr_unreported',
+      serverId: SERVER_A,
+    },
+  )
+})
+
+test('resolveOrCreateSubnetForAddress reuses known or pending site CIDRs', () => {
+  assertEquals(
+    resolveOrCreateSubnetForAddress(
+      '203.0.113.10',
+      privateIpMetadata('203.0.113.10', '203.0.113.10/24'),
+      [{ networkId: 'net-a', cidr: '203.0.113.0/24' }],
+    ),
+    { ok: true, networkId: 'net-a', created: false },
+  )
+  assertEquals(
+    resolveOrCreateSubnetForAddress(
+      '203.0.113.10',
+      privateIpMetadata('203.0.113.10', '203.0.113.10/24'),
+      [{ networkId: '', cidr: '203.0.113.0/24' }],
+    ),
+    { ok: true, created: true, cidr: '203.0.113.0/24' },
+  )
+  assertEquals(
+    resolveOrCreateSubnetForAddress(
+      '203.0.113.10',
+      privateIpMetadata('203.0.113.10', '203.0.113.10/24'),
+      [{ networkId: 'net-b', cidr: '198.51.100.0/24' }],
+    ),
+    { ok: true, created: true, cidr: '203.0.113.0/24' },
+  )
+  assertEquals(
+    resolveOrCreateSubnetForAddress('203.0.113.10', { ips: [] }, []),
+    { ok: false, error: 'address_not_reported' },
+  )
 })

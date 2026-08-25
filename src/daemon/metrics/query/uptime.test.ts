@@ -213,6 +213,39 @@ it("invalid or inverted ranges return zero totals", () => {
   assertEquals(inverted.uptimePercent, null);
 });
 
+it("returns zeros for an inverted or non-finite window", () => {
+  assertEquals(
+    computeStatusUptime({
+      fromMs: TO_MS,
+      toMs: FROM_MS,
+      initialConnected: true,
+      events: [],
+    }),
+    {
+      uptimeSeconds: 0,
+      downtimeSeconds: 0,
+      unknownSeconds: 0,
+      uptimePercent: null,
+    },
+  );
+});
+
+it("skips unparseable events and treats NaN knownUntilMs as the full window", () => {
+  const result = computeStatusUptime({
+    fromMs: FROM_MS,
+    toMs: TO_MS,
+    initialConnected: true,
+    events: [
+      { at: "not-a-time", connected: false, reason: "disconnect" },
+      { at: new Date(FROM_MS + 1_800_000).toISOString(), connected: false, reason: "disconnect" },
+    ],
+    knownUntilMs: Number.NaN,
+  });
+  assertEquals(result.uptimeSeconds, 1800);
+  assertEquals(result.downtimeSeconds, 1800);
+  assertEquals(result.unknownSeconds, 0);
+});
+
 it("knownUntilMs clamps to the query window", () => {
   const beforeFrom = computeStatusUptime({
     fromMs: FROM_MS,

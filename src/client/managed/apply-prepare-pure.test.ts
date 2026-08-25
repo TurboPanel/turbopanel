@@ -12,7 +12,11 @@ import {
   verifyCertificateSignature,
 } from '../../lib/tls/index.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import type { CommandRecord } from '../../lib/db/command-records.ts'
+import type { CommandStatus } from '../../lib/commands/types.ts'
+import type { Db } from '../../db.ts'
 import {
+  awaitCommandTerminal,
   buildManagedOrgTlsMaterial,
   isPrepareError,
   mapManagedApplyPrepareError,
@@ -454,4 +458,81 @@ test('buildManagedOrgTlsMaterial dedupes managed leaf name and localhost from ex
     1,
   )
   assertEquals(leaf.dnsNames.includes('extra.example'), true)
+})
+
+function commandRecord(status: CommandStatus): CommandRecord {
+  return {
+    id: 'cmd-1',
+    serverId: 'srv-1',
+    actorEntityType: 'user',
+    actorEntityId: 'u1',
+    type: 'managed.apply',
+    status,
+    context: null,
+    result: null,
+    errorCode: null,
+    errorMessage: null,
+    error: null,
+    attempts: 0,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    queuedAt: null,
+    dispatchStartedAt: null,
+    sentAt: null,
+    ackedAt: null,
+    startedAt: null,
+    finishedAt: null,
+    expiresAt: null,
+  }
+}
+
+test('awaitCommandTerminal returns the first terminal record', async () => {
+  const db = {} as Db
+  const record = commandRecord('succeeded')
+  const result = await awaitCommandTerminal(db, 'cmd-1', {
+    loadCommand: () => Promise.resolve(record),
+    sleep: () => Promise.resolve(),
+  })
+  assertEquals(result, record)
+})
+
+test('awaitCommandTerminal polls until the command is terminal', async () => {
+  const db = {} as Db
+  const polls: CommandStatus[] = ['queued', 'running', 'succeeded']
+  let slept = 0
+  const result = await awaitCommandTerminal(db, 'cmd-1', {
+    timeoutMs: 5_000,
+    pollMs: 1,
+    loadCommand: () => {
+      const status = polls.shift()
+      if (!status) throw new TypeError('unexpected extra poll')
+      return Promise.resolve(commandRecord(status))
+    },
+    sleep: () => {
+      slept += 1
+      return Promise.resolve()
+    },
+  })
+  assertEquals(result?.status, 'succeeded')
+  assertEquals(slept, 2)
+})
+
+test('awaitCommandTerminal returns the last record after timeout', async () => {
+  const db = {} as Db
+  const result = await awaitCommandTerminal(db, 'cmd-1', {
+    timeoutMs: 0,
+    loadCommand: () => Promise.resolve(commandRecord('queued')),
+    sleep: () => Promise.resolve(),
+  })
+  assertEquals(result?.status, 'queued')
+})
+
+test('awaitCommandTerminal returns null when the command is missing', async () => {
+  const db = {} as Db
+  const result = await awaitCommandTerminal(db, 'cmd-missing', {
+    timeoutMs: 0,
+    loadCommand: () => Promise.resolve(null),
+    sleep: () => Promise.resolve(),
+  })
+  assertEquals(result, null)
 })

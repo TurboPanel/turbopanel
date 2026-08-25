@@ -466,6 +466,9 @@ test("resolveFleetPresence enriches os / resources / timeSync / ips / docker / g
       version: "28.3.3",
       composeVersion: "2.39.1",
     },
+    runtimes: {
+      php: { series: ["8.4"] },
+    },
     geo: {
       country: "US",
       region: "TX",
@@ -501,6 +504,7 @@ test("resolveFleetPresence enriches os / resources / timeSync / ips / docker / g
     "203.0.113.50",
   );
   assertEquals(row?.geo?.country, "US");
+  assertEquals(row?.runtimes?.php?.series, ["8.4"]);
 });
 
 test("resolveFleetPresence treats invalid snapshot lastInbound timestamps as disconnected", async () => {

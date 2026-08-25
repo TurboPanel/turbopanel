@@ -33,6 +33,7 @@ import {
   expansionToRecord,
   extractComposeFromOptions,
   fabricNetworksFromSchedule,
+  findUnavailableStorageLocation,
   healthCheckAcknowledge,
   listComposeServiceKeys,
   listContainerComposeNames,
@@ -1017,16 +1018,7 @@ describe("resolveHostingBindAddress edge cases", () => {
 describe("attachPrincipalsToSites", () => {
   const principalId = "01936b3e-aaaa-bbbb-cccc-123456789abc";
   const serviceId = "01936b3e-4444-5555-6666-123456789abc";
-  // The compose-authored shape (php is an authored block here) and the wire
-  // shape (php already validated and rendered) are deliberately different
-  // types now, so the fixture is spelled once per side.
   const site: SiteSpec = {
-    composeServiceName: "site",
-    engine: "nginx",
-    root: "public",
-    listenPort: 18080,
-  };
-  const wireSite: EnvironmentDeploySite = {
     composeServiceName: "site",
     engine: "nginx",
     root: "public",
@@ -1164,6 +1156,27 @@ describe("warningFromPrepareError and soft-error absorb", () => {
         message:
           "A service binding could not resolve a ProxySQL listener for its managed cluster.",
       },
+    );
+    assertEquals(
+      warningFromPrepareError({
+        kind: "site_managed_directory_unowned",
+        composeServiceName: "uploads",
+      }).code,
+      "site_managed_directory_unowned",
+    );
+    assertEquals(
+      warningFromPrepareError({
+        kind: "site_cron_unowned",
+        composeServiceName: "cron-site",
+      }).code,
+      "site_cron_unowned",
+    );
+    assertEquals(
+      warningFromPrepareError({
+        kind: "source_principal_ambiguous",
+        composeServiceName: "git-app",
+      }).code,
+      "source_principal_ambiguous",
     );
   });
 
@@ -1690,16 +1703,7 @@ describe("stripReservedKeysFromEntries without service row", () => {
 });
 
 describe("attachPrincipalsToSites edge cases", () => {
-  // The compose-authored shape (php is an authored block here) and the wire
-  // shape (php already validated and rendered) are deliberately different
-  // types now, so the fixture is spelled once per side.
   const site: SiteSpec = {
-    composeServiceName: "site",
-    engine: "nginx",
-    root: "public",
-    listenPort: 18080,
-  };
-  const wireSite: EnvironmentDeploySite = {
     composeServiceName: "site",
     engine: "nginx",
     root: "public",
@@ -1915,6 +1919,170 @@ describe("healthCheckAcknowledge", () => {
   it("passes the deploy-mode flag through", () => {
     assertEquals(healthCheckAcknowledge("deploy", true), true);
     assertEquals(healthCheckAcknowledge("deploy"), undefined);
+  });
+});
+
+describe("findUnavailableStorageLocation", () => {
+  /**
+   * Drizzle-shaped double: every builder method returns the same chain, and
+   * each `await` consumes the next queued result set.
+   */
+  function fakeDb(resultSets: unknown[][]): Db {
+    const queue = [...resultSets];
+    const chain: unknown = new Proxy(
+      {},
+      {
+        get(_target, prop) {
+          if (prop === "then") {
+            const promise = Promise.resolve(queue.shift() ?? []);
+            return promise.then.bind(promise);
+          }
+          if (prop === "catch" || prop === "finally") return undefined;
+          return () => chain;
+        },
+      },
+    );
+    return chain as Db;
+  }
+
+  function locationRow(
+    overrides: {
+      storageId?: string;
+      storageName?: string;
+      accessMode?: string;
+      serviceId?: string;
+      locationServerId?: string | null;
+      locationRole?: string;
+    } = {},
+  ) {
+    return {
+      storageId: overrides.storageId ?? "st-1",
+      storageName: overrides.storageName ?? "data",
+      accessMode: overrides.accessMode ?? "single_writer",
+      serviceId: overrides.serviceId ?? "svc-1",
+      locationServerId: overrides.locationServerId === undefined
+        ? "srv-scheduled"
+        : overrides.locationServerId,
+      locationRole: overrides.locationRole ?? "replica",
+    };
+  }
+
+  it("returns null when no services are scheduled", async () => {
+    assertEquals(
+      await findUnavailableStorageLocation(fakeDb([[locationRow()]]), {
+        environmentId: "env-1",
+        scheduledServerId: "srv-scheduled",
+        serviceIds: [],
+      }),
+      null,
+    );
+  });
+
+  it("returns null when a location is usable on the scheduled server", async () => {
+    assertEquals(
+      await findUnavailableStorageLocation(fakeDb([[locationRow()]]), {
+        environmentId: "env-1",
+        scheduledServerId: "srv-scheduled",
+        serviceIds: ["svc-1"],
+      }),
+      null,
+    );
+  });
+
+  it("treats an unpinned location as usable on any server", async () => {
+    assertEquals(
+      await findUnavailableStorageLocation(
+        fakeDb([[locationRow({ locationServerId: null })]]),
+        {
+          environmentId: "env-1",
+          scheduledServerId: "srv-scheduled",
+          serviceIds: ["svc-1"],
+        },
+      ),
+      null,
+    );
+  });
+
+  it("ignores scratch locations when deciding usability", async () => {
+    const result = await findUnavailableStorageLocation(
+      fakeDb([[
+        locationRow({ locationRole: "scratch", locationServerId: "srv-scheduled" }),
+      ]]),
+      {
+        environmentId: "env-1",
+        scheduledServerId: "srv-scheduled",
+        serviceIds: ["svc-1"],
+      },
+    );
+    if (!result || result.kind !== "storage_location_unavailable") {
+      throw new TypeError("expected storage_location_unavailable");
+    }
+    assertEquals(result.storageId, "st-1");
+    assertEquals(result.primaryServerId, null);
+  });
+
+  it("stamps primaryServerId from the primary location row", async () => {
+    const result = await findUnavailableStorageLocation(
+      fakeDb([[
+        locationRow({
+          locationRole: "primary",
+          locationServerId: "srv-primary",
+        }),
+      ]]),
+      {
+        environmentId: "env-1",
+        scheduledServerId: "srv-scheduled",
+        serviceIds: ["svc-1"],
+      },
+    );
+    if (!result || result.kind !== "storage_location_unavailable") {
+      throw new TypeError("expected storage_location_unavailable");
+    }
+    assertEquals(result.primaryServerId, "srv-primary");
+    assertEquals(result.scheduledServerId, "srv-scheduled");
+    assertEquals(result.storageName, "data");
+    assertEquals(result.accessMode, "single_writer");
+    assertEquals(result.serviceId, "svc-1");
+  });
+
+  it("returns the first unusable storage when another is usable", async () => {
+    const result = await findUnavailableStorageLocation(
+      fakeDb([[
+        locationRow({ storageId: "st-ok", storageName: "ok" }),
+        locationRow({
+          storageId: "st-bad",
+          storageName: "bad",
+          locationServerId: "srv-other",
+        }),
+      ]]),
+      {
+        environmentId: "env-1",
+        scheduledServerId: "srv-scheduled",
+        serviceIds: ["svc-1"],
+      },
+    );
+    if (!result || result.kind !== "storage_location_unavailable") {
+      throw new TypeError("expected first unusable storage");
+    }
+    assertEquals(result.storageId, "st-bad");
+    assertEquals(result.storageName, "bad");
+  });
+
+  it("marks a storage usable when any non-scratch location matches", async () => {
+    assertEquals(
+      await findUnavailableStorageLocation(
+        fakeDb([[
+          locationRow({ locationServerId: "srv-other" }),
+          locationRow({ locationServerId: "srv-scheduled" }),
+        ]]),
+        {
+          environmentId: "env-1",
+          scheduledServerId: "srv-scheduled",
+          serviceIds: ["svc-1"],
+        },
+      ),
+      null,
+    );
   });
 });
 

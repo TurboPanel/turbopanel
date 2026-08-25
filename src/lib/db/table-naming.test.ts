@@ -1,6 +1,6 @@
 /**
  * Guard: physical CREATE TABLE names must stay single lower-case words
- * (no underscores). Squashed baseline lives at migrations/0000_init.sql.
+ * (no underscores). Scans every NNNN_*.sql file under migrations/.
  */
 
 import { assertEquals } from '@std/assert'
@@ -51,13 +51,36 @@ function assertPhysicalTableName(name: string): void {
   }
 }
 
-test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', async () => {
+test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   const here = dirname(fromFileUrl(import.meta.url))
-  const sqlPath = join(here, '../../../migrations/0000_init.sql')
-  const sql = await Deno.readTextFile(sqlPath)
-  const names = extractCreateTableNames(sql)
+  const migrationsDir = join(here, '../../../migrations')
+  const sqlFiles: string[] = []
+  for await (const entry of Deno.readDir(migrationsDir)) {
+    if (!entry.isFile) continue
+    if (!/^\d{4}_.*\.sql$/.test(entry.name)) continue
+    sqlFiles.push(entry.name)
+  }
+  sqlFiles.sort((a, b) => a.localeCompare(b))
+  if (sqlFiles.length === 0) {
+    throw new TypeError('expected at least one NNNN_*.sql file under migrations/')
+  }
+
+  // Known limitation: a future forward migration that does ALTER TABLE …
+  // RENAME TO would leave the old CREATE TABLE name visible in an earlier
+  // file and trip the retired-name reject on legitimate history. Handling
+  // this means folding ALTER TABLE … RENAME TO statements into the
+  // accumulated name set while scanning in _journal.json order. Deliberately
+  // not implemented now — the squash removed all rename history.
+
+  const names: string[] = []
+  for (const file of sqlFiles) {
+    const sql = await Deno.readTextFile(join(migrationsDir, file))
+    names.push(...extractCreateTableNames(sql))
+  }
   if (names.length === 0) {
-    throw new TypeError('expected at least one CREATE TABLE in 0000_init.sql')
+    throw new TypeError(
+      'expected at least one CREATE TABLE in scanned migration SQL files under migrations/',
+    )
   }
 
   const unique = [...new Set(names)].sort((a, b) => a.localeCompare(b))
@@ -87,6 +110,12 @@ test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', 
   if (!unique.includes('steward')) {
     throw new TypeError('expected principal-service table "steward"')
   }
+  if (!unique.includes('entitlement')) {
+    throw new TypeError('expected principal-runtime-grant table "entitlement"')
+  }
+  if (!unique.includes('ssh')) {
+    throw new TypeError('expected principal-ssh-key table "ssh"')
+  }
   if (
     unique.includes('member') ||
     unique.includes('membership') ||
@@ -99,10 +128,12 @@ test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', 
     unique.includes('vpn') ||
     unique.includes('peer') ||
     unique.includes('tlsleaf') ||
-    unique.includes('tlsrotation')
+    unique.includes('tlsrotation') ||
+    unique.includes('principal_entitlement') ||
+    unique.includes('principal_ssh_key')
   ) {
     throw new TypeError(
-      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge / vpn / peer / tlsleaf / tlsrotation must not reappear',
+      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge / vpn / peer / tlsleaf / tlsrotation / principal_entitlement / principal_ssh_key must not reappear',
     )
   }
 
@@ -112,7 +143,7 @@ test('migrations/0000_init.sql CREATE TABLE names are single lower-case words', 
   )) {
     if (!unique.includes(exception)) {
       throw new TypeError(
-        `exception "${exception}" is not present in 0000_init.sql — remove it from the test allowlist`,
+        `exception "${exception}" is not present in scanned migration SQL files under migrations/ — remove it from the test allowlist`,
       )
     }
   }

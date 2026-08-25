@@ -1,9 +1,14 @@
 import { assertEquals } from '@std/assert'
+import { MAX_CRON_JOBS_PER_SERVICE } from '../cron.ts'
 import {
   collectServiceTurbopanelValidationIssues,
+  isHostNativeServiceKind,
   isNodeComposeService,
+  isSafeRoot,
   isSiteComposeService,
+  parseServiceSourceExtension,
   parseServiceTurbopanelExtension,
+  readServiceSourceExtension,
   readServiceTurbopanelExtension,
 } from './service-kind.ts'
 import { validateComposeDocument } from './validate.ts'
@@ -658,5 +663,377 @@ test('a cron job name must be usable as a unit filename, and unique', () => {
   assertEquals(
     issues.some((issue) => issue.message.includes('duplicate job name "ok"')),
     true,
+  )
+})
+
+test('isHostNativeServiceKind covers site and node only', () => {
+  assertEquals(isHostNativeServiceKind('site'), true)
+  assertEquals(isHostNativeServiceKind('node'), true)
+  assertEquals(isHostNativeServiceKind('container'), false)
+  assertEquals(isHostNativeServiceKind(undefined), false)
+})
+
+test('isSafeRoot rejects empty, absolute, traversal, and NUL paths', () => {
+  assertEquals(isSafeRoot(''), false)
+  assertEquals(isSafeRoot('   '), false)
+  assertEquals(isSafeRoot('/etc'), false)
+  assertEquals(isSafeRoot('\\windows'), false)
+  assertEquals(isSafeRoot('apps/../secret'), false)
+  assertEquals(isSafeRoot('apps\0web'), false)
+  assertEquals(isSafeRoot('a'.repeat(201)), false)
+  assertEquals(isSafeRoot('apps/web'), true)
+})
+
+test('parseServiceSourceExtension drops unusable or over-long fields', () => {
+  assertEquals(parseServiceSourceExtension('bad'), null)
+  assertEquals(parseServiceSourceExtension({ sourceId: 'not-a-uuid' }), null)
+  assertEquals(
+    parseServiceSourceExtension({
+      sourceId: RAILPACK_SOURCE_ID,
+      branch: '   ',
+      buildCommand: 'x'.repeat(1001),
+      subdirectory: 'apps/web',
+    }),
+    { sourceId: RAILPACK_SOURCE_ID, subdirectory: 'apps/web' },
+  )
+})
+
+test('readServiceSourceExtension reads a bound source off the service', () => {
+  assertEquals(
+    readServiceSourceExtension({
+      image: 'nginx',
+      'x-turbopanel': {
+        source: { sourceId: RAILPACK_SOURCE_ID, branch: 'trunk' },
+      },
+    }),
+    { sourceId: RAILPACK_SOURCE_ID, branch: 'trunk' },
+  )
+  assertEquals(readServiceSourceExtension({ image: 'nginx' }), undefined)
+})
+
+test('malformed cron entries are dropped while valid ones remain', () => {
+  const parsed = parseServiceTurbopanelExtension({
+    serviceKind: 'site',
+    cron: [
+      'not-a-job',
+      { name: 'ok', schedule: '@daily' },
+      { name: 'keep', schedule: '@hourly', command: '/bin/true' },
+      { name: 42, schedule: '@daily', command: '/bin/true' },
+    ],
+  })
+  assertEquals(parsed?.cron, [
+    { name: 'keep', schedule: '@hourly', command: '/bin/true' },
+  ])
+})
+
+test('a service may not define more than MAX_CRON_JOBS_PER_SERVICE jobs', () => {
+  const jobs = Array.from({ length: MAX_CRON_JOBS_PER_SERVICE + 1 }, (_, i) => ({
+    name: `job-${i}`,
+    schedule: '@daily',
+    command: '/bin/true',
+  }))
+  const issues = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        root: 'public',
+        cron: jobs,
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.cron' &&
+      issue.message.includes(`at most ${MAX_CRON_JOBS_PER_SERVICE}`)
+    ),
+    true,
+  )
+})
+
+test('source field type and length errors are reported', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'nginx',
+      'x-turbopanel': {
+        source: {
+          sourceId: 'not-a-uuid',
+          branch: 12,
+          buildCommand: 'x'.repeat(1001),
+        },
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.api.x-turbopanel.source.sourceId'
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.api.x-turbopanel.source.branch' &&
+      issue.message.includes('must be a string')
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.api.x-turbopanel.source.buildCommand' &&
+      issue.message.includes('at most')
+    ),
+    true,
+  )
+})
+
+test('source must be a mapping when present', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'nginx',
+      'x-turbopanel': { source: 'github.com/org/repo' },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.api.x-turbopanel.source' &&
+      issue.message.includes('must be a mapping')
+    ),
+    true,
+  )
+})
+
+test('unsafe source path fields are rejected', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'nginx',
+      'x-turbopanel': {
+        source: {
+          sourceId: RAILPACK_SOURCE_ID,
+          subdirectory: '../etc',
+          outputDirectory: '/abs',
+        },
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.api.x-turbopanel.source.subdirectory'
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.api.x-turbopanel.source.outputDirectory'
+    ),
+    true,
+  )
+})
+
+test('php is parsed and accepted on a site service', () => {
+  const parsed = parseServiceTurbopanelExtension({
+    serviceKind: 'site',
+    engine: 'nginx',
+    php: {
+      version: '8.4',
+      extensions: ['redis', 'REDIS', 'not-valid!!', 12, 'gd'],
+      settings: {
+        memory_limit: '256M',
+        nested: { ignored: true },
+        display_errors: 'On',
+      },
+      pool: {
+        pm: 'dynamic',
+        'pm.max_children': 10,
+      },
+    },
+  })
+  assertEquals(parsed?.php?.version, '8.4')
+  assertEquals(parsed?.php?.extensions, ['gd', 'redis'])
+  assertEquals(parsed?.php?.settings, {
+    memory_limit: '256M',
+    display_errors: 'On',
+  })
+  assertEquals(parsed?.php?.pool, {
+    pm: 'dynamic',
+    'pm.max_children': 10,
+  })
+
+  assertEquals(
+    collectServiceTurbopanelValidationIssues({
+      blog: {
+        'x-turbopanel': {
+          serviceKind: 'site',
+          engine: 'nginx',
+          php: {
+            version: '8.4',
+            extensions: ['redis', 'gd'],
+            settings: { memory_limit: '256M' },
+            pool: { pm: 'ondemand', 'pm.max_children': 4 },
+          },
+        },
+      },
+    }),
+    [],
+  )
+})
+
+test('php is rejected outside site and for malformed blocks', () => {
+  const wrongKind = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'nginx',
+      'x-turbopanel': {
+        serviceKind: 'container',
+        php: { version: '8.4' },
+      },
+    },
+  })
+  assertEquals(
+    wrongKind.some((issue) =>
+      issue.path === 'services.api.x-turbopanel.php' &&
+      issue.message.includes('only valid when serviceKind is site')
+    ),
+    true,
+  )
+
+  const notMapping = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        php: '8.4',
+      },
+    },
+  })
+  assertEquals(
+    notMapping.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.php' &&
+      issue.message.includes('must be a mapping')
+    ),
+    true,
+  )
+})
+
+test('php version series and extension membership are enforced', () => {
+  const patchVersion = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        php: { version: '8.4.1' },
+      },
+    },
+  })
+  assertEquals(
+    patchVersion.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.php.version' &&
+      issue.message.includes('series like')
+    ),
+    true,
+  )
+
+  const unsupported = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        php: { version: '7.4' },
+      },
+    },
+  })
+  assertEquals(
+    unsupported.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.php.version' &&
+      issue.message.includes('not supported')
+    ),
+    true,
+  )
+
+  const badExtensions = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        php: { extensions: 'redis' },
+      },
+    },
+  })
+  assertEquals(
+    badExtensions.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.php.extensions' &&
+      issue.message.includes('must be a list')
+    ),
+    true,
+  )
+
+  const unknownExt = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        php: { extensions: ['redis', 'evil'] },
+      },
+    },
+  })
+  assertEquals(
+    unknownExt.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.php.extensions' &&
+      issue.message.includes('"evil"')
+    ),
+    true,
+  )
+})
+
+test('php settings and pool directives are validated key by key', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        php: {
+          settings: 'memory_limit=256M',
+          pool: {
+            pm: 'dynamic',
+            'pm.max_children': 9999,
+            unknown_key: 1,
+          },
+        },
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.php.settings' &&
+      issue.message.includes('must be a mapping')
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.php.pool.pm.max_children'
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.php.pool.unknown_key'
+    ),
+    true,
+  )
+})
+
+test('isNodeComposeService is false for invalid extension mappings', () => {
+  assertEquals(isNodeComposeService({ 'x-turbopanel': 'bad' }), false)
+  assertEquals(
+    isNodeComposeService({
+      'x-turbopanel': {
+        serviceKind: 'node',
+        source: { sourceId: RAILPACK_SOURCE_ID },
+      },
+    }),
+    true,
+  )
+})
+
+test('empty php and cron arrays do not attach to the parsed extension', () => {
+  assertEquals(
+    parseServiceTurbopanelExtension({
+      serviceKind: 'site',
+      php: { extensions: [], settings: { nested: { a: 1 } } },
+      cron: [],
+    }),
+    { serviceKind: 'site' },
   )
 })

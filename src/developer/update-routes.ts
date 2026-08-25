@@ -1,4 +1,4 @@
-import type { Hono } from 'hono'
+import type { Env, Hono } from 'hono'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
@@ -17,7 +17,7 @@ const SHA256_HEX_RE = /^[0-9a-f]{64}$/i
 export const COLOCATED_DAEMON_UPDATE_SKIPPED_REASON =
   'The co-located development daemon runs from source — rebuild upgrades remote servers only'
 
-function parseUpdateOverride(body: {
+export function parseUpdateOverride(body: {
   updateUrl?: unknown
   updateSha256?: unknown
 }): { updateUrl?: string; updateSha256?: string } | { error: string } {
@@ -95,10 +95,10 @@ async function updateDaemon(
  * Push a daemon update trigger to connected daemons. Defaults to channel-based
  * resolution (trunk); optional updateUrl + updateSha256 for explicit-URL triggers.
  */
-export function registerUpdateRoutes(
-  app: Hono,
+export function registerUpdateRoutes<E extends Env>(
+  app: Hono<E>,
   opts: { secrets: DerivedSecretsConfig; authRequired?: boolean },
-): Hono {
+): Hono<E> {
   if (opts.authRequired !== false) {
     app.use(`${DEVELOPER_API_PREFIX}/daemon/update`, createDeveloperAccessMiddleware(opts.secrets))
     app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/update`, createDeveloperAccessMiddleware(opts.secrets))

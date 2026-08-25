@@ -1,4 +1,4 @@
-import type { Hono } from 'hono'
+import type { Env, Hono } from 'hono'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
@@ -13,22 +13,36 @@ import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 
 const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
 
+export function parseTunnelTokenBody(
+  body: unknown,
+): { ok: true; token: string } | { ok: false } {
+  if (!body || typeof body !== 'object') {
+    return { ok: false }
+  }
+  const token = (body as { token?: unknown }).token
+  if (typeof token !== 'string') {
+    return { ok: false }
+  }
+  return { ok: true, token }
+}
+
 /**
  * Set the self-hosted instance's Cloudflare tunnel token. The token is pushed
  * to the co-located daemon (which runs cloudflared), exposing this instance so
  * external remote daemons can connect in. An empty token tears the tunnel down.
  */
-export function registerTunnelRoutes(
-  app: Hono,
+export function registerTunnelRoutes<E extends Env>(
+  app: Hono<E>,
   opts: { secrets: DerivedSecretsConfig; authRequired?: boolean },
-): Hono {
+): Hono<E> {
   if (opts.authRequired !== false) {
     app.use(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, createDeveloperAccessMiddleware(opts.secrets))
   }
 
   app.post(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, async (c) => {
     const body = await c.req.json().catch(() => null)
-    if (!body || typeof body !== 'object' || typeof body.token !== 'string') {
+    const parsed = parseTunnelTokenBody(body)
+    if (!parsed.ok) {
       return c.json({ ok: false, error: 'expected { token: string }' }, 400)
     }
 
@@ -64,7 +78,7 @@ export function registerTunnelRoutes(
       deliveryId: generateDeliveryId(),
       requestId,
       at: new Date().toISOString(),
-      token: body.token,
+      token: parsed.token,
     }
     cellTrace('request-enqueued', {
       requestId,

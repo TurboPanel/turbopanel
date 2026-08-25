@@ -26,6 +26,17 @@ export type EnqueuePlatformCaTrustReconcileParams = Readonly<{
   nowMs?: number
   readBundle?: () => Promise<string>
   listServerIds?: (db: Db) => Promise<string[]>
+  createCommand?: (
+    db: Db,
+    input: {
+      serverId: string
+      actorType: string
+      actorId: string
+      type: string
+      payload: unknown
+      expiresAt: string
+    },
+  ) => Promise<{ id: string; queuedAt: string | null; createdAt: string }>
 }>
 
 async function readPlatformCaBundle(): Promise<string> {
@@ -47,7 +58,7 @@ export async function enqueuePlatformCaTrustReconcile(
 
   let enqueued = 0
   for (const serverId of serverIds) {
-    const record = await createCommandRecord(params.db, {
+    const record = await (params.createCommand ?? createCommandRecord)(params.db, {
       serverId,
       actorType: 'user',
       actorId: params.actorId,

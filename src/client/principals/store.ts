@@ -11,7 +11,7 @@ import {
   principal,
   project,
   server,
-  principalEntitlement,
+  entitlement,
   steward,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -120,13 +120,13 @@ export async function loadEntitlementsByPrincipalIds(
   if (principalIds.length === 0) return byPrincipal
   const rows = await tx
     .select({
-      principalId: principalEntitlement.principalId,
-      runtime: principalEntitlement.runtime,
-      series: principalEntitlement.series,
-      grantedBy: principalEntitlement.grantedBy,
+      principalId: entitlement.principalId,
+      runtime: entitlement.runtime,
+      series: entitlement.series,
+      grantedBy: entitlement.grantedBy,
     })
-    .from(principalEntitlement)
-    .where(inArray(principalEntitlement.principalId, [...principalIds]))
+    .from(entitlement)
+    .where(inArray(entitlement.principalId, [...principalIds]))
 
   for (const row of rows) {
     const list = byPrincipal.get(row.principalId) ?? []
@@ -156,22 +156,22 @@ export async function replaceEntitlements(
     `${e.runtime}@${e.series}`
   const existing = await tx
     .select({
-      runtime: principalEntitlement.runtime,
-      series: principalEntitlement.series,
+      runtime: entitlement.runtime,
+      series: entitlement.series,
     })
-    .from(principalEntitlement)
-    .where(eq(principalEntitlement.principalId, principalId))
+    .from(entitlement)
+    .where(eq(entitlement.principalId, principalId))
 
   const current = new Set(existing.map(key))
   const desired = new Map(next.map((entry) => [key(entry), entry]))
 
   const toDelete = [...current].filter((k) => !desired.has(k))
   if (toDelete.length > 0) {
-    await tx.delete(principalEntitlement).where(
+    await tx.delete(entitlement).where(
       and(
-        eq(principalEntitlement.principalId, principalId),
+        eq(entitlement.principalId, principalId),
         inArray(
-          sql`${principalEntitlement.runtime} || '@' || ${principalEntitlement.series}`,
+          sql`${entitlement.runtime} || '@' || ${entitlement.series}`,
           toDelete,
         ),
       ),
@@ -187,7 +187,7 @@ export async function replaceEntitlements(
       grantedBy: entry.grantedBy,
     }))
   if (toInsert.length > 0) {
-    await tx.insert(principalEntitlement).values(toInsert)
+    await tx.insert(entitlement).values(toInsert)
   }
 }
 

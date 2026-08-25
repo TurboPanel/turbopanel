@@ -1964,8 +1964,8 @@ export const principal = pgTable(
  *
  * No `organization_id`: derived through `principal`, matching that table.
  */
-export const principalEntitlement = pgTable(
-  'principal_entitlement',
+export const entitlement = pgTable(
+  'entitlement',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -1984,29 +1984,29 @@ export const principalEntitlement = pgTable(
     grantedBy: text('granted_by').default('operator').notNull(),
   },
   (table) => [
-    index('idx_principal_entitlement_principal_id').using(
+    index('idx_entitlement_principal_id').using(
       'btree',
       table.principalId.asc().nullsLast().op('uuid_ops')
     ),
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
-      name: 'principal_entitlement_principal_id_principal_id_fk',
+      name: 'entitlement_principal_id_principal_id_fk',
     }).onDelete('cascade'),
-    unique('principal_entitlement_unique').on(
+    unique('entitlement_unique').on(
       table.principalId,
       table.runtime,
       table.series
     ),
-    check('principal_entitlement_runtime_check', sql`${table.runtime} IN ('php', 'node')`),
+    check('entitlement_runtime_check', sql`${table.runtime} IN ('php', 'node')`),
     check(
-      'principal_entitlement_series_check',
+      'entitlement_series_check',
       // `[.]` not `\.`: a template literal eats the backslash, and a bare dot
       // would match any character. A character class keeps it literal.
       sql`${table.series} ~ '^[0-9]{1,3}([.][0-9]{1,3})?$'`
     ),
     check(
-      'principal_entitlement_granted_by_check',
+      'entitlement_granted_by_check',
       sql`${table.grantedBy} IN ('operator', 'deploy')`
     ),
   ]
@@ -2016,7 +2016,7 @@ export const principalEntitlement = pgTable(
  * A public key that may authenticate as this principal over SSH.
  *
  * A table rather than `principal.options` jsonb, for the reasons
- * `principal_entitlement` already lists — `parsePrincipalOptions` is
+ * `entitlement` already lists — `parsePrincipalOptions` is
  * drop-on-invalid, which is the wrong posture for a credential — plus one
  * specific to keys: **"which principals does this fingerprint reach?" has to be
  * answerable in one query.** When a laptop is lost the operator has a
@@ -2043,8 +2043,8 @@ export const principalEntitlement = pgTable(
  *
  * No `organization_id`: derived through `principal`, matching that table.
  */
-export const principalSshKey = pgTable(
-  'principal_ssh_key',
+export const sshKey = pgTable(
+  'ssh',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -2072,48 +2072,48 @@ export const principalSshKey = pgTable(
     bits: integer(),
   },
   (table) => [
-    index('idx_principal_ssh_key_principal_id').using(
+    index('idx_ssh_principal_id').using(
       'btree',
       table.principalId.asc().nullsLast().op('uuid_ops')
     ),
     // The lost-laptop query: every account one fingerprint opens.
-    index('idx_principal_ssh_key_fingerprint').using(
+    index('idx_ssh_fingerprint').using(
       'btree',
       table.fingerprint.asc().nullsLast().op('text_ops')
     ),
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
-      name: 'principal_ssh_key_principal_id_principal_id_fk',
+      name: 'ssh_principal_id_principal_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
-      name: 'principal_ssh_key_user_id_user_id_fk',
+      name: 'ssh_user_id_user_id_fk',
     }).onDelete('set null'),
     // Keyed on the fingerprint rather than the key text: the fingerprint is
     // over the decoded bytes, so two spellings of one key collide here as they
     // should.
-    unique('principal_ssh_key_fingerprint_unique').on(
+    unique('ssh_fingerprint_unique').on(
       table.principalId,
       table.fingerprint
     ),
     check(
-      'principal_ssh_key_type_check',
+      'ssh_type_check',
       sql`${table.keyType} IN ('ssh-ed25519', 'sk-ssh-ed25519@openssh.com', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'sk-ecdsa-sha2-nistp256@openssh.com', 'ssh-rsa')`
     ),
     check(
-      'principal_ssh_key_fingerprint_check',
+      'ssh_fingerprint_check',
       sql`${table.fingerprint} ~ '^SHA256:[A-Za-z0-9+/]{43}$'`
     ),
     // A newline in the stored key would be a second authorized_keys entry. The
     // application parser already refuses one; this is the backstop that makes a
     // bug there unable to reach the file.
     check(
-      'principal_ssh_key_public_key_check',
+      'ssh_public_key_check',
       sql`${table.publicKey} ~ '^[A-Za-z0-9@.-]+ [A-Za-z0-9+/]+={0,2}$'`
     ),
-    check('principal_ssh_key_name_check', sql`char_length(${table.name}) >= 1`),
+    check('ssh_name_check', sql`char_length(${table.name}) >= 1`),
   ]
 )
 

@@ -55,3 +55,27 @@ test("resolveCellLocationHint returns undefined when neither column defines a hi
   const db = createMockDb({ metadata: {}, options: {} });
   assertEquals(await resolveCellLocationHint(db, serverId), undefined);
 });
+
+test("resolveCellLocationHint treats null options as metadata-only", async () => {
+  const db = createMockDb({
+    metadata: { cell: { locationHint: "from-meta" } },
+    options: null,
+  });
+  assertEquals(await resolveCellLocationHint(db, serverId), "from-meta");
+});
+
+test("resolveCellLocationHint ignores a cell block without locationHint", async () => {
+  const db = createMockDb({
+    metadata: { cell: {} },
+    options: null,
+  });
+  assertEquals(await resolveCellLocationHint(db, serverId), undefined);
+});
+
+test("resolveCellLocationHint uses options when metadata is null", async () => {
+  const db = createMockDb({
+    metadata: null,
+    options: { cellLocationHint: "from-options" },
+  });
+  assertEquals(await resolveCellLocationHint(db, serverId), "from-options");
+});

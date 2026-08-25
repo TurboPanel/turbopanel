@@ -74,6 +74,21 @@ test('mergeSnapshotPresence does not rewrite updatedAt when meta is not newer', 
   assertEquals(merged.connected, true)
 })
 
+test('mergeSnapshotPresence overlays lastSeenAt when other presence fields are omitted', () => {
+  const merged = mergeSnapshotPresence(storedBase, {
+    serverId: 'srv-merge',
+    version: 4,
+    updatedAt: '2020-01-01T00:00:00.000Z',
+    connected: false,
+    lastSeenAt: '2020-01-02T00:00:45.000Z',
+  })
+  assertEquals(merged.lastSeenAt, '2020-01-02T00:00:45.000Z')
+  assertEquals(merged.connected, false)
+  assertEquals(merged.remoteAddress, storedBase.remoteAddress)
+  assertEquals(merged.connectedAt, storedBase.connectedAt)
+  assertEquals(merged.updatedAt, storedBase.updatedAt)
+})
+
 test('mergeSnapshotPresence does not mutate the stored snapshot argument', () => {
   const stored = { ...storedBase }
   const meta: DaemonCellSnapshot = {

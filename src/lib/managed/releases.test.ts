@@ -78,6 +78,19 @@ test('engine specs resolve their default image from the catalog', () => {
   }
 })
 
+test('requireDefaultManagedImage throws for engines without a catalog', () => {
+  try {
+    requireDefaultManagedImage('redis' as 'postgres')
+    throw new TypeError('expected requireDefaultManagedImage to throw')
+  } catch (error) {
+    assertEquals(error instanceof Error, true)
+    assertEquals(
+      (error as Error).message,
+      'no managed release catalog entry for engine: redis',
+    )
+  }
+})
+
 test('settings allowlists are derived from the catalog', () => {
   assertEquals(
     POSTGRES_ALLOWED_IMAGES,

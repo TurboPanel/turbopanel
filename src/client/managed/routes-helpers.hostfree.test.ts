@@ -6,6 +6,7 @@ import { assertEquals } from '@std/assert'
 import { BadRequestError } from '../shared.ts'
 import {
   assertFailoverReplicaTransportAllowed,
+  buildDisasterRecoveryQueuedResponse,
   buildEmptyManagedDetailResponse,
   buildFencePromotePendingResponse,
   buildManagedDeleteHardResponse,
@@ -34,6 +35,8 @@ import {
   nextDatabasesAfterCreate,
   nextDatabasesAfterDelete,
   operatorPromoteHttpResult,
+  parseDisasterRecoveryPromoteBody,
+  parseManagedConnectionRole,
   parseManagedCreateName,
   parseManagedLifecycleAction,
   parseMemberPatch,
@@ -707,6 +710,77 @@ test('managedStatusListenerParams skips unplaced, uncatalogued, and unreadable r
       engineCode: 'postgres',
       engineDefaultPort: postgresEngineSpec.defaultPort,
       exposure: settings.exposure,
+    },
+  )
+})
+
+test('parseManagedConnectionRole defaults absent values to read-write', () => {
+  assertEquals(parseManagedConnectionRole(undefined), 'read-write')
+  assertEquals(parseManagedConnectionRole(null), 'read-write')
+  assertEquals(parseManagedConnectionRole('read-write'), 'read-write')
+  assertEquals(parseManagedConnectionRole('read-only'), 'read-only')
+  assertEquals(parseManagedConnectionRole('write-only'), null)
+  assertEquals(parseManagedConnectionRole(1), null)
+})
+
+test('parseDisasterRecoveryPromoteBody requires confirm and a member id', () => {
+  assertEquals(parseDisasterRecoveryPromoteBody({}), {
+    ok: false,
+    error: 'Invalid request',
+    status: 400,
+  })
+  assertEquals(parseDisasterRecoveryPromoteBody({ confirm: true }), {
+    ok: false,
+    error: 'Invalid request',
+    status: 400,
+  })
+  assertEquals(parseDisasterRecoveryPromoteBody({ confirm: true, memberId: '' }), {
+    ok: false,
+    error: 'Invalid request',
+    status: 400,
+  })
+  assertEquals(
+    parseDisasterRecoveryPromoteBody({ confirm: false, memberId: 'mem-1' }),
+    { ok: false, error: 'Invalid request', status: 400 },
+  )
+  assertEquals(
+    parseDisasterRecoveryPromoteBody({ confirm: true, memberId: 'mem-1' }),
+    { ok: true, memberId: 'mem-1' },
+  )
+})
+
+test('buildDisasterRecoveryQueuedResponse names source and target', () => {
+  assertEquals(
+    buildDisasterRecoveryQueuedResponse({
+      commandId: 'cmd-1',
+      serverId: 'srv-target',
+      fencePending: true,
+      lagBytes: 12,
+      sourceMemberId: 'mem-src',
+      sourceServerId: 'srv-src',
+      sourceDatacenterId: 'dc-src',
+      targetMemberId: 'mem-tgt',
+      targetServerId: 'srv-target',
+      targetDatacenterId: null,
+    }),
+    {
+      ok: true,
+      commandId: 'cmd-1',
+      status: 'queued',
+      serverId: 'srv-target',
+      fencePending: true,
+      kind: 'disaster-recovery',
+      lagBytes: 12,
+      source: {
+        memberId: 'mem-src',
+        serverId: 'srv-src',
+        datacenterId: 'dc-src',
+      },
+      target: {
+        memberId: 'mem-tgt',
+        serverId: 'srv-target',
+        datacenterId: null,
+      },
     },
   )
 })

@@ -17,25 +17,35 @@ import {
   AE_DEFAULT_MAX_RANGE_SECONDS,
   AE_LIVENESS_WINDOW_SECONDS,
   aeMissingMetricSentinelSql,
-  buildHostSeriesSql,
-  buildHostSummarySql,
+  buildFleetHostSnapshotClickHouseSql,
   buildFleetHostSnapshotSql,
+  buildHostSeriesClickHouseSql,
+  buildHostSeriesSql,
+  buildHostSummaryClickHouseSql,
+  buildHostSummarySql,
   buildRecentlyActiveServerIdsSql,
+  buildStatusEventsClickHouseSql,
   buildStatusEventsSql,
+  buildStatusPriorStateClickHouseSql,
   buildStatusPriorStateSql,
   clickhouseAvgExpression,
   hostEventDiscriminatorPredicates,
+  MAX_FLEET_SNAPSHOT_SERVERS,
   MAX_STATUS_EVENTS,
   parseAeLatestAtMs,
   parseCloudflareV4SqlResponse,
   parseFleetHostSnapshotRows,
   parseHostSummaryRow,
+  parseSeriesRows,
   parseStatusEventRows,
+  queryFleetHostSnapshotViaSqlApi,
   queryHostSeriesViaSqlApi,
   queryHostSummaryViaSqlApi,
   queryRecentlyActiveServerIds,
   queryStatusHistoryViaSqlApi,
+  quoteServerIdInList,
   quoteSqlString,
+  resolveTruncatedStatusEvents,
   statusEventDiscriminatorPredicates,
   weightedAvgExpression,
 } from "./sql-api.ts";
@@ -762,4 +772,370 @@ it("parseCloudflareV4SqlResponse surfaces AE SQL API errors", () => {
     Error,
     "AE SQL API error: code=1003",
   );
+});
+
+it("quoteServerIdInList rejects empty and over-cap lists", () => {
+  assertThrows(
+    () => quoteServerIdInList([]),
+    TypeError,
+    "serverIds must be non-empty",
+  );
+  assertThrows(
+    () =>
+      quoteServerIdInList(
+        Array.from({ length: MAX_FLEET_SNAPSHOT_SERVERS + 1 }, () => SERVER_ID),
+      ),
+    TypeError,
+    `exceeds max ${MAX_FLEET_SNAPSHOT_SERVERS}`,
+  );
+});
+
+it("quoteServerIdInList dedupes and wraps ClickHouse UUIDs", () => {
+  const idB = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  assertEquals(
+    quoteServerIdInList([SERVER_ID, SERVER_ID, idB]),
+    `${quoteSqlString(SERVER_ID)}, ${quoteSqlString(idB)}`,
+  );
+  assertEquals(
+    quoteServerIdInList([SERVER_ID], { asClickHouseUuid: true }),
+    `toUUID(${quoteSqlString(SERVER_ID)})`,
+  );
+  assertThrows(
+    () => quoteServerIdInList(["not-a-uuid"]),
+    TypeError,
+    "invalid serverId",
+  );
+});
+
+it("buildHostSummaryClickHouseSql uses UUID/DateTime64 params and count()", () => {
+  const sql = buildHostSummaryClickHouseSql(
+    {
+      serverId: SERVER_ID,
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+    },
+    { table: AE_DATASET_NAME, maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS },
+  );
+  assertEquals(sql.includes("{index1:UUID}"), true);
+  assertEquals(sql.includes("count() AS sample_count"), true);
+  assertEquals(sql.includes("{from:DateTime64(3, 'UTC')}"), true);
+  assertEquals(sql.includes("{to:DateTime64(3, 'UTC')}"), true);
+  assertEquals(sql.includes("SUM(_sample_interval)"), false);
+  for (const predicate of hostEventDiscriminatorPredicates()) {
+    assertEquals(sql.includes(`AND ${predicate}`), true);
+  }
+});
+
+it("buildHostSeriesClickHouseSql uses unit-weight avg and named params", () => {
+  const { sql, metrics, bucketSeconds } = buildHostSeriesClickHouseSql(
+    {
+      serverId: SERVER_ID,
+      metrics: ["cpuUsagePercent", "load1"],
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+      resolutionSeconds: 60,
+    },
+    { table: AE_DATASET_NAME, maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS },
+  );
+  assertEquals(metrics, ["cpuUsagePercent", "load1"]);
+  assertEquals(bucketSeconds, 60);
+  assertEquals(sql.includes("{index1:UUID}"), true);
+  assertEquals(
+    sql.includes(clickhouseAvgExpression(doubleColumnForMetric("cpuUsagePercent"))),
+    true,
+  );
+  assertEquals(sql.includes("_sample_interval"), false);
+  assertThrows(
+    () =>
+      buildHostSeriesClickHouseSql(
+        {
+          serverId: "not-a-uuid",
+          metrics: ["cpuUsagePercent"],
+          from: "2026-01-01T00:00:00.000Z",
+          to: "2026-01-01T01:00:00.000Z",
+        },
+        { table: AE_DATASET_NAME, maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS },
+      ),
+    TypeError,
+    "invalid serverId",
+  );
+});
+
+it("buildFleetHostSnapshotClickHouseSql embeds toUUID IN-list", () => {
+  const idB = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const { sql, metrics } = buildFleetHostSnapshotClickHouseSql(
+    {
+      serverIds: [SERVER_ID, idB],
+      metrics: ["cpuUsagePercent"],
+      from: "2026-01-01T00:50:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+    },
+    { table: AE_DATASET_NAME, maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS },
+  );
+  assertEquals(metrics, ["cpuUsagePercent"]);
+  assertEquals(
+    sql.includes(
+      `IN (toUUID(${quoteSqlString(SERVER_ID)}), toUUID(${quoteSqlString(idB)}))`,
+    ),
+    true,
+  );
+  assertEquals(sql.includes("count() AS sample_count"), true);
+  assertEquals(sql.includes("GROUP BY server_id"), true);
+  assertEquals(
+    sql.includes(clickhouseAvgExpression(doubleColumnForMetric("cpuUsagePercent"))),
+    true,
+  );
+  assertEquals(sql.includes("SUM(_sample_interval)"), false);
+});
+
+it("buildStatusEventsClickHouseSql and prior-state share status filters", () => {
+  const query = {
+    serverId: SERVER_ID,
+    from: "2026-01-01T00:00:00.000Z",
+    to: "2026-01-01T01:00:00.000Z",
+  };
+  const eventsSql = buildStatusEventsClickHouseSql(query, {
+    table: AE_DATASET_NAME,
+    maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS,
+  });
+  const priorSql = buildStatusPriorStateClickHouseSql(query, {
+    table: AE_DATASET_NAME,
+    maxRangeSeconds: AE_DEFAULT_MAX_RANGE_SECONDS,
+  });
+  for (const predicate of statusEventDiscriminatorPredicates()) {
+    assertEquals(eventsSql.includes(`AND ${predicate}`), true);
+    assertEquals(priorSql.includes(`AND ${predicate}`), true);
+  }
+  assertEquals(eventsSql.includes("{index1:UUID}"), true);
+  assertEquals(eventsSql.includes(`LIMIT ${MAX_STATUS_EVENTS + 1}`), true);
+  assertEquals(eventsSql.includes("ORDER BY timestamp ASC"), true);
+  assertEquals(priorSql.includes("timestamp < {from:DateTime64(3, 'UTC')}"), true);
+  assertEquals(priorSql.includes("ORDER BY timestamp DESC"), true);
+  assertEquals(priorSql.includes("LIMIT 1"), true);
+});
+
+it("parseSeriesRows skips bad buckets and ignores non-finite sample_count", () => {
+  const { points, sampleCount } = parseSeriesRows(
+    ["cpuUsagePercent"],
+    [
+      { bucket: 1_704_067_200, sample_count: 2, cpuUsagePercent: 10 },
+      { bucket: "1704067500", sample_count: "3", cpuUsagePercent: "12.5" },
+      { bucket: { not: "a number" }, sample_count: 99, cpuUsagePercent: 1 },
+      { bucket: 1_704_067_800, sample_count: "nope", cpuUsagePercent: null },
+    ],
+    300,
+  );
+  assertEquals(points.length, 3);
+  assertEquals(points[0]!.at, new Date(1_704_067_200 * 1000).toISOString());
+  assertEquals(points[0]!.values.cpuUsagePercent, 10);
+  assertEquals(points[0]!.sampleCount, 2);
+  assertEquals(points[0]!.expectedSampleCount, 5);
+  assertEquals(points[1]!.values.cpuUsagePercent, 12.5);
+  assertEquals(points[1]!.sampleCount, 3);
+  assertEquals(points[2]!.sampleCount, undefined);
+  assertEquals(points[2]!.values.cpuUsagePercent, null);
+  assertEquals(sampleCount, 5);
+});
+
+it("resolveTruncatedStatusEvents marks the cap from raw row count", () => {
+  const fromMs = Date.parse("2026-01-01T00:00:00.000Z");
+  const under = resolveTruncatedStatusEvents(
+    [
+      {
+        timestamp: "2026-01-01T00:00:01.000Z",
+        connected: true,
+        reason: "self_heal",
+      },
+    ],
+    fromMs,
+  );
+  assertEquals(under.truncated, false);
+  assertEquals(under.knownUntilMs, undefined);
+  assertEquals(under.events[0]!.reason, "self_heal");
+
+  const overflow: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < MAX_STATUS_EVENTS + 1; i++) {
+    overflow.push({
+      timestamp: new Date(fromMs + i * 1000).toISOString(),
+      connected: 1,
+      reason: "connect",
+    });
+  }
+  const over = resolveTruncatedStatusEvents(overflow, fromMs);
+  assertEquals(over.truncated, true);
+  assertEquals(over.events.length, MAX_STATUS_EVENTS);
+  assertEquals(
+    over.knownUntilMs,
+    fromMs + (MAX_STATUS_EVENTS - 1) * 1000,
+  );
+
+  const unparseable = resolveTruncatedStatusEvents(
+    Array.from({ length: MAX_STATUS_EVENTS + 1 }, () => ({
+      timestamp: "not-a-timestamp",
+      connected: 1,
+      reason: "connect",
+    })),
+    fromMs,
+  );
+  assertEquals(unparseable.truncated, true);
+  assertEquals(unparseable.events.length, 0);
+  assertEquals(unparseable.knownUntilMs, fromMs);
+});
+
+it("parseStatusEventRows accepts boolean connected and unknown reasons", () => {
+  const events = parseStatusEventRows([
+    { timestamp: "2026-01-01T00:00:00.000Z", connected: true, reason: "mystery" },
+    { timestamp: "2026-01-01T00:00:01.000Z", connected: false, reason: 12 },
+    { timestamp: "2026-01-01T00:00:02.000Z", connected: "nope", reason: "connect" },
+  ]);
+  assertEquals(events.length, 2);
+  assertEquals(events[0]!.connected, true);
+  assertEquals(events[0]!.reason, "connect");
+  assertEquals(events[1]!.connected, false);
+  assertEquals(events[1]!.reason, "disconnect");
+});
+
+it("parseFleetHostSnapshotRows drops blank ids and zero-sample latest_at", () => {
+  const rows = parseFleetHostSnapshotRows(
+    ["cpuUsagePercent"],
+    [
+      {
+        server_id: "  ",
+        sample_count: 2,
+        latest_at: "2026-01-01T00:59:00Z",
+        cpuUsagePercent: 1,
+      },
+      {
+        server_id: SERVER_ID,
+        sample_count: 0,
+        latest_at: "2026-01-01T00:59:00Z",
+        cpuUsagePercent: 9,
+      },
+      {
+        server_id: SERVER_ID,
+        sample_count: "not-a-number",
+        latest_at: "2026-01-01T00:59:00Z",
+        cpuUsagePercent: 4,
+      },
+    ],
+  );
+  assertEquals(rows.length, 2);
+  assertEquals(rows[0]!.latestAt, null);
+  assertEquals(rows[0]!.sampleCount, 0);
+  assertEquals(rows[1]!.sampleCount, 0);
+  assertEquals(rows[1]!.latestAt, null);
+});
+
+it("queryFleetHostSnapshotViaSqlApi: empty serverIds skips fetch", async () => {
+  const result = await queryFleetHostSnapshotViaSqlApi(
+    {
+      accountId: "acct123",
+      apiToken: "token-xyz",
+      fetch: () => {
+        throw new TypeError("fetch must not run for an empty fleet");
+      },
+    },
+    {
+      serverIds: [],
+      metrics: ["cpuUsagePercent"],
+      from: "2026-01-01T00:50:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+    },
+  );
+  assertEquals(result.kind, "analytics-engine");
+  assertEquals(result.available, true);
+  assertEquals(result.metrics, ["cpuUsagePercent"]);
+  assertEquals(result.servers, []);
+});
+
+it("queryFleetHostSnapshotViaSqlApi: consumes enveloped result.data", async () => {
+  const result = await queryFleetHostSnapshotViaSqlApi(
+    {
+      accountId: "acct123",
+      apiToken: "token-xyz",
+      fetch: async () =>
+        new Response(
+          envelopedSqlResponse([
+            {
+              server_id: SERVER_ID,
+              sample_count: 4,
+              latest_at: "2026-01-01T00:59:00Z",
+              cpuUsagePercent: 11,
+            },
+          ]),
+          { status: 200 },
+        ),
+    },
+    {
+      serverIds: [SERVER_ID],
+      metrics: ["cpuUsagePercent"],
+      from: "2026-01-01T00:50:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+    },
+  );
+  assertEquals(result.servers.length, 1);
+  assertEquals(result.servers[0]!.serverId, SERVER_ID);
+  assertEquals(result.servers[0]!.values.cpuUsagePercent, 11);
+  assertEquals(result.servers[0]!.sampleCount, 4);
+});
+
+it("parseCloudflareV4SqlResponse maps remaining envelope and error shapes", () => {
+  assertThrows(
+    () => parseCloudflareV4SqlResponse([]),
+    TypeError,
+    "not a JSON object",
+  );
+  assertEquals(parseCloudflareV4SqlResponse({ success: true, result: null }).data, []);
+  assertThrows(
+    () =>
+      parseCloudflareV4SqlResponse({
+        success: true,
+        result: { error: "query aborted" },
+      }),
+    Error,
+    "AE SQL query error: query aborted",
+  );
+  assertThrows(
+    () =>
+      parseCloudflareV4SqlResponse({
+        success: true,
+        result: { data: { not: "rows" } },
+      }),
+    TypeError,
+    "result.data is not an array",
+  );
+  assertThrows(
+    () =>
+      parseCloudflareV4SqlResponse({
+        success: true,
+        result: "oops",
+      }),
+    TypeError,
+    "result is not an object",
+  );
+  assertThrows(
+    () =>
+      parseCloudflareV4SqlResponse({
+        success: false,
+        errors: ["  auth failed  "],
+      }),
+    Error,
+    "AE SQL API error: auth failed",
+  );
+  assertThrows(
+    () =>
+      parseCloudflareV4SqlResponse({
+        success: false,
+        errors: [{}],
+        extra: true,
+      }),
+    Error,
+    "opaque body keys=",
+  );
+});
+
+it("parseAeLatestAtMs rejects non-numeric non-string values", () => {
+  assertEquals(parseAeLatestAtMs(false), null);
+  assertEquals(parseAeLatestAtMs(Number.NaN), null);
+  assertEquals(parseAeLatestAtMs("not-a-date"), null);
 });

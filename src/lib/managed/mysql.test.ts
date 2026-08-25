@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { applyResourcesToComposeService } from "../compose/apply-service-options.ts";
+import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 import { ManagedSecretPlaceholder } from "./index.ts";
 import { BINLOG_EXPIRE_LOGS_SECONDS, mysqlEngineSpec } from "./mysql.ts";
 import type { MysqlManagedSettings } from "./mysql.ts";
@@ -324,4 +325,95 @@ test("userOperations use backtick quote and 32-char max", () => {
   assertEquals(mysqlEngineSpec.userOperations.identifier.quote, "`");
   assertEquals(mysqlEngineSpec.userOperations.identifier.maxLength, 32);
   assertEquals(mysqlEngineSpec.userOperations.executor.client, "mysql");
+});
+
+test("binding DSN embeds the plaintext password with MySQL ssl-mode spelling", () => {
+  const binding = mysqlEngineSpec.binding;
+  if (!binding) throw new TypeError("expected mysql binding descriptor");
+  assertEquals(binding.scheme, "mysql");
+  assertEquals(binding.unprefixed.host, "MYSQL_HOST");
+  assertEquals(binding.unprefixed.sslMode, undefined);
+  const dsn = binding.buildBindingDsn({
+    host: "203.0.113.41",
+    port: 13306,
+    database: "appdb",
+    username: "app_user",
+    password: TEST_ONLY_TURBOPANEL_SECRET,
+    sslMode: "verify-ca",
+  });
+  assertEquals(dsn.startsWith("mysql://"), true);
+  assertEquals(dsn.includes(encodeURIComponent(TEST_ONLY_TURBOPANEL_SECRET)), true);
+  assertEquals(dsn.includes("***"), false);
+  assertEquals(dsn.includes("ssl-mode=VERIFY_CA"), true);
+});
+
+test("useOrgTls omits self-signed tlsMaterial", () => {
+  const withOrg = mysqlEngineSpec.buildRuntimeSpec({
+    managedId: "11111111-1111-1111-1111-111111111111",
+    settings: defaultSettings(),
+    rootUsername: "root",
+    useOrgTls: true,
+  });
+  assertEquals(withOrg.tlsMaterial, undefined);
+
+  const withoutOrg = mysqlEngineSpec.buildRuntimeSpec({
+    managedId: "11111111-1111-1111-1111-111111111111",
+    settings: defaultSettings(),
+    rootUsername: "root",
+  });
+  assertEquals(withoutOrg.tlsMaterial?.commonName, "managed-mysql");
+});
+
+test("buildRuntimeSpec applies dockerOptions onto compose service and env", () => {
+  const settings = defaultSettings({
+    dockerOptions: {
+      restart: "on-failure",
+      stopGracePeriodSeconds: 45,
+      shmSizeBytes: 32 * 1024 * 1024,
+      ulimits: { nofile: { soft: 512, hard: 1024 } },
+      labels: { "app.tier": "mysql" },
+      extraEnv: { MY_FLAG: "1" },
+    },
+    exposure: { enabled: true, scope: "datacenter" },
+  });
+  const spec = mysqlEngineSpec.buildRuntimeSpec({
+    managedId: "11111111-1111-1111-1111-111111111111",
+    settings,
+    rootUsername: "root",
+  });
+  assertEquals(spec.service.restart, "on-failure");
+  assertEquals(spec.service.stop_grace_period, "45s");
+  assertEquals(spec.service.shm_size, 32 * 1024 * 1024);
+  assertEquals(spec.service.ulimits, {
+    nofile: { soft: 512, hard: 1024 },
+  });
+  assertEquals(spec.service.labels, { "app.tier": "mysql" });
+  assertEquals(spec.env.MY_FLAG, "1");
+  assertEquals(spec.exposure.scope, "datacenter");
+});
+
+test("parseSettings rejects non-objects and system schemas; null uses defaults", () => {
+  assertEquals(mysqlEngineSpec.parseSettings([]), null);
+  assertEquals(mysqlEngineSpec.parseSettings("mysql"), null);
+  assertEquals(
+    mysqlEngineSpec.parseSettings({ initialDatabase: "information_schema" }),
+    null,
+  );
+  assertEquals(
+    mysqlEngineSpec.parseSettings({ initialDatabase: "performance_schema" }),
+    null,
+  );
+  const fromNull = mysqlEngineSpec.parseSettings(null) as MysqlManagedSettings;
+  assertEquals(fromNull.initialDatabase, "appdb");
+});
+
+test("buildConnectionInfo renders disable as DISABLED", () => {
+  const info = mysqlEngineSpec.buildConnectionInfo({
+    host: "db.example",
+    port: 3306,
+    database: "appdb",
+    username: "root",
+    sslMode: "disable",
+  });
+  assertEquals(info.dsn.includes("ssl-mode=DISABLED"), true);
 });

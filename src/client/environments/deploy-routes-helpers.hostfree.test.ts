@@ -16,10 +16,12 @@ import {
   expandHostingsForComposeInstances,
   fabricGateErrorResponse,
   hostingsNeedSharedHttpIngress,
+  isPlainObject,
   mapPrepareErrorResponse,
   parseDeployRef,
   parseDeployRequestFlags,
   parseLifecycleAction,
+  resolveDeployReleaseServiceId,
   preferredListenPortsFromHostings,
   queuedCommandsResponseBody,
   readHostingPorts,
@@ -130,6 +132,16 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
       scheduledServerId: 'srv-other',
       serviceId: 'svc-1',
     },
+    { kind: 'site_cron_unowned', composeServiceName: 'cron-site' },
+    { kind: 'site_managed_directory_unowned', composeServiceName: 'uploads' },
+    { kind: 'source_principal_ambiguous', composeServiceName: 'git-app' },
+    {
+      kind: 'source_ref_unresolved',
+      composeServiceName: 'git-app',
+      sourceId: 'src-1',
+      ref: 'missing-branch',
+      message: 'ref not found',
+    },
   ]
 
   assertEquals(mapPrepareErrorResponse(cases[0]).status, 409)
@@ -174,10 +186,20 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
     storageWithoutPrimary.body.message,
     'Storage "data" (single_writer) has no usable location on this server',
   )
+
+  assertEquals(mapPrepareErrorResponse(cases[11]).body.error, 'site_cron_unowned')
+  assertEquals(mapPrepareErrorResponse(cases[11]).status, 422)
+  assertEquals(mapPrepareErrorResponse(cases[12]).body.error, 'site_managed_directory_unowned')
+  assertEquals(mapPrepareErrorResponse(cases[13]).body.error, 'source_principal_ambiguous')
+  const unresolved = mapPrepareErrorResponse(cases[14])
+  assertEquals(unresolved.body.error, 'source_ref_unresolved')
+  assertEquals(unresolved.body.sourceId, 'src-1')
+  assertEquals(unresolved.body.ref, 'missing-branch')
 })
 
 test('parseDeployRequestFlags defaults flags to false', () => {
   assertEquals(parseDeployRequestFlags(null), 'invalid')
+  assertEquals(parseDeployRequestFlags([]), 'invalid')
   assertEquals(parseDeployRequestFlags({}), {
     acknowledgeHealthCheckWarnings: false,
     noCache: false,
@@ -230,21 +252,38 @@ test('parseDeployRef normalizes absent and blank values to null', () => {
 
 test('parseLifecycleAction accepts start stop restart only', () => {
   assertEquals(parseLifecycleAction({ action: 'start' }), 'start')
+  assertEquals(parseLifecycleAction({ action: 'stop' }), 'stop')
+  assertEquals(parseLifecycleAction({ action: 'restart' }), 'restart')
   assertEquals(parseLifecycleAction({ action: 'pause' }), 'invalid')
+  assertEquals(parseLifecycleAction(null), 'invalid')
+  assertEquals(parseLifecycleAction([]), 'invalid')
+  assertEquals(parseLifecycleAction({}), 'invalid')
+})
+
+test('isPlainObject rejects arrays and null', () => {
+  assertEquals(isPlainObject({ a: 1 }), true)
+  assertEquals(isPlainObject(null), false)
+  assertEquals(isPlainObject([]), false)
+  assertEquals(isPlainObject('x'), false)
 })
 
 test('expandHostingsForComposeInstances fans out clone keys', () => {
+  const hosting = {
+    hostingId: 'h1',
+    serviceId: 'svc',
+    composeServiceName: 'web',
+    hostnames: ['app.example.com'],
+  }
   const expanded = expandHostingsForComposeInstances(
-    [{
-      hostingId: 'h1',
-      serviceId: 'svc',
-      composeServiceName: 'web',
-      hostnames: ['app.example.com'],
-    }],
+    [hosting],
     { web: ['web-1', 'web-2'] },
   )
   assertEquals(expanded.length, 2)
   assertEquals(expanded.map((row) => row.composeServiceName), ['web-1', 'web-2'])
+
+  const kept = expandHostingsForComposeInstances([hosting], { web: [] })
+  assertEquals(kept, [hosting])
+  assertEquals(expandHostingsForComposeInstances([hosting], {}), [hosting])
 })
 
 test('hosting option readers filter invalid values', () => {
@@ -510,6 +549,43 @@ test('buildDeployPreviewServers emits per-host blocks when split', () => {
     { name: 'au1', services: ['web'] },
     { name: 'bravo.lan', services: ['api'] },
   ])
+})
+
+test('resolveDeployReleaseServiceId prefers hosting, then ingress, then compose key', () => {
+  assertEquals(
+    resolveDeployReleaseServiceId('web', [{
+      hostingId: 'h1',
+      serviceId: 'svc-hosting',
+      composeServiceName: 'web',
+      hostnames: ['app.example.com'],
+    }], []),
+    'svc-hosting',
+  )
+  assertEquals(
+    resolveDeployReleaseServiceId('web', [{
+      hostingId: 'h1',
+      serviceId: '',
+      composeServiceName: 'web',
+      hostnames: ['app.example.com'],
+    }], [{
+      serviceId: 'svc-ingress',
+      composeServiceName: 'web',
+      containerName: 'web-in',
+    }]),
+    'svc-ingress',
+  )
+  assertEquals(
+    resolveDeployReleaseServiceId('worker', [], [{
+      serviceId: 'svc-other',
+      composeServiceName: 'api',
+      containerName: 'api-in',
+    }]),
+    'worker',
+  )
+})
+
+test('buildNativeAppServicesForDeploy returns empty when no apps', () => {
+  assertEquals(buildNativeAppServicesForDeploy([], [], []), [])
 })
 
 test('native app rows resolve the release serviceId from hostings', () => {

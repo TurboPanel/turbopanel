@@ -27,6 +27,7 @@ import {
   listConnectedServerIdsFromProjection,
   listEnrolledDaemonServerIds,
   listRecentlyOfflineServersForSweep,
+  loadServerRowsForFleetPresence,
   mergeDaemonBuildPreserving,
   projectServerDaemon,
   readProjectionsForServers,
@@ -1411,6 +1412,47 @@ test("buildProjectionsFromDaemonRows maps connected servers with status timestam
   assertEquals(read?.connectedAt, "2020-01-01T00:00:00.000Z");
   assertEquals(read?.remoteAddress, "203.0.113.1");
   assertEquals(read?.daemonBuild?.commit, "abc");
+});
+
+test("loadServerRowsForFleetPresence short-circuits an empty id set", async () => {
+  const db = {
+    select: () => {
+      throw new Error("db must not be queried for an empty id set");
+    },
+  } as unknown as Db;
+
+  assertEquals(await loadServerRowsForFleetPresence(db, []), []);
+});
+
+test("loadServerRowsForFleetPresence selects the requested rows", async () => {
+  const row = {
+    id: serverId,
+    daemon: { key: baseKey },
+    metadata: null,
+    hostname: "host-1",
+    machineKey: null,
+    osId: null,
+    osFamily: null,
+    osVersion: null,
+    osCodename: null,
+    osPrettyName: null,
+    osArchitecture: null,
+    timezone: null,
+    isTimeSyncEnabled: null,
+    ntpServers: null,
+    ntpLastSyncedAt: null,
+    connected: true,
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  };
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve([row]),
+      }),
+    }),
+  } as unknown as Db;
+
+  assertEquals(await loadServerRowsForFleetPresence(db, [serverId]), [row]);
 });
 
 test("listEnrolledDaemonServerIds returns only servers with daemon keys", async () => {

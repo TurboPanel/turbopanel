@@ -82,6 +82,49 @@ it("selectResolutionSeconds: oversized maxPoints cannot bypass server cap", () =
   );
 });
 
+it("parseMaxPoints: defaults blank input and rejects non-integers", () => {
+  assertEquals(parseMaxPoints(undefined), {
+    ok: true,
+    value: MAX_METRICS_POINTS,
+  });
+  assertEquals(parseMaxPoints("  "), {
+    ok: true,
+    value: MAX_METRICS_POINTS,
+  });
+  assertEquals(parseMaxPoints(""), {
+    ok: true,
+    value: MAX_METRICS_POINTS,
+  });
+  assertEquals(parseMaxPoints("1.5"), {
+    ok: false,
+    message: "maxPoints must be a positive integer",
+  });
+  assertEquals(parseMaxPoints("0"), {
+    ok: false,
+    message: "maxPoints must be a positive integer",
+  });
+});
+
+it("selectResolutionSeconds: ignores disallowed requested values and inverted ranges", () => {
+  const base = Date.parse("2026-01-01T00:00:00.000Z");
+  assertEquals(
+    selectResolutionSeconds({
+      fromMs: base,
+      toMs: base + HOUR_MS,
+      requested: 90,
+    }),
+    60,
+  );
+  assertEquals(
+    selectResolutionSeconds({ fromMs: base + HOUR_MS, toMs: base }),
+    60,
+  );
+});
+
+it("validateMetricsRange: accepts an equal from/to pair", () => {
+  assertEquals(validateMetricsRange(1_000, 1_000), { ok: true });
+});
+
 it("parseMaxPoints: rejects values above MAX_METRICS_POINTS", () => {
   const parsed = parseMaxPoints(String(MAX_METRICS_POINTS + 1));
   assertEquals(parsed.ok, false);

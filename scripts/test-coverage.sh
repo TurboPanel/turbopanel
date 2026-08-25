@@ -106,6 +106,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/admin/reencrypt-secrets.hostfree.test.ts \
   src/admin/routes-helpers.hostfree.test.ts \
   src/admin/routes.hostfree.test.ts \
+  src/admin/tls-trust-reconcile.hostfree.test.ts \
   src/admin/routes.test.ts \
   src/app.test.ts \
   src/client/authn/auth-rate-limit-http.test.ts \
@@ -148,6 +149,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/environments/deploy-prepare.test.ts \
   src/client/environments/deploy-layers.test.ts \
   src/client/environments/deploy-routes.test.ts \
+  src/client/environments/deploy-sources.hostfree.test.ts \
+  src/client/environments/php-availability.test.ts \
   src/client/environments/register-compose-volumes.test.ts \
   src/client/environments/register-compose-volumes.hostfree.test.ts \
   src/client/environments/register-compose-mounts.hostfree.test.ts \
@@ -166,6 +169,10 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/apply-prepare-pure.test.ts \
   src/client/managed/apply-prepare-bind.hostfree.test.ts \
   src/client/managed/apply-prepare.test.ts \
+  src/client/managed/access-address.hostfree.test.ts \
+  src/client/managed/ha-authority.hostfree.test.ts \
+  src/client/managed/ha-desired.hostfree.test.ts \
+  src/client/managed/ha-recovery.hostfree.test.ts \
   src/client/managed/ha-recovery-pure.test.ts \
   src/client/managed/ingress-desired.test.ts \
   src/client/managed/ingress-desired.hostfree.test.ts \
@@ -195,6 +202,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/principals/routes.test.ts \
   src/client/principals/serialize.test.ts \
   src/client/principals/store.test.ts \
+  src/client/principals/ssh-keys.hostfree.test.ts \
   src/client/principals/store.hostfree.test.ts \
   src/client/principals/routes-helpers.hostfree.test.ts \
   src/client/projects/catalog/catalog.test.ts \
@@ -215,6 +223,11 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/servers/update-status.test.ts \
   src/client/shared.test.ts \
   src/client/shared-authz-guards.test.ts \
+  src/client/sources/inspect.hostfree.test.ts \
+  src/client/sources/provider-install-state.hostfree.test.ts \
+  src/client/sources/routes-helpers.hostfree.test.ts \
+  src/client/sources/webhook-trigger.hostfree.test.ts \
+  src/client/git/github-webhook-routes.hostfree.test.ts \
   src/client/storage/serialize.test.ts \
   src/client/storage/routes-helpers.test.ts \
   src/client/storage/routes.test.ts \
@@ -243,12 +256,14 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/authn/server-identity-db.hostfree.test.ts \
   src/daemon/authn/server-key.test.ts \
   src/daemon/api-routes.test.ts \
+  src/daemon/api-routes.hostfree.test.ts \
   src/daemon/rehydrate-secrets.hostfree.test.ts \
   src/daemon/execution-log-ingest.hostfree.test.ts \
   src/daemon/execution-log-ingest-route.hostfree.test.ts \
   src/daemon/container-log-ingest.hostfree.test.ts \
   src/daemon/container-log-ingest-route.hostfree.test.ts \
   src/daemon/container-logs-presence.hostfree.test.ts \
+  src/daemon/presence-ack-convergence.hostfree.test.ts \
   src/daemon/rate-limit/container-log-keys.hostfree.test.ts \
   src/daemon/cell/contracts.test.ts \
   src/daemon/cell/do-storage-classify.test.ts \
@@ -297,11 +312,13 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/rate-limit/inbound-window.test.ts \
   src/daemon/rate-limit/keys.test.ts \
   src/daemon/rate-limit/redis-rate-limiter.test.ts \
+  src/daemon/rate-limit/workers-rate-limiter.hostfree.test.ts \
   src/db-timeout.test.ts \
   src/db-url.test.ts \
   src/db.test.ts \
   src/db.hostfree.test.ts \
   src/deno-compile-permissions.test.ts \
+  src/deno-production-entry.test.ts \
   src/dev-mode.deno.test.ts \
   src/developer/database-routes-helpers.hostfree.test.ts \
   src/developer/database-routes.test.ts \
@@ -310,15 +327,21 @@ deno test -A --coverage=coverage/deno-profile \
   src/developer/drizzle-studio.test.ts \
   src/developer/drizzle-studio-spawn.test.ts \
   src/developer/dev-sync-archive.deno.test.ts \
+  src/developer/dev-sync.hostfree.test.ts \
   src/developer/drizzle-studio-bind.test.ts \
   src/developer/drizzle-studio-helpers.hostfree.test.ts \
   src/developer/local-console-auth.test.ts \
   src/developer/routes-core-helpers.hostfree.test.ts \
+  src/developer/routes.hostfree.test.ts \
+  src/developer/system-routes.hostfree.test.ts \
   src/developer/system-routes.test.ts \
+  src/developer/tunnel-routes.hostfree.test.ts \
+  src/developer/update-routes.hostfree.test.ts \
   src/drizzle-kit-config.test.ts \
   src/drizzle-studio-probe.test.ts \
   src/lib/amqp-default-url.test.ts \
   src/lib/commands/command-amqp-topology.test.ts \
+  src/lib/commands/context.test.ts \
   src/lib/commands/consumer.test.ts \
   src/lib/commands/consumer.hostfree.test.ts \
   src/lib/commands/deno-amqp-queue.test.ts \
@@ -330,6 +353,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/commands/noop-command-queue.test.ts \
   src/lib/commands/queue.test.ts \
   src/lib/commands/schemas.test.ts \
+  src/lib/commands/schemas-parsers.hostfree.test.ts \
   src/lib/commands/types.test.ts \
   src/lib/commands/workers-queue.test.ts \
   src/lib/compose/ \
@@ -338,6 +362,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/datacenter-metadata.test.ts \
   src/lib/datacenter-name-suggestions.test.ts \
   src/lib/datacenter-options.test.ts \
+  src/lib/cron.test.ts \
   src/lib/daemon-install-command.deno.test.ts \
   src/lib/install-tls.deno.test.ts \
   src/lib/container-logs/types.test.ts \
@@ -349,11 +374,14 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/container-logs/cloudflare/pipeline-store.test.ts \
   src/lib/container-logs/store-conformance.test.ts \
   src/lib/container-logs/org-settings.test.ts \
+  src/lib/execution-logs/disabled-store.test.ts \
   src/lib/execution-logs/index-model.test.ts \
   src/lib/execution-logs/store-selection.test.ts \
+  src/lib/execution-logs/types.test.ts \
   src/lib/execution-logs/seal-on-terminal.test.ts \
   src/lib/execution-logs/s3-sigv4.test.ts \
   src/lib/execution-logs/s3-store.deno.test.ts \
+  src/lib/execution-logs/object-store.hostfree.test.ts \
   src/lib/execution-logs/r2-store.deno.test.ts \
   src/lib/execution-logs/filesystem-store.deno.test.ts \
   src/lib/db/command-records.test.ts \
@@ -405,12 +433,18 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/display-name-format.test.ts \
   src/lib/organization-options.test.ts \
   src/lib/host-defaults.test.ts \
+  src/lib/optional-fields.test.ts \
+  src/lib/php-settings.test.ts \
+  src/lib/principal-access.test.ts \
   src/lib/principal-options.test.ts \
+  src/lib/project-compose-source.test.ts \
   src/lib/project-options.test.ts \
   src/lib/resolve-public-base-url.test.ts \
   src/lib/resource-limits.test.ts \
+  src/lib/runtime-registry.test.ts \
   src/lib/server-capacity.test.ts \
   src/lib/service-options-instances.test.ts \
+  src/lib/ssh-public-key.test.ts \
   src/lib/settings/email-settings.deno.test.ts \
   src/lib/settings/resolver.deno.test.ts \
   src/lib/settings/resolver.hostfree.test.ts \
@@ -420,6 +454,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/update/constants.test.ts \
   src/log-compat.test.ts \
   src/node-path.test.ts \
+  src/query-cache/cached-query.test.ts \
+  src/query-cache/keys.test.ts \
   src/query-cache/passthrough-query-cache.test.ts \
   src/query-cache/read-models/server-detail.test.ts \
   src/query-cache/read-models/servers-list.test.ts \
@@ -510,156 +546,13 @@ if bad="$(grep -E '^SF:(/|file:)' coverage/deno.lcov || true)" && [ -n "$bad" ];
   exit 1
 fi
 
+# Merge lives in scripts/merge-lcov.py (not an embedded heredoc) so concurrent
+# edits to this file's Deno test list cannot tear the merge Python mid-run.
 echo "==> Merge Vitest + Deno LCOV for SonarCloud"
-python3 - <<'PY'
-from __future__ import annotations
-
-from pathlib import Path
-
-
-def parse_records(path: Path) -> dict[str, list[str]]:
-    records: dict[str, list[str]] = {}
-    current_sf: str | None = None
-    current_lines: list[str] = []
-
-    def flush() -> None:
-        nonlocal current_sf, current_lines
-        if current_sf is None:
-            return
-        records[current_sf] = current_lines
-        current_sf = None
-        current_lines = []
-
-    for line in path.read_text().splitlines():
-        if line.startswith("SF:"):
-            flush()
-            current_sf = line[3:]
-            current_lines = [line]
-        elif current_sf is not None:
-            current_lines.append(line)
-            if line == "end_of_record":
-                flush()
-
-    flush()
-    return records
-
-
-def line_hits(record_lines: list[str]) -> dict[int, int]:
-    hits: dict[int, int] = {}
-    for line in record_lines:
-        if not line.startswith("DA:"):
-            continue
-        line_no, count = line[3:].split(",", 1)
-        hits[int(line_no)] = max(hits.get(int(line_no), 0), int(count))
-    return hits
-
-
-def branch_hits(record_lines: list[str]) -> dict[str, int]:
-    hits: dict[str, int] = {}
-    for line in record_lines:
-        if not line.startswith("BRDA:"):
-            continue
-        hits[line[5:]] = max(hits.get(line[5:], 0), int(line.rsplit(",", 1)[-1]))
-    return hits
-
-
-def covered_line_count(record_lines: list[str]) -> int:
-    return sum(1 for count in line_hits(record_lines).values() if count > 0)
-
-
-def smart_merge_hits(
-    primary: dict[int, int],
-    secondary: dict[int, int],
-) -> dict[int, int]:
-    """Primary coverable lines + max hits from secondary; add secondary-only hit lines.
-
-    Avoids Deno V8 zero-hit transitive lines diluting a healthy Vitest
-    (Istanbul) Workers/DO measurement, while still letting real Deno unit
-    coverage replace Vitest records that only imported a module (LH:0).
-    """
-    merged = dict(primary)
-    for line_no, count in secondary.items():
-        if line_no in merged:
-            merged[line_no] = max(merged[line_no], count)
-        elif count > 0:
-            merged[line_no] = count
-    return merged
-
-
-def merge_sf_records(
-    primary_lines: list[str],
-    secondary_lines: list[str] | None = None,
-) -> list[str]:
-    primary_hits = line_hits(primary_lines)
-    primary_branches = branch_hits(primary_lines)
-    if secondary_lines is None:
-        line_hits_merged = primary_hits
-        branch_hits_merged = primary_branches
-    else:
-        secondary_hits = line_hits(secondary_lines)
-        secondary_branches = branch_hits(secondary_lines)
-        line_hits_merged = smart_merge_hits(primary_hits, secondary_hits)
-        branch_hits_merged = dict(primary_branches)
-        for key, count in secondary_branches.items():
-            if key in branch_hits_merged:
-                branch_hits_merged[key] = max(branch_hits_merged[key], count)
-            elif count > 0:
-                branch_hits_merged[key] = count
-
-    sf_line = next(
-        (line for line in primary_lines if line.startswith("SF:")),
-        "SF:unknown",
-    )
-    body: list[str] = [sf_line]
-    for line_no in sorted(line_hits_merged):
-        body.append(f"DA:{line_no},{line_hits_merged[line_no]}")
-    body.append(f"LF:{len(line_hits_merged)}")
-    body.append(f"LH:{sum(1 for count in line_hits_merged.values() if count > 0)}")
-
-    if branch_hits_merged:
-        for key in sorted(branch_hits_merged):
-            body.append(f"BRDA:{key},{branch_hits_merged[key]}")
-        body.append(f"BRF:{len(branch_hits_merged)}")
-        body.append(
-            f"BRH:{sum(1 for count in branch_hits_merged.values() if count > 0)}"
-        )
-
-    body.append("end_of_record")
-    return body
-
-
-vitest_records = parse_records(Path("coverage/vitest/lcov.info"))
-deno_records = parse_records(Path("coverage/deno.lcov"))
-# Pair Vitest + Deno per SF:
-# - Vitest-only → Vitest (Workers/DO path).
-# - Deno-only → Deno (host-free unit suites).
-# - Both → whichever has more covered lines is primary; secondary may only
-#   raise hits or add *executed* lines (never zero-hit dilution).
-# Previously Vitest owned any overlapping SF entirely, so Deno LCOV for
-# modules Vitest only imported (db-url, allocate-containers, …) was dropped
-# and Sonar reported ~0% despite extensive Deno suite hits.
-all_sf = set(vitest_records) | set(deno_records)
-merged: dict[str, list[str]] = {}
-for sf in sorted(all_sf):
-    v = vitest_records.get(sf)
-    d = deno_records.get(sf)
-    if v is None:
-        assert d is not None
-        merged[sf] = d
-        continue
-    if d is None:
-        merged[sf] = v
-        continue
-    if covered_line_count(d) > covered_line_count(v):
-        merged[sf] = merge_sf_records(d, v)
-    else:
-        merged[sf] = merge_sf_records(v, d)
-
-out_lines: list[str] = []
-for sf in sorted(merged):
-    out_lines.extend(merged[sf])
-Path("coverage/lcov.info").write_text("\n".join(out_lines) + "\n")
-PY
+python3 scripts/merge-lcov.py \
+  --vitest coverage/vitest/lcov.info \
+  --deno coverage/deno.lcov \
+  --out coverage/lcov.info
 
 if ! grep -q '^SF:src/daemon/cell/do.ts' coverage/lcov.info; then
   echo "Merged LCOV expected SF:src/daemon/cell/do.ts" >&2

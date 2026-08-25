@@ -3,6 +3,7 @@ import { it } from "@std/testing/bdd";
 import {
   MAX_DAEMON_WS_REPO_READ_BYTES,
   MAX_DAEMON_WS_REPO_READ_ENTRIES,
+  MAX_DAEMON_WS_REPO_READ_PATHS,
   type DaemonMessage,
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -500,6 +501,7 @@ it("parseDaemonBuildInfo accepts optional builtAt and channel", () => {
 
 it("parseDaemonBuildInfo rejects missing or empty commit/buildId", () => {
   assertEquals(parseDaemonBuildInfo(null), undefined);
+  assertEquals(parseDaemonBuildInfo([]), undefined);
   assertEquals(parseDaemonBuildInfo({ commit: "", buildId: "b" }), undefined);
   assertEquals(parseDaemonBuildInfo({ commit: "c", buildId: "" }), undefined);
   assertEquals(parseDaemonBuildInfo({ commit: 1, buildId: "b" }), undefined);
@@ -938,6 +940,220 @@ it("repo-read-result accepts a normal read", () => {
     }),
   );
   assertEquals(result.ok, true);
+});
+
+it("validateDaemonInboundFrame rejects hello with a non-string machineKey", () => {
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "hello",
+        at: VALID_AT,
+        daemonBuild: VALID_DAEMON_BUILD,
+        machineKey: 12,
+      }),
+    ).ok,
+    false,
+  );
+});
+
+it("validateDaemonInboundFrame rejects heartbeat host fields that are not strings", () => {
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({ type: "heartbeat", at: VALID_AT, hostname: 1 }),
+    ).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "heartbeat",
+        at: VALID_AT,
+        machineKey: "x".repeat(MAX_DAEMON_WS_HOST_FIELD_CHARS + 1),
+      }),
+    ).ok,
+    false,
+  );
+});
+
+it("validateDaemonInboundFrame accepts managed-ha-event with a valid sourceMemberId", () => {
+  const result = validateDaemonInboundFrame(JSON.stringify({
+    type: "managed-ha-event",
+    managedId: "00000000-0000-4000-8000-000000000001",
+    sourceMemberId: "00000000-0000-4000-8000-000000000002",
+    at: VALID_AT,
+  }));
+  assertEquals(result.ok, true);
+});
+
+it("validateDaemonInboundFrame rejects managed-ha-event with an invalid sourceMemberId", () => {
+  const result = validateDaemonInboundFrame(JSON.stringify({
+    type: "managed-ha-event",
+    managedId: "00000000-0000-4000-8000-000000000001",
+    sourceMemberId: "not-a-uuid",
+    at: VALID_AT,
+  }));
+  assertEquals(result.ok, false);
+});
+
+it("validateDaemonInboundFrame rejects fabric path field shapes", () => {
+  const base = {
+    type: "fabric-paths-result",
+    id: "req-1",
+    at: FABRIC_PATH_AT,
+  };
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({
+      ...base,
+      paths: [{ publicKey: WG_PUBKEY, health: "maybe" }],
+    })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({
+      ...base,
+      paths: [{ publicKey: WG_PUBKEY, health: "healthy", endpoint: "not-an-endpoint" }],
+    })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({
+      ...base,
+      paths: [{
+        publicKey: WG_PUBKEY,
+        health: "healthy",
+        lastHandshakeAt: "not-a-timestamp",
+      }],
+    })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({
+      ...base,
+      paths: [{ publicKey: WG_PUBKEY, health: "healthy", latencyMs: -1 }],
+    })).ok,
+    false,
+  );
+});
+
+it("outboundEnvelopeToWireMessage maps repo-read-request with and without credential", () => {
+  const publicRepo = outboundEnvelopeToWireMessage({
+    kind: "repo-read-request",
+    deliveryId: "del-1",
+    requestId: "req-1",
+    cloneUrl: "https://example.com/repo.git",
+    ref: "trunk",
+    paths: ["compose.yaml"],
+    maxBytesPerFile: 1024,
+    at: VALID_AT,
+  });
+  assertEquals(publicRepo, {
+    type: "repo-read-request",
+    id: "req-1",
+    cloneUrl: "https://example.com/repo.git",
+    ref: "trunk",
+    paths: ["compose.yaml"],
+    maxBytesPerFile: 1024,
+    at: VALID_AT,
+  });
+
+  const privateRepo = outboundEnvelopeToWireMessage({
+    kind: "repo-read-request",
+    deliveryId: "del-2",
+    requestId: "req-2",
+    cloneUrl: "https://example.com/private.git",
+    ref: "main",
+    paths: ["a.yml", "b.yml"],
+    listPath: ".",
+    maxBytesPerFile: 2048,
+    credential: "tpdaemon.sealed",
+    credentialKind: "token",
+    credentialUsername: "git",
+    at: VALID_AT,
+  });
+  assertEquals(privateRepo.type, "repo-read-request");
+  if (privateRepo.type !== "repo-read-request") {
+    throw new TypeError("expected repo-read-request");
+  }
+  assertEquals(privateRepo.credential, "tpdaemon.sealed");
+  assertEquals(privateRepo.credentialKind, "token");
+  assertEquals(privateRepo.credentialUsername, "git");
+  assertEquals(privateRepo.listPath, ".");
+});
+
+it("wireMessageToInboundEnvelope maps repo-read-result", () => {
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "repo-read-result",
+      id: "req-1",
+      at: VALID_AT,
+      ok: true,
+      commitSha: "a".repeat(40),
+      files: [{ path: "compose.yaml", found: true, content: "services: {}\n" }],
+      entries: [{ path: "compose.yaml", kind: "file" }],
+    }),
+    {
+      kind: "repo-read-result",
+      requestId: "req-1",
+      at: VALID_AT,
+      ok: true,
+      commitSha: "a".repeat(40),
+      files: [{ path: "compose.yaml", found: true, content: "services: {}\n" }],
+      entries: [{ path: "compose.yaml", kind: "file" }],
+      error: undefined,
+    },
+  );
+});
+
+it("repo-read-result rejects invalid files and entries shapes", () => {
+  const base = {
+    type: "repo-read-result",
+    id: "req-1",
+    ok: true,
+    at: VALID_AT,
+  };
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({ ...base, files: "nope" })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({ ...base, files: [null] })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({
+      ...base,
+      files: [{ found: true }],
+    })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({
+      ...base,
+      files: [{ path: "a.yml", found: "yes" }],
+    })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({
+      ...base,
+      files: [{ path: "a.yml", found: true, content: 1 }],
+    })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({
+      ...base,
+      files: Array.from(
+        { length: MAX_DAEMON_WS_REPO_READ_PATHS + 1 },
+        (_, i) => ({ path: `f${i}.yml`, found: false }),
+      ),
+    })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({ ...base, entries: {} })).ok,
+    false,
+  );
 });
 
 it("repo-read-result rejects too many directory entries", () => {

@@ -1,4 +1,4 @@
-import type { Hono } from 'hono'
+import type { Env, Hono } from 'hono'
 import { join } from '@std/path'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
@@ -47,7 +47,7 @@ const CHUNK_CHARS = 256 * 1024
 const DEV_SYNC_TIMEOUT_MS = 180_000
 
 /** True when the daemon refused because it is a managed (non-checkout) install. */
-function isManagedDaemonDevSyncRefusal(message: string): boolean {
+export function isManagedDaemonDevSyncRefusal(message: string): boolean {
   return message.includes(MANAGED_DAEMON_DEV_SYNC_MARKER)
 }
 
@@ -222,10 +222,10 @@ export async function syncDevToDaemon(
  * Admin routes to push the current dev daemon build to daemons. Deno-only: tar +
  * filesystem access are not available in the Workers build.
  */
-export function registerDevSyncRoutes(
-  app: Hono,
+export function registerDevSyncRoutes<E extends Env>(
+  app: Hono<E>,
   opts: { secrets: DerivedSecretsConfig; authRequired?: boolean },
-): Hono {
+): Hono<E> {
   if (opts.authRequired !== false) {
     app.use(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, createDeveloperAccessMiddleware(opts.secrets))
     app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, createDeveloperAccessMiddleware(opts.secrets))
@@ -234,8 +234,10 @@ export function registerDevSyncRoutes(
   app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, async (c) => {
     const registry = getDaemonCellRegistry(c)
     if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
     const id = c.req.param('id')
-    const colocatedIds = await resolveColocatedServerIdSet(getDb(c), registry, [id])
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
     if (colocatedIds.has(id)) {
       return c.json({ ok: false, error: COLOCATED_DEV_SYNC_SKIPPED_REASON }, 422)
     }
@@ -262,8 +264,10 @@ export function registerDevSyncRoutes(
   app.post(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, async (c) => {
     const registry = getDaemonCellRegistry(c)
     if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
     const ids = await registry.listOnlineServerIds()
-    const colocatedIds = await resolveColocatedServerIdSet(getDb(c), registry, ids)
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, ids)
     const skippedResults = ids
       .filter((serverId) => colocatedIds.has(serverId))
       .map((daemonId) => ({

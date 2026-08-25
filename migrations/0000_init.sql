@@ -85,7 +85,8 @@ CREATE TABLE "credential" (
 	"name" varchar(255) NOT NULL,
 	"secret_envelope" text NOT NULL,
 	"expires_at" timestamp(3) with time zone,
-	CONSTRAINT "credential_provider_check" CHECK (provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav'))
+	CONSTRAINT "credential_provider_check" CHECK (provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
+        'git_deploy_key'))
 );
 --> statement-breakpoint
 CREATE TABLE "datacenter" (
@@ -129,6 +130,20 @@ CREATE TABLE "dispatch" (
 	"expires_at" timestamp(3) with time zone
 );
 --> statement-breakpoint
+CREATE TABLE "entitlement" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"principal_id" uuid NOT NULL,
+	"runtime" text NOT NULL,
+	"series" text NOT NULL,
+	"granted_by" text DEFAULT 'operator' NOT NULL,
+	CONSTRAINT "entitlement_unique" UNIQUE("principal_id","runtime","series"),
+	CONSTRAINT "entitlement_runtime_check" CHECK ("entitlement"."runtime" IN ('php', 'node')),
+	CONSTRAINT "entitlement_series_check" CHECK ("entitlement"."series" ~ '^[0-9]{1,3}([.][0-9]{1,3})?$'),
+	CONSTRAINT "entitlement_granted_by_check" CHECK ("entitlement"."granted_by" IN ('operator', 'deploy'))
+);
+--> statement-breakpoint
 CREATE TABLE "environment" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -153,6 +168,23 @@ CREATE TABLE "fabric" (
 	"cidr" "cidr" NOT NULL,
 	"name" varchar(255),
 	CONSTRAINT "fabric_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
+);
+--> statement-breakpoint
+CREATE TABLE "installation" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
+	"organization_id" uuid NOT NULL,
+	"provider" text NOT NULL,
+	"external_installation_id" text NOT NULL,
+	"account_login" varchar(255),
+	"account_type" text,
+	"suspended_at" timestamp(3) with time zone,
+	"oauth_envelope" jsonb,
+	CONSTRAINT "uniq_installation_organization_provider_external" UNIQUE("organization_id","provider","external_installation_id"),
+	CONSTRAINT "installation_provider_check" CHECK (provider IN ('github', 'gitlab'))
 );
 --> statement-breakpoint
 CREATE TABLE "grant" (
@@ -538,6 +570,48 @@ CREATE TABLE "setting" (
 	CONSTRAINT "setting_key_unique" UNIQUE("key")
 );
 --> statement-breakpoint
+CREATE TABLE "source" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
+	"organization_id" uuid NOT NULL,
+	"installation_id" uuid,
+	"service_id" uuid,
+	"environment_id" uuid,
+	"credential_id" uuid,
+	"provider" text NOT NULL,
+	"repository_url" text NOT NULL,
+	"repository_external_id" text,
+	"default_branch" varchar(255),
+	"subdirectory" text,
+	"auto_deploy" text DEFAULT 'disabled' NOT NULL,
+	CONSTRAINT "source_provider_check" CHECK (provider IN ('github', 'gitlab', 'git')),
+	CONSTRAINT "source_auto_deploy_check" CHECK (auto_deploy IN ('immediate', 'checks_passed', 'disabled')),
+	CONSTRAINT "source_at_most_one_parent_check" CHECK (((service_id IS NOT NULL)::int +
+        (environment_id IS NOT NULL)::int) <= 1)
+);
+--> statement-breakpoint
+CREATE TABLE "ssh" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"principal_id" uuid NOT NULL,
+	"name" varchar(255) NOT NULL,
+	"key_type" text NOT NULL,
+	"public_key" text NOT NULL,
+	"fingerprint" text NOT NULL,
+	"comment" text,
+	"user_id" uuid,
+	"bits" integer,
+	CONSTRAINT "ssh_fingerprint_unique" UNIQUE("principal_id","fingerprint"),
+	CONSTRAINT "ssh_type_check" CHECK ("ssh"."key_type" IN ('ssh-ed25519', 'sk-ssh-ed25519@openssh.com', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'sk-ecdsa-sha2-nistp256@openssh.com', 'ssh-rsa')),
+	CONSTRAINT "ssh_fingerprint_check" CHECK ("ssh"."fingerprint" ~ '^SHA256:[A-Za-z0-9+/]{43}$'),
+	CONSTRAINT "ssh_public_key_check" CHECK ("ssh"."public_key" ~ '^[A-Za-z0-9@.-]+ [A-Za-z0-9+/]+={0,2}$'),
+	CONSTRAINT "ssh_name_check" CHECK (char_length("ssh"."name") >= 1)
+);
+--> statement-breakpoint
 CREATE TABLE "steward" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -699,6 +773,16 @@ CREATE TABLE "verification" (
 	CONSTRAINT "verification_identifier_unique" UNIQUE("identifier")
 );
 --> statement-breakpoint
+CREATE TABLE "delivery" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"provider" text NOT NULL,
+	"external_delivery_id" text NOT NULL,
+	"event" text,
+	CONSTRAINT "uniq_delivery_provider_external" UNIQUE("provider","external_delivery_id"),
+	CONSTRAINT "delivery_provider_check" CHECK (provider IN ('github', 'gitlab'))
+);
+--> statement-breakpoint
 CREATE TABLE "workspace" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -723,9 +807,11 @@ ALTER TABLE "datacenter" ADD CONSTRAINT "datacenter_organization_id_organization
 ALTER TABLE "deployment" ADD CONSTRAINT "deployment_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deployment" ADD CONSTRAINT "deployment_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "dispatch" ADD CONSTRAINT "dispatch_command_id_command_id_fk" FOREIGN KEY ("command_id") REFERENCES "public"."command"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "entitlement" ADD CONSTRAINT "entitlement_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "environment" ADD CONSTRAINT "environment_project_id_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."project"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "environment" ADD CONSTRAINT "environment_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "fabric" ADD CONSTRAINT "fabric_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "installation" ADD CONSTRAINT "installation_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosting" ADD CONSTRAINT "hosting_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosting" ADD CONSTRAINT "hosting_tls_id_tls_id_fk" FOREIGN KEY ("tls_id") REFERENCES "public"."tls"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosting" ADD CONSTRAINT "hosting_ip_id_ip_id_fk" FOREIGN KEY ("ip_id") REFERENCES "public"."ip"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -768,6 +854,13 @@ ALTER TABLE "segment" ADD CONSTRAINT "segment_server_id_server_id_fk" FOREIGN KE
 ALTER TABLE "server" ADD CONSTRAINT "server_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "service" ADD CONSTRAINT "service_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "session" ADD CONSTRAINT "session_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "source" ADD CONSTRAINT "source_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "source" ADD CONSTRAINT "source_installation_id_installation_id_fk" FOREIGN KEY ("installation_id") REFERENCES "public"."installation"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "source" ADD CONSTRAINT "source_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "source" ADD CONSTRAINT "source_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "source" ADD CONSTRAINT "source_credential_id_credential_id_fk" FOREIGN KEY ("credential_id") REFERENCES "public"."credential"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ssh" ADD CONSTRAINT "ssh_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "ssh" ADD CONSTRAINT "ssh_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "steward" ADD CONSTRAINT "steward_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "steward" ADD CONSTRAINT "steward_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "storage" ADD CONSTRAINT "storage_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -811,10 +904,12 @@ CREATE INDEX "idx_datacenter_organization_id" ON "datacenter" USING btree ("orga
 CREATE INDEX "idx_deployment_environment_id" ON "deployment" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_deployment_server_id" ON "deployment" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_dispatch_expires_at" ON "dispatch" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX "idx_entitlement_principal_id" ON "entitlement" USING btree ("principal_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_environment_project_id" ON "environment" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_environment_server_id" ON "environment" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_fabric_organization_id" ON "fabric" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "idx_fabric_organization_id" ON "fabric" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_installation_organization_id" ON "installation" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_grant_entity" ON "grant" USING btree ("entity_type","entity_id");--> statement-breakpoint
 CREATE INDEX "idx_grant_actor" ON "grant" USING btree ("actor_type","actor_id");--> statement-breakpoint
 CREATE INDEX "idx_hosting_service_id" ON "hosting" USING btree ("service_id" uuid_ops);--> statement-breakpoint
@@ -877,6 +972,13 @@ CREATE INDEX "idx_server_connected" ON "server" USING btree ("id") WHERE "server
 CREATE INDEX "idx_service_environment_id" ON "service" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_service_environment_compose_name" ON "service" USING btree ("environment_id","compose_service_name");--> statement-breakpoint
 CREATE INDEX "idx_session_user_id" ON "session" USING btree ("user_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_source_organization_id" ON "source" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_source_installation_id" ON "source" USING btree ("installation_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_source_service_id" ON "source" USING btree ("service_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_source_environment_id" ON "source" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_source_credential_id" ON "source" USING btree ("credential_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_ssh_principal_id" ON "ssh" USING btree ("principal_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_ssh_fingerprint" ON "ssh" USING btree ("fingerprint" text_ops);--> statement-breakpoint
 CREATE INDEX "idx_steward_principal_id" ON "steward" USING btree ("principal_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_steward_service_id" ON "steward" USING btree ("service_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_storage_organization_id" ON "storage" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
@@ -913,5 +1015,6 @@ CREATE UNIQUE INDEX "uniq_var_environment" ON "variable" USING btree ("key","env
 CREATE UNIQUE INDEX "uniq_var_service" ON "variable" USING btree ("key","service_id") WHERE "variable"."service_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_var_hosting" ON "variable" USING btree ("key","hosting_id") WHERE "variable"."hosting_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_var_server" ON "variable" USING btree ("key","server_id") WHERE "variable"."server_id" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_delivery_created_at" ON "delivery" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "idx_workspace_organization_id" ON "workspace" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_workspace_organization_turbopanel" ON "workspace" USING btree ("organization_id") WHERE kind = 'turbopanel';

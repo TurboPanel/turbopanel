@@ -199,7 +199,7 @@ async function withVariableFixtures(
     try {
       await db.delete(binding).where(eq(binding.serviceId, serviceId))
     } catch {
-      // binding table lands after apply of the squashed 0000_init; ignore until applied
+      // binding table requires the migration to be applied; ignore until applied
     }
     await db.delete(service).where(eq(service.id, serviceId))
     await db.delete(environment).where(eq(environment.id, environmentId))

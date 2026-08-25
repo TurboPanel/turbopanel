@@ -23,6 +23,7 @@ import {
   isTransientError,
   processCommandEnvelope,
   resolveManagedIdFromPayload,
+  resolveManagedMemberIdFromFailedPayload,
 } from './consumer.ts'
 import { createNoopCommandQueue } from './noop-command-queue.ts'
 
@@ -35,8 +36,43 @@ import { createNoopCommandQueue } from './noop-command-queue.ts'
 const test = Deno.test.bind(Deno)
 
 const MANAGED_ID = '00000000-0000-4000-8000-0000000000aa'
+const MEMBER_ID = '00000000-0000-4000-8000-0000000000dd'
 const SERVER_ID = '00000000-0000-4000-8000-0000000000bb'
 const COMMAND_ID = '00000000-0000-4000-8000-0000000000cc'
+
+const VALID_MANAGED_APPLY_PAYLOAD = {
+  managedId: MANAGED_ID,
+  environmentId: '00000000-0000-4000-8000-000000000002',
+  engine: 'postgres',
+  projectName: 'tp-managed-pg',
+  containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-1',
+  image: 'docker.io/library/postgres:18-alpine',
+  containerPort: 5432,
+  composeYaml: 'services:\n  postgres:\n    image: postgres:18-alpine\n',
+  configFiles: [
+    {
+      path: 'postgresql.conf',
+      contents: "listen_addresses = '*'\n",
+      mode: '0640',
+    },
+  ],
+  volumes: [{ name: 'pgdata', target: '/var/lib/postgresql' }],
+  exposure: { enabled: false, protocol: 'tcp' },
+  memberId: MEMBER_ID,
+  memberRole: 'primary',
+  memberOrdinal: 1,
+  readEligible: true,
+  peers: [],
+  credentials: [
+    {
+      principalId: '00000000-0000-4000-8000-000000000003',
+      username: 'postgres',
+      role: 'root',
+      databases: ['postgres'],
+      password: 'tpdaemon.v1.server.key.payload',
+    },
+  ],
+} as const
 
 test('commandTimeoutMs returns per-type budgets and the default', () => {
   assertEquals(commandTimeoutMs('daemon.ping'), 30_000)
@@ -152,9 +188,66 @@ test('resolveManagedIdFromPayload extracts ids and returns null on miss', () => 
     }),
     MANAGED_ID
   )
+  assertEquals(
+    resolveManagedIdFromPayload('managed.apply', VALID_MANAGED_APPLY_PAYLOAD),
+    MANAGED_ID,
+  )
+  assertEquals(
+    resolveManagedIdFromPayload('managed.restore', {
+      managedId: 'm1',
+      engine: 'postgres',
+      backupId: 'bk_1700000000000',
+      artifactExtension: 'dump',
+      database: 'appdb',
+      checksum: 'c'.repeat(64),
+    }),
+    'm1',
+  )
+  assertEquals(
+    resolveManagedIdFromPayload('managed.ha.failover', {
+      managedId: 'managed-pg-1',
+      sourceMemberId: MEMBER_ID,
+      targetMemberId: '00000000-0000-4000-8000-0000000000ee',
+      phase: 'drain',
+    }),
+    'managed-pg-1',
+  )
   assertEquals(resolveManagedIdFromPayload('managed.lifecycle', {}), null)
   assertEquals(resolveManagedIdFromPayload('managed.apply', { managedId: 'x' }), null)
   assertEquals(resolveManagedIdFromPayload('daemon.ping', {}), null)
+})
+
+test('resolveManagedMemberIdFromFailedPayload reads member ids without inventing them', () => {
+  assertEquals(
+    resolveManagedMemberIdFromFailedPayload('managed.apply', VALID_MANAGED_APPLY_PAYLOAD),
+    MEMBER_ID,
+  )
+  assertEquals(
+    resolveManagedMemberIdFromFailedPayload('managed.lifecycle', {
+      managedId: MANAGED_ID,
+      action: 'start',
+      memberId: MEMBER_ID,
+    }),
+    MEMBER_ID,
+  )
+  assertEquals(
+    resolveManagedMemberIdFromFailedPayload('managed.lifecycle', {
+      managedId: MANAGED_ID,
+      action: 'start',
+    }),
+    null,
+  )
+  assertEquals(
+    resolveManagedMemberIdFromFailedPayload('managed.ha.failover', {
+      managedId: 'managed-pg-1',
+      sourceMemberId: MEMBER_ID,
+      targetMemberId: '00000000-0000-4000-8000-0000000000ee',
+      phase: 'recover',
+    }),
+    '00000000-0000-4000-8000-0000000000ee',
+  )
+  assertEquals(resolveManagedMemberIdFromFailedPayload('managed.destroy', {}), null)
+  assertEquals(resolveManagedMemberIdFromFailedPayload('daemon.ping', {}), null)
 })
 
 test('isTransientError still classifies durable-object / overloaded edges', () => {

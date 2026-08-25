@@ -92,19 +92,26 @@ async function sleepMs(ms: number): Promise<void> {
 export async function awaitCommandTerminal(
   db: Db,
   commandId: string,
-  options?: { timeoutMs?: number; pollMs?: number },
+  options?: {
+    timeoutMs?: number
+    pollMs?: number
+    loadCommand?: (db: Db, commandId: string) => Promise<CommandRecord | null>
+    sleep?: (ms: number) => Promise<void>
+  },
 ): Promise<CommandRecord | null> {
   const timeoutMs = options?.timeoutMs ?? APPLY_EXPIRES_MS
   const pollMs = options?.pollMs ?? COMMAND_AWAIT_POLL_MS
+  const loadCommand = options?.loadCommand ?? getCommandRecord
+  const sleep = options?.sleep ?? sleepMs
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const record = await getCommandRecord(db, commandId)
+    const record = await loadCommand(db, commandId)
     if (record && TERMINAL_COMMAND_STATUSES.has(record.status)) {
       return record
     }
-    await sleepMs(pollMs)
+    await sleep(pollMs)
   }
-  return await getCommandRecord(db, commandId)
+  return await loadCommand(db, commandId)
 }
 
 function isPrimaryMemberPayload(

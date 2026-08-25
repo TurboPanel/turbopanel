@@ -121,7 +121,7 @@ export type TriggerSummary = {
   outcomes: TriggerOutcome[]
 }
 
-function summarize(outcomes: TriggerOutcome[], matchedSources: number): TriggerSummary {
+export function summarize(outcomes: TriggerOutcome[], matchedSources: number): TriggerSummary {
   return {
     matchedSources,
     queued: outcomes.filter((o) => o.kind === 'queued').length,
@@ -153,7 +153,7 @@ const SOURCE_TRIGGER_SELECT = {
   options: source.options,
 }
 
-type TriggerSourceRow = {
+export type TriggerSourceRow = {
   id: string
   organizationId: string
   serviceId: string | null
@@ -197,6 +197,46 @@ async function findSourcesForRepository(
  * live GitHub call on the hot path of every delivery and would silently change
  * behavior when someone renames the default branch upstream.
  */
+export type WebhookTriggerDeps = {
+  loadInstallations?: (
+    db: Db,
+    provider: WebhookGitProviderName,
+    externalInstallationId: string | null,
+  ) => Promise<{ live: string[]; suspended: number }>
+  findSources?: (
+    db: Db,
+    installationIds: readonly string[],
+    repositoryExternalId: string,
+  ) => Promise<TriggerSourceRow[]>
+  setPendingChecks?: (
+    db: Db,
+    row: TriggerSourceRow,
+    pending: PendingChecks | null,
+  ) => Promise<void>
+  resolveSourceEnvironmentIds?: (
+    db: Db,
+    row: TriggerSourceRow,
+  ) => Promise<string[]>
+  resolveEnvironmentPlacement?: (
+    db: Db,
+    environmentId: string,
+  ) => Promise<{ serverId: string | null; organizationId: string } | null>
+  runDeploy?: typeof runEnvironmentDeployForActor
+}
+
+function resolveTriggerIo(deps: WebhookTriggerDeps = {}) {
+  return {
+    loadInstallations: deps.loadInstallations ?? loadInstallations,
+    findSources: deps.findSources ?? findSourcesForRepository,
+    setPendingChecks: deps.setPendingChecks ?? setPendingChecks,
+    resolveSourceEnvironmentIds: deps.resolveSourceEnvironmentIds ??
+      resolveSourceEnvironmentIds,
+    resolveEnvironmentPlacement: deps.resolveEnvironmentPlacement ??
+      resolveEnvironmentPlacement,
+    runDeploy: deps.runDeploy ?? runEnvironmentDeployForActor,
+  }
+}
+
 export function sourceWatchesBranch(
   defaultBranch: string | null,
   pushedBranch: string,
@@ -359,8 +399,9 @@ async function deployEnvironmentForSource(
     commitSha: string | null
     ref: string | null
   },
+  io: ReturnType<typeof resolveTriggerIo>,
 ): Promise<TriggerOutcome> {
-  const placement = await resolveEnvironmentPlacement(db, params.environmentId)
+  const placement = await io.resolveEnvironmentPlacement(db, params.environmentId)
   if (!placement) {
     return {
       kind: 'skipped',
@@ -394,7 +435,7 @@ async function deployEnvironmentForSource(
     },
   }
 
-  const response = await runEnvironmentDeployForActor(
+  const response = await io.runDeploy(
     c,
     db,
     commandQueue,
@@ -442,8 +483,9 @@ async function deployAllEnvironmentsForSource(
     commitSha: string | null
     ref: string | null
   },
+  io: ReturnType<typeof resolveTriggerIo>,
 ): Promise<TriggerOutcome[]> {
-  const environmentIds = await resolveSourceEnvironmentIds(db, params.row)
+  const environmentIds = await io.resolveSourceEnvironmentIds(db, params.row)
   if (environmentIds.length === 0) {
     return [{
       kind: 'skipped',
@@ -461,7 +503,7 @@ async function deployAllEnvironmentsForSource(
         environmentId,
         commitSha: params.commitSha,
         ref: params.ref,
-      }),
+      }, io),
     )
   }
   return outcomes
@@ -529,8 +571,10 @@ export async function resolvePushTrigger(
   db: Db,
   commandQueue: CommandQueue,
   push: PushTrigger,
+  deps: WebhookTriggerDeps = {},
 ): Promise<TriggerSummary> {
-  const installations = await loadInstallations(
+  const io = resolveTriggerIo(deps)
+  const installations = await io.loadInstallations(
     db,
     push.provider,
     push.externalInstallationId,
@@ -546,7 +590,7 @@ export async function resolvePushTrigger(
     }], 0)
   }
 
-  const rows = await findSourcesForRepository(
+  const rows = await io.findSources(
     db,
     installations.live,
     push.repositoryExternalId,
@@ -577,7 +621,7 @@ export async function resolvePushTrigger(
       // that carried no head SHA (a branch delete) has nothing to park and
       // nothing a later check could match, so it is simply dropped.
       if (push.commitSha) {
-        await setPendingChecks(db, row, {
+        await io.setPendingChecks(db, row, {
           commitSha: push.commitSha,
           ref: push.ref,
           recordedAt: new Date().toISOString(),
@@ -612,7 +656,7 @@ export async function resolvePushTrigger(
         row,
         commitSha: push.commitSha,
         ref: push.ref,
-      }),
+      }, io),
     )
   }
 
@@ -647,8 +691,10 @@ export async function resolveCheckTrigger(
   db: Db,
   commandQueue: CommandQueue,
   check: CheckTrigger,
+  deps: WebhookTriggerDeps = {},
 ): Promise<TriggerSummary> {
-  const installations = await loadInstallations(
+  const io = resolveTriggerIo(deps)
+  const installations = await io.loadInstallations(
     db,
     check.provider,
     check.externalInstallationId,
@@ -664,7 +710,7 @@ export async function resolveCheckTrigger(
     }], 0)
   }
 
-  const rows = await findSourcesForRepository(
+  const rows = await io.findSources(
     db,
     installations.live,
     check.repositoryExternalId,
@@ -680,17 +726,17 @@ export async function resolveCheckTrigger(
 
     // Clear first: a deploy that fails to enqueue must not leave the SHA parked
     // so a later unrelated success replays it.
-    await setPendingChecks(db, row, null)
+    await io.setPendingChecks(db, row, null)
     const results = await deployAllEnvironmentsForSource(c, db, commandQueue, {
       row,
       commitSha: pending.commitSha,
       ref: pending.ref,
-    })
+    }, io)
     // ...but an instance-side failure is not a replay risk, it is lost work: the
     // delivery is about to be answered 5xx, and GitHub's redelivery has nothing
     // to release unless the SHA goes back. Restore exactly what was parked.
     if (results.some((outcome) => outcome.kind === 'failed')) {
-      await setPendingChecks(db, row, pending)
+      await io.setPendingChecks(db, row, pending)
     }
     outcomes.push(...results)
   }
@@ -774,8 +820,15 @@ export function resolveGithubPushTrigger(
   db: Db,
   commandQueue: CommandQueue,
   push: Omit<PushTrigger, 'provider'>,
+  deps?: WebhookTriggerDeps,
 ): Promise<TriggerSummary> {
-  return resolvePushTrigger(c, db, commandQueue, { provider: 'github', ...push })
+  return resolvePushTrigger(
+    c,
+    db,
+    commandQueue,
+    { provider: 'github', ...push },
+    deps,
+  )
 }
 
 export function resolveGithubCheckTrigger(
@@ -783,8 +836,15 @@ export function resolveGithubCheckTrigger(
   db: Db,
   commandQueue: CommandQueue,
   check: Omit<CheckTrigger, 'provider'>,
+  deps?: WebhookTriggerDeps,
 ): Promise<TriggerSummary> {
-  return resolveCheckTrigger(c, db, commandQueue, { provider: 'github', ...check })
+  return resolveCheckTrigger(
+    c,
+    db,
+    commandQueue,
+    { provider: 'github', ...check },
+    deps,
+  )
 }
 
 export function applyGithubInstallationEvent(

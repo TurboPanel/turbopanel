@@ -1,4 +1,5 @@
 import { assertEquals } from '@std/assert'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { ManagedSecretPlaceholder } from './index.ts'
 import { mariadbEngineSpec } from './mariadb.ts'
 import type { MariadbManagedSettings } from './mariadb.ts'
@@ -176,4 +177,95 @@ test('parseSettings defaults initialDatabase to appdb and rejects system schemas
     mariadbEngineSpec.parseSettings({ initialDatabase: 'mysql' }),
     null,
   )
+})
+
+test('binding DSN matches MySQL-family scheme and encodes the fixture password', () => {
+  const binding = mariadbEngineSpec.binding
+  if (!binding) throw new TypeError('expected mariadb binding descriptor')
+  assertEquals(binding.scheme, 'mysql')
+  const dsn = binding.buildBindingDsn({
+    host: '203.0.113.42',
+    port: 13306,
+    database: 'appdb',
+    username: 'app_user',
+    password: TEST_ONLY_TURBOPANEL_SECRET,
+    sslMode: 'prefer',
+  })
+  assertEquals(dsn.includes(encodeURIComponent(TEST_ONLY_TURBOPANEL_SECRET)), true)
+  assertEquals(dsn.includes('ssl-mode=PREFERRED'), true)
+  assertEquals(dsn.includes('***'), false)
+})
+
+test('useOrgTls omits self-signed tlsMaterial', () => {
+  const withOrg = mariadbEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings: defaultSettings(),
+    rootUsername: 'root',
+    useOrgTls: true,
+  })
+  assertEquals(withOrg.tlsMaterial, undefined)
+})
+
+test('buildRuntimeSpec applies dockerOptions and exposure scope', () => {
+  const settings = defaultSettings({
+    dockerOptions: {
+      restart: 'unless-stopped',
+      stopGracePeriodSeconds: 20,
+      shmSizeBytes: 16 * 1024 * 1024,
+      ulimits: { nofile: { soft: 256, hard: 512 } },
+      labels: { 'app.tier': 'mariadb' },
+      extraEnv: { MY_FLAG: '1' },
+    },
+    exposure: { enabled: true, scope: 'turbofabric' },
+    resources: { memoryBytes: 512 * 1024 * 1024 },
+  })
+  const spec = mariadbEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings,
+    rootUsername: 'root',
+  })
+  assertEquals(spec.service.stop_grace_period, '20s')
+  assertEquals(spec.service.shm_size, 16 * 1024 * 1024)
+  assertEquals(spec.service.ulimits, {
+    nofile: { soft: 256, hard: 512 },
+  })
+  assertEquals(spec.service.labels, { 'app.tier': 'mariadb' })
+  assertEquals(spec.env.MY_FLAG, '1')
+  assertEquals(spec.exposure.scope, 'turbofabric')
+  const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ?? ''
+  assertEquals(conf.includes('innodb_buffer_pool_size='), true)
+})
+
+test('parseSettings rejects non-objects, includes, and reserved MariaDB GTID keys', () => {
+  assertEquals(mariadbEngineSpec.parseSettings([]), null)
+  assertEquals(mariadbEngineSpec.parseSettings('mariadb'), null)
+  assertEquals(
+    mariadbEngineSpec.parseSettings({ engineConfig: '!include /tmp/x.cnf\n' }),
+    null,
+  )
+  assertEquals(
+    mariadbEngineSpec.parseSettings({
+      engineConfig: 'gtid_strict_mode = OFF\n',
+    }),
+    null,
+  )
+  assertEquals(
+    mariadbEngineSpec.parseSettings({ initialDatabase: 'sys' }),
+    null,
+  )
+  const fromNull = mariadbEngineSpec.parseSettings(null) as MariadbManagedSettings
+  assertEquals(fromNull.initialDatabase, 'appdb')
+})
+
+test('socket healthcheck and backup descriptor stay credential-free', () => {
+  const spec = mariadbEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings: defaultSettings(),
+    rootUsername: 'root',
+  })
+  const cmd = spec.healthcheck.test[1] ?? ''
+  assertEquals(cmd.includes('mariadb-admin ping --protocol=socket'), true)
+  assertEquals(/\s-p(?:\s|=|$)/.test(cmd), false)
+  assertEquals(mariadbEngineSpec.backup?.supportsInstanceScope, false)
+  assertEquals(mariadbEngineSpec.backup?.defaultRetentionKeep, 7)
 })

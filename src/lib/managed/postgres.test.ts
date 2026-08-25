@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { ManagedSecretPlaceholder } from './index.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import type { PostgresManagedSettings } from './postgres.ts'
@@ -618,4 +619,100 @@ test('buildConnectionInfo renders the mode it is given, including disable', () =
   })
   assertEquals(info.dsn.includes('sslmode=disable'), true)
   assertEquals(info.dsn.includes(encodeURIComponent('app_user')), true)
+})
+
+test('binding DSN embeds the plaintext password and URI-encodes identity fields', () => {
+  const binding = postgresEngineSpec.binding
+  if (!binding) throw new TypeError('expected postgres binding descriptor')
+  assertEquals(binding.scheme, 'postgresql')
+  assertEquals(binding.unprefixed, {
+    host: 'PGHOST',
+    port: 'PGPORT',
+    database: 'PGDATABASE',
+    user: 'PGUSER',
+    password: 'PGPASSWORD',
+    sslMode: 'PGSSLMODE',
+  })
+  const dsn = binding.buildBindingDsn({
+    host: '203.0.113.40',
+    port: 15432,
+    database: 'app/db',
+    username: 'user@org',
+    password: TEST_ONLY_TURBOPANEL_SECRET,
+    sslMode: 'require',
+  })
+  assertEquals(dsn.includes(encodeURIComponent(TEST_ONLY_TURBOPANEL_SECRET)), true)
+  assertEquals(dsn.includes('***'), false)
+  assertEquals(dsn.includes(encodeURIComponent('user@org')), true)
+  assertEquals(dsn.includes(encodeURIComponent('app/db')), true)
+  assertEquals(dsn.includes('sslmode=require'), true)
+})
+
+test('useOrgTls omits self-signed tlsMaterial and adds ssl_ca_file', () => {
+  const withOrg = postgresEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings: defaultSettings(),
+    rootUsername: 'postgres',
+    useOrgTls: true,
+  })
+  assertEquals(withOrg.tlsMaterial, undefined)
+  const conf = withOrg.configFiles.find((f) => f.path === 'postgresql.conf')
+    ?.contents ?? ''
+  assertEquals(conf.includes('ssl_ca_file'), true)
+
+  const withoutOrg = postgresEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings: defaultSettings(),
+    rootUsername: 'postgres',
+  })
+  assertEquals(withoutOrg.tlsMaterial?.selfSigned, true)
+  assertEquals(withoutOrg.tlsMaterial?.commonName, 'managed-postgres')
+})
+
+test('private listener publishes native 5432 on the member address', () => {
+  const spec = postgresEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings: defaultSettings(),
+    rootUsername: 'postgres',
+    member: {
+      role: 'primary',
+      ordinal: 1,
+      privateListener: { address: '203.0.113.10', port: 45001 },
+    },
+  })
+  assertEquals(spec.service.ports, ['203.0.113.10:45001:5432'])
+})
+
+test('standby without hostaddr omits hostaddr from primary_conninfo', () => {
+  const spec = postgresEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings: defaultSettings(),
+    rootUsername: 'postgres',
+    useOrgTls: true,
+    member: {
+      role: 'standby',
+      ordinal: 2,
+      replication: {
+        username: 'tp_repl',
+        slotName: 'tp_member_2',
+        primary: {
+          host: 'managed-primary',
+          port: 15432,
+        },
+      },
+    },
+  })
+  const conf = spec.configFiles.find((f) => f.path === 'postgresql.conf')
+    ?.contents ?? ''
+  assertEquals(conf.includes('host=managed-primary'), true)
+  assertEquals(conf.includes('hostaddr='), false)
+  assertEquals(conf.includes("primary_slot_name = 'tp_member_2'"), true)
+})
+
+test('parseSettings rejects non-objects; null falls through to defaults', () => {
+  assertEquals(postgresEngineSpec.parseSettings('postgres'), null)
+  assertEquals(postgresEngineSpec.parseSettings([]), null)
+  const fromNull = postgresEngineSpec.parseSettings(null) as PostgresManagedSettings
+  assertEquals(fromNull.initialDatabase, 'postgres')
+  assertEquals(fromNull.exposure.enabled, false)
 })

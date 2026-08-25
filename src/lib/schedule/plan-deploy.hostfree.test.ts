@@ -184,6 +184,19 @@ test('resolveMergedCompose merges blank layers and rejects invalid compose', () 
   )
 })
 
+test('resolveMergedCompose maps a merge throw to invalid_compose', () => {
+  const circular: Record<string, unknown> = {}
+  circular.self = circular
+  const base = emptyComposeDocument()
+  base.data.services = { web: { image: 'nginx', expose: [] } }
+  const overlay = emptyComposeDocument()
+  overlay.data.services = { web: { expose: [circular] } }
+  assertEquals(
+    resolveMergedCompose({ compose: base }, { compose: overlay }, 'env.yml'),
+    { kind: 'invalid_compose' },
+  )
+})
+
 test('servicesMapping returns the services map or empty object', () => {
   const doc = emptyComposeDocument()
   assertEquals(servicesMapping(doc), {})

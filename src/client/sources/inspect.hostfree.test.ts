@@ -1,6 +1,13 @@
 import { assertEquals } from '@std/assert'
 import type { GitProvider } from '../../lib/git/git-provider.ts'
+import { INSPECT_PROBE_PATHS } from './inspect.ts'
 
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
 const test = Deno.test.bind(Deno)
 
 /**
@@ -19,6 +26,12 @@ function shouldFallBackToDaemon(
   if (read.failure === undefined) return false
   return read.status === undefined
 }
+
+test('INSPECT_PROBE_PATHS is a closed compose/app filename set', () => {
+  assertEquals(INSPECT_PROBE_PATHS.includes('docker-compose.yml'), true)
+  assertEquals(INSPECT_PROBE_PATHS.includes('package.json'), true)
+  assertEquals(INSPECT_PROBE_PATHS.includes('.env'), false)
+})
 
 test('a provider failure WITH a status is the answer, not a fallback', () => {
   // The daemon would be told the same thing, so retrying through it would just

@@ -1,6 +1,12 @@
 import { assertEquals } from "@std/assert";
 import { checkPhpSeriesAvailability } from "./deploy-prepare.ts";
 
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
 const test = Deno.test.bind(Deno);
 
 const site = (name: string, version?: string) => ({

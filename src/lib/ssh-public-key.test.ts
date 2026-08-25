@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertStringIncludes } from '@std/assert'
 import {
   ALLOWED_SSH_KEY_TYPES,
+  isCanonicalSshPublicKey,
   MIN_RSA_MODULUS_BITS,
   parseSshPublicKey,
 } from './ssh-public-key.ts'
@@ -174,4 +175,15 @@ test('an oversized line is rejected before any parsing', async () => {
 test('a NUL byte is rejected', async () => {
   const withNul = `${ED25519}${String.fromCodePoint(0)}evil`
   assertStringIncludes(await expectError(withNul), 'single line')
+})
+
+test('isCanonicalSshPublicKey accepts only two-field canonical lines', async () => {
+  const parsed = await expectOk(ED25519)
+  assert(isCanonicalSshPublicKey(parsed.publicKey))
+  assertEquals(isCanonicalSshPublicKey(`${ED25519} comment`), false)
+  assertEquals(
+    isCanonicalSshPublicKey(`command="/bin/false" ${ED25519}`),
+    false,
+  )
+  assertEquals(isCanonicalSshPublicKey('ssh-magic AAAA'), false)
 })

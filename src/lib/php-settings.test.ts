@@ -81,6 +81,30 @@ test('validatePhpPoolSetting caps workers and rejects platform-owned fields', ()
   }
 })
 
+test('validatePhpSetting handles name lists, tokens, and byte suffixes', () => {
+  assertEquals(
+    validatePhpSetting('disable_functions', 'exec, shell_exec'),
+    'exec,shell_exec',
+  )
+  assertEquals(validatePhpSetting('disable_functions', 'bad-name'), undefined)
+  assertEquals(validatePhpSetting('session.name', 'PHPSESSID'), 'PHPSESSID')
+  assertEquals(validatePhpSetting('session.name', 'bad name'), undefined)
+  assertEquals(validatePhpSetting('session.cookie_samesite', 'Strict'), 'Strict')
+  assertEquals(validatePhpSetting('session.cookie_samesite', 'Laxish'), undefined)
+  assertEquals(validatePhpSetting('upload_max_filesize', '512K'), '512K')
+  assertEquals(validatePhpSetting('max_input_time', '-1'), '-1')
+  assertEquals(validatePhpSetting('memory_limit', 256), '256')
+  assertEquals(validatePhpSetting('memory_limit', 'a'.repeat(513)), undefined)
+})
+
+test('validatePhpPoolSetting accepts idle timeout tokens and rejects non-strings', () => {
+  assertEquals(validatePhpPoolSetting('pm.process_idle_timeout', '10s'), '10s')
+  assertEquals(validatePhpPoolSetting('pm.process_idle_timeout', '10'), undefined)
+  assertEquals(validatePhpPoolSetting('pm.max_children', true), undefined)
+  assertEquals(validatePhpPoolSetting('pm.max_children', 8), '8')
+  assertEquals(validatePhpPoolSetting('pm', 'dynamic'), 'dynamic')
+})
+
 test('renderPhpForDeploy drops what fails and keeps what passes', () => {
   assertEquals(
     renderPhpForDeploy(
@@ -101,4 +125,5 @@ test('renderPhpForDeploy drops what fails and keeps what passes', () => {
     },
   )
   assertEquals(renderPhpForDeploy(undefined, []), undefined)
+  assertEquals(renderPhpForDeploy({ settings: {} }, []), undefined)
 })

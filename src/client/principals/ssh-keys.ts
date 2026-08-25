@@ -12,7 +12,7 @@ import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
   principal,
-  principalSshKey,
+  sshKey,
   project,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -55,18 +55,18 @@ export async function listSshKeys(
 ): Promise<PrincipalSshKeyRow[]> {
   return await db
     .select({
-      id: principalSshKey.id,
-      name: principalSshKey.name,
-      keyType: principalSshKey.keyType,
-      publicKey: principalSshKey.publicKey,
-      fingerprint: principalSshKey.fingerprint,
-      comment: principalSshKey.comment,
-      bits: principalSshKey.bits,
-      createdAt: principalSshKey.createdAt,
+      id: sshKey.id,
+      name: sshKey.name,
+      keyType: sshKey.keyType,
+      publicKey: sshKey.publicKey,
+      fingerprint: sshKey.fingerprint,
+      comment: sshKey.comment,
+      bits: sshKey.bits,
+      createdAt: sshKey.createdAt,
     })
-    .from(principalSshKey)
-    .where(eq(principalSshKey.principalId, principalId))
-    .orderBy(asc(principalSshKey.createdAt))
+    .from(sshKey)
+    .where(eq(sshKey.principalId, principalId))
+    .orderBy(asc(sshKey.createdAt))
 }
 
 /**
@@ -88,11 +88,11 @@ export async function loadSshKeysByPrincipalIds(
   if (principalIds.length > 0) {
     const rows = await tx
       .select({
-        principalId: principalSshKey.principalId,
-        publicKey: principalSshKey.publicKey,
+        principalId: sshKey.principalId,
+        publicKey: sshKey.publicKey,
       })
-      .from(principalSshKey)
-      .where(inArray(principalSshKey.principalId, [...principalIds]))
+      .from(sshKey)
+      .where(inArray(sshKey.principalId, [...principalIds]))
 
     for (const row of rows) {
       byPrincipal.get(row.principalId)?.push(row.publicKey)
@@ -141,9 +141,9 @@ export async function addSshKey(
 
   return await db.transaction(async (tx) => {
     const existing = await tx
-      .select({ fingerprint: principalSshKey.fingerprint })
-      .from(principalSshKey)
-      .where(eq(principalSshKey.principalId, input.principalId))
+      .select({ fingerprint: sshKey.fingerprint })
+      .from(sshKey)
+      .where(eq(sshKey.principalId, input.principalId))
 
     if (existing.length >= MAX_SSH_KEYS_PER_PRINCIPAL) {
       throw new SshKeyRejected(SSH_KEY_LIMIT_ERROR)
@@ -156,7 +156,7 @@ export async function addSshKey(
     }
 
     const [inserted] = await tx
-      .insert(principalSshKey)
+      .insert(sshKey)
       .values({
         principalId: input.principalId,
         name,
@@ -168,14 +168,14 @@ export async function addSshKey(
         userId: input.userId ?? null,
       })
       .returning({
-        id: principalSshKey.id,
-        name: principalSshKey.name,
-        keyType: principalSshKey.keyType,
-        publicKey: principalSshKey.publicKey,
-        fingerprint: principalSshKey.fingerprint,
-        comment: principalSshKey.comment,
-        bits: principalSshKey.bits,
-        createdAt: principalSshKey.createdAt,
+        id: sshKey.id,
+        name: sshKey.name,
+        keyType: sshKey.keyType,
+        publicKey: sshKey.publicKey,
+        fingerprint: sshKey.fingerprint,
+        comment: sshKey.comment,
+        bits: sshKey.bits,
+        createdAt: sshKey.createdAt,
       })
     return inserted
   })
@@ -188,16 +188,16 @@ export async function removeSshKey(
   keyId: string,
 ): Promise<boolean> {
   const deleted = await db
-    .delete(principalSshKey)
+    .delete(sshKey)
     .where(
       and(
-        eq(principalSshKey.id, keyId),
+        eq(sshKey.id, keyId),
         // Scoped by principal, so a key id from another account cannot be
         // deleted by guessing it.
-        eq(principalSshKey.principalId, principalId),
+        eq(sshKey.principalId, principalId),
       ),
     )
-    .returning({ id: principalSshKey.id })
+    .returning({ id: sshKey.id })
   return deleted.length > 0
 }
 
@@ -218,14 +218,14 @@ export async function principalsWithFingerprint(
       principalId: principal.id,
       username: principal.username,
     })
-    .from(principalSshKey)
-    .innerJoin(principal, eq(principal.id, principalSshKey.principalId))
+    .from(sshKey)
+    .innerJoin(principal, eq(principal.id, sshKey.principalId))
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(workspace, eq(project.workspaceId, workspace.id))
     .where(
       and(
         eq(workspace.organizationId, organizationId),
-        eq(principalSshKey.fingerprint, fingerprint),
+        eq(sshKey.fingerprint, fingerprint),
       ),
     )
 }

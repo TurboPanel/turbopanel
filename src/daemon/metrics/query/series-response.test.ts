@@ -127,6 +127,14 @@ it("parseRequestedMetrics: empty or omitted returns all metrics", () => {
   assertEquals(blank.ok, true);
 });
 
+it("parseRequestedMetrics: comma-only input falls back to every metric", () => {
+  const parsed = parseRequestedMetrics(" , , ");
+  assertEquals(parsed.ok, true);
+  if (parsed.ok) {
+    assertEquals(parsed.metrics.length, 20);
+  }
+});
+
 it("parseRequestedMetrics: accepts a comma-separated subset", () => {
   const parsed = parseRequestedMetrics("cpuUsagePercent, load1 ");
   assertEquals(parsed.ok, true);

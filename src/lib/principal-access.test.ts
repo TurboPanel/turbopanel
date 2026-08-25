@@ -6,6 +6,7 @@ import {
   accessLevelForShell,
   effectivePrincipalAccess,
   isPrincipalAccessLevel,
+  principalAccessLabel,
   shellForAccessLevel,
 } from './principal-access.ts'
 
@@ -84,4 +85,10 @@ test('isPrincipalAccessLevel gates unknown input', () => {
   assert(isPrincipalAccessLevel('sftp'))
   assert(!isPrincipalAccessLevel('root'))
   assert(!isPrincipalAccessLevel(undefined))
+})
+
+test('principalAccessLabel maps levels to operator-facing copy', () => {
+  assertEquals(principalAccessLabel('shell'), 'Shell')
+  assertEquals(principalAccessLabel('sftp'), 'Files only')
+  assertEquals(principalAccessLabel('none'), 'No access')
 })
