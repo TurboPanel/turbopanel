@@ -166,6 +166,7 @@ const DAEMON_COMMAND_TYPES = [
   "server.timezone.set",
   "server.fabric.reconcile",
   "server.tls.trust.reconcile",
+  "server.principals.reconcile",
   "environment.deploy",
   "environment.lifecycle",
   "environment.stop",
@@ -3646,4 +3647,137 @@ test("sourceMaterial rejects a credentialUsername that could break the askpass s
       "Invalid sourceMaterial credentialUsername",
     );
   }
+});
+
+const ED25519_KEY =
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGEmvBcjT+NvO6sokGNoJ0zA3dr0nhIQhhZ3wP220uFZ";
+
+function deployPayloadWithPrincipalFields(fields: Record<string, unknown>) {
+  return {
+    environmentId: "env-1",
+    projectId: "proj-1",
+    organizationId: "org-1",
+    projectName: "tp-demo",
+    composeFiles: [{
+      filename: "compose.yaml",
+      role: "runtime" as const,
+      content: "services: {}\n",
+    }],
+    hostings: [],
+    principalMaterial: [{
+      principalId: "00000000-0000-4000-8000-000000000001",
+      username: "appuser",
+      ...fields,
+    }],
+  };
+}
+
+test("parseCommandPayload round-trips access groups and ssh keys", () => {
+  const parsed = parseCommandPayload(
+    "environment.deploy" as CommandType,
+    deployPayloadWithPrincipalFields({
+      accessGroups: ["tpshell"],
+      sshKeys: [ED25519_KEY],
+    }),
+  ) as { principalMaterial: { accessGroups?: unknown; sshKeys?: unknown }[] };
+  assertEquals(parsed.principalMaterial[0]?.accessGroups, ["tpshell"]);
+  assertEquals(parsed.principalMaterial[0]?.sshKeys, [ED25519_KEY]);
+});
+
+test("parseCommandPayload keeps an empty access list distinct from an absent one", () => {
+  // `[]` is a revocation and `undefined` means "say nothing". Collapsing the
+  // two would make a steward-only edit silently strip an account's login.
+  const empty = parseCommandPayload(
+    "environment.deploy" as CommandType,
+    deployPayloadWithPrincipalFields({ accessGroups: [], sshKeys: [] }),
+  ) as { principalMaterial: { accessGroups?: unknown; sshKeys?: unknown }[] };
+  assertEquals(empty.principalMaterial[0]?.accessGroups, []);
+  assertEquals(empty.principalMaterial[0]?.sshKeys, []);
+
+  const absent = parseCommandPayload(
+    "environment.deploy" as CommandType,
+    deployPayloadWithPrincipalFields({}),
+  ) as { principalMaterial: { accessGroups?: unknown; sshKeys?: unknown }[] };
+  assertEquals(absent.principalMaterial[0]?.accessGroups, undefined);
+  assertEquals(absent.principalMaterial[0]?.sshKeys, undefined);
+});
+
+test("parseCommandPayload rejects anything structural in an ssh key", () => {
+  // These lines all reach a file `sshd` authenticates against. A second line is
+  // key injection; an options field is a directive the panel never wrote.
+  for (
+    const bad of [
+      [`${ED25519_KEY} laptop`],
+      [`command="/bin/sh" ${ED25519_KEY}`],
+      [`${ED25519_KEY}\nssh-rsa AAAAB3Nz`],
+      ["ssh-dss AAAAB3NzaC1kc3M="],
+      [ED25519_KEY.replace("ssh-ed25519", "ssh-magic")],
+      ED25519_KEY,
+      [42],
+    ]
+  ) {
+    assertThrows(
+      () =>
+        parseCommandPayload(
+          "environment.deploy" as CommandType,
+          deployPayloadWithPrincipalFields({ sshKeys: bad }),
+        ),
+      Error,
+      "Invalid environment.deploy payload",
+    );
+  }
+});
+
+test("parseCommandPayload rejects a malformed access group list", () => {
+  for (const bad of [["TPSHELL"], ["tp shell"], ["../root"], "tpshell", [7]]) {
+    assertThrows(
+      () =>
+        parseCommandPayload(
+          "environment.deploy" as CommandType,
+          deployPayloadWithPrincipalFields({ accessGroups: bad }),
+        ),
+      Error,
+      "Invalid environment.deploy payload",
+    );
+  }
+});
+
+test("server.principals.reconcile validates principals the same way a deploy does", () => {
+  const parsed = parseCommandPayload("server.principals.reconcile", {
+    principals: [{
+      principalId: "00000000-0000-4000-8000-000000000001",
+      username: "appuser",
+      accessGroups: ["tpsftp"],
+      sshKeys: [ED25519_KEY],
+    }],
+  }) as { principals: { username: string }[] };
+  assertEquals(parsed.principals[0]?.username, "appuser");
+
+  // One account named twice makes "the complete set" ambiguous about which key
+  // list wins — and the whole safety of removal rests on that set.
+  assertThrows(
+    () =>
+      parseCommandPayload("server.principals.reconcile", {
+        principals: [
+          { principalId: "a", username: "appuser" },
+          { principalId: "b", username: "appuser" },
+        ],
+      }),
+    Error,
+    "more than once",
+  );
+
+  // An empty list is a real instruction (remove every key file); a missing one
+  // is a malformed payload. The two must never be confused.
+  assertEquals(
+    (parseCommandPayload("server.principals.reconcile", { principals: [] }) as {
+      principals: unknown[];
+    }).principals,
+    [],
+  );
+  assertThrows(
+    () => parseCommandPayload("server.principals.reconcile", {}),
+    Error,
+    "principals must be an array",
+  );
 });

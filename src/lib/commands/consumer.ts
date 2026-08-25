@@ -121,6 +121,9 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.timezone.set': 300_000,
   'server.fabric.reconcile': 300_000,
   'server.tls.trust.reconcile': 300_000,
+  // Writes a handful of small files, runs `sshd -t`, reloads. Nothing here
+  // installs a package or waits on the network.
+  'server.principals.reconcile': 120_000,
   'environment.deploy': 600_000,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
@@ -156,6 +159,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.timezone.set' ||
     type === 'server.fabric.reconcile' ||
     type === 'server.tls.trust.reconcile' ||
+    type === 'server.principals.reconcile' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||

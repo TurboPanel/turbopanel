@@ -64,6 +64,8 @@ import {
   principalVolumePath,
   resolveDockerVolumeName,
 } from "../../lib/naming.ts";
+import { accessGroupsFor } from "../../lib/principal-access.ts";
+import { loadSshKeysByPrincipalIds } from "../principals/ssh-keys.ts";
 import {
   parsePrincipalOptions,
   resolvePrincipalIdOverride,
@@ -1077,6 +1079,9 @@ export async function loadPrincipalMaterial(
   // this set — it never derives entitlements itself, because a derived grant
   // could only ever be added and would therefore never be revocable.
   const entitlements = await loadEntitlementsByPrincipalIds(db, uniqueIds);
+  // Always present for every id asked about, so `[]` genuinely means "this
+  // account holds no keys" rather than "we did not look".
+  const sshKeys = await loadSshKeysByPrincipalIds(db, uniqueIds);
 
   const material: EnvironmentDeployPrincipalMaterial[] = [];
   for (const row of rows) {
@@ -1086,13 +1091,20 @@ export async function loadPrincipalMaterial(
       runtime: entry.runtime,
       series: entry.series,
     }));
+    const shell = resolvePrincipalShell(options);
+    const keys = sshKeys.get(row.id) ?? [];
     // naming.ts is the single source of truth for home; metadata.home is a
     // mirror for display only.
     material.push({
       principalId: row.id,
       username: row.username,
       home: principalHomeDir(row.username),
-      shell: resolvePrincipalShell(options),
+      shell,
+      // The effective set, decided here: an account with no keys gets no access
+      // group whatever its shell says, because there would be nothing for it to
+      // authenticate with. See `lib/principal-access.ts`.
+      accessGroups: [...accessGroupsFor(shell, keys.length)],
+      sshKeys: keys,
       ...(override ? { uid: override.uid, gid: override.gid } : {}),
       ...(runtimes.length > 0 ? { runtimes } : {}),
     });

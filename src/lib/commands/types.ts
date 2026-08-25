@@ -6,6 +6,7 @@ export const COMMAND_TYPES = [
   'server.timezone.set',
   'server.fabric.reconcile',
   'server.tls.trust.reconcile',
+  'server.principals.reconcile',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',

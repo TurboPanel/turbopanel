@@ -4,6 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import {
+  parseAccessField,
   parseEntitlementsField,
   patchTouchesPrincipal,
   mergeTopLevelPrincipalIdsIntoOptions,
@@ -151,4 +152,27 @@ test('patchTouchesPrincipal accepts an entitlements-only patch', () => {
   assertEquals(patchTouchesPrincipal({ entitlements: [] }), true)
   assertEquals(patchTouchesPrincipal({ serviceIds: [] }), true)
   assertEquals(patchTouchesPrincipal({ username: 'x' }), false)
+})
+
+test('parseAccessField distinguishes absent from set, and rejects nonsense', () => {
+  // Absent means "leave it alone". A value sets it. Invalid is rejected rather
+  // than dropped, so an operator cannot believe they suspended a live account.
+  assertEquals(parseAccessField({}), undefined)
+  assertEquals(parseAccessField({ access: 'none' }), '/bin/false')
+  assertEquals(parseAccessField({ access: 'sftp' }), '/usr/sbin/nologin')
+  assertEquals(parseAccessField({ access: 'shell' }), '/bin/bash')
+  assertEquals(parseAccessField({ access: 'root' }), null)
+  assertEquals(parseAccessField({ access: undefined }), null)
+})
+
+test('parseAccessField takes a level, never a shell path', () => {
+  // Accepting a raw path here would put a filesystem path back into a security
+  // decision field — exactly what the shell allowlist had to defend against.
+  assertEquals(parseAccessField({ access: '/bin/bash' }), null)
+  assertEquals(parseAccessField({ access: '/opt/evil' }), null)
+})
+
+test('patchTouchesPrincipal recognizes an access-only edit', () => {
+  assertEquals(patchTouchesPrincipal({ access: 'sftp' }), true)
+  assertEquals(patchTouchesPrincipal({}), false)
 })

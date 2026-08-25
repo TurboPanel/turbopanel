@@ -26,6 +26,17 @@ import {
   parseServiceIdsField,
   servicesBelongToProject,
 } from './stewards.ts'
+import { getCommandQueue } from '../../lib/commands/queue.ts'
+import { reconcilePrincipalAccess } from './reconcile.ts'
+import {
+  addSshKey,
+  countSshKeysByPrincipalIds,
+  listSshKeys,
+  removeSshKey,
+  SshKeyRejected,
+  SSH_KEY_DUPLICATE_ERROR,
+  SSH_KEY_LIMIT_ERROR,
+} from './ssh-keys.ts'
 import {
   loadEntitlementsByPrincipalIds,
   isServerPrincipalUsernameTaken,
@@ -37,6 +48,7 @@ import {
 import { serializeProjectPrincipal } from './serialize.ts'
 import {
   optionsRecordFromJsonb,
+  parseAccessField,
   parseCreatePrincipalOptions,
   parsePrincipalUsernameValue,
   parseEntitlementsField,
@@ -218,6 +230,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       db,
       principalIds,
     )
+    const keyCounts = await countSshKeysByPrincipalIds(db, principalIds)
 
     return c.json({
       principals: rows.map((row) =>
@@ -225,6 +238,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
           row,
           serviceIdsByPrincipal.get(row.id) ?? [],
           entitlementsByPrincipal.get(row.id) ?? [],
+          keyCounts.get(row.id) ?? 0,
         )
       ),
     })
@@ -315,6 +329,13 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       return c.json({ error: 'invalid_entitlements' }, 400)
     }
 
+    // Absent means "leave it alone"; a value sets it. Rejected rather than
+    // dropped, so an operator cannot believe they suspended a live account.
+    const accessShell = parseAccessField(body)
+    if (accessShell === null) {
+      return c.json({ error: 'invalid_access' }, 400)
+    }
+
     const patchesStewards = patchRequiresServiceIds(body)
     const serviceIds = patchesStewards ? parseServiceIdsField(body) : []
     if (serviceIds === null) {
@@ -332,12 +353,31 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       if (entitlements !== undefined) {
         await replaceEntitlements(tx, id, entitlements)
       }
+      const options = accessShell === undefined
+        ? {}
+        : {
+          options: {
+            ...optionsRecordFromJsonb(row.options),
+            shell: accessShell,
+          },
+        }
       await tx.update(principal).set({
+        ...options,
         updatedAt: new Date().toISOString(),
       }).where(eq(principal.id, id))
     })
 
-    return c.json({ ok: true as const, serviceIds })
+    // Entitlements and access are both enforced on the host as unix group
+    // membership, so a change that only lands in the database has not actually
+    // happened yet. Revoking in particular must not wait for a deploy.
+    const reconciled = (entitlements !== undefined || accessShell !== undefined)
+      ? await reconcilePrincipalAccess(db, getCommandQueue(c), {
+        actorType: 'user',
+        actorId: session.userId,
+      }, id)
+      : { queuedServerIds: [], failedServerIds: [] }
+
+    return c.json({ ok: true as const, serviceIds, reconciled })
   })
 
   router.delete('/projects/:projectId/principals/:id', async (c) => {
@@ -367,6 +407,147 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     await db.delete(principal).where(eq(principal.id, id))
     return c.json({ ok: true as const })
   })
+
+  // --- SSH keys ----------------------------------------------------------
+  //
+  // Keys live under the principal because that is what `authorized_keys` is: a
+  // per-account file. The panel is authoritative — the daemon writes a
+  // root-owned file outside the account's home, so a tenant cannot add a key
+  // over SSH that the panel cannot see and therefore cannot revoke.
+  router.use(
+    '/projects/:projectId/principals/:id/ssh-keys',
+    createSessionMiddleware(secrets),
+  )
+  router.use(
+    '/projects/:projectId/principals/:id/ssh-keys/:keyId',
+    createSessionMiddleware(secrets),
+  )
+
+  router.get('/projects/:projectId/principals/:id/ssh-keys', async (c) => {
+    const ctx = await resolvePrincipalRequest(c)
+    if (ctx instanceof Response) return ctx
+    return c.json({ keys: await listSshKeys(ctx.db, ctx.principalId) })
+  })
+
+  router.post('/projects/:projectId/principals/:id/ssh-keys', async (c) => {
+    const ctx = await resolvePrincipalRequest(c, { requireMutable: true })
+    if (ctx instanceof Response) return ctx
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const name = requireStringField(c, body, 'name')
+    if (name instanceof Response) return name
+
+    let key
+    try {
+      key = await addSshKey(ctx.db, {
+        principalId: ctx.principalId,
+        name,
+        publicKey: (body as Record<string, unknown>).publicKey,
+        userId: ctx.userId,
+      })
+    } catch (err) {
+      if (!(err instanceof SshKeyRejected)) throw err
+      // The parser's own sentence, not a generic "invalid key": an operator
+      // gets this wrong in specific, fixable ways (a pasted options field, a
+      // DSA key, the private half by mistake) and each deserves its own
+      // instruction.
+      if (err.message === SSH_KEY_LIMIT_ERROR) {
+        return c.json({ error: SSH_KEY_LIMIT_ERROR }, 409)
+      }
+      if (err.message === SSH_KEY_DUPLICATE_ERROR) {
+        return c.json({ error: SSH_KEY_DUPLICATE_ERROR }, 409)
+      }
+      return c.json({ error: 'invalid_public_key', detail: err.message }, 400)
+    }
+
+    const reconciled = await reconcilePrincipalAccess(
+      ctx.db,
+      getCommandQueue(c),
+      { actorType: 'user', actorId: ctx.userId },
+      ctx.principalId,
+    )
+    return c.json({ key, reconciled }, 201)
+  })
+
+  router.delete(
+    '/projects/:projectId/principals/:id/ssh-keys/:keyId',
+    async (c) => {
+      const ctx = await resolvePrincipalRequest(c, { requireMutable: true })
+      if (ctx instanceof Response) return ctx
+
+      const removed = await removeSshKey(
+        ctx.db,
+        ctx.principalId,
+        c.req.param('keyId'),
+      )
+      if (!removed) return c.json({ error: 'Not found' }, 404)
+
+      // The reconcile is the revocation. Without it the row is gone from the
+      // panel and the key still opens the account, which is the worst possible
+      // gap between what the operator sees and what is true.
+      const reconciled = await reconcilePrincipalAccess(
+        ctx.db,
+        getCommandQueue(c),
+        { actorType: 'user', actorId: ctx.userId },
+        ctx.principalId,
+      )
+      return c.json({ ok: true as const, reconciled })
+    },
+  )
+}
+
+/**
+ * The authz preamble every principal-scoped route repeats: session, org match,
+ * project ownership of the principal, manage permission, and (for writes) that
+ * the project is not system-owned.
+ *
+ * Factored out because the SSH key routes need exactly the same five checks in
+ * exactly the same order, and a route that skipped one would be a hole in a
+ * credential surface rather than a style problem.
+ */
+async function resolvePrincipalRequest(
+  c: Context<AppEnv>,
+  opts: { requireMutable?: boolean } = {},
+): Promise<
+  { db: Db; principalId: string; projectId: string; userId: string } | Response
+> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+  const orgResult = await getOrgId(c, session.userId)
+  if (orgResult instanceof Response) return orgResult
+
+  // Read with a fallback rather than `!`: this helper is shared across two
+  // route shapes, so the path params are only `string | undefined` here.
+  const projectId = c.req.param('projectId') ?? ''
+  const principalId = c.req.param('id') ?? ''
+  if (!projectId || !principalId) return c.json({ error: 'Not found' }, 404)
+
+  const projectOrgId = await resolveEntityOrganizationId(db, 'project', projectId)
+  if (!projectOrgId || projectOrgId !== orgResult) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const [row] = await db
+    .select({ projectId: principal.projectId })
+    .from(principal)
+    .where(eq(principal.id, principalId))
+    .limit(1)
+  if (row?.projectId !== projectId) return c.json({ error: 'Not found' }, 404)
+
+  const denied = await assertCanManageOr403(c, 'project', projectId)
+  if (denied) return denied
+
+  if (opts.requireMutable) {
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
+    if (immutable) return immutable
+  }
+
+  return { db, principalId, projectId, userId: session.userId }
 }
 
 export function registerOrganizationLimitsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {

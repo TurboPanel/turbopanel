@@ -1,4 +1,9 @@
 import type { principal } from '../../lib/db/schema.ts'
+import {
+  accessLevelForShell,
+  type PrincipalAccessLevel,
+} from '../../lib/principal-access.ts'
+import { parsePrincipalOptions, resolvePrincipalShell } from '../../lib/principal-options.ts'
 
 /**
  * Only the columns the serializer reads — deliberately excludes `password` so
@@ -35,6 +40,21 @@ export type SerializedProjectPrincipal = {
    * declared the runtime — both are real, revocable grants.
    */
   entitlements: { runtime: string; series: string; grantedBy: string }[]
+  /**
+   * How this account may log in, decoded from `options.shell`.
+   *
+   * Derived rather than stored: the shell **is** the access level, so exposing
+   * both a level and a shell as independent fields would let the two disagree.
+   * See `lib/principal-access.ts`.
+   *
+   * This is what the operator asked for. What actually happens also depends on
+   * `sshKeyCount` — an account set to `shell` with no keys cannot log in at all,
+   * because password authentication is off for these accounts. The UI renders
+   * both, so "Shell (no keys yet)" is distinguishable from "No access".
+   */
+  access: PrincipalAccessLevel
+  /** Keys on file. Zero means no login is possible at any access level. */
+  sshKeyCount: number
   createdAt: string
   updatedAt: string
 }
@@ -47,6 +67,7 @@ export function serializeProjectPrincipal(
     series: string
     grantedBy: string
   }[] = [],
+  sshKeyCount = 0,
 ): SerializedProjectPrincipal {
   return {
     id: row.id,
@@ -61,6 +82,10 @@ export function serializeProjectPrincipal(
     entitlements: [...entitlements].sort((a, b) =>
       `${a.runtime}@${a.series}`.localeCompare(`${b.runtime}@${b.series}`)
     ),
+    access: accessLevelForShell(
+      resolvePrincipalShell(parsePrincipalOptions(row.options)),
+    ),
+    sshKeyCount,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }

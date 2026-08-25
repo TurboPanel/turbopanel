@@ -2013,6 +2013,111 @@ export const principalEntitlement = pgTable(
 )
 
 /**
+ * A public key that may authenticate as this principal over SSH.
+ *
+ * A table rather than `principal.options` jsonb, for the reasons
+ * `principal_entitlement` already lists — `parsePrincipalOptions` is
+ * drop-on-invalid, which is the wrong posture for a credential — plus one
+ * specific to keys: **"which principals does this fingerprint reach?" has to be
+ * answerable in one query.** When a laptop is lost the operator has a
+ * fingerprint and needs every account it opens, across every project and every
+ * server. A blob per principal cannot answer that.
+ *
+ * `publicKey` holds the **re-rendered** `<type> <base64>` from
+ * `parseSshPublicKey`, never the pasted line: an `authorized_keys` entry may
+ * legally carry a leading options field (`command="…",no-pty`), and neither
+ * honouring nor silently stripping one is acceptable. The comment is split into
+ * its own column so the stored key has exactly two fields and cannot grow a
+ * third.
+ *
+ * `fingerprint` is `SHA256:<base64 unpadded>` over the decoded blob — byte
+ * identical to `ssh-keygen -lf`, so an operator can compare what the panel
+ * shows against what their agent shows.
+ *
+ * `userId` is **provenance, not ownership**: which org member added the key, so
+ * "revoke everything Alice can reach" is one query without inventing a
+ * user↔principal join table. Ownership stays with the principal, because
+ * `authorized_keys` is a per-account file and the daemon has to render it
+ * without resolving org membership. `set null` on user delete — losing who
+ * added a key must never silently delete the key.
+ *
+ * No `organization_id`: derived through `principal`, matching that table.
+ */
+export const principalSshKey = pgTable(
+  'principal_ssh_key',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    principalId: uuid('principal_id').notNull(),
+    /** Operator-facing label. Not the key comment — that is `comment`. */
+    name: varchar({ length: 255 }).notNull(),
+    keyType: text('key_type').notNull(),
+    /** Canonical `<type> <base64>`, re-rendered from the decoded blob. */
+    publicKey: text('public_key').notNull(),
+    /** `SHA256:…`, as `ssh-keygen -lf` prints it. */
+    fingerprint: text().notNull(),
+    /** Sanitized display comment from the pasted line, when it had one. */
+    comment: text(),
+    /** Org member who added it — audit provenance, not ownership. */
+    userId: uuid('user_id'),
+    /** RSA modulus size; null for the fixed-size key types. */
+    bits: integer(),
+  },
+  (table) => [
+    index('idx_principal_ssh_key_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops')
+    ),
+    // The lost-laptop query: every account one fingerprint opens.
+    index('idx_principal_ssh_key_fingerprint').using(
+      'btree',
+      table.fingerprint.asc().nullsLast().op('text_ops')
+    ),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'principal_ssh_key_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'principal_ssh_key_user_id_user_id_fk',
+    }).onDelete('set null'),
+    // Keyed on the fingerprint rather than the key text: the fingerprint is
+    // over the decoded bytes, so two spellings of one key collide here as they
+    // should.
+    unique('principal_ssh_key_fingerprint_unique').on(
+      table.principalId,
+      table.fingerprint
+    ),
+    check(
+      'principal_ssh_key_type_check',
+      sql`${table.keyType} IN ('ssh-ed25519', 'sk-ssh-ed25519@openssh.com', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'sk-ecdsa-sha2-nistp256@openssh.com', 'ssh-rsa')`
+    ),
+    check(
+      'principal_ssh_key_fingerprint_check',
+      sql`${table.fingerprint} ~ '^SHA256:[A-Za-z0-9+/]{43}$'`
+    ),
+    // A newline in the stored key would be a second authorized_keys entry. The
+    // application parser already refuses one; this is the backstop that makes a
+    // bug there unable to reach the file.
+    check(
+      'principal_ssh_key_public_key_check',
+      sql`${table.publicKey} ~ '^[A-Za-z0-9@.-]+ [A-Za-z0-9+/]+={0,2}$'`
+    ),
+    check('principal_ssh_key_name_check', sql`char_length(${table.name}) >= 1`),
+  ]
+)
+
+/**
  * Join edge: the Linux/system principal that stewards a service (runs as /
  * owns the site tree). Deleting a principal removes its edges (cascade); a
  * service still referenced by principals cannot be deleted (restrict),

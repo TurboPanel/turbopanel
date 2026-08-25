@@ -1,6 +1,7 @@
 import { HOSTNAME_MAX_LENGTH, isValidHostname } from "./hostname.ts";
 import { isValidCidr, isValidIpAddress } from "../ip-address.ts";
 import { ALLOWED_PRINCIPAL_SHELLS } from "../principal-options.ts";
+import { isCanonicalSshPublicKey } from "../ssh-public-key.ts";
 import {
   isManagedIngressProtocolPort,
   type ManagedIngressFamily,
@@ -214,6 +215,36 @@ export type NtpSetCommandResult = {
   summary?: string;
 };
 
+/**
+ * Must stay in sync with the daemon `server.principals.reconcile` shape.
+ *
+ * `principals` is the **complete** managed set for one server, which is what
+ * makes removal safe on the other side: an account absent from it is one
+ * TurboPanel no longer manages there, and its key file goes.
+ *
+ * A command of its own rather than a field on `environment.deploy`, because a
+ * deploy payload describes one environment and a host serves many. Revoking a
+ * key must not wait for — or be scoped by — an unrelated environment being
+ * deployed.
+ */
+export type PrincipalsReconcileCommandPayload = {
+  principals: EnvironmentDeployPrincipalMaterial[];
+};
+
+/** Must stay in sync with the daemon `server.principals.reconcile` shape. */
+export type PrincipalsReconcileCommandResult = {
+  principalsApplied: number;
+  keysChanged: string[];
+  keysRemoved: string[];
+  sshdReloaded: boolean;
+  /**
+   * Host conditions that will stop a valid key from working and that TurboPanel
+   * refuses to edit its way around (`AllowUsers`, `DenyGroups`, …). Reported so
+   * an operator is not left debugging a silent `Permission denied`.
+   */
+  warnings: string[];
+};
+
 /** Must stay in sync with the daemon `server.tls.trust.reconcile` shape. */
 export type TlsTrustReconcileCommandPayload = {
   bundlePem: string;
@@ -347,6 +378,65 @@ export function parseNtpSetResult(value: unknown): NtpSetCommandResult {
   if (fallback !== undefined) result.fallbackNtpServers = fallback;
   if (isString(value.summary)) result.summary = value.summary;
   return result;
+}
+
+export function parsePrincipalsReconcilePayload(
+  value: unknown,
+): PrincipalsReconcileCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error("Invalid principals reconcile payload");
+  }
+  if (!Array.isArray(value.principals)) {
+    throw new Error("principals must be an array");
+  }
+  // Reuses the deploy entry parser verbatim rather than defining a second
+  // principal shape: the same account described by a deploy and by a reconcile
+  // must validate identically, or one channel becomes a way to say something
+  // the other refuses.
+  const principals = value.principals.map(parseDeployPrincipalMaterialEntry);
+  const seen = new Set<string>();
+  for (const principal of principals) {
+    if (seen.has(principal.username)) {
+      // Two entries for one account would make "the complete set" ambiguous
+      // about which key list wins.
+      throw new Error(
+        `principals contains ${principal.username} more than once`,
+      );
+    }
+    seen.add(principal.username);
+  }
+  return { principals };
+}
+
+function parseStringArrayField(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || !value.every(isString)) {
+    throw new Error(`${field} must be an array of strings`);
+  }
+  return [...value];
+}
+
+export function parsePrincipalsReconcileResult(
+  value: unknown,
+): PrincipalsReconcileCommandResult {
+  if (!isRecord(value)) {
+    throw new Error("Invalid principals reconcile result");
+  }
+  if (
+    typeof value.principalsApplied !== "number" ||
+    !Number.isInteger(value.principalsApplied)
+  ) {
+    throw new TypeError("principalsApplied must be an integer");
+  }
+  if (typeof value.sshdReloaded !== "boolean") {
+    throw new TypeError("sshdReloaded must be a boolean");
+  }
+  return {
+    principalsApplied: value.principalsApplied,
+    keysChanged: parseStringArrayField(value.keysChanged, "keysChanged"),
+    keysRemoved: parseStringArrayField(value.keysRemoved, "keysRemoved"),
+    sshdReloaded: value.sshdReloaded,
+    warnings: parseStringArrayField(value.warnings, "warnings"),
+  };
 }
 
 export function parseTlsTrustReconcilePayload(
@@ -898,11 +988,28 @@ export type EnvironmentDeployPrincipalMaterial = {
   shell?: string;
   /**
    * Runtime series this principal may execute, as the daemon's
-   * `ensurePrincipalRuntimeGroups` reconciles them into unix groups. The
+   * `ensurePrincipalManagedGroups` reconciles them into unix groups. The
    * **effective** set, resolved here — the daemon adds *and revokes* from
    * exactly this list rather than deriving anything itself.
    */
   runtimes?: { runtime: string; series: string }[];
+  /**
+   * SSH access groups (`tpsftp` / `tpshell`), reconciled by the same daemon
+   * pass as `runtimes` and with the same add-and-revoke semantics.
+   *
+   * Derived here from the account's shell **and** whether it holds any key, so
+   * one place decides: see `resolvePrincipalAccessGroups`. `[]` is the normal
+   * value for an account with no keys and is a real revocation.
+   */
+  accessGroups?: string[];
+  /**
+   * Canonical `<type> <base64>` public keys for this account.
+   *
+   * Always the re-rendered form from `parseSshPublicKey`, never an operator's
+   * pasted line. `undefined` means this payload says nothing about keys and
+   * leaves the file alone; `[]` means the account has none.
+   */
+  sshKeys?: string[];
 };
 
 export type EnvironmentDeployServiceHook = {
@@ -1846,8 +1953,33 @@ function parseDeployPrincipalMaterialEntry(
       return { runtime: raw.runtime, series: raw.series };
     });
   }
+  if (entry.accessGroups !== undefined) {
+    // Rejected, not dropped, for the same reason `runtimes` is: dropping a
+    // malformed grant silently revokes the login it describes.
+    if (
+      !Array.isArray(entry.accessGroups) ||
+      !entry.accessGroups.every((raw) =>
+        isString(raw) && ACCESS_GROUP_RE.test(raw)
+      )
+    ) {
+      throw new Error("Invalid environment.deploy payload")
+    }
+    material.accessGroups = [...entry.accessGroups]
+  }
+  if (entry.sshKeys !== undefined) {
+    if (
+      !Array.isArray(entry.sshKeys) ||
+      !entry.sshKeys.every((raw) => isString(raw) && isCanonicalSshPublicKey(raw))
+    ) {
+      throw new Error("Invalid environment.deploy payload")
+    }
+    material.sshKeys = [...entry.sshKeys]
+  }
   return material;
 }
+
+/** Shape gate; the daemon registry decides which names actually exist. */
+const ACCESS_GROUP_RE = /^[a-z][a-z0-9-]{0,31}$/
 
 /** `8.4` or `24` — the exec boundary a group protects, never a patch pin. */
 const RUNTIME_SERIES_RE = /^\d{1,3}(\.\d{1,3})?$/;
@@ -5520,6 +5652,7 @@ export function parseCommandPayload(
   | RebootCommandPayload
   | FabricReconcileCommandPayload
   | TlsTrustReconcileCommandPayload
+  | PrincipalsReconcileCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -5548,6 +5681,8 @@ export function parseCommandPayload(
       return parseFabricReconcilePayload(value);
     case "server.tls.trust.reconcile":
       return parseTlsTrustReconcilePayload(value);
+    case "server.principals.reconcile":
+      return parsePrincipalsReconcilePayload(value);
     case "environment.deploy":
       return parseEnvironmentDeployPayload(value);
     case "environment.lifecycle":
@@ -5588,6 +5723,7 @@ export function parseCommandResult(
   | RebootCommandResult
   | FabricReconcileCommandResult
   | TlsTrustReconcileCommandResult
+  | PrincipalsReconcileCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -5616,6 +5752,8 @@ export function parseCommandResult(
       return parseFabricReconcileResult(value);
     case "server.tls.trust.reconcile":
       return parseTlsTrustReconcileResult(value);
+    case "server.principals.reconcile":
+      return parsePrincipalsReconcileResult(value);
     case "environment.deploy":
       return parseEnvironmentDeployResult(value);
     case "environment.lifecycle":

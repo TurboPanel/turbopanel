@@ -8,6 +8,10 @@ import {
   isReservedPrincipalUsername,
 } from '../../lib/naming.ts'
 import {
+  isPrincipalAccessLevel,
+  shellForAccessLevel,
+} from '../../lib/principal-access.ts'
+import {
   parsePrincipalOptionsInput,
   resolvePrincipalIdOverride,
   type PrincipalOptionsPersisted,
@@ -124,9 +128,9 @@ export function patchRequiresServiceIds(body: Record<string, unknown>): boolean 
   return 'serviceIds' in body
 }
 
-/** A PATCH must change something: stewards, entitlements, or both. */
+/** A PATCH must change something: stewards, entitlements, or access. */
 export function patchTouchesPrincipal(body: Record<string, unknown>): boolean {
-  return 'serviceIds' in body || 'entitlements' in body
+  return 'serviceIds' in body || 'entitlements' in body || 'access' in body
 }
 
 /**
@@ -162,4 +166,26 @@ export function parseEntitlementsField(
     out.push({ runtime, series, grantedBy: 'operator' })
   }
   return out
+}
+
+/**
+ * Parse an `access` field into the shell that encodes it.
+ *
+ * Same three-way result as {@link parseEntitlementsField} and for the same
+ * reason: absent means "leave it alone", a value means "set it", and `null`
+ * means invalid — rejected rather than dropped, because silently discarding a
+ * malformed access level would leave the operator believing they had suspended
+ * an account that is still reachable.
+ *
+ * The operator sets a *level*; the shell is how it is stored. Accepting a raw
+ * shell path here instead would put a filesystem path in a security-decision
+ * field, which is what the Phase 0 allowlist already had to defend against.
+ */
+export function parseAccessField(
+  body: Record<string, unknown>,
+): string | null | undefined {
+  if (!('access' in body)) return undefined
+  const raw = body.access
+  if (!isPrincipalAccessLevel(raw)) return null
+  return shellForAccessLevel(raw)
 }
