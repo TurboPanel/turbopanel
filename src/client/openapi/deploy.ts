@@ -67,6 +67,7 @@ export const deploySchemas = {
           'docker_external_network_unregistered',
           'site_principal_ambiguous',
           'site_managed_directory_unowned',
+          'site_cron_unowned',
         ],
       },
       message: { type: 'string' },

@@ -3858,3 +3858,82 @@ test("an unknown sourceKind is refused rather than defaulted", () => {
     );
   }
 });
+
+test("a site's cron jobs round-trip as OnCalendar and argv", () => {
+  const parsed = parseCommandPayload(
+    "environment.deploy" as CommandType,
+    deployPayloadWithSite({
+      principal: SITE_PRINCIPAL,
+      cron: [{
+        name: "wp-cron",
+        schedule: "*-*-* *:0/5:00",
+        command: ["/usr/local/bin/php", "wp-cron.php"],
+      }],
+    }),
+  ) as { sites: { cron?: { name: string }[] }[] };
+  assertEquals(parsed.sites[0]?.cron?.[0]?.name, "wp-cron");
+});
+
+test("scheduled jobs with no principal are refused", () => {
+  // A timer with no `User=` runs as root. There is no safe account to guess.
+  assertThrows(
+    () =>
+      parseCommandPayload(
+        "environment.deploy" as CommandType,
+        deployPayloadWithSite({
+          cron: [{
+            name: "wp-cron",
+            schedule: "*-*-* *:0/5:00",
+            command: ["/usr/local/bin/php", "wp-cron.php"],
+          }],
+        }),
+      ),
+    Error,
+    "no principal to run them as",
+  );
+});
+
+test("a cron entry that could reach a unit file structurally is refused", () => {
+  for (
+    const bad of [
+      // A relative command: systemd does not search PATH.
+      { name: "a", schedule: "*-*-* 0:0:00", command: ["php", "x.php"] },
+      // A newline in an argument would terminate the ExecStart directive.
+      { name: "a", schedule: "*-*-* 0:0:00", command: ["/bin/x", "a\nb"] },
+      // A name that is not usable as a unit filename.
+      { name: "A B", schedule: "*-*-* 0:0:00", command: ["/bin/x"] },
+      // A schedule carrying something other than calendar syntax.
+      { name: "a", schedule: "*-*-* 0:0:00\nExecStart=/bin/sh", command: ["/bin/x"] },
+      { name: "a", schedule: "*-*-* 0:0:00", command: [] },
+    ]
+  ) {
+    assertThrows(
+      () =>
+        parseCommandPayload(
+          "environment.deploy" as CommandType,
+          deployPayloadWithSite({ principal: SITE_PRINCIPAL, cron: [bad] }),
+        ),
+      Error,
+      "Invalid sites cron",
+    );
+  }
+});
+
+test("two cron jobs under one name are refused", () => {
+  // They would render one unit and silently lose a job.
+  assertThrows(
+    () =>
+      parseCommandPayload(
+        "environment.deploy" as CommandType,
+        deployPayloadWithSite({
+          principal: SITE_PRINCIPAL,
+          cron: [
+            { name: "a", schedule: "*-*-* 0:0:00", command: ["/bin/x"] },
+            { name: "a", schedule: "*-*-* 1:0:00", command: ["/bin/y"] },
+          ],
+        }),
+      ),
+    Error,
+    "Duplicate sites cron job",
+  );
+});

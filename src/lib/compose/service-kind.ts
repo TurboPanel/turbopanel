@@ -1,6 +1,11 @@
 /** Per-service `x-turbopanel` extension (Compose `services.<name>.x-turbopanel`). */
 
 import {
+  cronToOnCalendar,
+  MAX_CRON_JOBS_PER_SERVICE,
+  parseCronCommand,
+} from "../cron.ts"
+import {
   validatePhpPoolSetting,
   validatePhpSetting,
 } from "../php-settings.ts"
@@ -138,6 +143,41 @@ export type ComposeServiceTurbopanelExtension = {
    * time to a real lint issue at save time.
    */
   php?: ComposeServicePhpExtension
+  /**
+   * Scheduled jobs for a `site` or `node` service.
+   *
+   * Rendered by the daemon as a systemd timer per entry, with `User=` set to
+   * the service's principal. That is what makes this the cleanest proof
+   * entitlement had to be an OS grant: `ExecStart` reaches `execve` **after**
+   * systemd has dropped privileges, so `/usr/bin/php8.4` succeeds or fails
+   * purely on the account's group membership. Nothing in the generated unit
+   * grants anything.
+   */
+  cron?: ComposeServiceCronJob[]
+}
+
+/**
+ * One scheduled job.
+ *
+ * `schedule` is a 5-field cron expression (or a `@daily`-style shorthand) as the
+ * operator authored it — cron is what operators know, and `OnCalendar` is not
+ * something to make anyone learn. It is translated once, control-plane side, by
+ * `lib/cron.ts`; see that module for the day-of-month / day-of-week rule it
+ * refuses rather than approximates.
+ *
+ * `command` is argv, not a shell line. systemd runs it directly, so `>>`, `|`,
+ * and globs are inert text rather than syntax — the linter rejects them instead
+ * of letting a line that looks like it redirects output silently pass `>>` to
+ * the script as an argument. Output goes to the log viewer through journald,
+ * which is where it was wanted anyway.
+ */
+export type ComposeServiceCronJob = {
+  /** Unit-name segment: lowercase, `[a-z0-9-]`, unique within the service. */
+  name: string
+  /** Cron expression as authored. */
+  schedule: string
+  /** Command line, split to argv at deploy. */
+  command: string
 }
 
 export type ComposeServicePhpExtension = {
@@ -226,6 +266,33 @@ function readSiteEngine(
     return undefined
   }
   return trimmed as SiteEngine
+}
+
+/** Unit-name segment: lowercase, `[a-z0-9-]`, so it is safe as a filename. */
+const CRON_JOB_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
+
+/**
+ * Shape-only read; `lib/cron.ts` is what validates the schedule and the command,
+ * and its messages are what tell the operator why one was refused.
+ *
+ * A malformed entry is **dropped** rather than failing the whole parse, matching
+ * every other block here — the validator is where a bad job becomes a visible
+ * issue, and a parse that threw would make the compose editor unopenable.
+ */
+function parseServiceCronJobs(
+  value: unknown,
+): ComposeServiceCronJob[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const jobs: ComposeServiceCronJob[] = []
+  for (const raw of value) {
+    if (!isPlainMapping(raw)) continue
+    const name = readTrimmedString(raw.name)
+    const schedule = readTrimmedString(raw.schedule)
+    const command = readTrimmedString(raw.command)
+    if (!name || !schedule || !command) continue
+    jobs.push({ name, schedule, command })
+  }
+  return jobs.length > 0 ? jobs : undefined
 }
 
 function readSiteSourceKind(value: unknown): SiteSourceKind | undefined {
@@ -362,6 +429,8 @@ export function parseServiceTurbopanelExtension(
   if (root) extension.root = root
   const sourceKind = readSiteSourceKind(value.sourceKind)
   if (sourceKind) extension.sourceKind = sourceKind
+  const cron = parseServiceCronJobs(value.cron)
+  if (cron) extension.cron = cron
   const description = readTrimmedString(
     value.description,
     SERVICE_DESCRIPTION_MAX_LENGTH,
@@ -669,6 +738,72 @@ function validatePhpConsistency(
   return issues
 }
 
+/**
+ * Cron jobs, checked at save rather than at deploy.
+ *
+ * The schedule and command translators live in `../cron.ts` and return the
+ * sentence that explains the refusal — a day-of-week rule the operator has to
+ * understand, or a `>>` that would silently become an argument. Repeating those
+ * messages here would let the two drift; passing them through keeps one
+ * explanation per failure.
+ */
+function validateCronConsistency(
+  basePath: string,
+  parsed: ComposeServiceTurbopanelExtension,
+): ServiceTurbopanelValidationIssue[] {
+  const jobs = parsed.cron
+  if (!jobs || jobs.length === 0) return []
+
+  const issues: ServiceTurbopanelValidationIssue[] = []
+  // A container has no principal to run as and no tree to run in; both
+  // host-native kinds have exactly one of each.
+  if (!isHostNativeServiceKind(parsed.serviceKind)) {
+    issues.push({
+      path: `${basePath}.cron`,
+      message: "cron is only valid when serviceKind is site or node",
+    })
+    return issues
+  }
+  if (jobs.length > MAX_CRON_JOBS_PER_SERVICE) {
+    issues.push({
+      path: `${basePath}.cron`,
+      message:
+        `a service may define at most ${MAX_CRON_JOBS_PER_SERVICE} scheduled jobs`,
+    })
+  }
+
+  const seen = new Set<string>()
+  jobs.forEach((job, index) => {
+    const path = `${basePath}.cron[${index}]`
+    if (!CRON_JOB_NAME_RE.test(job.name)) {
+      issues.push({
+        path: `${path}.name`,
+        // It becomes a unit filename, so the charset is not cosmetic.
+        message:
+          'name must be lowercase letters, digits, and dashes (it becomes the timer\'s name)',
+      })
+    } else if (seen.has(job.name)) {
+      // Two jobs with one name would render one unit and silently lose a job.
+      issues.push({
+        path: `${path}.name`,
+        message: `duplicate job name "${job.name}"`,
+      })
+    } else {
+      seen.add(job.name)
+    }
+
+    const schedule = cronToOnCalendar(job.schedule)
+    if (!schedule.ok) {
+      issues.push({ path: `${path}.schedule`, message: schedule.error })
+    }
+    const command = parseCronCommand(job.command)
+    if (!command.ok) {
+      issues.push({ path: `${path}.command`, message: command.error })
+    }
+  })
+  return issues
+}
+
 function validateEngineConsistency(
   basePath: string,
   parsed: ComposeServiceTurbopanelExtension,
@@ -861,6 +996,7 @@ function collectServiceExtensionValidationIssues(
     ...validateNodeComposeFields(basePath, parsed, rawService),
     ...validateRootConsistency(basePath, parsed),
     ...validateSourceConsistency(basePath, parsed),
+    ...validateCronConsistency(basePath, parsed),
   ]
 }
 

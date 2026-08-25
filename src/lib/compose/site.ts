@@ -11,6 +11,7 @@ import {
   readServiceTurbopanelExtension,
   type ComposeServicePhpExtension,
   type SiteEngine,
+  type ComposeServiceCronJob,
   type SiteSourceKind,
 } from './service-kind.ts'
 
@@ -32,6 +33,8 @@ export type SiteSpec = {
    * would churn the wire for services that never opted in.
    */
   sourceKind?: SiteSourceKind
+  /** Authored cron jobs from `x-turbopanel.cron`, untranslated. */
+  cron?: ComposeServiceCronJob[]
 }
 
 /** Engine a site gets when its compose block does not name one. */
@@ -151,6 +154,7 @@ export function splitSiteServices(
       listenPort,
       ...(extension?.php ? { php: extension.php } : {}),
       ...(extension?.sourceKind ? { sourceKind: extension.sourceKind } : {}),
+      ...(extension?.cron ? { cron: extension.cron } : {}),
     })
   }
 

@@ -2,6 +2,7 @@ import { HOSTNAME_MAX_LENGTH, isValidHostname } from "./hostname.ts";
 import { isValidCidr, isValidIpAddress } from "../ip-address.ts";
 import { ALLOWED_PRINCIPAL_SHELLS } from "../principal-options.ts";
 import { isCanonicalSshPublicKey } from "../ssh-public-key.ts";
+import { MAX_CRON_JOBS_PER_SERVICE } from "../cron.ts";
 import {
   isManagedIngressProtocolPort,
   type ManagedIngressFamily,
@@ -1048,6 +1049,22 @@ export type EnvironmentDeploySitePrincipal = {
   gid?: number;
 };
 
+/**
+ * One scheduled job, already translated.
+ *
+ * `schedule` is a systemd `OnCalendar` value rather than a cron expression: the
+ * two disagree about what restricting both day fields means, and that
+ * disagreement is refused once, here, by `lib/cron.ts`. `command` is argv —
+ * systemd runs it directly, so there is no shell and nothing to quote.
+ */
+export type EnvironmentDeployCronJob = {
+  name: string;
+  /** systemd `OnCalendar` value. */
+  schedule: string;
+  /** argv; `command[0]` is an absolute path. */
+  command: string[];
+};
+
 export type EnvironmentDeploySite = {
   composeServiceName: string;
   engine: "caddy" | "apache" | "nginx" | "openlitespeed";
@@ -1064,6 +1081,11 @@ export type EnvironmentDeploySite = {
    * both, and without an owner there is no account to write into it.
    */
   sourceKind?: "release" | "managed-directory";
+  /**
+   * Scheduled jobs, run as this site's principal out of its document root.
+   * Requires `principal`: a timer with no `User=` would run as root.
+   */
+  cron?: EnvironmentDeployCronJob[];
   /** Merged hosting web env (variables + options.web.env). */
   webEnv?: Record<string, string>;
   php?: EnvironmentDeployHostingPhp;
@@ -2036,6 +2058,48 @@ function parseDeployServiceHooks(
 
 const SITE_ENGINES = new Set(["caddy", "apache", "nginx", "openlitespeed"]);
 const SITE_SOURCE_KINDS = new Set(["release", "managed-directory"]);
+const CRON_JOB_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/**
+ * `OnCalendar` charset. Deliberately not a calendar parser — systemd is the
+ * authority on what it accepts, and re-implementing its grammar would give two
+ * answers to one question. This only ensures nothing structural can reach a
+ * unit file.
+ */
+const ON_CALENDAR_RE = /^[A-Za-z0-9 ,.:*/-]{1,200}$/;
+
+function parseDeployCronJobs(
+  value: unknown,
+): EnvironmentDeployCronJob[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > MAX_CRON_JOBS_PER_SERVICE) {
+    throw new Error("Invalid sites cron");
+  }
+  const seen = new Set<string>();
+  return value.map((raw) => {
+    if (
+      !isRecord(raw) ||
+      !isString(raw.name) || !CRON_JOB_NAME_RE.test(raw.name) ||
+      !isString(raw.schedule) || !ON_CALENDAR_RE.test(raw.schedule) ||
+      !Array.isArray(raw.command) || raw.command.length === 0 ||
+      !raw.command.every((arg) =>
+        isString(arg) && arg.length > 0 && arg.length <= 512 &&
+        !/[\0\n\r]/.test(arg)
+      ) ||
+      !(raw.command[0] as string).startsWith("/")
+    ) {
+      throw new Error("Invalid sites cron entry");
+    }
+    if (seen.has(raw.name)) {
+      throw new Error(`Duplicate sites cron job: ${raw.name}`);
+    }
+    seen.add(raw.name);
+    return {
+      name: raw.name,
+      schedule: raw.schedule,
+      command: [...raw.command] as string[],
+    };
+  });
+}
 
 function parseDeploySiteEntry(
   entry: unknown,
@@ -2071,6 +2135,8 @@ function parseDeploySiteEntry(
     }
     site.sourceKind = entry.sourceKind as EnvironmentDeploySite["sourceKind"];
   }
+  const cron = parseDeployCronJobs(entry.cron);
+  if (cron) site.cron = cron;
   const webEnv = parseEnvRecord(entry.webEnv);
   if (webEnv) site.webEnv = webEnv;
   const php = parseDeployHostingPhp(entry.php);
@@ -2080,6 +2146,13 @@ function parseDeploySiteEntry(
   // A managed directory is "a directory **and a principal**". Without an owner
   // there is no account to write into it, and the daemon would silently fall
   // back to the unreachable daemon-owned tree — which looks like it worked.
+  // A timer with no `User=` runs as root. Refused rather than defaulted: there
+  // is no safe account to guess.
+  if (site.cron && site.cron.length > 0 && !site.principal) {
+    throw new Error(
+      `Invalid sites entry: ${site.composeServiceName} has scheduled jobs but no principal to run them as`,
+    );
+  }
   if (site.sourceKind === "managed-directory" && !site.principal) {
     throw new Error(
       `Invalid sites entry: ${site.composeServiceName} is a managed directory with no principal`,

@@ -48,6 +48,7 @@ import {
   splitSiteServices,
   type SiteSpec,
 } from "../../lib/compose/index.ts";
+import type { ComposeServiceCronJob } from "../../lib/compose/service-kind.ts";
 import {
   environmentComposeFilename,
   PROJECT_COMPOSE_FILENAME,
@@ -65,6 +66,11 @@ import {
   resolveDockerVolumeName,
 } from "../../lib/naming.ts";
 import { accessGroupsFor } from "../../lib/principal-access.ts";
+import {
+  cronToOnCalendar,
+  MAX_CRON_JOBS_PER_SERVICE,
+  parseCronCommand,
+} from "../../lib/cron.ts";
 import { loadSshKeysByPrincipalIds } from "../principals/ssh-keys.ts";
 import {
   parsePrincipalOptions,
@@ -122,6 +128,7 @@ import type {
   EnvironmentDeployStorageMount,
   EnvironmentDeploySitePrincipal,
   EnvironmentDeploySite,
+  EnvironmentDeployCronJob,
   EnvironmentDeployVariableMaterial,
 } from "../../lib/commands/schemas.ts";
 import {
@@ -207,6 +214,7 @@ export type DeployPrepareWarningCode =
   | "docker_external_network_unregistered"
   | "site_principal_ambiguous"
   | "site_managed_directory_unowned"
+  | "site_cron_unowned"
   | "source_principal_ambiguous"
   | "binding_endpoint_unavailable"
   | "php_series_not_installed";
@@ -428,6 +436,7 @@ export type DeployPrepareError =
   | { kind: "docker_external_network_unregistered"; names: string[] }
   | { kind: "site_principal_ambiguous"; composeServiceName: string }
   | { kind: "site_managed_directory_unowned"; composeServiceName: string }
+  | { kind: "site_cron_unowned"; composeServiceName: string }
   | { kind: "source_principal_ambiguous"; composeServiceName: string }
   | {
     kind: "source_ref_unresolved";
@@ -594,6 +603,13 @@ function warningFromPrepareError(
         code: "site_managed_directory_unowned",
         message:
           `Site "${error.composeServiceName}" serves an uploaded directory but has no project principal to own it.`,
+        details: { composeServiceName: error.composeServiceName },
+      };
+    case "site_cron_unowned":
+      return {
+        code: "site_cron_unowned",
+        message:
+          `Site "${error.composeServiceName}" has scheduled jobs but no project principal to run them as.`,
         details: { composeServiceName: error.composeServiceName },
       };
     case "source_principal_ambiguous":
@@ -1937,7 +1953,8 @@ function resolveSitesForMode(
     | {
       kind:
         | "site_principal_ambiguous"
-        | "site_managed_directory_unowned";
+        | "site_managed_directory_unowned"
+        | "site_cron_unowned";
       composeServiceName: string;
     },
   fallbackSites: readonly SiteSpec[],
@@ -1946,8 +1963,10 @@ function resolveSitesForMode(
   if (mode === "preview") {
     warnings.push(warningFromPrepareError(sitesOrError));
     // Preview drops the ambiguous principal pin but must still render the same
-    // validated php the real deploy would carry.
-    return fallbackSites.map(({ php, ...rest }) => {
+    // validated php and cron the real deploy would carry. Cron is *dropped*
+    // rather than rendered without an owner: the preview should show what would
+    // actually run, and without a principal these jobs would not.
+    return fallbackSites.map(({ php, cron: _unowned, ...rest }) => {
       const rendered = renderPhpForDeploy(php, ALLOWED_PHP_EXTENSIONS);
       return { ...rest, ...(rendered ? { php: rendered } : {}) };
     });
@@ -2685,7 +2704,10 @@ export async function attachPrincipalsToSites(
 ): Promise<
   | EnvironmentDeploySite[]
   | {
-    kind: "site_principal_ambiguous" | "site_managed_directory_unowned";
+    kind:
+      | "site_principal_ambiguous"
+      | "site_managed_directory_unowned"
+      | "site_cron_unowned";
     composeServiceName: string;
   }
 > {
@@ -2737,16 +2759,59 @@ export async function attachPrincipalsToSites(
         composeServiceName: site.composeServiceName,
       };
     }
-    const { php: authoredPhp, ...rest } = site;
+    // Compose carries what the operator authored; the wire carries what was
+    // validated and translated. Anything that fails its spec is dropped rather
+    // than escaped — the save-time linter is what tells them why.
+    const { php: authoredPhp, cron: authoredCron, ...rest } = site;
     const php = renderPhpForDeploy(authoredPhp, ALLOWED_PHP_EXTENSIONS);
+    const cron = renderCronForDeploy(authoredCron);
+    // A timer with no `User=` runs as root; the wire refuses that, so catching
+    // it here turns an enqueue-time "Invalid sites entry" into a sentence
+    // naming the service.
+    if (cron.length > 0 && !principalPin) {
+      return {
+        kind: "site_cron_unowned",
+        composeServiceName: site.composeServiceName,
+      };
+    }
     out.push({
       ...rest,
       ...(php ? { php } : {}),
+      ...(cron.length > 0 ? { cron } : {}),
       ...(principalPin ? { principal: principalPin } : {}),
     });
   }
   return out;
 }
+
+/**
+ * Translate authored cron into the wire shape.
+ *
+ * A job whose schedule or command fails its spec is **dropped**, matching how
+ * PHP settings are handled: the compose linter already refused it at save with
+ * the reason, and re-reporting it at deploy would be a second, worse
+ * explanation of a problem the operator has already been shown.
+ */
+function renderCronForDeploy(
+  jobs: readonly ComposeServiceCronJob[] | undefined,
+): EnvironmentDeployCronJob[] {
+  if (!jobs || jobs.length === 0) return [];
+  const out: EnvironmentDeployCronJob[] = [];
+  const seen = new Set<string>();
+  for (const job of jobs.slice(0, MAX_CRON_JOBS_PER_SERVICE)) {
+    if (!CRON_JOB_NAME_RE.test(job.name) || seen.has(job.name)) continue;
+    const schedule = cronToOnCalendar(job.schedule);
+    if (!schedule.ok) continue;
+    const command = parseCronCommand(job.command);
+    if (!command.ok) continue;
+    seen.add(job.name);
+    out.push({ name: job.name, schedule: schedule.value, command: command.value });
+  }
+  return out;
+}
+
+/** Mirrors the compose linter's rule; a name becomes a unit filename. */
+const CRON_JOB_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 function toSitePrincipal(
   material: EnvironmentDeployPrincipalMaterial,

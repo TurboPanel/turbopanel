@@ -557,3 +557,106 @@ test('an uploaded-directory site with no repository validates clean', () => {
     [],
   )
 })
+
+test('cron is rejected on a container service', () => {
+  // A container has no principal to run as and no tree to run in.
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'nginx',
+      'x-turbopanel': {
+        serviceKind: 'container',
+        cron: [{ name: 'sweep', schedule: '@daily', command: '/bin/true' }],
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.message.includes('cron is only valid when serviceKind is site or node')
+    ),
+    true,
+  )
+})
+
+test('a cron job on a site validates clean', () => {
+  assertEquals(
+    collectServiceTurbopanelValidationIssues({
+      blog: {
+        'x-turbopanel': {
+          serviceKind: 'site',
+          root: 'public',
+          cron: [
+            { name: 'wp-cron', schedule: '*/5 * * * *', command: 'php wp-cron.php' },
+          ],
+        },
+      },
+    }),
+    [],
+  )
+})
+
+test('the day-of-week trap surfaces as a save-time issue', () => {
+  // Not a deploy-time surprise: cron unions the two day fields and systemd
+  // intersects them, so this expression means two different things.
+  const issues = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        root: 'public',
+        cron: [{ name: 'billing', schedule: '0 0 13 * 5', command: '/bin/true' }],
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.cron[0].schedule' &&
+      issue.message.includes('both to match')
+    ),
+    true,
+  )
+})
+
+test('shell syntax in a cron command is a save-time issue', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        root: 'public',
+        cron: [
+          { name: 'sweep', schedule: '@daily', command: 'php x.php >> /tmp/l' },
+        ],
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.cron[0].command' &&
+      issue.message.includes('no shell')
+    ),
+    true,
+  )
+})
+
+test('a cron job name must be usable as a unit filename, and unique', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    blog: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        root: 'public',
+        cron: [
+          { name: 'Sweep Me', schedule: '@daily', command: '/bin/true' },
+          { name: 'ok', schedule: '@daily', command: '/bin/true' },
+          { name: 'ok', schedule: '@hourly', command: '/bin/true' },
+        ],
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) => issue.message.includes("becomes the timer's name")),
+    true,
+  )
+  // Two jobs with one name would render one unit and silently lose a job.
+  assertEquals(
+    issues.some((issue) => issue.message.includes('duplicate job name "ok"')),
+    true,
+  )
+})

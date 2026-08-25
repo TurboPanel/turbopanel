@@ -262,6 +262,16 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
             `Site "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
         },
       }
+    case 'site_cron_unowned':
+      return {
+        status: 422,
+        body: {
+          error: 'site_cron_unowned',
+          composeServiceName: prepared.composeServiceName,
+          message:
+            `Site "${prepared.composeServiceName}" has scheduled jobs but no project principal to run them as. Assign a principal to the service — a timer with no account would run as root, which TurboPanel will not do.`,
+        },
+      }
     case 'site_managed_directory_unowned':
       return {
         status: 422,
