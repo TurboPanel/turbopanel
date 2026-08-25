@@ -1,18 +1,26 @@
-import { assertEquals } from '@std/assert'
-import { Hono, type Context } from 'hono'
-import type { AppEnv } from '../app.ts'
-import type { DaemonCell, DaemonCellRegistry } from '../daemon/cell/contracts.ts'
-import type { Db } from '../db.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../client/authn/secrets.ts'
-import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
+import { assertEquals } from "@std/assert";
+import { type Context, Hono } from "hono";
+import type { AppEnv } from "../app.ts";
+import type {
+  DaemonCell,
+  DaemonCellRegistry,
+} from "../daemon/cell/contracts.ts";
+import type { Db } from "../db.ts";
+import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
+import {
+  deriveSecretsConfig,
+  parseSecretsEnv,
+} from "../client/authn/secrets.ts";
+import { DEVELOPER_API_PREFIX } from "../surfaces.ts";
 import {
   COLOCATED_DEV_SYNC_SKIPPED_REASON,
+  type DevSyncPackager,
+  INSTANCE_NO_DAEMON_CHECKOUT_REASON,
   isManagedDaemonDevSyncRefusal,
   MANAGED_DAEMON_DEV_SYNC_MARKER,
   MANAGED_DAEMON_DEV_SYNC_SKIPPED_REASON,
   registerDevSyncRoutes,
-} from './dev-sync.ts'
+} from "./dev-sync.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -20,12 +28,12 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
-const SERVER_ID = '00000000-0000-4000-8000-0000000000d1'
+const SERVER_ID = "00000000-0000-4000-8000-0000000000d1";
 
 function thenable(rows: unknown[]) {
-  const promise = Promise.resolve(rows)
+  const promise = Promise.resolve(rows);
   const chain: Record<string, unknown> = {
     from: () => chain,
     where: () => chain,
@@ -35,18 +43,19 @@ function thenable(rows: unknown[]) {
       onFulfilled: (value: unknown) => unknown,
       onRejected?: (reason: unknown) => unknown,
     ) => promise.then(onFulfilled, onRejected),
-  }
-  return chain
+  };
+  return chain;
 }
 
 function createDb(projectionRows: unknown[] = []): Db {
   return {
     select: (fields?: Record<string, unknown>) => {
-      const keys = fields ? Object.keys(fields) : []
-      const isProjection = keys.includes('daemon') && keys.includes('connected')
-      return thenable(isProjection ? projectionRows : [])
+      const keys = fields ? Object.keys(fields) : [];
+      const isProjection = keys.includes("daemon") &&
+        keys.includes("connected");
+      return thenable(isProjection ? projectionRows : []);
     },
-  } as unknown as Db
+  } as unknown as Db;
 }
 
 function directProjectionRow() {
@@ -54,28 +63,28 @@ function directProjectionRow() {
     id: SERVER_ID,
     daemon: {
       key: {
-        id: 'key-1',
-        algorithm: 'Ed25519',
-        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-        fingerprint: 'fp-1',
-        createdAt: '2020-01-01T00:00:00.000Z',
+        id: "key-1",
+        algorithm: "Ed25519",
+        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+        fingerprint: "fp-1",
+        createdAt: "2020-01-01T00:00:00.000Z",
       },
-      projection: { remoteAddress: '__direct__' },
+      projection: { remoteAddress: "__direct__" },
     },
     connected: true,
-    statusChangedAt: '2020-01-01T00:00:00.000Z',
-  }
+    statusChangedAt: "2020-01-01T00:00:00.000Z",
+  };
 }
 
 function createRegistry(opts: {
-  onlineIds?: string[]
-  connected?: boolean
-  syncError?: string
+  onlineIds?: string[];
+  connected?: boolean;
+  syncError?: string;
 } = {}): DaemonCellRegistry {
   const cell = {
     enqueue: () => Promise.resolve({}),
-    waitForRequest: () => Promise.resolve({ status: 'done' }),
-  } as unknown as DaemonCell
+    waitForRequest: () => Promise.resolve({ status: "done" }),
+  } as unknown as DaemonCell;
 
   return {
     getCell: () => {
@@ -83,9 +92,9 @@ function createRegistry(opts: {
         return {
           enqueue: () => Promise.reject(new Error(opts.syncError)),
           waitForRequest: () => Promise.resolve(null),
-        } as unknown as DaemonCell
+        } as unknown as DaemonCell;
       }
-      return cell
+      return cell;
     },
     listOnlineServerIds: () => Promise.resolve(opts.onlineIds ?? [SERVER_ID]),
     getSnapshots: () =>
@@ -96,114 +105,148 @@ function createRegistry(opts: {
             {
               serverId: SERVER_ID,
               version: 1,
-              updatedAt: '2020-01-01T00:00:00.000Z',
+              updatedAt: "2020-01-01T00:00:00.000Z",
               connected: opts.connected ?? true,
             },
           ],
         ]),
       ),
     purge: () => Promise.resolve(),
-  }
+  };
+}
+
+function stubPackager(
+  overrides: Partial<DevSyncPackager> = {},
+): DevSyncPackager {
+  return {
+    resolveRepo: () => "fake-daemon-checkout",
+    hasCheckout: () => Promise.resolve(true),
+    buildTarball: () => Promise.resolve(new Uint8Array([0x1f, 0x8b])),
+    ...overrides,
+  };
 }
 
 async function createApp(opts: {
-  db?: Db | null
-  registry?: DaemonCellRegistry | null
+  db?: Db | null;
+  registry?: DaemonCellRegistry | null;
+  packager?: DevSyncPackager;
 } = {}) {
   const secrets = await deriveSecretsConfig(
-    parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
-    'session-signing',
-  )
-  const app = new Hono()
-  app.use('*', async (c, next) => {
-    const vars = c as unknown as Context<AppEnv>
-    if (opts.db !== null) vars.set('db', opts.db ?? createDb())
+    parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, "deno"),
+    "session-signing",
+  );
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    const vars = c as unknown as Context<AppEnv>;
+    if (opts.db !== null) vars.set("db", opts.db ?? createDb());
     if (opts.registry !== null) {
-      vars.set('daemonCellRegistry', opts.registry ?? createRegistry())
+      vars.set("daemonCellRegistry", opts.registry ?? createRegistry());
     }
-    await next()
-  })
-  registerDevSyncRoutes(app, { secrets, authRequired: false })
-  return app
+    await next();
+  });
+  registerDevSyncRoutes(app, {
+    secrets,
+    authRequired: false,
+    ...(opts.packager ? { packager: opts.packager } : {}),
+  });
+  return app;
 }
 
-test('isManagedDaemonDevSyncRefusal matches the daemon marker only', () => {
+test("isManagedDaemonDevSyncRefusal matches the daemon marker only", () => {
   assertEquals(
     isManagedDaemonDevSyncRefusal(`failed: ${MANAGED_DAEMON_DEV_SYNC_MARKER}`),
     true,
-  )
-  assertEquals(isManagedDaemonDevSyncRefusal('daemon not connected'), false)
-})
+  );
+  assertEquals(isManagedDaemonDevSyncRefusal("daemon not connected"), false);
+});
 
-test('POST /daemon/:id/sync-dev skips colocated and reports 503 without registry', async () => {
-  const noRegistry = await createApp({ registry: null })
+test("POST /daemon/:id/sync-dev skips colocated and reports 503 without registry", async () => {
+  const noRegistry = await createApp({ registry: null });
   const missing = await noRegistry.request(
     `${DEVELOPER_API_PREFIX}/daemon/${SERVER_ID}/sync-dev`,
-    { method: 'POST' },
-  )
-  assertEquals(missing.status, 503)
+    { method: "POST" },
+  );
+  assertEquals(missing.status, 503);
 
   const app = await createApp({
     db: createDb([directProjectionRow()]),
     registry: createRegistry(),
-  })
+  });
   const skipped = await app.request(
     `${DEVELOPER_API_PREFIX}/daemon/${SERVER_ID}/sync-dev`,
-    { method: 'POST' },
-  )
-  assertEquals(skipped.status, 422)
-  const body = await skipped.json() as { error: string }
-  assertEquals(body.error, COLOCATED_DEV_SYNC_SKIPPED_REASON)
-})
+    { method: "POST" },
+  );
+  assertEquals(skipped.status, 422);
+  const body = await skipped.json() as { error: string };
+  assertEquals(body.error, COLOCATED_DEV_SYNC_SKIPPED_REASON);
+});
 
-test('POST /daemon/:id/sync-dev classifies managed refusal as skipped', async () => {
+test("POST /daemon/:id/sync-dev reports no instance checkout as unavailable", async () => {
   const app = await createApp({
+    packager: stubPackager({ hasCheckout: () => Promise.resolve(false) }),
+    registry: createRegistry(),
+  });
+  const response = await app.request(
+    `${DEVELOPER_API_PREFIX}/daemon/${SERVER_ID}/sync-dev`,
+    { method: "POST" },
+  );
+  assertEquals(response.status, 500);
+  const body = await response.json() as { error: string };
+  assertEquals(body.error, INSTANCE_NO_DAEMON_CHECKOUT_REASON);
+});
+
+test("POST /daemon/:id/sync-dev classifies managed refusal as skipped", async () => {
+  const app = await createApp({
+    packager: stubPackager(),
     registry: createRegistry({
       syncError: `apply failed: ${MANAGED_DAEMON_DEV_SYNC_MARKER}`,
     }),
-  })
+  });
   const response = await app.request(
     `${DEVELOPER_API_PREFIX}/daemon/${SERVER_ID}/sync-dev`,
-    { method: 'POST' },
-  )
-  assertEquals(response.status, 200)
-  const body = await response.json() as { skipped?: boolean; error?: string }
-  assertEquals(body.skipped, true)
-  assertEquals(body.error, MANAGED_DAEMON_DEV_SYNC_SKIPPED_REASON)
-})
+    { method: "POST" },
+  );
+  assertEquals(response.status, 200);
+  const body = await response.json() as { skipped?: boolean; error?: string };
+  assertEquals(body.skipped, true);
+  assertEquals(body.error, MANAGED_DAEMON_DEV_SYNC_SKIPPED_REASON);
+});
 
-test('POST /daemon/:id/sync-dev maps disconnected to 404', async () => {
+test("POST /daemon/:id/sync-dev maps disconnected to 404", async () => {
   const app = await createApp({
     registry: createRegistry({ connected: false }),
-  })
+  });
   const response = await app.request(
     `${DEVELOPER_API_PREFIX}/daemon/${SERVER_ID}/sync-dev`,
-    { method: 'POST' },
-  )
-  assertEquals(response.status, 404)
-})
+    { method: "POST" },
+  );
+  assertEquals(response.status, 404);
+});
 
-test('POST /daemon/sync-dev skips colocated members of the fleet', async () => {
-  const noRegistry = await createApp({ registry: null })
+test("POST /daemon/sync-dev skips colocated members of the fleet", async () => {
+  const noRegistry = await createApp({ registry: null });
   const missing = await noRegistry.request(
     `${DEVELOPER_API_PREFIX}/daemon/sync-dev`,
-    { method: 'POST' },
-  )
-  assertEquals(missing.status, 503)
+    { method: "POST" },
+  );
+  assertEquals(missing.status, 503);
 
   const app = await createApp({
     db: createDb([directProjectionRow()]),
     registry: createRegistry({ onlineIds: [SERVER_ID] }),
-  })
-  const response = await app.request(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, {
-    method: 'POST',
-  })
-  assertEquals(response.status, 200)
+  });
+  const response = await app.request(
+    `${DEVELOPER_API_PREFIX}/daemon/sync-dev`,
+    {
+      method: "POST",
+    },
+  );
+  assertEquals(response.status, 200);
   const body = await response.json() as {
-    ok: boolean
-    results: Array<{ skipped?: boolean; error?: string }>
-  }
-  assertEquals(body.ok, true)
-  assertEquals(body.results[0]?.skipped, true)
-  assertEquals(body.results[0]?.error, COLOCATED_DEV_SYNC_SKIPPED_REASON)
-})
+    ok: boolean;
+    results: Array<{ skipped?: boolean; error?: string }>;
+  };
+  assertEquals(body.ok, true);
+  assertEquals(body.results[0]?.skipped, true);
+  assertEquals(body.results[0]?.error, COLOCATED_DEV_SYNC_SKIPPED_REASON);
+});

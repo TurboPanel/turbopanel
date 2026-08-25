@@ -1,23 +1,23 @@
-import type { Env, Hono } from 'hono'
-import { join } from '@std/path'
-import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
-import { encodeBase64 } from '@std/encoding/base64'
-import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
+import type { Env, Hono } from "hono";
+import { join } from "@std/path";
+import { createDeveloperAccessMiddleware } from "../client/authn/middleware.ts";
+import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import { encodeBase64 } from "@std/encoding/base64";
+import type { DaemonCellRegistry } from "../daemon/cell/contracts.ts";
 import {
+  type DaemonOutboundEnvelope,
   generateDeliveryId,
   generateRequestId,
-  type DaemonOutboundEnvelope,
-} from '../daemon/cell/protocol.ts'
-import { resolveColocatedServerIdSet } from '../client/servers/colocated.ts'
-import { getDaemonCellRegistry, getDb } from '../db.ts'
-import { getDaemonRepoPath } from '../daemon/version.ts'
-import { cellTrace } from '../logger.ts'
-import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
-import { buildDevSyncTarArgs } from './dev-sync-archive.ts'
+} from "../daemon/cell/protocol.ts";
+import { resolveColocatedServerIdSet } from "../client/servers/colocated.ts";
+import { getDaemonCellRegistry, getDb } from "../db.ts";
+import { getDaemonRepoPath } from "../daemon/version.ts";
+import { cellTrace } from "../logger.ts";
+import { DEVELOPER_API_PREFIX } from "../surfaces.ts";
+import { buildDevSyncTarArgs } from "./dev-sync-archive.ts";
 
 export const COLOCATED_DEV_SYNC_SKIPPED_REASON =
-  'The co-located development daemon is not updated by dev-sync — edit the local checkout directly'
+  "The co-located development daemon is not updated by dev-sync — edit the local checkout directly";
 
 /**
  * Stable marker embedded in the daemon's managed-install dev-sync refusal
@@ -28,10 +28,11 @@ export const COLOCATED_DEV_SYNC_SKIPPED_REASON =
  * (co-located dev + managed) does not fail the whole sync. Keep in sync with the
  * daemon constant.
  */
-export const MANAGED_DAEMON_DEV_SYNC_MARKER = 'dev-sync refused on this managed install'
+export const MANAGED_DAEMON_DEV_SYNC_MARKER =
+  "dev-sync refused on this managed install";
 
 export const MANAGED_DAEMON_DEV_SYNC_SKIPPED_REASON =
-  'Skipped a managed install — source dev-sync only targets co-located development daemon checkouts'
+  "Skipped a managed install — source dev-sync only targets co-located development daemon checkouts";
 
 /**
  * Refusal when the *instance host itself* has no daemon source checkout to
@@ -39,17 +40,28 @@ export const MANAGED_DAEMON_DEV_SYNC_SKIPPED_REASON =
  * checkout; without it there is nothing to send and the flow is disabled.
  */
 export const INSTANCE_NO_DAEMON_CHECKOUT_REASON =
-  'dev-sync is unavailable — this instance host has no daemon source checkout to package (managed installs update via run.sh / update.sh)'
+  "dev-sync is unavailable — this instance host has no daemon source checkout to package (managed installs update via run.sh / update.sh)";
 
 /** Base64 characters per chunk (~256 KiB of payload before encoding). */
-const CHUNK_CHARS = 256 * 1024
+const CHUNK_CHARS = 256 * 1024;
 /** Generous ceiling: tar + transfer + unpack + deno cache + restart ack. */
-const DEV_SYNC_TIMEOUT_MS = 180_000
+const DEV_SYNC_TIMEOUT_MS = 180_000;
 
 /** True when the daemon refused because it is a managed (non-checkout) install. */
 export function isManagedDaemonDevSyncRefusal(message: string): boolean {
-  return message.includes(MANAGED_DAEMON_DEV_SYNC_MARKER)
+  return message.includes(MANAGED_DAEMON_DEV_SYNC_MARKER);
 }
+
+/**
+ * Source-packaging seam for host-free tests. Production uses the default
+ * checkout + `tar` implementation; tests stub this so classification does not
+ * depend on a sibling `turbopaneld` tree (absent in single-repo CI).
+ */
+export type DevSyncPackager = {
+  resolveRepo: () => string;
+  hasCheckout: (repo: string) => Promise<boolean>;
+  buildTarball: (repo: string) => Promise<Uint8Array>;
+};
 
 /**
  * True when `repo` is a real, editable daemon source checkout (has `main.ts`).
@@ -57,10 +69,10 @@ export function isManagedDaemonDevSyncRefusal(message: string): boolean {
  */
 async function hasInstanceDaemonCheckout(repo: string): Promise<boolean> {
   try {
-    await Deno.stat(join(repo, 'main.ts'))
-    return true
+    await Deno.stat(join(repo, "main.ts"));
+    return true;
   } catch {
-    return false
+    return false;
   }
 }
 
@@ -76,135 +88,144 @@ async function buildDaemonTarball(repo: string): Promise<Uint8Array> {
   // runs as a sandboxed Deno process whose `--allow-write` does not include the
   // OS temp dir, so `Deno.makeTempFile()` throws "Requires write access to
   // <TMP>". Writing to stdout needs no filesystem write permission.
-  const command = new Deno.Command('tar', {
-    args: buildDevSyncTarArgs(repo, '-'),
-    stdout: 'piped',
-    stderr: 'piped',
-  })
-  const out = await command.output()
+  const command = new Deno.Command("tar", {
+    args: buildDevSyncTarArgs(repo, "-"),
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const out = await command.output();
   if (!out.success) {
-    throw new Error(`tar failed: ${new TextDecoder().decode(out.stderr).trim()}`)
+    throw new Error(
+      `tar failed: ${new TextDecoder().decode(out.stderr).trim()}`,
+    );
   }
-  return out.stdout
+  return out.stdout;
 }
+
+const defaultDevSyncPackager: DevSyncPackager = {
+  resolveRepo: getDaemonRepoPath,
+  hasCheckout: hasInstanceDaemonCheckout,
+  buildTarball: buildDaemonTarball,
+};
 
 async function syncDevToDaemonWithRegistry(
   registry: DaemonCellRegistry,
   serverId: string,
+  packager: DevSyncPackager = defaultDevSyncPackager,
 ): Promise<void> {
-  const snapshots = await registry.getSnapshots([serverId])
+  const snapshots = await registry.getSnapshots([serverId]);
   if (!snapshots.get(serverId)?.connected) {
-    throw new Error('daemon not connected')
+    throw new Error("daemon not connected");
   }
 
   // Gate on the source: only a checkout-backed instance host can serve dev-sync.
-  const repo = getDaemonRepoPath()
-  if (!(await hasInstanceDaemonCheckout(repo))) {
-    throw new Error(INSTANCE_NO_DAEMON_CHECKOUT_REASON)
+  const repo = packager.resolveRepo();
+  if (!(await packager.hasCheckout(repo))) {
+    throw new Error(INSTANCE_NO_DAEMON_CHECKOUT_REASON);
   }
 
-  const cell = registry.getCell(serverId)
-  const tarball = await buildDaemonTarball(repo)
-  const base64 = encodeBase64(tarball)
-  const requestId = generateRequestId()
-  const totalChunks = Math.max(1, Math.ceil(base64.length / CHUNK_CHARS))
+  const cell = registry.getCell(serverId);
+  const tarball = await packager.buildTarball(repo);
+  const base64 = encodeBase64(tarball);
+  const requestId = generateRequestId();
+  const totalChunks = Math.max(1, Math.ceil(base64.length / CHUNK_CHARS));
 
-  cellTrace('request-start', {
+  cellTrace("request-start", {
     requestId,
     serverId,
-    kind: 'dev-sync',
+    kind: "dev-sync",
     totalChunks,
     totalBytes: tarball.byteLength,
-  })
+  });
 
   const begin: DaemonOutboundEnvelope = {
-    kind: 'dev-sync',
+    kind: "dev-sync",
     deliveryId: generateDeliveryId(),
     requestId,
     at: new Date().toISOString(),
-    phase: 'begin',
+    phase: "begin",
     totalChunks,
     totalBytes: tarball.byteLength,
-  }
-  await cell.enqueue(begin)
-  cellTrace('request-enqueued', {
+  };
+  await cell.enqueue(begin);
+  cellTrace("request-enqueued", {
     requestId,
     serverId,
-    kind: 'dev-sync',
-    phase: 'begin',
+    kind: "dev-sync",
+    phase: "begin",
     totalChunks,
-  })
+  });
 
   for (let i = 0; i < totalChunks; i++) {
     const chunk: DaemonOutboundEnvelope = {
-      kind: 'dev-sync',
+      kind: "dev-sync",
       deliveryId: generateDeliveryId(),
       requestId,
       at: new Date().toISOString(),
-      phase: 'chunk',
+      phase: "chunk",
       index: i,
       data: base64.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS),
-    }
-    await cell.enqueue(chunk)
+    };
+    await cell.enqueue(chunk);
   }
 
   const end: DaemonOutboundEnvelope = {
-    kind: 'dev-sync',
+    kind: "dev-sync",
     deliveryId: generateDeliveryId(),
     requestId,
     at: new Date().toISOString(),
-    phase: 'end',
-  }
-  await cell.enqueue(end)
-  cellTrace('request-enqueued', {
+    phase: "end",
+  };
+  await cell.enqueue(end);
+  cellTrace("request-enqueued", {
     requestId,
     serverId,
-    kind: 'dev-sync',
-    phase: 'end',
+    kind: "dev-sync",
+    phase: "end",
     totalChunks,
-  })
+  });
 
-  const record = await cell.waitForRequest(requestId, DEV_SYNC_TIMEOUT_MS)
-  if (!record || record.status === 'expired') {
-    cellTrace('request-result', {
+  const record = await cell.waitForRequest(requestId, DEV_SYNC_TIMEOUT_MS);
+  if (!record || record.status === "expired") {
+    cellTrace("request-result", {
       requestId,
       serverId,
-      kind: 'dev-sync',
+      kind: "dev-sync",
       pendingStatus: record?.status,
-      resultStatus: 'timeout',
-      error: 'timeout waiting for daemon acknowledgement',
-    })
-    throw new Error('timeout waiting for daemon acknowledgement')
+      resultStatus: "timeout",
+      error: "timeout waiting for daemon acknowledgement",
+    });
+    throw new Error("timeout waiting for daemon acknowledgement");
   }
-  if (record.status === 'failed') {
-    cellTrace('request-result', {
+  if (record.status === "failed") {
+    cellTrace("request-result", {
       requestId,
       serverId,
-      kind: 'dev-sync',
+      kind: "dev-sync",
       pendingStatus: record.status,
-      resultStatus: 'failed',
-      error: record.error ?? 'daemon reported failure',
-    })
-    throw new Error(record.error ?? 'daemon reported failure')
+      resultStatus: "failed",
+      error: record.error ?? "daemon reported failure",
+    });
+    throw new Error(record.error ?? "daemon reported failure");
   }
-  if (record.status !== 'done') {
-    cellTrace('request-result', {
+  if (record.status !== "done") {
+    cellTrace("request-result", {
       requestId,
       serverId,
-      kind: 'dev-sync',
+      kind: "dev-sync",
       pendingStatus: record.status,
-      resultStatus: 'failed',
+      resultStatus: "failed",
       error: `unexpected dev-sync status: ${record.status}`,
-    })
-    throw new Error(`unexpected dev-sync status: ${record.status}`)
+    });
+    throw new Error(`unexpected dev-sync status: ${record.status}`);
   }
-  cellTrace('request-result', {
+  cellTrace("request-result", {
     requestId,
     serverId,
-    kind: 'dev-sync',
+    kind: "dev-sync",
     pendingStatus: record.status,
-    resultStatus: 'done',
-  })
+    resultStatus: "done",
+  });
 }
 
 /**
@@ -214,8 +235,9 @@ async function syncDevToDaemonWithRegistry(
 export async function syncDevToDaemon(
   daemonId: string,
   registry: DaemonCellRegistry,
+  packager: DevSyncPackager = defaultDevSyncPackager,
 ): Promise<void> {
-  await syncDevToDaemonWithRegistry(registry, daemonId)
+  await syncDevToDaemonWithRegistry(registry, daemonId, packager);
 }
 
 /**
@@ -224,28 +246,47 @@ export async function syncDevToDaemon(
  */
 export function registerDevSyncRoutes<E extends Env>(
   app: Hono<E>,
-  opts: { secrets: DerivedSecretsConfig; authRequired?: boolean },
+  opts: {
+    secrets: DerivedSecretsConfig;
+    authRequired?: boolean;
+    packager?: DevSyncPackager;
+  },
 ): Hono<E> {
+  const packager = opts.packager ?? defaultDevSyncPackager;
   if (opts.authRequired !== false) {
-    app.use(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, createDeveloperAccessMiddleware(opts.secrets))
-    app.use(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, createDeveloperAccessMiddleware(opts.secrets))
+    app.use(
+      `${DEVELOPER_API_PREFIX}/daemon/sync-dev`,
+      createDeveloperAccessMiddleware(opts.secrets),
+    );
+    app.use(
+      `${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`,
+      createDeveloperAccessMiddleware(opts.secrets),
+    );
   }
 
   app.post(`${DEVELOPER_API_PREFIX}/daemon/:id/sync-dev`, async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
-    const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
-    const id = c.req.param('id')
-    const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id])
+    const registry = getDaemonCellRegistry(c);
+    if (!registry) {
+      return c.json(
+        { ok: false, error: "Daemon cell registry unavailable" },
+        503,
+      );
+    }
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    const id = c.req.param("id");
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id]);
     if (colocatedIds.has(id)) {
-      return c.json({ ok: false, error: COLOCATED_DEV_SYNC_SKIPPED_REASON }, 422)
+      return c.json(
+        { ok: false, error: COLOCATED_DEV_SYNC_SKIPPED_REASON },
+        422,
+      );
     }
     try {
-      await syncDevToDaemon(id, registry)
-      return c.json({ ok: true, daemonId: id })
+      await syncDevToDaemon(id, registry, packager);
+      return c.json({ ok: true, daemonId: id });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = err instanceof Error ? err.message : String(err);
       // Managed target daemon has no source checkout — report as skipped, not
       // failed, so operators aren't shown a spurious error for a valid install.
       if (isManagedDaemonDevSyncRefusal(message)) {
@@ -254,20 +295,25 @@ export function registerDevSyncRoutes<E extends Env>(
           daemonId: id,
           skipped: true,
           error: MANAGED_DAEMON_DEV_SYNC_SKIPPED_REASON,
-        })
+        });
       }
-      const status = message === 'daemon not connected' ? 404 : 500
-      return c.json({ ok: false, error: message }, status)
+      const status = message === "daemon not connected" ? 404 : 500;
+      return c.json({ ok: false, error: message }, status);
     }
-  })
+  });
 
   app.post(`${DEVELOPER_API_PREFIX}/daemon/sync-dev`, async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
-    const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
-    const ids = await registry.listOnlineServerIds()
-    const colocatedIds = await resolveColocatedServerIdSet(db, registry, ids)
+    const registry = getDaemonCellRegistry(c);
+    if (!registry) {
+      return c.json(
+        { ok: false, error: "Daemon cell registry unavailable" },
+        503,
+      );
+    }
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    const ids = await registry.listOnlineServerIds();
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, ids);
     const skippedResults = ids
       .filter((serverId) => colocatedIds.has(serverId))
       .map((daemonId) => ({
@@ -275,16 +321,16 @@ export function registerDevSyncRoutes<E extends Env>(
         ok: true as const,
         skipped: true as const,
         error: COLOCATED_DEV_SYNC_SKIPPED_REASON,
-      }))
+      }));
     const results = await Promise.all(
       ids
         .filter((serverId) => !colocatedIds.has(serverId))
         .map(async (serverId) => {
           try {
-            await syncDevToDaemon(serverId, registry)
-            return { daemonId: serverId, ok: true as const }
+            await syncDevToDaemon(serverId, registry, packager);
+            return { daemonId: serverId, ok: true as const };
           } catch (err) {
-            const message = err instanceof Error ? err.message : String(err)
+            const message = err instanceof Error ? err.message : String(err);
             // Managed target daemon has no source checkout — classify as skipped
             // so a mixed fleet does not fail the whole sync.
             if (isManagedDaemonDevSyncRefusal(message)) {
@@ -293,22 +339,22 @@ export function registerDevSyncRoutes<E extends Env>(
                 ok: true as const,
                 skipped: true as const,
                 error: MANAGED_DAEMON_DEV_SYNC_SKIPPED_REASON,
-              }
+              };
             }
             return {
               daemonId: serverId,
               ok: false as const,
               error: message,
-            }
+            };
           }
         }),
-    )
-    const allResults = [...skippedResults, ...results]
+    );
+    const allResults = [...skippedResults, ...results];
     return c.json({
       ok: allResults.every((r) => r.ok),
       results: allResults,
-    })
-  })
+    });
+  });
 
-  return app
+  return app;
 }
