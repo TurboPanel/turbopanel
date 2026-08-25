@@ -302,30 +302,31 @@ export default {
   },
 
   async scheduled(
-    _controller: ScheduledController,
+    controller: ScheduledController,
     env: CloudflareBindings,
     ctx: ExecutionContext,
   ) {
     initPromise ??= initWorkerApp(env)
     await initPromise
-    ctx.waitUntil(
-      runOfflineSweep(
-        env,
-        cachedSecretsConfig && cachedDataEncryptionSecrets
-          ? {
-            secretsConfig: cachedSecretsConfig,
-            dataEncryptionSecrets: cachedDataEncryptionSecrets,
-          }
-          : null,
-        {
-          // Hosted retention override, resolved at the entry point exactly like
-          // deno-server.ts does for the self-hosted path.
-          executionLogRetentionDays: parseExecutionLogRetentionDays(
-            env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS,
-          ),
-        },
-      ),
+    const sweep = runOfflineSweep(
+      env,
+      cachedSecretsConfig && cachedDataEncryptionSecrets
+        ? {
+          secretsConfig: cachedSecretsConfig,
+          dataEncryptionSecrets: cachedDataEncryptionSecrets,
+        }
+        : null,
+      {
+        // Hosted retention override, resolved at the entry point exactly like
+        // deno-server.ts does for the self-hosted path.
+        executionLogRetentionDays: parseExecutionLogRetentionDays(
+          env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS,
+        ),
+        scheduledTime: controller.scheduledTime,
+      },
     )
+    ctx.waitUntil(sweep)
+    await sweep
   },
 
   async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {

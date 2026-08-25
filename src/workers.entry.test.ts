@@ -15,6 +15,7 @@ import {
 } from './workers-bindings.ts'
 import workers, { resetWorkerAppCachesForTests } from './workers.ts'
 import { resetContainerLogStoreSelectionWarningsForTests } from './lib/container-logs/store-selection.ts'
+import { takeLastOfflineSweepScheduledTimeForTests } from './daemon/cell/offline-sweep.ts'
 
 function mockDb(label: string): Db {
   return {
@@ -217,11 +218,12 @@ describe('workers.ts entry handlers', () => {
     await Promise.all(ctx.waitUntilPromises)
   }, 30_000)
 
-  it('scheduled runs offline sweep waitUntil (no-db early return)', async () => {
+  it('scheduled awaits the offline sweep and forwards scheduledTime', async () => {
+    const scheduledTime = Date.parse('2026-01-01T00:15:00.000Z')
     const ctx = fakeExecutionContext()
     await workers.scheduled(
       {
-        scheduledTime: Date.now(),
+        scheduledTime,
         cron: '* * * * *',
         noRetry() {},
       },
@@ -229,7 +231,7 @@ describe('workers.ts entry handlers', () => {
       ctx,
     )
     expect(ctx.waitUntilPromises).toHaveLength(1)
-    await Promise.all(ctx.waitUntilPromises)
+    expect(takeLastOfflineSweepScheduledTimeForTests()).toBe(scheduledTime)
   }, 30_000)
 
   it('queue retries the batch when no DB client is available', async () => {

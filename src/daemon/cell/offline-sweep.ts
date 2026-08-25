@@ -40,9 +40,22 @@
  *
  * Detection latency: up to one cron interval (60s, Cloudflare's finest cron
  * granularity) plus `OFFLINE_SWEEP_STALE_MS` grace — worst case is close to
- * but a good deal cheaper than re-arming a DO alarm per server.
+ * but a good deal cheaper than re-arming a DO alarm per server. Overlap is
+ * serialized by a Postgres `setting` CAS lease (`OFFLINE_SWEEP_LOCK`); each
+ * tick is also bounded by `OFFLINE_SWEEP_TICK_BUDGET_MS`. Servers skipped
+ * when that deadline is reached — or when they sit past `MAX_SWEEP_FANOUT` —
+ * are picked up next tick by `rotateSweepBatch`. Do not "fix" truncation by
+ * raising `MAX_SWEEP_FANOUT`. The tick budget is a hard deadline: awaited
+ * phases race remaining time, and `OFFLINE_SWEEP_LOCK.expiresAt` covers the
+ * enforced live runtime so a still-running holder cannot be stolen.
  */
-import { type Db, endDbConnection } from "../../db.ts";
+import {
+  type Db,
+  DB_OP_TIMEOUT_MS,
+  endDbConnection,
+  raceWithTimeout,
+  runWithDbTimeout,
+} from "../../db.ts";
 import { resolveWorkersDb } from "../../workers-bindings.ts";
 import { runSystemReconcileSweep } from "../../client/system/reconcile.ts";
 import { runLeafRenewalSweepTick } from "../../client/tls/leaf-renewal-sweep.ts";
@@ -60,14 +73,14 @@ import {
   WEBHOOK_DELIVERY_SWEEP_LIMIT,
 } from "../../lib/db/webhook-delivery-records.ts";
 import {
-  resolveServerMetricsStore,
   type AnalyticsEngineDatasetLike,
+  resolveServerMetricsStore,
 } from "../metrics/store-selection.ts";
 import { setServerStatusEventSink } from "../metrics/status-events.ts";
 import {
   parseExecutionLogRetentionDays,
-  resolveExecutionLogStore,
   type R2BucketLike,
+  resolveExecutionLogStore,
 } from "../../lib/execution-logs/store-selection.ts";
 import {
   EXECUTION_LOG_SWEEP_LIMIT,
@@ -93,9 +106,14 @@ import type {
 } from "./contracts.ts";
 import { resolveAnalyticsEngineSqlConfig } from "../metrics/store-selection.ts";
 import {
+  AE_LIVENESS_QUERY_TIMEOUT_MS,
   AE_LIVENESS_WINDOW_SECONDS,
   queryRecentlyActiveServerIds,
 } from "../metrics/analytics-engine/sql-api.ts";
+import {
+  endOfflineSweep,
+  tryBeginOfflineSweep,
+} from "./offline-sweep-lease.ts";
 
 /** Grace beyond the daemon's ~60s idle-ping cadence before declaring a server stale. */
 export const OFFLINE_SWEEP_STALE_MS = 90_000;
@@ -111,6 +129,51 @@ export const SELF_HEAL_SWEEP_BUDGET = MAX_SWEEP_FANOUT - CONNECTED_SWEEP_BUDGET;
 
 /** Bound in-flight liveness RPCs per tick instead of bursting the whole batch at once. */
 const FANOUT_CONCURRENCY = 25;
+
+/** Wall-clock budget for one cron tick, well under the 60 s cadence. */
+export const OFFLINE_SWEEP_TICK_BUDGET_MS = 45_000;
+
+/**
+ * Reserved slice so `demoteStale` / `healServers` always run on what was
+ * already probed — a probed-but-unwritten demotion is a lost minute of
+ * accuracy.
+ */
+export const DEMOTION_RESERVE_MS = 8_000;
+
+/** Hard deadline per `checkLiveness` DO RPC. */
+export const LIVENESS_RPC_TIMEOUT_MS = 5_000;
+
+/** Execution-log R2 retention runs on this minute-modulo divisor. */
+export const EXECUTION_LOG_SWEEP_MINUTE_DIVISOR = 15;
+
+export type SweepOnceStats = {
+  probed: number;
+  stale: number;
+  healed: number;
+};
+
+const EMPTY_SWEEP_STATS: SweepOnceStats = {
+  probed: 0,
+  stale: 0,
+  healed: 0,
+};
+
+let lastScheduledTimeForTests: number | undefined;
+
+/** Test helper — last `scheduledTime` forwarded into {@link runOfflineSweep}. */
+export function takeLastOfflineSweepScheduledTimeForTests():
+  | number
+  | undefined {
+  const value = lastScheduledTimeForTests;
+  lastScheduledTimeForTests = undefined;
+  return value;
+}
+
+/** True on every Nth UTC minute (isolate-independent, no stored state). */
+export function shouldSweepExecutionLogs(scheduledTimeMs: number): boolean {
+  const minute = Math.floor(scheduledTimeMs / 60_000);
+  return minute % EXECUTION_LOG_SWEEP_MINUTE_DIVISOR === 0;
+}
 
 /** Format a trace field without relying on Object's default `[object Object]`. */
 function formatSweepTraceValue(value: unknown): string {
@@ -149,10 +212,12 @@ async function withBoundedConcurrency<T>(
   items: T[],
   limit: number,
   fn: (item: T) => Promise<void>,
+  shouldStop?: () => boolean,
 ): Promise<void> {
   let cursor = 0;
   async function worker(): Promise<void> {
     for (;;) {
+      if (shouldStop?.()) return;
       const index = cursor++;
       if (index >= items.length) return;
       await fn(items[index]);
@@ -171,7 +236,9 @@ type SweepCandidate = {
 
 /**
  * Grace bookkeeping for connected sockets whose auto-response timestamp is
- * still null — bounded in-memory state only (never DO SQLite).
+ * still null — bounded in-memory state only (never DO SQLite). Per-isolate:
+ * the durable `OFFLINE_SWEEP_LOCK` lease is what stops two isolates forming
+ * contradictory first-null observations in the same minute.
  */
 const firstNullObservedAtMs = new Map<string, number>();
 
@@ -286,6 +353,7 @@ async function resolveRecentlyActiveServerIds(
   try {
     return await queryRecentlyActiveServerIds(config, {
       sinceSeconds: AE_LIVENESS_WINDOW_SECONDS,
+      signal: AbortSignal.timeout(AE_LIVENESS_QUERY_TIMEOUT_MS),
     });
   } catch (err) {
     sweepTrace("ae-query-failed", {
@@ -315,53 +383,72 @@ export type SweepOnceDeps = {
     connectedAt?: string | null,
   ) => Promise<unknown>;
   onDisconnected?: (db: Db, serverId: string) => Promise<unknown>;
+  nowMs?: number;
+  /** Stop claiming new probe indices once this wall-clock instant is passed. */
+  deadlineMs?: number;
 };
 
 async function probeCandidates(
   batch: SweepCandidate[],
   registry: DaemonCellRegistry,
   nowMs: number,
-): Promise<{ staleIds: string[]; healIds: string[] }> {
+  probeDeadlineMs: number,
+): Promise<{ staleIds: string[]; healIds: string[]; probed: number }> {
   const staleIds: string[] = [];
   const healIds: string[] = [];
+  let probed = 0;
 
-  await withBoundedConcurrency(batch, FANOUT_CONCURRENCY, async (candidate) => {
-    let liveness: DaemonCellLiveness | null = null;
-    try {
-      // Half-open reaping still runs inside `/rpc/liveness` (`#reapUnhealthySockets`)
-      // for the suspects we still wake; the absolute max-age backstop moves
-      // daemon-side in a later phase.
-      liveness = (await registry.getCell(candidate.id).checkLiveness?.()) ??
-        null;
-    } catch (err) {
-      sweepTrace("liveness-check-failed", {
-        serverId: candidate.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-
-    updateNullGraceBookkeeping(candidate.id, liveness, nowMs);
-
-    if (candidate.postgresConnected) {
-      if (isStale(candidate.id, liveness, nowMs, candidate.connectedAt)) {
-        staleIds.push(candidate.id);
+  await withBoundedConcurrency(
+    batch,
+    FANOUT_CONCURRENCY,
+    async (candidate) => {
+      let liveness: DaemonCellLiveness | null = null;
+      try {
+        probed += 1;
+        // Half-open reaping still runs inside `/rpc/liveness` (`#reapUnhealthySockets`)
+        // for the suspects we still wake; the absolute max-age backstop moves
+        // daemon-side in a later phase.
+        const cell = registry.getCell(candidate.id);
+        const check = cell.checkLiveness;
+        liveness = check
+          ? await raceWithTimeout(
+            check.call(cell),
+            LIVENESS_RPC_TIMEOUT_MS,
+            `liveness RPC exceeded ${LIVENESS_RPC_TIMEOUT_MS}ms`,
+          )
+          : null;
+      } catch (err) {
+        sweepTrace("liveness-check-failed", {
+          serverId: candidate.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
       }
-      return;
-    }
 
-    if (isLiveAndWarm(liveness, nowMs)) {
-      healIds.push(candidate.id);
-    }
-  });
+      updateNullGraceBookkeeping(candidate.id, liveness, nowMs);
 
-  return { staleIds, healIds };
+      if (candidate.postgresConnected) {
+        if (isStale(candidate.id, liveness, nowMs, candidate.connectedAt)) {
+          staleIds.push(candidate.id);
+        }
+        return;
+      }
+
+      if (isLiveAndWarm(liveness, nowMs)) {
+        healIds.push(candidate.id);
+      }
+    },
+    () => Date.now() >= probeDeadlineMs,
+  );
+
+  return { staleIds, healIds, probed };
 }
 
 async function demoteStale(
   db: Db,
   staleIds: string[],
   onDisconnected: (db: Db, serverId: string) => Promise<unknown>,
+  deadlineMs: number,
 ): Promise<void> {
   if (staleIds.length === 0) return;
 
@@ -381,6 +468,7 @@ async function demoteStale(
         });
       }
     },
+    () => Date.now() >= deadlineMs,
   );
 }
 
@@ -393,6 +481,7 @@ async function healServers(
     serverId: string,
     cell: DaemonCell,
   ) => Promise<unknown>,
+  deadlineMs: number,
 ): Promise<void> {
   if (healIds.length === 0) return;
 
@@ -412,6 +501,7 @@ async function healServers(
         });
       }
     },
+    () => Date.now() >= deadlineMs,
   );
 }
 
@@ -424,6 +514,7 @@ async function healServersFromEvidence(
     serverId: string,
     connectedAt?: string | null,
   ) => Promise<unknown>,
+  deadlineMs: number,
 ): Promise<void> {
   if (candidates.length === 0) return;
 
@@ -442,6 +533,7 @@ async function healServersFromEvidence(
         });
       }
     },
+    () => Date.now() >= deadlineMs,
   );
 }
 
@@ -449,22 +541,75 @@ type SweepResolvedDeps = Required<
   Pick<
     SweepOnceDeps,
     | "registry"
-    | "listConnected"
-    | "listRecentlyOffline"
     | "onConnected"
     | "onConnectedFromEvidence"
     | "onDisconnected"
   >
 >;
 
+/** Shared tick inputs for the AE-short-circuit and fallback sweep paths. */
+type SweepOnceContext = {
+  db: Db;
+  deps: SweepResolvedDeps;
+  connected: ConnectedServerForSweep[];
+  recentlyOffline: RecentlyOfflineServerForSweep[];
+  nowMs: number;
+  deadlineMs: number;
+  probeDeadlineMs: number;
+};
+
+function remainingMs(deadlineMs: number, nowMs = Date.now()): number {
+  if (!Number.isFinite(deadlineMs)) return Number.POSITIVE_INFINITY;
+  return deadlineMs - nowMs;
+}
+
+/**
+ * Run one awaited phase against the tick deadline. Timed-out or already-due
+ * phases log `budget-exhausted` and return false so callers skip later work.
+ */
+async function runBoundedPhase(
+  deadlineMs: number,
+  phase: string,
+  work: () => Promise<void>,
+): Promise<boolean> {
+  const left = remainingMs(deadlineMs);
+  if (left <= 0) {
+    sweepTrace("budget-exhausted", { phase });
+    return false;
+  }
+  try {
+    if (!Number.isFinite(left)) {
+      await work();
+      return true;
+    }
+    await raceWithTimeout(
+      work(),
+      left,
+      `offline-sweep ${phase} exceeded remaining budget`,
+    );
+    return true;
+  } catch (err) {
+    sweepTrace("budget-exhausted", {
+      phase,
+      error: sweepErrorMessage(err),
+    });
+    return false;
+  }
+}
+
 /** Fallback path: today's check-all behavior (AE unavailable / query failed). */
 async function sweepOnceFallback(
-  db: Db,
-  deps: SweepResolvedDeps,
-  nowMs: number,
-): Promise<void> {
-  const connected = await deps.listConnected(db);
-  const recentlyOffline = await deps.listRecentlyOffline(db);
+  ctx: SweepOnceContext,
+): Promise<SweepOnceStats> {
+  const {
+    db,
+    deps,
+    connected,
+    recentlyOffline,
+    nowMs,
+    deadlineMs,
+    probeDeadlineMs,
+  } = ctx;
   const connectedBatch = rotateSweepBatch(
     connected,
     CONNECTED_SWEEP_BUDGET,
@@ -476,7 +621,7 @@ async function sweepOnceFallback(
     nowMs,
   );
   const candidates = mergeSweepCandidates(connectedBatch, selfHealBatch);
-  if (candidates.length === 0) return;
+  if (candidates.length === 0) return { ...EMPTY_SWEEP_STATS };
 
   const totalCandidates = connected.length + recentlyOffline.length;
   const truncated = totalCandidates > candidates.length;
@@ -491,27 +636,49 @@ async function sweepOnceFallback(
     });
   }
 
-  const { staleIds, healIds } = await probeCandidates(
+  const { staleIds, healIds, probed } = await probeCandidates(
     candidates,
     deps.registry,
     nowMs,
+    probeDeadlineMs,
   );
 
-  await demoteStale(db, staleIds, deps.onDisconnected);
+  if (
+    !await runBoundedPhase(
+      deadlineMs,
+      "demote",
+      () => demoteStale(db, staleIds, deps.onDisconnected, deadlineMs),
+    )
+  ) {
+    return { probed, stale: staleIds.length, healed: 0 };
+  }
   pruneNullGraceBookkeeping(new Set(candidates.map((c) => c.id)));
-  await healServers(db, healIds, deps.registry, deps.onConnected);
+  if (
+    !await runBoundedPhase(
+      deadlineMs,
+      "heal",
+      () => healServers(db, healIds, deps.registry, deps.onConnected, deadlineMs),
+    )
+  ) {
+    return { probed, stale: staleIds.length, healed: 0 };
+  }
+  return { probed, stale: staleIds.length, healed: healIds.length };
 }
 
 /** AE-active path: skip DO wakes for hosts with a recent metrics sample. */
 async function sweepOnceWithAe(
-  db: Db,
+  ctx: SweepOnceContext,
   activeById: Map<string, number>,
-  deps: SweepResolvedDeps,
-  nowMs: number,
-): Promise<void> {
-  const connected = await deps.listConnected(db);
-  const recentlyOffline = await deps.listRecentlyOffline(db);
-
+): Promise<SweepOnceStats> {
+  const {
+    db,
+    deps,
+    connected,
+    recentlyOffline,
+    nowMs,
+    deadlineMs,
+    probeDeadlineMs,
+  } = ctx;
   const suspects = connected.filter((c) => !activeById.has(c.id));
   const suspectBatch = rotateSweepBatch(
     suspects,
@@ -544,36 +711,81 @@ async function sweepOnceWithAe(
   });
 
   const probeBatch = mergeSweepCandidates(suspectBatch, selfHealBatch);
-  const { staleIds, healIds } = probeBatch.length > 0
-    ? await probeCandidates(probeBatch, deps.registry, nowMs)
-    : { staleIds: [] as string[], healIds: [] as string[] };
+  const { staleIds, healIds, probed } = probeBatch.length > 0
+    ? await probeCandidates(
+      probeBatch,
+      deps.registry,
+      nowMs,
+      probeDeadlineMs,
+    )
+    : { staleIds: [] as string[], healIds: [] as string[], probed: 0 };
 
-  await demoteStale(db, staleIds, deps.onDisconnected);
+  if (
+    !await runBoundedPhase(
+      deadlineMs,
+      "demote",
+      () => demoteStale(db, staleIds, deps.onDisconnected, deadlineMs),
+    )
+  ) {
+    return { probed, stale: staleIds.length, healed: 0 };
+  }
   pruneNullGraceBookkeeping(new Set(probeBatch.map((c) => c.id)));
 
   // AE-direct heal stays separate from probed heals — must not call
   // registry.getCell() / getSnapshot().
-  await healServersFromEvidence(
-    db,
-    directHeal,
-    deps.onConnectedFromEvidence,
-  );
-  await healServers(db, healIds, deps.registry, deps.onConnected);
+  if (
+    !await runBoundedPhase(
+      deadlineMs,
+      "heal-direct",
+      () =>
+        healServersFromEvidence(
+          db,
+          directHeal,
+          deps.onConnectedFromEvidence,
+          deadlineMs,
+        ),
+    )
+  ) {
+    return { probed, stale: staleIds.length, healed: 0 };
+  }
+  if (
+    !await runBoundedPhase(
+      deadlineMs,
+      "heal",
+      () => healServers(db, healIds, deps.registry, deps.onConnected, deadlineMs),
+    )
+  ) {
+    return {
+      probed,
+      stale: staleIds.length,
+      healed: directHeal.length,
+    };
+  }
+  return {
+    probed,
+    stale: staleIds.length,
+    healed: healIds.length + directHeal.length,
+  };
 }
 
 export async function sweepOnce(
   env: CloudflareBindings,
   db: Db,
   deps: SweepOnceDeps = {},
-): Promise<void> {
-  const nowMs = Date.now();
+): Promise<SweepOnceStats> {
+  const nowMs = deps.nowMs ?? Date.now();
+  const probeDeadlineMs = deps.deadlineMs === undefined
+    ? Number.POSITIVE_INFINITY
+    : deps.deadlineMs - DEMOTION_RESERVE_MS;
   const registry = deps.registry ??
     createDurableObjectDaemonCellRegistry(env, db);
   const resolveActiveServerIds = deps.resolveActiveServerIds ??
     (() => resolveRecentlyActiveServerIds(env));
-  const listConnected = deps.listConnected ?? listConnectedServersForSweep;
+  const listConnected = deps.listConnected ??
+    ((listDb: Db) => runWithDbTimeout(listDb, listConnectedServersForSweep));
   const listRecentlyOffline = deps.listRecentlyOffline ??
-    listRecentlyOfflineServersForSweep;
+    ((listDb: Db) =>
+      runWithDbTimeout(listDb, listRecentlyOfflineServersForSweep));
   const onConnected = deps.onConnected ?? onDaemonConnected;
   const onConnectedFromEvidence = deps.onConnectedFromEvidence ??
     onDaemonConnectedFromEvidence;
@@ -585,12 +797,17 @@ export async function sweepOnce(
 
   const resolvedDeps: SweepResolvedDeps = {
     registry,
-    listConnected,
-    listRecentlyOffline,
     onConnected,
     onConnectedFromEvidence,
     onDisconnected,
   };
+
+  const connected = await listConnected(db);
+  const recentlyOffline = await listRecentlyOffline(db);
+  if (connected.length === 0 && recentlyOffline.length === 0) {
+    sweepTrace("no-candidates");
+    return { ...EMPTY_SWEEP_STATS };
+  }
 
   let activeById: Map<string, number> | null;
   try {
@@ -601,12 +818,20 @@ export async function sweepOnce(
     });
     activeById = null;
   }
+  const ctx: SweepOnceContext = {
+    db,
+    deps: resolvedDeps,
+    connected,
+    recentlyOffline,
+    nowMs,
+    deadlineMs: deps.deadlineMs ?? Number.POSITIVE_INFINITY,
+    probeDeadlineMs,
+  };
   if (activeById === null) {
-    await sweepOnceFallback(db, resolvedDeps, nowMs);
-    return;
+    return await sweepOnceFallback(ctx);
   }
 
-  await sweepOnceWithAe(db, activeById, resolvedDeps, nowMs);
+  return await sweepOnceWithAe(ctx, activeById);
 }
 
 type CronTlsRenewal = {
@@ -621,11 +846,13 @@ function sweepErrorMessage(err: unknown): string {
 async function sweepOnceSafely(
   env: CloudflareBindings,
   db: Db,
-): Promise<void> {
+  deps: SweepOnceDeps = {},
+): Promise<SweepOnceStats> {
   try {
-    await sweepOnce(env, db);
+    return await sweepOnce(env, db, deps);
   } catch (err) {
     sweepTrace("sweep-failed", { error: sweepErrorMessage(err) });
+    return { ...EMPTY_SWEEP_STATS };
   }
 }
 
@@ -671,7 +898,9 @@ export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
  * Rides this cron's already-open db and is isolated the same way, so a failure
  * here never aborts the other sweeps.
  */
-export async function sweepExpiredWebhookDeliveriesSafely(db: Db): Promise<void> {
+export async function sweepExpiredWebhookDeliveriesSafely(
+  db: Db,
+): Promise<void> {
   try {
     const deleted = await sweepExpiredWebhookDeliveries(db, {
       limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
@@ -731,12 +960,178 @@ async function runQueuedCronSweeps(
   }
 }
 
+function capDbTimeout(deadlineMs: number): number {
+  const left = remainingMs(deadlineMs);
+  if (!Number.isFinite(left)) return DB_OP_TIMEOUT_MS;
+  return Math.max(1, Math.min(DB_OP_TIMEOUT_MS, left));
+}
+
+function optionalPhaseNames(scheduledTime: number | undefined): string[] {
+  const names = ["command-dispatch", "webhook-deliveries"];
+  if (
+    scheduledTime !== undefined && shouldSweepExecutionLogs(scheduledTime)
+  ) {
+    names.push("execution-logs");
+  }
+  names.push("reconcile");
+  return names;
+}
+
+function markSkippedFrom(
+  phasesSkipped: string[],
+  phase: string,
+  scheduledTime: number | undefined,
+): void {
+  const rest = optionalPhaseNames(scheduledTime);
+  const index = rest.indexOf(phase);
+  phasesSkipped.push(...(index === -1 ? rest : rest.slice(index)));
+}
+
+function skipFromPhase(
+  phasesSkipped: string[],
+  phase: string,
+  scheduledTime: number | undefined,
+): void {
+  sweepTrace("budget-exhausted", { phase });
+  markSkippedFrom(phasesSkipped, phase, scheduledTime);
+}
+
+/**
+ * Run one optional cron phase against the remaining tick deadline. On timeout
+ * or a missed deadline, later phases are skipped rather than started.
+ */
+async function runOptionalPhase(
+  deadlineMs: number,
+  phase: string,
+  scheduledTime: number | undefined,
+  phasesSkipped: string[],
+  work: () => Promise<void>,
+): Promise<boolean> {
+  const left = remainingMs(deadlineMs);
+  if (left <= 0) {
+    skipFromPhase(phasesSkipped, phase, scheduledTime);
+    return false;
+  }
+  try {
+    if (!Number.isFinite(left)) {
+      await work();
+      return true;
+    }
+    await raceWithTimeout(
+      work(),
+      left,
+      `offline-sweep ${phase} exceeded remaining budget`,
+    );
+    return true;
+  } catch (err) {
+    sweepTrace("budget-exhausted", {
+      phase,
+      error: sweepErrorMessage(err),
+    });
+    markSkippedFrom(phasesSkipped, phase, scheduledTime);
+    return false;
+  }
+}
+
+async function runOptionalCronPhases(
+  env: CloudflareBindings,
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined,
+  opts: RunOfflineSweepOpts,
+  deadlineMs: number,
+  phasesSkipped: string[],
+): Promise<void> {
+  if (
+    !await runOptionalPhase(
+      deadlineMs,
+      "command-dispatch",
+      opts.scheduledTime,
+      phasesSkipped,
+      () =>
+        runWithDbTimeout(
+          db,
+          sweepExpiredCommandDispatchSafely,
+          capDbTimeout(deadlineMs),
+        ),
+    )
+  ) {
+    return;
+  }
+
+  if (
+    !await runOptionalPhase(
+      deadlineMs,
+      "webhook-deliveries",
+      opts.scheduledTime,
+      phasesSkipped,
+      () =>
+        runWithDbTimeout(
+          db,
+          sweepExpiredWebhookDeliveriesSafely,
+          capDbTimeout(deadlineMs),
+        ),
+    )
+  ) {
+    return;
+  }
+
+  if (
+    opts.scheduledTime !== undefined &&
+    shouldSweepExecutionLogs(opts.scheduledTime)
+  ) {
+    if (
+      !await runOptionalPhase(
+        deadlineMs,
+        "execution-logs",
+        opts.scheduledTime,
+        phasesSkipped,
+        () =>
+          sweepExpiredExecutionLogsSafely(
+            resolveExecutionLogStore({
+              runtime: "workers",
+              r2: (env as { EXECUTION_LOGS?: R2BucketLike }).EXECUTION_LOGS,
+            }),
+            opts.executionLogRetentionDays ??
+              parseExecutionLogRetentionDays(
+                env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS,
+              ),
+          ),
+      )
+    ) {
+      return;
+    }
+  }
+
+  const commandQueue = env.TURBOPANEL_COMMAND_QUEUE;
+  if (!commandQueue) return;
+  await runOptionalPhase(
+    deadlineMs,
+    "reconcile",
+    opts.scheduledTime,
+    phasesSkipped,
+    () => runQueuedCronSweeps(db, commandQueue, tlsRenewal),
+  );
+}
+
+export type RunOfflineSweepOpts = {
+  executionLogRetentionDays?: number;
+  scheduledTime?: number;
+  nowMs?: number;
+  deadlineMs?: number;
+  /** Test seam: skip `resolveWorkersDb`. */
+  db?: Db;
+  /** Test seam: inject `sweepOnce` deps (registry, list, AE resolver). */
+  sweepOnceDeps?: SweepOnceDeps;
+};
+
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */
 export async function runOfflineSweep(
   env: CloudflareBindings,
   tlsRenewal?: CronTlsRenewal | null,
-  opts: { executionLogRetentionDays?: number } = {},
+  opts: RunOfflineSweepOpts = {},
 ): Promise<void> {
+  lastScheduledTimeForTests = opts.scheduledTime;
+
   // Cron-only isolate never ran `initWorkerApp` — register a write-only AE
   // sink so demotions / self-heal emit status rows (no SQL config needed).
   setServerStatusEventSink(
@@ -750,42 +1145,77 @@ export async function runOfflineSweep(
   // Fresh per-invocation Hyperdrive client (Workers cannot reuse a DB socket
   // across requests/cron invocations). Always end it — leaving postgres.js
   // pools open stacks memory until the isolate hits the 128 MB limit.
-  const db = resolveWorkersDb(env);
+  const db = opts.db ?? resolveWorkersDb(env);
   if (!db) return;
 
+  const startedAtMs = opts.nowMs ?? Date.now();
+  const deadlineMs = opts.deadlineMs ??
+    (startedAtMs + OFFLINE_SWEEP_TICK_BUDGET_MS);
+  const phasesSkipped: string[] = [];
+  let stats: SweepOnceStats = { ...EMPTY_SWEEP_STATS };
+
   try {
-    await sweepOnceSafely(env, db);
-
-    // Expired failure-retention dispatch payloads — same already-open db.
-    await sweepExpiredCommandDispatchSafely(db);
-
-    // Webhook delivery ids past their replay-protection window — same db.
-    await sweepExpiredWebhookDeliveriesSafely(db);
-
-    // Command transcripts past retention — object-store only, no db needed,
-    // but bounded per tick the same way so cleanup never dominates the sweep.
-    await sweepExpiredExecutionLogsSafely(
-      resolveExecutionLogStore({
-        runtime: "workers",
-        r2: (env as { EXECUTION_LOGS?: R2BucketLike }).EXECUTION_LOGS,
-      }),
-      opts.executionLogRetentionDays ??
-        parseExecutionLogRetentionDays(
-          env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS,
-        ),
-    );
-
-    // System-reconcile drift sweep reuses this cron's already-open db — never
-    // open a second Hyperdrive client per tick. Skip when the queue binding
-    // is absent.
-    if (env.TURBOPANEL_COMMAND_QUEUE) {
-      await runQueuedCronSweeps(
+    let lock = null;
+    try {
+      lock = await runWithDbTimeout(
         db,
-        env.TURBOPANEL_COMMAND_QUEUE,
-        tlsRenewal,
+        (leaseDb) =>
+          tryBeginOfflineSweep(leaseDb, startedAtMs, {
+            heldUntilMs: deadlineMs + DB_OP_TIMEOUT_MS,
+          }),
+        capDbTimeout(deadlineMs),
       );
+    } catch (err) {
+      sweepTrace("lease-acquire-failed", { error: sweepErrorMessage(err) });
+      return;
+    }
+    if (!lock) {
+      sweepTrace("skipped-lease-held");
+      return;
+    }
+
+    try {
+      const ranLiveness = await runBoundedPhase(
+        deadlineMs,
+        "liveness",
+        async () => {
+          stats = await sweepOnceSafely(env, db, {
+            ...opts.sweepOnceDeps,
+            nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
+            deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,
+          });
+        },
+      );
+      if (!ranLiveness) {
+        markSkippedFrom(phasesSkipped, "command-dispatch", opts.scheduledTime);
+      } else {
+        await runOptionalCronPhases(
+          env,
+          db,
+          tlsRenewal,
+          opts,
+          deadlineMs,
+          phasesSkipped,
+        );
+      }
+    } finally {
+      try {
+        await runWithDbTimeout(
+          db,
+          (leaseDb) => endOfflineSweep(leaseDb, lock),
+        );
+      } catch (err) {
+        sweepTrace("lease-release-failed", { error: sweepErrorMessage(err) });
+      }
     }
   } finally {
     await endDbConnection(db).catch(() => {});
+    sweepTrace("tick-complete", {
+      durationMs: Date.now() - startedAtMs,
+      probed: stats.probed,
+      stale: stats.stale,
+      healed: stats.healed,
+      phasesSkipped,
+    });
   }
 }

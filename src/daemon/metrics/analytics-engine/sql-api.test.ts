@@ -402,6 +402,28 @@ it("queryRecentlyActiveServerIds: maps enveloped rows to serverId → latestAtMs
   assertEquals(byId.get(idB), Date.parse("2026-01-01T00:59:00Z"));
 });
 
+it("queryRecentlyActiveServerIds: forwards AbortSignal to fetch", async () => {
+  const controller = new AbortController();
+  let seen: AbortSignal | undefined;
+  await queryRecentlyActiveServerIds(
+    {
+      accountId: "acct123",
+      apiToken: "token-xyz",
+      fetch: (_url, init) => {
+        seen = init?.signal ?? undefined;
+        return Promise.resolve(
+          new Response(envelopedSqlResponse([]), { status: 200 }),
+        );
+      },
+    },
+    {
+      sinceSeconds: AE_LIVENESS_WINDOW_SECONDS,
+      signal: controller.signal,
+    },
+  );
+  assertEquals(seen, controller.signal);
+});
+
 it("parseCloudflareV4SqlResponse: reads result.data from v4 envelope", () => {
   const parsed = parseCloudflareV4SqlResponse({
     success: true,

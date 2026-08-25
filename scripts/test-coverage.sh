@@ -259,6 +259,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/cell/location.test.ts \
   src/daemon/cell/snapshot-merge.test.ts \
   src/daemon/cell/offline-sweep.test.ts \
+  src/daemon/cell/deno-maintenance.test.ts \
   src/daemon/cell/postgres-projection.test.ts \
   src/daemon/cell/inbound-outcome.hostfree.test.ts \
   src/daemon/cell/protocol.test.ts \

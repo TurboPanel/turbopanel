@@ -71,6 +71,9 @@ export const AE_DEFAULT_BUCKET_SECONDS = 300;
  */
 export const AE_LIVENESS_WINDOW_SECONDS = 180;
 
+/** Hard deadline for the offline-sweep AE liveness SQL read. */
+export const AE_LIVENESS_QUERY_TIMEOUT_MS = 5_000;
+
 /**
  * Schema versions this read path understands (positional semantics must match).
  * Derived from the wire contract — do not hardcode version literals in SQL.
@@ -91,6 +94,8 @@ export type AnalyticsEngineSqlConfig = {
   maxRangeSeconds?: number;
   /** Injected for tests. */
   fetch?: typeof fetch;
+  /** Cancels the SQL subrequest rather than abandoning it. */
+  signal?: AbortSignal;
 };
 
 /** SQL payload nested under the Cloudflare v4 `result` field. */
@@ -746,13 +751,16 @@ function unwrapAeSqlSuccessResult(
  */
 export async function queryRecentlyActiveServerIds(
   config: AnalyticsEngineSqlConfig,
-  opts: { sinceSeconds: number },
+  opts: { sinceSeconds: number; signal?: AbortSignal },
 ): Promise<Map<string, number>> {
   const sql = buildRecentlyActiveServerIdsSql({
     sinceSeconds: opts.sinceSeconds,
     dataset: config.dataset,
   });
-  const result = await executeSql(config, sql);
+  const result = await executeSql(
+    opts.signal ? { ...config, signal: opts.signal } : config,
+    sql,
+  );
   const byId = new Map<string, number>();
   for (const row of result.data) {
     const id = parseAeServerId(row.server_id);
@@ -830,6 +838,7 @@ async function executeSql(
       "Content-Type": "text/plain",
     },
     body: sql,
+    signal: config.signal,
   });
   if (!response.ok) {
     const body = await response.text();

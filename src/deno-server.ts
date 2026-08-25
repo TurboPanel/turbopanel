@@ -14,6 +14,7 @@ import { createDenoDb, endDbConnection, type Db } from './db.ts'
 import { logInfo, logWarn } from './logger.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from './daemon/cell/control-plane-monitor.ts'
+import { createDenoMaintenanceScheduler } from './daemon/cell/deno-maintenance.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -437,39 +438,57 @@ export async function startDenoServer(
   // stale presence at DAEMON_OFFLINE_SWEEP_MS; Redis uses this timer-driven
   // maintain() + sweepStalePresence loop. Workers is disconnect-first (no periodic
   // DO stale-sweep alarm) — see DaemonCellObject alarm-path comments in do.ts.
-  const maintenanceTimer = setInterval(() => {
-    void daemonCellRegistry.maintain().catch((err) => {
-      logWarn('daemon-cell', `maintenance error: ${String(err)}`)
-    })
-    void sweepStalePresence(db, daemonCellRegistry).catch((err) => {
-      logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
-    })
-    // Workers parity (offline-sweep cron): bounded cleanup of expired
-    // `dispatch` failure-retention payloads on the process-long db.
-    void sweepExpiredCommandDispatch(db, {
-      limit: COMMAND_DISPATCH_SWEEP_LIMIT,
-    }).catch((err) => {
-      logWarn('daemon-cell', `command dispatch sweep error: ${String(err)}`)
-    })
-    // Workers parity (offline-sweep cron): drop webhook delivery ids past the
-    // replay-protection retention window.
-    void sweepExpiredWebhookDeliveries(db, {
-      limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
-    }).catch((err) => {
-      logWarn('daemon-cell', `webhook delivery sweep error: ${String(err)}`)
-    })
-    // Workers parity (offline-sweep cron): bounded removal of command
-    // transcripts past retention. Object/filesystem only — no db involved.
-    void executionLogStore
-      .sweepExpired({
-        retentionDays: executionLogRetentionDays,
-        limit: EXECUTION_LOG_SWEEP_LIMIT,
-      })
-      .catch((err) => {
+  // Liveness and cleanup use separate in-flight flags so a hung dispatch /
+  // webhook / execution-log / reconcile sweep cannot suppress stale-presence.
+  const maintenance = createDenoMaintenanceScheduler({
+    async runLiveness() {
+      try {
+        await daemonCellRegistry.maintain()
+      } catch (err) {
+        logWarn('daemon-cell', `maintenance error: ${String(err)}`)
+      }
+      try {
+        await sweepStalePresence(db, daemonCellRegistry)
+      } catch (err) {
+        logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
+      }
+    },
+    async runCleanup() {
+      // Workers parity (offline-sweep cron): bounded cleanup of expired
+      // `dispatch` failure-retention payloads on the process-long db.
+      try {
+        await sweepExpiredCommandDispatch(db, {
+          limit: COMMAND_DISPATCH_SWEEP_LIMIT,
+        })
+      } catch (err) {
+        logWarn('daemon-cell', `command dispatch sweep error: ${String(err)}`)
+      }
+      // Workers parity (offline-sweep cron): drop webhook delivery ids past the
+      // replay-protection retention window.
+      try {
+        await sweepExpiredWebhookDeliveries(db, {
+          limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
+        })
+      } catch (err) {
+        logWarn('daemon-cell', `webhook delivery sweep error: ${String(err)}`)
+      }
+      // Workers parity (offline-sweep cron): bounded removal of command
+      // transcripts past retention. Object/filesystem only — no db involved.
+      try {
+        await executionLogStore.sweepExpired({
+          retentionDays: executionLogRetentionDays,
+          limit: EXECUTION_LOG_SWEEP_LIMIT,
+        })
+      } catch (err) {
         logWarn('daemon-cell', `execution log sweep error: ${String(err)}`)
-      })
-    runSystemReconcileSweepTick()
-  }, DAEMON_CELL_MAINTAIN_MS)
+      }
+      runSystemReconcileSweepTick()
+    },
+  })
+  const maintenanceTimer = setInterval(
+    () => maintenance.tick(),
+    DAEMON_CELL_MAINTAIN_MS,
+  )
 
   // First Deno-side scheduled surface besides cell maintain: Organization CA
   // leaf renewal. Fresh createDenoDb() per tick, always endDbConnection in

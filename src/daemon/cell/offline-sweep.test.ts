@@ -19,11 +19,18 @@ import {
   isStale,
   OFFLINE_SWEEP_STALE_MS,
   resetOfflineSweepNullGraceForTests,
+  runOfflineSweep,
   SELF_HEAL_SWEEP_BUDGET,
+  shouldSweepExecutionLogs,
   sweepExpiredCommandDispatchSafely,
   sweepOnce,
   updateNullGraceBookkeeping,
 } from "./offline-sweep.ts";
+import {
+  endOfflineSweep,
+  OFFLINE_SWEEP_LEASE_MS,
+  tryBeginOfflineSweep,
+} from "./offline-sweep-lease.ts";
 import type { Db } from "../../db.ts";
 import { COMMAND_DISPATCH_SWEEP_LIMIT } from "../../lib/db/command-records.ts";
 
@@ -520,4 +527,286 @@ it("dispatch-expiry sweep failures stay isolated from the rest of the tick", asy
 
   // Resolves instead of throwing — the cron's other sweeps must still run.
   await sweepExpiredCommandDispatchSafely(db);
+});
+
+type SweepLockValue = {
+  owner: string;
+  expiresAt: string;
+};
+
+function applySweepLockUpdate(
+  lock: { current: SweepLockValue | null },
+  row: { value: SweepLockValue },
+): Promise<{ key: string }[]> {
+  if (lock.current === null) return Promise.resolve([]);
+  const expires = Date.parse(lock.current.expiresAt);
+  const expired = !Number.isFinite(expires) || expires <= Date.now();
+  const stealable = lock.current.owner.length === 0 || expired;
+  const sameOwner = row.value.owner === lock.current.owner;
+  const releasing = row.value.owner.length === 0;
+  if (!stealable && !sameOwner && !releasing) {
+    return Promise.resolve([]);
+  }
+  lock.current = row.value;
+  return Promise.resolve([{ key: "OFFLINE_SWEEP_LOCK" }]);
+}
+
+function thenableRows(rows: Promise<{ key: string }[]>) {
+  return Object.assign(rows, { returning: () => rows });
+}
+
+function createOfflineSweepLockMemoryDb(initial?: SweepLockValue): Db {
+  const lock = { current: initial ?? null };
+
+  return {
+    insert: () => ({
+      values: (row: { key: string; value: SweepLockValue }) => ({
+        onConflictDoNothing: () => ({
+          returning: () => {
+            if (lock.current !== null) return Promise.resolve([]);
+            lock.current = row.value;
+            return Promise.resolve([{ key: row.key }]);
+          },
+        }),
+      }),
+    }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve(lock.current ? [{ value: lock.current }] : []),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (row: { value: SweepLockValue }) => ({
+        where: () => thenableRows(applySweepLockUpdate(lock, row)),
+      }),
+    }),
+    delete: () => ({
+      where: () => ({
+        returning: () => Promise.resolve([]),
+      }),
+    }),
+    $client: { end: () => Promise.resolve() },
+  } as unknown as Db;
+}
+
+it("shouldSweepExecutionLogs is true on every 15th UTC minute", () => {
+  assertEquals(
+    shouldSweepExecutionLogs(Date.parse("2026-01-01T00:00:00.000Z")),
+    true,
+  );
+  assertEquals(
+    shouldSweepExecutionLogs(Date.parse("2026-01-01T00:15:00.000Z")),
+    true,
+  );
+  assertEquals(
+    shouldSweepExecutionLogs(Date.parse("2026-01-01T00:01:00.000Z")),
+    false,
+  );
+});
+
+it("second tick skips while the offline-sweep lease is held", async () => {
+  const db = createOfflineSweepLockMemoryDb();
+  const first = await tryBeginOfflineSweep(db);
+  assertEquals(first !== null, true);
+  assertEquals(await tryBeginOfflineSweep(db), null);
+
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await runOfflineSweep(inertEnv(), null, { db });
+  } finally {
+    console.info = originalInfo;
+  }
+  assertEquals(
+    traces.some((line) => line.includes("event=skipped-lease-held")),
+    true,
+  );
+  await endOfflineSweep(db, first!);
+  assertEquals((await tryBeginOfflineSweep(db)) !== null, true);
+});
+
+it("offline-sweep lease is released when a phase throws", async () => {
+  const db = createOfflineSweepLockMemoryDb();
+  await runOfflineSweep(inertEnv(), null, {
+    db,
+    sweepOnceDeps: {
+      listConnected: () => {
+        throw new Error("phase boom");
+      },
+      listRecentlyOffline: () => Promise.resolve([]),
+      resolveActiveServerIds: () => Promise.resolve(new Map()),
+      onDisconnected: () => Promise.resolve(),
+      onConnected: () => Promise.resolve(),
+    },
+  });
+  assertEquals((await tryBeginOfflineSweep(db)) !== null, true);
+});
+
+it("expired offline-sweep lease is stealable", async () => {
+  const db = createOfflineSweepLockMemoryDb({
+    owner: "expired-owner",
+    expiresAt: new Date(Date.now() - 1).toISOString(),
+  });
+  const stolen = await tryBeginOfflineSweep(db);
+  assertEquals(stolen !== null, true);
+  assertEquals(await tryBeginOfflineSweep(db), null);
+});
+
+it(
+  "second tick skips while a stalled optional phase still holds the lease past TTL",
+  async () => {
+    const startedAt = Date.now();
+    let hangStarted = false;
+    let resolveHang: (rows: { commandId: string }[]) => void = () => {};
+    const hang = new Promise<{ commandId: string }[]>((resolve) => {
+      resolveHang = resolve;
+    });
+    const db = createOfflineSweepLockMemoryDb();
+    const hangingDb = {
+      ...db,
+      delete: () => {
+        hangStarted = true;
+        return {
+          where: () => ({
+            returning: () => hang,
+          }),
+        };
+      },
+    } as unknown as Db;
+
+    const first = runOfflineSweep(inertEnv(), null, {
+      db: hangingDb,
+      nowMs: startedAt,
+      deadlineMs: startedAt + OFFLINE_SWEEP_LEASE_MS + 30_000,
+      sweepOnceDeps: {
+        listConnected: () => Promise.resolve([]),
+        listRecentlyOffline: () => Promise.resolve([]),
+        resolveActiveServerIds: () => Promise.resolve(new Map()),
+        onDisconnected: () => Promise.resolve(),
+        onConnected: () => Promise.resolve(),
+      },
+    });
+
+    try {
+      const waitUntil = startedAt + 2_000;
+      while (!hangStarted && Date.now() < waitUntil) {
+        await Promise.resolve();
+      }
+      assertEquals(hangStarted, true);
+
+      const traces: string[] = [];
+      const originalInfo = console.info;
+      console.info = (...args: unknown[]) => {
+        traces.push(args.map(String).join(" "));
+      };
+      try {
+        await runOfflineSweep(inertEnv(), null, {
+          db: hangingDb,
+          nowMs: startedAt + OFFLINE_SWEEP_LEASE_MS + 1,
+        });
+      } finally {
+        console.info = originalInfo;
+      }
+      assertEquals(
+        traces.some((line) => line.includes("event=skipped-lease-held")),
+        true,
+      );
+    } finally {
+      resolveHang([]);
+      await first;
+    }
+  },
+);
+
+it("probe stops at the deadline; the next tick's rotation covers the remainder", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const idC = "cccccccc-dddd-4eee-8fff-000000000000";
+  const cellA = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+  const cellB = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+  const cellC = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+  const cells = new Map([
+    [ID_A, cellA],
+    [ID_B, cellB],
+    [idC, cellC],
+  ]);
+  const connected = [
+    { id: ID_A, connectedAt: new Date().toISOString() },
+    { id: ID_B, connectedAt: new Date().toISOString() },
+    { id: idC, connectedAt: new Date().toISOString() },
+  ];
+  const registry = createFakeRegistry(cells);
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry,
+    nowMs: 1_700_000_000_000,
+    deadlineMs: 0,
+    resolveActiveServerIds: () => Promise.resolve(null),
+    listConnected: () => Promise.resolve(connected),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.resolve(),
+  });
+  assertEquals(cellA.checkLivenessCalls, 0);
+  assertEquals(cellB.checkLivenessCalls, 0);
+  assertEquals(cellC.checkLivenessCalls, 0);
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry,
+    nowMs: 1_700_000_000_000 + 60_000,
+    deadlineMs: Date.now() + 60_000,
+    resolveActiveServerIds: () => Promise.resolve(null),
+    listConnected: () => Promise.resolve(connected),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.resolve(),
+  });
+  assertEquals(cellA.checkLivenessCalls, 1);
+  assertEquals(cellB.checkLivenessCalls, 1);
+  assertEquals(cellC.checkLivenessCalls, 1);
+});
+
+it("sweepOnce: AE timeout takes the fallback path", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+  const cells = new Map([[ID_A, cell]]);
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(cells),
+    resolveActiveServerIds: () =>
+      Promise.reject(
+        new DOMException("The operation was aborted.", "TimeoutError"),
+      ),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.resolve(),
+  });
+
+  assertEquals(cell.checkLivenessCalls, 1);
+});
+
+it("sweepOnce: empty candidate lists return before the AE resolver", async () => {
+  resetOfflineSweepNullGraceForTests();
+  let aeCalled = false;
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(new Map()),
+    resolveActiveServerIds: () => {
+      aeCalled = true;
+      return Promise.resolve(new Map());
+    },
+    listConnected: () => Promise.resolve([]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.resolve(),
+  });
+
+  assertEquals(aeCalled, false);
 });
