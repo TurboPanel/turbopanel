@@ -12,17 +12,12 @@ import { environment, fabric, location, mount, project, server, service, storage
 import { listServerLabelsForServers } from '../db/label-records.ts'
 import { listEnvironmentTasks } from '../db/task-records.ts'
 import {
-  assertComposeDocument,
   mergeComposeLayers,
   type ComposeDocument,
-  type ComposeLayer,
 } from '../compose/index.ts'
 import { parseProjectOptions } from '../project-options.ts'
 import { parseServiceOptions, resolveServiceInstances } from '../service-options.ts'
-import {
-  environmentComposeFilename,
-  PROJECT_COMPOSE_FILENAME,
-} from '../../client/environments/deploy-layers.ts'
+import { environmentComposeFilename } from '../../client/environments/deploy-layers.ts'
 import { interpretServiceSchedule } from './interpret.ts'
 import { reconcileServicesFromCompose } from '../../client/environments/reconcile-services.ts'
 import { registerComposeVolumes } from '../../client/environments/register-compose-volumes.ts'

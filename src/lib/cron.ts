@@ -126,42 +126,49 @@ function readFieldValue(
   return value
 }
 
-function parseFieldItem(
+/** The `/N` suffix, bounded by the field's own range. */
+function parseStepSuffix(
   raw: string,
+  stepRaw: string,
   spec: FieldSpec,
+): CronParseResult<number> {
+  if (!/^\d{1,3}$/.test(stepRaw) || Number(stepRaw) < 1) {
+    return fail(`"${raw}" has an invalid step for the ${spec.label}`)
+  }
+  const step = Number(stepRaw)
+  if (step > spec.max - spec.min + 1) {
+    return fail(
+      `"${raw}" steps by more than the whole ${spec.label} range`,
+    )
+  }
+  return { ok: true, value: step }
+}
+
+/** `*` or `*` with a step: the item spans the whole field. */
+function wholeFieldItem(
+  spec: FieldSpec,
+  step: number | undefined,
 ): CronParseResult<FieldItem> {
-  const [body, stepRaw, ...extra] = raw.split('/')
-  if (extra.length > 0 || body === undefined) {
-    return fail(`"${raw}" is not a valid ${spec.label}`)
+  if (step === undefined) return { ok: true, value: { kind: 'all' } }
+  return {
+    ok: true,
+    value: {
+      kind: 'step',
+      from: spec.min,
+      to: spec.max,
+      step,
+      wholeField: true,
+    },
   }
+}
 
-  let step: number | undefined
-  if (stepRaw !== undefined) {
-    if (!/^\d{1,3}$/.test(stepRaw) || Number(stepRaw) < 1) {
-      return fail(`"${raw}" has an invalid step for the ${spec.label}`)
-    }
-    step = Number(stepRaw)
-    if (step > spec.max - spec.min + 1) {
-      return fail(
-        `"${raw}" steps by more than the whole ${spec.label} range`,
-      )
-    }
-  }
-
-  if (body.trim() === '*') {
-    if (step === undefined) return { ok: true, value: { kind: 'all' } }
-    return {
-      ok: true,
-      value: {
-        kind: 'step',
-        from: spec.min,
-        to: spec.max,
-        step,
-        wholeField: true,
-      },
-    }
-  }
-
+/** `5`, `5-9`, `5/10`, `5-9/2` — an item anchored at a real value. */
+function parseAnchoredItem(
+  raw: string,
+  body: string,
+  spec: FieldSpec,
+  step: number | undefined,
+): CronParseResult<FieldItem> {
   const [fromRaw, toRaw, ...rest] = body.split('-')
   if (rest.length > 0 || fromRaw === undefined) {
     return fail(`"${raw}" is not a valid ${spec.label}`)
@@ -192,6 +199,26 @@ function parseFieldItem(
   }
   if (step === undefined) return { ok: true, value: { kind: 'range', from, to } }
   return { ok: true, value: { kind: 'step', from, to, step, wholeField: false } }
+}
+
+function parseFieldItem(
+  raw: string,
+  spec: FieldSpec,
+): CronParseResult<FieldItem> {
+  const [body, stepRaw, ...extra] = raw.split('/')
+  if (extra.length > 0 || body === undefined) {
+    return fail(`"${raw}" is not a valid ${spec.label}`)
+  }
+
+  let step: number | undefined
+  if (stepRaw !== undefined) {
+    const parsed = parseStepSuffix(raw, stepRaw, spec)
+    if (!parsed.ok) return parsed
+    step = parsed.value
+  }
+
+  if (body.trim() === '*') return wholeFieldItem(spec, step)
+  return parseAnchoredItem(raw, body, spec, step)
 }
 
 function parseField(
@@ -281,29 +308,34 @@ function renderWeekdayField(
  * Seconds are always `00`: cron has no sub-minute resolution, and emitting `*`
  * there would turn every job into a per-second timer.
  */
-export function cronToOnCalendar(input: unknown): CronParseResult<string> {
-  if (typeof input !== 'string') return fail('a schedule must be text')
-  const trimmed = input.trim()
-  if (trimmed.length === 0) return fail('a schedule is required')
-  if (trimmed.length > 200) return fail('that schedule is too long to be one')
-
-  if (trimmed.startsWith('@')) {
-    const alias = CRON_ALIASES[trimmed.toLowerCase()]
-    if (alias === undefined) {
-      if (trimmed.toLowerCase() === '@reboot') {
-        return fail(
-          '`@reboot` is not a schedule a timer can express. Use a real time, or run the work from the service itself on start.',
-        )
-      }
-      return fail(
-        `unknown shorthand "${trimmed}" — supported: ${
-          Object.keys(CRON_ALIASES).join(', ')
-        }`,
-      )
-    }
-    return cronToOnCalendar(alias)
+/** `@daily` and friends, expanded to the five-field expression they stand for. */
+function expandCronAlias(trimmed: string): CronParseResult<string> {
+  const lowered = trimmed.toLowerCase()
+  const alias = CRON_ALIASES[lowered]
+  if (alias !== undefined) return { ok: true, value: alias }
+  if (lowered === '@reboot') {
+    return fail(
+      '`@reboot` is not a schedule a timer can express. Use a real time, or run the work from the service itself on start.',
+    )
   }
+  return fail(
+    `unknown shorthand "${trimmed}" — supported: ${
+      Object.keys(CRON_ALIASES).join(', ')
+    }`,
+  )
+}
 
+/** The five cron fields, parsed, in cron order. */
+type CronFields = {
+  minute: FieldItem[]
+  hour: FieldItem[]
+  dom: FieldItem[]
+  month: FieldItem[]
+  dow: FieldItem[]
+}
+
+/** All five fields, or the first one that did not parse. */
+function parseCronFields(trimmed: string): CronParseResult<CronFields> {
   const fields = trimmed.split(/\s+/)
   if (fields.length !== 5) {
     return fail(
@@ -329,24 +361,47 @@ export function cronToOnCalendar(input: unknown): CronParseResult<string> {
   const dow = parseField(dowRaw, DAY_OF_WEEK)
   if (!dow.ok) return dow
 
+  return {
+    ok: true,
+    value: {
+      minute: minute.value,
+      hour: hour.value,
+      dom: dom.value,
+      month: month.value,
+      dow: dow.value,
+    },
+  }
+}
+
+export function cronToOnCalendar(input: unknown): CronParseResult<string> {
+  if (typeof input !== 'string') return fail('a schedule must be text')
+  const trimmed = input.trim()
+  if (trimmed.length === 0) return fail('a schedule is required')
+  if (trimmed.length > 200) return fail('that schedule is too long to be one')
+
+  if (trimmed.startsWith('@')) {
+    const alias = expandCronAlias(trimmed)
+    return alias.ok ? cronToOnCalendar(alias.value) : alias
+  }
+
+  const parsed = parseCronFields(trimmed)
+  if (!parsed.ok) return parsed
+  const { minute, hour, dom, month, dow } = parsed.value
+
   // The whole reason this module rejects rather than approximates. See the file
   // header: cron unions these two fields, systemd intersects them, and no
   // `OnCalendar` string expresses the union.
-  if (isRestricted(dom.value) && isRestricted(dow.value)) {
+  if (isRestricted(dom) && isRestricted(dow)) {
     return fail(
       'cron runs a job when the day-of-month **or** the day-of-week matches; a systemd timer needs both to match. Restrict one field and leave the other as "*", or split this into two jobs.',
     )
   }
 
-  const weekday = renderWeekdayField(dow.value)
+  const weekday = renderWeekdayField(dow)
   if (!weekday.ok) return weekday
 
-  const date = `*-${renderNumericField(month.value)}-${
-    renderNumericField(dom.value)
-  }`
-  const time = `${renderNumericField(hour.value)}:${
-    renderNumericField(minute.value)
-  }:00`
+  const date = `*-${renderNumericField(month)}-${renderNumericField(dom)}`
+  const time = `${renderNumericField(hour)}:${renderNumericField(minute)}:00`
   const prefix = weekday.value.length > 0 ? `${weekday.value} ` : ''
   return { ok: true, value: `${prefix}${date} ${time}` }
 }

@@ -25,6 +25,7 @@
 import { ClickHouseHttpClient } from '../../../daemon/metrics/clickhouse/client.ts'
 import type { ClickHouseHttpClientOptions } from '../../../daemon/metrics/clickhouse/client.ts'
 import {
+  containerLogRowText,
   resolveContainerLogQueryLimit,
   truncateContainerLogMessage,
   type ContainerLogEvent,
@@ -231,14 +232,14 @@ export function buildContainerLogRow(event: ContainerLogEvent): Record<string, u
 /** Parse one `JSONEachRow` row back into the storage-agnostic contract shape. */
 export function parseContainerLogRow(row: Record<string, unknown>): ContainerLogEvent {
   return {
-    timestamp: fromClickHouseDateTime64(String(row.timestamp ?? '')),
-    organizationId: String(row.organization_id ?? ''),
-    serverId: String(row.server_id ?? ''),
-    environmentId: row.environment_id == null ? null : String(row.environment_id),
-    serviceId: row.service_id == null ? null : String(row.service_id),
-    containerId: String(row.container_id ?? ''),
+    timestamp: fromClickHouseDateTime64(containerLogRowText(row.timestamp)),
+    organizationId: containerLogRowText(row.organization_id),
+    serverId: containerLogRowText(row.server_id),
+    environmentId: row.environment_id == null ? null : containerLogRowText(row.environment_id),
+    serviceId: row.service_id == null ? null : containerLogRowText(row.service_id),
+    containerId: containerLogRowText(row.container_id),
     stream: row.stream === 'stderr' ? 'stderr' : 'stdout',
-    message: String(row.message ?? ''),
+    message: containerLogRowText(row.message),
   }
 }
 

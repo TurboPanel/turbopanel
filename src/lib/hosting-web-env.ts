@@ -10,7 +10,6 @@ import type { Db } from '../db.ts'
 import {
   HOSTING_WEB_ENV_KEY_RE,
   parseHostingOptions,
-  type HostingPhpOptions,
   type HostingWebOptions,
 } from './hosting-options.ts'
 import type {

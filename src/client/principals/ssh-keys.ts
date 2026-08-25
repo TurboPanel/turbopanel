@@ -85,17 +85,18 @@ export async function loadSshKeysByPrincipalIds(
   const byPrincipal = new Map<string, string[]>(
     principalIds.map((id) => [id, []]),
   )
-  if (principalIds.length === 0) return byPrincipal
-  const rows = await tx
-    .select({
-      principalId: principalSshKey.principalId,
-      publicKey: principalSshKey.publicKey,
-    })
-    .from(principalSshKey)
-    .where(inArray(principalSshKey.principalId, [...principalIds]))
+  if (principalIds.length > 0) {
+    const rows = await tx
+      .select({
+        principalId: principalSshKey.principalId,
+        publicKey: principalSshKey.publicKey,
+      })
+      .from(principalSshKey)
+      .where(inArray(principalSshKey.principalId, [...principalIds]))
 
-  for (const row of rows) {
-    byPrincipal.get(row.principalId)?.push(row.publicKey)
+    for (const row of rows) {
+      byPrincipal.get(row.principalId)?.push(row.publicKey)
+    }
   }
   return byPrincipal
 }

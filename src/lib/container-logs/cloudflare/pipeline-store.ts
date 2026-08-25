@@ -51,6 +51,7 @@
  */
 
 import {
+  containerLogRowText,
   resolveContainerLogQueryLimit,
   truncateContainerLogMessage,
   type ContainerLogEvent,
@@ -178,7 +179,7 @@ export class PipelinesIcebergContainerLogStore implements ContainerLogStore {
     const lastRow = rows.at(-1)
     const nextCursor =
       events.length >= limit && lastRow
-        ? encodeContainerLogCursor(events.at(-1)!.timestamp, String(lastRow.row_id ?? ''))
+        ? encodeContainerLogCursor(events.at(-1)!.timestamp, containerLogRowText(lastRow.row_id))
         : null
     return { events, nextCursor }
   }
@@ -214,14 +215,14 @@ export function buildContainerLogIcebergRow(
 /** Parse one R2 SQL row back into the storage-agnostic contract shape. */
 export function parseContainerLogIcebergRow(row: Record<string, unknown>): ContainerLogEvent {
   return {
-    timestamp: normalizeIsoTimestamp(String(row.timestamp ?? '')),
-    organizationId: String(row.organization_id ?? ''),
-    serverId: String(row.server_id ?? ''),
-    environmentId: row.environment_id == null ? null : String(row.environment_id),
-    serviceId: row.service_id == null ? null : String(row.service_id),
-    containerId: String(row.container_id ?? ''),
+    timestamp: normalizeIsoTimestamp(containerLogRowText(row.timestamp)),
+    organizationId: containerLogRowText(row.organization_id),
+    serverId: containerLogRowText(row.server_id),
+    environmentId: row.environment_id == null ? null : containerLogRowText(row.environment_id),
+    serviceId: row.service_id == null ? null : containerLogRowText(row.service_id),
+    containerId: containerLogRowText(row.container_id),
     stream: row.stream === 'stderr' ? 'stderr' : 'stdout',
-    message: String(row.message ?? ''),
+    message: containerLogRowText(row.message),
   }
 }
 

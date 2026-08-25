@@ -4,12 +4,12 @@ import {
   type ComposeValidateOptions,
   type ComposeValidationIssue,
 } from '../../lib/compose/index.ts'
-import { parseComposeSourceInput } from '../../lib/project-options.ts'
-import { isPlacementServerId } from '../../lib/compose/placement.ts'
 import {
+  parseComposeSourceInput,
   parseContainerNamingInput,
   parseDefaultServerIdInput,
 } from '../../lib/project-options.ts'
+import { isPlacementServerId } from '../../lib/compose/placement.ts'
 import {
   parseDescription,
   parseName,
@@ -214,6 +214,47 @@ export function parseCreateProjectServerIdField(
   return { ok: true, serverId: body.serverId }
 }
 
+/**
+ * Normalize `composeSource` in place. Rejects rather than drops: losing the
+ * provenance of a project's compose is not something the operator can notice
+ * or recover from.
+ */
+function normalizeComposeSourceOption(
+  options: Record<string, unknown>,
+  validateOptions?: ComposeValidateOptions,
+): ProjectRouteValidationError | null {
+  if (!('composeSource' in options)) return null
+  const parsed = parseComposeSourceInput(
+    options.composeSource,
+    validateOptions?.knownSourceIds,
+  )
+  if (!parsed.ok) return { ok: false, error: parsed.reason, status: 400 }
+  if (parsed.value === null) delete options.composeSource
+  else options.composeSource = parsed.value
+  return null
+}
+
+function normalizeContainerNamingOption(
+  options: Record<string, unknown>,
+): ProjectRouteValidationError | null {
+  if (!('containerNaming' in options)) return null
+  const naming = parseContainerNamingInput(options.containerNaming)
+  if (!naming.ok) return { ok: false, error: 'Invalid request', status: 400 }
+  options.containerNaming = naming.value
+  return null
+}
+
+function normalizeDefaultServerIdOption(
+  options: Record<string, unknown>,
+): ProjectRouteValidationError | null {
+  if (!('defaultServerId' in options)) return null
+  const parsed = parseDefaultServerIdInput(options.defaultServerId)
+  if (!parsed.ok) return { ok: false, error: 'Invalid request', status: 400 }
+  if (parsed.value === null) delete options.defaultServerId
+  else options.defaultServerId = parsed.value
+  return null
+}
+
 export function normalizeProjectPatchOptions(
   optionsResult: Record<string, unknown>,
   validateOptions?: ComposeValidateOptions,
@@ -221,19 +262,12 @@ export function normalizeProjectPatchOptions(
   | { ok: true; options: Record<string, unknown> }
   | ProjectComposeValidationError
   | ProjectRouteValidationError {
-  // Reject rather than drop: losing the provenance of a project's compose is
-  // not something the operator can notice or recover from.
-  if ('composeSource' in optionsResult) {
-    const parsed = parseComposeSourceInput(
-      optionsResult.composeSource,
-      validateOptions?.knownSourceIds,
-    )
-    if (!parsed.ok) {
-      return { ok: false, error: parsed.reason, status: 400 }
-    }
-    if (parsed.value === null) delete optionsResult.composeSource
-    else optionsResult.composeSource = parsed.value
-  }
+  const composeSourceError = normalizeComposeSourceOption(
+    optionsResult,
+    validateOptions,
+  )
+  if (composeSourceError) return composeSourceError
+
   const composeOption = applyValidatedComposeOption(optionsResult, validateOptions)
   if (!composeOption.ok) {
     return {
@@ -244,25 +278,11 @@ export function normalizeProjectPatchOptions(
     }
   }
 
-  if ('containerNaming' in optionsResult) {
-    const naming = parseContainerNamingInput(optionsResult.containerNaming)
-    if (!naming.ok) {
-      return { ok: false, error: 'Invalid request', status: 400 }
-    }
-    optionsResult.containerNaming = naming.value
-  }
+  const namingError = normalizeContainerNamingOption(optionsResult)
+  if (namingError) return namingError
 
-  if ('defaultServerId' in optionsResult) {
-    const parsed = parseDefaultServerIdInput(optionsResult.defaultServerId)
-    if (!parsed.ok) {
-      return { ok: false, error: 'Invalid request', status: 400 }
-    }
-    if (parsed.value === null) {
-      delete optionsResult.defaultServerId
-    } else {
-      optionsResult.defaultServerId = parsed.value
-    }
-  }
+  const serverIdError = normalizeDefaultServerIdOption(optionsResult)
+  if (serverIdError) return serverIdError
 
   stripProjectComposePlacementOption(optionsResult)
   return { ok: true, options: optionsResult }

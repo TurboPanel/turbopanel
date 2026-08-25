@@ -445,6 +445,42 @@ function validateManagedLogsResultFields(
   return null;
 }
 
+/**
+ * The `files[]` array: per-entry shape and the cumulative content budget.
+ *
+ * The byte total is checked here as well as in the envelope validator: this
+ * runs on the raw frame, before anything is handed onward.
+ */
+function validateRepoReadFiles(value: unknown): string | null {
+  if (!Array.isArray(value)) return "invalid files";
+  if (value.length > MAX_DAEMON_WS_REPO_READ_PATHS) {
+    return "files exceed max entries";
+  }
+  let bytes = 0;
+  for (const file of value) {
+    if (typeof file !== "object" || file === null) return "invalid file entry";
+    const entry = file as Record<string, unknown>;
+    if (typeof entry.path !== "string") return "invalid file path";
+    if (typeof entry.found !== "boolean") return "invalid file found";
+    if (entry.content === undefined) continue;
+    if (typeof entry.content !== "string") return "invalid file content";
+    bytes += utf8ByteLength(entry.content);
+    if (bytes > MAX_DAEMON_WS_REPO_READ_BYTES) {
+      return "repo read exceeds max bytes";
+    }
+  }
+  return null;
+}
+
+/** The `entries[]` array — a listing, so only its size is bounded here. */
+function validateRepoReadEntries(value: unknown): string | null {
+  if (!Array.isArray(value)) return "invalid entries";
+  if (value.length > MAX_DAEMON_WS_REPO_READ_ENTRIES) {
+    return "entries exceed max";
+  }
+  return null;
+}
+
 function validateRepoReadResultFields(
   record: Record<string, unknown>,
 ): string | null {
@@ -452,32 +488,12 @@ function validateRepoReadResultFields(
   if (base) return base;
   if (typeof record.ok !== "boolean") return "invalid ok";
   if (record.files !== undefined) {
-    if (!Array.isArray(record.files)) return "invalid files";
-    if (record.files.length > MAX_DAEMON_WS_REPO_READ_PATHS) {
-      return "files exceed max entries";
-    }
-    let bytes = 0;
-    for (const file of record.files) {
-      if (typeof file !== "object" || file === null) return "invalid file entry";
-      const entry = file as Record<string, unknown>;
-      if (typeof entry.path !== "string") return "invalid file path";
-      if (typeof entry.found !== "boolean") return "invalid file found";
-      if (entry.content !== undefined) {
-        if (typeof entry.content !== "string") return "invalid file content";
-        bytes += utf8ByteLength(entry.content);
-        // Checked here as well as in the envelope validator: this runs on the
-        // raw frame, before anything is handed onward.
-        if (bytes > MAX_DAEMON_WS_REPO_READ_BYTES) {
-          return "repo read exceeds max bytes";
-        }
-      }
-    }
+    const issue = validateRepoReadFiles(record.files);
+    if (issue) return issue;
   }
   if (record.entries !== undefined) {
-    if (!Array.isArray(record.entries)) return "invalid entries";
-    if (record.entries.length > MAX_DAEMON_WS_REPO_READ_ENTRIES) {
-      return "entries exceed max";
-    }
+    const issue = validateRepoReadEntries(record.entries);
+    if (issue) return issue;
   }
   return null;
 }
@@ -1013,6 +1029,76 @@ export function wireMessageToInboundEnvelope(
   }
 }
 
+/** One envelope variant, addressed by its `kind`. */
+type OutboundEnvelopeOf<K extends DaemonOutboundEnvelope["kind"]> = Extract<
+  DaemonOutboundEnvelope,
+  { kind: K }
+>;
+
+/**
+ * The credential fields ride along only when the source has one — a `null` or
+ * an empty string would read as "clone anonymously", which is a different
+ * request.
+ */
+function repoReadRequestMessage(
+  env: OutboundEnvelopeOf<"repo-read-request">,
+): DaemonMessage {
+  return {
+    type: "repo-read-request",
+    id: env.requestId,
+    cloneUrl: env.cloneUrl,
+    ref: env.ref,
+    paths: env.paths.slice(0, MAX_DAEMON_WS_REPO_READ_PATHS),
+    ...(env.listPath === undefined ? {} : { listPath: env.listPath }),
+    maxBytesPerFile: env.maxBytesPerFile,
+    ...(env.credential === undefined ? {} : { credential: env.credential }),
+    ...(env.credentialKind === undefined
+      ? {}
+      : { credentialKind: env.credentialKind }),
+    ...(env.credentialUsername === undefined
+      ? {}
+      : { credentialUsername: env.credentialUsername }),
+    at: env.at,
+  };
+}
+
+/** One dev-sync envelope carries the phase; the wire has a type per phase. */
+function devSyncMessage(env: OutboundEnvelopeOf<"dev-sync">): DaemonMessage {
+  if (env.phase === "begin") {
+    return {
+      type: "dev-sync-begin",
+      id: env.requestId,
+      totalChunks: env.totalChunks,
+      totalBytes: env.totalBytes,
+      at: env.at,
+    };
+  }
+  if (env.phase === "chunk") {
+    return {
+      type: "dev-sync-chunk",
+      id: env.requestId,
+      index: env.index,
+      data: env.data,
+      at: env.at,
+    };
+  }
+  return { type: "dev-sync-end", id: env.requestId, at: env.at };
+}
+
+/** An absent field means "keep what you have", not "clear it". */
+function updateMessage(env: OutboundEnvelopeOf<"update">): DaemonMessage {
+  return {
+    type: "update",
+    id: env.requestId,
+    at: env.at,
+    ...(env.channel !== undefined ? { channel: env.channel } : {}),
+    ...(env.updateUrl !== undefined ? { updateUrl: env.updateUrl } : {}),
+    ...(env.updateSha256 !== undefined
+      ? { updateSha256: env.updateSha256 }
+      : {}),
+  };
+}
+
 export function outboundEnvelopeToWireMessage(
   env: DaemonOutboundEnvelope,
 ): DaemonMessage {
@@ -1028,23 +1114,7 @@ export function outboundEnvelopeToWireMessage(
         at: env.at,
       };
     case "repo-read-request":
-      return {
-        type: "repo-read-request",
-        id: env.requestId,
-        cloneUrl: env.cloneUrl,
-        ref: env.ref,
-        paths: env.paths.slice(0, MAX_DAEMON_WS_REPO_READ_PATHS),
-        ...(env.listPath === undefined ? {} : { listPath: env.listPath }),
-        maxBytesPerFile: env.maxBytesPerFile,
-        ...(env.credential === undefined ? {} : { credential: env.credential }),
-        ...(env.credentialKind === undefined
-          ? {}
-          : { credentialKind: env.credentialKind }),
-        ...(env.credentialUsername === undefined
-          ? {}
-          : { credentialUsername: env.credentialUsername }),
-        at: env.at,
-      };
+      return repoReadRequestMessage(env);
     case "fabric-paths-request":
       return {
         type: "fabric-paths-request",
@@ -1063,25 +1133,7 @@ export function outboundEnvelopeToWireMessage(
         at: env.at,
       };
     case "dev-sync":
-      if (env.phase === "begin") {
-        return {
-          type: "dev-sync-begin",
-          id: env.requestId,
-          totalChunks: env.totalChunks,
-          totalBytes: env.totalBytes,
-          at: env.at,
-        };
-      }
-      if (env.phase === "chunk") {
-        return {
-          type: "dev-sync-chunk",
-          id: env.requestId,
-          index: env.index,
-          data: env.data,
-          at: env.at,
-        };
-      }
-      return { type: "dev-sync-end", id: env.requestId, at: env.at };
+      return devSyncMessage(env);
     case "tunnel-token":
       return {
         type: "tunnel-token",
@@ -1097,16 +1149,7 @@ export function outboundEnvelopeToWireMessage(
         at: env.at,
       };
     case "update":
-      return {
-        type: "update",
-        id: env.requestId,
-        at: env.at,
-        ...(env.channel !== undefined ? { channel: env.channel } : {}),
-        ...(env.updateUrl !== undefined ? { updateUrl: env.updateUrl } : {}),
-        ...(env.updateSha256 !== undefined
-          ? { updateSha256: env.updateSha256 }
-          : {}),
-      };
+      return updateMessage(env);
     case "echo":
       return { type: "echo", payload: env.payload, at: env.at };
     case "command-dispatch":

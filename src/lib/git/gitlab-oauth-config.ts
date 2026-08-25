@@ -126,7 +126,7 @@ function trimOrNull(value: string | null | undefined): string | null {
 /** Strip a trailing slash so `${baseUrl}/api/v4/…` never doubles it. */
 function normalizeBaseUrl(value: string | null): string {
   if (!value) return GITLAB_DEFAULT_BASE_URL
-  const trimmed = value.trim().replace(/\/+$/, '')
+  const trimmed = value.trim().replace(/(?<!\/)\/+$/, '')
   if (trimmed.length === 0) return GITLAB_DEFAULT_BASE_URL
   try {
     const url = new URL(trimmed)

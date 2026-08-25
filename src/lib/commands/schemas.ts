@@ -388,7 +388,7 @@ export function parsePrincipalsReconcilePayload(
     throw new Error("Invalid principals reconcile payload");
   }
   if (!Array.isArray(value.principals)) {
-    throw new Error("principals must be an array");
+    throw new TypeError("principals must be an array");
   }
   // Reuses the deploy entry parser verbatim rather than defining a second
   // principal shape: the same account described by a deploy and by a reconcile
@@ -1585,29 +1585,12 @@ function parseDeployHostingPorts(
   return value.map(parseDeployHostingPortEntry);
 }
 
-function parseDeployHostingPhp(
-  value: unknown,
-): EnvironmentDeployHostingPhp | undefined {
-  if (!isRecord(value)) return undefined;
-  const php: EnvironmentDeployHostingPhp = {};
-  if (isString(value.version)) php.version = value.version;
-  for (const field of ["settings", "pool"] as const) {
-    const raw = value[field];
-    if (!isRecord(raw)) continue;
-    const kept: Record<string, string> = {};
-    for (const [key, entry] of Object.entries(raw)) {
-      if (isString(entry)) kept[key] = entry;
-    }
-    if (Object.keys(kept).length > 0) php[field] = kept;
-  }
-  if (Array.isArray(value.extensions)) {
-    const names = value.extensions.filter(isString);
-    if (names.length > 0) php.extensions = names;
-  }
-  return Object.keys(php).length > 0 ? php : undefined;
-}
-
-/** `Record<string, string>` env map, dropping non-string values. */
+/**
+ * `Record<string, string>` map, dropping non-string values.
+ *
+ * Serves both env maps and the php `settings` / `pool` blocks — the wire shape
+ * is the same, and so is the "drop what is not a string" rule.
+ */
 function parseEnvRecord(
   value: unknown,
 ): Record<string, string> | undefined {
@@ -1618,6 +1601,28 @@ function parseEnvRecord(
     env[key] = raw;
   }
   return Object.keys(env).length > 0 ? env : undefined;
+}
+
+/** A list of strings, dropping everything else; nothing when none survive. */
+function parseStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = value.filter(isString);
+  return names.length > 0 ? names : undefined;
+}
+
+function parseDeployHostingPhp(
+  value: unknown,
+): EnvironmentDeployHostingPhp | undefined {
+  if (!isRecord(value)) return undefined;
+  const php: EnvironmentDeployHostingPhp = {};
+  if (isString(value.version)) php.version = value.version;
+  for (const field of ["settings", "pool"] as const) {
+    const directives = parseEnvRecord(value[field]);
+    if (directives) php[field] = directives;
+  }
+  const extensions = parseStringList(value.extensions);
+  if (extensions) php.extensions = extensions;
+  return Object.keys(php).length > 0 ? php : undefined;
 }
 
 function parseDeployHostingWeb(
@@ -1937,6 +1942,60 @@ function parseOptionalPrincipalId(
   return value;
 }
 
+/** One optional principal path field, rejected outright when malformed. */
+function requirePrincipalPath(
+  value: unknown,
+  isValid: (path: string) => boolean,
+): string {
+  if (!isString(value) || !isValid(value)) {
+    throw new Error("Invalid environment.deploy payload");
+  }
+  return value;
+}
+
+/**
+ * Rejected, not dropped: this is a grant. Silently discarding a malformed
+ * list would revoke every entitlement the principal should have held.
+ */
+function parseDeployPrincipalRuntimes(
+  value: unknown,
+): { runtime: string; series: string }[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError("Invalid environment.deploy payload");
+  }
+  return value.map((raw) => {
+    if (
+      !isRecord(raw) || !isString(raw.runtime) || !isString(raw.series) ||
+      !RUNTIME_SERIES_RE.test(raw.series)
+    ) {
+      throw new Error("Invalid environment.deploy payload");
+    }
+    return { runtime: raw.runtime, series: raw.series };
+  });
+}
+
+/**
+ * A granted list where every entry must be valid — same reject-don't-drop rule
+ * as `runtimes`: dropping a malformed grant silently revokes the login or the
+ * access it describes.
+ */
+function requireGrantedTokens(
+  value: unknown,
+  isValid: (token: string) => boolean,
+): string[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError("Invalid environment.deploy payload");
+  }
+  const tokens: string[] = [];
+  for (const raw of value) {
+    if (!isString(raw) || !isValid(raw)) {
+      throw new Error("Invalid environment.deploy payload");
+    }
+    tokens.push(raw);
+  }
+  return tokens;
+}
+
 function parseDeployPrincipalMaterialEntry(
   entry: unknown,
 ): EnvironmentDeployPrincipalMaterial {
@@ -1957,54 +2016,31 @@ function parseDeployPrincipalMaterialEntry(
     ...(gid !== undefined ? { gid } : {}),
   };
   if (entry.home !== undefined) {
-    if (!isString(entry.home) || !isValidAbsolutePrincipalPath(entry.home)) {
-      throw new Error("Invalid environment.deploy payload");
-    }
-    material.home = entry.home;
+    material.home = requirePrincipalPath(
+      entry.home,
+      isValidAbsolutePrincipalPath,
+    );
   }
   if (entry.shell !== undefined) {
-    if (!isString(entry.shell) || !isValidPrincipalShellPath(entry.shell)) {
-      throw new Error("Invalid environment.deploy payload");
-    }
-    material.shell = entry.shell;
+    material.shell = requirePrincipalPath(
+      entry.shell,
+      isValidPrincipalShellPath,
+    );
   }
   if (entry.runtimes !== undefined) {
-    // Rejected, not dropped: this is a grant. Silently discarding a malformed
-    // list would revoke every entitlement the principal should have held.
-    if (!Array.isArray(entry.runtimes)) {
-      throw new Error("Invalid environment.deploy payload");
-    }
-    material.runtimes = entry.runtimes.map((raw) => {
-      if (
-        !isRecord(raw) || !isString(raw.runtime) || !isString(raw.series) ||
-        !RUNTIME_SERIES_RE.test(raw.series)
-      ) {
-        throw new Error("Invalid environment.deploy payload");
-      }
-      return { runtime: raw.runtime, series: raw.series };
-    });
+    material.runtimes = parseDeployPrincipalRuntimes(entry.runtimes);
   }
   if (entry.accessGroups !== undefined) {
-    // Rejected, not dropped, for the same reason `runtimes` is: dropping a
-    // malformed grant silently revokes the login it describes.
-    if (
-      !Array.isArray(entry.accessGroups) ||
-      !entry.accessGroups.every((raw) =>
-        isString(raw) && ACCESS_GROUP_RE.test(raw)
-      )
-    ) {
-      throw new Error("Invalid environment.deploy payload")
-    }
-    material.accessGroups = [...entry.accessGroups]
+    material.accessGroups = requireGrantedTokens(
+      entry.accessGroups,
+      (raw) => ACCESS_GROUP_RE.test(raw),
+    );
   }
   if (entry.sshKeys !== undefined) {
-    if (
-      !Array.isArray(entry.sshKeys) ||
-      !entry.sshKeys.every((raw) => isString(raw) && isCanonicalSshPublicKey(raw))
-    ) {
-      throw new Error("Invalid environment.deploy payload")
-    }
-    material.sshKeys = [...entry.sshKeys]
+    material.sshKeys = requireGrantedTokens(
+      entry.sshKeys,
+      isCanonicalSshPublicKey,
+    );
   }
   return material;
 }

@@ -134,3 +134,25 @@ export function truncateContainerLogMessage(message: string): string {
   while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--
   return new TextDecoder().decode(bytes.subarray(0, end))
 }
+
+/**
+ * Coerce one raw backend column to the contract's `string`.
+ *
+ * Both stores decode rows the wire layer types as `unknown`. A plain `String()`
+ * on an unexpected object would silently produce the literal `[object Object]`
+ * and store it as a real organization id or log line; anything that is not a
+ * JSON scalar is dropped to `''` instead so a malformed row reads as empty
+ * rather than as convincing garbage.
+ */
+export function containerLogRowText(value: unknown): string {
+  switch (typeof value) {
+    case 'string':
+      return value
+    case 'number':
+    case 'bigint':
+    case 'boolean':
+      return String(value)
+    default:
+      return ''
+  }
+}

@@ -35,7 +35,6 @@ import {
 } from "../../lib/compose/apply-variables.ts";
 import type { DeploySecretPlanEntry } from "../../lib/compose/secret-files.ts";
 import {
-  assertComposeDocument,
   type ComposeDocument,
   composeDocumentToRuntimeYaml,
   type ComposeLayer,
@@ -51,7 +50,6 @@ import {
 import type { ComposeServiceCronJob } from "../../lib/compose/service-kind.ts";
 import {
   environmentComposeFilename,
-  PROJECT_COMPOSE_FILENAME,
   renderRuntimeComposeFiles,
 } from "./deploy-layers.ts";
 import { stripReservedDeployVariableKeys } from "../../lib/compose/platform-variables.ts";
@@ -2691,6 +2689,68 @@ export async function prepareDeployCompose(
   });
 }
 
+/** Why one site could not be pinned to a principal. */
+export type SitePrincipalError = {
+  kind:
+    | "site_principal_ambiguous"
+    | "site_managed_directory_unowned"
+    | "site_cron_unowned";
+  composeServiceName: string;
+};
+
+/**
+ * One site, pinned to its sole assigned principal and rendered for the wire.
+ *
+ * The ownership refusals are caught here rather than at payload validation so
+ * the operator gets a sentence naming the service instead of a generic
+ * "Invalid sites entry" during enqueue.
+ */
+function prepareSiteForDeploy(
+  site: SiteSpec,
+  assignedIds: readonly string[],
+  principalById: ReadonlyMap<string, EnvironmentDeployPrincipalMaterial>,
+): { ok: true; site: EnvironmentDeploySite } | {
+  ok: false;
+  error: SitePrincipalError;
+} {
+  const fail = (kind: SitePrincipalError["kind"]) => ({
+    ok: false as const,
+    error: { kind, composeServiceName: site.composeServiceName },
+  });
+
+  const sole = pickSolePrincipalId(assignedIds);
+  if (sole.status === "ambiguous") return fail("site_principal_ambiguous");
+  const material = sole.status === "one"
+    ? principalById.get(sole.principalId)
+    : undefined;
+  const principalPin = material ? toSitePrincipal(material) : undefined;
+
+  // "A directory and a principal" needs both — falling back to the
+  // daemon-owned tree would serve fine and be unreachable over SFTP forever.
+  if (site.sourceKind === "managed-directory" && !principalPin) {
+    return fail("site_managed_directory_unowned");
+  }
+
+  // Compose carries what the operator authored; the wire carries what was
+  // validated and translated. Anything that fails its spec is dropped rather
+  // than escaped — the save-time linter is what tells them why.
+  const { php: authoredPhp, cron: authoredCron, ...rest } = site;
+  const php = renderPhpForDeploy(authoredPhp, ALLOWED_PHP_EXTENSIONS);
+  const cron = renderCronForDeploy(authoredCron);
+  // A timer with no `User=` runs as root; the wire refuses that.
+  if (cron.length > 0 && !principalPin) return fail("site_cron_unowned");
+
+  return {
+    ok: true,
+    site: {
+      ...rest,
+      ...(php ? { php } : {}),
+      ...(cron.length > 0 ? { cron } : {}),
+      ...(principalPin ? { principal: principalPin } : {}),
+    },
+  };
+}
+
 /**
  * Pin each site to at most one assigned project principal.
  * Multiple principals on the same service is ambiguous ownership → prepare error.
@@ -2701,16 +2761,7 @@ export async function attachPrincipalsToSites(
   serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>,
   principalMaterial: readonly EnvironmentDeployPrincipalMaterial[],
   sites: readonly SiteSpec[],
-): Promise<
-  | EnvironmentDeploySite[]
-  | {
-    kind:
-      | "site_principal_ambiguous"
-      | "site_managed_directory_unowned"
-      | "site_cron_unowned";
-    composeServiceName: string;
-  }
-> {
+): Promise<EnvironmentDeploySite[] | SitePrincipalError> {
   if (sites.length === 0) return [];
 
   const principalById = new Map(
@@ -2732,54 +2783,9 @@ export async function attachPrincipalsToSites(
     const assignedIds = serviceId
       ? (principalIdsByServiceId.get(serviceId) ?? [])
       : [];
-    const sole = pickSolePrincipalId(assignedIds);
-    if (sole.status === "ambiguous") {
-      return {
-        kind: "site_principal_ambiguous",
-        composeServiceName: site.composeServiceName,
-      };
-    }
-    const material = sole.status === "one"
-      ? principalById.get(sole.principalId)
-      : undefined;
-    const principalPin = material
-      ? toSitePrincipal(material)
-      : undefined;
-    // Compose carries the *authored* php block; the wire carries the validated,
-    // rendered one. Anything that fails its spec is dropped rather than
-    // escaped — the save-time linter is what tells the operator why.
-    // "A directory and a principal" needs both. Caught here rather than at
-    // payload validation so the operator gets a sentence naming the service
-    // instead of a generic "Invalid sites entry" during enqueue — and caught at
-    // all rather than falling back to the daemon-owned tree, which would serve
-    // fine and be unreachable over SFTP forever.
-    if (site.sourceKind === "managed-directory" && !principalPin) {
-      return {
-        kind: "site_managed_directory_unowned",
-        composeServiceName: site.composeServiceName,
-      };
-    }
-    // Compose carries what the operator authored; the wire carries what was
-    // validated and translated. Anything that fails its spec is dropped rather
-    // than escaped — the save-time linter is what tells them why.
-    const { php: authoredPhp, cron: authoredCron, ...rest } = site;
-    const php = renderPhpForDeploy(authoredPhp, ALLOWED_PHP_EXTENSIONS);
-    const cron = renderCronForDeploy(authoredCron);
-    // A timer with no `User=` runs as root; the wire refuses that, so catching
-    // it here turns an enqueue-time "Invalid sites entry" into a sentence
-    // naming the service.
-    if (cron.length > 0 && !principalPin) {
-      return {
-        kind: "site_cron_unowned",
-        composeServiceName: site.composeServiceName,
-      };
-    }
-    out.push({
-      ...rest,
-      ...(php ? { php } : {}),
-      ...(cron.length > 0 ? { cron } : {}),
-      ...(principalPin ? { principal: principalPin } : {}),
-    });
+    const prepared = prepareSiteForDeploy(site, assignedIds, principalById);
+    if (!prepared.ok) return prepared.error;
+    out.push(prepared.site);
   }
   return out;
 }

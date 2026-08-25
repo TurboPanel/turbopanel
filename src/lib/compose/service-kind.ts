@@ -451,6 +451,31 @@ export function parseServiceTurbopanelExtension(
  * dropped. The strict pass that produces operator-facing messages is
  * {@link validatePhpConsistency}, which runs at save time.
  */
+/** The deduped, canonical extension list, or nothing when none survive. */
+function parsePhpExtensionList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const names = value
+    .filter((name): name is string => typeof name === 'string')
+    .map((name) => name.trim().toLowerCase())
+    .filter((name) => PHP_EXTENSION_RE.test(name))
+  if (names.length === 0) return undefined
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b))
+}
+
+/** Scalar directives only — a nested mapping is not a php.ini value. */
+function parsePhpDirectiveMap(
+  value: unknown,
+): Record<string, string | number> | undefined {
+  if (!isPlainMapping(value)) return undefined
+  const kept: Record<string, string | number> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string' || typeof entry === 'number') {
+      kept[key] = entry
+    }
+  }
+  return Object.keys(kept).length > 0 ? kept : undefined
+}
+
 function parseServicePhpExtension(
   value: unknown,
 ): ComposeServicePhpExtension | null {
@@ -459,24 +484,12 @@ function parseServicePhpExtension(
   const version = readTrimmedString(value.version)
   if (version && PHP_VERSION_RE.test(version)) php.version = version
 
-  if (Array.isArray(value.extensions)) {
-    const names = value.extensions
-      .filter((name): name is string => typeof name === 'string')
-      .map((name) => name.trim().toLowerCase())
-      .filter((name) => PHP_EXTENSION_RE.test(name))
-    if (names.length > 0) php.extensions = [...new Set(names)].sort()
-  }
+  const extensions = parsePhpExtensionList(value.extensions)
+  if (extensions) php.extensions = extensions
 
   for (const field of ['settings', 'pool'] as const) {
-    const raw = value[field]
-    if (!isPlainMapping(raw)) continue
-    const kept: Record<string, string | number> = {}
-    for (const [key, entry] of Object.entries(raw)) {
-      if (typeof entry === 'string' || typeof entry === 'number') {
-        kept[key] = entry
-      }
-    }
-    if (Object.keys(kept).length > 0) php[field] = kept
+    const directives = parsePhpDirectiveMap(value[field])
+    if (directives) php[field] = directives
   }
 
   return Object.keys(php).length > 0 ? php : null
@@ -647,66 +660,108 @@ function validateRawSourceFieldTypes(
  * types `8.1` or `memory_limit: 256 MB` now gets a message in the editor
  * instead of a successful save followed by a deploy-time surprise.
  */
+/** A series like `8.4`, and one this platform actually installs. */
+function validatePhpVersion(
+  basePath: string,
+  rawVersion: unknown,
+): ServiceTurbopanelValidationIssue[] {
+  const version = typeof rawVersion === 'string' ? rawVersion.trim() : ''
+  if (!PHP_VERSION_RE.test(version)) {
+    return [{
+      path: `${basePath}.php.version`,
+      message: 'php.version must be a series like "8.4", not a patch version',
+    }]
+  }
+  if (!SUPPORTED_PHP_SERIES.includes(version)) {
+    return [{
+      path: `${basePath}.php.version`,
+      message: `PHP ${version} is not supported; supported: ${
+        SUPPORTED_PHP_SERIES.join(', ')
+      }`,
+    }]
+  }
+  return []
+}
+
+/** Every name is reported, not just the first: operators paste whole lists. */
+function validatePhpExtensions(
+  basePath: string,
+  rawExtensions: unknown,
+): ServiceTurbopanelValidationIssue[] {
+  if (!Array.isArray(rawExtensions)) {
+    return [{
+      path: `${basePath}.php.extensions`,
+      message: 'php.extensions must be a list of extension names',
+    }]
+  }
+  const issues: ServiceTurbopanelValidationIssue[] = []
+  for (const name of rawExtensions) {
+    const trimmed = typeof name === 'string' ? name.trim().toLowerCase() : ''
+    if (!ALLOWED_PHP_EXTENSIONS.includes(trimmed)) {
+      issues.push({
+        path: `${basePath}.php.extensions`,
+        message: `Unknown or disallowed PHP extension "${name}". Allowed: ${
+          ALLOWED_PHP_EXTENSIONS.join(', ')
+        }`,
+      })
+    }
+  }
+  return issues
+}
+
+/**
+ * One `php.settings` / `php.pool` mapping, checked key by key against the
+ * validator that owns that table — the same one the deploy path re-runs.
+ */
+function validatePhpDirectiveBlock(
+  basePath: string,
+  field: 'settings' | 'pool',
+  block: unknown,
+  validate: (key: string, value: unknown) => string | undefined,
+): ServiceTurbopanelValidationIssue[] {
+  if (!isPlainMapping(block)) {
+    return [{
+      path: `${basePath}.php.${field}`,
+      message: `php.${field} must be a mapping`,
+    }]
+  }
+  const issues: ServiceTurbopanelValidationIssue[] = []
+  for (const [key, value] of Object.entries(block)) {
+    if (validate(key, value) === undefined) {
+      issues.push({
+        path: `${basePath}.php.${field}.${key}`,
+        message:
+          `"${key}" is not a settable php ${field} value, or "${value}" is out of range`,
+      })
+    }
+  }
+  return issues
+}
+
 function validatePhpConsistency(
   basePath: string,
   raw: Record<string, unknown>,
   parsed: ComposeServiceTurbopanelExtension,
 ): ServiceTurbopanelValidationIssue[] {
-  const issues: ServiceTurbopanelValidationIssue[] = []
   const rawPhp = raw.php
-  if (rawPhp === undefined) return issues
+  if (rawPhp === undefined) return []
 
   if (parsed.serviceKind !== 'site') {
-    issues.push({
+    return [{
       path: `${basePath}.php`,
       message: 'php is only valid when serviceKind is site',
-    })
-    return issues
+    }]
   }
   if (!isPlainMapping(rawPhp)) {
-    issues.push({ path: `${basePath}.php`, message: 'php must be a mapping' })
-    return issues
+    return [{ path: `${basePath}.php`, message: 'php must be a mapping' }]
   }
 
+  const issues: ServiceTurbopanelValidationIssue[] = []
   if (rawPhp.version !== undefined) {
-    const version = typeof rawPhp.version === 'string'
-      ? rawPhp.version.trim()
-      : ''
-    if (!PHP_VERSION_RE.test(version)) {
-      issues.push({
-        path: `${basePath}.php.version`,
-        message: 'php.version must be a series like "8.4", not a patch version',
-      })
-    } else if (!SUPPORTED_PHP_SERIES.includes(version)) {
-      issues.push({
-        path: `${basePath}.php.version`,
-        message: `PHP ${version} is not supported; supported: ${
-          SUPPORTED_PHP_SERIES.join(', ')
-        }`,
-      })
-    }
+    issues.push(...validatePhpVersion(basePath, rawPhp.version))
   }
-
   if (rawPhp.extensions !== undefined) {
-    if (!Array.isArray(rawPhp.extensions)) {
-      issues.push({
-        path: `${basePath}.php.extensions`,
-        message: 'php.extensions must be a list of extension names',
-      })
-    } else {
-      for (const name of rawPhp.extensions) {
-        const trimmed = typeof name === 'string' ? name.trim().toLowerCase() : ''
-        if (!ALLOWED_PHP_EXTENSIONS.includes(trimmed)) {
-          issues.push({
-            path: `${basePath}.php.extensions`,
-            message:
-              `Unknown or disallowed PHP extension "${name}". Allowed: ${
-                ALLOWED_PHP_EXTENSIONS.join(', ')
-              }`,
-          })
-        }
-      }
-    }
+    issues.push(...validatePhpExtensions(basePath, rawPhp.extensions))
   }
 
   for (
@@ -716,22 +771,8 @@ function validatePhpConsistency(
     ] as const
   ) {
     const block = rawPhp[field]
-    if (block === undefined) continue
-    if (!isPlainMapping(block)) {
-      issues.push({
-        path: `${basePath}.php.${field}`,
-        message: `php.${field} must be a mapping`,
-      })
-      continue
-    }
-    for (const [key, value] of Object.entries(block)) {
-      if (validate(key, value) === undefined) {
-        issues.push({
-          path: `${basePath}.php.${field}.${key}`,
-          message:
-            `"${key}" is not a settable php ${field} value, or "${value}" is out of range`,
-        })
-      }
+    if (block !== undefined) {
+      issues.push(...validatePhpDirectiveBlock(basePath, field, block, validate))
     }
   }
 

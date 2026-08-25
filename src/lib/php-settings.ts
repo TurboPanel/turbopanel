@@ -73,7 +73,7 @@ export const PHP_SETTINGS: Readonly<Record<string, PhpSettingSpec>> = {
 
   'date.timezone': { kind: 'timezone' },
   disable_functions: { kind: 'nameList' },
-  'session.name': { kind: 'token', pattern: /^[A-Za-z0-9_]{1,64}$/ },
+  'session.name': { kind: 'token', pattern: /^\w{1,64}$/ },
 }
 
 /** `error_reporting` levels, expanded to the literal PHP constant expression. */
@@ -83,14 +83,27 @@ const ERROR_REPORTING_LEVELS: Readonly<Record<string, string>> = {
   all: 'E_ALL',
 }
 
+/** Megabytes for `n` in `unit`. An unrecognised suffix means plain bytes. */
+function toMegabytes(n: number, unit: string): number {
+  switch (unit) {
+    case 'G':
+      return n * 1024
+    case 'M':
+      return n
+    case 'K':
+      return n / 1024
+    default:
+      return n / 1_048_576
+  }
+}
+
 function parseBytes(raw: string, maxMb: number): string | undefined {
   if (!BYTES_RE.test(raw)) return undefined
   const unit = raw.slice(-1).toUpperCase()
   const digits = /^\d+$/.test(raw) ? raw : raw.slice(0, -1)
   const n = Number(digits)
   if (!Number.isFinite(n)) return undefined
-  const mb = unit === 'G' ? n * 1024 : unit === 'K' ? n / 1024 : unit === 'M' ? n : n / 1_048_576
-  if (mb > maxMb) return undefined
+  if (toMegabytes(n, unit) > maxMb) return undefined
   return raw
 }
 
@@ -115,6 +128,61 @@ function isKnownTimezone(value: string): boolean {
   }
 }
 
+/** Longest a directive value may be before it is dropped unread. */
+const MAX_SETTING_LENGTH = 512
+
+/** Most `disable_functions` entries one directive may carry. */
+const MAX_NAME_LIST_ENTRIES = 128
+
+const BOOL_TRUE_WORDS: ReadonlySet<string> = new Set(['on', '1', 'true', 'yes'])
+const BOOL_FALSE_WORDS: ReadonlySet<string> = new Set(['off', '0', 'false', 'no'])
+
+function renderInt(trimmed: string, spec: { min: number; max: number }): string | undefined {
+  if (!/^-?\d+$/.test(trimmed)) return undefined
+  const n = Number(trimmed)
+  return n >= spec.min && n <= spec.max ? String(n) : undefined
+}
+
+function renderBool(trimmed: string): string | undefined {
+  const lower = trimmed.toLowerCase()
+  if (BOOL_TRUE_WORDS.has(lower)) return 'On'
+  if (BOOL_FALSE_WORDS.has(lower)) return 'Off'
+  return undefined
+}
+
+/**
+ * `error_reporting` is the one enum whose accepted words are labels rather
+ * than values: they expand to the literal PHP constant expression.
+ */
+function renderEnum(
+  key: string,
+  trimmed: string,
+  values: readonly string[],
+): string | undefined {
+  if (!values.includes(trimmed)) return undefined
+  if (key !== 'error_reporting') return trimmed
+  return ERROR_REPORTING_LEVELS[trimmed] ?? trimmed
+}
+
+function renderNameList(trimmed: string): string | undefined {
+  const names = trimmed.split(',').map((n) => n.trim()).filter((n) => n.length > 0)
+  if (names.length === 0 || names.length > MAX_NAME_LIST_ENTRIES) return undefined
+  return names.every((n) => NAME_RE.test(n)) ? names.join(',') : undefined
+}
+
+/**
+ * Coerce a directive value to the trimmed single line the specs are written
+ * against, or `undefined` when it can never be one. Shared shape gate: both
+ * render targets are line-oriented, so a multi-line value is never valid.
+ */
+function directiveText(raw: unknown, maxLength: number): string | undefined {
+  const value = typeof raw === 'number' ? String(raw) : raw
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (trimmed.length === 0 || trimmed.length > maxLength) return undefined
+  return /[\r\n]/.test(trimmed) ? undefined : trimmed
+}
+
 /**
  * Validate one directive. Returns the rendered value, or `undefined` when the
  * key is unknown or the value fails its spec — the caller drops it.
@@ -125,40 +193,22 @@ export function validatePhpSetting(
 ): string | undefined {
   const spec = PHP_SETTINGS[key]
   if (!spec) return undefined
-  const value = typeof raw === 'number' ? String(raw) : raw
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
-  if (trimmed.length === 0 || trimmed.length > 512) return undefined
-  // Nothing here is ever multi-line: both render targets are line-oriented.
-  if (/[\r\n]/.test(trimmed)) return undefined
+  const trimmed = directiveText(raw, MAX_SETTING_LENGTH)
+  if (trimmed === undefined) return undefined
 
   switch (spec.kind) {
     case 'bytes':
       return parseBytes(trimmed, spec.maxMb ?? PHP_MAX_BYTES_MB)
-    case 'int': {
-      if (!/^-?\d+$/.test(trimmed)) return undefined
-      const n = Number(trimmed)
-      return n >= spec.min && n <= spec.max ? String(n) : undefined
-    }
-    case 'bool': {
-      const lower = trimmed.toLowerCase()
-      if (['on', '1', 'true', 'yes'].includes(lower)) return 'On'
-      if (['off', '0', 'false', 'no'].includes(lower)) return 'Off'
-      return undefined
-    }
-    case 'enum': {
-      if (!spec.values.includes(trimmed)) return undefined
-      return ERROR_REPORTING_LEVELS[trimmed] !== undefined && key === 'error_reporting'
-        ? ERROR_REPORTING_LEVELS[trimmed]
-        : trimmed
-    }
+    case 'int':
+      return renderInt(trimmed, spec)
+    case 'bool':
+      return renderBool(trimmed)
+    case 'enum':
+      return renderEnum(key, trimmed, spec.values)
     case 'timezone':
       return isKnownTimezone(trimmed) ? trimmed : undefined
-    case 'nameList': {
-      const names = trimmed.split(',').map((n) => n.trim()).filter((n) => n.length > 0)
-      if (names.length === 0 || names.length > 128) return undefined
-      return names.every((n) => NAME_RE.test(n)) ? names.join(',') : undefined
-    }
+    case 'nameList':
+      return renderNameList(trimmed)
     case 'token':
       return spec.pattern.test(trimmed) ? trimmed : undefined
   }
@@ -256,7 +306,9 @@ export function renderPhpForDeploy(
   const extensions = (php.extensions ?? [])
     .map((name) => name.trim().toLowerCase())
     .filter((name) => allowedExtensions.includes(name))
-  if (extensions.length > 0) out.extensions = [...new Set(extensions)].sort()
+  if (extensions.length > 0) {
+    out.extensions = [...new Set(extensions)].sort((a, b) => a.localeCompare(b))
+  }
 
   return Object.keys(out).length > 0 ? out : undefined
 }

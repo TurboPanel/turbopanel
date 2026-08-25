@@ -19,7 +19,6 @@ import {
   stripComposeTurbopanelExtensions,
   stripSiteServicesFromLayer,
   type ComposeDocument,
-  type ComposeLayer,
 } from '../../lib/compose/index.ts'
 
 export const PROJECT_COMPOSE_FILENAME = 'docker-compose.yml'

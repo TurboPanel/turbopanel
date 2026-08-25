@@ -43,7 +43,7 @@ const PROJECT_PAGE_SIZE = 100
 const PROJECT_MAX_PAGES = 10
 
 export function gitlabApiBase(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/api/v4`
+  return `${baseUrl.replace(/(?<!\/)\/+$/, '')}/api/v4`
 }
 
 export function gitlabApiHeaders(token: string): HeadersInit {
@@ -143,9 +143,9 @@ export function toGitlabRepositorySummary(
     : null
   if (!fullName || fullName.length === 0) return null
   return {
-    id: typeof project.id === 'number'
+    id: typeof project.id === 'number' || typeof project.id === 'string'
       ? String(project.id)
-      : String(project.id ?? ''),
+      : '',
     fullName,
     defaultBranch: typeof project.default_branch === 'string'
       ? project.default_branch

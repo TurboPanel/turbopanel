@@ -64,6 +64,33 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Entries returned by one listing when the caller does not cap it. */
+const DEFAULT_MAX_ENTRIES = 256
+
+/**
+ * GitHub's `contents` listing, narrowed to the picker's entry shape.
+ *
+ * Anything that is not a named entry is skipped rather than rejected: a
+ * listing is a browsing aid, and one odd row should not blank the directory.
+ */
+function toRepositoryEntries(
+  payload: unknown,
+  maxEntries: number,
+): RepositoryEntry[] {
+  if (!Array.isArray(payload)) return []
+  const entries: RepositoryEntry[] = []
+  for (const raw of payload.slice(0, maxEntries)) {
+    if (!isPlainObject(raw) || typeof raw.path !== 'string') continue
+    const entry: RepositoryEntry = {
+      path: raw.path,
+      kind: raw.type === 'dir' ? 'dir' : 'file',
+    }
+    if (typeof raw.size === 'number') entry.bytes = raw.size
+    entries.push(entry)
+  }
+  return entries
+}
+
 /** GitHub sends numeric ids; the schema stores them as text. */
 function externalId(value: unknown): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return String(value)
@@ -94,7 +121,7 @@ export function toGithubRepositorySummary(
   const fullName = repo.full_name
   if (typeof fullName !== 'string' || fullName.length === 0) return null
   return {
-    id: typeof repo.id === 'number' ? String(repo.id) : String(repo.id ?? ''),
+    id: externalId(repo.id) ?? '',
     fullName,
     defaultBranch:
       typeof repo.default_branch === 'string' ? repo.default_branch : null,
@@ -443,22 +470,10 @@ export const githubProvider: GitProvider = {
       return { failure: `github listing failed`, status: response.status }
     }
     const payload = (await response.json().catch(() => null)) as unknown
-    if (!Array.isArray(payload)) return { commitSha, entries: [] }
-
-    const maxEntries = params.maxEntries ?? 256
-    const entries: RepositoryEntry[] = []
-    for (const raw of payload.slice(0, maxEntries)) {
-      if (typeof raw !== 'object' || raw === null) continue
-      const record = raw as { path?: unknown; type?: unknown; size?: unknown }
-      if (typeof record.path !== 'string') continue
-      const kind = record.type === 'dir' ? 'dir' : 'file'
-      entries.push({
-        path: record.path,
-        kind,
-        ...(typeof record.size === 'number' ? { bytes: record.size } : {}),
-      })
+    return {
+      commitSha,
+      entries: toRepositoryEntries(payload, params.maxEntries ?? DEFAULT_MAX_ENTRIES),
     }
-    return { commitSha, entries }
   },
 
   async prepareClone(

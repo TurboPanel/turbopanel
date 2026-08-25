@@ -50,7 +50,7 @@ export class FilesystemExecutionLogStore implements ExecutionLogStore {
   readonly #now: () => Date
 
   constructor(root: string, opts: { now?: () => Date } = {}) {
-    this.#root = root.replace(/\/+$/, '')
+    this.#root = root.replace(/(?<!\/)\/+$/, '')
     this.#now = opts.now ?? (() => new Date())
   }
 

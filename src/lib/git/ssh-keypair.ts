@@ -111,7 +111,7 @@ function ed25519PublicBlob(publicKey: Uint8Array): Uint8Array {
 /** `SHA256:<base64 without padding>` over the public blob, as `ssh-keygen -l`. */
 async function publicKeyFingerprint(publicBlob: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', publicBlob as BufferSource)
-  return `SHA256:${base64Encode(new Uint8Array(digest)).replace(/=+$/, '')}`
+  return `SHA256:${base64Encode(new Uint8Array(digest)).replace(/={0,2}$/, '')}`
 }
 
 /**

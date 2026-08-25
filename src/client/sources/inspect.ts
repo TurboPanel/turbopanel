@@ -51,7 +51,7 @@ export type InspectOutcome =
  * - `unsupported` means the provider has no read API for this source at all
  *   (a bare git remote, a GitLab deploy key). Fall back.
  */
-export async function inspectRepository(params: {
+export type InspectRepositoryParams = {
   db: Db
   registry: DaemonCellRegistry | null
   dataEncryptionSecrets: DerivedSecretsConfig | null
@@ -67,54 +67,37 @@ export async function inspectRepository(params: {
     credentialKind?: string
     credentialUsername?: string
   }
-}): Promise<InspectOutcome> {
-  const paths = params.paths ?? INSPECT_PROBE_PATHS
-  const provider = resolveGitProvider(params.row.provider)
-  const ctx = {
-    db: params.db,
-    ...(params.dataEncryptionSecrets
-      ? { dataEncryptionSecrets: params.dataEncryptionSecrets }
-      : {}),
-  }
+}
 
-  const read = await provider.readRepositoryFiles(ctx, {
+/**
+ * The optional directory listing that rides along with a provider read.
+ *
+ * A listing that fails degrades to no entries rather than to an error: the
+ * files the caller actually asked for were already read, and the listing is a
+ * browsing aid on top of them.
+ */
+async function listEntriesViaProvider(
+  provider: ReturnType<typeof resolveGitProvider>,
+  ctx: { db: Db; dataEncryptionSecrets?: DerivedSecretsConfig },
+  params: InspectRepositoryParams,
+): Promise<RepositoryEntry[]> {
+  if (params.listPath === undefined) return []
+  const listed = await provider.listRepositoryEntries(ctx, {
     row: params.row,
     ref: params.ref,
-    paths,
-    maxBytesPerFile: MAX_REPOSITORY_FILE_BYTES,
+    path: params.listPath,
   })
-
-  if (!isRepositoryReadUnsupported(read) && !isGitProviderFailure(read)) {
-    let entries: RepositoryEntry[] = []
-    if (params.listPath !== undefined) {
-      const listed = await provider.listRepositoryEntries(ctx, {
-        row: params.row,
-        ref: params.ref,
-        path: params.listPath,
-      })
-      if (!isRepositoryReadUnsupported(listed) && !isGitProviderFailure(listed)) {
-        entries = listed.entries
-      }
-    }
-    return {
-      ok: true,
-      commitSha: read.commitSha,
-      files: read.files,
-      entries,
-      via: 'provider',
-    }
+  if (isRepositoryReadUnsupported(listed) || isGitProviderFailure(listed)) {
+    return []
   }
+  return listed.entries
+}
 
-  // The provider answered with a real HTTP status: that IS the answer.
-  if (isGitProviderFailure(read) && typeof read.status === 'number') {
-    return {
-      ok: false,
-      status: read.status === 404 ? 404 : 502,
-      error: 'source_read_failed',
-      message: read.failure,
-    }
-  }
-
+/** The daemon lane, taken once the provider has declined or gone unreachable. */
+async function inspectViaDaemon(
+  params: InspectRepositoryParams,
+  paths: readonly string[],
+): Promise<InspectOutcome> {
   if (!params.registry) {
     return {
       ok: false,
@@ -132,7 +115,7 @@ export async function inspectRepository(params: {
     paths,
     ...(params.listPath === undefined ? {} : { listPath: params.listPath }),
     maxBytesPerFile: MAX_REPOSITORY_FILE_BYTES,
-    ...(params.daemonCredential ?? {}),
+    ...params.daemonCredential,
     serverIds: params.serverIds,
   })
 
@@ -151,4 +134,46 @@ export async function inspectRepository(params: {
     entries: viaDaemon.entries,
     via: 'daemon',
   }
+}
+
+export async function inspectRepository(
+  params: InspectRepositoryParams,
+): Promise<InspectOutcome> {
+  const paths = params.paths ?? INSPECT_PROBE_PATHS
+  const provider = resolveGitProvider(params.row.provider)
+  const ctx = {
+    db: params.db,
+    ...(params.dataEncryptionSecrets
+      ? { dataEncryptionSecrets: params.dataEncryptionSecrets }
+      : {}),
+  }
+
+  const read = await provider.readRepositoryFiles(ctx, {
+    row: params.row,
+    ref: params.ref,
+    paths,
+    maxBytesPerFile: MAX_REPOSITORY_FILE_BYTES,
+  })
+
+  if (!isRepositoryReadUnsupported(read) && !isGitProviderFailure(read)) {
+    return {
+      ok: true,
+      commitSha: read.commitSha,
+      files: read.files,
+      entries: await listEntriesViaProvider(provider, ctx, params),
+      via: 'provider',
+    }
+  }
+
+  // The provider answered with a real HTTP status: that IS the answer.
+  if (isGitProviderFailure(read) && typeof read.status === 'number') {
+    return {
+      ok: false,
+      status: read.status === 404 ? 404 : 502,
+      error: 'source_read_failed',
+      message: read.failure,
+    }
+  }
+
+  return await inspectViaDaemon(params, paths)
 }

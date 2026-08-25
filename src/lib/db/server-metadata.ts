@@ -1043,34 +1043,52 @@ function parseRuntimeSeriesList(value: unknown): string[] {
  * which the prepare gate treats as "will be installed", not to a hard failure
  * that would take the server offline for every deploy.
  */
+/** Extension names for one series — canonical, deduped, capped. */
+function parseRuntimeExtensionList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const names = value
+    .filter((n): n is string => typeof n === 'string')
+    .map((n) => n.trim().toLowerCase())
+    .filter((n) => RUNTIME_EXTENSION_TOKEN.test(n))
+  return [...new Set(names)]
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, MAX_RUNTIME_EXTENSIONS)
+}
+
+/** `{ "8.4": ["gd", …] }` — extensions keyed by the series that carries them. */
+function parseRuntimeExtensionsBySeries(
+  value: unknown,
+): Record<string, string[]> {
+  if (!isRecord(value)) return {}
+  const extensions: Record<string, string[]> = {}
+  for (const [key, raw] of Object.entries(value)) {
+    if (!RUNTIME_SERIES_TOKEN.test(key)) continue
+    const names = parseRuntimeExtensionList(raw)
+    if (names.length > 0) extensions[key] = names
+  }
+  return extensions
+}
+
+/** The `php` area, which is the one that also carries per-series extensions. */
+function parsePhpRuntimeMetadata(
+  value: unknown,
+): ServerRuntimeMetadata['php'] {
+  if (!isRecord(value)) return undefined
+  const series = parseRuntimeSeriesList(value.series)
+  if (series.length === 0) return undefined
+  const extensions = parseRuntimeExtensionsBySeries(value.extensions)
+  if (Object.keys(extensions).length === 0) return { series }
+  return { series, extensions }
+}
+
 export function parseServerRuntimeMetadata(
   value: unknown,
 ): ServerRuntimeMetadata | undefined {
   if (!isRecord(value)) return undefined
   const out: ServerRuntimeMetadata = {}
 
-  if (isRecord(value.php)) {
-    const series = parseRuntimeSeriesList(value.php.series)
-    if (series.length > 0) {
-      const extensions: Record<string, string[]> = {}
-      if (isRecord(value.php.extensions)) {
-        for (const [key, raw] of Object.entries(value.php.extensions)) {
-          if (!RUNTIME_SERIES_TOKEN.test(key) || !Array.isArray(raw)) continue
-          const names = raw
-            .filter((n): n is string => typeof n === 'string')
-            .map((n) => n.trim().toLowerCase())
-            .filter((n) => RUNTIME_EXTENSION_TOKEN.test(n))
-          if (names.length > 0) {
-            extensions[key] = [...new Set(names)].sort().slice(0, MAX_RUNTIME_EXTENSIONS)
-          }
-        }
-      }
-      out.php = {
-        series,
-        ...(Object.keys(extensions).length > 0 ? { extensions } : {}),
-      }
-    }
-  }
+  const php = parsePhpRuntimeMetadata(value.php)
+  if (php) out.php = php
 
   for (const area of ['node', 'lsphp'] as const) {
     const raw = value[area]

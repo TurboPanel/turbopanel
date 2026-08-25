@@ -79,7 +79,7 @@ function fail(error: string): SshPublicKeyParseResult {
  * strings, big-endian, with nothing else in it.
  */
 class SshBlobReader {
-  #bytes: Uint8Array
+  readonly #bytes: Uint8Array
   #offset = 0
 
   constructor(bytes: Uint8Array) {
@@ -167,14 +167,14 @@ function decodeBase64Strict(value: string): Uint8Array | null {
     return null
   }
   const out = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i)
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.codePointAt(i)!
   return out
 }
 
 /** `SHA256:<base64 without padding>` over the public blob, as `ssh-keygen -l`. */
 async function fingerprintOf(blob: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', blob as BufferSource)
-  return `SHA256:${base64Encode(new Uint8Array(digest)).replace(/=+$/, '')}`
+  return `SHA256:${base64Encode(new Uint8Array(digest)).replace(/={0,2}$/, '')}`
 }
 
 /**
@@ -212,48 +212,62 @@ function ecCurveForKeyType(keyType: SshKeyType): string | null {
 }
 
 /**
- * Walk the type-specific body of the blob.
+ * What one type-specific body reader says about the blob it walked.
  *
- * Returning the RSA size (and only ever that) keeps the caller from having to
- * know which types carry a variable-length parameter.
+ * `bits` is carried only by RSA — see {@link readKeyBody}.
  */
-function readKeyBody(
+type KeyBodyResult = { ok: true; bits?: number } | { ok: false; error: string }
+
+/**
+ * The one message for every structural failure.
+ *
+ * Deliberately uniform: telling an operator *which* length prefix ran off the
+ * end of the blob helps nobody paste a better key, and the specific failures
+ * that do have a fix (`ssh-dss`, an options field, a short modulus) get their
+ * own sentence elsewhere.
+ */
+const MALFORMED_KEY_BODY: KeyBodyResult = {
+  ok: false,
+  error: 'the key data is malformed',
+}
+
+function readRsaKeyBody(reader: SshBlobReader): KeyBodyResult {
+  const exponent = reader.readString()
+  const modulus = reader.readString()
+  if (exponent === null || modulus === null) return MALFORMED_KEY_BODY
+  const bits = mpintBitLength(modulus)
+  if (bits < MIN_RSA_MODULUS_BITS) {
+    return {
+      ok: false,
+      error:
+        `RSA keys must be at least ${MIN_RSA_MODULUS_BITS} bits; this one is ${bits}. Generate a new key with \`ssh-keygen -t ed25519\`.`,
+    }
+  }
+  return { ok: true, bits }
+}
+
+function readEd25519KeyBody(
   keyType: SshKeyType,
   reader: SshBlobReader,
-): { ok: true; bits?: number } | { ok: false; error: string } {
-  const malformed = { ok: false as const, error: 'the key data is malformed' }
-
-  if (keyType === 'ssh-rsa') {
-    const exponent = reader.readString()
-    const modulus = reader.readString()
-    if (exponent === null || modulus === null) return malformed
-    const bits = mpintBitLength(modulus)
-    if (bits < MIN_RSA_MODULUS_BITS) {
-      return {
-        ok: false,
-        error:
-          `RSA keys must be at least ${MIN_RSA_MODULUS_BITS} bits; this one is ${bits}. Generate a new key with \`ssh-keygen -t ed25519\`.`,
-      }
-    }
-    return { ok: true, bits }
+): KeyBodyResult {
+  const publicKey = reader.readString()
+  if (publicKey?.length !== 32) return MALFORMED_KEY_BODY
+  if (keyType === 'sk-ssh-ed25519@openssh.com') {
+    // FIDO keys carry the relying-party application string.
+    if (reader.readString() === null) return MALFORMED_KEY_BODY
   }
+  return { ok: true }
+}
 
-  if (keyType === 'ssh-ed25519' || keyType === 'sk-ssh-ed25519@openssh.com') {
-    const publicKey = reader.readString()
-    if (publicKey === null || publicKey.length !== 32) return malformed
-    if (keyType === 'sk-ssh-ed25519@openssh.com') {
-      // FIDO keys carry the relying-party application string.
-      if (reader.readString() === null) return malformed
-    }
-    return { ok: true }
-  }
-
-  // Every remaining allowed type is ECDSA: curve name, then an uncompressed
-  // point, then (for the FIDO variant) the application string.
+/** Curve name, then an uncompressed point, then (FIDO only) the application. */
+function readEcdsaKeyBody(
+  keyType: SshKeyType,
+  reader: SshBlobReader,
+): KeyBodyResult {
   const declaredCurve = ecCurveForKeyType(keyType)
-  if (declaredCurve === null) return malformed
+  if (declaredCurve === null) return MALFORMED_KEY_BODY
   const curve = reader.readAsciiString()
-  if (curve === null) return malformed
+  if (curve === null) return MALFORMED_KEY_BODY
   if (curve !== declaredCurve) {
     return {
       ok: false,
@@ -262,14 +276,32 @@ function readKeyBody(
     }
   }
   const point = reader.readString()
-  if (point === null) return malformed
+  if (point === null) return MALFORMED_KEY_BODY
   if (point.length !== EC_CURVE_POINT_BYTES[curve] || point[0] !== 0x04) {
     return { ok: false, error: 'the key data is not an uncompressed EC point' }
   }
   if (keyType === 'sk-ecdsa-sha2-nistp256@openssh.com') {
-    if (reader.readString() === null) return malformed
+    if (reader.readString() === null) return MALFORMED_KEY_BODY
   }
   return { ok: true }
+}
+
+/**
+ * Walk the type-specific body of the blob.
+ *
+ * Returning the RSA size (and only ever that) keeps the caller from having to
+ * know which types carry a variable-length parameter.
+ */
+function readKeyBody(
+  keyType: SshKeyType,
+  reader: SshBlobReader,
+): KeyBodyResult {
+  if (keyType === 'ssh-rsa') return readRsaKeyBody(reader)
+  if (keyType === 'ssh-ed25519' || keyType === 'sk-ssh-ed25519@openssh.com') {
+    return readEd25519KeyBody(keyType, reader)
+  }
+  // Every remaining allowed type is ECDSA.
+  return readEcdsaKeyBody(keyType, reader)
 }
 
 /**
@@ -383,7 +415,7 @@ export async function parseSshPublicKey(
 const CANONICAL_KEY_LINE_RE = new RegExp(
   `^(?:${
     ALLOWED_SSH_KEY_TYPES.map((type) =>
-      type.replaceAll(/[.*+?^${}()|[\]\\@]/g, '\\$&')
+      type.replaceAll(/[.*+?^${}()|[\]\\@]/g, String.raw`\$&`)
     ).join('|')
   }) [A-Za-z0-9+/]+={0,2}$`,
 )
