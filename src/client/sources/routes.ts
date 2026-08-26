@@ -747,7 +747,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     // The app comes from the signed state, not from a query param on the
     // provider's redirect — the callback URL is one GitHub controls.
     const app = await loadGitApp(db, dataEncryptionSecrets, claims.appId)
-    if (!app || app.provider !== 'github' || !app.privateKeyPem) {
+    if (app?.provider !== 'github' || !app.privateKeyPem) {
       return fail('not_configured', claims.appId)
     }
 
@@ -902,7 +902,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     if (!dataEncryptionSecrets) return fail('unavailable', claims.appId)
 
     const app = await loadGitApp(db, dataEncryptionSecrets, claims.appId)
-    if (!app || app.provider !== 'gitlab') return fail('not_configured', claims.appId)
+    if (app?.provider !== 'gitlab') return fail('not_configured', claims.appId)
 
     const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
     if (!redirectUri) return fail('not_configured', app.id)

@@ -188,6 +188,42 @@ async function selectVerified<THolder>(
 }
 
 /**
+ * Step 1. The cheapest check, and the one that keeps an unauthenticated caller
+ * from spending the verification work below.
+ */
+async function withinRateLimit<THolder>(
+  gate: WebhookGate<THolder>,
+  opts: WebhookGateOpts,
+  c: Context<AppEnv>,
+): Promise<boolean> {
+  if (!opts.rateLimiter) return true
+  const peer = resolveClientIp(c, opts.runtime) ?? 'unknown'
+  const { success } = await opts.rateLimiter.limit({
+    key: gate.rateLimitKey(peer),
+  })
+  return success
+}
+
+/**
+ * Step 3. The exact bytes the sender sent, never `c.req.json()` — a signature
+ * covers the bytes, and parsing then re-encoding changes key order and escapes.
+ *
+ * `null` is over the ceiling. `content-length` is checked first so an oversized
+ * body is refused before it is buffered, and the buffered length again because
+ * that header is the sender's claim rather than a fact.
+ */
+async function readRawBody(
+  c: Context<AppEnv>,
+  maxBodyBytes: number,
+): Promise<Uint8Array | null> {
+  const declared = Number.parseInt(c.req.header('content-length') ?? '', 10)
+  if (Number.isFinite(declared) && declared > maxBodyBytes) return null
+  const buffer = await c.req.arrayBuffer()
+  if (buffer.byteLength > maxBodyBytes) return null
+  return new Uint8Array(buffer)
+}
+
+/**
  * Mount one gate on every path it answers.
  *
  * Flat `app.post` registrations against the absolute paths in
@@ -207,12 +243,8 @@ export function registerWebhookGate<THolder>(
 ): void {
   const handler = async (c: Context<AppEnv>) => {
     // 1. Rate limit first — it is what protects the verification work below.
-    if (opts.rateLimiter) {
-      const peer = resolveClientIp(c, opts.runtime) ?? 'unknown'
-      const { success } = await opts.rateLimiter.limit({
-        key: gate.rateLimitKey(peer),
-      })
-      if (!success) return c.json({ error: 'Too many requests' }, 429)
+    if (!(await withinRateLimit(gate, opts, c))) {
+      return c.json({ error: 'Too many requests' }, 429)
     }
 
     const db = getDb(c)
@@ -244,15 +276,8 @@ export function registerWebhookGate<THolder>(
     }
 
     // 3. Raw bytes, before any parse.
-    const declared = Number.parseInt(c.req.header('content-length') ?? '', 10)
-    if (Number.isFinite(declared) && declared > gate.maxBodyBytes) {
-      return c.json({ error: 'Payload too large' }, 413)
-    }
-    const buffer = await c.req.arrayBuffer()
-    if (buffer.byteLength > gate.maxBodyBytes) {
-      return c.json({ error: 'Payload too large' }, 413)
-    }
-    const raw = new Uint8Array(buffer)
+    const raw = await readRawBody(c, gate.maxBodyBytes)
+    if (!raw) return c.json({ error: 'Payload too large' }, 413)
 
     // 4. Verify against the resolved holder's own secret.
     const holder = await selectVerified(gate, resolution.candidates, raw, ctx)

@@ -229,6 +229,14 @@ function readCredentials(value: unknown): StoredCredentials {
   return stored
 }
 
+function encodeUrlSafe(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) {
+    binary += String.fromCodePoint(byte)
+  }
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+}
+
 /**
  * Opaque routing token for this app's webhook URL.
  *
@@ -236,20 +244,12 @@ function readCredentials(value: unknown): StoredCredentials {
  * authenticates the delivery. Unguessable so the surface cannot be enumerated.
  */
 export function generateWebhookRef(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(24))
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
+  return encodeUrlSafe(crypto.getRandomValues(new Uint8Array(24)))
 }
 
 /** A GitLab webhook token, when we are the one minting it. */
 export function generateGitlabWebhookToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32))
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
+  return encodeUrlSafe(crypto.getRandomValues(new Uint8Array(32)))
 }
 
 /**
@@ -543,6 +543,42 @@ export async function createGitApp(
   return summarizeGitApp(rows[0])
 }
 
+function requireNonEmpty(value: string | undefined, field: string): string | undefined {
+  if (value === undefined) return undefined
+  const trimmed = trimOrNull(value)
+  if (!trimmed) throw new GitAppError(`${field} must not be empty`)
+  return trimmed
+}
+
+const NULLABLE_STRING_COLUMNS = [
+  'apiUrl',
+  'appSlug',
+  'clientId',
+  'redirectUri',
+  'webhookOrigin',
+  'customGitUser',
+] as const
+
+function applyGitAppColumnUpdates(
+  next: Partial<typeof gitProviderApp.$inferInsert>,
+  updates: GitAppUpdate,
+): void {
+  const name = requireNonEmpty(updates.name, 'name')
+  if (name !== undefined) next.name = name
+  const externalAppId = requireNonEmpty(updates.externalAppId, 'externalAppId')
+  if (externalAppId !== undefined) next.externalAppId = externalAppId
+  const baseUrl = requireNonEmpty(updates.baseUrl, 'baseUrl')
+  if (baseUrl !== undefined) next.baseUrl = normalizeOrigin(baseUrl)
+
+  for (const column of NULLABLE_STRING_COLUMNS) {
+    const value = updates[column]
+    if (value !== undefined) next[column] = trimOrNull(value)
+  }
+  if (updates.isPublic !== undefined) next.isPublic = updates.isPublic
+  if (updates.customGitPort !== undefined) next.customGitPort = updates.customGitPort
+  if (updates.syncedAt !== undefined) next.syncedAt = updates.syncedAt
+}
+
 export async function updateGitApp(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
@@ -567,35 +603,7 @@ export async function updateGitApp(
     credentials,
     updatedAt: new Date().toISOString(),
   }
-
-  if (updates.name !== undefined) {
-    const name = trimOrNull(updates.name)
-    if (!name) throw new GitAppError('name must not be empty')
-    next.name = name
-  }
-  if (updates.externalAppId !== undefined) {
-    const externalAppId = trimOrNull(updates.externalAppId)
-    if (!externalAppId) throw new GitAppError('externalAppId must not be empty')
-    next.externalAppId = externalAppId
-  }
-  if (updates.baseUrl !== undefined) {
-    const baseUrl = trimOrNull(updates.baseUrl)
-    if (!baseUrl) throw new GitAppError('baseUrl must not be empty')
-    next.baseUrl = normalizeOrigin(baseUrl)
-  }
-  if (updates.apiUrl !== undefined) next.apiUrl = trimOrNull(updates.apiUrl)
-  if (updates.appSlug !== undefined) next.appSlug = trimOrNull(updates.appSlug)
-  if (updates.clientId !== undefined) next.clientId = trimOrNull(updates.clientId)
-  if (updates.redirectUri !== undefined) next.redirectUri = trimOrNull(updates.redirectUri)
-  if (updates.webhookOrigin !== undefined) {
-    next.webhookOrigin = trimOrNull(updates.webhookOrigin)
-  }
-  if (updates.isPublic !== undefined) next.isPublic = updates.isPublic
-  if (updates.customGitUser !== undefined) {
-    next.customGitUser = trimOrNull(updates.customGitUser)
-  }
-  if (updates.customGitPort !== undefined) next.customGitPort = updates.customGitPort
-  if (updates.syncedAt !== undefined) next.syncedAt = updates.syncedAt
+  applyGitAppColumnUpdates(next, updates)
 
   const tokenHash = await resolveGitlabTokenHash(provider, updates.webhookSecret)
   if (tokenHash !== undefined) next.webhookTokenHash = tokenHash

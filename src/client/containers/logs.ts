@@ -9,11 +9,10 @@ import {
 import { cellTrace } from '../../logger.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import type { Db } from '../../db.ts'
-import { parseLogsTailQuery } from '../managed/logs.ts'
+
+export { parseLogsTailQuery } from '../managed/logs.ts'
 
 const LOGS_TIMEOUT_MS = 20_000
-
-export { parseLogsTailQuery }
 
 function extractLogs(result: unknown): string | null {
   if (typeof result !== 'object' || result === null || Array.isArray(result)) {

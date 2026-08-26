@@ -110,7 +110,7 @@ export async function resolveGithubWebhookApp(
 
   if (webhookRef) {
     const app = await findGitAppByWebhookRef(db, dataEncryptionSecrets, webhookRef)
-    if (!app || app.provider !== 'github') return failed('unresolved')
+    if (app?.provider !== 'github') return failed('unresolved')
     // Both signals present: they must agree. Disagreement means the URL and the
     // signing credentials belong to different apps, and accepting either one
     // would route a verified delivery to the wrong tenant.
@@ -140,7 +140,7 @@ export async function resolveGitlabWebhookApp(
 ): Promise<WebhookAppResolution> {
   if (webhookRef) {
     const app = await findGitAppByWebhookRef(db, dataEncryptionSecrets, webhookRef)
-    if (!app || app.provider !== 'gitlab') return failed('unresolved')
+    if (app?.provider !== 'gitlab') return failed('unresolved')
     return { ok: true, candidates: [app] }
   }
 

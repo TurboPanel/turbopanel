@@ -87,13 +87,22 @@ export function ipsFromDaemonPresence(
   return parseServerIps(payload.resources.ips)
 }
 
-/** Reported addresses stored on `server.metadata.resources.ips`. */
+/**
+ * Reported addresses stored on `server.metadata`.
+ *
+ * Current writes nest under `resources.ips`. Leftover top-level `ips[]` from
+ * older jsonb is still accepted so datacenter membership and fleet reads keep
+ * working for hosts that have not been rewritten.
+ */
 export function reportedIpsFromServerMetadata(
   metadata: unknown,
 ): ServerReportedIp[] | undefined {
   if (!isRecord(metadata)) return undefined
-  if (!isRecord(metadata.resources)) return undefined
-  return parseServerIps(metadata.resources.ips)
+  if (isRecord(metadata.resources)) {
+    const nested = parseServerIps(metadata.resources.ips)
+    if (nested !== undefined) return nested
+  }
+  return parseServerIps(metadata.ips)
 }
 
 export function serverIpsEquals(

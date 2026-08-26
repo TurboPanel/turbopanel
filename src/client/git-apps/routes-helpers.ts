@@ -157,50 +157,76 @@ function optionalTrimmed(value: unknown): string | null | undefined {
   return trimmed.length > 0 ? trimmed : null
 }
 
+/**
+ * The optional string fields, all sharing the same grammar: absent, `null`,
+ * or a non-empty string.
+ */
+const MANIFEST_OPTIONAL_FIELDS = [
+  'apiUrl',
+  'organizationLogin',
+  'webhookOrigin',
+  'customGitUser',
+] as const
+
+type ManifestOptionalField = (typeof MANIFEST_OPTIONAL_FIELDS)[number]
+
+/**
+ * Read every optional field in one pass, or reject the body.
+ *
+ * A field that is present but not a string is a client bug, not an omission,
+ * so the whole body is refused rather than the field being quietly dropped —
+ * see the note on {@link GithubManifestStartInput} for why a half-applied
+ * manifest cannot be corrected afterwards.
+ */
+function readManifestOptionals(
+  raw: Record<string, unknown>,
+): Record<ManifestOptionalField, string | null> | null {
+  const out = {} as Record<ManifestOptionalField, string | null>
+  for (const key of MANIFEST_OPTIONAL_FIELDS) {
+    const value = optionalTrimmed(raw[key])
+    if (value === undefined) return null
+    out[key] = value
+  }
+  return out
+}
+
+/** `undefined` means "reject the body"; `null` means the operator left it unset. */
+function readCustomGitPort(value: unknown): number | null | undefined {
+  if (value === undefined || value === null) return null
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined
+  return port
+}
+
 export function parseGithubManifestStartBody(
   body: unknown,
 ): GithubManifestStartInput | null {
-  const raw = (body && typeof body === 'object' && !Array.isArray(body))
-    ? body as Record<string, unknown>
-    : {}
+  const raw = isPlainObject(body) ? body : {}
 
   const name = typeof raw.name === 'string' ? raw.name.trim() : ''
   if (name.length === 0 || name.length > GITHUB_APP_NAME_MAX_LENGTH) return null
 
   const baseUrlRaw = optionalTrimmed(raw.baseUrl)
   if (baseUrlRaw === undefined) return null
-  const baseUrl = (baseUrlRaw ?? GITHUB_DEFAULT_BASE_URL).replace(/\/+$/, '')
 
-  const apiUrl = optionalTrimmed(raw.apiUrl)
-  if (apiUrl === undefined) return null
+  const optionals = readManifestOptionals(raw)
+  if (optionals === null) return null
 
-  const organizationLogin = optionalTrimmed(raw.organizationLogin)
-  if (organizationLogin === undefined) return null
-
-  const webhookOrigin = optionalTrimmed(raw.webhookOrigin)
-  if (webhookOrigin === undefined) return null
-
-  const customGitUser = optionalTrimmed(raw.customGitUser)
-  if (customGitUser === undefined) return null
-
-  let customGitPort: number | null = null
-  if (raw.customGitPort !== undefined && raw.customGitPort !== null) {
-    const port = Number(raw.customGitPort)
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return null
-    customGitPort = port
-  }
+  const customGitPort = readCustomGitPort(raw.customGitPort)
+  if (customGitPort === undefined) return null
 
   const access = raw.pullRequestAccess
   if (access !== undefined && access !== 'read' && access !== 'write') return null
 
+  const { apiUrl, organizationLogin, webhookOrigin, customGitUser } = optionals
   return {
     name,
-    baseUrl,
-    apiUrl: apiUrl ?? null,
-    organizationLogin: organizationLogin ?? null,
+    baseUrl: (baseUrlRaw ?? GITHUB_DEFAULT_BASE_URL).replace(/\/+$/, ''),
+    apiUrl,
+    organizationLogin,
     webhookOrigin: webhookOrigin ? webhookOrigin.replace(/\/+$/, '') : null,
     pullRequestAccess: access === 'write' ? 'write' : 'read',
-    customGitUser: customGitUser ?? null,
+    customGitUser,
     customGitPort,
   }
 }

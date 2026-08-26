@@ -11,6 +11,7 @@ import {
   providerInstallUiReturnPath,
   parseGitAppCreateBody,
   parseGitAppPatchBody,
+  parseGithubManifestStartBody,
   serializeGitApp,
 } from './routes-helpers.ts'
 import type { GitAppSummary } from '../../lib/git/git-app-records.ts'
@@ -172,4 +173,46 @@ test('a self-hosted app carries its ref; the app origin beats the instance defau
   // And the origin is the one the provider was actually given at registration,
   // not whichever public URL happens to sort first today.
   assertEquals(enterprise.webhookUrl, 'https://hooks.example.com/webhook/github/ref-1')
+})
+
+test('the manifest wizard normalizes what it accepts and rejects the rest', () => {
+  // Trailing slashes are stripped on both origins: the manifest records these
+  // verbatim on GitHub's side, and a doubled slash there is not correctable.
+  assertEquals(
+    parseGithubManifestStartBody({
+      name: '  Acme Panel  ',
+      baseUrl: 'https://github.acme.test/',
+      webhookOrigin: 'https://hooks.example.com//',
+      customGitPort: '2222',
+      pullRequestAccess: 'write',
+    }),
+    {
+      name: 'Acme Panel',
+      baseUrl: 'https://github.acme.test',
+      apiUrl: null,
+      organizationLogin: null,
+      webhookOrigin: 'https://hooks.example.com',
+      pullRequestAccess: 'write',
+      customGitUser: null,
+      customGitPort: 2222,
+    },
+  )
+})
+
+test('a manifest body with a mistyped field is refused whole', () => {
+  const base = { name: 'Acme Panel' }
+  // An omitted name, or one GitHub would refuse at 35 characters.
+  assertEquals(parseGithubManifestStartBody({}), null)
+  assertEquals(parseGithubManifestStartBody({ name: 'x'.repeat(35) }), null)
+  // A non-string where a string belongs is a client bug, not an omission —
+  // dropping the field would register the app with the wrong settings.
+  assertEquals(parseGithubManifestStartBody({ ...base, apiUrl: 7 }), null)
+  assertEquals(parseGithubManifestStartBody({ ...base, webhookOrigin: [] }), null)
+  assertEquals(parseGithubManifestStartBody({ ...base, customGitUser: false }), null)
+  // Ports outside the range, and non-integers, are rejected rather than clamped.
+  assertEquals(parseGithubManifestStartBody({ ...base, customGitPort: 0 }), null)
+  assertEquals(parseGithubManifestStartBody({ ...base, customGitPort: 65536 }), null)
+  assertEquals(parseGithubManifestStartBody({ ...base, customGitPort: 'ssh' }), null)
+  // Only the two access levels the manifest knows how to request.
+  assertEquals(parseGithubManifestStartBody({ ...base, pullRequestAccess: 'admin' }), null)
 })

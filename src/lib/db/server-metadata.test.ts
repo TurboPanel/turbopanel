@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   ipsFromDaemonPresence,
   parseServerIps,
+  reportedIpsFromServerMetadata,
   serverIpsEquals,
 } from '../../server-addresses.ts'
 import {
@@ -491,6 +492,45 @@ test('ipsFromDaemonPresence reads resources.ips only', () => {
   )
   assertEquals(ipsFromDaemonPresence({}), undefined)
   assertEquals(ipsFromDaemonPresence({ ips: [] }), undefined)
+})
+
+test('reportedIpsFromServerMetadata prefers resources.ips and falls back to leftover top-level ips', () => {
+  assertEquals(
+    reportedIpsFromServerMetadata({
+      resources: {
+        ips: [{
+          address: '10.0.0.4',
+          version: 4,
+          scope: 'private',
+          interface: 'eth0',
+        }],
+      },
+      ips: [{ address: '203.0.113.10', version: 4, scope: 'public' }],
+    }),
+    [
+      { address: '10.0.0.4', version: 4, scope: 'private', interface: 'eth0' },
+    ],
+  )
+  assertEquals(
+    reportedIpsFromServerMetadata({
+      ips: [{
+        address: '10.0.0.10',
+        version: 4,
+        scope: 'private',
+        cidr: '10.0.0.10/24',
+      }],
+    }),
+    [
+      {
+        address: '10.0.0.10',
+        version: 4,
+        scope: 'private',
+        cidr: '10.0.0.0/24',
+      },
+    ],
+  )
+  assertEquals(reportedIpsFromServerMetadata({}), undefined)
+  assertEquals(reportedIpsFromServerMetadata({ resources: {} }), undefined)
 })
 
 test('resourcesFromDaemonPresence reads resources only', () => {
