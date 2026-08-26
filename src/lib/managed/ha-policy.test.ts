@@ -78,6 +78,10 @@ test('pickAutomaticFailoverCandidate is lowest ordinal and ignores readEligible'
     'm-failover',
   )
   assertEquals(pickAutomaticFailoverCandidate([readSameDc, failoverRemote]), null)
+  // Equal ordinal: stable id order via localeCompare.
+  const twinA = { ...failoverSameDc, id: 'm-a', ordinal: 2 }
+  const twinB = { ...failoverSameDc, id: 'm-b', ordinal: 2 }
+  assertEquals(pickAutomaticFailoverCandidate([twinB, twinA])?.id, 'm-a')
 })
 
 test('pickAutomaticFailoverCandidate skips unhealthy and picks the next healthy ordinal', () => {
@@ -164,6 +168,23 @@ test('disaster recovery demotes remote failover to read and never upgrades read'
     }),
     null,
   )
+  // Unknown / missing replica class on a non-primary falls back to read.
+  assertEquals(
+    replicaClassAfterDisasterRecovery({
+      role: 'replica',
+      replicaClass: null,
+      sameDatacenterAsNewPrimary: true,
+    }),
+    'read',
+  )
+  assertEquals(
+    replicaClassAfterDisasterRecovery({
+      role: 'replica',
+      replicaClass: 'standby',
+      sameDatacenterAsNewPrimary: false,
+    }),
+    'read',
+  )
 })
 
 test('serverHostsManagedHa includes primary and failover, not read-only', () => {
@@ -188,6 +209,10 @@ test('pickHaAdvertiseAddress prefers IPv4 datacenter pins', () => {
       { address: '203.0.113.10', family: 4 },
     ]),
     '203.0.113.10',
+  )
+  assertEquals(
+    pickHaAdvertiseAddress([{ address: '2001:db8::10', family: 6 }]),
+    '2001:db8::10',
   )
   assertEquals(pickHaAdvertiseAddress([]), null)
 })

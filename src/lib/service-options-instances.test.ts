@@ -94,3 +94,13 @@ test('resolve helpers apply documented defaults', () => {
   assertEquals(resolveHealthCheckPolicy(undefined), 'disabled')
   assertEquals(formatStopGracePeriod(45), '45s')
 })
+
+test('parseServiceOptions treats nullish input as an empty record', () => {
+  assertEquals(parseServiceOptions(null), {})
+  assertEquals(parseServiceOptions(undefined), {})
+})
+
+test('parseServiceOptions drops invalid resource limits', () => {
+  assertEquals(parseServiceOptions({ resources: { cpus: -1 } }), {})
+  assertEquals(parseServiceOptions({ resources: { memoryBytes: 0 } }), {})
+})

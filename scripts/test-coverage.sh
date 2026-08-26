@@ -389,6 +389,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/container-records.test.ts \
   src/lib/db/container-records.hostfree.test.ts \
   src/lib/db/deployment-records.hostfree.test.ts \
+  src/lib/db/deployment-history.hostfree.test.ts \
   src/lib/db/environment-generation.hostfree.test.ts \
   src/lib/db/fabric-records.hostfree.test.ts \
   src/lib/db/fabric-records-lifecycle.hostfree.test.ts \
@@ -397,9 +398,12 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/net-types.test.ts \
   src/lib/db/project-delete.test.ts \
   src/lib/db/project-delete.hostfree.test.ts \
+  src/lib/db/recovery-records.hostfree.test.ts \
   src/lib/db/releases.hostfree.test.ts \
   src/lib/db/server-metadata.test.ts \
+  src/lib/db/source-records.hostfree.test.ts \
   src/lib/db/storage-records.hostfree.test.ts \
+  src/lib/db/webhook-delivery-records.hostfree.test.ts \
   src/lib/db/table-naming.test.ts \
   src/lib/db/boolean-column-naming.test.ts \
   src/lib/db/tls-leaf-indexes.test.ts \

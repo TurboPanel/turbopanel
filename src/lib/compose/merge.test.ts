@@ -985,3 +985,244 @@ test('presentation blankLines: indexed path without a finite index is left alone
     2,
   )
 })
+
+test('mergeComposeOverlay with omitted or null overlay returns the resolved base', () => {
+  const base = docFrom({
+    services: {
+      web: { image: makeComposeTag('override', 'nginx') },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base)).web.image, 'nginx')
+  assertEquals(servicesOf(mergeComposeOverlay(base, null)).web.image, 'nginx')
+})
+
+test('overlay comments merge onto base when overlay data is not blank', () => {
+  const base = docFrom({ services: { web: { image: 'nginx' } } })
+  const overlay: ComposeDocument = {
+    version: 1,
+    data: { name: 'app' },
+    presentation: {
+      keyOrder: ['name'],
+      comments: { name: { inline: 'kept' } },
+    },
+  }
+  const merged = mergeComposeOverlay(base, overlay)
+  assertEquals(merged.data.name, 'app')
+  assertEquals(servicesOf(merged).web.image, 'nginx')
+  assertEquals(merged.presentation.comments.name?.inline, 'kept')
+})
+
+test('undefined overlay children are skipped; type-mismatch overlay wins', () => {
+  const base = docFrom({
+    services: {
+      web: { image: 'nginx', ports: ['80:80'] },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        image: undefined,
+        ports: '8080:80',
+      },
+    },
+  })
+  const web = servicesOf(mergeComposeOverlay(base, overlay)).web
+  assertEquals(web.image, 'nginx')
+  assertEquals(web.ports, '8080:80')
+})
+
+test('root-level command / entrypoint replace; root-level ports append', () => {
+  const base = docFrom({
+    command: ['nginx'],
+    entrypoint: ['/entry.sh'],
+    ports: ['80:80'],
+    services: { web: { image: 'nginx' } },
+  })
+  const overlay = docFrom({
+    command: ['sleep', 'infinity'],
+    entrypoint: ['/bin/sh'],
+    ports: ['443:443'],
+  })
+  const merged = mergeComposeOverlay(base, overlay)
+  assertEquals(merged.data.command, ['sleep', 'infinity'])
+  assertEquals(merged.data.entrypoint, ['/bin/sh'])
+  assertEquals(merged.data.ports, ['80:80', '443:443'])
+})
+
+test('extra_hosts list-base + map-overlay merge via duality', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        extra_hosts: ['db:host-gateway'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        extra_hosts: { cache: 'host-gateway' },
+      },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.extra_hosts, {
+    db: 'host-gateway',
+    cache: 'host-gateway',
+  })
+})
+
+test('presentation: overlay editorView wins; document comments fall back', () => {
+  const base: ComposeDocument = {
+    version: 1,
+    data: { services: { web: { image: 'nginx' } } },
+    presentation: {
+      keyOrder: ['services'],
+      comments: {},
+      documentComment: '# base trailing',
+      editorView: 'editor',
+    },
+  }
+  const overlay: ComposeDocument = {
+    version: 1,
+    data: { services: { web: { image: 'httpd' } } },
+    presentation: {
+      keyOrder: ['services'],
+      comments: {},
+      documentCommentBefore: '# overlay leading',
+      editorView: 'visual',
+    },
+  }
+  const merged = mergeComposeOverlay(base, overlay)
+  assertEquals(merged.presentation.editorView, 'visual')
+  assertEquals(merged.presentation.documentComment, '# base trailing')
+  assertEquals(merged.presentation.documentCommentBefore, '# overlay leading')
+})
+
+test('presentation: #key blank-line suffix remaps with sequence append', () => {
+  const base: ComposeDocument = {
+    version: 1,
+    data: { services: { web: { image: 'nginx', ports: ['80:80'] } } },
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
+  const overlay: ComposeDocument = {
+    version: 1,
+    data: { services: { web: { ports: ['443:443'] } } },
+    presentation: {
+      keyOrder: ['services'],
+      comments: {},
+      blankLines: { 'services.web.ports[0]#key': 2 },
+    },
+  }
+  const merged = mergeComposeOverlay(base, overlay)
+  assertEquals(
+    merged.presentation.blankLines?.['services.web.ports[1]#key'],
+    2,
+  )
+})
+
+test('volumes single-segment short syntax keys on the whole string', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        volumes: ['data'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        volumes: ['data', 'logs'],
+      },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.volumes, [
+    'data',
+    'logs',
+  ])
+})
+
+test('secrets with an empty target fall back to source as the unique key', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        secrets: [{ source: 'db', target: '' }],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        secrets: [{ source: 'db', mode: 0o444 }],
+      },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.secrets, [
+    { source: 'db', mode: 0o444 },
+  ])
+})
+
+test('ports: numeric short entries stringify for the unique key', () => {
+  const base = docFrom({
+    services: {
+      web: { image: 'nginx', ports: [80] },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: { ports: [80, 443] },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.ports, [80, 443])
+})
+
+test('ports: unclosed IPv6 bracket falls back to colon split', () => {
+  const base = docFrom({
+    services: {
+      web: { image: 'nginx', ports: ['[::1:8080:80'] },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: { ports: ['[::1:8080:80', '90'] },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.ports, [
+    '[::1:8080:80',
+    '90',
+  ])
+})
+
+test('mergeKeyOrder appends merged keys that were missing from both orders', () => {
+  const base: ComposeDocument = {
+    version: 1,
+    data: { services: { web: { image: 'nginx' } }, networks: { front: {} } },
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
+  const overlay: ComposeDocument = {
+    version: 1,
+    data: { volumes: { data: {} } },
+    presentation: { keyOrder: [], comments: {} },
+  }
+  const merged = mergeComposeOverlay(base, overlay)
+  assertEquals(merged.presentation.keyOrder, ['services', 'networks', 'volumes'])
+})
+
+test('expose boolean entries scalar-dedup via String()', () => {
+  const base = docFrom({
+    services: {
+      web: { image: 'nginx', expose: [true, '80'] },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: { expose: [true, false] },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.expose, [
+    true,
+    '80',
+    false,
+  ])
+})

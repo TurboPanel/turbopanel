@@ -1,5 +1,8 @@
 import { assertEquals } from "@std/assert";
-import { compileRuntimeComposeDocument } from "./compile-runtime.ts";
+import {
+  compileRuntimeCompose,
+  compileRuntimeComposeDocument,
+} from "./compile-runtime.ts";
 import { composeDocumentToRuntimeYaml } from "./convert.ts";
 import { TURBOPANEL_EXTENSION_KEY } from "./placement.ts";
 import { type ComposeDocument, emptyComposeDocument } from "./types.ts";
@@ -884,4 +887,406 @@ test("compileRuntimeComposeDocument omits peer extra_hosts when peer networks ar
   const web = (compiled.data.services as Record<string, Record<string, unknown>>)
     .web;
   assertEquals("extra_hosts" in (web ?? {}), false);
+});
+
+test("compileRuntimeCompose returns identity expansion for unexpanded services", () => {
+  const { document, expansion } = compileRuntimeCompose(
+    doc({ services: { web: { image: "nginx" } } }),
+  );
+  assertEquals(expansion.get("web"), ["web"]);
+  assertEquals(
+    (document.data.services as Record<string, unknown>).web !== undefined,
+    true,
+  );
+});
+
+test("compileRuntimeCompose expands spanning replicas in the expansion map", () => {
+  const { expansion } = compileRuntimeCompose(
+    doc({
+      services: { web: { image: "nginx", networks: ["frontend"] } },
+      networks: { frontend: {} },
+    }),
+    {
+      localReplicaCounts: new Map([["web", 2]]),
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+    },
+  );
+  assertEquals(expansion.get("web"), ["web-1", "web-2"]);
+});
+
+test("compileRuntimeComposeDocument merges map-form labels when scale is greater than one", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          labels: { "com.example": "keep" },
+        },
+      },
+    }),
+    { localReplicaCounts: new Map([["web", 3]]) },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.scale, 3);
+  assertEquals(web?.labels, {
+    "com.example": "keep",
+    "com.turbopanel.service": "web",
+  });
+  assertEquals("com.turbopanel.environment" in (web?.labels as object), false);
+});
+
+test("compileRuntimeComposeDocument skips extra_hosts that already use name= form", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          networks: ["frontend"],
+          extra_hosts: ["api.env-1=198.51.100.9", "api.env-1"],
+        },
+        api: { image: "node", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      environmentId: "env-1",
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      spanningHostsByService: new Map([
+        ["api", {
+          primary: "203.0.113.20",
+          replicas: new Map(),
+          networks: new Set(["frontend"]),
+        }],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.extra_hosts, ["api.env-1=198.51.100.9", "api.env-1"]);
+});
+
+test("compileRuntimeComposeDocument replaces a non-list extra_hosts value when merging", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          networks: ["frontend"],
+          extra_hosts: 12,
+        },
+        api: { image: "node", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      environmentId: "env-1",
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      spanningHostsByService: new Map([
+        ["api", {
+          primary: "203.0.113.20",
+          replicas: new Map(),
+          networks: new Set(["frontend"]),
+        }],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.extra_hosts, ["api.env-1:203.0.113.20"]);
+});
+
+test("compileRuntimeComposeDocument merges managed ingress extra_hosts without spanning networks", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: { web: { image: "nginx" } },
+    }),
+    {
+      managedIngressHostsByService: new Map([
+        ["web", [{ name: "svc-in", address: "203.0.113.254" }]],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.extra_hosts, ["svc-in:203.0.113.254"]);
+});
+
+test("compileRuntimeComposeDocument does not attach default when the service already lists networks", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      spanningNetworks: new Map([
+        ["default", "tpn_default"],
+        ["frontend", "tpn_front"],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.networks, ["frontend"]);
+  assertEquals(compiled.data.networks, {
+    frontend: { external: true, name: "tpn_front" },
+  });
+});
+
+test("compileRuntimeComposeDocument adds spanning keys that were absent from networks", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+      },
+    }),
+    {
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+    },
+  );
+  assertEquals(compiled.data.networks, {
+    frontend: { external: true, name: "tpn_net1" },
+  });
+});
+
+test("compileRuntimeComposeDocument object-form networks with non-object values still get ipv4_address", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          networks: { frontend: "bridge" },
+        },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      taskAddressesByService: new Map([
+        ["web", new Map([[0, "203.0.113.10"]])],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.networks, {
+    frontend: { ipv4_address: "203.0.113.10" },
+  });
+});
+
+test("compileRuntimeComposeDocument keeps a string depends_on when filtering locals", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", depends_on: "db" },
+        db: { image: "postgres" },
+      },
+    }),
+    { localServiceNames: new Set(["web"]) },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.depends_on, "db");
+});
+
+test("compileRuntimeComposeDocument drops non-string depends_on list entries during expansion rewrite", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+        api: {
+          image: "node",
+          networks: ["frontend"],
+          depends_on: [12, true],
+        },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      localReplicaCounts: new Map([["web", 2], ["api", 1]]),
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+    },
+  );
+  const api = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .api;
+  assertEquals("depends_on" in (api ?? {}), false);
+});
+
+test("compileRuntimeComposeDocument deletes empty volume and secret mappings", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      volumes: {},
+      secrets: {},
+      services: { web: { image: "nginx" } },
+    }),
+  );
+  assertEquals("volumes" in compiled.data, false);
+  assertEquals("secrets" in compiled.data, false);
+});
+
+test("compileRuntimeComposeDocument prunes secrets when the remaining service uses a non-array secrets value", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      secrets: { web_token: { file: "/run/secrets/web" } },
+      services: {
+        web: { image: "nginx", secrets: "web_token" },
+      },
+    }),
+  );
+  assertEquals("secrets" in compiled.data, false);
+});
+
+test("compileRuntimeComposeDocument ignores an empty task-address slot map", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      taskAddressesByService: new Map([["web", new Map()]]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.networks, ["frontend"]);
+});
+
+test("compileRuntimeComposeDocument skips replica extra_hosts with a blank address", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+        api: { image: "node", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      environmentId: "env-1",
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      spanningHostsByService: new Map([
+        ["api", {
+          primary: "203.0.113.20",
+          replicas: new Map([[2, ""]]),
+          networks: new Set(["frontend"]),
+        }],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.extra_hosts, ["api.env-1:203.0.113.20"]);
+});
+
+test("compileRuntimeComposeDocument copies managed ingress extra_hosts onto expanded spanning clones", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      localReplicaCounts: new Map([["web", 2]]),
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      managedIngressHostsByService: new Map([
+        ["web", [{ name: "svc-in", address: "203.0.113.254" }]],
+      ]),
+    },
+  );
+  const services = compiled.data.services as Record<
+    string,
+    Record<string, unknown>
+  >;
+  assertEquals(services["web-1"]?.extra_hosts, ["svc-in:203.0.113.254"]);
+  assertEquals(services["web-2"]?.extra_hosts, ["svc-in:203.0.113.254"]);
+});
+
+test("compileRuntimeComposeDocument keeps a non-mapping volumes value when no services remain", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      volumes: "legacy",
+      services: { web: { image: "nginx" } },
+    }),
+    { localServiceNames: new Set(["other"]) },
+  );
+  assertEquals(compiled.data.volumes, "legacy");
+  assertEquals(compiled.data.services, {});
+});
+
+test("compileRuntimeComposeDocument keeps empty services when volumes are still present", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      volumes: ["legacy-volume"],
+      services: { web: { image: "nginx" } },
+    }),
+    { localServiceNames: new Set(["other"]) },
+  );
+  // Empty-service short-circuit only fires when volumes/networks are also gone.
+  assertEquals(compiled.data.services, {});
+  assertEquals(compiled.data.volumes, ["legacy-volume"]);
+});
+
+test("compileRuntimeComposeDocument skips extra_hosts that already use exact name", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          networks: ["frontend"],
+          extra_hosts: ["api.env-1"],
+        },
+        api: { image: "node", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      environmentId: "env-1",
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      spanningHostsByService: new Map([
+        ["api", {
+          primary: "203.0.113.20",
+          replicas: new Map(),
+          networks: new Set(["frontend"]),
+        }],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.extra_hosts, ["api.env-1"]);
+});
+
+test("compileRuntimeComposeDocument skips extra_hosts that already use name: form", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          networks: ["frontend"],
+          extra_hosts: ["api.env-1:192.0.2.9"],
+        },
+        api: { image: "node", networks: ["frontend"] },
+      },
+      networks: { frontend: {} },
+    }),
+    {
+      environmentId: "env-1",
+      spanningNetworks: new Map([["frontend", "tpn_net1"]]),
+      spanningHostsByService: new Map([
+        ["api", {
+          primary: "203.0.113.20",
+          replicas: new Map(),
+          networks: new Set(["frontend"]),
+        }],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals(web?.extra_hosts, ["api.env-1:192.0.2.9"]);
 });

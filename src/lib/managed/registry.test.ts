@@ -7,6 +7,7 @@ import {
 import {
   getManagedBackupDescriptor,
   getManagedEngineSpec,
+  isManagedBackupSupported,
   isManagedEngineAvailable,
   listManagedEngineSpecs,
   MANAGED_ENGINE_STATUS,
@@ -64,6 +65,15 @@ test('getManagedBackupDescriptor returns dump/sql for available engines or null'
   assertEquals(getManagedBackupDescriptor('mariadb')?.artifactExtension, 'sql')
   assertEquals(getManagedBackupDescriptor('redis'), null)
   assertEquals(getManagedBackupDescriptor('nope'), null)
+})
+
+test('isManagedBackupSupported mirrors backup descriptors', () => {
+  assertEquals(isManagedBackupSupported('postgres'), true)
+  assertEquals(isManagedBackupSupported('mysql'), true)
+  assertEquals(isManagedBackupSupported('mariadb'), true)
+  assertEquals(isManagedBackupSupported('redis'), false)
+  assertEquals(isManagedBackupSupported('clickhouse'), false)
+  assertEquals(isManagedBackupSupported('nope'), false)
 })
 
 test('catalog and spec agree for every code that has a spec', () => {

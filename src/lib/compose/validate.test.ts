@@ -1,8 +1,10 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertThrows } from '@std/assert'
 import {
   applyValidatedComposeOption,
   assertComposeDocument,
+  isComposeDocument,
   stripComposePlacementOption,
+  stripProjectComposePlacementOption,
   validateComposeDocument,
 } from './validate.ts'
 import { makeComposeTag } from './tags.ts'
@@ -118,4 +120,195 @@ services:
 `)
   assertEquals(validateComposeDocument(document, { layer: 'overlay' }).ok, true)
   assertEquals(validateComposeDocument(document, { layer: 'base' }).ok, true)
+})
+
+test('validateComposeDocument treats null and undefined as an empty draft', () => {
+  assertEquals(validateComposeDocument(null).ok, true)
+  if (validateComposeDocument(null).ok) {
+    assertEquals(validateComposeDocument(null).document.data, {})
+  }
+  const missing = validateComposeDocument(undefined)
+  assertEquals(missing.ok, true)
+  if (missing.ok) {
+    assertEquals(missing.document.data, emptyComposeDocument().data)
+  }
+})
+
+test('assertComposeDocument throws TypeError when the document is invalid', () => {
+  assertThrows(
+    () => assertComposeDocument({ version: 2 }),
+    TypeError,
+    'must be a ComposeDocument',
+  )
+})
+
+test('applyValidatedComposeOption rewrites a valid compose document in place', () => {
+  const options: Record<string, unknown> = {
+    compose: {
+      version: 1,
+      data: { services: { api: { image: 'node:22' } } },
+      presentation: { keyOrder: ['services'], comments: {} },
+    },
+  }
+  const result = applyValidatedComposeOption(options)
+  assertEquals(result.ok, true)
+  assertEquals(isComposeDocument(options.compose), true)
+})
+
+test('applyValidatedComposeOption forwards knownSourceIds to the linter', () => {
+  const sourceId = '01989d42-9adb-7e65-bc2e-f38792c53691'
+  const document = yamlToComposeDocument(`
+services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: ${sourceId}
+`)
+  const options: Record<string, unknown> = { compose: document }
+  assertEquals(applyValidatedComposeOption(options).ok, true)
+  const denied = applyValidatedComposeOption(options, {
+    knownSourceIds: new Set(['00000000-0000-4000-8000-000000000001']),
+  })
+  assertEquals(denied.ok, false)
+  if (!denied.ok) {
+    assertEquals(
+      denied.issues.some((issue) => issue.message.includes('was not found')),
+      true,
+    )
+  }
+})
+
+test('validateComposeDocument rejects a non-mapping services value', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: { services: ['web'] },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((issue) => issue.path === 'services'),
+      true,
+    )
+  }
+})
+
+test('validateComposeDocument rejects a non-mapping x-turbopanel extension', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: {
+      'x-turbopanel': 'nope',
+      services: { web: { image: 'nginx' } },
+    },
+    presentation: { keyOrder: ['x-turbopanel', 'services'], comments: {} },
+  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((issue) => issue.path === 'x-turbopanel'),
+      true,
+    )
+  }
+})
+
+test('validateComposeDocument walks malformed tags inside sequences', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: {
+      services: {
+        web: {
+          image: 'nginx',
+          ports: [{ __turbopanelComposeTag: 'nope', value: '80:80' }],
+        },
+      },
+    },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((issue) => issue.message.includes('unknown compose tag')),
+      true,
+    )
+  }
+})
+
+test('validateComposeDocument walks the inner value of a well-formed tag', () => {
+  const result = validateComposeDocument({
+    version: 1,
+    data: {
+      services: {
+        web: {
+          image: 'nginx',
+          ports: makeComposeTag('override', ['80:80']),
+        },
+      },
+    },
+    presentation: { keyOrder: ['services'], comments: {} },
+  })
+  assertEquals(result.ok, true)
+})
+
+test('validateComposeDocument surfaces per-service x-turbopanel shape errors', () => {
+  const document = yamlToComposeDocument(`
+services:
+  web:
+    image: nginx
+    x-turbopanel:
+      engine: nginx
+`)
+  const result = validateComposeDocument(document)
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.issues.length > 0, true)
+  }
+})
+
+test('validateComposeDocument prefixes lint messages with the source line', () => {
+  const document = yamlToComposeDocument(`
+services:
+  web:
+    imaage: nginx
+`)
+  const result = validateComposeDocument(document)
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(
+      result.issues.some((issue) => issue.message.startsWith('Line ')),
+      true,
+    )
+    assertEquals(
+      result.issues.some((issue) => issue.line !== undefined),
+      true,
+    )
+  }
+})
+
+test('stripComposePlacementOption removes stored placement from a ComposeDocument', () => {
+  const options: Record<string, unknown> = {
+    compose: {
+      version: 1,
+      data: {
+        'x-turbopanel': {
+          placement: { server_id: '01989d42-9adb-7e65-bc2e-f38792c53691' },
+        },
+        services: { web: { image: 'nginx' } },
+      },
+      presentation: { keyOrder: ['x-turbopanel', 'services'], comments: {} },
+    },
+  }
+  stripComposePlacementOption(options)
+  const compose = options.compose
+  if (!isComposeDocument(compose)) {
+    throw new TypeError('expected ComposeDocument after strip')
+  }
+  assertEquals('x-turbopanel' in compose.data, false)
+})
+
+test('stripProjectComposePlacementOption is an alias of stripComposePlacementOption', () => {
+  const options: Record<string, unknown> = { other: true }
+  stripProjectComposePlacementOption(options)
+  stripProjectComposePlacementOption(null)
+  assertEquals(options.other, true)
 })

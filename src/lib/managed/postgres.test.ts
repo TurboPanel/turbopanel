@@ -716,3 +716,17 @@ test('parseSettings rejects non-objects; null falls through to defaults', () => 
   assertEquals(fromNull.initialDatabase, 'postgres')
   assertEquals(fromNull.exposure.enabled, false)
 })
+
+test('buildRuntimeSpec falls back when settings omit image and initialDatabase', () => {
+  const settings = {
+    ssl: {},
+    exposure: { enabled: false },
+  } as PostgresManagedSettings
+  const spec = postgresEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings,
+    rootUsername: 'postgres',
+  })
+  assertEquals(spec.service.image, postgresEngineSpec.defaultImage)
+  assertEquals(spec.env.POSTGRES_DB, 'postgres')
+})

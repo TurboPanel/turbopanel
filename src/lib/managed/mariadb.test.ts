@@ -253,8 +253,30 @@ test('parseSettings rejects non-objects, includes, and reserved MariaDB GTID key
     mariadbEngineSpec.parseSettings({ initialDatabase: 'sys' }),
     null,
   )
+  assertEquals(
+    mariadbEngineSpec.parseSettings({ initialDatabase: 12 }),
+    null,
+  )
+  assertEquals(
+    mariadbEngineSpec.parseSettings({ initialDatabase: 'bad-name' }),
+    null,
+  )
   const fromNull = mariadbEngineSpec.parseSettings(null) as MariadbManagedSettings
   assertEquals(fromNull.initialDatabase, 'appdb')
+})
+
+test('buildRuntimeSpec falls back when settings omit image and initialDatabase', () => {
+  const settings = {
+    ssl: {},
+    exposure: { enabled: false },
+  } as MariadbManagedSettings
+  const spec = mariadbEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings,
+    rootUsername: 'root',
+  })
+  assertEquals(spec.service.image, mariadbEngineSpec.defaultImage)
+  assertEquals(spec.env.MARIADB_DATABASE, 'appdb')
 })
 
 test('socket healthcheck and backup descriptor stay credential-free', () => {

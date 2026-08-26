@@ -491,3 +491,294 @@ test('lintComposeYaml accepts build shorthand scalar and tagged override shortha
     false,
   )
 })
+
+const SOURCE_ID = '01989d42-9adb-7e65-bc2e-f38792c53691'
+
+test('lintComposeYaml emits a non-blocking source advisory and skips unknown ids when the set is omitted', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: ${SOURCE_ID}
+`)
+  const advisory = issues.find((issue) =>
+    issue.path === 'services.web.x-turbopanel.source'
+  )
+  assertEquals(advisory?.level, 'warning')
+  assertEquals(advisory?.blocking, false)
+  assertEquals(advisory?.message.includes('builds and promotes a release'), true)
+  assertEquals(
+    issues.some((issue) => issue.message.includes('was not found')),
+    false,
+  )
+  assertEquals(blockingComposeLintIssues(issues), [])
+})
+
+test('lintComposeYaml errors when knownSourceIds does not contain the bound source', () => {
+  const issues = lintComposeYaml(
+    `services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: ${SOURCE_ID}
+`,
+    { knownSourceIds: new Set(['00000000-0000-4000-8000-000000000001']) },
+  )
+  const missing = issues.find((issue) =>
+    issue.path === 'services.web.x-turbopanel.source.sourceId'
+  )
+  assertEquals(missing?.level, 'error')
+  assertEquals(missing?.message.includes(SOURCE_ID), true)
+  assertEquals(blockingComposeLintIssues(issues).length > 0, true)
+})
+
+test('lintComposeYaml accepts a sourceId that resolves in knownSourceIds', () => {
+  const issues = lintComposeYaml(
+    `services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: ${SOURCE_ID}
+`,
+    { knownSourceIds: new Set([SOURCE_ID]) },
+  )
+  assertEquals(
+    issues.some((issue) => issue.message.includes('was not found')),
+    false,
+  )
+})
+
+test('lintComposeYaml skips resolution when sourceId is blank even if knownSourceIds is set', () => {
+  const issues = lintComposeYaml(
+    `services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: "  "
+`,
+    { knownSourceIds: new Set([SOURCE_ID]) },
+  )
+  assertEquals(
+    issues.some((issue) => issue.message.includes('was not found')),
+    false,
+  )
+})
+
+test('lintComposeYaml skips resolution when source is not a mapping', () => {
+  const issues = lintComposeYaml(
+    `services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source: ${SOURCE_ID}
+`,
+    { knownSourceIds: new Set([SOURCE_ID]) },
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.x-turbopanel.source'),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) => issue.message.includes('was not found')),
+    false,
+  )
+})
+
+test('lintComposeYaml skips resolution when source omits sourceId', () => {
+  const issues = lintComposeYaml(
+    `services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source:
+        branch: main
+`,
+    { knownSourceIds: new Set([SOURCE_ID]) },
+  )
+  assertEquals(
+    issues.some((issue) => issue.message.includes('was not found')),
+    false,
+  )
+})
+
+test('lintComposeYaml treats a null image as missing and ignores a scalar environment', () => {
+  const issues = lintComposeYaml(`services:
+  app:
+    image: null
+    environment: PRODUCTION
+`)
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.app' && issue.message.includes('image')
+    ),
+    true,
+  )
+})
+
+test('lintComposeYaml skips non-string environment map values', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    environment:
+      PORT: 8080
+      BAD: prefix-{$PORT}
+`)
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment.PORT'),
+    false,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment.BAD'),
+    true,
+  )
+})
+
+test('lintComposeYaml skips list-form environment entries with no separator', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    environment:
+      - BARE
+      - BAD=prefix-{$PORT}
+`)
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment[0]'),
+    false,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment[1]'),
+    true,
+  )
+})
+
+test('lintComposeYaml advisories a tagged top-level networks key on the base layer', () => {
+  const source = `networks: !override
+  front: {}
+services:
+  web:
+    image: nginx
+`
+  const issues = lintComposeYaml(source)
+  const advisory = issues.find((issue) => issue.path === 'networks')
+  assertEquals(advisory?.blocking, false)
+  assertEquals(advisory?.message.includes('only take effect in an overlay'), true)
+  assertEquals(
+    lintComposeYaml(source, { layer: 'overlay' }).some((issue) => issue.path === 'networks'),
+    false,
+  )
+})
+
+test('lintComposeYaml sorts same-line same-level issues by path', () => {
+  const issues = lintComposeYaml(`services:
+  web: { image: nginx, zzbar: 1, zzfoo: 2 }
+`)
+  const unknown = issues.filter((issue) =>
+    issue.path.startsWith('services.web.zz')
+  )
+  assertEquals(
+    unknown.map((issue) => issue.path),
+    ['services.web.zzbar', 'services.web.zzfoo'],
+  )
+})
+
+test('lintComposeYaml does not treat a non-mapping x-turbopanel as host-native', () => {
+  const issues = lintComposeYaml(`services:
+  app:
+    x-turbopanel: true
+`)
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.app' && issue.message.includes('image')
+    ),
+    true,
+  )
+})
+
+test('lintComposeYaml railpack source is not host-native when source is a scalar', () => {
+  const issues = lintComposeYaml(`services:
+  app:
+    x-turbopanel:
+      source: not-a-map
+`)
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.app' && issue.message.includes('image')
+    ),
+    true,
+  )
+})
+
+test('lintComposeYaml skips image requirement for a railpack-built source', () => {
+  const issues = lintComposeYaml(`services:
+  app:
+    x-turbopanel:
+      source:
+        sourceId: ${SOURCE_ID}
+        buildKind: railpack
+`)
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.app' && issue.message.includes('image')
+    ),
+    false,
+  )
+})
+
+test('lintComposeYaml trims whitespace around railpack buildKind', () => {
+  const issues = lintComposeYaml(`services:
+  app:
+    x-turbopanel:
+      source:
+        sourceId: ${SOURCE_ID}
+        buildKind: "  railpack  "
+`)
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.app' && issue.message.includes('image')
+    ),
+    false,
+  )
+})
+
+test('lintComposeYaml list-form environment picks the earlier of = and : separators', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    environment:
+      - BOTH=prefix-{$PORT}:tail
+      - COLONFIRST:prefix-{$PORT}=tail
+`)
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment[0]'),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment[1]'),
+    true,
+  )
+})
+
+test('lintComposeYaml tag walk skips nested non-string map keys', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    healthcheck:
+      42: !override
+        - ignored
+      test: !override
+        - CMD-SHELL
+        - exit 0
+`)
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.healthcheck.test'),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path.includes('healthcheck.42')),
+    false,
+  )
+})

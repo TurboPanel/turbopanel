@@ -403,8 +403,26 @@ test("parseSettings rejects non-objects and system schemas; null uses defaults",
     mysqlEngineSpec.parseSettings({ initialDatabase: "performance_schema" }),
     null,
   );
+  assertEquals(
+    mysqlEngineSpec.parseSettings({ initialDatabase: 12 }),
+    null,
+  );
   const fromNull = mysqlEngineSpec.parseSettings(null) as MysqlManagedSettings;
   assertEquals(fromNull.initialDatabase, "appdb");
+});
+
+test("buildRuntimeSpec falls back when settings omit image and initialDatabase", () => {
+  const settings = {
+    ssl: {},
+    exposure: { enabled: false },
+  } as MysqlManagedSettings;
+  const spec = mysqlEngineSpec.buildRuntimeSpec({
+    managedId: "11111111-1111-1111-1111-111111111111",
+    settings,
+    rootUsername: "root",
+  });
+  assertEquals(spec.service.image, mysqlEngineSpec.defaultImage);
+  assertEquals(spec.env.MYSQL_DATABASE, "appdb");
 });
 
 test("buildConnectionInfo renders disable as DISABLED", () => {

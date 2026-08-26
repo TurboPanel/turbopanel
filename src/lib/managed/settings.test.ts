@@ -339,6 +339,8 @@ test('clampManagedResources clamps against org and server limits', () => {
 
 test('parseBackupSettings: absent -> undefined', () => {
   assertEquals(parseBackupSettings(undefined), undefined)
+  // Empty object has no retentionKeep — inherit engine defaults.
+  assertEquals(parseBackupSettings({}), undefined)
 })
 
 test('parseBackupSettings: retentionKeep accepted within bounds', () => {

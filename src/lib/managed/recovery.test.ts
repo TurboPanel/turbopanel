@@ -100,4 +100,15 @@ test('serializeRecovery surfaces blocked copy for the UI', () => {
   }
   assertEquals(serializeRecovery(row).blockedReason, 'unable to fence')
   assertEquals(serializeRecovery(row).state, 'blocked')
+  assertEquals(
+    serializeRecovery({ ...row, metadata: {} }).blockedReason,
+    null,
+  )
+})
+
+test('parseRecoveryMetadata drops non-number lagBytes that are not null', () => {
+  assertEquals(
+    parseRecoveryMetadata({ lagBytes: '12', blockedReason: 9 }),
+    {},
+  )
 })

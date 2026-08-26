@@ -27,6 +27,18 @@ test('missing replication is not healthy enough for automatic failover', () => {
     evaluateManagedPromoteLagGate(undefined, NOW),
     'managed_replica_not_streaming',
   )
+  assertEquals(
+    evaluateManagedPromoteLagGate(['not-an-object'], NOW),
+    'managed_replica_not_streaming',
+  )
+  assertEquals(
+    evaluateManagedPromoteLagGate({ state: '', observedAt: FRESH }, NOW),
+    'managed_replica_not_streaming',
+  )
+  assertEquals(
+    evaluateManagedPromoteLagGate({ state: 12, observedAt: FRESH }, NOW),
+    'managed_replica_not_streaming',
+  )
 })
 
 test('fresh streaming under threshold is healthy for automatic failover', () => {
@@ -48,6 +60,20 @@ test('stale or lagging observations fail closed', () => {
     false,
   )
   assertEquals(
+    evaluateManagedPromoteLagGate(
+      { state: 'streaming', observedAt: '' },
+      NOW,
+    ),
+    'managed_replica_health_stale',
+  )
+  assertEquals(
+    evaluateManagedPromoteLagGate(
+      { state: 'streaming', observedAt: 'not-a-date' },
+      NOW,
+    ),
+    'managed_replica_health_stale',
+  )
+  assertEquals(
     isAutomaticFailoverHealthy(
       {
         state: 'streaming',
@@ -58,10 +84,74 @@ test('stale or lagging observations fail closed', () => {
     ),
     false,
   )
+  assertEquals(
+    evaluateManagedPromoteLagGate(
+      {
+        state: 'streaming',
+        observedAt: FRESH,
+        lagSeconds: 31,
+      },
+      NOW,
+    ),
+    'managed_replica_lagging',
+  )
+})
+
+test('evaluateManagedPromoteLagGate honors custom stale and lag ceilings', () => {
+  // Fresh within a 3-minute stale window, but over a tiny byte ceiling.
+  assertEquals(
+    evaluateManagedPromoteLagGate(
+      {
+        state: 'streaming',
+        observedAt: FRESH,
+        lagBytes: 100,
+        lagSeconds: 5,
+      },
+      NOW,
+      { staleMs: 180_000, maxLagBytes: 50, maxLagSeconds: 10 },
+    ),
+    'managed_replica_lagging',
+  )
+  assertEquals(
+    evaluateManagedPromoteLagGate(
+      {
+        state: 'streaming',
+        observedAt: FRESH,
+        lagBytes: 10,
+        lagSeconds: 20,
+      },
+      NOW,
+      { staleMs: 180_000, maxLagBytes: 50, maxLagSeconds: 10 },
+    ),
+    'managed_replica_lagging',
+  )
+  assertEquals(
+    evaluateManagedPromoteLagGate(
+      {
+        state: 'streaming',
+        observedAt: FRESH,
+        lagBytes: 10,
+        lagSeconds: 5,
+      },
+      NOW,
+      { staleMs: 180_000, maxLagBytes: 50, maxLagSeconds: 10 },
+    ),
+    null,
+  )
+  // Custom staleMs tighter than the default fails a one-minute-old sample.
+  assertEquals(
+    evaluateManagedPromoteLagGate(
+      { state: 'streaming', observedAt: FRESH },
+      NOW,
+      { staleMs: 30_000 },
+    ),
+    'managed_replica_health_stale',
+  )
 })
 
 test('replicationFromMemberMetadata reads node.metadata.replication', () => {
   assertEquals(replicationFromMemberMetadata(null), undefined)
+  assertEquals(replicationFromMemberMetadata(['array']), undefined)
   assertEquals(
     replicationFromMemberMetadata({
       replication: { state: 'streaming', observedAt: FRESH },

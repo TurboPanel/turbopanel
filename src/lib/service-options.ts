@@ -1,4 +1,4 @@
-/** Validated `service.options` shape for Coolify-style per-service settings. */
+/** Validated `service.options` shape for per-service settings. */
 
 export type HealthCheckPolicy = 'disabled' | 'warn' | 'required'
 
