@@ -2,9 +2,14 @@
  * Route-gate coverage for the GitHub webhook surface.
  *
  * Host-free: the only database work these paths reach before answering is the
- * single `setting` read behind `getGithubAppConfig`, which is stubbed here.
- * The point of these cases is the *order* of the gate — an unconfigured App and
- * an unsigned delivery must both be refused before anything is written.
+ * `gitapp` lookup behind `resolveGithubWebhookApp`, which is stubbed here.
+ * The point of these cases is the *order* of the gate — a delivery that names
+ * no registered app, one whose app has no webhook secret, and one that is
+ * unsigned must each be refused before anything is written.
+ *
+ * Deliveries arrive on the **scoped** path, which is the URL every registered
+ * App is handed; the ref in that path is what selects the secret to verify
+ * against.
  */
 
 import { assertEquals } from '@std/assert'
@@ -15,7 +20,6 @@ import { GITHUB_WEBHOOK_PATH } from '../../surfaces.ts'
 import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
 import { encryptSecret } from '../authn/data-encryption.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { GITHUB_APP_SETTING_KEY } from '../../lib/git/github-app-config.ts'
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   registerGithubWebhookRoutes,
@@ -37,8 +41,11 @@ const test = Deno.test.bind(Deno)
 
 const encoder = new TextEncoder()
 
-/** Minimal `select().from().where().limit()` chain returning one settings row. */
-function stubSettingDb(rows: Array<{ key: string; value: unknown }>): Db {
+/** The ref this instance would have baked into the App's webhook URL. */
+const WEBHOOK_REF = 'ref-under-test'
+
+/** Minimal `select().from().where().limit()` chain returning the gitapp rows. */
+function stubAppDb(rows: unknown[]): Db {
   return {
     select: () => ({
       from: () => ({
@@ -51,7 +58,10 @@ function stubSettingDb(rows: Array<{ key: string; value: unknown }>): Db {
 }
 
 async function buildApp(opts: {
-  webhookSecret?: string | null
+  /** `undefined` = the app exists but has no webhook secret configured. */
+  webhookSecret?: string
+  /** `false` = the ref resolves to nothing at all. */
+  appRegistered?: boolean
   rateLimited?: boolean
 }) {
   const secretsConfig = parseTestSecretsConfig('deno')
@@ -60,12 +70,22 @@ async function buildApp(opts: {
     'data-encryption',
   )
 
-  const rows = opts.webhookSecret === undefined ? [] : [{
-    key: GITHUB_APP_SETTING_KEY,
-    value: {
-      appId: '1234',
+  const rows = opts.appRegistered === false ? [] : [{
+    id: 'app-1',
+    organizationId: null,
+    provider: 'github',
+    name: 'TurboPanel',
+    baseUrl: 'https://github.com',
+    apiUrl: null,
+    externalAppId: '1234',
+    appSlug: null,
+    clientId: null,
+    redirectUri: null,
+    webhookRef: WEBHOOK_REF,
+    webhookTokenHash: null,
+    credentials: {
       privateKeyEnvelope: await encryptSecret(dataEncryptionSecrets, 'pem-placeholder'),
-      ...(opts.webhookSecret === null ? {} : {
+      ...(opts.webhookSecret === undefined ? {} : {
         webhookSecretEnvelope: await encryptSecret(
           dataEncryptionSecrets,
           opts.webhookSecret,
@@ -76,7 +96,7 @@ async function buildApp(opts: {
 
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
-    c.set('db', stubSettingDb(rows))
+    c.set('db', stubAppDb(rows))
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     return next()
   })
@@ -109,7 +129,7 @@ async function signBody(secret: string, body: string): Promise<string> {
 }
 
 function post(body: string, headers: Record<string, string> = {}): Request {
-  return new Request(`http://instance${GITHUB_WEBHOOK_PATH}`, {
+  return new Request(`http://instance${GITHUB_WEBHOOK_PATH}/${WEBHOOK_REF}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body,
@@ -122,17 +142,17 @@ test('rate limit is spent before any App config read', async () => {
   assertEquals(res.status, 429)
 })
 
+test('a ref naming no registered app is rejected, not accepted', async () => {
+  const app = await buildApp({ appRegistered: false })
+  const res = await app.request(post('{}', { 'x-github-event': 'push' }))
+  assertEquals(res.status, 401)
+})
+
 test('an unconfigured App refuses rather than accepting unsigned deliveries', async () => {
   const app = await buildApp({})
   const res = await app.request(post('{}', { 'x-github-event': 'push' }))
   assertEquals(res.status, 503)
   assertEquals(await res.json(), { error: 'github_app_not_configured' })
-})
-
-test('a configured App with no webhook secret still refuses', async () => {
-  const app = await buildApp({ webhookSecret: null })
-  const res = await app.request(post('{}', { 'x-github-event': 'push' }))
-  assertEquals(res.status, 503)
 })
 
 test('a missing or wrong signature is 401 before the delivery is claimed', async () => {

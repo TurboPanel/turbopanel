@@ -170,6 +170,30 @@ CREATE TABLE "fabric" (
 	CONSTRAINT "fabric_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text)))
 );
 --> statement-breakpoint
+CREATE TABLE "gitapp" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"metadata" jsonb,
+	"options" jsonb,
+	"organization_id" uuid,
+	"provider" text NOT NULL,
+	"name" varchar(255) NOT NULL,
+	"base_url" text NOT NULL,
+	"api_url" text,
+	"external_app_id" text NOT NULL,
+	"app_slug" varchar(255),
+	"client_id" text,
+	"redirect_uri" text,
+	"credentials" jsonb NOT NULL,
+	"webhook_ref" varchar(64) NOT NULL,
+	"webhook_token_hash" text,
+	CONSTRAINT "uniq_gitapp_webhook_ref" UNIQUE("webhook_ref"),
+	CONSTRAINT "uniq_gitapp_provider_base_external" UNIQUE("provider","base_url","external_app_id"),
+	CONSTRAINT "uniq_gitapp_webhook_token_hash" UNIQUE("webhook_token_hash"),
+	CONSTRAINT "gitapp_provider_check" CHECK (provider IN ('github', 'gitlab'))
+);
+--> statement-breakpoint
 CREATE TABLE "installation" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -177,13 +201,14 @@ CREATE TABLE "installation" (
 	"metadata" jsonb,
 	"options" jsonb,
 	"organization_id" uuid NOT NULL,
+	"app_id" uuid NOT NULL,
 	"provider" text NOT NULL,
 	"external_installation_id" text NOT NULL,
 	"account_login" varchar(255),
 	"account_type" text,
 	"suspended_at" timestamp(3) with time zone,
 	"oauth_envelope" jsonb,
-	CONSTRAINT "uniq_installation_organization_provider_external" UNIQUE("organization_id","provider","external_installation_id"),
+	CONSTRAINT "uniq_installation_organization_app_external" UNIQUE("organization_id","app_id","external_installation_id"),
 	CONSTRAINT "installation_provider_check" CHECK (provider IN ('github', 'gitlab'))
 );
 --> statement-breakpoint
@@ -811,7 +836,9 @@ ALTER TABLE "entitlement" ADD CONSTRAINT "entitlement_principal_id_principal_id_
 ALTER TABLE "environment" ADD CONSTRAINT "environment_project_id_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."project"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "environment" ADD CONSTRAINT "environment_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "fabric" ADD CONSTRAINT "fabric_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "gitapp" ADD CONSTRAINT "gitapp_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "installation" ADD CONSTRAINT "installation_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "installation" ADD CONSTRAINT "installation_app_id_gitapp_id_fk" FOREIGN KEY ("app_id") REFERENCES "public"."gitapp"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosting" ADD CONSTRAINT "hosting_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosting" ADD CONSTRAINT "hosting_tls_id_tls_id_fk" FOREIGN KEY ("tls_id") REFERENCES "public"."tls"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "hosting" ADD CONSTRAINT "hosting_ip_id_ip_id_fk" FOREIGN KEY ("ip_id") REFERENCES "public"."ip"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -909,7 +936,10 @@ CREATE INDEX "idx_environment_project_id" ON "environment" USING btree ("project
 CREATE INDEX "idx_environment_server_id" ON "environment" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_fabric_organization_id" ON "fabric" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "idx_fabric_organization_id" ON "fabric" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_gitapp_organization_id" ON "gitapp" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_gitapp_provider" ON "gitapp" USING btree ("provider" text_ops);--> statement-breakpoint
 CREATE INDEX "idx_installation_organization_id" ON "installation" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_installation_app_id" ON "installation" USING btree ("app_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_grant_entity" ON "grant" USING btree ("entity_type","entity_id");--> statement-breakpoint
 CREATE INDEX "idx_grant_actor" ON "grant" USING btree ("actor_type","actor_id");--> statement-breakpoint
 CREATE INDEX "idx_hosting_service_id" ON "hosting" USING btree ("service_id" uuid_ops);--> statement-breakpoint

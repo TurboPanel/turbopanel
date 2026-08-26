@@ -34,6 +34,7 @@ import {
 } from './principals/routes.ts'
 import { registerStorageRoutes } from './storage/routes.ts'
 import { registerSourceRoutes } from './sources/routes.ts'
+import { registerGitAppRoutes } from './git-apps/routes.ts'
 import { registerNetworkRoutes } from './networks/routes.ts'
 import { registerDatacenterRoutes } from './datacenters/routes.ts'
 import { registerIpRoutes } from './ips/routes.ts'
@@ -104,6 +105,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   registerContainerRoutes(client, opts)
   registerStorageRoutes(client, opts)
   registerSourceRoutes(client, opts)
+  registerGitAppRoutes(client, opts)
   registerProjectPrincipalRoutes(client, opts)
   registerOrganizationLimitsRoutes(client, opts)
   registerServerLimitsRoutes(client, opts)

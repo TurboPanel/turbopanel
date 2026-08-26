@@ -40,15 +40,14 @@ import {
   setPublicUrls,
 } from "./public-urls.ts";
 import {
-  getGithubAppConfigSummary,
-  GithubAppConfigError,
-  setGithubAppConfig,
-} from "../lib/git/github-app-config.ts";
-import {
-  getGitlabOauthConfigSummary,
-  GitlabOauthConfigError,
-  setGitlabOauthConfig,
-} from "../lib/git/gitlab-oauth-config.ts";
+  completeGithubManifestHandler,
+  createGitAppHandler,
+  deleteGitAppHandler,
+  getGitAppHandler,
+  listGitAppsHandler,
+  patchGitAppHandler,
+  startGithubManifestHandler,
+} from "../client/git-apps/handlers.ts";
 import {
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
@@ -64,8 +63,6 @@ import {
   extractAddresses,
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
-  parseGithubAppUpdates,
-  parseGitlabOauthUpdates,
   parsePayloadBody,
   parseReencryptRequestBody,
   parseSignupEnabledBody,
@@ -207,104 +204,63 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     return c.json({ ok: true, urls: parsed.urls, applied: false });
   });
 
-  // Instance-wide GitHub App credentials. The private key and webhook secret
-  // are sealed as `tpsecret` before persist (see `lib/git/github-app-config.ts`)
-  // and are never returned — GET reports presence only.
-  admin.get("/instance/github-app", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
-    const config = await getGithubAppConfigSummary(db);
-    return c.json({ ok: true, githubApp: config });
-  });
-
-  admin.put("/instance/github-app", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
-
-    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
-    if (!dataEncryptionSecrets) {
-      return c.json({
-        ok: false,
-        error: "Encryption unavailable — no encryption key configured",
-      }, 503);
-    }
-
-    const body = await c.req.json().catch(() => null);
-    const updates = parseGithubAppUpdates(body);
-    if (!updates) {
-      return c.json({
-        ok: false,
-        error:
-          "expected { appId?, appSlug?, clientId?, privateKeyPem?, webhookSecret? }",
-      }, 400);
-    }
-
-    try {
-      await setGithubAppConfig(db, dataEncryptionSecrets, updates);
-    } catch (error) {
-      if (error instanceof GithubAppConfigError) {
-        return c.json({ ok: false, error: error.message }, 400);
-      }
-      throw error;
-    }
-
-    return c.json({ ok: true, githubApp: await getGithubAppConfigSummary(db) });
-  });
-
-  // Instance-wide GitLab OAuth application. The GitLab counterpart of the
-  // GitHub App routes above and the only supported way to turn the GitLab
-  // provider on: `/sources/gitlab/oauth`, repository discovery, and webhook
-  // verification all read this row, and every one of them reports a
-  // configuration error until it exists.
+  // Instance-wide Git provider applications: GitHub Apps and GitLab OAuth
+  // applications an operator registers once for the whole instance, so any
+  // organization can connect accounts through them.
   //
-  // GitLab has no per-repository App install, so what the operator registers is
-  // one OAuth application (on gitlab.com or their self-managed instance) and
-  // each organization then connects an account or group through it — see
-  // `lib/git/gitlab-oauth-config.ts`. The client secret and the webhook token
-  // are sealed as `tpsecret` before persist and are never returned; GET reports
-  // presence only, exactly like the GitHub App surface.
-  admin.get("/instance/gitlab-oauth", async (c) => {
+  // This is a **collection**, not a pair of singleton settings rows. An
+  // instance may hold several apps per provider — a github.com App and a GitHub
+  // Enterprise one, or separate Apps for separate customer accounts — and each
+  // carries its own webhook URL so an inbound delivery can name the app that
+  // signed it before any secret is consulted (`lib/git/resolve-webhook-app.ts`).
+  //
+  // Sealed material (App private key, OAuth client secret, webhook secret) is
+  // written as `tpsecret` and never returned; reads report presence only.
+  // Organizations manage their *own* apps through the client surface
+  // (`/api/client/v1/git/apps`) — the admin surface has no organization context
+  // and deliberately sees only instance-wide rows.
+  const instanceScope = { organizationId: null };
+
+  admin.get("/git/apps", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
-    const config = await getGitlabOauthConfigSummary(db);
-    return c.json({ ok: true, gitlabOauth: config });
+    return await listGitAppsHandler(c, db, instanceScope);
   });
 
-  admin.put("/instance/gitlab-oauth", async (c) => {
+  admin.post("/git/apps", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    return await createGitAppHandler(c, db, instanceScope);
+  });
 
-    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
-    if (!dataEncryptionSecrets) {
-      return c.json({
-        ok: false,
-        error: "Encryption unavailable — no encryption key configured",
-      }, 503);
-    }
+  admin.post("/git/apps/github/manifest", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    return await startGithubManifestHandler(c, db, instanceScope);
+  });
 
-    const body = await c.req.json().catch(() => null);
-    const updates = parseGitlabOauthUpdates(body);
-    if (!updates) {
-      return c.json({
-        ok: false,
-        error:
-          "expected { clientId?, clientSecret?, baseUrl?, redirectUri?, webhookSecret? }",
-      }, 400);
-    }
+  admin.get("/git/apps/github/manifest/callback", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    return await completeGithubManifestHandler(c, db, instanceScope);
+  });
 
-    try {
-      await setGitlabOauthConfig(db, dataEncryptionSecrets, updates);
-    } catch (error) {
-      if (error instanceof GitlabOauthConfigError) {
-        return c.json({ ok: false, error: error.message }, 400);
-      }
-      throw error;
-    }
+  admin.get("/git/apps/:id", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    return await getGitAppHandler(c, db, instanceScope, c.req.param("id"));
+  });
 
-    return c.json({
-      ok: true,
-      gitlabOauth: await getGitlabOauthConfigSummary(db),
-    });
+  admin.patch("/git/apps/:id", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    return await patchGitAppHandler(c, db, instanceScope, c.req.param("id"));
+  });
+
+  admin.delete("/git/apps/:id", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    return await deleteGitAppHandler(c, db, instanceScope, c.req.param("id"));
   });
 
   admin.get("/settings/email", async (c) => {

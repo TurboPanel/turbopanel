@@ -34,6 +34,16 @@ export const INSTALL_STATE_PURPOSES = {
   gitlab: 'gitlab-oauth-connect-state',
 } as const
 
+/**
+ * The manifest flow's own purpose.
+ *
+ * Separate from the install purposes above for the same reason those are
+ * separate from each other: a state minted to *create* an App carries different
+ * claims than one minted to *install* an existing App, and a key that does not
+ * verify is a stronger guarantee than a runtime shape check.
+ */
+export const GITHUB_MANIFEST_STATE_PURPOSE = 'github-app-manifest-state'
+
 export type InstallStateProvider = keyof typeof INSTALL_STATE_PURPOSES
 
 /** Short window: the operator is mid-redirect, not sitting on the link. */
@@ -48,7 +58,22 @@ const textDecoder = new TextDecoder()
 
 type InstallStatePayload = {
   organizationId: string
+  /**
+   * The registered app the flow was started against.
+   *
+   * Carried in the signed state rather than re-derived on the callback because
+   * the provider's redirect does not echo it back, and an instance may now hold
+   * several apps for the same provider — without it the callback would have to
+   * guess which one the resulting installation belongs to.
+   */
+  appId: string
   exp: number
+}
+
+/** What a verified state proves. */
+export type InstallStateClaims = {
+  organizationId: string
+  appId: string
 }
 
 function base64urlEncode(bytes: Uint8Array): string {
@@ -70,10 +95,109 @@ function base64urlDecode(input: string): Uint8Array {
   return bytes
 }
 
+/**
+ * What a verified manifest state proves.
+ *
+ * The App does not exist yet, so there is no row id to carry — instead the
+ * state holds everything the callback needs to create one, including the
+ * `webhookRef` that was already written into the manifest's
+ * `hook_attributes.url`. Signing it is what keeps a caller from redirecting the
+ * conversion of someone else's App into their own organization.
+ */
+export type GithubManifestStateClaims = {
+  /** `null` for the instance-wide (admin) flow. */
+  organizationId: string | null
+  webhookRef: string
+  baseUrl: string
+  name: string
+}
+
+type ManifestStatePayload = GithubManifestStateClaims & { exp: number }
+
+export async function signGithubManifestState(
+  secretsConfig: SecretsConfig,
+  claims: GithubManifestStateClaims,
+  nowMs: number = Date.now(),
+): Promise<string> {
+  const derived = await deriveSecretsConfig(
+    secretsConfig,
+    GITHUB_MANIFEST_STATE_PURPOSE,
+  )
+  const payload: ManifestStatePayload = {
+    ...claims,
+    exp: Math.floor((nowMs + INSTALL_STATE_TTL_MS) / 1000),
+  }
+  const encodedPayload = base64urlEncode(
+    textEncoder.encode(JSON.stringify(payload)),
+  )
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    derived.current.key,
+    textEncoder.encode(encodedPayload),
+  )
+  return formatEnvelope(
+    ENVELOPE_SCHEME_INSTALL_STATE,
+    derived.current.version,
+    encodedPayload,
+    base64urlEncode(new Uint8Array(signature)),
+  )
+}
+
+export async function verifyGithubManifestState(
+  secretsConfig: SecretsConfig,
+  state: string,
+  nowMs: number = Date.now(),
+): Promise<GithubManifestStateClaims | null> {
+  const parsed = parseEnvelope(ENVELOPE_SCHEME_INSTALL_STATE, state, 2)
+  if (!parsed) return null
+
+  const derived = await deriveSecretsConfig(
+    secretsConfig,
+    GITHUB_MANIFEST_STATE_PURPOSE,
+  )
+  const key = findKeyForVersion(derived, parsed.version)
+  if (!key) return null
+
+  const [encodedPayload, encodedSignature] = parsed.fields
+  let signature: Uint8Array
+  let payload: ManifestStatePayload
+  try {
+    signature = base64urlDecode(encodedSignature!)
+    payload = JSON.parse(
+      textDecoder.decode(base64urlDecode(encodedPayload!)),
+    ) as ManifestStatePayload
+  } catch {
+    return null
+  }
+
+  const verified = await crypto.subtle.verify(
+    'HMAC',
+    key,
+    signature as BufferSource,
+    textEncoder.encode(encodedPayload!),
+  )
+  if (!verified) return null
+
+  if (payload.organizationId !== null && typeof payload.organizationId !== 'string') {
+    return null
+  }
+  for (const field of ['webhookRef', 'baseUrl', 'name'] as const) {
+    if (typeof payload[field] !== 'string' || payload[field].length === 0) return null
+  }
+  if (typeof payload.exp !== 'number' || payload.exp * 1000 <= nowMs) return null
+
+  return {
+    organizationId: payload.organizationId,
+    webhookRef: payload.webhookRef,
+    baseUrl: payload.baseUrl,
+    name: payload.name,
+  }
+}
+
 export async function signProviderInstallState(
   secretsConfig: SecretsConfig,
   provider: InstallStateProvider,
-  organizationId: string,
+  claims: InstallStateClaims,
   nowMs: number = Date.now(),
 ): Promise<string> {
   const derived = await deriveSecretsConfig(
@@ -81,7 +205,8 @@ export async function signProviderInstallState(
     INSTALL_STATE_PURPOSES[provider],
   )
   const payload: InstallStatePayload = {
-    organizationId,
+    organizationId: claims.organizationId,
+    appId: claims.appId,
     exp: Math.floor((nowMs + INSTALL_STATE_TTL_MS) / 1000),
   }
   const encodedPayload = base64urlEncode(
@@ -101,15 +226,15 @@ export async function signProviderInstallState(
 }
 
 /**
- * Verify the signature and expiry. Returns the organization id, or `null` for
- * any malformed / unsigned / expired state — never a partially trusted value.
+ * Verify the signature and expiry. Returns the claims, or `null` for any
+ * malformed / unsigned / expired state — never a partially trusted value.
  */
 export async function verifyProviderInstallState(
   secretsConfig: SecretsConfig,
   provider: InstallStateProvider,
   state: string,
   nowMs: number = Date.now(),
-): Promise<string | null> {
+): Promise<InstallStateClaims | null> {
   const parsed = parseEnvelope(ENVELOPE_SCHEME_INSTALL_STATE, state, 2)
   if (!parsed) return null
 
@@ -143,43 +268,44 @@ export async function verifyProviderInstallState(
   if (typeof payload.organizationId !== 'string' || !payload.organizationId) {
     return null
   }
+  if (typeof payload.appId !== 'string' || !payload.appId) return null
   if (typeof payload.exp !== 'number' || payload.exp * 1000 <= nowMs) {
     return null
   }
 
-  return payload.organizationId
+  return { organizationId: payload.organizationId, appId: payload.appId }
 }
 
 /** GitHub App installation redirect state. */
 export function signGithubInstallState(
   secretsConfig: SecretsConfig,
-  organizationId: string,
+  claims: InstallStateClaims,
   nowMs: number = Date.now(),
 ): Promise<string> {
-  return signProviderInstallState(secretsConfig, 'github', organizationId, nowMs)
+  return signProviderInstallState(secretsConfig, 'github', claims, nowMs)
 }
 
 export function verifyGithubInstallState(
   secretsConfig: SecretsConfig,
   state: string,
   nowMs: number = Date.now(),
-): Promise<string | null> {
+): Promise<InstallStateClaims | null> {
   return verifyProviderInstallState(secretsConfig, 'github', state, nowMs)
 }
 
 /** GitLab OAuth authorize redirect state. */
 export function signGitlabConnectState(
   secretsConfig: SecretsConfig,
-  organizationId: string,
+  claims: InstallStateClaims,
   nowMs: number = Date.now(),
 ): Promise<string> {
-  return signProviderInstallState(secretsConfig, 'gitlab', organizationId, nowMs)
+  return signProviderInstallState(secretsConfig, 'gitlab', claims, nowMs)
 }
 
 export function verifyGitlabConnectState(
   secretsConfig: SecretsConfig,
   state: string,
   nowMs: number = Date.now(),
-): Promise<string | null> {
+): Promise<InstallStateClaims | null> {
   return verifyProviderInstallState(secretsConfig, 'gitlab', state, nowMs)
 }

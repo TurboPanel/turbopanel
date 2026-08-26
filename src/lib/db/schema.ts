@@ -2534,6 +2534,105 @@ export const mount = pgTable(
   ],
 )
 /**
+ * A registered Git provider application — a GitHub App, or a GitLab OAuth
+ * application.
+ *
+ * Physical table name is the single lower-case word `gitapp` (repo rule — see
+ * `src/lib/db/table-naming.test.ts`); the exported binding keeps the
+ * fully-qualified `gitProviderApp` name used across the codebase.
+ *
+ * **`organization_id` is the scope switch.** `NULL` means instance-wide: an
+ * operator registered it once and every organization may connect through it.
+ * A non-null value means the row belongs to that organization alone. This is
+ * one table rather than a global settings row plus a per-org table, so every
+ * resolution site has exactly one place to look.
+ *
+ * **`webhook_ref` is how a delivery finds its way back here.** Each app is
+ * handed its own webhook URL ending in this token, so an inbound delivery names
+ * its app before any secret is consulted — see `src/lib/git/resolve-webhook-app.ts`.
+ * It is a routing key, not a credential: HMAC (GitHub) or the token compare
+ * (GitLab) still authenticates. Being unguessable only keeps the surface from
+ * being enumerable.
+ *
+ * **`base_url` participates in the unique key** because a GitHub App id is
+ * unique per origin, not globally — the same numeric id may exist on github.com
+ * and on a GitHub Enterprise Server instance. Holding it per app is also what
+ * lets one TurboPanel instance talk to several GitLab origins at once.
+ *
+ * **All sealed material lives in `credentials`** as `tpsecret` envelopes
+ * (`privateKeyEnvelope`, `clientSecretEnvelope`, `webhookSecretEnvelope`),
+ * the same shape `installation.oauth_envelope` uses. Nothing sealed is ever
+ * returned over the API; summaries report presence only.
+ */
+export const gitProviderApp = pgTable(
+  'gitapp',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    /** NULL = instance-wide (any organization may use it); set = owned by that org. */
+    organizationId: uuid('organization_id'),
+    provider: text().notNull(),
+    name: varchar({ length: 255 }).notNull(),
+    /** Origin the app lives on; part of the unique key, so never null. */
+    baseUrl: text('base_url').notNull(),
+    /** Explicit API origin for GitHub Enterprise Server; derived when null. */
+    apiUrl: text('api_url'),
+    /**
+     * Provider-side application id. For GitHub this is the numeric App id that
+     * arrives as `X-GitHub-Hook-Installation-Target-ID`; for GitLab it is the
+     * OAuth application id.
+     */
+    externalAppId: text('external_app_id').notNull(),
+    /** GitHub App slug, used to build the install URL. */
+    appSlug: varchar('app_slug', { length: 255 }),
+    clientId: text('client_id'),
+    /** GitLab OAuth redirect URI. */
+    redirectUri: text('redirect_uri'),
+    /**
+     * Sealed material: `{ privateKeyEnvelope?, clientSecretEnvelope?,
+     * webhookSecretEnvelope? }`, each a `tpsecret` string.
+     */
+    credentials: jsonb().notNull(),
+    /** Opaque routing token that appears in this app's webhook URL. */
+    webhookRef: varchar('webhook_ref', { length: 64 }).notNull(),
+    /**
+     * GitLab only: HMAC of the webhook token, so a delivery that arrives on the
+     * unscoped path resolves in one indexed lookup instead of a scan.
+     */
+    webhookTokenHash: text('webhook_token_hash'),
+  },
+  (table) => [
+    index('idx_gitapp_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_gitapp_provider').using('btree', table.provider.asc().nullsLast().op('text_ops')),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'gitapp_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    check('gitapp_provider_check', sql`provider IN ('github', 'gitlab')`),
+    unique('uniq_gitapp_webhook_ref').on(table.webhookRef),
+    unique('uniq_gitapp_provider_base_external').on(
+      table.provider,
+      table.baseUrl,
+      table.externalAppId,
+    ),
+    unique('uniq_gitapp_webhook_token_hash').on(table.webhookTokenHash),
+  ],
+)
+/**
  * A Git provider connection granted to one organization.
  *
  * Physical table name is the single lower-case word `installation` (repo rule —
@@ -2545,8 +2644,14 @@ export const mount = pgTable(
  * GitLab there is no per-repository install: the operator connects one account
  * or group over OAuth, and the id is that account/group's GitLab id.
  *
+ * **`app_id` names the application the grant was made through**, and is what
+ * makes a webhook delivery resolvable to exactly one row: an App id alone is
+ * shared by every installation of that App, and a GitLab delivery names no
+ * connection at all. Without it the only discriminators are provider and
+ * external id, which collide across organizations.
+ *
  * **No GitHub token columns.** Installation access tokens are minted on demand
- * from the instance-wide sealed App credentials
+ * from the sealed credentials of the `gitapp` row this one points at
  * (`src/lib/git/github-app-token.ts`) and are never persisted.
  *
  * **GitLab is the exception, and `oauth_envelope` is why.** OAuth hands out an
@@ -2571,6 +2676,8 @@ export const gitProviderInstallation = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
+    /** The registered application this connection was granted through. */
+    appId: uuid('app_id').notNull(),
     provider: text().notNull(),
     /** Provider-side id: a GitHub App installation, or a GitLab account/group. */
     externalInstallationId: text('external_installation_id').notNull(),
@@ -2595,15 +2702,24 @@ export const gitProviderInstallation = pgTable(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops'),
     ),
+    index('idx_installation_app_id').using(
+      'btree',
+      table.appId.asc().nullsLast().op('uuid_ops'),
+    ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
       name: 'installation_organization_id_organization_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.appId],
+      foreignColumns: [gitProviderApp.id],
+      name: 'installation_app_id_gitapp_id_fk',
+    }).onDelete('cascade'),
     check('installation_provider_check', sql`provider IN ('github', 'gitlab')`),
-    unique('uniq_installation_organization_provider_external').on(
+    unique('uniq_installation_organization_app_external').on(
       table.organizationId,
-      table.provider,
+      table.appId,
       table.externalInstallationId,
     ),
   ],

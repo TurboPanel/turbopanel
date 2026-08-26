@@ -56,30 +56,59 @@ test('getAdminOpenApiSpec documents public URL and reencrypt paths', () => {
   assertEquals((publicUrls?.properties?.applied as SchemaObject).const, false)
 })
 
-test('getAdminOpenApiSpec documents the GitLab OAuth configuration path', () => {
+test('getAdminOpenApiSpec documents the git app collection', () => {
   const spec = getAdminOpenApiSpec('https://localhost:8443') as {
     paths: Record<string, Record<string, unknown>>
     components: { schemas: Record<string, SchemaObject> }
   }
-  const path = spec.paths[`${ADMIN_API_PREFIX}/instance/gitlab-oauth`]
-  assertExists(path)
-  assertExists(path.get)
-  assertExists(path.put)
 
-  // The write surface has to expose every field the runtime reads, or the
+  const collection = spec.paths[`${ADMIN_API_PREFIX}/git/apps`]
+  assertExists(collection)
+  assertExists(collection.get)
+  assertExists(collection.post)
+
+  const item = spec.paths[`${ADMIN_API_PREFIX}/git/apps/{id}`]
+  assertExists(item)
+  assertExists(item.get)
+  assertExists(item.patch)
+  assertExists(item.delete)
+
+  // The manifest flow is the supported way to register a GitHub App, so both
+  // of its hops have to be discoverable.
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/git/apps/github/manifest`])
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/git/apps/github/manifest/callback`])
+
+  // The write surface has to expose every field the runtime reads, or a
   // provider stays unconfigurable without direct database access.
-  const body = spec.components.schemas.GitlabOauthPutBody
+  const body = spec.components.schemas.GitAppCreateBody
   assertEquals(
     Object.keys(body?.properties ?? {}).sort((a, b) => a.localeCompare(b)),
-    ['baseUrl', 'clientId', 'clientSecret', 'redirectUri', 'webhookSecret'],
+    [
+      'apiUrl',
+      'appSlug',
+      'baseUrl',
+      'clientId',
+      'clientSecret',
+      'externalAppId',
+      'name',
+      'privateKeyPem',
+      'provider',
+      'redirectUri',
+      'webhookSecret',
+    ],
   )
 
   // Secrets are reported as presence only; the sealed values never come back.
-  const config = spec.components.schemas.GitlabOauthConfig
-  assertEquals(
-    Object.keys(config?.properties ?? {}).sort((a, b) => a.localeCompare(b)),
-    ['baseUrl', 'clientId', 'hasClientSecret', 'hasWebhookSecret', 'redirectUri'],
-  )
+  const app = spec.components.schemas.GitApp
+  const properties = Object.keys(app?.properties ?? {})
+  assertEquals(properties.includes('credentials'), false)
+  for (const key of ['hasPrivateKey', 'hasClientSecret', 'hasWebhookSecret']) {
+    assertEquals(properties.includes(key), true)
+  }
+  // The routing token and its resolved URL are what an operator copies into
+  // the provider, so both are part of the documented shape.
+  assertEquals(properties.includes('webhookRef'), true)
+  assertEquals(properties.includes('webhookUrl'), true)
 })
 
 test('getAdminOpenApiSpec accepts devSurface option without changing core paths', () => {

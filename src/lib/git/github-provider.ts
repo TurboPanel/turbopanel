@@ -46,7 +46,7 @@ import {
   trimCommitField,
 } from './clone-url.ts'
 import {
-  GITHUB_API_BASE,
+  type GithubApiAuth,
   githubApiHeaders,
   GithubAppTokenError,
   mintGithubInstallationToken,
@@ -132,14 +132,16 @@ export function toGithubRepositorySummary(
 
 /** `GET /installation/repositories`, paginated. */
 export async function listGithubInstallationRepositories(
-  token: string,
+  auth: GithubApiAuth,
 ): Promise<RepositorySummary[]> {
   const repositories: RepositorySummary[] = []
 
   for (let page = 1; page <= REPOSITORY_MAX_PAGES; page += 1) {
-    const url = `${GITHUB_API_BASE}/installation/repositories` +
+    const url = `${auth.apiBase}/installation/repositories` +
       `?per_page=${REPOSITORY_PAGE_SIZE}&page=${page}`
-    const response = await fetch(url, { headers: githubApiHeaders(token, 'token') })
+    const response = await fetch(url, {
+      headers: githubApiHeaders(auth.token, 'token'),
+    })
     if (!response.ok) {
       throw new GithubAppTokenError(
         `github repository listing failed (${response.status})`,
@@ -186,7 +188,7 @@ async function githubReadAuth(
   ctx: GitProviderContext,
   row: GitProviderSourceRow,
 ): Promise<
-  { token: string } | GitProviderFailure | RepositoryReadUnsupported
+  GithubApiAuth | GitProviderFailure | RepositoryReadUnsupported
 > {
   // A GitHub source with no App installation cannot be read over the API at
   // all — the daemon clones it with the stored credential instead.
@@ -195,12 +197,12 @@ async function githubReadAuth(
     return { failure: 'github app credentials are unreadable' }
   }
   try {
-    const { token } = await mintGithubInstallationToken(
+    const { token, apiBase } = await mintGithubInstallationToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
       row.installationId,
     )
-    return { token }
+    return { token, apiBase }
   } catch (error) {
     return githubReadFailure(error)
   }
@@ -213,7 +215,7 @@ async function githubReadAuth(
  * base64 round-trip the JSON representation would need.
  */
 async function readGithubFile(
-  auth: { token: string },
+  auth: GithubApiAuth,
   repositoryUrl: string,
   commitSha: string,
   path: string,
@@ -221,7 +223,7 @@ async function readGithubFile(
 ): Promise<RepositoryFileEntry | GitProviderFailure> {
   const parsed = parseRepositoryOwnerRepo(repositoryUrl)
   if (!parsed) return { failure: 'source repository url is not a github path' }
-  const url = `${GITHUB_API_BASE}/repos/${encodeURIComponent(parsed.owner)}/${
+  const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${
     encodeURIComponent(parsed.repo)
   }/contents/${encodePathSegments(path)}?ref=${encodeURIComponent(commitSha)}`
 
@@ -269,7 +271,7 @@ async function readGithubFile(
  * subject and author name the release surface shows.
  */
 export async function resolveGithubCommit(
-  token: string,
+  auth: GithubApiAuth,
   repositoryUrl: string,
   ref: string,
 ): Promise<ResolvedSourceCommit> {
@@ -279,12 +281,12 @@ export async function resolveGithubCommit(
       'source repository url is not a github repository path',
     )
   }
-  const url = `${GITHUB_API_BASE}/repos/${encodeURIComponent(parsed.owner)}/${
+  const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${
     encodeURIComponent(parsed.repo)
   }/commits/${encodeURIComponent(ref)}`
   let response: Response
   try {
-    response = await fetch(url, { headers: githubApiHeaders(token, 'token') })
+    response = await fetch(url, { headers: githubApiHeaders(auth.token, 'token') })
   } catch (error) {
     throw new GithubAppTokenError(
       `github commit lookup failed: ${
@@ -382,12 +384,12 @@ export const githubProvider: GitProvider = {
       throw new GithubAppTokenError('github app credentials are unreadable')
     }
     // Minted per request, used once, and discarded — never persisted.
-    const { token } = await mintGithubInstallationToken(
+    const { token, apiBase } = await mintGithubInstallationToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
       installationId,
     )
-    return await listGithubInstallationRepositories(token)
+    return await listGithubInstallationRepositories({ token, apiBase })
   },
 
   async readRepositoryFiles(
@@ -405,7 +407,7 @@ export const githubProvider: GitProvider = {
     let commitSha: string
     try {
       commitSha =
-        (await resolveGithubCommit(auth.token, params.row.repositoryUrl, params.ref))
+        (await resolveGithubCommit(auth, params.row.repositoryUrl, params.ref))
           .commitSha
     } catch (error) {
       return githubReadFailure(error)
@@ -443,7 +445,7 @@ export const githubProvider: GitProvider = {
     let commitSha: string
     try {
       commitSha =
-        (await resolveGithubCommit(auth.token, params.row.repositoryUrl, params.ref))
+        (await resolveGithubCommit(auth, params.row.repositoryUrl, params.ref))
           .commitSha
     } catch (error) {
       return githubReadFailure(error)
@@ -451,7 +453,7 @@ export const githubProvider: GitProvider = {
 
     const parsed = parseRepositoryOwnerRepo(params.row.repositoryUrl)
     if (!parsed) return { failure: 'source repository url is not a github path' }
-    const url = `${GITHUB_API_BASE}/repos/${encodeURIComponent(parsed.owner)}/${
+    const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${
       encodeURIComponent(parsed.repo)
     }/contents/${encodePathSegments(params.path)}?ref=${encodeURIComponent(commitSha)}`
 
@@ -495,11 +497,12 @@ export const githubProvider: GitProvider = {
     try {
       // Minted here, sealed straight into the payload by the caller, never
       // persisted.
-      const { token } = await mintGithubInstallationToken(
+      const { token, apiBase } = await mintGithubInstallationToken(
         ctx.db,
         ctx.dataEncryptionSecrets,
         row.installationId,
       )
+      const auth = { token, apiBase }
       // A webhook already knows the head SHA, but not its subject or author, so
       // the commit is resolved either way — pinned to the SHA the trigger named
       // rather than to the (possibly already advanced) ref. When the SHA is
@@ -508,9 +511,9 @@ export const githubProvider: GitProvider = {
       // to the bare SHA instead of raising. Without a SHA the lookup is
       // load-bearing and its failure is a real prepare error.
       const commit = params.requestedCommitSha === undefined
-        ? await resolveGithubCommit(token, row.repositoryUrl, ref)
+        ? await resolveGithubCommit(auth, row.repositoryUrl, ref)
         : await resolveGithubCommit(
-          token,
+          auth,
           row.repositoryUrl,
           params.requestedCommitSha,
         ).catch(() => ({ commitSha: params.requestedCommitSha as string }))

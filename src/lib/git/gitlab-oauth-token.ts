@@ -26,10 +26,42 @@ import {
 } from '../../client/authn/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import {
-  getGitlabOauthConfig,
-  type GitlabOauthConfig,
+  type GitApp,
   GITLAB_OAUTH_SCOPES,
-} from './gitlab-oauth-config.ts'
+  loadGitAppForInstallation,
+} from './git-app-records.ts'
+
+/**
+ * The application-level material every GitLab grant is minted through.
+ *
+ * A narrow structural type rather than the whole app row: these functions do
+ * token exchange and nothing else, and keeping them off `GitApp` means the
+ * connect flow can pass credentials it assembled from a form just as easily as
+ * ones it read from the table.
+ */
+export type GitlabOauthCredentials = {
+  clientId: string
+  clientSecret: string
+  /** Instance root (`https://gitlab.com` or a self-managed origin). */
+  baseUrl: string
+}
+
+/**
+ * Narrow a registered app to its OAuth credentials.
+ *
+ * Throws rather than returning null: a GitLab app without a client id and
+ * secret cannot mint anything, and every caller here is already on a path that
+ * needs a token.
+ */
+export function gitlabOauthCredentials(app: GitApp): GitlabOauthCredentials {
+  if (app.provider !== 'gitlab') {
+    throw new GitlabOauthTokenError(`app "${app.name}" is not a gitlab application`)
+  }
+  if (!app.clientId || !app.clientSecret) {
+    throw new GitlabOauthTokenError('gitlab oauth application is not configured')
+  }
+  return { clientId: app.clientId, clientSecret: app.clientSecret, baseUrl: app.baseUrl }
+}
 
 export class GitlabOauthTokenError extends Error {
   /** HTTP status from GitLab, when the failure came from the API. */
@@ -94,7 +126,7 @@ function readStored(value: unknown): StoredGitlabOauth {
 
 /** The URL the connect flow redirects the operator to. */
 export function gitlabAuthorizeUrl(
-  config: Pick<GitlabOauthConfig, 'baseUrl' | 'clientId'>,
+  config: Pick<GitlabOauthCredentials, 'baseUrl' | 'clientId'>,
   params: { redirectUri: string; state: string },
 ): string {
   const target = new URL(`${config.baseUrl}/oauth/authorize`)
@@ -141,7 +173,7 @@ function expiresAtFrom(expiresIn: unknown, nowMs: number): string {
  * client and inventing one here would be a larger change than this call needs.
  */
 async function postTokenGrant(
-  config: GitlabOauthConfig,
+  config: GitlabOauthCredentials,
   form: Record<string, string>,
 ): Promise<GitlabTokenPair> {
   const body = new URLSearchParams({
@@ -200,7 +232,7 @@ async function postTokenGrant(
 
 /** Trade the callback's `code` for the initial token pair. */
 export async function exchangeGitlabAuthorizationCode(
-  config: GitlabOauthConfig,
+  config: GitlabOauthCredentials,
   params: { code: string; redirectUri: string },
 ): Promise<GitlabTokenPair> {
   return await postTokenGrant(config, {
@@ -212,7 +244,7 @@ export async function exchangeGitlabAuthorizationCode(
 
 /** Trade a refresh token for a new pair. GitLab rotates the refresh half. */
 export async function refreshGitlabAccessToken(
-  config: GitlabOauthConfig,
+  config: GitlabOauthCredentials,
   refreshToken: string,
 ): Promise<GitlabTokenPair> {
   return await postTokenGrant(config, {
@@ -283,11 +315,6 @@ export async function mintGitlabAccessToken(
   dataEncryptionSecrets: DerivedSecretsConfig,
   installationId: string,
 ): Promise<GitlabAccessToken> {
-  const config = await getGitlabOauthConfig(db, dataEncryptionSecrets)
-  if (!config) {
-    throw new GitlabOauthTokenError('gitlab oauth application is not configured')
-  }
-
   const [row] = await db
     .select({
       provider: gitProviderInstallation.provider,
@@ -335,7 +362,14 @@ export async function mintGitlabAccessToken(
     dataEncryptionSecrets,
     stored.refreshTokenEnvelope,
   )
-  const pair = await refreshGitlabAccessToken(config, refreshToken)
+  // Resolved from `installation.app_id`, not from a single instance-wide row:
+  // two connections may legitimately be minted through different applications,
+  // on different GitLab origins.
+  const app = await loadGitAppForInstallation(db, dataEncryptionSecrets, installationId)
+  if (!app) {
+    throw new GitlabOauthTokenError('gitlab oauth application is not configured')
+  }
+  const pair = await refreshGitlabAccessToken(gitlabOauthCredentials(app), refreshToken)
   // Write back *before* returning: the rotated refresh token is the only thing
   // that keeps this connection alive past the current token's lifetime.
   await persistGitlabTokenPair(db, dataEncryptionSecrets, installationId, pair)

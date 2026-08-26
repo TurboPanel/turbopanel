@@ -19,7 +19,7 @@ import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { gitProviderInstallation } from '../db/schema.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
-import { getGithubAppConfig } from './github-app-config.ts'
+import { type GitApp, loadGitAppForInstallation } from './git-app-records.ts'
 
 const textEncoder = new TextEncoder()
 
@@ -44,10 +44,38 @@ export class GithubAppTokenError extends Error {
   }
 }
 
-export type GithubInstallationToken = {
+/**
+ * A token plus the origin it is valid against.
+ *
+ * The pair travels together because an installation token minted on one GitHub
+ * origin means nothing on another, and every API helper needs both.
+ */
+export type GithubApiAuth = {
   token: string
+  /**
+   * `api.github.com` for a github.com App, or the App's own API origin when it
+   * lives on a GitHub Enterprise Server.
+   */
+  apiBase: string
+}
+
+export type GithubInstallationToken = GithubApiAuth & {
   /** ISO-8601 expiry as reported by GitHub. */
   expiresAt: string
+}
+
+/**
+ * API origin for one registered App.
+ *
+ * Explicit `apiUrl` wins. Otherwise github.com gets the documented
+ * `api.github.com`, and a GitHub Enterprise Server gets its documented
+ * `<host>/api/v3` form.
+ */
+export function githubApiBaseFor(app: Pick<GitApp, 'apiUrl' | 'baseUrl'>): string {
+  if (app.apiUrl) return app.apiUrl.replace(/\/+$/, '')
+  const baseUrl = app.baseUrl.replace(/\/+$/, '')
+  if (baseUrl === 'https://github.com') return GITHUB_API_BASE
+  return `${baseUrl}/api/v3`
 }
 
 function base64urlEncode(bytes: Uint8Array): string {
@@ -219,14 +247,15 @@ async function readGithubError(response: Response): Promise<string> {
  * generic third-party HTTP client, and inventing one here would be a larger
  * change than this call needs.
  */
-export async function exchangeInstallationToken(
+export async function exchangeInstallationTokenAt(
+  apiBase: string,
   appJwt: string,
   externalInstallationId: string,
 ): Promise<GithubInstallationToken> {
   const id = encodeURIComponent(externalInstallationId)
   let response: Response
   try {
-    response = await fetch(`${GITHUB_API_BASE}/app/installations/${id}/access_tokens`, {
+    response = await fetch(`${apiBase}/app/installations/${id}/access_tokens`, {
       method: 'POST',
       headers: githubApiHeaders(appJwt, 'Bearer'),
     })
@@ -253,12 +282,18 @@ export async function exchangeInstallationToken(
       typeof payload.expires_at === 'string'
         ? payload.expires_at
         : new Date(Date.now() + GITHUB_APP_JWT_LIFETIME_MS).toISOString(),
+    apiBase,
   }
 }
 
 /**
- * Load the sealed App config + the installation row, sign the App JWT, and
- * exchange it for an installation token.
+ * Load the installation row **and the App it was granted through**, sign that
+ * App's JWT, and exchange it for an installation token.
+ *
+ * The app is resolved from `installation.app_id` rather than from a single
+ * instance-wide config, which is what allows several Apps to coexist: two
+ * installations can name the same external id and still mint against different
+ * private keys, on different origins.
  *
  * The token is returned to the caller only — this function never writes it.
  */
@@ -267,11 +302,6 @@ export async function mintGithubInstallationToken(
   dataEncryptionSecrets: DerivedSecretsConfig,
   installationId: string,
 ): Promise<GithubInstallationToken> {
-  const config = await getGithubAppConfig(db, dataEncryptionSecrets)
-  if (!config) {
-    throw new GithubAppTokenError('github app is not configured')
-  }
-
   const [row] = await db
     .select({
       provider: gitProviderInstallation.provider,
@@ -292,6 +322,18 @@ export async function mintGithubInstallationToken(
     throw new GithubAppTokenError('installation is suspended', 409)
   }
 
-  const appJwt = await signGithubAppJwt(config.appId, config.privateKeyPem)
-  return await exchangeInstallationToken(appJwt, row.externalInstallationId)
+  const app = await loadGitAppForInstallation(db, dataEncryptionSecrets, installationId)
+  if (!app || app.provider !== 'github') {
+    throw new GithubAppTokenError('github app is not configured')
+  }
+  if (!app.privateKeyPem) {
+    throw new GithubAppTokenError('github app has no private key configured')
+  }
+
+  const appJwt = await signGithubAppJwt(app.externalAppId, app.privateKeyPem)
+  return await exchangeInstallationTokenAt(
+    githubApiBaseFor(app),
+    appJwt,
+    row.externalInstallationId,
+  )
 }

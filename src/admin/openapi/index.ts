@@ -177,66 +177,177 @@ export function getAdminOpenApiSpec(
             },
           },
         },
-        GitlabOauthConfig: {
+        GitApp: {
           type: "object",
           description:
-            "Non-secret view of the instance GitLab OAuth application. The client " +
-            "secret and webhook token are sealed at rest and never returned — only " +
-            "their presence is reported.",
-          required: ["clientId", "redirectUri", "baseUrl", "hasClientSecret", "hasWebhookSecret"],
+            "A registered Git provider application. Sealed material (App private " +
+            "key, OAuth client secret, webhook secret) is never returned — only " +
+            "its presence is reported.",
+          required: [
+            "id",
+            "organizationId",
+            "provider",
+            "name",
+            "baseUrl",
+            "externalAppId",
+            "webhookRef",
+            "webhookPath",
+            "readOnly",
+            "hasPrivateKey",
+            "hasClientSecret",
+            "hasWebhookSecret",
+          ],
           properties: {
-            clientId: {
-              oneOf: [{ type: "string" }, { type: "null" }],
-              description: "Application id from the GitLab OAuth application",
-            },
-            redirectUri: {
-              oneOf: [{ type: "string" }, { type: "null" }],
+            id: { type: "string", format: "uuid" },
+            organizationId: {
+              oneOf: [{ type: "string", format: "uuid" }, { type: "null" }],
               description:
-                "Absolute callback URL registered on the GitLab application",
+                "null = instance-wide: every organization may connect through it. " +
+                "A uuid means the app belongs to that organization alone.",
             },
+            provider: { type: "string", enum: ["github", "gitlab"] },
+            name: { type: "string" },
             baseUrl: {
               type: "string",
               description:
-                "GitLab instance root; defaults to https://gitlab.com when unset",
+                "Origin the app lives on — github.com / gitlab.com, or a GitHub " +
+                "Enterprise Server or self-managed GitLab. Part of the uniqueness " +
+                "key, because a provider app id is unique per origin, not globally.",
             },
+            apiUrl: {
+              oneOf: [{ type: "string" }, { type: "null" }],
+              description: "Explicit API origin; derived from baseUrl when null",
+            },
+            externalAppId: {
+              type: "string",
+              description:
+                "Provider-side id. For GitHub the numeric App id that arrives as " +
+                "X-GitHub-Hook-Installation-Target-ID; for GitLab the application id.",
+            },
+            appSlug: { oneOf: [{ type: "string" }, { type: "null" }] },
+            clientId: { oneOf: [{ type: "string" }, { type: "null" }] },
+            redirectUri: { oneOf: [{ type: "string" }, { type: "null" }] },
+            webhookRef: {
+              type: "string",
+              description:
+                "Opaque routing token in this app's webhook URL. Not a credential " +
+                "— the HMAC (GitHub) or token compare (GitLab) still authenticates.",
+            },
+            webhookPath: {
+              type: "string",
+              description: "Ingress path this app's deliveries should arrive on",
+            },
+            webhookUrl: {
+              oneOf: [{ type: "string" }, { type: "null" }],
+              description:
+                "Absolute delivery URL; null when no public origin is configured",
+            },
+            readOnly: {
+              type: "boolean",
+              description:
+                "True for an instance-wide app viewed from an organization: " +
+                "visible and usable, but only an instance admin may edit it.",
+            },
+            hasPrivateKey: { type: "boolean" },
             hasClientSecret: { type: "boolean" },
             hasWebhookSecret: { type: "boolean" },
           },
         },
-        GitlabOauthResponse: {
+        GitAppListResponse: {
           type: "object",
-          required: ["ok", "gitlabOauth"],
+          required: ["apps"],
           properties: {
-            ok: { type: "boolean", const: true },
-            gitlabOauth: { $ref: "#/components/schemas/GitlabOauthConfig" },
+            apps: { type: "array", items: { $ref: "#/components/schemas/GitApp" } },
           },
         },
-        GitlabOauthPutBody: {
+        GitAppResponse: {
           type: "object",
-          description:
-            "Partial update — omitted keys keep their stored value, so a PUT that " +
-            "omits clientSecret keeps the sealed one. Send null to clear a nullable field.",
+          required: ["app"],
+          properties: { app: { $ref: "#/components/schemas/GitApp" } },
+        },
+        GitAppCreateBody: {
+          type: "object",
+          required: ["provider", "name", "externalAppId"],
           properties: {
-            clientId: { type: "string", minLength: 1 },
-            clientSecret: {
-              type: "string",
-              minLength: 1,
-              description: "Sealed before persist and never returned",
-            },
+            provider: { type: "string", enum: ["github", "gitlab"] },
+            name: { type: "string", minLength: 1 },
+            externalAppId: { type: "string", minLength: 1 },
             baseUrl: {
-              oneOf: [{ type: "string" }, { type: "null" }],
-              description:
-                "Self-managed GitLab origin; null reverts to https://gitlab.com",
+              type: "string",
+              description: "Defaults to the provider's public origin when omitted",
             },
-            redirectUri: {
+            apiUrl: { oneOf: [{ type: "string" }, { type: "null" }] },
+            appSlug: { oneOf: [{ type: "string" }, { type: "null" }] },
+            clientId: { oneOf: [{ type: "string" }, { type: "null" }] },
+            redirectUri: { oneOf: [{ type: "string" }, { type: "null" }] },
+            privateKeyPem: {
               oneOf: [{ type: "string" }, { type: "null" }],
+              description: "GitHub App private key. Sealed before persist, never returned.",
+            },
+            clientSecret: {
+              oneOf: [{ type: "string" }, { type: "null" }],
+              description: "GitLab OAuth application secret. Sealed before persist.",
             },
             webhookSecret: {
               oneOf: [{ type: "string" }, { type: "null" }],
               description:
-                "Shared token every GitLab delivery must present in X-Gitlab-Token. " +
-                "GitLab does not sign deliveries, so this is the whole credential. " +
-                "Sealed before persist and never returned.",
+                "GitHub HMAC secret, or the GitLab X-Gitlab-Token value. GitLab " +
+                "does not sign deliveries, so for GitLab this is the whole " +
+                "credential and is subject to a minimum length.",
+            },
+          },
+        },
+        GitAppPatchBody: {
+          type: "object",
+          description:
+            "Partial update — omitted keys keep their stored value, so a PATCH that " +
+            "omits privateKeyPem keeps the sealed one. Send null to clear a " +
+            "nullable field. provider and organizationId are immutable.",
+          properties: {
+            name: { type: "string", minLength: 1 },
+            externalAppId: { type: "string", minLength: 1 },
+            baseUrl: { type: "string", minLength: 1 },
+            apiUrl: { oneOf: [{ type: "string" }, { type: "null" }] },
+            appSlug: { oneOf: [{ type: "string" }, { type: "null" }] },
+            clientId: { oneOf: [{ type: "string" }, { type: "null" }] },
+            redirectUri: { oneOf: [{ type: "string" }, { type: "null" }] },
+            privateKeyPem: { oneOf: [{ type: "string" }, { type: "null" }] },
+            clientSecret: { oneOf: [{ type: "string" }, { type: "null" }] },
+            webhookSecret: { oneOf: [{ type: "string" }, { type: "null" }] },
+          },
+        },
+        GithubManifestStartBody: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "App name shown on GitHub" },
+            baseUrl: {
+              type: "string",
+              description: "GitHub Enterprise Server origin; defaults to github.com",
+            },
+            organizationLogin: {
+              oneOf: [{ type: "string" }, { type: "null" }],
+              description:
+                "Create the App under this GitHub organization rather than the " +
+                "acting user's account, so it belongs to the org.",
+            },
+          },
+        },
+        GithubManifestStartResponse: {
+          type: "object",
+          required: ["manifest", "createUrl", "state"],
+          properties: {
+            manifest: {
+              type: "object",
+              description:
+                "POST this to createUrl as form field `manifest`. Its " +
+                "hook_attributes.url already points at the new app's scoped " +
+                "webhook path, so the App is born self-identifying.",
+            },
+            createUrl: { type: "string" },
+            state: {
+              type: "string",
+              description:
+                "Signed state carrying the pending webhook ref, origin and name",
             },
           },
         },
@@ -356,22 +467,21 @@ export function getAdminOpenApiSpec(
           },
         },
       },
-      [`${ADMIN_API_PREFIX}/instance/gitlab-oauth`]: {
+      [`${ADMIN_API_PREFIX}/git/apps`]: {
         get: {
-          tags: ["Instance"],
-          summary: "Read the instance GitLab OAuth application (presence only)",
+          tags: ["Git apps"],
+          summary: "List instance-wide Git provider applications",
           description:
-            "The GitLab provider is off until this application is configured: the " +
-            "connect flow, repository discovery, and webhook verification all read " +
-            "this row. Secrets are never returned — the response reports only " +
-            "whether the sealed material is present.",
+            "Instance-wide apps only: this surface is role-gated and carries no " +
+            "organization context. An organization's own apps are managed through " +
+            "the client surface at /api/client/v1/git/apps.",
           security: [...cookieSecurity],
           responses: {
             "200": {
-              description: "Non-secret GitLab OAuth application summary",
+              description: "Registered instance-wide apps",
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/GitlabOauthResponse" },
+                  schema: { $ref: "#/components/schemas/GitAppListResponse" },
                 },
               },
             },
@@ -382,37 +492,33 @@ export function getAdminOpenApiSpec(
             "503": { description: "Database unavailable" },
           },
         },
-        put: {
-          tags: ["Instance"],
-          summary: "Persist the instance GitLab OAuth application",
+        post: {
+          tags: ["Git apps"],
+          summary: "Register an instance-wide Git provider application",
           description:
-            "Register one OAuth application on gitlab.com or a self-managed " +
-            "instance, then point this at it. Unlike GitHub there is no " +
-            "per-repository install: each organization connects an account or " +
-            "group through this single application. The client secret and webhook " +
-            "token are sealed (tpsecret) before persist and are never returned.",
+            "Registers an existing GitHub App or GitLab OAuth application from " +
+            "credentials you already hold. To have GitHub create one for you — " +
+            "with the correct scoped webhook URL already set — use the manifest " +
+            "flow instead. Several apps per provider may coexist.",
           security: [...cookieSecurity],
           requestBody: {
             required: true,
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/GitlabOauthPutBody" },
+                schema: { $ref: "#/components/schemas/GitAppCreateBody" },
               },
             },
           },
           responses: {
-            "200": {
-              description: "Updated GitLab OAuth application summary",
+            "201": {
+              description: "The registered app",
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/GitlabOauthResponse" },
+                  schema: { $ref: "#/components/schemas/GitAppResponse" },
                 },
               },
             },
-            "400": {
-              description:
-                "Invalid request body, or a rejected field (empty clientId, non-http(s) baseUrl)",
-            },
+            "400": { description: "Invalid request body, or a rejected field" },
             "401": { description: "Unauthorized" },
             "403": {
               description: "Forbidden — requires admin or superadmin role",
@@ -421,6 +527,162 @@ export function getAdminOpenApiSpec(
               description:
                 "Database unavailable, or no encryption key configured to seal the secrets",
             },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/git/apps/{id}`]: {
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string", format: "uuid" },
+          },
+        ],
+        get: {
+          tags: ["Git apps"],
+          summary: "Read one instance-wide Git provider application",
+          security: [...cookieSecurity],
+          responses: {
+            "200": {
+              description: "The app",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/GitAppResponse" },
+                },
+              },
+            },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "404": { description: "Not found" },
+          },
+        },
+        patch: {
+          tags: ["Git apps"],
+          summary: "Update one instance-wide Git provider application",
+          security: [...cookieSecurity],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/GitAppPatchBody" },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "The updated app",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/GitAppResponse" },
+                },
+              },
+            },
+            "400": { description: "Invalid request body, or a rejected field" },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "404": { description: "Not found" },
+          },
+        },
+        delete: {
+          tags: ["Git apps"],
+          summary: "Delete one instance-wide Git provider application",
+          description:
+            "Cascades to the installations granted through it. Sources that " +
+            "referenced those installations survive but lose their clone " +
+            "credential and must be reconnected.",
+          security: [...cookieSecurity],
+          responses: {
+            "204": { description: "Deleted" },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "404": { description: "Not found" },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/git/apps/github/manifest`]: {
+        post: {
+          tags: ["Git apps"],
+          summary: "Start the GitHub App Manifest flow",
+          description:
+            "Returns a manifest to POST to GitHub, which creates the App and " +
+            "redirects back with a code. The manifest's hook_attributes.url is " +
+            "already the new app's scoped webhook path, so deliveries identify " +
+            "their app from the first one onward.",
+          security: [...cookieSecurity],
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/GithubManifestStartBody" },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Manifest, target URL, and signed state",
+              content: {
+                "application/json": {
+                  schema: {
+                    $ref: "#/components/schemas/GithubManifestStartResponse",
+                  },
+                },
+              },
+            },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "503": {
+              description: "No public URL configured, or no root secret to sign the state",
+            },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/git/apps/github/manifest/callback`]: {
+        get: {
+          tags: ["Git apps"],
+          summary: "Finish the GitHub App Manifest flow",
+          description:
+            "Exchanges GitHub's one-shot code for the App id, private key, " +
+            "webhook secret and client credentials, and stores them as an " +
+            "instance-wide app.",
+          security: [...cookieSecurity],
+          parameters: [
+            {
+              name: "code",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+            },
+            {
+              name: "state",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          responses: {
+            "201": {
+              description: "The registered app",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/GitAppResponse" },
+                },
+              },
+            },
+            "400": { description: "Missing code/state, or state that does not verify" },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "502": { description: "GitHub refused the manifest conversion" },
           },
         },
       },

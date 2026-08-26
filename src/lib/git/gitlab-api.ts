@@ -8,7 +8,7 @@
  *
  * **Base URL is configuration, not a constant.** Self-managed GitLab is the
  * common case for the audience that wants GitLab at all, so every call takes
- * the instance root from `getGitlabOauthConfig().baseUrl` rather than
+ * the instance root from the connection's own `gitapp.base_url` rather than
  * hardcoding `https://gitlab.com`.
  *
  * **Project ids are full namespace paths.** GitLab addresses a project by its

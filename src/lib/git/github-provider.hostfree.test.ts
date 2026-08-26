@@ -7,13 +7,13 @@ import { encryptSecret } from '../../client/authn/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
 import type { Db } from '../../db.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { gitProviderInstallation, setting } from '../db/schema.ts'
+import { gitProviderInstallation } from '../db/schema.ts'
 import {
   isGitProviderFailure,
   type GitProviderContext,
   type GitProviderSourceRow,
 } from './git-provider.ts'
-import { GithubAppConfigError } from './github-app-config.ts'
+import { GitAppError } from './git-app-records.ts'
 import { GITHUB_API_BASE, GithubAppTokenError } from './github-app-token.ts'
 import { GITHUB_SIGNATURE_HEADER } from './github-webhook.ts'
 import {
@@ -70,20 +70,47 @@ async function generatePkcs8Pem(): Promise<string> {
   return `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----\n`
 }
 
+/** Auth pair for the API helpers that no longer take a bare token. */
+const AUTH = { token: 'ghs', apiBase: GITHUB_API_BASE }
+const AUTH_LIST = { token: 'ghs_list', apiBase: GITHUB_API_BASE }
+
+function gitApp(credentials: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: 'app-1',
+    organizationId: null,
+    provider: 'github',
+    name: 'TurboPanel',
+    baseUrl: 'https://github.com',
+    apiUrl: null,
+    externalAppId: '12345',
+    appSlug: null,
+    clientId: null,
+    redirectUri: null,
+    webhookRef: 'ref-1',
+    webhookTokenHash: null,
+    credentials,
+  }
+}
+
+/**
+ * The app now arrives through an installation → gitapp join rather than a
+ * singleton `setting` row; `innerJoin` is what distinguishes the two reads.
+ */
 function gitDb(opts: {
-  settingValue?: unknown
+  app?: Record<string, unknown> | null
   installation?: Record<string, unknown> | null
 }): Db {
+  const joined = () => ({
+    where: () => ({
+      limit: () => Promise.resolve(opts.app ? [{ app: opts.app }] : []),
+    }),
+  })
   return {
     select: () => ({
       from: (table: unknown) => ({
+        innerJoin: joined,
         where: () => ({
           limit: () => {
-            if (table === setting) {
-              return Promise.resolve(
-                opts.settingValue === undefined ? [] : [{ value: opts.settingValue }],
-              )
-            }
             if (table === gitProviderInstallation) {
               return Promise.resolve(opts.installation ? [opts.installation] : [])
             }
@@ -103,10 +130,7 @@ async function mintedCtx(): Promise<GitProviderContext> {
   )
   return {
     db: gitDb({
-      settingValue: {
-        appId: '12345',
-        privateKeyEnvelope: await encryptSecret(secrets, pem),
-      },
+      app: gitApp({ privateKeyEnvelope: await encryptSecret(secrets, pem) }),
       installation: {
         provider: 'github',
         externalInstallationId: '77',
@@ -168,7 +192,7 @@ test('listGithubInstallationRepositories paginates and skips junk rows', async (
       repositories: [repoPayload(101, { clone_url: 'https://github.com/acme/last.git' })],
     }))
   }, async () => {
-    const repos = await listGithubInstallationRepositories('ghs_list')
+    const repos = await listGithubInstallationRepositories(AUTH_LIST)
     assertEquals(repos.length, 101)
     assertEquals(repos[0]?.fullName, 'acme/app-1')
     assertEquals(repos[100]?.id, '101')
@@ -180,7 +204,7 @@ test('listGithubInstallationRepositories throws on a non-OK listing', async () =
     () => new Response('', { status: 403 }),
     async () => {
       const error = await assertRejects(
-        () => listGithubInstallationRepositories('ghs_list'),
+        () => listGithubInstallationRepositories(AUTH_LIST),
         GithubAppTokenError,
         'github repository listing failed (403)',
       )
@@ -204,7 +228,7 @@ test('resolveGithubCommit returns sha, subject, and author', async () => {
     }))
   }, async () => {
     assertEquals(
-      await resolveGithubCommit('ghs', 'https://github.com/acme/app.git', SHA),
+      await resolveGithubCommit(AUTH, 'https://github.com/acme/app.git', SHA),
       { commitSha: SHA, commitMessage: 'fix: deploy', commitAuthor: 'Ada' },
     )
   })
@@ -212,7 +236,7 @@ test('resolveGithubCommit returns sha, subject, and author', async () => {
 
 test('resolveGithubCommit maps URL, network, HTTP, and empty-sha failures', async () => {
   await assertRejects(
-    () => resolveGithubCommit('ghs', 'https://github.com/only-one-segment', 'main'),
+    () => resolveGithubCommit(AUTH, 'https://github.com/only-one-segment', 'main'),
     GithubAppTokenError,
     'not a github repository path',
   )
@@ -222,7 +246,7 @@ test('resolveGithubCommit maps URL, network, HTTP, and empty-sha failures', asyn
     },
     async () => {
       await assertRejects(
-        () => resolveGithubCommit('ghs', 'https://github.com/acme/app.git', 'main'),
+        () => resolveGithubCommit(AUTH, 'https://github.com/acme/app.git', 'main'),
         GithubAppTokenError,
         'reset',
       )
@@ -232,7 +256,7 @@ test('resolveGithubCommit maps URL, network, HTTP, and empty-sha failures', asyn
     () => new Response('', { status: 404 }),
     async () => {
       await assertRejects(
-        () => resolveGithubCommit('ghs', 'https://github.com/acme/app.git', 'main'),
+        () => resolveGithubCommit(AUTH, 'https://github.com/acme/app.git', 'main'),
         GithubAppTokenError,
         'github commit lookup failed (404)',
       )
@@ -242,7 +266,7 @@ test('resolveGithubCommit maps URL, network, HTTP, and empty-sha failures', asyn
     () => new Response(JSON.stringify({}), { status: 200 }),
     async () => {
       await assertRejects(
-        () => resolveGithubCommit('ghs', 'https://github.com/acme/app.git', 'main'),
+        () => resolveGithubCommit(AUTH, 'https://github.com/acme/app.git', 'main'),
         GithubAppTokenError,
         'returned no sha',
       )
@@ -447,7 +471,7 @@ test('githubProvider.prepareClone maps a mint failure and rethrows config errors
   )
   const unsealed = {
     db: gitDb({
-      settingValue: { appId: '1', privateKeyEnvelope: 'not-a-tpsecret' },
+      app: gitApp({ privateKeyEnvelope: 'not-a-tpsecret' }),
       installation: {
         provider: 'github',
         externalInstallationId: '1',
@@ -463,8 +487,8 @@ test('githubProvider.prepareClone maps a mint failure and rethrows config errors
         ref: 'main',
         needsCredential: true,
       }),
-    GithubAppConfigError,
-    'github app private key is not sealed',
+    GitAppError,
+    'git app private key is not sealed',
   )
 })
 

@@ -3,14 +3,14 @@ import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
 import { encryptSecret } from '../../client/authn/data-encryption.ts'
 import type { Db } from '../../db.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { gitProviderInstallation, setting } from '../db/schema.ts'
+import { gitProviderInstallation } from '../db/schema.ts'
 import {
   GITHUB_API_ACCEPT,
   GITHUB_API_BASE,
   GITHUB_API_VERSION,
   GITHUB_USER_AGENT,
   GithubAppTokenError,
-  exchangeInstallationToken,
+  exchangeInstallationTokenAt,
   githubApiHeaders,
   mintGithubInstallationToken,
   privateKeyPemToPkcs8Der,
@@ -65,7 +65,7 @@ test('privateKeyPemToPkcs8Der rejects invalid PEM', () => {
 })
 
 test('githubApiHeaders sets the GitHub REST contract', () => {
-  const headers = githubApiHeaders('ghs_testtoken', 'Bearer')
+  const headers = githubApiHeaders('ghs_testtoken', 'Bearer') as Record<string, string>
   assertEquals(headers.authorization, 'Bearer ghs_testtoken')
   assertEquals(headers.accept, GITHUB_API_ACCEPT)
   assertEquals(headers['x-github-api-version'], GITHUB_API_VERSION)
@@ -189,11 +189,11 @@ function withFetch(
 }
 
 test('githubApiHeaders uses the token scheme for installation tokens', () => {
-  const headers = githubApiHeaders('ghs_install', 'token')
+  const headers = githubApiHeaders('ghs_install', 'token') as Record<string, string>
   assertEquals(headers.authorization, 'token ghs_install')
 })
 
-test('exchangeInstallationToken returns the token and GitHub expiry', async () => {
+test('exchangeInstallationTokenAt returns the token and GitHub expiry', async () => {
   await withFetch((url, init) => {
     assertEquals(
       url,
@@ -207,29 +207,33 @@ test('exchangeInstallationToken returns the token and GitHub expiry', async () =
       { status: 200 },
     )
   }, async () => {
-    const result = await exchangeInstallationToken('app-jwt', '42/99')
-    assertEquals(result, { token: 'ghs_live', expiresAt: '2030-01-01T00:00:00Z' })
+    const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '42/99')
+    assertEquals(result, {
+      token: 'ghs_live',
+      expiresAt: '2030-01-01T00:00:00Z',
+      apiBase: GITHUB_API_BASE,
+    })
   })
 })
 
-test('exchangeInstallationToken synthesizes expiry when GitHub omits it', async () => {
+test('exchangeInstallationTokenAt synthesizes expiry when GitHub omits it', async () => {
   await withFetch(
     () => new Response(JSON.stringify({ token: 'ghs_noexp' }), { status: 200 }),
     async () => {
-      const result = await exchangeInstallationToken('jwt', '1')
+      const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1')
       assertEquals(result.token, 'ghs_noexp')
       assertEquals(Number.isNaN(Date.parse(result.expiresAt)), false)
     },
   )
 })
 
-test('exchangeInstallationToken maps GitHub error bodies', async () => {
+test('exchangeInstallationTokenAt maps GitHub error bodies', async () => {
   await withFetch(
     () =>
       new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 }),
     async () => {
       const error = await assertRejects(
-        () => exchangeInstallationToken('jwt', '1'),
+        () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
         'Bad credentials',
       )
@@ -242,12 +246,12 @@ test('exchangeInstallationToken maps GitHub error bodies', async () => {
   )
 })
 
-test('exchangeInstallationToken falls back when the error body is not JSON', async () => {
+test('exchangeInstallationTokenAt falls back when the error body is not JSON', async () => {
   await withFetch(
     () => new Response('plain failure', { status: 502 }),
     async () => {
       await assertRejects(
-        () => exchangeInstallationToken('jwt', '1'),
+        () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
         'github request failed (502)',
       )
@@ -255,12 +259,12 @@ test('exchangeInstallationToken falls back when the error body is not JSON', asy
   )
 })
 
-test('exchangeInstallationToken falls back when the error body is empty', async () => {
+test('exchangeInstallationTokenAt falls back when the error body is empty', async () => {
   await withFetch(
     () => new Response('', { status: 503 }),
     async () => {
       await assertRejects(
-        () => exchangeInstallationToken('jwt', '1'),
+        () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
         'github request failed (503)',
       )
@@ -268,12 +272,12 @@ test('exchangeInstallationToken falls back when the error body is empty', async 
   )
 })
 
-test('exchangeInstallationToken rejects a payload with no token', async () => {
+test('exchangeInstallationTokenAt rejects a payload with no token', async () => {
   await withFetch(
     () => new Response(JSON.stringify({ expires_at: '2030-01-01T00:00:00Z' }), { status: 201 }),
     async () => {
       await assertRejects(
-        () => exchangeInstallationToken('jwt', '1'),
+        () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
         'returned no token',
       )
@@ -281,14 +285,14 @@ test('exchangeInstallationToken rejects a payload with no token', async () => {
   )
 })
 
-test('exchangeInstallationToken wraps network failures', async () => {
+test('exchangeInstallationTokenAt wraps network failures', async () => {
   await withFetch(
     () => {
       throw new Error('dns failed')
     },
     async () => {
       await assertRejects(
-        () => exchangeInstallationToken('jwt', '1'),
+        () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
         'dns failed',
       )
@@ -296,14 +300,14 @@ test('exchangeInstallationToken wraps network failures', async () => {
   )
 })
 
-test('exchangeInstallationToken wraps non-Error network failures', async () => {
+test('exchangeInstallationTokenAt wraps non-Error network failures', async () => {
   await withFetch(
     () => {
       throw 'offline'
     },
     async () => {
       await assertRejects(
-        () => exchangeInstallationToken('jwt', '1'),
+        () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
         'network error',
       )
@@ -311,20 +315,26 @@ test('exchangeInstallationToken wraps non-Error network failures', async () => {
   )
 })
 
+/**
+ * Two shapes of read now matter: the bare installation row, and the
+ * installation-joined-to-its-app that replaced the old singleton setting
+ * lookup. The join is distinguished by `innerJoin` being called at all.
+ */
 function gitDb(opts: {
-  settingValue?: unknown
+  app?: Record<string, unknown> | null
   installation?: Record<string, unknown> | null
 }): Db {
+  const joined = () => ({
+    where: () => ({
+      limit: () => Promise.resolve(opts.app ? [{ app: opts.app }] : []),
+    }),
+  })
   return {
     select: () => ({
       from: (table: unknown) => ({
+        innerJoin: joined,
         where: () => ({
           limit: () => {
-            if (table === setting) {
-              return Promise.resolve(
-                opts.settingValue === undefined ? [] : [{ value: opts.settingValue }],
-              )
-            }
             if (table === gitProviderInstallation) {
               return Promise.resolve(opts.installation ? [opts.installation] : [])
             }
@@ -336,25 +346,38 @@ function gitDb(opts: {
   } as unknown as Db
 }
 
-async function sealedAppSetting(privateKeyPem: string) {
+async function sealedApp(privateKeyPem: string, baseUrl = 'https://github.com') {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
     'data-encryption',
   )
   return {
     secrets,
-    value: {
-      appId: ' 12345 ',
-      privateKeyEnvelope: await encryptSecret(secrets, privateKeyPem),
+    app: {
+      id: 'app-1',
+      organizationId: null,
+      provider: 'github',
+      name: 'TurboPanel',
+      baseUrl,
+      apiUrl: null,
+      externalAppId: '12345',
+      appSlug: null,
+      clientId: null,
+      redirectUri: null,
+      webhookRef: 'ref-1',
+      webhookTokenHash: null,
+      credentials: {
+        privateKeyEnvelope: await encryptSecret(secrets, privateKeyPem),
+      },
     },
   }
 }
 
 test('mintGithubInstallationToken exchanges a JWT for the installation token', async () => {
   const pem = await generatePkcs8Pem()
-  const { secrets, value } = await sealedAppSetting(pem)
+  const { secrets, app } = await sealedApp(pem)
   const db = gitDb({
-    settingValue: value,
+    app,
     installation: {
       provider: 'github',
       externalInstallationId: '88',
@@ -373,6 +396,7 @@ test('mintGithubInstallationToken exchanges a JWT for the installation token', a
     assertEquals(token, {
       token: 'ghs_minted',
       expiresAt: '2031-01-01T00:00:00Z',
+      apiBase: GITHUB_API_BASE,
     })
   })
 })
@@ -383,7 +407,18 @@ test('mintGithubInstallationToken rejects a missing App config', async () => {
     'data-encryption',
   )
   await assertRejects(
-    () => mintGithubInstallationToken(gitDb({}), secrets, 'install-1'),
+    () =>
+      mintGithubInstallationToken(
+        gitDb({
+          installation: {
+            provider: 'github',
+            externalInstallationId: '88',
+            suspendedAt: null,
+          },
+        }),
+        secrets,
+        'install-1',
+      ),
     GithubAppTokenError,
     'github app is not configured',
   )
@@ -391,11 +426,11 @@ test('mintGithubInstallationToken rejects a missing App config', async () => {
 
 test('mintGithubInstallationToken rejects a missing installation', async () => {
   const pem = await generatePkcs8Pem()
-  const { secrets, value } = await sealedAppSetting(pem)
+  const { secrets, app } = await sealedApp(pem)
   await assertRejects(
     () =>
       mintGithubInstallationToken(
-        gitDb({ settingValue: value, installation: null }),
+        gitDb({ app, installation: null }),
         secrets,
         'missing',
       ),
@@ -406,12 +441,12 @@ test('mintGithubInstallationToken rejects a missing installation', async () => {
 
 test('mintGithubInstallationToken rejects a non-github installation', async () => {
   const pem = await generatePkcs8Pem()
-  const { secrets, value } = await sealedAppSetting(pem)
+  const { secrets, app } = await sealedApp(pem)
   await assertRejects(
     () =>
       mintGithubInstallationToken(
         gitDb({
-          settingValue: value,
+          app,
           installation: {
             provider: 'gitlab',
             externalInstallationId: '1',
@@ -428,12 +463,12 @@ test('mintGithubInstallationToken rejects a non-github installation', async () =
 
 test('mintGithubInstallationToken rejects a suspended installation', async () => {
   const pem = await generatePkcs8Pem()
-  const { secrets, value } = await sealedAppSetting(pem)
+  const { secrets, app } = await sealedApp(pem)
   const error = await assertRejects(
     () =>
       mintGithubInstallationToken(
         gitDb({
-          settingValue: value,
+          app,
           installation: {
             provider: 'github',
             externalInstallationId: '1',

@@ -124,8 +124,11 @@ function triggerDeps(
   }
 }
 
+const APP_ID = '11111111-1111-4111-8111-111111111111'
+
 const samplePush = {
   provider: 'github' as const,
+  appId: APP_ID,
   externalInstallationId: '42',
   repositoryExternalId: '99',
   ref: 'refs/heads/trunk',
@@ -369,6 +372,7 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
     unusedQueue,
     {
       provider: 'github',
+      appId: APP_ID,
       externalInstallationId: '42',
       repositoryExternalId: '99',
       commitSha: 'abc123def',
@@ -392,6 +396,7 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
     unusedQueue,
     {
       provider: 'github',
+      appId: APP_ID,
       externalInstallationId: '42',
       repositoryExternalId: '99',
       commitSha: 'abc123def',
@@ -412,6 +417,7 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
     unusedQueue,
     {
       provider: 'github',
+      appId: APP_ID,
       externalInstallationId: '42',
       repositoryExternalId: '99',
       commitSha: 'abc123def',
@@ -430,12 +436,13 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
 test('GitHub aliases bind the github provider discriminant', async () => {
   const seen: string[] = []
   const deps: WebhookTriggerDeps = {
-    loadInstallations: async (_db, provider) => {
-      seen.push(provider)
+    loadInstallations: async (_db, query) => {
+      seen.push(query.provider)
       return { live: [], suspended: 0 }
     },
   }
   await resolveGithubPushTrigger(unusedCtx, unusedDb, unusedQueue, {
+    appId: APP_ID,
     externalInstallationId: '42',
     repositoryExternalId: '99',
     ref: 'refs/heads/trunk',
@@ -443,6 +450,7 @@ test('GitHub aliases bind the github provider discriminant', async () => {
     commitSha: 'abc',
   }, deps)
   await resolveGithubCheckTrigger(unusedCtx, unusedDb, unusedQueue, {
+    appId: APP_ID,
     externalInstallationId: '42',
     repositoryExternalId: '99',
     commitSha: 'abc',
@@ -485,6 +493,106 @@ test('resolveSourceEnvironmentIds unions column pins service env and compose ref
     sourceRow({ environmentId: null, serviceId: 'svc-missing' }),
   )
   assertEquals(empty, [])
+})
+
+/**
+ * The literal values a Drizzle predicate binds.
+ *
+ * Drizzle condition objects hold back-references to their table, so they cannot
+ * be serialized; this walks them with a seen-set and collects the strings,
+ * which is enough to assert *which* app id a query was scoped to.
+ */
+function boundValues(condition: unknown): string[] {
+  const found: string[] = []
+  const seen = new Set<unknown>()
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      found.push(value)
+      return
+    }
+    if (typeof value !== 'object' || value === null) return
+    if (seen.has(value)) return
+    seen.add(value)
+    for (const entry of Object.values(value as Record<string, unknown>)) visit(entry)
+  }
+  visit(condition)
+  return found
+}
+
+test('installation lookup is scoped to the app that signed the delivery', async () => {
+  // The regression this guards: a GitHub installation id is unique only within
+  // its App, and `installation` is unique on (org, app, external id) — so the
+  // same numeric id legitimately exists as a row for several organizations.
+  // Matching on provider + external id alone returned all of them, and one
+  // organization's push deployed another organization's environments.
+  const OTHER_APP = '33333333-3333-4333-8333-333333333333'
+  const rowsByApp: Record<string, Array<{ id: string; suspendedAt: string | null }>> = {
+    [APP_ID]: [{ id: 'ours', suspendedAt: null }],
+    [OTHER_APP]: [{ id: 'theirs', suspendedAt: null }],
+  }
+
+  const scopedDb = {
+    select: () => ({
+      from: () => ({
+        where: (condition: unknown) => {
+          // Stand in for SQL: answer with the rows of whichever app id the
+          // predicate actually binds, and nothing when it binds neither.
+          const bound = boundValues(condition)
+          const appId = bound.includes(APP_ID)
+            ? APP_ID
+            : bound.includes(OTHER_APP)
+            ? OTHER_APP
+            : null
+          return Promise.resolve(appId ? rowsByApp[appId] : [])
+        },
+      }),
+    }),
+  } as unknown as Db
+
+  const seenInstallations: string[][] = []
+  const summary = await resolvePushTrigger(
+    unusedCtx,
+    scopedDb,
+    unusedQueue,
+    samplePush,
+    {
+      findSources: async (_db, installationIds) => {
+        seenInstallations.push([...installationIds])
+        return []
+      },
+    },
+  )
+
+  assertEquals(summary.matchedSources, 0)
+  // Only the signing app's installation is a candidate; `theirs` never appears.
+  assertEquals(seenInstallations, [['ours']])
+})
+
+test('a gitlab delivery still narrows to the app, not to every connection', async () => {
+  // GitLab names no connection on a delivery, so the external-id predicate is
+  // dropped. Before `app_id` that left *every* live GitLab connection on the
+  // instance as a candidate — including projects on a different GitLab origin
+  // whose numeric ids happened to collide.
+  let sawAppPredicate = false
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: (condition: unknown) => {
+          sawAppPredicate = boundValues(condition).includes(APP_ID)
+          return Promise.resolve([{ id: 'gl-conn', suspendedAt: null }])
+        },
+      }),
+    }),
+  } as unknown as Db
+
+  await resolvePushTrigger(
+    unusedCtx,
+    db,
+    unusedQueue,
+    { ...samplePush, provider: 'gitlab', externalInstallationId: null },
+    { findSources: async () => [] },
+  )
+  assertEquals(sawAppPredicate, true)
 })
 
 test('resolvePushTrigger default loaders read a fake installation and source chain', async () => {
@@ -543,6 +651,7 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
     unusedQueue,
     {
       provider: 'github',
+      appId: APP_ID,
       externalInstallationId: '42',
       repositoryExternalId: '99',
       commitSha: 'abc123def',
@@ -648,6 +757,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
   assertEquals(
     await applyProviderInstallationEvent(db, {
       provider: 'github',
+      appId: APP_ID,
       externalInstallationId: '42',
       action: 'new_permissions_granted',
     }),
@@ -658,6 +768,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
   assertEquals(
     await applyProviderInstallationEvent(db, {
       provider: 'github',
+      appId: APP_ID,
       externalInstallationId: '42',
       action: 'suspend',
     }),
@@ -669,6 +780,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
 
   assertEquals(
     await applyGithubInstallationEvent(db, {
+      appId: APP_ID,
       externalInstallationId: '42',
       action: 'unsuspend',
     }),
@@ -688,6 +800,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
   assertEquals(
     await applyProviderInstallationEvent(empty, {
       provider: 'gitlab',
+      appId: APP_ID,
       externalInstallationId: '99',
       action: 'deleted',
     }),

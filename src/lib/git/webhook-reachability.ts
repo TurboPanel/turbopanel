@@ -62,6 +62,23 @@ function webhookUrlFor(origin: string, path: string): string {
 }
 
 /**
+ * The ingress path for one app.
+ *
+ * With a `webhookRef` this is the app's own scoped path, which is what every
+ * registered app should actually be pointed at — a delivery arriving there
+ * names its app before any secret is consulted. Without one the caller gets the
+ * bare path, which still resolves (by App id header, or by GitLab token
+ * digest) but only for an app the instance can identify from the request.
+ */
+export function webhookPathFor(
+  provider: WebhookProvider,
+  webhookRef?: string | null,
+): string {
+  const base = WEBHOOK_PATH_BY_PROVIDER[provider]
+  return webhookRef ? `${base}/${encodeURIComponent(webhookRef)}` : base
+}
+
+/**
  * Classify the instance's configured origins.
  *
  * The first publicly reachable origin wins — that is the one worth handing to
@@ -72,8 +89,9 @@ function webhookUrlFor(origin: string, path: string): string {
 export function webhookReachability(
   origins: readonly string[],
   provider: WebhookProvider = 'github',
+  webhookRef?: string | null,
 ): WebhookReachability {
-  const path = WEBHOOK_PATH_BY_PROVIDER[provider]
+  const path = webhookPathFor(provider, webhookRef)
   const usable = origins.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
   if (usable.length === 0) {
     return { webhookUrl: null, reachable: false, note: NO_URL_NOTE }

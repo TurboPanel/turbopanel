@@ -70,7 +70,7 @@ export function collectHealthCheckWarnings(
 }
 
 /**
- * Map Coolify-style resource limits onto a Compose service fragment.
+ * Map resource limits onto a Compose service fragment.
  * Shared by tenant deploy and managed-engine runtime specs so `cpus` /
  * `mem_limit` / `mem_reservation` / `deploy.resources.limits` never drift.
  */

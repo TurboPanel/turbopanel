@@ -8,8 +8,6 @@ import {
   MAX_CELL_PURGE_BATCH_SIZE,
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
-  parseGithubAppUpdates,
-  parseGitlabOauthUpdates,
   parsePayloadBody,
   parseReencryptRequestBody,
   parseSignupEnabledBody,
@@ -121,41 +119,6 @@ test('parseEmailSettingsUpdates keeps string/null entries only', () => {
     parseEmailSettingsUpdates({ SMTP_HOST: 'mail.example.com', SMTP_PORT: 587, BAD: true }),
     { SMTP_HOST: 'mail.example.com' },
   )
-})
-
-test('parseGitlabOauthUpdates keeps only supplied keys', () => {
-  assertEquals(
-    parseGitlabOauthUpdates({ clientId: 'app-id', baseUrl: 'https://gitlab.example.com' }),
-    { clientId: 'app-id', baseUrl: 'https://gitlab.example.com' },
-  )
-  // Omitted secrets keep the sealed ones; an explicit null clears a nullable.
-  assertEquals(
-    parseGitlabOauthUpdates({ webhookSecret: null, redirectUri: null }),
-    { webhookSecret: null, redirectUri: null },
-  )
-  assertEquals(
-    parseGitlabOauthUpdates({ clientSecret: 'shhh' }),
-    { clientSecret: 'shhh' },
-  )
-})
-
-test('parseGitlabOauthUpdates rejects empty ids, wrong types, and empty bodies', () => {
-  assertEquals(parseGitlabOauthUpdates({ clientId: '   ' }), null)
-  assertEquals(parseGitlabOauthUpdates({ clientSecret: '' }), null)
-  assertEquals(parseGitlabOauthUpdates({ baseUrl: 42 }), null)
-  assertEquals(parseGitlabOauthUpdates({ clientId: null }), null)
-  assertEquals(parseGitlabOauthUpdates({}), null)
-  assertEquals(parseGitlabOauthUpdates([]), null)
-  assertEquals(parseGitlabOauthUpdates(null), null)
-})
-
-test('parseGitlabOauthUpdates mirrors the GitHub App partial-update contract', () => {
-  // Same rule on both provider surfaces: a required-string field must be a
-  // non-empty string, a nullable one accepts null.
-  assertEquals(parseGithubAppUpdates({ appId: '' }), null)
-  assertEquals(parseGitlabOauthUpdates({ clientId: '' }), null)
-  assertEquals(parseGithubAppUpdates({ webhookSecret: null }), { webhookSecret: null })
-  assertEquals(parseGitlabOauthUpdates({ webhookSecret: null }), { webhookSecret: null })
 })
 
 test('resolvePerServerLimit falls back to 50', () => {

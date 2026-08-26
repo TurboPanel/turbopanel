@@ -16,13 +16,16 @@ forward migrations** — `pnpm drizzle-kit generate --name <summary>` writes the
 next `NNNN_*.sql` plus its `migrations/meta/NNNN_snapshot.json` and appends the
 journal entry; commit all three and leave `0000_init.sql` untouched.
 
-Migration history was collapsed once into a single regenerated `0000_init.sql`
-while pre-MVP (no installed instances, no data). That was a one-time event.
-The existing policy is unchanged going forward: additive forward migrations,
+The baseline has been regenerated while pre-MVP (no installed instances, no
+data) — most recently for the `gitapp` table and `installation.app_id`, which
+replaced the singleton GitHub App / GitLab OAuth `setting` rows. Each such
+regeneration is a deliberate pre-MVP exception, **not** a precedent: the policy
+above is what holds going forward. Additive forward migrations,
 `0000_init.sql` is the squashed baseline and nothing else, and applying a
 regenerated baseline requires wiping the database because `public.migration`
 replay follows the migration journal timestamps/order
-(`migrations/meta/_journal.json`).
+(`migrations/meta/_journal.json`). Once a real instance exists, regenerating
+stops being an option at all.
 
 Physical boolean columns use an `is_` prefix (`is_connected`,
 `is_read_eligible`, `is_for_build`, `is_for_runtime`,
@@ -290,6 +293,8 @@ organization → storage                         (logical dataset; optional work
 organization → storage → location              (physical copy; optional server + credential)
 organization → storage → mount → service       (container destination)
 organization → credential                      (sealed provider secrets; schema only — no public CRUD)
+gitapp                                         (registered GitHub App / GitLab OAuth application; `organization_id` NULL = instance-wide, set = org-owned)
+gitapp → installation                          (every connection names the app it was granted through)
 organization → installation                    (Git provider App install, physical table `installation`; no token columns)
 organization → source                          (Git repository binding; optional single service *or* environment scope)
 organization → workspace → project → environment → service → source

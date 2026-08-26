@@ -33,17 +33,20 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
+import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
 import {
   credential,
+  gitProviderApp,
   gitProviderInstallation,
   server,
   source,
 } from '../../lib/db/schema.ts'
 import {
-  getGithubAppConfig,
-  getGithubAppConfigSummary,
-} from '../../lib/git/github-app-config.ts'
+  type GitApp,
+  loadGitApp,
+  visibleGitAppsCondition,
+} from '../../lib/git/git-app-records.ts'
 import {
   webhookReachability,
   type WebhookProvider,
@@ -54,15 +57,16 @@ import {
 } from '../../admin/public-urls.ts'
 import {
   GITHUB_API_BASE,
+  githubApiBaseFor,
   githubApiHeaders,
   GithubAppTokenError,
   signGithubAppJwt,
 } from '../../lib/git/github-app-token.ts'
 import { resolveGitProvider } from '../../lib/git/git-provider.ts'
-import { getGitlabOauthConfig } from '../../lib/git/gitlab-oauth-config.ts'
 import {
   exchangeGitlabAuthorizationCode,
   gitlabAuthorizeUrl,
+  gitlabOauthCredentials,
   GitlabOauthTokenError,
   persistGitlabTokenPair,
 } from '../../lib/git/gitlab-oauth-token.ts'
@@ -318,27 +322,136 @@ function providerErrorResponse(c: Context<AppEnv>, error: unknown): Response {
   return c.json({ error: 'git_provider_request_failed', detail: error.message }, status)
 }
 
-/** Best-effort account metadata for a fresh installation (App JWT scope). */
+/**
+ * The registered app a connect flow was asked to run against.
+ *
+ * `?appId=` is required rather than defaulted, because "the" app no longer
+ * exists: an instance may hold several per provider, and silently picking one
+ * would connect the operator's account to an application they did not choose.
+ * The lookup is scoped by {@link visibleGitAppsCondition}, so an organization
+ * can only name its own apps or instance-wide ones — a 404 for anything else,
+ * which is also what hides the existence of another organization's app.
+ */
+async function resolveConnectApp(
+  c: Context<AppEnv>,
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  organizationId: string,
+  provider: 'github' | 'gitlab',
+): Promise<GitApp | Response> {
+  const appId = c.req.query('appId')?.trim() ?? ''
+  if (!UUID_RE.test(appId)) return c.json({ error: 'git_app_required' }, 400)
+
+  const [row] = await db
+    .select({ id: gitProviderApp.id })
+    .from(gitProviderApp)
+    .where(
+      and(
+        eq(gitProviderApp.id, appId),
+        eq(gitProviderApp.provider, provider),
+        visibleGitAppsCondition(organizationId),
+      ),
+    )
+    .limit(1)
+  if (!row) return c.json({ error: 'Not found' }, 404)
+
+  const app = await loadGitApp(db, dataEncryptionSecrets, row.id)
+  if (!app) return c.json({ error: 'Not found' }, 404)
+  return app
+}
+
+/**
+ * Refuse an installation another organization already holds.
+ *
+ * The unique key is `(organization_id, app_id, external_installation_id)`, so
+ * the same provider-side installation *can* be recorded by two organizations —
+ * and for an instance-wide app that is a cross-tenant hole rather than a
+ * feature: the App's key mints tokens for that installation regardless of which
+ * organization asked, so the second claimant would read the first one's
+ * repositories, and a push would fan out to both.
+ *
+ * The provider cannot tell us who is entitled to an account, so the rule is
+ * first-come: one installation belongs to one organization per app, and a
+ * second claim is a `409` rather than a silent duplicate. Reconnecting from the
+ * organization that already owns it still works, because that is an update.
+ */
+async function assertInstallationUnclaimed(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    appId: string
+    externalInstallationId: string
+    provider: 'github' | 'gitlab'
+    organizationId: string
+  },
+): Promise<Response | null> {
+  const [claimed] = await db
+    .select({ organizationId: gitProviderInstallation.organizationId })
+    .from(gitProviderInstallation)
+    .where(
+      and(
+        eq(gitProviderInstallation.appId, params.appId),
+        eq(gitProviderInstallation.provider, params.provider),
+        eq(
+          gitProviderInstallation.externalInstallationId,
+          params.externalInstallationId,
+        ),
+      ),
+    )
+    .limit(1)
+
+  if (claimed && claimed.organizationId !== params.organizationId) {
+    return c.json({ error: 'installation_claimed_by_another_organization' }, 409)
+  }
+  return null
+}
+
+/**
+ * Confirm the installation exists under this App, and read its account.
+ *
+ * **This is an authorization check, not decoration.** `installation_id` arrives
+ * as a query parameter on a URL the caller can retype, so nothing about it is
+ * trusted: the signed `state` proves which organization started the flow, not
+ * which installation the operator actually approved. A caller who names an
+ * installation belonging to somebody else would otherwise get a row bound to
+ * *their* organization, and the App's private key really can mint a token for
+ * it — so a swallowed lookup failure is a cross-tenant repository read.
+ *
+ * A non-OK answer therefore throws rather than degrading to null metadata. It
+ * covers exactly the case that matters: `404` is what GitHub returns for an
+ * installation this App cannot see.
+ */
 async function fetchInstallationAccount(
   appJwt: string,
   externalInstallationId: string,
+  apiBase: string = GITHUB_API_BASE,
 ): Promise<{ accountLogin: string | null; accountType: string | null }> {
+  const id = encodeURIComponent(externalInstallationId)
+  let response: Response
   try {
-    const id = encodeURIComponent(externalInstallationId)
-    const response = await fetch(`${GITHUB_API_BASE}/app/installations/${id}`, {
+    response = await fetch(`${apiBase}/app/installations/${id}`, {
       headers: githubApiHeaders(appJwt, 'Bearer'),
     })
-    if (!response.ok) return { accountLogin: null, accountType: null }
-    const payload = (await response.json().catch(() => null)) as
-      | { account?: { login?: unknown; type?: unknown } }
-      | null
-    const account = payload?.account
-    return {
-      accountLogin: typeof account?.login === 'string' ? account.login : null,
-      accountType: typeof account?.type === 'string' ? account.type : null,
-    }
-  } catch {
-    return { accountLogin: null, accountType: null }
+  } catch (error) {
+    throw new GithubAppTokenError(
+      `github installation lookup failed: ${
+        error instanceof Error ? error.message : 'network error'
+      }`,
+    )
+  }
+  if (!response.ok) {
+    throw new GithubAppTokenError(
+      'github installation not found for this app',
+      response.status === 404 ? 404 : response.status,
+    )
+  }
+  const payload = (await response.json().catch(() => null)) as
+    | { account?: { login?: unknown; type?: unknown } }
+    | null
+  const account = payload?.account
+  return {
+    accountLogin: typeof account?.login === 'string' ? account.login : null,
+    accountType: typeof account?.type === 'string' ? account.type : null,
   }
 }
 
@@ -354,16 +467,38 @@ async function fetchInstallationAccount(
  * differently and are mounted separately), so a `gitlab` source is told about
  * `GITLAB_WEBHOOK_PATH`. A `git` source has no webhook surface at all and is
  * given none.
+ *
+ * The URL is **per app**, not per instance: it carries the `webhook_ref` of the
+ * app behind this source's installation, which is what lets a delivery name its
+ * app before any secret is consulted. A source with no installation (a GitLab
+ * deploy-key source) has no app, and falls back to the bare path.
  */
 async function resolveSourceWebhookInfo(
   db: Db,
   provider: string,
+  installationId: string | null,
 ): Promise<SourceWebhookInfo | undefined> {
   if (provider !== 'github' && provider !== 'gitlab') return undefined
   const origins = (await getPublicUrls(db))
     .map((entry) => publicUrlEntryToInstallOrigin(entry))
     .filter((origin): origin is string => origin !== null)
-  const reachability = webhookReachability(origins, provider as WebhookProvider)
+
+  let webhookRef: string | null = null
+  if (installationId) {
+    const rows = await db
+      .select({ webhookRef: gitProviderApp.webhookRef })
+      .from(gitProviderInstallation)
+      .innerJoin(gitProviderApp, eq(gitProviderInstallation.appId, gitProviderApp.id))
+      .where(eq(gitProviderInstallation.id, installationId))
+      .limit(1)
+    webhookRef = rows[0]?.webhookRef ?? null
+  }
+
+  const reachability = webhookReachability(
+    origins,
+    provider as WebhookProvider,
+    webhookRef,
+  )
   return {
     webhookUrl: reachability.webhookUrl,
     webhookReachable: reachability.reachable,
@@ -478,14 +613,29 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: 'Signing unavailable — no root secret configured' }, 503)
     }
 
-    const summary = await getGithubAppConfigSummary(db)
-    if (!summary.appSlug) {
-      return c.json({ error: 'github_app_not_configured' }, 503)
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    if (!dataEncryptionSecrets) {
+      return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
     }
 
-    const state = await signGithubInstallState(secretsConfig, organizationId)
+    const app = await resolveConnectApp(
+      c,
+      db,
+      dataEncryptionSecrets,
+      organizationId,
+      'github',
+    )
+    if (app instanceof Response) return app
+    if (!app.appSlug) return c.json({ error: 'github_app_not_configured' }, 503)
+
+    const state = await signGithubInstallState(secretsConfig, {
+      organizationId,
+      appId: app.id,
+    })
+    // The install page lives on the App's own origin, so a GitHub Enterprise
+    // App sends the operator to that server rather than to github.com.
     const target = new URL(
-      `https://github.com/apps/${encodeURIComponent(summary.appSlug)}/installations/new`,
+      `${app.baseUrl}/apps/${encodeURIComponent(app.appSlug)}/installations/new`,
     )
     target.searchParams.set('state', state)
     return c.redirect(target.toString(), 302)
@@ -508,12 +658,12 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const statedOrganizationId = await verifyGithubInstallState(secretsConfig, state)
-    if (!statedOrganizationId) {
+    const claims = await verifyGithubInstallState(secretsConfig, state)
+    if (!claims) {
       return c.json({ error: 'github_install_state_invalid' }, 400)
     }
     // The signed state is the authority; the live session must agree with it.
-    if (statedOrganizationId !== organizationId) {
+    if (claims.organizationId !== organizationId) {
       return c.json({ error: 'Forbidden' }, 403)
     }
 
@@ -525,13 +675,29 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
     }
 
-    const config = await getGithubAppConfig(db, dataEncryptionSecrets)
-    if (!config) return c.json({ error: 'github_app_not_configured' }, 503)
+    // The app comes from the signed state, not from a query param on the
+    // provider's redirect — the callback URL is one GitHub controls.
+    const app = await loadGitApp(db, dataEncryptionSecrets, claims.appId)
+    if (!app || app.provider !== 'github' || !app.privateKeyPem) {
+      return c.json({ error: 'github_app_not_configured' }, 503)
+    }
+
+    const claimed = await assertInstallationUnclaimed(c, db, {
+      appId: app.id,
+      externalInstallationId,
+      provider: 'github',
+      organizationId,
+    })
+    if (claimed) return claimed
 
     let account: { accountLogin: string | null; accountType: string | null }
     try {
-      const appJwt = await signGithubAppJwt(config.appId, config.privateKeyPem)
-      account = await fetchInstallationAccount(appJwt, externalInstallationId)
+      const appJwt = await signGithubAppJwt(app.externalAppId, app.privateKeyPem)
+      account = await fetchInstallationAccount(
+        appJwt,
+        externalInstallationId,
+        githubApiBaseFor(app),
+      )
     } catch (error) {
       return providerErrorResponse(c, error)
     }
@@ -540,6 +706,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .insert(gitProviderInstallation)
       .values({
         organizationId,
+        appId: app.id,
         provider: 'github',
         externalInstallationId,
         accountLogin: account.accountLogin,
@@ -548,7 +715,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .onConflictDoUpdate({
         target: [
           gitProviderInstallation.organizationId,
-          gitProviderInstallation.provider,
+          gitProviderInstallation.appId,
           gitProviderInstallation.externalInstallationId,
         ],
         set: {
@@ -589,14 +756,30 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
     }
 
-    const config = await getGitlabOauthConfig(db, dataEncryptionSecrets)
-    if (!config) return c.json({ error: 'gitlab_oauth_not_configured' }, 503)
+    const app = await resolveConnectApp(
+      c,
+      db,
+      dataEncryptionSecrets,
+      organizationId,
+      'gitlab',
+    )
+    if (app instanceof Response) return app
+    if (!app.clientId) return c.json({ error: 'gitlab_oauth_not_configured' }, 503)
 
-    const redirectUri = await resolveGitlabRedirectUri(db, config.redirectUri)
+    const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
     if (!redirectUri) return c.json({ error: 'gitlab_redirect_uri_unknown' }, 503)
 
-    const state = await signGitlabConnectState(secretsConfig, organizationId)
-    return c.redirect(gitlabAuthorizeUrl(config, { redirectUri, state }), 302)
+    const state = await signGitlabConnectState(secretsConfig, {
+      organizationId,
+      appId: app.id,
+    })
+    return c.redirect(
+      gitlabAuthorizeUrl(
+        { baseUrl: app.baseUrl, clientId: app.clientId },
+        { redirectUri, state },
+      ),
+      302,
+    )
   })
 
   /**
@@ -623,12 +806,12 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const code = c.req.query('code')
     if (!state || !code) return c.json({ error: 'Invalid request' }, 400)
 
-    const statedOrganizationId = await verifyGitlabConnectState(secretsConfig, state)
-    if (!statedOrganizationId) {
+    const claims = await verifyGitlabConnectState(secretsConfig, state)
+    if (!claims) {
       return c.json({ error: 'gitlab_connect_state_invalid' }, 400)
     }
     // The signed state is the authority; the live session must agree with it.
-    if (statedOrganizationId !== organizationId) {
+    if (claims.organizationId !== organizationId) {
       return c.json({ error: 'Forbidden' }, 403)
     }
 
@@ -640,17 +823,26 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
     }
 
-    const config = await getGitlabOauthConfig(db, dataEncryptionSecrets)
-    if (!config) return c.json({ error: 'gitlab_oauth_not_configured' }, 503)
+    const app = await loadGitApp(db, dataEncryptionSecrets, claims.appId)
+    if (!app || app.provider !== 'gitlab') {
+      return c.json({ error: 'gitlab_oauth_not_configured' }, 503)
+    }
 
-    const redirectUri = await resolveGitlabRedirectUri(db, config.redirectUri)
+    const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
     if (!redirectUri) return c.json({ error: 'gitlab_redirect_uri_unknown' }, 503)
+
+    let credentials
+    try {
+      credentials = gitlabOauthCredentials(app)
+    } catch (error) {
+      return providerErrorResponse(c, error)
+    }
 
     let pair
     let account
     try {
-      pair = await exchangeGitlabAuthorizationCode(config, { code, redirectUri })
-      account = await fetchGitlabAccount(config.baseUrl, pair.token)
+      pair = await exchangeGitlabAuthorizationCode(credentials, { code, redirectUri })
+      account = await fetchGitlabAccount(app.baseUrl, pair.token)
     } catch (error) {
       return providerErrorResponse(c, error)
     }
@@ -659,12 +851,21 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     // API declined to answer it, the row still has to be addressable and unique
     // within the organization, so the client id stands in — one connection per
     // OAuth application per organization, which is what a re-connect should be.
-    const externalInstallationId = account.externalId ?? `client:${config.clientId}`
+    const externalInstallationId = account.externalId ?? `client:${credentials.clientId}`
+
+    const claimed = await assertInstallationUnclaimed(c, db, {
+      appId: app.id,
+      externalInstallationId,
+      provider: 'gitlab',
+      organizationId,
+    })
+    if (claimed) return claimed
 
     const [row] = await db
       .insert(gitProviderInstallation)
       .values({
         organizationId,
+        appId: app.id,
         provider: 'gitlab',
         externalInstallationId,
         accountLogin: account.login,
@@ -673,7 +874,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .onConflictDoUpdate({
         target: [
           gitProviderInstallation.organizationId,
-          gitProviderInstallation.provider,
+          gitProviderInstallation.appId,
           gitProviderInstallation.externalInstallationId,
         ],
         set: {
@@ -843,7 +1044,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     return c.json({
       source: serializeSourceRow(
         row,
-        await resolveSourceWebhookInfo(db, row.provider),
+        await resolveSourceWebhookInfo(db, row.provider, row.installationId),
       ),
     })
   })

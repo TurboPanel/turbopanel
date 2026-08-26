@@ -3,11 +3,12 @@ import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
 import { encryptSecret } from '../../client/authn/data-encryption.ts'
 import type { Db } from '../../db.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { gitProviderInstallation, setting } from '../db/schema.ts'
+import { gitProviderInstallation } from '../db/schema.ts'
 import {
   GitlabOauthTokenError,
   exchangeGitlabAuthorizationCode,
   gitlabAuthorizeUrl,
+  type GitlabOauthCredentials,
   mintGitlabAccessToken,
   persistGitlabTokenPair,
   refreshGitlabAccessToken,
@@ -15,8 +16,7 @@ import {
 import {
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_OAUTH_SCOPES,
-  type GitlabOauthConfig,
-} from './gitlab-oauth-config.ts'
+} from './git-app-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -57,12 +57,10 @@ test('gitlabAuthorizeUrl respects a self-managed GitLab base URL', () => {
   assertEquals(parsed.pathname, '/oauth/authorize')
 })
 
-const oauthConfig: GitlabOauthConfig = {
+const oauthConfig: GitlabOauthCredentials = {
   clientId: 'app-id',
   clientSecret: 'app-secret',
-  redirectUri: 'https://203.0.113.10/callback',
   baseUrl: GITLAB_DEFAULT_BASE_URL,
-  webhookSecret: null,
 }
 
 function withFetch(
@@ -234,21 +232,26 @@ type GitlabDb = Db & {
   updated: unknown
 }
 
+/**
+ * The OAuth application now arrives through an installation → gitapp join
+ * rather than a singleton `setting` row; `innerJoin` distinguishes the reads.
+ */
 function gitlabDb(opts: {
-  settingValue?: unknown
+  app?: Record<string, unknown> | null
   installation?: Record<string, unknown> | null
 }): GitlabDb {
+  const joined = () => ({
+    where: () => ({
+      limit: () => Promise.resolve(opts.app ? [{ app: opts.app }] : []),
+    }),
+  })
   const db = {
     updated: undefined as unknown,
     select: () => ({
       from: (table: unknown) => ({
+        innerJoin: joined,
         where: () => ({
           limit: () => {
-            if (table === setting) {
-              return Promise.resolve(
-                opts.settingValue === undefined ? [] : [{ value: opts.settingValue }],
-              )
-            }
             if (table === gitProviderInstallation) {
               return Promise.resolve(opts.installation ? [opts.installation] : [])
             }
@@ -269,16 +272,29 @@ function gitlabDb(opts: {
   return db as unknown as GitlabDb
 }
 
-async function sealedOauthSetting() {
+async function sealedOauthApp() {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
     'data-encryption',
   )
   return {
     secrets,
-    value: {
+    app: {
+      id: 'app-1',
+      organizationId: null,
+      provider: 'gitlab',
+      name: 'TurboPanel',
+      baseUrl: GITLAB_DEFAULT_BASE_URL,
+      apiUrl: null,
+      externalAppId: 'app-id',
+      appSlug: null,
       clientId: 'app-id',
-      clientSecretEnvelope: await encryptSecret(secrets, 'app-secret'),
+      redirectUri: null,
+      webhookRef: 'ref-1',
+      webhookTokenHash: null,
+      credentials: {
+        clientSecretEnvelope: await encryptSecret(secrets, 'app-secret'),
+      },
     },
   }
 }
@@ -336,10 +352,10 @@ test('persistGitlabTokenPair writes a rotated refresh token', async () => {
 })
 
 test('mintGitlabAccessToken returns a still-valid sealed access token', async () => {
-  const { secrets, value } = await sealedOauthSetting()
+  const { secrets, app } = await sealedOauthApp()
   const access = await encryptSecret(secrets, 'still-valid')
   const db = gitlabDb({
-    settingValue: value,
+    app,
     installation: {
       provider: 'gitlab',
       suspendedAt: null,
@@ -355,10 +371,10 @@ test('mintGitlabAccessToken returns a still-valid sealed access token', async ()
 })
 
 test('mintGitlabAccessToken refreshes and writes back an expired pair', async () => {
-  const { secrets, value } = await sealedOauthSetting()
+  const { secrets, app } = await sealedOauthApp()
   const refresh = await encryptSecret(secrets, 'refresh-me')
   const db = gitlabDb({
-    settingValue: value,
+    app,
     installation: {
       provider: 'gitlab',
       suspendedAt: null,
@@ -395,17 +411,47 @@ test('mintGitlabAccessToken rejects missing config, row, provider, and suspensio
     parseTestSecretsConfig('deno'),
     'data-encryption',
   )
+  // The application is resolved *through* the installation now, so a missing
+  // installation reports itself rather than being blamed on configuration.
   await assertRejects(
     () => mintGitlabAccessToken(gitlabDb({}), secrets, 'install-1'),
+    GitlabOauthTokenError,
+    'installation not found',
+  )
+
+  // A live installation whose app row is gone is the configuration failure —
+  // reached only on the refresh path, which is the only place the app is read.
+  const unconfigured = await deriveEncryptionSecretsConfig(
+    parseTestSecretsConfig('deno'),
+    'data-encryption',
+  )
+  const staleRefresh = await encryptSecret(unconfigured, 'refresh-me')
+  await assertRejects(
+    () =>
+      mintGitlabAccessToken(
+        gitlabDb({
+          app: null,
+          installation: {
+            provider: 'gitlab',
+            suspendedAt: null,
+            oauthEnvelope: {
+              refreshTokenEnvelope: staleRefresh,
+              expiresAt: '2000-01-01T00:00:00.000Z',
+            },
+          },
+        }),
+        unconfigured,
+        'install-1',
+      ),
     GitlabOauthTokenError,
     'gitlab oauth application is not configured',
   )
 
-  const { secrets: sealedSecrets, value } = await sealedOauthSetting()
+  const { secrets: sealedSecrets, app } = await sealedOauthApp()
   await assertRejects(
     () =>
       mintGitlabAccessToken(
-        gitlabDb({ settingValue: value, installation: null }),
+        gitlabDb({ app, installation: null }),
         sealedSecrets,
         'missing',
       ),
@@ -416,7 +462,7 @@ test('mintGitlabAccessToken rejects missing config, row, provider, and suspensio
     () =>
       mintGitlabAccessToken(
         gitlabDb({
-          settingValue: value,
+          app,
           installation: { provider: 'github', suspendedAt: null, oauthEnvelope: {} },
         }),
         sealedSecrets,
@@ -429,7 +475,7 @@ test('mintGitlabAccessToken rejects missing config, row, provider, and suspensio
     () =>
       mintGitlabAccessToken(
         gitlabDb({
-          settingValue: value,
+          app,
           installation: {
             provider: 'gitlab',
             suspendedAt: '2030-01-01T00:00:00.000Z',
@@ -449,12 +495,12 @@ test('mintGitlabAccessToken rejects missing config, row, provider, and suspensio
 })
 
 test('mintGitlabAccessToken rejects unsealed envelopes and a missing refresh token', async () => {
-  const { secrets, value } = await sealedOauthSetting()
+  const { secrets, app } = await sealedOauthApp()
   await assertRejects(
     () =>
       mintGitlabAccessToken(
         gitlabDb({
-          settingValue: value,
+          app,
           installation: {
             provider: 'gitlab',
             suspendedAt: null,
@@ -474,7 +520,7 @@ test('mintGitlabAccessToken rejects unsealed envelopes and a missing refresh tok
     () =>
       mintGitlabAccessToken(
         gitlabDb({
-          settingValue: value,
+          app,
           installation: {
             provider: 'gitlab',
             suspendedAt: null,
@@ -491,7 +537,7 @@ test('mintGitlabAccessToken rejects unsealed envelopes and a missing refresh tok
     () =>
       mintGitlabAccessToken(
         gitlabDb({
-          settingValue: value,
+          app,
           installation: {
             provider: 'gitlab',
             suspendedAt: null,

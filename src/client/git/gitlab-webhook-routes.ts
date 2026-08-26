@@ -31,7 +31,7 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDb, type Db } from '../../db.ts'
-import { GITLAB_WEBHOOK_PATH } from '../../surfaces.ts'
+import { GITLAB_WEBHOOK_PATH, GITLAB_WEBHOOK_SCOPED_PATH } from '../../surfaces.ts'
 import { logInfo, logWarn } from '../../logger.ts'
 import type { RateLimiter } from '../../daemon/rate-limit/contracts.ts'
 import { gitlabWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
@@ -39,13 +39,18 @@ import {
   claimWebhookDelivery,
   releaseWebhookDelivery,
 } from '../../lib/db/webhook-delivery-records.ts'
-import { getGitlabOauthConfig } from '../../lib/git/gitlab-oauth-config.ts'
 import { gitlabProvider } from '../../lib/git/gitlab-provider.ts'
+import {
+  candidatesUnconfigured,
+  resolveGitlabWebhookApp,
+  selectVerifiedApp,
+} from '../../lib/git/resolve-webhook-app.ts'
 import {
   gitlabDeliveryId,
   gitlabEventName,
   GITLAB_EVENT_HEADER,
   GITLAB_EVENT_UUID_HEADER,
+  GITLAB_TOKEN_HEADER,
 } from '../../lib/git/gitlab-webhook.ts'
 import { resolveClientIp } from '../authn/http.ts'
 import { assertDeployDispatchInfrastructure } from '../environments/deploy-routes.ts'
@@ -114,6 +119,7 @@ function parseDeliveryPayload(raw: Uint8Array): Record<string, unknown> | null {
 async function handlePush(
   c: Context<AppEnv>,
   db: Db,
+  appId: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
   const push = gitlabProvider.parsePush(payload)
@@ -127,6 +133,7 @@ async function handlePush(
 
   const summary = await resolvePushTrigger(c, db, commandQueue, {
     provider: 'gitlab',
+    appId,
     ...push,
   })
   return { retry: triggerSummaryNeedsRetry(summary), result: summary }
@@ -135,6 +142,7 @@ async function handlePush(
 async function handlePipeline(
   c: Context<AppEnv>,
   db: Db,
+  appId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
@@ -148,6 +156,7 @@ async function handlePipeline(
 
   const summary = await resolveCheckTrigger(c, db, commandQueue, {
     provider: 'gitlab',
+    appId,
     ...check,
   })
   return { retry: triggerSummaryNeedsRetry(summary), result: summary }
@@ -164,15 +173,16 @@ async function handlePipeline(
 async function dispatchDelivery(
   c: Context<AppEnv>,
   db: Db,
+  appId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
   const kind = typeof payload.object_kind === 'string' ? payload.object_kind : event
   switch (kind) {
     case 'push':
-      return await handlePush(c, db, payload)
+      return await handlePush(c, db, appId, payload)
     case 'pipeline':
-      return await handlePipeline(c, db, kind, payload)
+      return await handlePipeline(c, db, appId, kind, payload)
     default:
       // Notably absent: an installation lifecycle case. GitLab has no such
       // webhook — a revoked OAuth grant surfaces as a failing token refresh at
@@ -193,7 +203,7 @@ export function registerGitlabWebhookRoutes(
   app: Hono<AppEnv>,
   opts: GitlabWebhookRouteOpts,
 ) {
-  app.post(GITLAB_WEBHOOK_PATH, async (c) => {
+  const handler = async (c: Context<AppEnv>) => {
     // 1. Rate limit first — it is what protects the work below.
     if (opts.rateLimiter) {
       const peer = resolveClientIp(c, opts.runtime) ?? 'unknown'
@@ -211,22 +221,39 @@ export function registerGitlabWebhookRoutes(
       return c.json({ error: 'Encryption unavailable' }, 503)
     }
 
-    const config = await getGitlabOauthConfig(db, dataEncryptionSecrets)
-    if (!config?.webhookSecret) {
+    const headers = { get: (name: string) => c.req.header(name) ?? null }
+
+    // 2a. Which app is this? On the scoped path the ref says so outright; on the
+    //     bare path the presented token is digested and looked up. Either way
+    //     this only *selects* a secret — step 3 is still what authenticates.
+    const webhookRef = c.req.param('ref')?.trim() || null
+    const resolution = await resolveGitlabWebhookApp(
+      db,
+      dataEncryptionSecrets,
+      webhookRef,
+      c.req.header(GITLAB_TOKEN_HEADER) ?? null,
+    )
+    if (!resolution.ok) {
+      logWarn('git-webhook', 'rejected gitlab delivery that names no registered app')
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    if (candidatesUnconfigured(resolution.candidates)) {
       // Nothing to verify against: refuse rather than accept unauthenticated
       // deliveries. 503 (not 401) because the gap is on this side.
       return c.json({ error: 'gitlab_webhook_not_configured' }, 503)
     }
 
-    // 2. Raw bytes, before any parse — also what the fallback delivery id hashes.
+    // 2b. Raw bytes, before any parse — also what the fallback delivery id hashes.
     const raw = await readRawBody(c)
     if (raw instanceof Response) return raw
 
-    // 3. Token. Nothing has been written yet.
-    const verified = await gitlabProvider.verifyWebhook(config.webhookSecret, raw, {
-      get: (name) => c.req.header(name) ?? null,
-    })
-    if (!verified) {
+    // 3. Token, against the resolved app's own secret. The digest lookup above
+    //    found the row; this is the constant-time compare that admits it.
+    const verifiedApp = await selectVerifiedApp(
+      resolution.candidates,
+      (webhookSecret) => gitlabProvider.verifyWebhook(webhookSecret, raw, headers),
+    )
+    if (!verifiedApp) {
       logWarn('git-webhook', 'rejected gitlab delivery with invalid token')
       return c.json({ error: 'Unauthorized' }, 401)
     }
@@ -254,7 +281,7 @@ export function registerGitlabWebhookRoutes(
     const payload = parseDeliveryPayload(raw)
     if (!payload) return c.json({ error: 'Invalid request' }, 400)
 
-    const outcome = await dispatchDelivery(c, db, event, payload)
+    const outcome = await dispatchDelivery(c, db, verifiedApp.id, event, payload)
     if (outcome.retry) {
       // Give the delivery id back before answering: a resend carries the same
       // id (or hashes to it), and the claim taken in step 4 would otherwise
@@ -271,5 +298,10 @@ export function registerGitlabWebhookRoutes(
       return c.json({ ok: false as const, event, result: outcome.result }, 503)
     }
     return c.json({ ok: true as const, event, result: outcome.result })
-  })
+  }
+
+  // The scoped path is what every project hook is pointed at; the bare path
+  // stays for hooks configured by hand, which resolve by token digest.
+  app.post(GITLAB_WEBHOOK_SCOPED_PATH, handler)
+  app.post(GITLAB_WEBHOOK_PATH, handler)
 }

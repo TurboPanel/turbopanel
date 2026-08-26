@@ -1,6 +1,89 @@
 import { buildResourceCrudPaths, clientErrorJson, resourceErrorResponses } from './shared.ts'
 
 export const sourceSchemas = {
+  OrgGitApp: {
+    type: 'object',
+    description:
+      'A Git provider application this organization may connect through: its ' +
+      'own, or one registered instance-wide. Sealed material (App private key, ' +
+      'OAuth client secret, webhook secret) is never returned — only presence.',
+    properties: {
+      id: { type: 'string' },
+      organizationId: {
+        type: ['string', 'null'],
+        description: 'null = instance-wide, usable by every organization',
+      },
+      provider: { type: 'string', enum: ['github', 'gitlab'] },
+      name: { type: 'string' },
+      baseUrl: { type: 'string' },
+      apiUrl: { type: ['string', 'null'] },
+      externalAppId: { type: 'string' },
+      appSlug: { type: ['string', 'null'] },
+      clientId: { type: ['string', 'null'] },
+      redirectUri: { type: ['string', 'null'] },
+      webhookRef: {
+        type: 'string',
+        description: "Routing token in this app's own webhook URL",
+      },
+      webhookPath: { type: 'string' },
+      webhookUrl: { type: ['string', 'null'] },
+      readOnly: {
+        type: 'boolean',
+        description:
+          'True for an instance-wide app: usable, but only an instance admin may edit it',
+      },
+      hasPrivateKey: { type: 'boolean' },
+      hasClientSecret: { type: 'boolean' },
+      hasWebhookSecret: { type: 'boolean' },
+    },
+  },
+  OrgGitAppsResponse: {
+    type: 'object',
+    properties: {
+      apps: { type: 'array', items: { $ref: '#/components/schemas/OrgGitApp' } },
+    },
+  },
+  OrgGitAppResponse: {
+    type: 'object',
+    properties: { app: { $ref: '#/components/schemas/OrgGitApp' } },
+  },
+  CreateOrgGitAppBody: {
+    type: 'object',
+    required: ['provider', 'name', 'externalAppId'],
+    properties: {
+      provider: { type: 'string', enum: ['github', 'gitlab'] },
+      name: { type: 'string', minLength: 1 },
+      externalAppId: { type: 'string', minLength: 1 },
+      baseUrl: { type: 'string' },
+      apiUrl: { type: ['string', 'null'] },
+      appSlug: { type: ['string', 'null'] },
+      clientId: { type: ['string', 'null'] },
+      redirectUri: { type: ['string', 'null'] },
+      privateKeyPem: { type: ['string', 'null'] },
+      clientSecret: { type: ['string', 'null'] },
+      webhookSecret: { type: ['string', 'null'] },
+    },
+  },
+  PatchOrgGitAppBody: {
+    type: 'object',
+    description:
+      'Partial update — omitted keys keep their stored value, so a PATCH that ' +
+      'omits privateKeyPem keeps the sealed one. Send null to clear a nullable ' +
+      'field; an empty string is rejected rather than treated as a clear. ' +
+      'provider and organizationId are immutable.',
+    properties: {
+      name: { type: 'string', minLength: 1 },
+      externalAppId: { type: 'string', minLength: 1 },
+      baseUrl: { type: 'string', minLength: 1 },
+      apiUrl: { type: ['string', 'null'] },
+      appSlug: { type: ['string', 'null'] },
+      clientId: { type: ['string', 'null'] },
+      redirectUri: { type: ['string', 'null'] },
+      privateKeyPem: { type: ['string', 'null'] },
+      clientSecret: { type: ['string', 'null'] },
+      webhookSecret: { type: ['string', 'null'] },
+    },
+  },
   SourceRecord: {
     type: 'object',
     properties: {
@@ -215,8 +298,198 @@ const sourcesBasePath = '/api/client/v1/sources'
 const sourceIdPath = `${sourcesBasePath}/{id}`
 const security = [{ cookieAuth: [] }]
 
+const gitAppsBasePath = '/api/client/v1/git/apps'
+
 export const sourcePaths = {
   ...basePaths,
+  [gitAppsBasePath]: {
+    get: {
+      tags: ['Sources'],
+      summary: "List Git applications this organization may connect through",
+      description:
+        "The organization's own applications plus every instance-wide one. " +
+        'Instance-wide rows come back with `readOnly: true`: usable for a ' +
+        'connect flow, but only an instance admin may edit them.',
+      security,
+      responses: {
+        '200': {
+          description: 'Available applications',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrgGitAppsResponse' },
+            },
+          },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+    post: {
+      tags: ['Sources'],
+      summary: 'Register a Git application for this organization',
+      description:
+        'Registers an existing GitHub App or GitLab OAuth application. Several ' +
+        'may coexist per provider. Secrets are sealed before persist and never ' +
+        'returned.',
+      security,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateOrgGitAppBody' },
+          },
+        },
+      },
+      responses: {
+        '201': {
+          description: 'The registered application',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrgGitAppResponse' },
+            },
+          },
+        },
+        '409': {
+          description:
+            'An application with these details is already registered. The ' +
+            'message is deliberately identical whether the existing row is ' +
+            "yours or another organization's — the uniqueness keys are " +
+            'instance-global, and a distinguishable answer would let one ' +
+            "tenant probe another's registrations.",
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+  },
+  [`${gitAppsBasePath}/{id}`]: {
+    parameters: [
+      { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+    ],
+    get: {
+      tags: ['Sources'],
+      summary: 'Read one Git application',
+      security,
+      responses: {
+        '200': {
+          description: 'The application',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrgGitAppResponse' },
+            },
+          },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+    patch: {
+      tags: ['Sources'],
+      summary: 'Update one Git application owned by this organization',
+      security,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/PatchOrgGitAppBody' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'The updated application',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrgGitAppResponse' },
+            },
+          },
+        },
+        '403': {
+          description:
+            'git_app_not_writable — the application is instance-wide',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '409': {
+          description: 'An application with these details is already registered',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+    delete: {
+      tags: ['Sources'],
+      summary: 'Delete one Git application owned by this organization',
+      description:
+        'Cascades to the connections granted through it. Sources that named ' +
+        'those connections survive but lose their clone credential and must be ' +
+        'reconnected.',
+      security,
+      responses: {
+        '204': { description: 'Deleted' },
+        '403': {
+          description:
+            'git_app_not_writable — the application is instance-wide',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+  },
+  [`${gitAppsBasePath}/github/manifest`]: {
+    post: {
+      tags: ['Sources'],
+      summary: 'Start the GitHub App Manifest flow for this organization',
+      description:
+        'Returns a manifest to POST to GitHub as a form. Its ' +
+        'hook_attributes.url and setup_url already point at this instance, so ' +
+        'the created App is self-identifying and its install redirect writes ' +
+        'the connection without any manual copying.',
+      security,
+      responses: {
+        '200': {
+          description: 'Manifest, target URL, and signed state',
+          content: { 'application/json': { schema: { type: 'object' } } },
+        },
+        '503': {
+          description: 'public_url_not_configured, or no root secret to sign the state',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+  },
+  [`${gitAppsBasePath}/github/manifest/callback`]: {
+    get: {
+      tags: ['Sources'],
+      summary: 'Finish the GitHub App Manifest flow',
+      description:
+        "Exchanges GitHub's one-shot code for the App credentials and stores " +
+        'them. A browser redirect, so the organization is pinned in the query ' +
+        'string rather than the usual header.',
+      security,
+      parameters: [
+        { name: 'code', in: 'query', required: true, schema: { type: 'string' } },
+        { name: 'state', in: 'query', required: true, schema: { type: 'string' } },
+      ],
+      responses: {
+        '201': {
+          description: 'The registered application',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrgGitAppResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Missing code/state, or state that does not verify',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '502': {
+          description: 'GitHub refused the manifest conversion',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+  },
   [sourcesBasePath]: {
     ...(basePaths[sourcesBasePath] as Record<string, unknown>),
     get: {
@@ -313,10 +586,29 @@ export const sourcePaths = {
       tags: ['Sources'],
       summary: 'Start the GitHub App installation flow',
       description:
-        'Redirects to GitHub with a signed `state` binding the flow to the caller organization.',
+        'Redirects to GitHub with a signed `state` binding the flow to the caller ' +
+        'organization **and** to the chosen application.',
       security,
+      parameters: [
+        {
+          name: 'appId',
+          in: 'query',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+          description:
+            'Which registered application to connect through. Required rather ' +
+            'than defaulted: an instance may hold several apps per provider, and ' +
+            'silently picking one would connect the account to an application ' +
+            'the operator did not choose. Must be an app the organization owns ' +
+            'or an instance-wide one.',
+        },
+      ],
       responses: {
         '302': { description: 'Redirect to GitHub' },
+        '400': {
+          description: 'git_app_required — no usable appId was supplied',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
         '503': {
           description: 'github_app_not_configured',
           content: { 'application/json': { schema: clientErrorJson } },
@@ -363,11 +655,30 @@ export const sourcePaths = {
       summary: 'Start the GitLab OAuth connect flow',
       description:
         'Redirects to the GitLab authorize endpoint with a signed `state` binding the flow ' +
-        "to the caller organization. GitLab has no App install, so this connects one " +
-        'account or group rather than selecting repositories.',
+        "to the caller organization and to the chosen application. GitLab has no " +
+        'App install, so this connects one account or group rather than selecting ' +
+        'repositories.',
       security,
+      parameters: [
+        {
+          name: 'appId',
+          in: 'query',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+          description:
+            'Which registered application to connect through. Required rather ' +
+            'than defaulted: an instance may hold several apps per provider, and ' +
+            'silently picking one would connect the account to an application ' +
+            'the operator did not choose. Must be an app the organization owns ' +
+            'or an instance-wide one.',
+        },
+      ],
       responses: {
         '302': { description: 'Redirect to GitLab' },
+        '400': {
+          description: 'git_app_required — no usable appId was supplied',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
         '503': {
           description: 'gitlab_oauth_not_configured / gitlab_redirect_uri_unknown',
           content: { 'application/json': { schema: clientErrorJson } },

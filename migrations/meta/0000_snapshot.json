@@ -1,5 +1,5 @@
 {
-  "id": "eb8edd83-09fd-4d8f-b7a3-fdb4b4ce5e0b",
+  "id": "36085061-19c8-4161-a49a-e76aff47185a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1630,6 +1630,200 @@
       },
       "isRLSEnabled": false
     },
+    "public.gitapp": {
+      "name": "gitapp",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_url": {
+          "name": "base_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "api_url": {
+          "name": "api_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_app_id": {
+          "name": "external_app_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "app_slug": {
+          "name": "app_slug",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "client_id": {
+          "name": "client_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "redirect_uri": {
+          "name": "redirect_uri",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credentials": {
+          "name": "credentials",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "webhook_ref": {
+          "name": "webhook_ref",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "webhook_token_hash": {
+          "name": "webhook_token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_gitapp_organization_id": {
+          "name": "idx_gitapp_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_gitapp_provider": {
+          "name": "idx_gitapp_provider",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "gitapp_organization_id_organization_id_fk": {
+          "name": "gitapp_organization_id_organization_id_fk",
+          "tableFrom": "gitapp",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_gitapp_webhook_ref": {
+          "name": "uniq_gitapp_webhook_ref",
+          "nullsNotDistinct": false,
+          "columns": [
+            "webhook_ref"
+          ]
+        },
+        "uniq_gitapp_provider_base_external": {
+          "name": "uniq_gitapp_provider_base_external",
+          "nullsNotDistinct": false,
+          "columns": [
+            "provider",
+            "base_url",
+            "external_app_id"
+          ]
+        },
+        "uniq_gitapp_webhook_token_hash": {
+          "name": "uniq_gitapp_webhook_token_hash",
+          "nullsNotDistinct": false,
+          "columns": [
+            "webhook_token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "gitapp_provider_check": {
+          "name": "gitapp_provider_check",
+          "value": "provider IN ('github', 'gitlab')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.installation": {
       "name": "installation",
       "schema": "",
@@ -1669,6 +1863,12 @@
         },
         "organization_id": {
           "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "app_id": {
+          "name": "app_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -1726,6 +1926,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_installation_app_id": {
+          "name": "idx_installation_app_id",
+          "columns": [
+            {
+              "expression": "app_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1741,16 +1957,29 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "installation_app_id_gitapp_id_fk": {
+          "name": "installation_app_id_gitapp_id_fk",
+          "tableFrom": "installation",
+          "tableTo": "gitapp",
+          "columnsFrom": [
+            "app_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uniq_installation_organization_provider_external": {
-          "name": "uniq_installation_organization_provider_external",
+        "uniq_installation_organization_app_external": {
+          "name": "uniq_installation_organization_app_external",
           "nullsNotDistinct": false,
           "columns": [
             "organization_id",
-            "provider",
+            "app_id",
             "external_installation_id"
           ]
         }

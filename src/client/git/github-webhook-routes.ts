@@ -29,7 +29,7 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { getDb, type Db } from '../../db.ts'
-import { GITHUB_WEBHOOK_PATH } from '../../surfaces.ts'
+import { GITHUB_WEBHOOK_PATH, GITHUB_WEBHOOK_SCOPED_PATH } from '../../surfaces.ts'
 import { logInfo, logWarn } from '../../logger.ts'
 import type { RateLimiter } from '../../daemon/rate-limit/contracts.ts'
 import { githubWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
@@ -37,7 +37,11 @@ import {
   claimWebhookDelivery,
   releaseWebhookDelivery,
 } from '../../lib/db/webhook-delivery-records.ts'
-import { getGithubAppConfig } from '../../lib/git/github-app-config.ts'
+import {
+  candidatesUnconfigured,
+  resolveGithubWebhookApp,
+  selectVerifiedApp,
+} from '../../lib/git/resolve-webhook-app.ts'
 import {
   branchFromGitRef,
   GITHUB_DELIVERY_HEADER,
@@ -145,6 +149,7 @@ export { successfulCheckSha } from '../../lib/git/github-provider.ts'
 async function handlePush(
   c: Context<AppEnv>,
   db: Db,
+  appId: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
   // `githubProvider.parsePush` applies the branch-ref and identification rules;
@@ -166,6 +171,7 @@ async function handlePush(
   if (commandQueue instanceof Response) return retryable('dispatch_unavailable')
 
   const summary = await resolveGithubPushTrigger(c, db, commandQueue, {
+    appId,
     externalInstallationId: push.externalInstallationId,
     repositoryExternalId: push.repositoryExternalId,
     ref: push.ref,
@@ -178,6 +184,7 @@ async function handlePush(
 async function handleChecks(
   c: Context<AppEnv>,
   db: Db,
+  appId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
@@ -191,6 +198,7 @@ async function handleChecks(
   if (commandQueue instanceof Response) return retryable('dispatch_unavailable')
 
   const summary = await resolveGithubCheckTrigger(c, db, commandQueue, {
+    appId,
     externalInstallationId: check.externalInstallationId,
     repositoryExternalId: check.repositoryExternalId,
     commitSha: check.commitSha,
@@ -209,6 +217,7 @@ async function handleChecks(
  */
 async function handleInstallation(
   db: Db,
+  appId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
@@ -227,6 +236,7 @@ async function handleInstallation(
   const action = typeof payload.action === 'string' ? payload.action : ''
   return accepted(
     await applyGithubInstallationEvent(db, {
+      appId,
       externalInstallationId: installation,
       action,
     }),
@@ -236,18 +246,19 @@ async function handleInstallation(
 async function dispatchDelivery(
   c: Context<AppEnv>,
   db: Db,
+  appId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
   switch (event) {
     case 'push':
-      return await handlePush(c, db, payload)
+      return await handlePush(c, db, appId, payload)
     case 'check_suite':
     case 'check_run':
-      return await handleChecks(c, db, event, payload)
+      return await handleChecks(c, db, appId, event, payload)
     case 'installation':
     case 'installation_repositories':
-      return await handleInstallation(db, event, payload)
+      return await handleInstallation(db, appId, event, payload)
     default:
       return accepted({ skipped: 'event_not_handled' })
   }
@@ -264,7 +275,7 @@ export function registerGithubWebhookRoutes(
   app: Hono<AppEnv>,
   opts: GithubWebhookRouteOpts,
 ) {
-  app.post(GITHUB_WEBHOOK_PATH, async (c) => {
+  const handler = async (c: Context<AppEnv>) => {
     // 1. Rate limit first — the HMAC below is the work being protected.
     if (opts.rateLimiter) {
       const peer = resolveClientIp(c, opts.runtime) ?? 'unknown'
@@ -282,22 +293,44 @@ export function registerGithubWebhookRoutes(
       return c.json({ error: 'Encryption unavailable' }, 503)
     }
 
-    const config = await getGithubAppConfig(db, dataEncryptionSecrets)
-    if (!config?.webhookSecret) {
+    const headers = { get: (name: string) => c.req.header(name) ?? null }
+
+    // 2a. Which app is this? Selection only — nothing is trusted until step 3.
+    //     The `:ref` segment is absent on the unscoped path, where the App id
+    //     header does the work instead.
+    const webhookRef = c.req.param('ref')?.trim() || null
+    const resolution = await resolveGithubWebhookApp(
+      db,
+      dataEncryptionSecrets,
+      webhookRef,
+      headers,
+    )
+    if (!resolution.ok) {
+      logWarn(
+        'git-webhook',
+        resolution.reason === 'ref_header_mismatch'
+          ? 'rejected delivery whose webhook url and app id name different apps'
+          : 'rejected delivery that names no registered app',
+      )
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+    if (candidatesUnconfigured(resolution.candidates)) {
       // Nothing to verify against: refuse rather than accept unauthenticated
       // deliveries. 503 (not 401) because the gap is on this side.
       return c.json({ error: 'github_app_not_configured' }, 503)
     }
 
-    // 2. Raw bytes, before any parse.
+    // 2b. Raw bytes, before any parse.
     const raw = await readRawBody(c)
     if (raw instanceof Response) return raw
 
-    // 3. Signature. Nothing has been written yet.
-    const verified = await githubProvider.verifyWebhook(config.webhookSecret, raw, {
-      get: (name) => c.req.header(name) ?? null,
-    })
-    if (!verified) {
+    // 3. Signature, against the resolved app's own secret. More than one
+    //    candidate only when a numeric App id is shared across origins.
+    const verifiedApp = await selectVerifiedApp(
+      resolution.candidates,
+      (webhookSecret) => githubProvider.verifyWebhook(webhookSecret, raw, headers),
+    )
+    if (!verifiedApp) {
       logWarn('git-webhook', 'rejected delivery with invalid signature')
       return c.json({ error: 'Unauthorized' }, 401)
     }
@@ -318,11 +351,13 @@ export function registerGithubWebhookRoutes(
       return c.body(null, 204)
     }
 
-    // 5. Parse and act.
+    // 5. Parse and act. Every downstream lookup is scoped to `verifiedApp.id`,
+    //    which is what keeps one organization's push out of another's
+    //    environments when both connected the same provider account.
     const payload = parseDeliveryPayload(raw)
     if (!payload) return c.json({ error: 'Invalid request' }, 400)
 
-    const outcome = await dispatchDelivery(c, db, event, payload)
+    const outcome = await dispatchDelivery(c, db, verifiedApp.id, event, payload)
     if (outcome.retry) {
       // Give the delivery id back before answering: GitHub redelivers with the
       // same id, and the claim taken in step 4 would otherwise make that retry a
@@ -339,5 +374,10 @@ export function registerGithubWebhookRoutes(
       return c.json({ ok: false as const, event, result: outcome.result }, 503)
     }
     return c.json({ ok: true as const, event, result: outcome.result })
-  })
+  }
+
+  // The scoped path is what every registered App is handed; the bare path stays
+  // for Apps configured by hand against it, which resolve by header.
+  app.post(GITHUB_WEBHOOK_SCOPED_PATH, handler)
+  app.post(GITHUB_WEBHOOK_PATH, handler)
 }

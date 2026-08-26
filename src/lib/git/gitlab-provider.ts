@@ -62,7 +62,7 @@ import {
   listGitlabProjects,
   resolveGitlabCommit,
 } from './gitlab-api.ts'
-import { getGitlabOauthConfig } from './gitlab-oauth-config.ts'
+import { loadGitAppForInstallation } from './git-app-records.ts'
 import {
   GitlabOauthTokenError,
   mintGitlabAccessToken,
@@ -223,8 +223,14 @@ async function gitlabReadAuth(
     return { failure: 'gitlab oauth credentials are unreadable' }
   }
   try {
-    const config = await getGitlabOauthConfig(ctx.db, ctx.dataEncryptionSecrets)
-    if (!config) return { failure: 'gitlab oauth application is not configured' }
+    // The origin comes from the connection's own application, so an instance
+    // may hold connections to gitlab.com and to a self-managed GitLab at once.
+    const app = await loadGitAppForInstallation(
+      ctx.db,
+      ctx.dataEncryptionSecrets,
+      row.installationId,
+    )
+    if (!app) return { failure: 'gitlab oauth application is not configured' }
     const { token } = await mintGitlabAccessToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
@@ -237,7 +243,7 @@ async function gitlabReadAuth(
     if (!projectId) {
       return { failure: 'source repository url is not a gitlab project path' }
     }
-    return { token, baseUrl: config.baseUrl, projectId }
+    return { token, baseUrl: app.baseUrl, projectId }
   } catch (error) {
     return gitlabReadFailure(error)
   }
@@ -253,8 +259,12 @@ export const gitlabProvider: GitProvider = {
     if (!ctx.dataEncryptionSecrets) {
       throw new GitlabOauthTokenError('gitlab oauth credentials are unreadable')
     }
-    const config = await getGitlabOauthConfig(ctx.db, ctx.dataEncryptionSecrets)
-    if (!config) {
+    const app = await loadGitAppForInstallation(
+      ctx.db,
+      ctx.dataEncryptionSecrets,
+      installationId,
+    )
+    if (!app) {
       throw new GitlabOauthTokenError('gitlab oauth application is not configured')
     }
     const { token } = await mintGitlabAccessToken(
@@ -262,7 +272,7 @@ export const gitlabProvider: GitProvider = {
       ctx.dataEncryptionSecrets,
       installationId,
     )
-    return await listGitlabProjects(config.baseUrl, token)
+    return await listGitlabProjects(app.baseUrl, token)
   },
 
   async readRepositoryFiles(
@@ -408,8 +418,12 @@ export const gitlabProvider: GitProvider = {
     }
 
     try {
-      const config = await getGitlabOauthConfig(ctx.db, ctx.dataEncryptionSecrets)
-      if (!config) {
+      const app = await loadGitAppForInstallation(
+        ctx.db,
+        ctx.dataEncryptionSecrets,
+        row.installationId,
+      )
+      if (!app) {
         return { failure: 'gitlab oauth application is not configured' }
       }
       // Minted (and, when the pair had rotated, written back) here; sealed
@@ -429,9 +443,9 @@ export const gitlabProvider: GitProvider = {
       // with one it is decoration for the release surface and must not fail a
       // deploy that already has everything it needs to build.
       const commit = params.requestedCommitSha === undefined
-        ? await resolveGitlabCommit(config.baseUrl, token, projectId, ref)
+        ? await resolveGitlabCommit(app.baseUrl, token, projectId, ref)
         : await resolveGitlabCommit(
-          config.baseUrl,
+          app.baseUrl,
           token,
           projectId,
           params.requestedCommitSha,

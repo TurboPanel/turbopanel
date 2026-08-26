@@ -1,7 +1,14 @@
 # Git provider webhooks — AGENTS.md
 
 Inbound webhook surfaces for Git providers: **GitHub** and **GitLab**, one route
-file each, both running the identical five-step gate.
+file each, both running the identical **six**-step gate.
+
+An instance may hold **more than one** GitHub App or GitLab OAuth application —
+instance-wide ones an operator registered for everybody, and organization-owned
+ones. So a delivery can no longer be checked against "the" webhook secret: the
+surface has to work out *whose* secret to use before it can authenticate
+anything. That is step 3 below (`src/lib/git/resolve-webhook-app.ts`), and it is
+the one structural change to the gate.
 
 ## Why this lives outside `CLIENT_API_PREFIX`
 
@@ -49,6 +56,15 @@ Cloudflare Workers reject `crypto.getRandomValues` (and async SubtleCrypto)
 in isolate global scope (error 10021), and `src/workers.ts` imports this
 module on boot.
 
+## Two paths per provider
+
+| Path | When it is used |
+| --- | --- |
+| `/api/git/v1/<provider>/webhook/:ref` | **The URL every registered app is handed.** `:ref` is that app's `gitapp.webhook_ref`, baked in at registration (GitHub: `hook_attributes.url` in the manifest, or `PATCH /app/hook/config`; GitLab: the per-project hook URL). |
+| `/api/git/v1/<provider>/webhook` | Fallback for an app someone configured by hand against the bare URL. Resolves by header (GitHub) or token digest (GitLab). |
+
+Both register the same handler; the ref is simply absent on the bare path.
+
 ## The gate, in order
 
 `registerGithubWebhookRoutes` and `registerGitlabWebhookRoutes` run the same
@@ -60,22 +76,26 @@ fixed sequence, and the order is load-bearing:
    `src/daemon/rate-limit/keys.ts` that does so, because the caller has no
    identity until step 3 succeeds. **Separate buckets per provider**, so a
    pipeline-hook flood from one cannot start dropping the other's deliveries.
-2. **Raw bytes** — `c.req.arrayBuffer()`, never `c.req.json()`. GitHub's
+2. **Resolve the app** (`resolveGithubWebhookApp` / `resolveGitlabWebhookApp`).
+   Selection only — nothing is trusted yet; see "Which app sent this?" below.
+   Nothing resolves → `401`, never an unauthenticated accept. Every candidate
+   missing its webhook secret → `503`, because that gap is on this side.
+3. **Raw bytes** — `c.req.arrayBuffer()`, never `c.req.json()`. GitHub's
    signature covers the exact bytes it sent; parsing and re-encoding changes key
    order and escapes and breaks the MAC. GitLab reads the same bytes at the same
    point, both to keep the two surfaces structurally identical and because the
    fallback delivery id is a digest of them.
-3. **Verify** — GitHub: HMAC-SHA256 against the sealed webhook secret from
-   `getGithubAppConfig(...).webhookSecret`. GitLab: the sealed
-   `getGitlabOauthConfig(...).webhookSecret`, compared in constant time. No
-   secret configured → `503`, never an unauthenticated accept. Bad or missing
-   credential → `401`, before any database write.
-4. **Delivery claim** — the delivery id is claimed once in the `delivery` table
+4. **Verify** — against **that app's** sealed secret. GitHub: HMAC-SHA256.
+   GitLab: the static token, compared in constant time. `selectVerifiedApp`
+   walks the candidates and keeps the one that actually verifies; nothing
+   verifies → `401`, before any database write. The verified app's id is what
+   every downstream lookup is then scoped to.
+5. **Delivery claim** — the delivery id is claimed once in the `delivery` table
    (`claimWebhookDelivery`, keyed on `(provider, external_delivery_id)`). A
    redelivery answers `204` without re-running side effects. Claiming *after*
    verification is deliberate: otherwise an unauthenticated request could burn
    the id a genuine redelivery needs.
-5. **Parse and dispatch** — on `X-GitHub-Event`, or on GitLab's `object_kind`.
+6. **Parse and dispatch** — on `X-GitHub-Event`, or on GitLab's `object_kind`.
 
 Everything answers fast and answers 2xx unless the instance itself is at fault.
 A provider reads a non-2xx as "retry me", and retrying will not conjure a server
@@ -160,23 +180,72 @@ deploy-prepare down to two cases rather than four:
 Exactly one of the two, never both — `assertProviderAuthShape` rejects the
 ambiguous pair at the write boundary rather than letting deploy-prepare guess.
 
-### Instance-wide provider credentials
+### Registered applications, and who owns them
 
-Neither hosted provider works until an instance admin registers its application,
-and each has one admin route pair:
+Neither hosted provider works until an application is registered. Those live in
+the **`gitapp`** table, not in a settings row, and an instance may hold as many
+as it needs:
 
-| Provider | Route | Setting row | Notes |
-| --- | --- | --- | --- |
-| GitHub | `GET`/`PUT` `/api/admin/v1/instance/github-app` | `TURBOPANEL_GITHUB_APP` | App id, slug, client id, private key, webhook secret |
-| GitLab | `GET`/`PUT` `/api/admin/v1/instance/gitlab-oauth` | `TURBOPANEL_GITLAB_OAUTH` | Client id, client secret, `baseUrl` (self-managed origin), redirect URI, webhook token |
+| `organization_id` | Meaning | Managed through |
+| --- | --- | --- |
+| `NULL` | **Instance-wide** — any organization may connect through it | `GET`/`POST`/`PATCH`/`DELETE` `/api/admin/v1/git/apps` (role-gated) |
+| set | Owned by that organization alone | the same verbs under `/api/client/v1/git/apps` (`organization:manage`) |
 
-Both `PUT`s are partial: an omitted key keeps its stored value, so a body that
-does not mention the secret keeps the sealed one, and an explicit `null` clears
-a nullable field. Both `GET`s report **presence only** — sealed material is
-never returned. Without the GitLab row, `/sources/gitlab/oauth`, repository
-discovery, and webhook verification each answer with a configuration error, so
-this route is the supported way to turn the provider on; the GitLab path is
-documented in the admin OpenAPI spec (`src/admin/openapi/index.ts`).
+An organization *reads* instance-wide apps — the connect flow has to be able to
+offer them — but may never edit one; that is a `403`, not a `404`, because the
+caller already knows it exists. Both surfaces share `src/client/git-apps/`, so
+the two cannot drift into accepting different shapes for the same resource. The
+admin surface deliberately sees only instance-wide rows: `createAdminAccessMiddleware`
+resolves no organization, so it has no scope in which to edit an org-owned app.
+
+Every write is partial — an omitted key keeps its stored value, so a form can
+save a rename without the operator re-pasting a private key it was never shown —
+and an explicit `null` clears a nullable field. Reads report **presence only**;
+sealed material is never returned.
+
+`POST /git/apps/github/manifest` is the supported way to create a GitHub App:
+it returns a manifest whose `hook_attributes.url` is already the new app's
+scoped webhook path, so the App is born self-identifying. Manual registration
+stays available for GitHub Enterprise Server and for an App that already exists.
+A manifest App is created `public: true` on purpose — **a private GitHub App can
+only be installed on the account that owns it**, so one meant to serve several
+organizations has to be public.
+
+`installation.app_id` names the app a connection was granted through. Token
+minting resolves the app from that column (`mintGithubInstallationToken`,
+`mintGitlabAccessToken`) rather than from a single instance-wide config, which
+is what lets two connections with the same provider-side id mint against
+different private keys, on different origins.
+
+### Which app sent this?
+
+Resolution runs before verification and only *selects* a candidate key.
+
+**GitHub.** The `:ref` in the path is authoritative. Failing that,
+`X-GitHub-Hook-Installation-Target-ID` holds — for a webhook whose
+`…-Target-Type` is `integration`/`app` — the **App id**, not the installation
+id. Every installation of one App shares it, so it selects the *app* and never
+the installation. Keeping that straight is the whole game: matching an
+installation on the App id would mean one App installed across several accounts
+only ever deploys for whichever row was created first. The App id picks the
+**key**; the payload's `installation.id` picks the **tenant**.
+
+More than one row can match an App id, because a numeric App id is unique per
+origin rather than globally — github.com and a GHES instance can each hold one.
+So resolution returns a candidate *list* and `selectVerifiedApp` keeps whichever
+secret actually verifies.
+
+**GitLab** sends no such header. It echoes the configured secret verbatim in
+`X-Gitlab-Token`, so the token *is* the routing signal: apps store a digest of
+it (`hashWebhookToken`) and the fallback is one indexed lookup. The digest only
+**finds** the row — `verifyGitlabWebhookToken` still does the constant-time
+compare against the sealed value. Because a weak token would be brute-forceable
+offline by anyone holding the table, hand-entered GitLab tokens have a minimum
+length and the ones we mint are 32 random bytes.
+
+**A ref and a header that disagree is a `401`.** It means the URL and the
+signing credentials belong to different apps, which would otherwise surface as
+deliveries silently landing on the wrong tenant.
 
 ### Write-boundary compatibility
 
@@ -216,14 +285,35 @@ things there are easy to get wrong:
   `actorType: 'system'` actor whose `actorId` is the triggering `source.id`.
   There is no second enqueue path — see the concurrency note in
   `src/lib/commands/AGENTS.md`.
+- **Every lookup is scoped to the verified app.** `loadInstallations` takes the
+  `app_id` of the app whose secret verified the delivery, and that predicate is
+  load-bearing rather than an optimization: `installation` is unique on
+  `(organization_id, app_id, external_installation_id)`, so the same GitHub
+  installation id legitimately exists as a row for several organizations.
+  Matching on provider and external id alone returned all of them, and one
+  organization's push deployed another organization's environments.
+  `applyProviderInstallationEvent` carries the same predicate, or one
+  organization's uninstall would suspend everybody's row for that account.
+
+  For an **instance-wide** app the predicate narrows to the app rather than to
+  one tenant — several organizations connect through it by design — and the
+  final narrowing is the repository id. That is sound only because an
+  installation may be claimed by one organization per app: `installation_id`
+  arrives as a query parameter the caller can retype, so the callback both
+  verifies the installation exists under the App and refuses one another
+  organization already holds (`assertInstallationUnclaimed`). Without those two
+  checks a second organization could name someone else's installation, and the
+  shared App's key would happily mint a token for it.
 - **A GitLab delivery names no connection.** GitHub puts the installation id on
   every delivery; GitLab's payload identifies only the project, because a
   webhook has no idea which OAuth connection an operator registered it under.
-  `loadInstallations` therefore accepts a `null` external id and treats **every
-  live connection for that provider** as a candidate, with the provider-side
-  project id doing the narrowing in `findSourcesForRepository`. That is safe
-  because a `source` can only carry a project id the connection that created it
-  could see.
+  `loadInstallations` therefore accepts a `null` external id and treats every
+  live connection **granted through that app** as a candidate, with the
+  provider-side project id doing the narrowing in `findSourcesForRepository`.
+  That is safe because a `source` can only carry a project id the connection
+  that created it could see. Scoping to the app is what keeps this from
+  spanning the whole instance — including projects on a *different* GitLab
+  origin whose numeric ids happen to collide, since `base_url` is per app.
 
 A source with `defaultBranch` set watches exactly that branch; one that left it
 blank watches every branch, because guessing the repository's upstream default
@@ -235,8 +325,10 @@ A LAN-only instance (`https://panel.lan:8443`, a private IP, a `.internal` name)
 can clone and mint tokens — both outbound — but no provider can deliver to it.
 `GET /sources/:id` therefore returns `webhookUrl`, `webhookReachable`, and
 `reachabilityNote`, computed from the operator's public URL list by
-`src/lib/git/webhook-reachability.ts` **on the source's own provider path**; a
-`provider: 'git'` source has no webhook surface and is given none. The intended alternative for those
+`src/lib/git/webhook-reachability.ts` **on the source's own provider path, with
+the `webhook_ref` of the app behind its installation**; a `provider: 'git'`
+source has no webhook surface and is given none, and a deploy-key source has no
+app, so it falls back to the bare path. The intended alternative for those
 instances is the `ref` field on `POST /environments/:id/deploy`.
 
 That field is **accepted and validated but still not honored.** It is threaded

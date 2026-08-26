@@ -1,0 +1,583 @@
+/**
+ * Registered Git provider applications — GitHub Apps and GitLab OAuth
+ * applications — as rows in `gitapp`.
+ *
+ * This replaces the two singleton `setting` rows (`TURBOPANEL_GITHUB_APP`,
+ * `TURBOPANEL_GITLAB_OAUTH`) that previously allowed exactly one app of each
+ * kind per instance. The sealing rules are unchanged: the App private key, the
+ * OAuth client secret, and the webhook secret are sealed with `encryptSecret`
+ * (`tpsecret`) before they are written, and are never plaintext at rest. Only
+ * the shape moved — from one key/value row to a table with a scope column.
+ *
+ * **`organizationId === null` means instance-wide.** Any organization may
+ * connect through such an app; only an instance admin may edit it. A non-null
+ * value means the app belongs to that organization alone. `visibleGitApps`
+ * is the one query that encodes "what may this organization use", and every
+ * org-facing caller should go through it rather than filtering by hand.
+ *
+ * **Tokens are not stored here.** GitHub installation tokens are minted on
+ * demand (`./github-app-token.ts`); GitLab's per-connection OAuth pair lives
+ * sealed on the installation row (`./gitlab-oauth-token.ts`). This table holds
+ * only the application-level material every connection is minted through.
+ */
+
+import { and, eq, isNull, or, type SQL } from 'drizzle-orm'
+import type { Db } from '../../db.ts'
+import { gitProviderApp, gitProviderInstallation } from '../db/schema.ts'
+import {
+  decryptSecret,
+  encryptSecret,
+  isSealedEnvelope,
+} from '../../client/authn/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
+
+/** Providers that have a registerable application. `git` (generic SSH) has none. */
+export const GIT_APP_PROVIDERS = ['github', 'gitlab'] as const
+export type GitAppProvider = (typeof GIT_APP_PROVIDERS)[number]
+
+/** github.com, unless the operator points at a GitHub Enterprise Server. */
+export const GITHUB_DEFAULT_BASE_URL = 'https://github.com'
+
+/** gitlab.com, unless the operator points at a self-managed instance. */
+export const GITLAB_DEFAULT_BASE_URL = 'https://gitlab.com'
+
+/** Scopes the GitLab connect flow requests. `api` covers repository + webhook reads. */
+export const GITLAB_OAUTH_SCOPES = 'api read_repository'
+
+/**
+ * Minimum accepted length for a GitLab webhook token.
+ *
+ * The token is looked up by digest (see {@link hashWebhookToken}), so a
+ * low-entropy value would be brute-forceable offline by anyone who obtained the
+ * table. Tokens we generate are 32 random bytes; this floor only constrains
+ * hand-entered ones.
+ */
+export const MIN_GITLAB_WEBHOOK_TOKEN_LENGTH = 24
+
+export class GitAppError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'GitAppError'
+  }
+}
+
+/**
+ * A registration that collides with one already stored.
+ *
+ * Raised in place of the raw Postgres unique violation so callers answer `409`
+ * rather than `500`. **The message is deliberately the same for every
+ * constraint and says nothing about who holds the existing row.** All three
+ * unique keys here are instance-global — they have to be, because webhook
+ * routing resolves a delivery without knowing its tenant first — so a
+ * distinguishable error would let one organization probe another's
+ * registrations. For `webhook_token_hash` that would be worse than an existence
+ * leak: the token is the *whole* credential on a GitLab delivery, so a
+ * distinguishable response is an online guessing oracle for it.
+ */
+export class GitAppConflictError extends Error {
+  constructor() {
+    super('a git application with these details is already registered')
+    this.name = 'GitAppConflictError'
+  }
+}
+
+/** Postgres `unique_violation`. */
+const PG_UNIQUE_VIOLATION = '23505'
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === PG_UNIQUE_VIOLATION
+  )
+}
+
+/** Run a write, mapping a unique violation to the opaque conflict above. */
+async function withConflictMapped<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (error) {
+    if (isUniqueViolation(error)) throw new GitAppConflictError()
+    throw error
+  }
+}
+
+/** Sealed material, held together in the row's `credentials` jsonb. */
+type StoredCredentials = {
+  /** GitHub App private key (PEM). */
+  privateKeyEnvelope?: string
+  /** GitLab OAuth application secret. */
+  clientSecretEnvelope?: string
+  /** GitHub HMAC secret, or the GitLab `X-Gitlab-Token` value. */
+  webhookSecretEnvelope?: string
+}
+
+/** Non-secret columns, shared by every view of a row. */
+export type GitAppRecord = {
+  id: string
+  /** `null` = instance-wide. */
+  organizationId: string | null
+  provider: GitAppProvider
+  name: string
+  baseUrl: string
+  /** Explicit API origin (GHES); `null` means derive it from `baseUrl`. */
+  apiUrl: string | null
+  externalAppId: string
+  appSlug: string | null
+  clientId: string | null
+  redirectUri: string | null
+  webhookRef: string
+}
+
+/** Safe to return over the API: reports only whether sealed material exists. */
+export type GitAppSummary = GitAppRecord & {
+  hasPrivateKey: boolean
+  hasClientSecret: boolean
+  hasWebhookSecret: boolean
+}
+
+/** Unsealed. Callers must keep the result in memory only. */
+export type GitApp = GitAppRecord & {
+  privateKeyPem: string | null
+  clientSecret: string | null
+  webhookSecret: string | null
+}
+
+export type GitAppCreate = {
+  organizationId: string | null
+  provider: GitAppProvider
+  name: string
+  baseUrl?: string | null
+  apiUrl?: string | null
+  externalAppId: string
+  appSlug?: string | null
+  clientId?: string | null
+  redirectUri?: string | null
+  privateKeyPem?: string | null
+  clientSecret?: string | null
+  webhookSecret?: string | null
+  /**
+   * Adopt a ref minted before the row existed.
+   *
+   * The manifest flow has to know the webhook URL *before* GitHub creates the
+   * App, so it generates the ref up front and bakes it into the manifest. The
+   * row must then be born with that same ref — writing a different one and
+   * correcting it afterwards would leave a window where the App's configured
+   * URL resolves to nothing.
+   */
+  webhookRef?: string
+}
+
+/** Partial update; omitted fields keep their stored value, `null` clears. */
+export type GitAppUpdate = {
+  name?: string
+  baseUrl?: string
+  apiUrl?: string | null
+  externalAppId?: string
+  appSlug?: string | null
+  clientId?: string | null
+  redirectUri?: string | null
+  privateKeyPem?: string | null
+  clientSecret?: string | null
+  webhookSecret?: string | null
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function trimOrNull(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+/** Drop a trailing slash so `baseUrl` compares (and concatenates) predictably. */
+function normalizeOrigin(value: string): string {
+  return value.trim().replace(/\/+$/, '')
+}
+
+export function defaultBaseUrlFor(provider: GitAppProvider): string {
+  return provider === 'github' ? GITHUB_DEFAULT_BASE_URL : GITLAB_DEFAULT_BASE_URL
+}
+
+function readCredentials(value: unknown): StoredCredentials {
+  if (!isPlainObject(value)) return {}
+  const stored: StoredCredentials = {}
+  for (const key of ['privateKeyEnvelope', 'clientSecretEnvelope', 'webhookSecretEnvelope'] as const) {
+    const held = value[key]
+    if (typeof held === 'string' && held.length > 0) stored[key] = held
+  }
+  return stored
+}
+
+/**
+ * Opaque routing token for this app's webhook URL.
+ *
+ * Not a credential — the HMAC (GitHub) or the token compare (GitLab) still
+ * authenticates the delivery. Unguessable so the surface cannot be enumerated.
+ */
+export function generateWebhookRef(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(24))
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
+/** A GitLab webhook token, when we are the one minting it. */
+export function generateGitlabWebhookToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
+/**
+ * Digest a GitLab webhook token so a delivery arriving on the unscoped path can
+ * be resolved with one indexed lookup instead of a table scan.
+ *
+ * This is a routing index, not the authentication step: the resolved app's
+ * sealed secret is still compared against the presented token in constant time
+ * (`timingSafeSecretEquals`). Domain-separated so the digest cannot be confused
+ * with any other hash of the same value.
+ */
+export async function hashWebhookToken(token: string): Promise<string> {
+  const material = new TextEncoder().encode(`turbopanel:gitlab-webhook-token:${token}`)
+  const digest = await crypto.subtle.digest('SHA-256', material)
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+type Row = typeof gitProviderApp.$inferSelect
+
+function toRecord(row: Row): GitAppRecord {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    provider: row.provider as GitAppProvider,
+    name: row.name,
+    baseUrl: row.baseUrl,
+    apiUrl: row.apiUrl,
+    externalAppId: row.externalAppId,
+    appSlug: row.appSlug,
+    clientId: row.clientId,
+    redirectUri: row.redirectUri,
+    webhookRef: row.webhookRef,
+  }
+}
+
+export function summarizeGitApp(row: Row): GitAppSummary {
+  const credentials = readCredentials(row.credentials)
+  return {
+    ...toRecord(row),
+    hasPrivateKey: Boolean(credentials.privateKeyEnvelope),
+    hasClientSecret: Boolean(credentials.clientSecretEnvelope),
+    hasWebhookSecret: Boolean(credentials.webhookSecretEnvelope),
+  }
+}
+
+async function unsealOne(
+  envelope: string | undefined,
+  label: string,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+): Promise<string | null> {
+  if (!envelope) return null
+  if (!isSealedEnvelope(envelope)) {
+    throw new GitAppError(`git app ${label} is not sealed`)
+  }
+  return await decryptSecret(dataEncryptionSecrets, envelope)
+}
+
+async function unsealGitApp(
+  row: Row,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+): Promise<GitApp> {
+  const credentials = readCredentials(row.credentials)
+  return {
+    ...toRecord(row),
+    privateKeyPem: await unsealOne(
+      credentials.privateKeyEnvelope,
+      'private key',
+      dataEncryptionSecrets,
+    ),
+    clientSecret: await unsealOne(
+      credentials.clientSecretEnvelope,
+      'client secret',
+      dataEncryptionSecrets,
+    ),
+    webhookSecret: await unsealOne(
+      credentials.webhookSecretEnvelope,
+      'webhook secret',
+      dataEncryptionSecrets,
+    ),
+  }
+}
+
+/**
+ * Apps this organization may connect through: its own, plus every instance-wide
+ * one. Pass `organizationId: null` for the instance-admin view, which lists only
+ * instance-wide rows.
+ */
+export function visibleGitAppsCondition(organizationId: string | null): SQL {
+  if (organizationId === null) return isNull(gitProviderApp.organizationId)
+  // Never `undefined`: callers pass this straight into `and(...)`, which
+  // *silently drops* undefined operands — a nullable return would degrade a
+  // scoped lookup into an unscoped one, which is a cross-tenant read.
+  return or(
+    isNull(gitProviderApp.organizationId),
+    eq(gitProviderApp.organizationId, organizationId),
+  ) as SQL
+}
+
+export async function listGitApps(
+  db: Db,
+  opts: { organizationId: string | null; provider?: GitAppProvider },
+): Promise<GitAppSummary[]> {
+  const conditions: SQL[] = [visibleGitAppsCondition(opts.organizationId)]
+  if (opts.provider) conditions.push(eq(gitProviderApp.provider, opts.provider))
+
+  const rows = await db
+    .select()
+    .from(gitProviderApp)
+    .where(conditions.length === 1 ? conditions[0] : and(...conditions))
+    .orderBy(gitProviderApp.createdAt)
+  return rows.map(summarizeGitApp)
+}
+
+export async function getGitAppSummary(db: Db, id: string): Promise<GitAppSummary | null> {
+  const rows = await db.select().from(gitProviderApp).where(eq(gitProviderApp.id, id)).limit(1)
+  return rows[0] ? summarizeGitApp(rows[0]) : null
+}
+
+/** Unsealed load by id. `null` when the row is gone. */
+export async function loadGitApp(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  id: string,
+): Promise<GitApp | null> {
+  const rows = await db.select().from(gitProviderApp).where(eq(gitProviderApp.id, id)).limit(1)
+  return rows[0] ? await unsealGitApp(rows[0], dataEncryptionSecrets) : null
+}
+
+/**
+ * Unsealed load of the app an installation was granted through.
+ *
+ * This is the replacement for the old org-blind `getGithubAppConfig(db, …)` /
+ * `getGitlabOauthConfig(db, …)` calls: the installation row names its app, so
+ * token minting no longer has to assume there is only one.
+ */
+export async function loadGitAppForInstallation(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  installationId: string,
+): Promise<GitApp | null> {
+  const rows = await db
+    .select({ app: gitProviderApp })
+    .from(gitProviderInstallation)
+    .innerJoin(gitProviderApp, eq(gitProviderInstallation.appId, gitProviderApp.id))
+    .where(eq(gitProviderInstallation.id, installationId))
+    .limit(1)
+  return rows[0] ? await unsealGitApp(rows[0].app, dataEncryptionSecrets) : null
+}
+
+/** Webhook routing: the authoritative lookup, by the ref in the delivery URL. */
+export async function findGitAppByWebhookRef(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  webhookRef: string,
+): Promise<GitApp | null> {
+  const rows = await db
+    .select()
+    .from(gitProviderApp)
+    .where(eq(gitProviderApp.webhookRef, webhookRef))
+    .limit(1)
+  return rows[0] ? await unsealGitApp(rows[0], dataEncryptionSecrets) : null
+}
+
+/**
+ * Webhook routing fallback for GitHub: the App id from
+ * `X-GitHub-Hook-Installation-Target-ID`.
+ *
+ * Returns every match rather than the first. A numeric App id is unique per
+ * origin, not globally, so github.com and a GHES instance can both hold one —
+ * the caller tries each candidate's secret. Taking `.first()` here is precisely
+ * the bug that makes multi-installation routing fail elsewhere.
+ */
+export async function findGithubAppsByExternalAppId(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  externalAppId: string,
+): Promise<GitApp[]> {
+  const rows = await db
+    .select()
+    .from(gitProviderApp)
+    .where(
+      and(eq(gitProviderApp.provider, 'github'), eq(gitProviderApp.externalAppId, externalAppId)),
+    )
+    .orderBy(gitProviderApp.createdAt)
+  return await Promise.all(rows.map((row) => unsealGitApp(row, dataEncryptionSecrets)))
+}
+
+/** Webhook routing fallback for GitLab: digest of the presented `X-Gitlab-Token`. */
+export async function findGitlabAppByWebhookTokenHash(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  tokenHash: string,
+): Promise<GitApp | null> {
+  const rows = await db
+    .select()
+    .from(gitProviderApp)
+    .where(eq(gitProviderApp.webhookTokenHash, tokenHash))
+    .limit(1)
+  return rows[0] ? await unsealGitApp(rows[0], dataEncryptionSecrets) : null
+}
+
+function assertProvider(provider: string): GitAppProvider {
+  if (provider !== 'github' && provider !== 'gitlab') {
+    throw new GitAppError(`unsupported git app provider: ${provider}`)
+  }
+  return provider
+}
+
+async function sealInto(
+  credentials: StoredCredentials,
+  key: keyof StoredCredentials,
+  value: string | null | undefined,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+): Promise<void> {
+  if (value === undefined) return
+  const trimmed = trimOrNull(value)
+  if (trimmed === null) delete credentials[key]
+  else credentials[key] = await encryptSecret(dataEncryptionSecrets, trimmed)
+}
+
+/**
+ * The GitLab webhook token is the one secret we also index. Keep the digest in
+ * lockstep with the sealed value so the fallback lookup can never resolve to an
+ * app whose stored secret would then fail the constant-time compare.
+ */
+async function resolveGitlabTokenHash(
+  provider: GitAppProvider,
+  webhookSecret: string | null | undefined,
+): Promise<string | null | undefined> {
+  if (provider !== 'gitlab' || webhookSecret === undefined) return undefined
+  const trimmed = trimOrNull(webhookSecret)
+  if (trimmed === null) return null
+  if (trimmed.length < MIN_GITLAB_WEBHOOK_TOKEN_LENGTH) {
+    throw new GitAppError(
+      `gitlab webhook token must be at least ${MIN_GITLAB_WEBHOOK_TOKEN_LENGTH} characters`,
+    )
+  }
+  return await hashWebhookToken(trimmed)
+}
+
+export async function createGitApp(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  input: GitAppCreate,
+): Promise<GitAppSummary> {
+  const provider = assertProvider(input.provider)
+  const name = trimOrNull(input.name)
+  if (!name) throw new GitAppError('name must not be empty')
+  const externalAppId = trimOrNull(input.externalAppId)
+  if (!externalAppId) throw new GitAppError('externalAppId must not be empty')
+
+  const credentials: StoredCredentials = {}
+  await sealInto(credentials, 'privateKeyEnvelope', input.privateKeyPem, dataEncryptionSecrets)
+  await sealInto(credentials, 'clientSecretEnvelope', input.clientSecret, dataEncryptionSecrets)
+  await sealInto(credentials, 'webhookSecretEnvelope', input.webhookSecret, dataEncryptionSecrets)
+
+  const tokenHash = await resolveGitlabTokenHash(provider, input.webhookSecret)
+
+  const rows = await withConflictMapped(() =>
+    db
+      .insert(gitProviderApp)
+      .values({
+        organizationId: input.organizationId,
+        provider,
+        name,
+        baseUrl: normalizeOrigin(
+          trimOrNull(input.baseUrl) ?? defaultBaseUrlFor(provider),
+        ),
+        apiUrl: trimOrNull(input.apiUrl),
+        externalAppId,
+        appSlug: trimOrNull(input.appSlug),
+        clientId: trimOrNull(input.clientId),
+        redirectUri: trimOrNull(input.redirectUri),
+        credentials,
+        webhookRef: input.webhookRef ?? generateWebhookRef(),
+        webhookTokenHash: tokenHash ?? null,
+      })
+      .returning()
+  )
+  return summarizeGitApp(rows[0])
+}
+
+export async function updateGitApp(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  id: string,
+  updates: GitAppUpdate,
+): Promise<GitAppSummary | null> {
+  const existing = await db
+    .select()
+    .from(gitProviderApp)
+    .where(eq(gitProviderApp.id, id))
+    .limit(1)
+  const row = existing[0]
+  if (!row) return null
+
+  const provider = assertProvider(row.provider)
+  const credentials = readCredentials(row.credentials)
+  await sealInto(credentials, 'privateKeyEnvelope', updates.privateKeyPem, dataEncryptionSecrets)
+  await sealInto(credentials, 'clientSecretEnvelope', updates.clientSecret, dataEncryptionSecrets)
+  await sealInto(credentials, 'webhookSecretEnvelope', updates.webhookSecret, dataEncryptionSecrets)
+
+  const next: Partial<typeof gitProviderApp.$inferInsert> = {
+    credentials,
+    updatedAt: new Date().toISOString(),
+  }
+
+  if (updates.name !== undefined) {
+    const name = trimOrNull(updates.name)
+    if (!name) throw new GitAppError('name must not be empty')
+    next.name = name
+  }
+  if (updates.externalAppId !== undefined) {
+    const externalAppId = trimOrNull(updates.externalAppId)
+    if (!externalAppId) throw new GitAppError('externalAppId must not be empty')
+    next.externalAppId = externalAppId
+  }
+  if (updates.baseUrl !== undefined) {
+    const baseUrl = trimOrNull(updates.baseUrl)
+    if (!baseUrl) throw new GitAppError('baseUrl must not be empty')
+    next.baseUrl = normalizeOrigin(baseUrl)
+  }
+  if (updates.apiUrl !== undefined) next.apiUrl = trimOrNull(updates.apiUrl)
+  if (updates.appSlug !== undefined) next.appSlug = trimOrNull(updates.appSlug)
+  if (updates.clientId !== undefined) next.clientId = trimOrNull(updates.clientId)
+  if (updates.redirectUri !== undefined) next.redirectUri = trimOrNull(updates.redirectUri)
+
+  const tokenHash = await resolveGitlabTokenHash(provider, updates.webhookSecret)
+  if (tokenHash !== undefined) next.webhookTokenHash = tokenHash
+
+  const rows = await withConflictMapped(() =>
+    db
+      .update(gitProviderApp)
+      .set(next)
+      .where(eq(gitProviderApp.id, id))
+      .returning()
+  )
+  return rows[0] ? summarizeGitApp(rows[0]) : null
+}
+
+export async function deleteGitApp(db: Db, id: string): Promise<boolean> {
+  const rows = await db
+    .delete(gitProviderApp)
+    .where(eq(gitProviderApp.id, id))
+    .returning({ id: gitProviderApp.id })
+  return rows.length > 0
+}

@@ -19,22 +19,24 @@ import {
 const test = Deno.test.bind(Deno)
 
 const ORG_ID = '550e8400-e29b-41d4-a716-446655440000'
+const APP_ID = '22222222-2222-4222-8222-222222222222'
+const CLAIMS = { organizationId: ORG_ID, appId: APP_ID }
 const NOW_MS = Date.parse('2026-01-15T12:00:00.000Z')
 
 test('sign/verify round-trips github and gitlab install state', async () => {
   const secrets = parseTestSecretsConfig()
-  const github = await signGithubInstallState(secrets, ORG_ID, NOW_MS)
+  const github = await signGithubInstallState(secrets, CLAIMS, NOW_MS)
   assertEquals(github.startsWith('tpinstall.v1.'), true)
-  assertEquals(await verifyGithubInstallState(secrets, github, NOW_MS), ORG_ID)
+  assertEquals(await verifyGithubInstallState(secrets, github, NOW_MS), CLAIMS)
 
-  const gitlab = await signGitlabConnectState(secrets, ORG_ID, NOW_MS)
-  assertEquals(await verifyGitlabConnectState(secrets, gitlab, NOW_MS), ORG_ID)
+  const gitlab = await signGitlabConnectState(secrets, CLAIMS, NOW_MS)
+  assertEquals(await verifyGitlabConnectState(secrets, gitlab, NOW_MS), CLAIMS)
 })
 
 test('provider install state is not interchangeable across HKDF purposes', async () => {
   const secrets = parseTestSecretsConfig()
-  const github = await signProviderInstallState(secrets, 'github', ORG_ID, NOW_MS)
-  const gitlab = await signProviderInstallState(secrets, 'gitlab', ORG_ID, NOW_MS)
+  const github = await signProviderInstallState(secrets, 'github', CLAIMS, NOW_MS)
+  const gitlab = await signProviderInstallState(secrets, 'gitlab', CLAIMS, NOW_MS)
 
   assertEquals(
     await verifyProviderInstallState(secrets, 'gitlab', github, NOW_MS),
@@ -48,7 +50,7 @@ test('provider install state is not interchangeable across HKDF purposes', async
 
 test('verifyProviderInstallState rejects expired, malformed, and unsigned state', async () => {
   const secrets = parseTestSecretsConfig()
-  const state = await signProviderInstallState(secrets, 'github', ORG_ID, NOW_MS)
+  const state = await signProviderInstallState(secrets, 'github', CLAIMS, NOW_MS)
 
   assertEquals(
     await verifyProviderInstallState(

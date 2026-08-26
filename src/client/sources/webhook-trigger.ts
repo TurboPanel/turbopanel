@@ -25,9 +25,15 @@
  * 5xx instead.
  *
  * **Everything below is provider-agnostic.** Both webhook surfaces hand it the
- * same `(provider, installation, repository, branch, sha)` tuple, and the only
- * thing the provider discriminant changes is which installation rows are
+ * same `(provider, app, installation, repository, branch, sha)` tuple, and the
+ * only thing the provider discriminant changes is which installation rows are
  * candidates — see {@link loadInstallations}.
+ *
+ * **`appId` is not optional and is not a hint.** It is the registered app whose
+ * webhook secret verified the delivery, and it is what narrows the candidate
+ * installations to the connections granted through that app. See
+ * {@link loadInstallations} for why provider and external id alone are not
+ * enough — and for what it does *not* do on its own.
  */
 
 import { and, eq, inArray, sql } from 'drizzle-orm'
@@ -200,8 +206,7 @@ async function findSourcesForRepository(
 export type WebhookTriggerDeps = {
   loadInstallations?: (
     db: Db,
-    provider: WebhookGitProviderName,
-    externalInstallationId: string | null,
+    query: InstallationQuery,
   ) => Promise<{ live: string[]; suspended: number }>
   findSources?: (
     db: Db,
@@ -509,32 +514,64 @@ async function deployAllEnvironmentsForSource(
   return outcomes
 }
 
+/** What a verified delivery knows about the connection it came from. */
+export type InstallationQuery = {
+  provider: WebhookGitProviderName
+  /**
+   * The registered app whose webhook secret verified this delivery. Always
+   * known by the time this runs, and the predicate that keeps the candidate set
+   * inside one tenant — see the note on {@link loadInstallations}.
+   */
+  appId: string
+  /** `null` when the delivery names no connection (GitLab). */
+  externalInstallationId: string | null
+}
+
 /**
  * Live installation rows that could own this delivery.
  *
- * Plural on purpose: the unique index is
- * `(organization_id, provider, external_installation_id)`, so the same GitHub
- * installation can legitimately be registered by more than one organization on
- * a shared instance, and each of them gets its own sources.
+ * **`appId` is the load-bearing predicate.** Without it the only filters are
+ * provider and external id, and neither is unique across tenants: the unique
+ * index is `(organization_id, app_id, external_installation_id)`, so the same
+ * GitHub installation id may exist as a row for several organizations. Matching
+ * without the app would hand one organization's push to another organization's
+ * environments. Scoping to the app that actually signed the delivery is what
+ * makes the candidate set exactly the connections granted through it.
+ *
+ * Still plural: one app may legitimately be installed by several organizations
+ * on a shared instance, and each of them gets its own sources.
+ *
+ * **What `app_id` does not do.** For an *instance-wide* app it narrows to the
+ * app, not to one tenant — several organizations connect through it, and the
+ * final narrowing is `source.repository_external_id`. That is only sound
+ * because an installation is claimed by exactly one organization per app
+ * (`assertInstallationUnclaimed` in `../sources/routes.ts` enforces first-come,
+ * since the provider cannot tell us who is entitled to an account). Without
+ * that check a second organization could register someone else's installation
+ * id and receive their deliveries.
  *
  * **`externalInstallationId` may be `null`, and that is not a failure.** GitHub
  * names the installation on every delivery; GitLab names only the project,
  * because its webhook has no idea which OAuth connection an operator registered
- * the project under. A `null` therefore means "every live connection for this
- * provider is a candidate", and the repository id does the narrowing in
+ * the project under. A `null` therefore means "every live connection granted
+ * through this app is a candidate", and the repository id does the narrowing in
  * {@link findSourcesForRepository} — which is safe because it matches on the
  * provider-side project id, and a source can only carry an id the connection
- * that created it could see.
+ * that created it could see. Before `app_id` existed that fallback spanned
+ * every GitLab connection on the instance, including other origins' projects
+ * whose numeric ids happened to collide.
  */
 async function loadInstallations(
   db: Db,
-  provider: WebhookGitProviderName,
-  externalInstallationId: string | null,
+  query: InstallationQuery,
 ): Promise<{ live: string[]; suspended: number }> {
-  const conditions = [eq(gitProviderInstallation.provider, provider)]
-  if (externalInstallationId) {
+  const conditions = [
+    eq(gitProviderInstallation.provider, query.provider),
+    eq(gitProviderInstallation.appId, query.appId),
+  ]
+  if (query.externalInstallationId) {
     conditions.push(
-      eq(gitProviderInstallation.externalInstallationId, externalInstallationId),
+      eq(gitProviderInstallation.externalInstallationId, query.externalInstallationId),
     )
   }
 
@@ -555,6 +592,8 @@ async function loadInstallations(
 export type PushTrigger = {
   /** Which provider delivered it — decides the candidate installation set. */
   provider: WebhookGitProviderName
+  /** The registered app whose secret verified the delivery. */
+  appId: string
   /** `null` when the delivery names no connection (GitLab). */
   externalInstallationId: string | null
   repositoryExternalId: string
@@ -574,11 +613,11 @@ export async function resolvePushTrigger(
   deps: WebhookTriggerDeps = {},
 ): Promise<TriggerSummary> {
   const io = resolveTriggerIo(deps)
-  const installations = await io.loadInstallations(
-    db,
-    push.provider,
-    push.externalInstallationId,
-  )
+  const installations = await io.loadInstallations(db, {
+    provider: push.provider,
+    appId: push.appId,
+    externalInstallationId: push.externalInstallationId,
+  })
   if (installations.live.length === 0) {
     return summarize([{
       kind: 'skipped',
@@ -671,6 +710,8 @@ export async function resolvePushTrigger(
 
 export type CheckTrigger = {
   provider: WebhookGitProviderName
+  /** The registered app whose secret verified the delivery. */
+  appId: string
   /** `null` when the delivery names no connection (GitLab). */
   externalInstallationId: string | null
   repositoryExternalId: string
@@ -694,11 +735,11 @@ export async function resolveCheckTrigger(
   deps: WebhookTriggerDeps = {},
 ): Promise<TriggerSummary> {
   const io = resolveTriggerIo(deps)
-  const installations = await io.loadInstallations(
-    db,
-    check.provider,
-    check.externalInstallationId,
-  )
+  const installations = await io.loadInstallations(db, {
+    provider: check.provider,
+    appId: check.appId,
+    externalInstallationId: check.externalInstallationId,
+  })
   if (installations.live.length === 0) {
     return summarize([{
       kind: 'skipped',
@@ -766,11 +807,17 @@ export async function resolveCheckTrigger(
  * Only GitHub delivers these. GitLab has no installation-lifecycle webhook: a
  * revoked grant surfaces as a failing token refresh, which the deploy path
  * reports as a prepare error rather than as a suspension recorded up front.
+ *
+ * **Scoped to `appId` for the same reason the lookup above is.** A GitHub
+ * installation id is unique only within its App, so suspending on provider and
+ * external id alone would suspend every organization's row for that account the
+ * moment any one of them uninstalled.
  */
 export async function applyProviderInstallationEvent(
   db: Db,
   params: {
     provider: WebhookGitProviderName
+    appId: string
     externalInstallationId: string
     action: string
   },
@@ -789,6 +836,7 @@ export async function applyProviderInstallationEvent(
     .where(
       and(
         eq(gitProviderInstallation.provider, params.provider),
+        eq(gitProviderInstallation.appId, params.appId),
         eq(
           gitProviderInstallation.externalInstallationId,
           params.externalInstallationId,
@@ -849,7 +897,7 @@ export function resolveGithubCheckTrigger(
 
 export function applyGithubInstallationEvent(
   db: Db,
-  params: { externalInstallationId: string; action: string },
+  params: { appId: string; externalInstallationId: string; action: string },
 ): Promise<{ updated: number }> {
   return applyProviderInstallationEvent(db, { provider: 'github', ...params })
 }
