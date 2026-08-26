@@ -37,10 +37,10 @@ import {
 
 const INBOUND_PROJECTION_COALESCE_MS = 60_000;
 
-// `hostname` here models stray pre-migration jsonb content — `hostname` is a
-// dedicated `server` column now and `buildMetadataPatch` never reads/writes it,
-// so this key is inert legacy data the projection must tolerate, not a value
-// any current code path reflects back into `metadata` patches.
+// `hostname` here models a jsonb key the control plane does not model —
+// `hostname` is a dedicated `server` column and `buildMetadataPatch` never
+// reads or writes it. The projection must carry such a key through untouched
+// rather than reflecting it back into a `metadata` patch.
 const DEFAULT_PROJECTION_TEST_METADATA: Record<string, unknown> = {
   hostname: "host-1",
 };

@@ -4,7 +4,7 @@ import type { CommandEnvelope } from './envelope.ts'
 /**
  * Narrow view of the Workers `Queue` producer binding — only `send` is used.
  *
- * Declared locally, the same way `PipelineLike` is, so this module needs no
+ * Declared locally, the same way `R2BucketLike` is, so this module needs no
  * Workers ambient types and stays inside the Deno type-check.
  *
  * The result is `Promise<unknown>`, not `Promise<void>`: the real Workers

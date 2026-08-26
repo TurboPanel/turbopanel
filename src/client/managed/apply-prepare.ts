@@ -220,7 +220,7 @@ export type BuildManagedApplyInput = {
   spec: ManagedEngineSpec
   settings: ManagedSettings
   databases: string[]
-  /** Primary pin — used by ensureManagedPrimaryMember self-heal. */
+  /** Primary pin — the server `ensureManagedPrimaryMember` binds the primary to. */
   serverId: string
   environmentId: string
   /** Org that owns the managed service (and the org CA library). */

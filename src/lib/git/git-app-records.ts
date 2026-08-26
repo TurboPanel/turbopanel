@@ -127,6 +127,14 @@ export type GitAppRecord = {
   clientId: string | null
   redirectUri: string | null
   webhookRef: string
+  /** Public origin this app's deliveries were registered against; null = unset. */
+  webhookOrigin: string | null
+  /** What the provider was told about installability beyond the owning account. */
+  isPublic: boolean
+  /** SSH clone identity; inert for token-cloned GitHub App sources. */
+  customGitUser: string | null
+  customGitPort: number | null
+  syncedAt: string | null
 }
 
 /** Safe to return over the API: reports only whether sealed material exists. */
@@ -153,6 +161,10 @@ export type GitAppCreate = {
   appSlug?: string | null
   clientId?: string | null
   redirectUri?: string | null
+  webhookOrigin?: string | null
+  isPublic?: boolean
+  customGitUser?: string | null
+  customGitPort?: number | null
   privateKeyPem?: string | null
   clientSecret?: string | null
   webhookSecret?: string | null
@@ -177,9 +189,15 @@ export type GitAppUpdate = {
   appSlug?: string | null
   clientId?: string | null
   redirectUri?: string | null
+  webhookOrigin?: string | null
+  isPublic?: boolean
+  customGitUser?: string | null
+  customGitPort?: number | null
   privateKeyPem?: string | null
   clientSecret?: string | null
   webhookSecret?: string | null
+  /** Set by the provider reconcile in `./github-app-metadata.ts`. */
+  syncedAt?: string
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -266,6 +284,11 @@ function toRecord(row: Row): GitAppRecord {
     clientId: row.clientId,
     redirectUri: row.redirectUri,
     webhookRef: row.webhookRef,
+    webhookOrigin: row.webhookOrigin,
+    isPublic: row.isPublic,
+    customGitUser: row.customGitUser,
+    customGitPort: row.customGitPort,
+    syncedAt: row.syncedAt,
   }
 }
 
@@ -507,6 +530,10 @@ export async function createGitApp(
         appSlug: trimOrNull(input.appSlug),
         clientId: trimOrNull(input.clientId),
         redirectUri: trimOrNull(input.redirectUri),
+        webhookOrigin: trimOrNull(input.webhookOrigin),
+        isPublic: input.isPublic ?? false,
+        customGitUser: trimOrNull(input.customGitUser),
+        customGitPort: input.customGitPort ?? null,
         credentials,
         webhookRef: input.webhookRef ?? generateWebhookRef(),
         webhookTokenHash: tokenHash ?? null,
@@ -560,6 +587,15 @@ export async function updateGitApp(
   if (updates.appSlug !== undefined) next.appSlug = trimOrNull(updates.appSlug)
   if (updates.clientId !== undefined) next.clientId = trimOrNull(updates.clientId)
   if (updates.redirectUri !== undefined) next.redirectUri = trimOrNull(updates.redirectUri)
+  if (updates.webhookOrigin !== undefined) {
+    next.webhookOrigin = trimOrNull(updates.webhookOrigin)
+  }
+  if (updates.isPublic !== undefined) next.isPublic = updates.isPublic
+  if (updates.customGitUser !== undefined) {
+    next.customGitUser = trimOrNull(updates.customGitUser)
+  }
+  if (updates.customGitPort !== undefined) next.customGitPort = updates.customGitPort
+  if (updates.syncedAt !== undefined) next.syncedAt = updates.syncedAt
 
   const tokenHash = await resolveGitlabTokenHash(provider, updates.webhookSecret)
   if (tokenHash !== undefined) next.webhookTokenHash = tokenHash

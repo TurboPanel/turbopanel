@@ -6,7 +6,7 @@
  * contract: re-serializing a parsed body changes key order, unicode escapes, and
  * whitespace, and the MAC no longer matches. Callers must therefore read the
  * request body once as bytes (`c.req.arrayBuffer()`) and hand *those* here
- * **before** any `JSON.parse` — see `src/client/git/github-webhook-routes.ts`.
+ * **before** any `JSON.parse` — see `src/webhook/gate.ts`.
  *
  * Web APIs only (`crypto.subtle`, `TextEncoder`) so the module stays reachable
  * from `src/workers.ts`, same containment rule as `./github-app-token.ts`.

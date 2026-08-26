@@ -10,15 +10,16 @@
  *
  * **The webhook URL is the reason this matters here.** The manifest sets
  * `hook_attributes.url`, so the App is born already pointing at its own scoped
- * ingress path (`/api/git/v1/github/webhook/<ref>`). That is what makes a
+ * ingress path (`/webhook/github`, or `/webhook/github/<ref>` on GitHub
+ * Enterprise). That is what makes a
  * delivery self-identifying, and it is why {@link buildGithubAppManifest} takes
  * the `webhookRef` that will be written to the `gitapp` row rather than
  * generating one afterwards.
  *
- * **`public: true` is not a default we drifted into.** A private GitHub App can
- * only be installed on the account that owns it, so an App meant to serve
- * several organizations — the whole point of an instance-wide app — has to be
- * public.
+ * **`public` tracks the instance-wide toggle.** A private GitHub App can only
+ * be installed on the account that owns it, so an App meant to serve several
+ * organizations — the whole point of an instance-wide app — has to be public,
+ * while an App belonging to one organization should not be.
  */
 
 import {
@@ -40,9 +41,14 @@ export class GithubManifestError extends Error {
 /**
  * Permissions the App requests.
  *
- * Read-only throughout: TurboPanel clones, resolves refs, and reads compose
+ * Read-only by default: TurboPanel clones, resolves refs, and reads compose
  * files. Nothing in the deploy path writes to a repository, and an App that
  * cannot write is one an operator can grant without auditing us first.
+ *
+ * **These are creation-only.** GitHub bakes them into the App and an existing
+ * one keeps its old set until every installation manually accepts the new
+ * permissions — which is why the choice below is offered up front rather than
+ * as a setting to flip later.
  */
 export const GITHUB_MANIFEST_PERMISSIONS = {
   contents: 'read',
@@ -52,21 +58,42 @@ export const GITHUB_MANIFEST_PERMISSIONS = {
 } as const
 
 /**
+ * How much access the App gets to pull requests.
+ *
+ * `read` is enough to observe a PR. `write` is what a preview deployment needs
+ * to post its URL back onto the PR, and it is the one place this App is allowed
+ * to write anything — so it is opt-in, and the wizard says plainly what it
+ * grants.
+ */
+export const GITHUB_PULL_REQUEST_ACCESS = ['read', 'write'] as const
+export type GithubPullRequestAccess = (typeof GITHUB_PULL_REQUEST_ACCESS)[number]
+
+/**
  * Events the App subscribes to.
  *
  * `check_suite` and `check_run` are both needed because `autoDeploy:
  * 'checks_passed'` releases on a *suite* result but GitHub only sends the
  * suite-level conclusion on some workflows; the run handler reads its nested
- * suite. `installation` / `installation_repositories` keep the connection's
- * lifecycle in step without polling.
+ * suite.
+ *
+ * Do **not** list `installation` or `installation_repositories` here. GitHub
+ * still delivers those to every App automatically, but they are not
+ * subscribe-able `default_events` — a manifest that names them is rejected
+ * ("Default events unsupported" / "not supported by permissions").
  */
 export const GITHUB_MANIFEST_EVENTS = [
   'push',
   'check_suite',
   'check_run',
-  'installation',
-  'installation_repositories',
 ] as const
+
+/**
+ * Extra event delivered only when the App can act on pull requests.
+ *
+ * Subscribing without the write permission would deliver events the instance
+ * has no way to respond to, so the two move together.
+ */
+export const GITHUB_PULL_REQUEST_EVENT = 'pull_request'
 
 export type GithubAppManifest = {
   name: string
@@ -108,8 +135,20 @@ export function buildGithubAppManifest(params: {
   webhookUrl: string
   redirectUrl: string
   setupUrl: string
+  /**
+   * Installable by GitHub accounts other than the one that creates it.
+   *
+   * Tracks the instance-wide toggle. A **private** GitHub App can only be
+   * installed on its owning account, so an app meant to serve several
+   * organizations has to be public — and an app meant for one organization
+   * should not be, because public is the broader exposure.
+   */
+  publicApp: boolean
+  /** `write` also subscribes the App to `pull_request`. */
+  pullRequestAccess?: GithubPullRequestAccess
 }): GithubAppManifest {
-  return {
+  const pullRequestAccess = params.pullRequestAccess ?? 'read'
+  const manifest: GithubAppManifest = {
     name: params.name,
     url: params.publicUrl,
     hook_attributes: { url: params.webhookUrl, active: true },
@@ -120,10 +159,18 @@ export function buildGithubAppManifest(params: {
     // first install.
     setup_on_update: true,
     request_oauth_on_install: false,
-    public: true,
-    default_permissions: { ...GITHUB_MANIFEST_PERMISSIONS },
-    default_events: [...GITHUB_MANIFEST_EVENTS],
+    public: params.publicApp,
+    default_permissions: {
+      ...GITHUB_MANIFEST_PERMISSIONS,
+      pull_requests: pullRequestAccess,
+    },
+    // Subscribing without the write permission would deliver events the
+    // instance has no way to act on, so the two move together.
+    default_events: pullRequestAccess === 'write'
+      ? [...GITHUB_MANIFEST_EVENTS, GITHUB_PULL_REQUEST_EVENT]
+      : [...GITHUB_MANIFEST_EVENTS],
   }
+  return manifest
 }
 
 /**
@@ -174,10 +221,9 @@ export async function convertGithubAppManifest(
       },
     )
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'network error'
     throw new GithubManifestError(
-      `github manifest conversion failed: ${
-        error instanceof Error ? error.message : 'network error'
-      }`,
+      `github manifest conversion failed: ${errorMessage}`,
     )
   }
 

@@ -158,6 +158,22 @@ it("wireMessageToInboundEnvelope maps inbound wire types", () => {
 
   assertEquals(
     wireMessageToInboundEnvelope({
+      type: "container-logs-result",
+      id: "r3c",
+      at,
+      logs: "2026-01-01T00:00:00.000000000Z line\n",
+    }),
+    {
+      kind: "container-logs-result",
+      requestId: "r3c",
+      at,
+      logs: "2026-01-01T00:00:00.000000000Z line\n",
+      error: undefined,
+    },
+  );
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
       type: "dev-sync-result",
       id: "r4",
       at,
@@ -336,6 +352,22 @@ it("outboundEnvelopeToWireMessage maps outbound kinds", () => {
       type: "managed-logs-request",
       id: "req-1",
       managedId: "00000000-0000-4000-8000-000000000001",
+      tail: 200,
+      at: base.at,
+    },
+  );
+
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "container-logs-request",
+      containerId: "aabbccddeeff",
+      tail: 200,
+    }),
+    {
+      type: "container-logs-request",
+      id: "req-1",
+      containerId: "aabbccddeeff",
       tail: 200,
       at: base.at,
     },

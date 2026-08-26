@@ -2599,6 +2599,41 @@ export const gitProviderApp = pgTable(
     /** GitLab OAuth redirect URI. */
     redirectUri: text('redirect_uri'),
     /**
+     * The public origin this app's deliveries were registered against.
+     *
+     * An instance may publish several URLs, and the provider stores whichever
+     * one it was given at registration — GitHub bakes it into
+     * `hook_attributes.url` and nothing revisits it. Picking "the first public
+     * origin" at read time, as every other consumer does, would show an
+     * operator a URL the provider is not actually using. Null on an app
+     * registered before the operator was offered the choice.
+     */
+    webhookOrigin: text('webhook_origin'),
+    /**
+     * Whether the provider was told this app is publicly installable.
+     *
+     * Tracks the instance-wide toggle: a **private** GitHub App can only be
+     * installed on the account that owns it, so an app meant to serve several
+     * organizations has to be public. Recorded because it is decided once, at
+     * creation, and can only be changed on the provider's own settings page.
+     */
+    isPublic: boolean('is_public').default(false).notNull(),
+    /**
+     * SSH clone identity for a self-hosted host on a non-standard port.
+     *
+     * Unused by GitHub App sources, which clone over HTTPS with a minted token;
+     * these only shape the `ssh://user@host:port/...` URL for the deploy-key and
+     * generic-git lanes.
+     */
+    customGitUser: varchar('custom_git_user', { length: 64 }),
+    customGitPort: integer('custom_git_port'),
+    /** Last successful reconcile against the provider's own record of the app. */
+    syncedAt: timestamp('synced_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
      * Sealed material: `{ privateKeyEnvelope?, clientSecretEnvelope?,
      * webhookSecretEnvelope? }`, each a `tpsecret` string.
      */
@@ -2806,6 +2841,26 @@ export const source = pgTable(
       foreignColumns: [credential.id],
       name: 'source_credential_id_credential_id_fk',
     }).onDelete('set null'),
+    /**
+     * One repository binds once per organization.
+     *
+     * A source is created implicitly now, when a repository is attached to a
+     * project, so the same repo can be attached from two projects. Without this
+     * that produces two rows for one repository — and since `auto_deploy` and
+     * `default_branch` live on the row, their policies would silently diverge
+     * while a single push fanned out to both. The unique key is also what makes
+     * the find-or-create in `POST /sources/attach` atomic rather than a
+     * check-then-insert race.
+     *
+     * Deploy-key and generic-git sources carry a null `installation_id` and are
+     * therefore not constrained here: Postgres treats nulls as distinct, which
+     * is right — those are keyed by credential, not by installation.
+     */
+    unique('uniq_source_organization_installation_repository').on(
+      table.organizationId,
+      table.installationId,
+      table.repositoryExternalId,
+    ),
     check('source_provider_check', sql`provider IN ('github', 'gitlab', 'git')`),
     check(
       'source_auto_deploy_check',

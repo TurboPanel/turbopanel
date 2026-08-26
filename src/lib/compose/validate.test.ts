@@ -123,9 +123,13 @@ services:
 })
 
 test('validateComposeDocument treats null and undefined as an empty draft', () => {
-  assertEquals(validateComposeDocument(null).ok, true)
-  if (validateComposeDocument(null).ok) {
-    assertEquals(validateComposeDocument(null).document.data, {})
+  // Bind once and narrow that: calling again inside the `if` produces a fresh
+  // union the guard never narrowed, which is what `undefined` below already
+  // does correctly.
+  const empty = validateComposeDocument(null)
+  assertEquals(empty.ok, true)
+  if (empty.ok) {
+    assertEquals(empty.document.data, {})
   }
   const missing = validateComposeDocument(undefined)
   assertEquals(missing.ok, true)

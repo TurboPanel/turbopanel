@@ -1437,7 +1437,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // Same-cluster collision, owning-org namespace probe, and principal insert
     // share one txn so the organization FOR UPDATE lock covers the insert —
     // otherwise concurrent creates can pass the check before either inserts.
-    // include targetServerId so legacy rows self-heal a primary member first.
+    // `targetServerId` goes in so the primary member exists before the insert.
     const userCreate = await db.transaction(async (tx) => {
       const existingUsers = await listManagedPrincipals(tx, row.id)
       if (existingUsers.some((entry) => entry.username === username)) {

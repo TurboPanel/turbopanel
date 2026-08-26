@@ -119,6 +119,20 @@ export type DaemonMessage =
     at: string;
   }
   | {
+    type: "container-logs-request";
+    id: string;
+    containerId: string;
+    tail: number;
+    at: string;
+  }
+  | {
+    type: "container-logs-result";
+    id: string;
+    logs: string;
+    error?: string;
+    at: string;
+  }
+  | {
     type: "repo-read-request";
     id: string;
     cloneUrl: string;
@@ -246,20 +260,6 @@ export type DaemonMessage =
     daemonRespondedAt?: string;
   };
 
-/**
- * Control-plane acknowledgement of a `hello` / `heartbeat`.
- *
- * **Outbound only** — never accepted from a daemon (it is absent from
- * {@link DAEMON_INBOUND_ALLOWED}). Carries the owning organization's opt-in
- * flags so a daemon can start or stop container log collection without a new
- * command type; see `../container-logs-presence.ts`.
- */
-export type DaemonPresenceAckMessage = {
-  type: "presence-ack";
-  at: string;
-  containerLogsEnabled: boolean;
-};
-
 /** Read-time stale window when no inbound traffic is recorded on the cell. */
 export const DAEMON_STALE_MS = 60_000;
 /** Background sweep threshold for marking connected cells offline (DO alarm + Redis maintain). */
@@ -274,6 +274,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "heartbeat",
     "addresses-result",
     "managed-logs-result",
+    "container-logs-result",
     "repo-read-result",
     "managed-ha-event",
     "fabric-paths-result",
@@ -295,7 +296,7 @@ export const MAX_DAEMON_WS_ID_CHARS = 128;
 /** Max characters for daemon-reported error strings. */
 export const MAX_DAEMON_WS_ERROR_CHARS = 4 * 1024;
 
-/** Max characters for `managed-logs-result.logs`. */
+/** Max characters for `managed-logs-result` / `container-logs-result.logs`. */
 export const MAX_DAEMON_WS_LOGS_CHARS = 200 * 1024;
 
 /**
@@ -647,6 +648,7 @@ function validateInboundMessageFields(
     case "addresses-result":
       return validateAddressesResultFields(record);
     case "managed-logs-result":
+    case "container-logs-result":
       return validateManagedLogsResultFields(record);
     case "repo-read-result":
       return validateRepoReadResultFields(record);
@@ -669,7 +671,10 @@ function validateInboundMessageFields(
 }
 
 function validateManagedLogsEnvelope(
-  inbound: Extract<DaemonInboundEnvelope, { kind: "managed-logs-result" }>,
+  inbound: Extract<
+    DaemonInboundEnvelope,
+    { kind: "managed-logs-result" | "container-logs-result" }
+  >,
 ): string | null {
   if (inbound.logs.length > MAX_DAEMON_WS_LOGS_CHARS) {
     return "logs exceed max length";
@@ -726,6 +731,7 @@ function validateInboundEnvelopeKind(
 ): string | null {
   switch (inbound.kind) {
     case "managed-logs-result":
+    case "container-logs-result":
       return validateManagedLogsEnvelope(inbound);
     case "repo-read-result":
       return validateRepoReadEnvelope(inbound);
@@ -794,6 +800,11 @@ export type DaemonOutboundEnvelope =
     tail: number;
   })
   | (OutboundEnvelopeBase & {
+    kind: "container-logs-request";
+    containerId: string;
+    tail: number;
+  })
+  | (OutboundEnvelopeBase & {
     kind: "repo-read-request";
     cloneUrl: string;
     ref: string;
@@ -850,6 +861,13 @@ export type DaemonInboundEnvelope =
   }
   | {
     kind: "managed-logs-result";
+    requestId: string;
+    at: string;
+    logs: string;
+    error?: string;
+  }
+  | {
+    kind: "container-logs-result";
     requestId: string;
     at: string;
     logs: string;
@@ -950,6 +968,14 @@ export function wireMessageToInboundEnvelope(
     case "managed-logs-result":
       return {
         kind: "managed-logs-result",
+        requestId: msg.id,
+        at: msg.at,
+        logs: msg.logs,
+        error: msg.error,
+      };
+    case "container-logs-result":
+      return {
+        kind: "container-logs-result",
         requestId: msg.id,
         at: msg.at,
         logs: msg.logs,
@@ -1110,6 +1136,14 @@ export function outboundEnvelopeToWireMessage(
         type: "managed-logs-request",
         id: env.requestId,
         managedId: env.managedId,
+        tail: env.tail,
+        at: env.at,
+      };
+    case "container-logs-request":
+      return {
+        type: "container-logs-request",
+        id: env.requestId,
+        containerId: env.containerId,
         tail: env.tail,
         at: env.at,
       };

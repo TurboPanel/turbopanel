@@ -6,7 +6,7 @@
  * secret — the surface has to work out *whose* secret to use before it can
  * authenticate anything. This module is that step, and it runs between reading
  * the raw bytes and verifying them (steps 2 and 3 of the gate in
- * `src/client/git/AGENTS.md`).
+ * `src/webhook/AGENTS.md`).
  *
  * Nothing here is trusted. Resolution only selects a candidate key; the
  * delivery is still unauthenticated until the caller verifies it.

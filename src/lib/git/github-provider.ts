@@ -4,7 +4,7 @@
  * A thin adapter, not a rewrite: every call below delegates to the modules that
  * already implemented this behaviour inline (`./github-app-token.ts`,
  * `./github-webhook.ts`), and the payload readers are the ones lifted verbatim
- * out of `src/client/git/github-webhook-routes.ts`. Nothing about GitHub's
+ * out of `src/webhook/git/github.ts`. Nothing about GitHub's
  * behaviour changes here — the point is that deploy-prepare, the repository
  * picker, and the webhook ingress now reach it through one interface instead of
  * three `provider === 'github'` branches.

@@ -1,33 +1,55 @@
-# Git provider webhooks — AGENTS.md
+# Webhook ingress — AGENTS.md
 
-Inbound webhook surfaces for Git providers: **GitHub** and **GitLab**, one route
-file each, both running the identical **six**-step gate.
+The inbound webhook surface. Today that is **GitHub** and **GitLab**; the
+directory is shaped so a third kind is an adapter, not a third copy of the gate.
+
+```
+src/webhook/
+├── gate.ts     the six ordered steps, written once
+├── routes.ts   registerWebhookRoutes — the one call each entrypoint makes
+└── git/        github.ts, gitlab.ts — what makes each provider itself
+```
 
 An instance may hold **more than one** GitHub App or GitLab OAuth application —
 instance-wide ones an operator registered for everybody, and organization-owned
-ones. So a delivery can no longer be checked against "the" webhook secret: the
-surface has to work out *whose* secret to use before it can authenticate
-anything. That is step 3 below (`src/lib/git/resolve-webhook-app.ts`), and it is
-the one structural change to the gate.
+ones. So a delivery cannot be checked against "the" webhook secret: the surface
+has to work out *whose* secret to use before it can authenticate anything. That
+is step 2 below (`src/lib/git/resolve-webhook-app.ts`).
 
-## Why this lives outside `CLIENT_API_PREFIX`
+## Why this is its own surface
 
 Every other write surface in this codebase authenticates a *caller we enrolled*:
 a browser with a session cookie, or a daemon with a JWT. A webhook has neither.
-The caller is the Git provider, and its only credential is one it presents in
-the request itself. So the routes are mounted on the **top-level app** at
-`GITHUB_WEBHOOK_PATH` (`/api/git/v1/github/webhook`) and `GITLAB_WEBHOOK_PATH`
-(`/api/git/v1/gitlab/webhook`, both in `src/surfaces.ts`) rather than under
-`CLIENT_API_PREFIX`:
+The caller is the provider, its only credential is one it presents in the request
+itself, and what arrives is an **event rather than a call**. That is a different
+thing from `/api`, which is why it has its own URL prefix — and, since the same
+argument applies to the code, its own top-level directory beside `admin`,
+`client`, `daemon` and `developer`.
 
-- session middleware would reject every delivery;
-- the cross-origin write gate (`src/browser-write-protection.ts`) only guards
-  cookie-authenticated prefixes, and this surface is not one — including it would
-  add nothing and would have to be special-cased for an `Origin`-less caller.
+One consequence is deliberate and easy to undo by accident:
 
-Registration therefore happens in the entrypoints (`src/deno-server.ts`,
-`src/workers.ts`) next to `registerDaemonApiRoutes`, **not** inside
-`registerClientRoutes`.
+- **No `.use('*')` middleware.** `/webhook` stays out of `PROTECTED_PREFIXES`
+  in `src/browser-write-protection.ts`: session middleware would reject every
+  delivery, and the cross-origin write gate has no `Origin` to read. Each gate
+  authenticates itself.
+
+Registration is **flat** — each gate calls `app.post()` with the absolute paths
+from `src/surfaces.ts` rather than mounting a child router at the prefix. Two
+gates own paths under `/webhook`, and a shared child router would be one more
+object to thread through `registerWebhookRoutes` for no behaviour.
+
+Registration happens in the entrypoints (`src/deno-server.ts`, `src/workers.ts`)
+next to `registerDaemonApiRoutes`, through the single `registerWebhookRoutes`
+call — **not** inside `registerClientRoutes`.
+
+**Every layer in front of the instance has to know `/webhook`.** `Caddyfile`,
+`dev/orchestration/Caddyfile` (both listener blocks), and the `routes` patterns
+in `wrangler.jsonc` each enumerate the prefixes they forward and then end in a
+catch-all that serves the UI's `index.html`. A prefix missing from one of those
+lists does not 404 — it answers **`200` with an HTML page**, which a Git
+provider reads as a delivered webhook and never retries. That is silent,
+unrecoverable loss of every push, and it is why `src/surfaces.test.ts` pins
+these strings.
 
 ## The two surfaces, and the one difference that matters
 
@@ -60,15 +82,19 @@ module on boot.
 
 | Path | When it is used |
 | --- | --- |
-| `/api/git/v1/<provider>/webhook/:ref` | **The URL every registered app is handed.** `:ref` is that app's `gitapp.webhook_ref`, baked in at registration (GitHub: `hook_attributes.url` in the manifest, or `PATCH /app/hook/config`; GitLab: the per-project hook URL). |
-| `/api/git/v1/<provider>/webhook` | Fallback for an app someone configured by hand against the bare URL. Resolves by header (GitHub) or token digest (GitLab). |
+| `/webhook/<provider>` | **Hosted providers.** github.com stamps `X-GitHub-Hook-Installation-Target-ID` on every App delivery and gitlab.com echoes the token we can digest, so the app is identifiable from the request alone and the URL stays clean — nothing internal in it. |
+| `/webhook/<provider>/:ref` | **Self-hosted providers.** `:ref` is that app's `gitapp.webhook_ref`, baked in at registration (GitHub: `hook_attributes.url` in the manifest; GitLab: the per-project hook URL). GitHub Enterprise Server and self-managed GitLab ship on their own cadence, so the header is not a safe single point of failure there — a build that omitted it would 401 every delivery with nothing in the URL to fall back to. |
 
-Both register the same handler; the ref is simply absent on the bare path.
+All of them register the same handler; the ref is simply absent on the bare
+path. `webhookPathFor` in `src/lib/git/webhook-reachability.ts` decides which
+shape an app is *told* about, from its `base_url`.
 
 ## The gate, in order
 
-`registerGithubWebhookRoutes` and `registerGitlabWebhookRoutes` run the same
-fixed sequence, and the order is load-bearing:
+`gate.ts` runs this sequence for **every** kind, and the order is load-bearing —
+three of the six steps are security properties rather than tidiness. It used to
+be written out twice, once per provider, with nothing keeping the two in step;
+that is exactly the duplication a third kind would have inherited.
 
 1. **Rate limit** (`GITHUB_WEBHOOK_RATE_LIMITER` / `GITLAB_WEBHOOK_RATE_LIMITER`,
    or the Deno Redis limiters). Cheapest check first — it is what protects the
@@ -122,6 +148,40 @@ takes a completed successful `check_suite`, or a `check_run` whose nested
 `check_suite` has itself concluded `success`. GitLab's `pipeline` is the exact
 analogue — one pipeline covers every job in the ref — so `Job Hook` is
 deliberately not honored.
+
+## Adding a kind
+
+Implement `WebhookGate<THolder>` and add a line to `routes.ts`. `THolder` is
+whatever that kind verifies against — a `GitApp` for the git kinds — so a kind
+with **no tenant at all** is as expressible as a multi-tenant one: `resolve`
+returns a single holder carrying only the instance-wide secret.
+
+Two escape hatches exist for senders that do not look like GitHub. `verify` and
+`eventName` receive the **raw bytes** rather than a parsed payload, so a sender
+that signs *fields* (Mailgun MACs `timestamp + token`) or names its event in the
+body can parse them itself without moving the parse ahead of verification.
+
+Worth knowing before you start — the surface is generic, but three things around
+it are still git-shaped and would need widening:
+
+- `delivery.provider` is `CHECK (provider IN ('github','gitlab'))`
+  (`src/lib/db/schema.ts`, `migrations/0000_init.sql`). The claim in step 5
+  writes it, so a new kind throws on insert until this is widened.
+- `WebhookDeliveryProvider` is aliased to `WebhookGitProviderName`
+  (`src/lib/db/webhook-delivery-records.ts`) — which is `src/lib/db/`'s only
+  dependency on `src/lib/git/`. Decoupling it is the natural moment to break
+  that.
+- Rate-limit keys are `git:webhook:<provider>:<peer>`
+  (`src/daemon/rate-limit/keys.ts`) — domain-prefixed rather than
+  traffic-class-prefixed. `webhook:<kind>:<peer>` generalises, but it is a
+  breaking change to live counters and `rate-limit/keys.test.ts` pins the
+  current strings.
+- Cloudflare needs a rate-limiter binding in **three** places in
+  `wrangler.jsonc` (default, `env.testing`, `env.live`), each with its own
+  `namespace_id`.
+
+The URL plumbing, though, is free: `/webhook/*` is already forwarded by every
+fronting layer, so `/webhook/<kind>` inherits it.
 
 ## Events
 
@@ -205,7 +265,10 @@ sealed material is never returned.
 
 `POST /git/apps/github/manifest` is the supported way to create a GitHub App:
 it returns a manifest whose `hook_attributes.url` is already the new app's
-scoped webhook path, so the App is born self-identifying. Manual registration
+scoped webhook path, so the App is born self-identifying. GitHub then sends
+the operator's browser to `GET …/github/manifest/callback`, which stores the
+credentials and **302s** to `/<orgId>/projects/git-apps` (or `/admin/git`)
+with `created=` or `error=` — never a JSON body. Manual registration
 stays available for GitHub Enterprise Server and for an App that already exists.
 A manifest App is created `public: true` on purpose — **a private GitHub App can
 only be installed on the account that owns it**, so one meant to serve several

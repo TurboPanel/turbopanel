@@ -16,20 +16,22 @@ import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
-import { GITHUB_WEBHOOK_PATH } from '../../surfaces.ts'
-import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
-import { encryptSecret } from '../authn/data-encryption.ts'
+import {
+  GITHUB_WEBHOOK_PATH,
+} from '../../surfaces.ts'
+import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
+import { encryptSecret } from '../../client/authn/data-encryption.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   registerGithubWebhookRoutes,
   successfulCheckSha,
-} from './github-webhook-routes.ts'
+} from './github.ts'
 import {
   sourceWatchesBranch,
   type TriggerSummary,
   triggerSummaryNeedsRetry,
-} from '../sources/webhook-trigger.ts'
+} from '../../client/sources/webhook-trigger.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -44,13 +46,21 @@ const encoder = new TextEncoder()
 /** The ref this instance would have baked into the App's webhook URL. */
 const WEBHOOK_REF = 'ref-under-test'
 
-/** Minimal `select().from().where().limit()` chain returning the gitapp rows. */
+/**
+ * Minimal gitapp read stub.
+ *
+ * Both terminal shapes matter: the ref lookup ends in `.limit(1)`, the App-id
+ * fallback ends in `.orderBy(...)` because it returns a candidate list. A stub
+ * with only one of them makes the other rung throw, which reads as a 500 and
+ * hides whichever path is actually being exercised.
+ */
 function stubAppDb(rows: unknown[]): Db {
   return {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve(rows),
+          limit: () => Promise.resolve(rows.slice(0, 1)),
+          orderBy: () => Promise.resolve(rows),
         }),
       }),
     }),
@@ -128,6 +138,18 @@ async function signBody(secret: string, body: string): Promise<string> {
   return `sha256=${hex}`
 }
 
+function postTo(
+  path: string,
+  body: string,
+  headers: Record<string, string> = {},
+): Request {
+  return new Request(`http://instance${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body,
+  })
+}
+
 function post(body: string, headers: Record<string, string> = {}): Request {
   return new Request(`http://instance${GITHUB_WEBHOOK_PATH}/${WEBHOOK_REF}`, {
     method: 'POST',
@@ -193,6 +215,26 @@ test('an oversized declared body is refused before it is buffered', async () => 
     'content-length': String(GITHUB_WEBHOOK_MAX_BODY_BYTES + 1),
   }))
   assertEquals(res.status, 413)
+})
+
+test('the scoped and bare paths both reach the same gate', async () => {
+  const app = await buildApp({ webhookSecret: 'shh' })
+
+  // Both are URLs a provider is actually pointed at: the scoped path for
+  // self-hosted apps, the bare path for github.com. Retiring either silently
+  // stops the Apps holding it from ever deploying again.
+  for (const path of [`${GITHUB_WEBHOOK_PATH}/${WEBHOOK_REF}`, GITHUB_WEBHOOK_PATH]) {
+    const res = await app.request(
+      postTo(path, '{}', {
+        'x-github-event': 'push',
+        'x-github-hook-installation-target-type': 'integration',
+        'x-github-hook-installation-target-id': '1234',
+      }),
+    )
+    // 401 is the gate rejecting an unsigned body — which means it ran. A 404
+    // would mean the path never reached the handler at all.
+    assertEquals(res.status, 401, `expected the gate to run for ${path}`)
+  }
 })
 
 test('successfulCheckSha reads only completed successful suites', () => {

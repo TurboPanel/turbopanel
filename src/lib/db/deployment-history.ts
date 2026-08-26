@@ -19,6 +19,15 @@ import { and, desc, eq, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { normalizeReplicaCounts } from '../commands/context.ts'
 import type { ExecutionLogStore } from '../execution-logs/types.ts'
+
+/**
+ * The one capability the history reader needs from an execution-log store.
+ *
+ * Deliberately a `Pick` rather than a fresh interface: it stays tied to
+ * {@link ExecutionLogStore}, so a signature change over there still surfaces
+ * here rather than silently drifting.
+ */
+export type ExecutionLogPresence = Pick<ExecutionLogStore, 'exists'>
 import { deploymentDurationMs } from './deployment-records.ts'
 import { command, deployment, server } from './schema.ts'
 
@@ -108,7 +117,7 @@ export type ListDeploymentHistoryParams = {
    */
   before?: string
   /** Resolves `hasLog`; omit in runtimes with no configured store. */
-  logStore?: ExecutionLogStore
+  logStore?: ExecutionLogPresence
 }
 
 export type DeploymentHistoryPage = {
@@ -240,8 +249,16 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
  * in parallel, exactly as the batched command-status route does. Fan-out is
  * bounded by the page limit.
  */
+/**
+ * Which of these deployments have a stored transcript.
+ *
+ * Takes only the `exists` half of the store, not the whole interface. Reading
+ * history never appends, seals or deletes — asking for a full
+ * {@link ExecutionLogStore} would force every caller (and every test) to supply
+ * five methods this function will not call.
+ */
 async function resolveHasLogs(
-  store: ExecutionLogStore | undefined,
+  store: ExecutionLogPresence | undefined,
   ids: readonly string[],
 ): Promise<boolean[]> {
   if (!store) return ids.map(() => false)
@@ -303,7 +320,7 @@ export async function getEnvironmentDeploymentDetail(
   db: Db,
   environmentId: string,
   deploymentId: string,
-  params: { logStore?: ExecutionLogStore } = {},
+  params: { logStore?: ExecutionLogPresence } = {},
 ): Promise<DeploymentHistoryDetail | null> {
   const anchorRows = (await db
     .select(DEPLOY_COMMAND_COLUMNS)

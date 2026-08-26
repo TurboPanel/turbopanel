@@ -8,7 +8,6 @@ import { registerCorsMiddleware } from './cors.ts'
 import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
 import type { ServerMetricsStore } from './daemon/metrics/types.ts'
 import type { ExecutionLogStore } from './lib/execution-logs/types.ts'
-import type { ContainerLogStore } from './lib/container-logs/types.ts'
 import type { Db } from './db.ts'
 import type { SignupEnvOverride } from './client/authn/install-state.ts'
 import type { CommandQueue } from './lib/commands/queue.ts'
@@ -38,12 +37,6 @@ export type AppEnv = {
      * backend is configured for the runtime — reads then report "no transcript".
      */
     executionLogStore?: ExecutionLogStore
-    /**
-     * Container stdout/stderr store. Container logs are **default-off**, so
-     * this is normally the `DisabledContainerLogStore` no-op rather than
-     * absent — callers never branch on availability.
-     */
-    containerLogStore?: ContainerLogStore
     /**
      * Runtime serving the request. Used by session-cookie TLS resolution to
      * decide whether `X-Forwarded-Proto` is trustworthy (Deno Caddy-over-Unix
@@ -81,7 +74,6 @@ export function createApp(
     queryCache,
     serverMetricsStore,
     executionLogStore,
-    containerLogStore,
     dataEncryptionSecrets,
     secretsConfig,
     authRateLimiter,
@@ -100,7 +92,6 @@ export function createApp(
     queryCache?: QueryCache
     serverMetricsStore?: ServerMetricsStore
     executionLogStore?: ExecutionLogStore
-    containerLogStore?: ContainerLogStore
     dataEncryptionSecrets?: DerivedSecretsConfig
     secretsConfig?: SecretsConfig
     /**
@@ -159,12 +150,6 @@ export function createApp(
   if (executionLogStore) {
     app.use('*', (c, next) => {
       c.set('executionLogStore', executionLogStore)
-      return next()
-    })
-  }
-  if (containerLogStore) {
-    app.use('*', (c, next) => {
-      c.set('containerLogStore', containerLogStore)
       return next()
     })
   }

@@ -14,7 +14,6 @@ import {
   setWorkersDbFactoryForTests,
 } from './workers-bindings.ts'
 import workers, { resetWorkerAppCachesForTests } from './workers.ts'
-import { resetContainerLogStoreSelectionWarningsForTests } from './lib/container-logs/store-selection.ts'
 import { takeLastOfflineSweepScheduledTimeForTests } from './daemon/cell/offline-sweep.ts'
 
 function mockDb(label: string): Db {
@@ -94,7 +93,6 @@ function fakeMessageBatch(
 beforeEach(() => {
   resetWorkerAppCachesForTests()
   resetWorkersBindingWarningsForTests()
-  resetContainerLogStoreSelectionWarningsForTests()
   // Avoid live Hyperdrive sockets — entry smoke uses doubles only.
   setWorkersDbFactoryForTests(() => undefined)
 })
@@ -103,23 +101,7 @@ afterEach(() => {
   resetWorkerAppCachesForTests()
   setWorkersDbFactoryForTests(null)
   resetWorkersBindingWarningsForTests()
-  resetContainerLogStoreSelectionWarningsForTests()
 })
-
-/** Capture `console.warn` for the duration of one call. */
-async function captureWarnings(run: () => Promise<void>): Promise<string[]> {
-  const warnings: string[] = []
-  const original = console.warn
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args.map((arg) => String(arg)).join(' '))
-  }
-  try {
-    await run()
-  } finally {
-    console.warn = original
-  }
-  return warnings
-}
 
 describe('workers.ts entry handlers', () => {
   it('fetch serves /api/health after init and closes per-request DB handles', async () => {
@@ -151,70 +133,6 @@ describe('workers.ts entry handlers', () => {
       ctx,
     )
     expect(response.status).toBe(200)
-    await Promise.all(ctx.waitUntilPromises)
-  }, 30_000)
-
-  // Container logs are default-off and their Pipelines binding is only added to
-  // wrangler.jsonc once the Stream exists, so the disabled fallback — not the
-  // Cloudflare store — is the steady state on every deployed env.
-  it('fetch resolves a container-log store without a CONTAINER_LOGS binding', async () => {
-    const ctx = fakeExecutionContext()
-    const warnings = await captureWarnings(async () => {
-      const response = await workers.fetch(
-        new Request(`https://panel.example.com${HEALTH_PATH}`),
-        workersTestEnv(),
-        ctx,
-      )
-      expect(response.status).toBe(200)
-    })
-    // Default-off means no misconfiguration warning: this is the expected state.
-    expect(warnings.filter((line) => line.includes('container logs'))).toEqual([])
-    await Promise.all(ctx.waitUntilPromises)
-  }, 30_000)
-
-  it('fetch warns once when container logs are enabled but unconfigured', async () => {
-    const ctx = fakeExecutionContext()
-    const warnings = await captureWarnings(async () => {
-      const response = await workers.fetch(
-        new Request(`https://panel.example.com${HEALTH_PATH}`),
-        workersTestEnv({ TURBOPANEL_CONTAINER_LOGS_ENABLED: '1' }),
-        ctx,
-      )
-      // The request still succeeds — an unconfigured backend degrades to the
-      // disabled no-op store, it never fails a request.
-      expect(response.status).toBe(200)
-    })
-    expect(
-      warnings.filter((line) => line.includes('container logs are enabled on Workers')),
-    ).toHaveLength(1)
-    await Promise.all(ctx.waitUntilPromises)
-  }, 30_000)
-
-  it('fetch selects the Pipelines store when the binding and R2 SQL config are complete', async () => {
-    const sends: unknown[][] = []
-    const ctx = fakeExecutionContext()
-    const warnings = await captureWarnings(async () => {
-      const response = await workers.fetch(
-        new Request(`https://panel.example.com${HEALTH_PATH}`),
-        workersTestEnv({
-          TURBOPANEL_CONTAINER_LOGS_ENABLED: 'true',
-          CLOUDFLARE_ACCOUNT_ID: 'acct-entry-test',
-          TURBOPANEL_CONTAINER_LOGS_R2_SQL_API_TOKEN: 'token-entry-test',
-          TURBOPANEL_CONTAINER_LOGS_R2_SQL_BUCKET: 'entry-test-container-logs',
-          CONTAINER_LOGS: {
-            send(records: unknown[]) {
-              sends.push(records)
-              return Promise.resolve()
-            },
-          } as unknown as CloudflareBindings['CONTAINER_LOGS'],
-        }),
-        ctx,
-      )
-      expect(response.status).toBe(200)
-    })
-    expect(warnings.filter((line) => line.includes('container logs'))).toEqual([])
-    // Resolving the store must never write: ingest only happens on real events.
-    expect(sends).toEqual([])
     await Promise.all(ctx.waitUntilPromises)
   }, 30_000)
 

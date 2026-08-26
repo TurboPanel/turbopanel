@@ -30,6 +30,7 @@ import {
   generateWebhookRef,
   getGitAppSummary,
   listGitApps,
+  loadGitApp,
   updateGitApp,
   visibleGitAppsCondition,
 } from '../../lib/git/git-app-records.ts'
@@ -40,6 +41,7 @@ import {
   GithubManifestError,
 } from '../../lib/git/github-manifest.ts'
 import { githubApiBaseFor } from '../../lib/git/github-app-token.ts'
+import { fetchGithubAppMetadata } from '../../lib/git/github-app-metadata.ts'
 import {
   getPublicUrls,
   publicUrlEntryToInstallOrigin,
@@ -52,14 +54,24 @@ import {
 import {
   GIT_APP_UUID_RE,
   parseGitAppCreateBody,
+  parseGithubManifestStartBody,
   parseGitAppPatchBody,
   serializeGitApp,
+  githubManifestUiReturnPath,
+  type GithubManifestReturnError,
 } from './routes-helpers.ts'
-import { GITHUB_DEFAULT_BASE_URL } from '../../lib/git/git-app-records.ts'
 
 export type GitAppScope = {
   /** `null` = the instance-wide (admin) view. */
   organizationId: string | null
+}
+
+/** Every origin this instance publishes, normalized for comparison. */
+async function listPublicOrigins(db: Db): Promise<string[]> {
+  return (await getPublicUrls(db))
+    .map((entry) => publicUrlEntryToInstallOrigin(entry))
+    .filter((origin): origin is string => origin !== null)
+    .map((origin) => origin.replace(/\/$/, ''))
 }
 
 /**
@@ -250,6 +262,81 @@ export async function deleteGitAppHandler(
 }
 
 /**
+ * Reconcile one app against the provider's own record of it.
+ *
+ * An operator can rename an App on GitHub, and nothing tells us — the App's
+ * webhook vocabulary has no "I was renamed" event. The console would keep
+ * showing the old name indefinitely, and a stale `app_slug` is worse than
+ * cosmetic: it builds the install URL, so an App renamed on GitHub silently
+ * loses the ability to connect new accounts.
+ *
+ * Writable apps only. An organization looking at an instance-wide app may read
+ * it but must not rewrite fields the instance admin owns.
+ */
+export async function syncGitAppHandler(
+  c: Context<AppEnv>,
+  db: Db,
+  scope: GitAppScope,
+  id: string,
+): Promise<Response> {
+  if (!GIT_APP_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!dataEncryptionSecrets) {
+    return c.json({ error: 'Encryption unavailable' }, 503)
+  }
+
+  const visible = await loadVisibleApp(db, scope, id)
+  if (!visible) return c.json({ error: 'Not found' }, 404)
+  const denied = assertWritable(c, scope, visible)
+  if (denied) return denied
+
+  const app = await loadGitApp(db, dataEncryptionSecrets, id)
+  if (!app) return c.json({ error: 'Not found' }, 404)
+  if (app.provider !== 'github') {
+    // GitLab OAuth applications have no equivalent self-describing endpoint;
+    // there is nothing to reconcile against.
+    return c.json({ error: 'git_app_sync_unsupported' }, 400)
+  }
+
+  let metadata
+  try {
+    metadata = await fetchGithubAppMetadata(app)
+  } catch (error) {
+    // Always 502: every failure here is GitHub's answer to *our* credentials,
+    // not a fault in the operator's request. A 401 from GitHub means the stored
+    // private key no longer matches the App — which is worth saying out loud in
+    // `detail` rather than reflecting back as a 401 the console would read as
+    // "your session expired".
+    return c.json({
+      error: 'git_app_sync_failed',
+      detail: error instanceof Error ? error.message : 'unknown error',
+    }, 502)
+  }
+
+  const updated = await updateGitApp(db, dataEncryptionSecrets, id, {
+    name: metadata.name,
+    appSlug: metadata.slug,
+    externalAppId: metadata.externalAppId,
+    // `null` means GitHub did not report visibility; keep what we recorded.
+    ...(metadata.isPublic === null ? {} : { isPublic: metadata.isPublic }),
+    syncedAt: new Date().toISOString(),
+  })
+  if (!updated) return c.json({ error: 'Not found' }, 404)
+
+  const publicOrigin = await resolvePublicOrigin(db)
+  return c.json({
+    app: serializeGitApp(updated, {
+      publicOrigin,
+      viewerOrganizationId: scope.organizationId,
+    }),
+    // Reported rather than judged: what counts as drift is a product question,
+    // and the console is where that comparison belongs.
+    provider: { permissions: metadata.permissions, events: metadata.events },
+  })
+}
+
+/**
  * Start the manifest flow.
  *
  * The `webhookRef` is minted here, before the App exists, so it can go into the
@@ -275,18 +362,30 @@ export async function startGithubManifestHandler(
   if (!publicOrigin) return c.json({ error: 'public_url_not_configured' }, 503)
 
   const body = (await c.req.json().catch(() => null)) as
-    | { name?: unknown; baseUrl?: unknown; organizationLogin?: unknown }
+    | Record<string, unknown>
     | null
-  const name = typeof body?.name === 'string' && body.name.trim().length > 0
-    ? body.name.trim()
-    : 'TurboPanel'
-  const baseUrl = typeof body?.baseUrl === 'string' && body.baseUrl.trim().length > 0
-    ? body.baseUrl.trim().replace(/\/+$/, '')
-    : GITHUB_DEFAULT_BASE_URL
-  const organizationLogin = typeof body?.organizationLogin === 'string' &&
-      body.organizationLogin.trim().length > 0
-    ? body.organizationLogin.trim()
-    : null
+  const wizard = parseGithubManifestStartBody(body)
+  if (!wizard) return c.json({ error: 'invalid_manifest_request' }, 400)
+
+  const { name, baseUrl, organizationLogin, apiUrl, pullRequestAccess } = wizard
+
+  // The operator picks which published URL the App delivers to, because an
+  // instance may have several and GitHub stores exactly one. It has to be one
+  // this instance actually publishes — otherwise the App would be registered
+  // against an address nothing here answers on. Falling back to the instance
+  // default keeps the old single-URL behaviour working.
+  let webhookOrigin = publicOrigin.replace(/\/$/, '')
+  if (wizard.webhookOrigin) {
+    const known = await listPublicOrigins(db)
+    if (!known.includes(wizard.webhookOrigin)) {
+      return c.json({ error: 'webhook_origin_not_published' }, 400)
+    }
+    webhookOrigin = wizard.webhookOrigin
+  }
+
+  // Instance-wide apps have to be installable by accounts other than the one
+  // that created them; an organization's own app should not be.
+  const isPublic = scope.organizationId === null
 
   const webhookRef = generateWebhookRef()
   const origin = publicOrigin.replace(/\/$/, '')
@@ -307,6 +406,12 @@ export async function startGithubManifestHandler(
     webhookRef,
     baseUrl,
     name,
+    webhookOrigin,
+    apiUrl,
+    isPublic,
+    pullRequestAccess,
+    customGitUser: wizard.customGitUser,
+    customGitPort: wizard.customGitPort,
   })
 
   // The install redirect lands on the *source* callback — the one that writes
@@ -318,21 +423,39 @@ export async function startGithubManifestHandler(
       encodeURIComponent(scope.organizationId)
     }`
 
+  const manifest = buildGithubAppManifest({
+    name,
+    publicUrl: origin,
+    // The app's own origin, and the ref only when self-hosted — this URL is
+    // what GitHub stores, and nothing revisits it.
+    webhookUrl: `${webhookOrigin}${webhookPathFor('github', webhookRef, baseUrl)}`,
+    redirectUrl: `${origin}${callbackPath}`,
+    setupUrl: `${origin}${setupPath}`,
+    publicApp: isPublic,
+    pullRequestAccess,
+  })
   return c.json({
-    manifest: buildGithubAppManifest({
-      name,
-      publicUrl: origin,
-      webhookUrl: `${origin}${webhookPathFor('github', webhookRef)}`,
-      redirectUrl: `${origin}${callbackPath}`,
-      setupUrl: `${origin}${setupPath}`,
-    }),
+    manifest,
     createUrl: githubAppCreateUrl(baseUrl, state, organizationLogin),
     state,
   })
 }
 
+function redirectToGitAppsUi(
+  c: Context<AppEnv>,
+  scope: GitAppScope,
+  query: { created?: string; error?: GithubManifestReturnError },
+): Response {
+  const location = githubManifestUiReturnPath(scope.organizationId, query)
+  return c.redirect(location, 302)
+}
+
 /**
  * Finish the manifest flow: exchange the code and store the App.
+ *
+ * GitHub sends the operator's *browser* here. After the row is written (or the
+ * exchange fails), redirect to the Git providers page — a JSON 201 left the
+ * browser sitting on the API path.
  *
  * The row is written with the ref that was already baked into the App's webhook
  * URL, so the two agree from the first delivery onward.
@@ -344,22 +467,26 @@ export async function completeGithubManifestHandler(
 ): Promise<Response> {
   const secretsConfig = c.get('secretsConfig')
   if (!secretsConfig) {
-    return c.json({ error: 'Signing unavailable — no root secret configured' }, 503)
+    return redirectToGitAppsUi(c, scope, { error: 'unavailable' })
   }
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!dataEncryptionSecrets) {
-    return c.json({ error: 'Encryption unavailable' }, 503)
+    return redirectToGitAppsUi(c, scope, { error: 'unavailable' })
   }
 
   const state = c.req.query('state')
   const code = c.req.query('code')
-  if (!state || !code) return c.json({ error: 'Invalid request' }, 400)
+  if (!state || !code) {
+    return redirectToGitAppsUi(c, scope, { error: 'invalid_request' })
+  }
 
   const pending = await verifyGithubManifestState(secretsConfig, state)
-  if (!pending) return c.json({ error: 'github_manifest_state_invalid' }, 400)
+  if (!pending) {
+    return redirectToGitAppsUi(c, scope, { error: 'state_invalid' })
+  }
   // The signed state is the authority; the surface it came back on must agree.
   if (pending.organizationId !== scope.organizationId) {
-    return c.json({ error: 'Forbidden' }, 403)
+    return redirectToGitAppsUi(c, scope, { error: 'forbidden' })
   }
 
   let conversion
@@ -369,7 +496,9 @@ export async function completeGithubManifestHandler(
       code,
     )
   } catch (error) {
-    if (error instanceof GithubManifestError) return c.json({ error: error.message }, 502)
+    if (error instanceof GithubManifestError) {
+      return redirectToGitAppsUi(c, scope, { error: 'conversion_failed' })
+    }
     throw error
   }
 
@@ -389,20 +518,26 @@ export async function completeGithubManifestHandler(
       privateKeyPem: conversion.privateKeyPem,
       webhookSecret: conversion.webhookSecret,
       webhookRef: pending.webhookRef,
+      // GitHub's conversion response carries credentials and nothing about how
+      // the operator configured the app, so the rest comes back from the signed
+      // state. Recording the origin matters most: GitHub stored one specific
+      // URL and never revisits it, so this is the only way the console can show
+      // the address deliveries actually arrive on.
+      apiUrl: pending.apiUrl ?? null,
+      webhookOrigin: pending.webhookOrigin ?? null,
+      isPublic: pending.isPublic === true,
+      customGitUser: pending.customGitUser ?? null,
+      customGitPort: pending.customGitPort ?? null,
     })
 
-    const publicOrigin = await resolvePublicOrigin(db)
-    return c.json({
-      app: serializeGitApp(app, {
-        publicOrigin,
-        viewerOrganizationId: scope.organizationId,
-      }),
-    }, 201)
+    return redirectToGitAppsUi(c, scope, { created: app.id })
   } catch (error) {
     if (error instanceof GitAppConflictError) {
-      return c.json({ error: error.message }, 409)
+      return redirectToGitAppsUi(c, scope, { error: 'conflict' })
     }
-    if (error instanceof GitAppError) return c.json({ error: error.message }, 400)
+    if (error instanceof GitAppError) {
+      return redirectToGitAppsUi(c, scope, { error: 'create_failed' })
+    }
     throw error
   }
 }

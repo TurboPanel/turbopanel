@@ -96,6 +96,38 @@ it("compiled instance can reach configured TURBOPANEL_CLICKHOUSE_URL host", asyn
   );
 });
 
+it("instance --allow-net includes public Git provider APIs", async () => {
+  const denoJsonPath = new URL("../deno.json", import.meta.url);
+  const denoJson = JSON.parse(await Deno.readTextFile(denoJsonPath));
+  const required = ["api.github.com:443", "gitlab.com:443"];
+
+  for (const taskName of ["compile", "compile:dev"]) {
+    const task = denoJson.tasks?.[taskName];
+    assert(typeof task === "string", `deno.json must define tasks.${taskName}`);
+    const allowNet = extractAllowNetFlag(task);
+    assert(allowNet, `${taskName} must include --allow-net`);
+    const hosts = allowNet.split(",");
+    for (const host of required) {
+      assert(
+        hosts.includes(host),
+        `${taskName} --allow-net must include ${host} for Git provider API calls`,
+      );
+    }
+  }
+
+  try {
+    const serviceUnit = await Deno.readTextFile(instanceLaunchUnitPath());
+    for (const host of required) {
+      assert(
+        serviceUnit.includes(host),
+        `turbopanel-instance.service.j2 must allow ${host}`,
+      );
+    }
+  } catch (err) {
+    if (!(err instanceof Deno.errors.NotFound)) throw err;
+  }
+});
+
 it("production compile excludes developer-only permissions and entry", async () => {
   const denoJsonPath = new URL("../deno.json", import.meta.url);
   const denoJson = JSON.parse(await Deno.readTextFile(denoJsonPath));

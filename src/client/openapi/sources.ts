@@ -433,6 +433,138 @@ export const sourcePaths = {
       },
     },
   },
+  [`${sourcesBasePath}/attach`]: {
+    post: {
+      tags: ['Sources'],
+      summary: 'Bind a repository to this organization, reusing an existing binding',
+      description:
+        'Called when a repository is attached to a project. **Idempotent**: two ' +
+        'projects on the same repository share one row rather than racing to ' +
+        'make two, which matters because auto-deploy and the default branch ' +
+        'live on the row and duplicates would let one repository hold two ' +
+        'policies while a single push fanned out to both. Commits before the ' +
+        'project save that references it, because an unknown sourceId fails the ' +
+        'compose lint.',
+      security,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['installationId', 'repositoryExternalId', 'repositoryUrl'],
+              properties: {
+                installationId: { type: 'string', format: 'uuid' },
+                repositoryExternalId: {
+                  type: 'string',
+                  description: 'Provider-side repository id — what webhook matching keys on',
+                },
+                repositoryUrl: { type: 'string' },
+                defaultBranch: {
+                  type: ['string', 'null'],
+                  description: "Omit for the repository's own default",
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'An existing binding was reused',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  id: { type: 'string' },
+                  reused: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        '201': {
+          description: 'A new binding was created',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  id: { type: 'string' },
+                  reused: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Malformed body',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+  },
+  [`${gitAppsBasePath}/{id}/sync`]: {
+    post: {
+      tags: ['Sources'],
+      summary: "Reconcile an app against the provider's own record of it",
+      description:
+        'Reads `GET /app` with the App JWT and updates the stored name, slug, ' +
+        'app id and visibility. An operator can rename an App on GitHub and ' +
+        'nothing announces it — and a stale slug is not cosmetic, it builds the ' +
+        'install URL, so a renamed App silently loses the ability to connect ' +
+        'new accounts. GitHub apps only: a GitLab OAuth application has no ' +
+        'equivalent self-describing endpoint.',
+      security,
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+      ],
+      responses: {
+        '200': {
+          description: 'The reconciled app, plus the provider permission/event sets',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  app: { $ref: '#/components/schemas/OrgGitApp' },
+                  provider: {
+                    type: 'object',
+                    description:
+                      'What GitHub currently holds. Reported, not judged — ' +
+                      'what counts as drift is a product question.',
+                    properties: {
+                      permissions: { type: 'object' },
+                      events: { type: 'array', items: { type: 'string' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'git_app_sync_unsupported — not a GitHub app',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '403': {
+          description: 'git_app_not_writable — the application is instance-wide',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '502': {
+          description:
+            'git_app_sync_failed — GitHub refused. A 401 from GitHub means the ' +
+            'stored private key no longer matches the App.',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+  },
   [`${gitAppsBasePath}/github/manifest`]: {
     post: {
       tags: ['Sources'],
@@ -462,29 +594,19 @@ export const sourcePaths = {
       summary: 'Finish the GitHub App Manifest flow',
       description:
         "Exchanges GitHub's one-shot code for the App credentials and stores " +
-        'them. A browser redirect, so the organization is pinned in the query ' +
-        'string rather than the usual header.',
+        'them, then 302s the operator\'s browser back to the Git providers ' +
+        'page. The organization is pinned in the query string rather than the ' +
+        'usual header because this is a top-level navigation.',
       security,
       parameters: [
         { name: 'code', in: 'query', required: true, schema: { type: 'string' } },
         { name: 'state', in: 'query', required: true, schema: { type: 'string' } },
       ],
       responses: {
-        '201': {
-          description: 'The registered application',
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/OrgGitAppResponse' },
-            },
-          },
-        },
-        '400': {
-          description: 'Missing code/state, or state that does not verify',
-          content: { 'application/json': { schema: clientErrorJson } },
-        },
-        '502': {
-          description: 'GitHub refused the manifest conversion',
-          content: { 'application/json': { schema: clientErrorJson } },
+        '302': {
+          description:
+            'Redirect to /{organizationId}/projects/git-apps with created= ' +
+            'or error=',
         },
         ...resourceErrorResponses({}),
       },

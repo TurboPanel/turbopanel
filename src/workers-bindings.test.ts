@@ -512,7 +512,6 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
         DAEMON_CONNECT_RATE_LIMITER: noopLimiter,
         DAEMON_REST_RATE_LIMITER: noopLimiter,
         DAEMON_METRICS_RATE_LIMITER: noopLimiter,
-        CONTAINER_LOGS_RATE_LIMITER: noopLimiter,
       } as unknown as CloudflareBindings)
       expect(messages).toHaveLength(0)
     } finally {

@@ -139,7 +139,17 @@ describe('encryptSecret / decryptSecret', () => {
     const secrets = await createCurrentSecrets()
     const envelope = await encryptSecret(secrets, 'tamper-me')
     const parts = envelope.split('.')
-    parts[2] = `${parts[2]!.slice(0, -2)}xx`
+    const payload = parts[2]!
+
+    // Tamper in the **middle**, never at the end. A base64url payload whose
+    // byte length is 1 mod 3 ends in a character carrying only two significant
+    // bits, so three of the four possible last characters decode to identical
+    // bytes — rewriting the tail is a no-op often enough to flake.
+    const at = Math.floor(payload.length / 2)
+    const flipped = payload[at] === 'A' ? 'B' : 'A'
+    parts[2] = `${payload.slice(0, at)}${flipped}${payload.slice(at + 1)}`
+    expect(parts[2]).not.toBe(payload)
+
     await expect(decryptSecret(secrets, parts.join('.'))).rejects.toThrow(
       DataEncryptionError,
     )

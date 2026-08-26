@@ -1013,9 +1013,6 @@ async function rematerializeManagedBindings(
  *
  * Non-goals: no automatic failover (promote stays operator-triggered), no
  * ProxySQL→ProxySQL chaining, no DNS / floating-IP primary discovery.
- *
- * Older daemons reject a TLS-less empty-clusters teardown payload; the stack
- * simply keeps running — acceptable, no data-plane risk.
  */
 export async function fanOutManagedIngressReconcile(
   db: Db,

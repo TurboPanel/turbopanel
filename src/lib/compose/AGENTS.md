@@ -66,8 +66,7 @@ input-sanitization pass. The UI Overview now edits **either**
 (overlay) and renders a client-side `mergeComposeOverlay` **Merged compose**
 preview; **Prepared** preview and `environment.deploy` send **one compiled
 `compose.yaml`** per participating server (`role: 'runtime'`). Users never see
-project/environment/platform layers or daemon overlay files. Deprecated
-**`composeYaml`** equals that compiled body for older daemons. The reserved
+project/environment/platform layers or daemon overlay files. The reserved
 top-level `x-turbopanel` extension must not carry `placement` **on stored
 project/environment compose** — `validateComposeDocument` rejects it
 (`x-turbopanel.placement`), and `src/lib/compose/placement.ts`

@@ -24,8 +24,7 @@ import {
   sweepExpiredWebhookDeliveries,
   WEBHOOK_DELIVERY_SWEEP_LIMIT,
 } from './lib/db/webhook-delivery-records.ts'
-import { registerGithubWebhookRoutes } from './client/git/github-webhook-routes.ts'
-import { registerGitlabWebhookRoutes } from './client/git/gitlab-webhook-routes.ts'
+import { registerWebhookRoutes } from './webhook/routes.ts'
 import { runSystemReconcileSweep } from './client/system/reconcile.ts'
 import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
@@ -50,19 +49,11 @@ import {
   resolveExecutionLogStore,
   resolveS3ExecutionLogConfig,
 } from './lib/execution-logs/store-selection.ts'
-import {
-  isDisabledContainerLogStore,
-  parseContainerLogRetentionDays,
-  parseContainerLogsEnabled,
-  resolveContainerLogStore,
-} from './lib/container-logs/store-selection.ts'
-import { setContainerLogBackendAvailable } from './daemon/container-logs-presence.ts'
 import { setExecutionLogSealSink } from './lib/execution-logs/seal-on-terminal.ts'
 import { EXECUTION_LOG_SWEEP_LIMIT } from './lib/execution-logs/types.ts'
 import {
   createRedisRateLimiter,
   resolveDaemonConnectRateLimit,
-  resolveDaemonContainerLogsRateLimit,
   resolveDaemonMetricsRateLimit,
   resolveDaemonRestRateLimit,
   resolveGithubWebhookRateLimit,
@@ -256,34 +247,12 @@ export async function startDenoServer(
       s3: resolveS3ExecutionLogConfig(Deno.env.toObject()),
     },
   })
-  // Backend availability only — NOT the retention switch. Whether a tenant
-  // retains container output is `organization.options.containerLogsEnabled`,
-  // re-read on every ingest write and every read route. This env var is the
-  // platform-level kill switch: without TURBOPANEL_CONTAINER_LOGS_ENABLED (or
-  // with incomplete ClickHouse config) this resolves to the disabled no-op
-  // store, and the presence ack is forced off so daemons do not stream into a
-  // backend that can only drop what they send.
-  const containerLogStore = resolveContainerLogStore({
-    runtime: 'deno',
-    enabled: parseContainerLogsEnabled(Deno.env.get('TURBOPANEL_CONTAINER_LOGS_ENABLED')),
-    clickhouse: {
-      url: Deno.env.get('TURBOPANEL_CLICKHOUSE_URL'),
-      database: Deno.env.get('TURBOPANEL_CLICKHOUSE_DATABASE'),
-      user: Deno.env.get('TURBOPANEL_CLICKHOUSE_USER'),
-      password: Deno.env.get('TURBOPANEL_CLICKHOUSE_PASSWORD'),
-      retentionDays: parseContainerLogRetentionDays(
-        Deno.env.get('TURBOPANEL_CONTAINER_LOG_RETENTION_DAYS'),
-      ),
-    },
-  })
-  setContainerLogBackendAvailable(!isDisabledContainerLogStore(containerLogStore))
   // The AMQP command consumer transitions commands outside any Hono context —
   // register the seal sink at boot so terminal transitions compact transcripts.
   setExecutionLogSealSink(executionLogStore)
   const connectRate = resolveDaemonConnectRateLimit()
   const restRate = resolveDaemonRestRateLimit()
   const metricsRate = resolveDaemonMetricsRateLimit()
-  const containerLogsRate = resolveDaemonContainerLogsRateLimit()
   const githubWebhookRate = resolveGithubWebhookRateLimit()
   const gitlabWebhookRate = resolveGitlabWebhookRateLimit()
   const inboundLimits = resolveDaemonWsInboundLimits()
@@ -301,13 +270,6 @@ export async function startDenoServer(
     client: daemonCellRegistry.client,
     limit: metricsRate.limit,
     periodSeconds: metricsRate.periodSeconds,
-  })
-  // Dedicated bucket: batched container output must not be able to starve the
-  // shared REST budget enroll/session/decrypt depend on.
-  const daemonContainerLogsLimiter = createRedisRateLimiter({
-    client: daemonCellRegistry.client,
-    limit: containerLogsRate.limit,
-    periodSeconds: containerLogsRate.periodSeconds,
   })
   // Inbound GitHub webhooks: keyed per peer address, not per server, because the
   // caller has no identity until its HMAC has been checked (see
@@ -362,7 +324,6 @@ export async function startDenoServer(
     queryCache,
     serverMetricsStore,
     executionLogStore,
-    containerLogStore,
     dataEncryptionSecrets,
     secretsConfig,
     // Inject before client routes mount — must not be registered after
@@ -394,17 +355,14 @@ export async function startDenoServer(
     secretsConfig,
     restLimiter: daemonRestLimiter,
     metricsLimiter: daemonMetricsLimiter,
-    containerLogsLimiter: daemonContainerLogsLimiter,
   })
   // Unversioned, session-free surface: mounted on the top-level app next to the
-  // daemon API rather than under CLIENT_API_PREFIX, and authenticated by HMAC.
-  registerGithubWebhookRoutes(app, {
+  // daemon API rather than under CLIENT_API_PREFIX, and authenticating itself.
+  // One call for every webhook kind — see `src/webhook/AGENTS.md`.
+  registerWebhookRoutes(app, {
     runtime: 'deno',
-    rateLimiter: githubWebhookLimiter,
-  })
-  registerGitlabWebhookRoutes(app, {
-    runtime: 'deno',
-    rateLimiter: gitlabWebhookLimiter,
+    github: githubWebhookLimiter,
+    gitlab: gitlabWebhookLimiter,
   })
   registerDaemonWebSocket(routes, {
     developerSurface,

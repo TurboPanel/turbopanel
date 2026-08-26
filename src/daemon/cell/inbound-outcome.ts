@@ -45,6 +45,7 @@ export function deriveInboundOutcome(
     case "addresses-result":
       return { status: "done", result: { ips: inbound.ips } };
     case "managed-logs-result":
+    case "container-logs-result":
       return inboundOutcomeFromError({ logs: inbound.logs }, inbound.error);
     case "fabric-paths-result":
       return inboundOutcomeFromError({ paths: inbound.paths }, inbound.error);

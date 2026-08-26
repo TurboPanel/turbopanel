@@ -41,8 +41,8 @@ test("checkPhpSeriesAvailability warns, not errors, for an installable series", 
 });
 
 test("checkPhpSeriesAvailability treats no report as unknown, not absent", () => {
-  // An older daemon reports nothing. Silence is not evidence the series is
-  // missing, so it must not produce a warning.
+  // A daemon that has not reported inventory yet sends nothing. Silence is not
+  // evidence the series is missing, so it must not produce a warning.
   const { errors, warnings } = checkPhpSeriesAvailability({
     sites: [site("app", "8.3")],
     reportedSeries: null,

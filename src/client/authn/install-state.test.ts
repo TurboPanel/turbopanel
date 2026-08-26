@@ -6,7 +6,6 @@ import { createDenoDb, type Db } from '../../db.ts'
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
   completeInstanceInstall,
-  DEFAULT_ORGANIZATION_NAME,
   DEFAULT_WORKSPACE_NAME,
   getInstallStatus,
   INSTANCE_ALREADY_CONFIGURED_ERROR,
@@ -14,6 +13,7 @@ import {
   isInstanceInstalled,
   persistColocatedLicenseCredentials,
   resolveColocatedServerId,
+  ROOT_ORGANIZATION_NAME,
   rotateColocatedLicenseCredentials,
 } from './install-state.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
@@ -207,7 +207,7 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
     const orgRows = await db
       .select({ id: organization.id })
       .from(organization)
-      .where(eq(organization.name, DEFAULT_ORGANIZATION_NAME))
+      .where(eq(organization.name, ROOT_ORGANIZATION_NAME))
     if (orgRows.length !== 1) {
       throw new Error(
         `expected exactly one Root Organization, got ${orgRows.length}`,
@@ -310,7 +310,7 @@ it('install produces System workspace then Default Workspace', async () => {
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1)
-    assertEquals(orgRow?.name, DEFAULT_ORGANIZATION_NAME)
+    assertEquals(orgRow?.name, ROOT_ORGANIZATION_NAME)
 
     const serverRows = await db
       .select({

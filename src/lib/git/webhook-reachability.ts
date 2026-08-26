@@ -61,21 +61,47 @@ function webhookUrlFor(origin: string, path: string): string {
   return `${origin.replace(/\/$/, '')}${path}`
 }
 
+/** The origins whose deliveries resolve without a ref in the path. */
+const HOSTED_PROVIDER_ORIGINS: Record<WebhookProvider, string> = {
+  github: 'https://github.com',
+  gitlab: 'https://gitlab.com',
+}
+
+/**
+ * Does an app on this origin need its ref in the URL?
+ *
+ * github.com stamps `X-GitHub-Hook-Installation-Target-ID` on every App
+ * delivery and gitlab.com echoes the token we can digest, so a hosted app is
+ * identifiable from the request alone and gets the clean path.
+ *
+ * A **self-hosted** origin is the case where that assumption is not ours to
+ * make: GitHub Enterprise Server and self-managed GitLab ship on their own
+ * release cadence, and a build that omits the header would 401 every delivery
+ * with nothing in the URL to fall back to. Those get the ref.
+ */
+export function webhookPathNeedsRef(
+  provider: WebhookProvider,
+  baseUrl?: string | null,
+): boolean {
+  if (!baseUrl) return false
+  return baseUrl.trim().replace(/\/+$/, '') !== HOSTED_PROVIDER_ORIGINS[provider]
+}
+
 /**
  * The ingress path for one app.
  *
- * With a `webhookRef` this is the app's own scoped path, which is what every
- * registered app should actually be pointed at — a delivery arriving there
- * names its app before any secret is consulted. Without one the caller gets the
- * bare path, which still resolves (by App id header, or by GitLab token
- * digest) but only for an app the instance can identify from the request.
+ * Hosted providers get the bare path — clean, and with nothing internal in it.
+ * Self-hosted ones get the app's `webhookRef` appended, which names the app
+ * before any secret is consulted. Pass no `baseUrl` to get the bare path.
  */
 export function webhookPathFor(
   provider: WebhookProvider,
   webhookRef?: string | null,
+  baseUrl?: string | null,
 ): string {
   const base = WEBHOOK_PATH_BY_PROVIDER[provider]
-  return webhookRef ? `${base}/${encodeURIComponent(webhookRef)}` : base
+  if (!webhookRef || !webhookPathNeedsRef(provider, baseUrl)) return base
+  return `${base}/${encodeURIComponent(webhookRef)}`
 }
 
 /**
@@ -90,8 +116,9 @@ export function webhookReachability(
   origins: readonly string[],
   provider: WebhookProvider = 'github',
   webhookRef?: string | null,
+  baseUrl?: string | null,
 ): WebhookReachability {
-  const path = webhookPathFor(provider, webhookRef)
+  const path = webhookPathFor(provider, webhookRef, baseUrl)
   const usable = origins.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
   if (usable.length === 0) {
     return { webhookUrl: null, reachable: false, note: NO_URL_NOTE }

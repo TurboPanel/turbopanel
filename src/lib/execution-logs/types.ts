@@ -123,7 +123,7 @@ export const EXECUTION_LOG_TRUNCATION_MARKER =
 export const DEFAULT_EXECUTION_LOG_READ_BYTES = 512 * 1024
 
 /** Default retention window for stored transcripts. */
-export const EXECUTION_LOG_RETENTION_DAYS = 30
+export const EXECUTION_LOG_RETENTION_DAYS = 90
 
 /** Bounded per maintenance tick — parity with `COMMAND_DISPATCH_SWEEP_LIMIT`. */
 export const EXECUTION_LOG_SWEEP_LIMIT = 200

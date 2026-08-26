@@ -92,8 +92,7 @@ echo "==> Deno coverage profile"
 #   - Host-free unit suites (always run; no Postgres/Redis/ClickHouse).
 #   - Postgres integration suites (need TURBOPANEL_DATABASE_URL; skip gracefully
 #     when unset locally — CI build.yml starts Postgres and sets the URL).
-# Omit: redis-cell / ws-handlers (Redis), store.integration (ClickHouse — both
-#   metrics and container-logs),
+# Omit: redis-cell / ws-handlers (Redis), store.integration (ClickHouse metrics),
 # Vitest-only Workers suites (workers-ws, durable-object, routes-core, …).
 # CI uses -A so every suite shares one profile dir (mirrors the daemon repo's
 # test:coverage grant).
@@ -225,9 +224,11 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/shared-authz-guards.test.ts \
   src/client/sources/inspect.hostfree.test.ts \
   src/client/sources/provider-install-state.hostfree.test.ts \
+  src/client/git-apps/routes-helpers.hostfree.test.ts \
   src/client/sources/routes-helpers.hostfree.test.ts \
   src/client/sources/webhook-trigger.hostfree.test.ts \
-  src/client/git/github-webhook-routes.hostfree.test.ts \
+  src/webhook/gate.hostfree.test.ts \
+  src/webhook/git/github.hostfree.test.ts \
   src/client/storage/serialize.test.ts \
   src/client/storage/routes-helpers.test.ts \
   src/client/storage/routes.test.ts \
@@ -260,11 +261,6 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/rehydrate-secrets.hostfree.test.ts \
   src/daemon/execution-log-ingest.hostfree.test.ts \
   src/daemon/execution-log-ingest-route.hostfree.test.ts \
-  src/daemon/container-log-ingest.hostfree.test.ts \
-  src/daemon/container-log-ingest-route.hostfree.test.ts \
-  src/daemon/container-logs-presence.hostfree.test.ts \
-  src/daemon/presence-ack-convergence.hostfree.test.ts \
-  src/daemon/rate-limit/container-log-keys.hostfree.test.ts \
   src/daemon/cell/contracts.test.ts \
   src/daemon/cell/do-storage-classify.test.ts \
   src/daemon/deno-ws.test.ts \
@@ -365,15 +361,6 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/cron.test.ts \
   src/lib/daemon-install-command.deno.test.ts \
   src/lib/install-tls.deno.test.ts \
-  src/lib/container-logs/types.test.ts \
-  src/lib/container-logs/disabled-store.test.ts \
-  src/lib/container-logs/store-selection.test.ts \
-  src/lib/container-logs/clickhouse/schema.test.ts \
-  src/lib/container-logs/clickhouse/store.test.ts \
-  src/lib/container-logs/cloudflare/config.test.ts \
-  src/lib/container-logs/cloudflare/pipeline-store.test.ts \
-  src/lib/container-logs/store-conformance.test.ts \
-  src/lib/container-logs/org-settings.test.ts \
   src/lib/execution-logs/disabled-store.test.ts \
   src/lib/execution-logs/index-model.test.ts \
   src/lib/execution-logs/store-selection.test.ts \
@@ -478,6 +465,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/access/routes.hostfree.test.ts \
   src/client/containers/routes.test.ts \
   src/client/containers/routes-helpers.hostfree.test.ts \
+  src/client/containers/routes.hostfree.test.ts \
+  src/client/containers/logs.test.ts \
   src/client/datacenters/routes.test.ts \
   src/client/datacenters/routes-pure.test.ts \
   src/client/datacenters/routes.hostfree.test.ts \
@@ -499,8 +488,6 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/networks/routes.hostfree.test.ts \
   src/client/organizations/routes.test.ts \
   src/client/organizations/routes.hostfree.test.ts \
-  src/client/organizations/container-log-routes.hostfree.test.ts \
-  src/client/organizations/container-log-routes-helpers.hostfree.test.ts \
   src/client/organizations/routes-helpers.hostfree.test.ts \
   src/client/organizations/fabric-routes.hostfree.test.ts \
   src/client/organizations/fabric-routes-authz.hostfree.test.ts \

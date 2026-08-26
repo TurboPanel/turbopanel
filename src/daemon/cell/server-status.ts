@@ -72,8 +72,8 @@ export type ServerFleetPresence = {
   docker: ServerDockerMetadata | null;
   /**
    * From `server.metadata.runtimes` — what is actually installed on the host.
-   * `null` when the daemon has not reported (an older daemon, or one that
-   * found nothing), which prepare treats as "unknown", never as "absent".
+   * `null` when the daemon has not reported yet, or reported finding nothing.
+   * Prepare treats that as "unknown", never as "absent".
    */
   runtimes: ServerRuntimeMetadata | null;
 };

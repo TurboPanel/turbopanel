@@ -23,6 +23,7 @@ import {
   parsePatchContainerFields,
   serializeContainer,
 } from './routes-helpers.ts'
+import { fetchContainerLogTail, parseLogsTailQuery } from './logs.ts'
 
 /**
  * Joined through `service` so every serialized container carries the
@@ -54,6 +55,7 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
 
   router.use('/containers', createSessionMiddleware(secrets))
   router.use('/containers/:id', createSessionMiddleware(secrets))
+  router.use('/containers/:id/logs', createSessionMiddleware(secrets))
 
   router.get('/containers', async (c) => {
     const db = getDb(c)
@@ -150,6 +152,52 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     if (denied) return denied
 
     return c.json({ container: serializeContainer(row) })
+  })
+
+  router.get('/containers/:id/logs', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'container', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const rows = await db
+      .select(CONTAINER_SELECT)
+      .from(container)
+      .innerJoin(service, eq(container.serviceId, service.id))
+      .where(eq(container.id, id))
+      .limit(1)
+
+    const row = rows[0]
+    if (!row) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const denied = await assertCanReadOr403(c, 'server', row.serverId)
+    if (denied) return denied
+
+    if (!row.containerId) {
+      return c.json({ error: 'container_id_unavailable' }, 409)
+    }
+
+    const tail = parseLogsTailQuery(c.req.query('tail'))
+    const result = await fetchContainerLogTail(c, db, {
+      serverId: row.serverId,
+      containerId: row.containerId,
+      tail,
+    })
+    if (result instanceof Response) return result
+    return c.json(result)
   })
 
   router.post('/containers', async (c) => {

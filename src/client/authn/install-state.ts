@@ -66,8 +66,6 @@ function isSimpleEmailShape(email: string): boolean {
  * plane server and TurboPanel hierarchy.
  */
 export const ROOT_ORGANIZATION_NAME = "Root Organization";
-/** @deprecated Prefer {@link ROOT_ORGANIZATION_NAME} — kept as the install alias. */
-export const DEFAULT_ORGANIZATION_NAME = ROOT_ORGANIZATION_NAME;
 /**
  * Default display name for the first org provisioned for a signed-up user
  * (Workers onboarding / `createOrganizationForUser` without an explicit name).
@@ -649,14 +647,6 @@ export async function findDefaultInstalledOrganizationId(
     .where(eq(organization.name, ROOT_ORGANIZATION_NAME))
     .limit(1);
   if (byName[0]?.id) return byName[0].id;
-
-  // Legacy installs named the root org "Default Organization".
-  const byLegacyName = await db
-    .select({ id: organization.id })
-    .from(organization)
-    .where(eq(organization.name, "Default Organization"))
-    .limit(1);
-  if (byLegacyName[0]?.id) return byLegacyName[0].id;
 
   const withSuperadmin = await db
     .select({ organizationId: team.organizationId })

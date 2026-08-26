@@ -30,11 +30,13 @@ import {
   listGitAppsHandler,
   patchGitAppHandler,
   startGithubManifestHandler,
+  syncGitAppHandler,
 } from './handlers.ts'
 
 const GIT_APP_PATHS = [
   '/git/apps',
   '/git/apps/:id',
+  '/git/apps/:id/sync',
   '/git/apps/github/manifest',
   '/git/apps/github/manifest/callback',
 ] as const
@@ -97,6 +99,19 @@ export function registerGitAppRoutes(
     return await completeGithubManifestHandler(c, ctx.db, {
       organizationId: ctx.organizationId,
     })
+  })
+
+  // Declared before `/git/apps/:id` is irrelevant here (different segment
+  // count), but keeping the action routes together makes the surface readable.
+  router.post('/git/apps/:id/sync', async (c) => {
+    const ctx = await resolve(c)
+    if (ctx instanceof Response) return ctx
+    return await syncGitAppHandler(
+      c,
+      ctx.db,
+      { organizationId: ctx.organizationId },
+      c.req.param('id'),
+    )
   })
 
   router.get('/git/apps/:id', async (c) => {

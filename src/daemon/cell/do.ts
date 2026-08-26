@@ -22,11 +22,6 @@ import {
 } from "../../lib/db/server-metadata.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { handleManagedHaEvent } from "../../client/managed/ha-event.ts";
-import {
-  buildPresenceAck,
-  peekDaemonContainerLogsFlag,
-  resolveDaemonContainerLogsFlag,
-} from "../container-logs-presence.ts";
 import { touchServerMetadata } from "../../server-registry.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
 import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
@@ -1071,9 +1066,6 @@ export class DaemonCellObject {
         geo,
         keyId,
       );
-      // Warm the presence-ack cache on this already-open client so a
-      // fact-free heartbeat does not mint a second Hyperdrive socket.
-      await resolveDaemonContainerLogsFlag(db, serverId);
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: connected (${serverId})`);
       }
@@ -1176,7 +1168,6 @@ export class DaemonCellObject {
         this.#projectionCell(serverId),
         { at, daemonBuild, geo },
       );
-      await resolveDaemonContainerLogsFlag(db, serverId);
     });
     const atMs = at ? Date.parse(at) : Date.now();
     this.#lastProjectedAtMs = Number.isNaN(atMs) ? Date.now() : atMs;
@@ -1656,38 +1647,7 @@ export class DaemonCellObject {
     }
   }
 
-  /**
-   * Answer a presence frame with the organization's container-log switch.
-   *
-   * This is how the daemon learns to start or stop its collector — see
-   * `../container-logs-presence.ts` for why it rides the ack instead of a
-   * command. Heartbeats are change-detected *plus* a several-minute refresh
-   * floor (`turbopaneld/src/instance/idle-presence.ts` → `PRESENCE_REFRESH_MS`),
-   * which is what converges a toggle on an idle daemon: the cell ping is
-   * answered by `setWebSocketAutoResponse` and never wakes this object, so a
-   * presence frame is the only place the flag can ride. The projection read is
-   * TTL-cached so that refresh floor cannot turn into a query per frame.
-   * Peek the cache *before* opening Hyperdrive: a cache hit that still mints
-   * a postgres.js client keeps this object non-hibernatable.
-   * Best effort: a failed ack never fails the presence frame.
-   */
-  async #sendPresenceAck(ws: WebSocket, serverId: string): Promise<void> {
-    // `??` short-circuits, so a cache hit never reaches the projection read.
-    const enabled = peekDaemonContainerLogsFlag(serverId) ??
-      await this.#withProjectionDbResult(
-        "presence-ack",
-        serverId,
-        (db) => resolveDaemonContainerLogsFlag(db, serverId),
-      );
-    try {
-      ws.send(JSON.stringify(buildPresenceAck(enabled === true)));
-    } catch {
-      // Socket went away between the frame and the ack.
-    }
-  }
-
   async #handlePresenceMessage(
-    ws: WebSocket,
     attachment: {
       connectionId: string;
       serverId: string;
@@ -1779,7 +1739,6 @@ export class DaemonCellObject {
         attachGeo,
       );
     }
-    await this.#sendPresenceAck(ws, attachment.serverId);
   }
 
   async webSocketMessage(
@@ -1823,7 +1782,7 @@ export class DaemonCellObject {
       this.#ensureSchema();
 
       if (parsed.type === "hello" || parsed.type === "heartbeat") {
-        await this.#handlePresenceMessage(ws, attachment, parsed);
+        await this.#handlePresenceMessage(attachment, parsed);
         return;
       }
 

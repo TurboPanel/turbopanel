@@ -11,21 +11,15 @@ import {
 } from "../org-context.ts";
 import {
   assertCanManageOr403,
-  assertCanReadOr403,
   parseJsonBody,
 } from "../shared.ts";
-import { type Db, getContainerLogStore, getDb } from "../../db.ts";
+import { type Db, getDb } from "../../db.ts";
 import { organization } from "../../lib/db/schema.ts";
 import { parseOrganizationOptions } from "../../lib/organization-options.ts";
 import { loadOrgServerCapacity } from "../../lib/server-capacity.ts";
 import { listTimezones } from "../../lib/timezones.ts";
-import { isDisabledContainerLogStore } from "../../lib/container-logs/store-selection.ts";
-import { resolveContainerLogsEnabled } from "../../lib/container-logs/org-settings.ts";
-import { ContainerLogStoreUnavailableError } from "../../lib/container-logs/cloudflare/pipeline-store.ts";
 import {
   applyManagedDefaultsPatch,
-  containerLogSettingsGetResponse,
-  containerLogSettingsPutResponse,
   defaultEnvironmentGetResponse,
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
@@ -34,8 +28,6 @@ import {
   hostDefaultsPutResponse,
   managedDefaultsGetResponse,
   managedDefaultsPutResponse,
-  parseContainerLogQueryParams,
-  parseContainerLogSettingsPatch,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
   parseHostDefaultsPatch,
@@ -90,14 +82,6 @@ export function registerOrganizationRoutes(
   );
   router.use(
     "/organizations/:id/managed-defaults",
-    createSessionMiddleware(secrets),
-  );
-  router.use(
-    "/organizations/:id/container-logs-settings",
-    createSessionMiddleware(secrets),
-  );
-  router.use(
-    "/organizations/:id/container-logs",
     createSessionMiddleware(secrets),
   );
   router.use("/timezones", createSessionMiddleware(secrets));
@@ -309,133 +293,6 @@ export function registerOrganizationRoutes(
     const options = parseOrganizationOptions(updated?.options);
 
     return c.json(hostDefaultsPutResponse(options));
-  });
-
-  /**
-   * Container-log retention switch. Manage-gated: turning this on starts every
-   * daemon in the org tailing its containers (via the presence ack) and starts
-   * billing for the storage, so it is not a read-level setting.
-   */
-  router.get("/organizations/:id/container-logs-settings", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
-
-    const id = c.req.param("id");
-    const denied = await assertCanManageOr403(c, "organization", id);
-    if (denied) return denied;
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1);
-    if (!orgRow) return c.json({ error: "Not found" }, 404);
-
-    const options = parseOrganizationOptions(orgRow.options);
-    return c.json(containerLogSettingsGetResponse(options));
-  });
-
-  router.put("/organizations/:id/container-logs-settings", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
-
-    const id = c.req.param("id");
-    const denied = await assertCanManageOr403(c, "organization", id);
-    if (denied) return denied;
-
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
-
-    const parsedPatch = parseContainerLogSettingsPatch(body);
-    if (!parsedPatch.ok) {
-      return c.json({ error: parsedPatch.error }, parsedPatch.status);
-    }
-    const patch = parsedPatch.patch;
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1);
-    if (!orgRow) return c.json({ error: "Not found" }, 404);
-
-    await db.update(organization).set({
-      options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
-        JSON.stringify(patch)
-      }::jsonb`,
-      updatedAt: new Date().toISOString(),
-    }).where(eq(organization.id, id));
-
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1);
-    const options = parseOrganizationOptions(updated?.options);
-
-    return c.json(containerLogSettingsPutResponse(options));
-  });
-
-  /**
-   * Read one newest-first page of container output.
-   *
-   * Read-gated through the repo's standard helper, not `canAccessOrganization`:
-   * that one is true for any teammate of the organization, which would hand
-   * container output — application logs, and whatever a container prints into
-   * them — to every member. `assertCanReadOr403` is the same read contract the
-   * rest of the client API uses (today it resolves to manage-level access).
-   *
-   * The organization comes from the **path** after the access check, never from
-   * the query string: `parseContainerLogQueryParams` has no way to set it, so a
-   * caller cannot widen a read past the org they were authorized for.
-   */
-  router.get("/organizations/:id/container-logs", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
-
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
-
-    const id = c.req.param("id");
-    const denied = await assertCanReadOr403(c, "organization", id);
-    if (denied) return denied;
-
-    // `organization.options.containerLogsEnabled` is the authoritative
-    // retention gate, and it is checked **before** the backend: an org that
-    // never turned retention on has nothing stored no matter how healthy
-    // ClickHouse/R2 SQL is, and reading it back would be a page of another
-    // era's data at best. The runtime store is only backend availability.
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1);
-    if (!orgRow) return c.json({ error: "Not found" }, 404);
-    if (!resolveContainerLogsEnabled(parseOrganizationOptions(orgRow.options))) {
-      return c.json({ error: "container_logs_disabled" }, 503);
-    }
-
-    const store = getContainerLogStore(c);
-    // An empty page would be indistinguishable from "the operator never turned
-    // this on" — say so explicitly instead.
-    if (!store || isDisabledContainerLogStore(store)) {
-      return c.json({ error: "container_logs_disabled" }, 503);
-    }
-
-    const parsed = parseContainerLogQueryParams(c.req.query(), id);
-    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
-
-    try {
-      const page = await store.query(parsed.query);
-      return c.json(page);
-    } catch (err) {
-      // The Cloudflare backend is public beta: a transport/envelope failure is
-      // an availability problem, not a bad request.
-      if (err instanceof ContainerLogStoreUnavailableError) {
-        return c.json({ error: "container_logs_unavailable" }, 503);
-      }
-      throw err;
-    }
   });
 
   router.get("/organizations/:id/default-environment", async (c) => {

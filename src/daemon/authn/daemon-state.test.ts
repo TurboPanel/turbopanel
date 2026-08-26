@@ -36,10 +36,10 @@ test("parseServerDaemonState parses key + projection only", () => {
   assertEquals(parsed?.projection?.hostname, "legacy-host");
 });
 
-test("parseServerDaemonState ignores a legacy status field on the jsonb blob", () => {
-  // `server.daemon` no longer carries `status` — fleet liveness lives on
-  // dedicated columns. A stray legacy `status` key (e.g. from an old row that
-  // has not been migrated) must not surface on the parsed state.
+test("parseServerDaemonState ignores an unknown status key on the jsonb blob", () => {
+  // `server.daemon` does not carry `status` — fleet liveness lives on dedicated
+  // columns. The parser is allowlist-shaped, so an extra key on the jsonb blob
+  // must not surface on the parsed state.
   const row = {
     key: baseKey,
     projection: {

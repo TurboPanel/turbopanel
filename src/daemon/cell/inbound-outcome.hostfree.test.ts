@@ -50,6 +50,23 @@ test("deriveInboundOutcome maps managed-logs-result done and failed", () => {
   );
 });
 
+test("deriveInboundOutcome maps container-logs-result done and failed", () => {
+  const done: DaemonInboundEnvelope = {
+    kind: "container-logs-result",
+    requestId: REQUEST_ID,
+    at: AT,
+    logs: "line\n",
+  };
+  assertEquals(deriveInboundOutcome(done), {
+    status: "done",
+    result: { logs: "line\n" },
+  });
+  assertEquals(
+    deriveInboundOutcome({ ...done, error: "not owned" }),
+    { status: "failed", result: { logs: "line\n" }, error: "not owned" },
+  );
+});
+
 test("deriveInboundOutcome maps fabric-paths-result done and failed", () => {
   const paths = [{ publicKey: "pk", health: "healthy" as const }];
   const done: DaemonInboundEnvelope = {

@@ -809,7 +809,7 @@ export async function authorizeEnvironmentManage(
  * Who a deploy is attributed to.
  *
  * A deploy is no longer always a person pressing a button: the GitHub webhook
- * surface (`src/client/git/github-webhook-routes.ts`) drives the *same*
+ * surface (`src/webhook/git/github.ts`) drives the *same*
  * pipeline with `actorType: 'system'` and the triggering `source.id` as the
  * actor. Carrying the pair explicitly — rather than a bare `userId` — is what
  * lets the two entry points share one enqueue path, so the generation-supersede

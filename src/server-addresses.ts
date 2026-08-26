@@ -92,11 +92,8 @@ export function reportedIpsFromServerMetadata(
   metadata: unknown,
 ): ServerReportedIp[] | undefined {
   if (!isRecord(metadata)) return undefined
-  if (isRecord(metadata.resources) && metadata.resources.ips !== undefined) {
-    return parseServerIps(metadata.resources.ips)
-  }
-  // Legacy top-level `metadata.ips` (pre-resources nest).
-  return parseServerIps(metadata.ips)
+  if (!isRecord(metadata.resources)) return undefined
+  return parseServerIps(metadata.resources.ips)
 }
 
 export function serverIpsEquals(

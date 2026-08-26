@@ -547,9 +547,57 @@ export function serializeSourceRow(row: SourceRowLike, webhook?: SourceWebhookIn
   }
 }
 
+/**
+ * Body grammar for `POST /sources/attach`.
+ *
+ * Deliberately narrower than {@link parseSourceCreateBody}. Attaching names a
+ * repository the operator picked out of a provider listing, so the fields that
+ * make a source a *managed* thing — the service/environment parent, the
+ * auto-deploy policy, the deploy-key credential — are not accepted here. They
+ * have their own surfaces, and letting an implicit create set them would make
+ * the second attach of a repository silently different from the first.
+ */
+export type SourceAttachFields = {
+  installationId: string
+  repositoryExternalId: string
+  repositoryUrl: string
+  defaultBranch: string | null
+}
+
+export function parseSourceAttachBody(body: unknown): SourceAttachFields | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
+  const raw = body as Record<string, unknown>
+
+  const installationId = typeof raw.installationId === 'string'
+    ? raw.installationId.trim()
+    : ''
+  if (!UUID_RE.test(installationId)) return null
+
+  const repositoryExternalId = typeof raw.repositoryExternalId === 'string'
+    ? raw.repositoryExternalId.trim()
+    : ''
+  if (repositoryExternalId.length === 0) return null
+
+  const repositoryUrl = typeof raw.repositoryUrl === 'string'
+    ? raw.repositoryUrl.trim()
+    : ''
+  if (repositoryUrl.length === 0) return null
+
+  let defaultBranch: string | null = null
+  if (raw.defaultBranch !== undefined && raw.defaultBranch !== null) {
+    if (typeof raw.defaultBranch !== 'string') return null
+    const trimmed = raw.defaultBranch.trim()
+    defaultBranch = trimmed.length > 0 ? trimmed : null
+  }
+
+  return { installationId, repositoryExternalId, repositoryUrl, defaultBranch }
+}
+
 export type InstallationRowLike = {
   id: string
   organizationId: string
+  /** The registered app this connection was granted through. */
+  appId: string
   provider: string
   externalInstallationId: string
   accountLogin: string | null
@@ -565,6 +613,10 @@ export function serializeInstallationRow(row: InstallationRowLike) {
   return {
     id: row.id,
     organizationId: row.organizationId,
+    // Without this the console cannot tell which registered app a connection
+    // came through, and the app -> account -> repository picker has no top
+    // level to group by.
+    appId: row.appId,
     provider: row.provider,
     externalInstallationId: row.externalInstallationId,
     accountLogin: row.accountLogin,

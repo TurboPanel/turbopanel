@@ -212,9 +212,9 @@ change. Future agents read `AGENTS.md` first.
   `DurableObjectNamespace` is a **class** — neither merges with a local
   interface, and augmenting `Response.webSocket` trips "identical modifiers".
 - The supported way to keep a shared module inside the Deno check is the
-  narrowing pattern: a local structural type (`PipelineLike`,
-  `HyperdriveBinding`, `R2BucketLike`, `CommandQueueBinding`) instead of the
-  Workers global. Prefer that over widening the exclusion list.
+  narrowing pattern: a local structural type (`HyperdriveBinding`,
+  `R2BucketLike`, `CommandQueueBinding`) instead of the Workers global. Prefer
+  that over widening the exclusion list.
 
 ### Deno lint
 
@@ -618,7 +618,12 @@ The instance Deno process runs with scoped permissions (see the
 (`tar` is needed for the dev-sync tarball). TCP listeners and Unix-domain
 connects (Postgres `.s.PGSQL.5432`, Redis `redis.sock`, instance listen sock) go
 on `--allow-net` — Deno 2.9+ treats Unix-socket connect as net, not read. TCP
-dev Postgres adds `--allow-net=127.0.0.1:5432`.
+dev Postgres adds `--allow-net=127.0.0.1:5432`. Public Git provider APIs
+(`api.github.com:443`, `gitlab.com:443`) must stay on that list — the GitHub
+App manifest callback and GitLab token/API calls fetch them from this process,
+and a missing host surfaces as HTTP 502 (`NotCapable`). A GitHub Enterprise
+or self-managed GitLab origin is not pre-allowed; add that host to the unit
+when one is configured.
 
 ### Production
 
@@ -630,14 +635,24 @@ playbook, which installs `/etc/tmpfiles.d/turbopanel.conf` and applies it with
 
 This repo's `Caddyfile` is **production-only**. Caddy terminates TLS and routes:
 
-- `/api/*` and `/ws/*` → Deno instance (`unix:///run/turbopanel/instance.sock`)
+- `/api/*`, `/ws/*`, and `/webhook/*` → Deno instance
+  (`unix:///run/turbopanel/instance.sock`)
 - everything else → static UI export (`TURBOPANEL_UI_ROOT`, default
   `/opt/turbopanel/share/ui`)
 
-`reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on `/api/*`
-and `/ws/*`. The instance uses that header to deduplicate daemon WebSocket
-reconnects (without it, every reconnect looked like a new fleet member behind
-the proxy).
+**The catch-all is why the prefix list is load-bearing.** It answers
+`try_files {path} /index.html`, so a prefix the instance owns but Caddy does not
+match is served the SPA shell with **HTTP 200** rather than a 404. For a Git
+webhook that means the provider records a successful delivery and never
+retries — silent, unrecoverable loss. The same trap exists on Workers, where
+the UI worker holds the apex as a custom domain with
+`not_found_handling: "single-page-application"`; add the prefix to `routes` in
+`wrangler.jsonc` at the same time. `src/surfaces.test.ts` pins the strings.
+
+`reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on all three.
+The instance uses that header to deduplicate daemon WebSocket reconnects
+(without it, every reconnect looked like a new fleet member behind the proxy),
+and to key the webhook rate limiter per peer address.
 
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
 set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
@@ -758,7 +773,8 @@ leaf certificate paths.
 
 Four versioned surfaces each have REST + WS namespaces (where applicable).
 Prefixes live in `src/surfaces.ts`; `GET /api/health` is the single
-deliberately-unversioned probe.
+deliberately-unversioned probe, and `/webhook/*` is a separate top-level traffic
+class rather than a versioned API — see the last row.
 
 | Surface                      | REST                  | WS                        | Notes                                                                                                                                                                                                                                                                                                                                                                        |
 | ---------------------------- | --------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -767,6 +783,7 @@ deliberately-unversioned probe.
 | Developer (dev console)      | `/api/developer/v1/*` | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                                                                                                                                                                                                                                     |
 | Admin                        | `/api/admin/v1/*`     | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only                                                                                                                                                                                                                   |
 | Daemon                       | `/api/daemon/v1/*`    | `/ws/daemon/v1`           | `version`, `instance/ca`; daemons connect on the WS path                                                                                                                                                                                                                                                                                                                     |
+| Git webhooks                 | `/webhook/{github,gitlab}(/:ref)` | —             | **Not an API.** The caller is GitHub or GitLab: no session, no daemon JWT, no `Origin`, and what arrives is an event rather than a call. Unversioned and outside every protected prefix by design. Self-hosted providers get the `:ref` suffix; hosted ones get the clean path. Every fronting layer must forward it — see `src/webhook/AGENTS.md` |
 
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`,
   `src/lib/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
@@ -968,26 +985,31 @@ deliberately-unversioned probe.
   `private_family_mismatch` (alongside existing `datacenter_has_members` /
   `datacenter_has_networks`).
 
-## Storage classification (five workloads)
+## Storage classification (four workloads)
 
 Storage is chosen by **the question asked of the data**, not by the shape of the
-data. Two subsystems can both be called "logs" and still belong in opposite
-classes. Before adding, moving, or "unifying" a store, place it in this table
-first — and read the linked doc.
+data. A deploy transcript and a running container's stdout can both be called
+"logs" and still belong in opposite classes — one is stored, one is not. Before
+adding, moving, or "unifying" a store, place it in this table first — and read
+the linked doc.
 
 | # | Workload | Access pattern | Hosted (Workers) | Self-hosted (Deno) | Read before editing |
 | - | -------- | -------------- | ---------------- | ------------------ | ------------------- |
 | 1 | **Command state** — `command` rows, status, timings, `context` | Relational, transactional, filtered/joined; source of truth | Postgres via Hyperdrive | Postgres (co-located) | `src/lib/commands/AGENTS.md` |
 | 2 | **Command execution material** — the one-shot daemon payload | Written once, read once, then deleted (~24 h on failure) | Postgres `dispatch` side table | Postgres `dispatch` side table | `src/lib/db/AGENTS.md` |
 | 3 | **Deploy/build transcript** — a command's stdout/stderr | `GET` by known `commandId`, whole or resumed from an offset — **never scanned across commands** | R2 keyed objects (`EXECUTION_LOGS`) | Filesystem under the state tree (or S3) | `src/lib/execution-logs/AGENTS.md` |
-| 4 | **Container log stream** — running-container stdout/stderr | Scan with a fixed predicate set across orgs/servers/services/time | Pipelines → Iceberg in R2 Data Catalog, read via R2 SQL | ClickHouse `container_logs` | `src/lib/container-logs/AGENTS.md` |
-| 5 | **Analytics** — host metrics + connection-status events | Aggregate over time buckets; sampled, disposable | Analytics Engine | ClickHouse `turbopanel_server_metrics` | `src/daemon/metrics/AGENTS.md` |
+| 4 | **Analytics** — host metrics + connection-status events | Aggregate over time buckets; sampled, disposable | Analytics Engine | ClickHouse `turbopanel_server_metrics` | `src/daemon/metrics/AGENTS.md` |
 
-Classes 1–2 are canonical business data; 3–5 are retained telemetry and are
+Container output is tailed live (on-demand `docker container logs` via a
+correlated cell round trip) and is **never stored**. It is not a storage
+workload. Operators who need history ship those bytes to their own sink — see
+`../website/docs/architecture/container-logs.mdx`.
+
+Classes 1–2 are canonical business data; 3–4 are retained telemetry and are
 never load-bearing for a control-plane decision. **Postgres holds no log bytes**
 — no execution-log column, no container-log table; `hasLog` is resolved
 store-side. Every telemetry store resolves to a **safe no-op disabled store**
-when unconfigured (`resolveExecutionLogStore` / `resolveContainerLogStore` /
+when unconfigured (`resolveExecutionLogStore` /
 `resolveServerMetricsStore`), so callers never branch on availability. Public
 docs: `../website/docs/architecture/storage-architecture.mdx` (plus
 `deployment-logs.mdx` and `container-logs.mdx`).
@@ -1004,10 +1026,10 @@ orientation; the detail moved to:
 | **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`                         | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.is_connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column)                                                                                                                                                                          |
 | **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                                                                                                                                                                                                |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                                                                                                                                                                                              |
-| **Execution logs**                | `src/lib/execution-logs/AGENTS.md`                  | Command transcripts (daemon stdout/stderr): the `ExecutionLogStore` contract, R2 (Workers) / filesystem + S3 (Deno) drivers, seq/seal/truncation semantics, retention on the shared maintenance tick. **Keyed-object GET, not an analytics table** — nothing queries across transcripts. Postgres holds no execution-log column; `hasLog` is resolved store-side |
-| **Container logs**                | `src/lib/container-logs/AGENTS.md`                  | Running-container stdout/stderr: the `ContainerLogStore` contract with **two backends behind one API — parity of contract, not of technology**: ClickHouse (Deno) and Pipelines → Iceberg in R2 Data Catalog, read via R2 SQL (Workers, public beta — degrades to `503` rather than `500`). **An analytics table, not keyed objects** — the exact opposite of execution logs, because container output is queried across servers/services/time. `ORDER BY (organization_id, server_id, service_id, timestamp)` doubles as the future Iceberg partition plan. **Default-off**, per organization (`organization.options.containerLogsEnabled`, toggled via `PUT /api/client/v1/organizations/:id/container-logs-settings`) — the daemon learns the switch from the `presence-ack` reply to its own hello/heartbeat, **not** from a command. Daemon writes land on `POST /api/daemon/v1/logs/containers` (own `CONTAINER_LOGS_RATE_LIMITER`, org stamped server-side from the JWT `sub`); clients read `GET /api/client/v1/organizations/:id/container-logs`. Shares the `turbopanel_metrics` database + `turbopanel_app` grant, so no Ansible change |
+| **Webhook ingress** (`/webhook/*`) | `src/webhook/AGENTS.md`                            | The six-step gate every inbound webhook runs, why its ordering is load-bearing, how a delivery is resolved to the secret that verifies it, the delivery-claim replay ledger, and what adding a new webhook kind costs                                                                                                                                                                                                                                                                                                                                                              |
+| **Execution logs**                | `src/lib/execution-logs/AGENTS.md`                  | Command transcripts (daemon stdout/stderr): the `ExecutionLogStore` contract, R2 (Workers) / filesystem + S3 (Deno) drivers, seq/seal/truncation semantics, retention on the shared maintenance tick. **Keyed-object GET, not an analytics table** — nothing queries across transcripts. Postgres holds no execution-log column; `hasLog` is resolved store-side. This is the **only** log class TurboPanel stores. Container stdout is a live on-demand tail, never this store. |
 | **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/lib/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                                                                                                          |
-| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL and `managed.ha.reconcile` for per-org Orchestrator (lazy: HA only on servers that host a primary or `failover` replica). Promote / DR / auto-failover journal in `recovery`; detection is unsolicited `managed-ha-event`. All status reads are Postgres-backed (`GET …/managed/status` includes `error` when status is `failed`); logs use cell `managed-logs-request` |
+| **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL and `managed.ha.reconcile` for per-org Orchestrator (lazy: HA only on servers that host a primary or `failover` replica). Promote / DR / auto-failover journal in `recovery`; detection is unsolicited `managed-ha-event`. All status reads are Postgres-backed (`GET …/managed/status` includes `error` when status is `failed`); engine logs use cell `managed-logs-request`. Container stdout uses the same correlated cell round trip (`docker container logs` on demand) and is never stored |
 | **Bindings**                      | `src/client/bindings/`                              | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                                                                                                     |
 | **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                                                                                                                                                                                              |
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                             |
@@ -1253,6 +1275,12 @@ sequenceDiagram
   `mailgun/` (Workers) backends
 - `src/developer/` — developer surface (Deno-only routes + Workers-safe
   `routes-core.ts`)
+- `src/webhook/` — inbound webhook surface (`/webhook/*`). Its own top-level
+  directory for the same reason it has its own URL prefix: the caller is a
+  provider, not a session or an enrolled daemon. `gate.ts` holds the ordered
+  six-step gate every kind runs; `git/` holds the GitHub and GitLab adapters.
+  Registered from the entrypoints via `registerWebhookRoutes`, never inside
+  `registerClientRoutes`
 - `src/admin/routes.ts` — admin surface (`/api/admin/v1`); **now mounted** on
   both runtimes; gated to `superadmin` or `admin` via
   `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar;

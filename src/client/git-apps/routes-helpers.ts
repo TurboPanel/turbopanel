@@ -15,6 +15,7 @@
 
 import {
   type GitAppCreate,
+  GITHUB_DEFAULT_BASE_URL,
   type GitAppProvider,
   type GitAppSummary,
   type GitAppUpdate,
@@ -27,6 +28,182 @@ import {
 
 export const GIT_APP_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * GitHub sends the operator's browser to the manifest callback. After the
+ * instance stores the App, that GET must land back on the console — not on a
+ * JSON body. These codes stay short and secret-free so they can ride the
+ * query string.
+ */
+export const GITHUB_MANIFEST_RETURN_ERRORS = [
+  'unavailable',
+  'invalid_request',
+  'state_invalid',
+  'forbidden',
+  'conversion_failed',
+  'conflict',
+  'create_failed',
+] as const
+
+export type GithubManifestReturnError =
+  (typeof GITHUB_MANIFEST_RETURN_ERRORS)[number]
+
+/**
+ * Where the console lists Git applications.
+ *
+ * Every provider redirect in this feature ends here or one level below it, and
+ * the provider controls the URL it sends the browser to — so this is the one
+ * place the console's own layout is written down on the server side.
+ */
+export function gitSourcesUiBasePath(organizationId: string | null): string {
+  return organizationId === null
+    ? '/admin/git'
+    : `/${organizationId}/projects/git-sources`
+}
+
+/** One registered app's detail screen, where installation is completed. */
+export function gitAppUiPath(organizationId: string | null, appId: string): string {
+  return `${gitSourcesUiBasePath(organizationId)}/${encodeURIComponent(appId)}`
+}
+
+function withQuery(base: string, query: Record<string, string | undefined>): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value) params.set(key, value)
+  }
+  const qs = params.toString()
+  return qs ? `${base}?${qs}` : base
+}
+
+export function githubManifestUiReturnPath(
+  organizationId: string | null,
+  query: { created?: string; error?: GithubManifestReturnError },
+): string {
+  // A freshly converted app goes straight to its own screen, which is where the
+  // "repository access has not been installed yet" step lives — that is the
+  // operator's actual next action, not the list.
+  const base = query.created
+    ? gitAppUiPath(organizationId, query.created)
+    : gitSourcesUiBasePath(organizationId)
+  return withQuery(base, { created: query.created, error: query.error })
+}
+
+/**
+ * Short, secret-free codes for the *installation* return trip.
+ *
+ * Separate from {@link GITHUB_MANIFEST_RETURN_ERRORS} because they describe a
+ * different hop: the manifest codes are about creating an app, these are about
+ * granting one access to repositories.
+ */
+export const PROVIDER_INSTALL_RETURN_ERRORS = [
+  'unavailable',
+  'invalid_request',
+  'state_invalid',
+  'forbidden',
+  'not_configured',
+  'claimed',
+  'provider_failed',
+] as const
+
+export type ProviderInstallReturnError =
+  (typeof PROVIDER_INSTALL_RETURN_ERRORS)[number]
+
+/**
+ * Where a provider's install/consent redirect lands the operator.
+ *
+ * The alternative is what this replaces: GitHub bounced the browser to a route
+ * that answered `200 {"ok":true,…}`, leaving the operator staring at JSON on an
+ * API path with no way back. Worse, `setup_on_update` means that happens again
+ * on every repository-selection change.
+ */
+export function providerInstallUiReturnPath(
+  organizationId: string | null,
+  appId: string | null,
+  query: { installed?: string; error?: ProviderInstallReturnError },
+): string {
+  const base = appId
+    ? gitAppUiPath(organizationId, appId)
+    : gitSourcesUiBasePath(organizationId)
+  return withQuery(base, { installed: query.installed, error: query.error })
+}
+
+/**
+ * What the "create a GitHub App" wizard sends.
+ *
+ * Every field here is **creation-only** on GitHub's side — the name, the
+ * origin, the webhook URL, the permission set — so this is the one chance to
+ * get them right. That is why the wizard asks rather than defaulting, and why
+ * a malformed body is rejected instead of being silently normalized: an app
+ * registered with the wrong webhook origin cannot be corrected from here.
+ */
+export type GithubManifestStartInput = {
+  name: string
+  baseUrl: string
+  apiUrl: string | null
+  organizationLogin: string | null
+  webhookOrigin: string | null
+  pullRequestAccess: 'read' | 'write'
+  customGitUser: string | null
+  customGitPort: number | null
+}
+
+/** GitHub caps App names at 34 characters. */
+export const GITHUB_APP_NAME_MAX_LENGTH = 34
+
+function optionalTrimmed(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+export function parseGithubManifestStartBody(
+  body: unknown,
+): GithubManifestStartInput | null {
+  const raw = (body && typeof body === 'object' && !Array.isArray(body))
+    ? body as Record<string, unknown>
+    : {}
+
+  const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+  if (name.length === 0 || name.length > GITHUB_APP_NAME_MAX_LENGTH) return null
+
+  const baseUrlRaw = optionalTrimmed(raw.baseUrl)
+  if (baseUrlRaw === undefined) return null
+  const baseUrl = (baseUrlRaw ?? GITHUB_DEFAULT_BASE_URL).replace(/\/+$/, '')
+
+  const apiUrl = optionalTrimmed(raw.apiUrl)
+  if (apiUrl === undefined) return null
+
+  const organizationLogin = optionalTrimmed(raw.organizationLogin)
+  if (organizationLogin === undefined) return null
+
+  const webhookOrigin = optionalTrimmed(raw.webhookOrigin)
+  if (webhookOrigin === undefined) return null
+
+  const customGitUser = optionalTrimmed(raw.customGitUser)
+  if (customGitUser === undefined) return null
+
+  let customGitPort: number | null = null
+  if (raw.customGitPort !== undefined && raw.customGitPort !== null) {
+    const port = Number(raw.customGitPort)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null
+    customGitPort = port
+  }
+
+  const access = raw.pullRequestAccess
+  if (access !== undefined && access !== 'read' && access !== 'write') return null
+
+  return {
+    name,
+    baseUrl,
+    apiUrl: apiUrl ?? null,
+    organizationLogin: organizationLogin ?? null,
+    webhookOrigin: webhookOrigin ? webhookOrigin.replace(/\/+$/, '') : null,
+    pullRequestAccess: access === 'write' ? 'write' : 'read',
+    customGitUser: customGitUser ?? null,
+    customGitPort,
+  }
+}
 
 /** Plain fields that accept a value or an explicit `null` to clear. */
 const NULLABLE_TEXT_FIELDS = ['apiUrl', 'appSlug', 'clientId', 'redirectUri'] as const
@@ -141,6 +318,12 @@ export type SerializedGitApp = GitAppSummary & {
 /**
  * Fold the routing URL onto a summary.
  *
+ * The app's **own** `webhookOrigin` wins over the instance default. The
+ * provider stored one specific URL at registration and never revisits it, so on
+ * an instance publishing several origins the default would show the operator an
+ * address their deliveries do not use. The instance default is the fallback for
+ * an app registered before the choice was offered.
+ *
  * `readOnly` is computed rather than stored: the same instance-wide row is
  * editable through the admin surface and read-only through an organization's,
  * so it is a property of the view, not of the record.
@@ -149,13 +332,16 @@ export function serializeGitApp(
   app: GitAppSummary,
   opts: { publicOrigin: string | null; viewerOrganizationId: string | null },
 ): SerializedGitApp {
-  const webhookPath = webhookPathFor(app.provider as WebhookProvider, app.webhookRef)
+  const webhookPath = webhookPathFor(
+    app.provider as WebhookProvider,
+    app.webhookRef,
+    app.baseUrl,
+  )
+  const origin = app.webhookOrigin ?? opts.publicOrigin
   return {
     ...app,
     webhookPath,
-    webhookUrl: opts.publicOrigin
-      ? `${opts.publicOrigin.replace(/\/$/, '')}${webhookPath}`
-      : null,
+    webhookUrl: origin ? `${origin.replace(/\/$/, '')}${webhookPath}` : null,
     readOnly: opts.viewerOrganizationId !== null && app.organizationId === null,
   }
 }

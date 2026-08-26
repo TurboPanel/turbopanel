@@ -1,5 +1,5 @@
 {
-  "id": "36085061-19c8-4161-a49a-e76aff47185a",
+  "id": "564e8fcc-f752-40ed-a8fb-b2d3f26b8cd3",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1718,6 +1718,37 @@
         "redirect_uri": {
           "name": "redirect_uri",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "webhook_origin": {
+          "name": "webhook_origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_public": {
+          "name": "is_public",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "custom_git_user": {
+          "name": "custom_git_user",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "custom_git_port": {
+          "name": "custom_git_port",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "synced_at": {
+          "name": "synced_at",
+          "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -6040,7 +6071,17 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "uniq_source_organization_installation_repository": {
+          "name": "uniq_source_organization_installation_repository",
+          "nullsNotDistinct": false,
+          "columns": [
+            "organization_id",
+            "installation_id",
+            "repository_external_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {
         "source_provider_check": {

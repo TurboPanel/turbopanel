@@ -6,6 +6,7 @@ import {
   parseSourceCreateBody,
   parseSourceListFilter,
   parseSourcePatchBody,
+  parseSourceAttachBody,
   serializeInstallationRow,
   serializeSourceRow,
   SOURCE_REFERENCED_BY_COMPOSE_ERROR,
@@ -22,6 +23,7 @@ import {
 const test = Deno.test.bind(Deno)
 
 const INSTALL_ID = '550e8400-e29b-41d4-a716-446655440000'
+const APP_ID = '11111111-1111-4111-8111-111111111111'
 const CREDENTIAL_ID = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
 const SERVICE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
 const ENV_ID = '11111111-2222-4333-8444-555555555555'
@@ -389,6 +391,7 @@ test('serializeSourceRow and serializeInstallationRow fold optional facts', () =
     serializeInstallationRow({
       id: INSTALL_ID,
       organizationId: INSTALL_ID,
+      appId: APP_ID,
       provider: 'github',
       externalInstallationId: '99',
       accountLogin: 'acme',
@@ -405,6 +408,7 @@ test('serializeSourceRow and serializeInstallationRow fold optional facts', () =
     serializeInstallationRow({
       id: INSTALL_ID,
       organizationId: INSTALL_ID,
+      appId: APP_ID,
       provider: 'gitlab',
       externalInstallationId: '1',
       accountLogin: null,
@@ -416,5 +420,100 @@ test('serializeSourceRow and serializeInstallationRow fold optional facts', () =
       updatedAt: '2026-01-02T00:00:00.000Z',
     }).suspended,
     false,
+  )
+})
+
+test('attach accepts only what a repository pick can name', () => {
+  const parsed = parseSourceAttachBody({
+    installationId: INSTALL_ID,
+    repositoryExternalId: '  99  ',
+    repositoryUrl: ' https://github.com/acme/app.git ',
+    defaultBranch: ' trunk ',
+  })
+  assertEquals(parsed, {
+    installationId: INSTALL_ID,
+    repositoryExternalId: '99',
+    repositoryUrl: 'https://github.com/acme/app.git',
+    defaultBranch: 'trunk',
+  })
+
+  // An omitted or blank branch means "the repository's own default", which is
+  // null on the row rather than an empty string.
+  assertEquals(
+    parseSourceAttachBody({
+      installationId: INSTALL_ID,
+      repositoryExternalId: '99',
+      repositoryUrl: 'https://github.com/acme/app.git',
+    })?.defaultBranch,
+    null,
+  )
+  assertEquals(
+    parseSourceAttachBody({
+      installationId: INSTALL_ID,
+      repositoryExternalId: '99',
+      repositoryUrl: 'https://github.com/acme/app.git',
+      defaultBranch: '   ',
+    })?.defaultBranch,
+    null,
+  )
+})
+
+test('attach refuses the fields that make a source a managed thing', () => {
+  // Attaching is implicit and repeatable, so it must not be able to set the
+  // parent scope, the auto-deploy policy, or a deploy-key credential — the
+  // second attach of a repository would otherwise differ from the first.
+  const parsed = parseSourceAttachBody({
+    installationId: INSTALL_ID,
+    repositoryExternalId: '99',
+    repositoryUrl: 'https://github.com/acme/app.git',
+    serviceId: SERVICE_ID,
+    autoDeploy: 'immediate',
+    credentialId: INSTALL_ID,
+  })
+  assertEquals(parsed !== null, true)
+  for (const key of ['serviceId', 'autoDeploy', 'credentialId', 'environmentId']) {
+    assertEquals(parsed !== null && key in parsed, false, `${key} must not survive`)
+  }
+})
+
+test('attach rejects a malformed body', () => {
+  assertEquals(parseSourceAttachBody(null), null)
+  assertEquals(parseSourceAttachBody([]), null)
+  // The installation is a uuid we are about to authorize against; a non-uuid
+  // is a bad request, not a 404 lookup.
+  assertEquals(
+    parseSourceAttachBody({
+      installationId: 'not-a-uuid',
+      repositoryExternalId: '99',
+      repositoryUrl: 'https://github.com/acme/app.git',
+    }),
+    null,
+  )
+  // The provider-side id is what webhook matching keys on, so a blank one
+  // would make the row unroutable.
+  assertEquals(
+    parseSourceAttachBody({
+      installationId: INSTALL_ID,
+      repositoryExternalId: '   ',
+      repositoryUrl: 'https://github.com/acme/app.git',
+    }),
+    null,
+  )
+  assertEquals(
+    parseSourceAttachBody({
+      installationId: INSTALL_ID,
+      repositoryExternalId: '99',
+      repositoryUrl: '',
+    }),
+    null,
+  )
+  assertEquals(
+    parseSourceAttachBody({
+      installationId: INSTALL_ID,
+      repositoryExternalId: '99',
+      repositoryUrl: 'https://github.com/acme/app.git',
+      defaultBranch: 42,
+    }),
+    null,
   )
 })

@@ -4,7 +4,6 @@ import postgres from "postgres";
 import type { DaemonCellRegistry } from "./daemon/cell/contracts.ts";
 import type { ServerMetricsStore } from "./daemon/metrics/types.ts";
 import type { ExecutionLogStore } from "./lib/execution-logs/types.ts";
-import type { ContainerLogStore } from "./lib/container-logs/types.ts";
 import type { QueryCache } from "./query-cache/contracts.ts";
 import { getDatabaseUrl, resolvePostgresConnection } from "./db-url.ts";
 import * as schema from "./lib/db/schema.ts";
@@ -259,19 +258,4 @@ export function getExecutionLogStore(
   c: Context,
 ): ExecutionLogStore | undefined {
   return c.get("executionLogStore");
-}
-
-/**
- * Container stdout/stderr store for the current request.
- *
- * Container logs are **default-off**, so this is normally the
- * `DisabledContainerLogStore` no-op rather than `undefined` — callers ingest
- * and query without branching on availability. Use
- * `isDisabledContainerLogStore` when a *read* route needs to answer 503
- * instead of an empty page.
- */
-export function getContainerLogStore(
-  c: Context,
-): ContainerLogStore | undefined {
-  return c.get("containerLogStore");
 }

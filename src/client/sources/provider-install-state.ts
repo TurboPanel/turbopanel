@@ -110,6 +110,21 @@ export type GithubManifestStateClaims = {
   webhookRef: string
   baseUrl: string
   name: string
+  /**
+   * Everything else the wizard collected.
+   *
+   * It rides in the signed state because the row does not exist yet and GitHub
+   * does not hand any of it back: the conversion response carries credentials
+   * and nothing about how the operator configured the app. Signed rather than
+   * echoed through a query param so a tampered return cannot, say, flip an
+   * organization-owned app to instance-wide.
+   */
+  webhookOrigin?: string | null
+  apiUrl?: string | null
+  isPublic?: boolean
+  pullRequestAccess?: 'read' | 'write'
+  customGitUser?: string | null
+  customGitPort?: number | null
 }
 
 type ManifestStatePayload = GithubManifestStateClaims & { exp: number }
@@ -191,6 +206,14 @@ export async function verifyGithubManifestState(
     webhookRef: payload.webhookRef,
     baseUrl: payload.baseUrl,
     name: payload.name,
+    webhookOrigin: payload.webhookOrigin ?? null,
+    apiUrl: payload.apiUrl ?? null,
+    isPublic: payload.isPublic === true,
+    pullRequestAccess: payload.pullRequestAccess === 'write' ? 'write' : 'read',
+    customGitUser: payload.customGitUser ?? null,
+    customGitPort: typeof payload.customGitPort === 'number'
+      ? payload.customGitPort
+      : null,
   }
 }
 

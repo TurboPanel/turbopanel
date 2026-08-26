@@ -606,6 +606,43 @@ export function getAdminOpenApiSpec(
           },
         },
       },
+      [`${ADMIN_API_PREFIX}/git/apps/{id}/sync`]: {
+        post: {
+          tags: ["Git apps"],
+          summary: "Reconcile an app against GitHub's own record of it",
+          description:
+            "Reads `GET /app` with the App JWT and updates the stored name, " +
+            "slug, app id and visibility. An operator can rename an App on " +
+            "GitHub and nothing announces it — and a stale slug is not " +
+            "cosmetic, it builds the install URL.",
+          security: [...cookieSecurity],
+          parameters: [
+            {
+              name: "id",
+              in: "path",
+              required: true,
+              schema: { type: "string", format: "uuid" },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "The reconciled app",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/GitAppResponse" },
+                },
+              },
+            },
+            "400": { description: "Not a GitHub app" },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "404": { description: "Not found" },
+            "502": { description: "GitHub refused the lookup" },
+          },
+        },
+      },
       [`${ADMIN_API_PREFIX}/git/apps/github/manifest`]: {
         post: {
           tags: ["Git apps"],
@@ -651,8 +688,9 @@ export function getAdminOpenApiSpec(
           summary: "Finish the GitHub App Manifest flow",
           description:
             "Exchanges GitHub's one-shot code for the App id, private key, " +
-            "webhook secret and client credentials, and stores them as an " +
-            "instance-wide app.",
+            "webhook secret and client credentials, stores them as an " +
+            "instance-wide app, then 302s the operator's browser back to " +
+            "/admin/git.",
           security: [...cookieSecurity],
           parameters: [
             {
@@ -669,20 +707,13 @@ export function getAdminOpenApiSpec(
             },
           ],
           responses: {
-            "201": {
-              description: "The registered app",
-              content: {
-                "application/json": {
-                  schema: { $ref: "#/components/schemas/GitAppResponse" },
-                },
-              },
+            "302": {
+              description: "Redirect to /admin/git with created= or error=",
             },
-            "400": { description: "Missing code/state, or state that does not verify" },
             "401": { description: "Unauthorized" },
             "403": {
               description: "Forbidden — requires admin or superadmin role",
             },
-            "502": { description: "GitHub refused the manifest conversion" },
           },
         },
       },

@@ -229,8 +229,9 @@ export type DeployPrepareWarningCode =
  *   Ansible run installs it. Refusing here would reject a deploy the host can
  *   perfectly well serve — which is exactly what the old host-wide pin did.
  *
- * A server that has reported no inventory (an older daemon, or one that found
- * nothing) is treated as *unknown*, never as *absent*: silence is not evidence.
+ * A server that has reported no inventory — not connected yet, or connected and
+ * found nothing — is treated as *unknown*, never as *absent*: silence is not
+ * evidence.
  */
 export function checkPhpSeriesAvailability(params: {
   sites: readonly { composeServiceName: string; php?: { version?: string } }[];

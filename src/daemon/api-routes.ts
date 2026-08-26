@@ -15,7 +15,6 @@ import {
 } from "../client/authn/data-encryption.ts";
 import type { Db } from "../db.ts";
 import {
-  getContainerLogStore,
   getDb,
   getExecutionLogStore,
   getServerMetricsStore,
@@ -73,17 +72,11 @@ import {
 import type { RateLimiter } from "./rate-limit/contracts.ts";
 import { createNoopRateLimiter } from "./rate-limit/contracts.ts";
 import {
-  daemonContainerLogsRateLimitKey,
   daemonEnrollChallengeRateLimitKey,
   daemonMetricsRateLimitKey,
   daemonRestRateLimitKey,
   type DaemonRestRateLimitRoute,
 } from "./rate-limit/keys.ts";
-import {
-  loadContainerLogIngestTarget,
-  MAX_CONTAINER_LOG_BATCH_BODY_BYTES,
-  parseContainerLogBatchBody,
-} from "./container-log-ingest.ts";
 
 function normalizeRequiredString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -485,15 +478,12 @@ export function registerDaemonApiRoutes<E extends Env>(
     secretsConfig?: SecretsConfig;
     restLimiter?: RateLimiter;
     metricsLimiter?: RateLimiter;
-    containerLogsLimiter?: RateLimiter;
   } = {},
 ) {
   const daemon = new Hono<DaemonApiEnv>();
   const { secrets, challengeSigningSecrets, secretsConfig } = options;
   const restLimiter = options.restLimiter ?? createNoopRateLimiter();
   const metricsLimiter = options.metricsLimiter ?? createNoopRateLimiter();
-  const containerLogsLimiter = options.containerLogsLimiter ??
-    createNoopRateLimiter();
   const enrollStore = challengeSigningSecrets
     ? createStatelessChallengeStore(
       challengeSigningSecrets,
@@ -524,19 +514,6 @@ export function registerDaemonApiRoutes<E extends Env>(
   ): Promise<Response | null> {
     const { success } = await metricsLimiter.limit({
       key: daemonMetricsRateLimitKey(serverId),
-    });
-    if (!success) {
-      return c.json({ ok: false, error: "rate_limited" }, 429);
-    }
-    return null;
-  }
-
-  async function enforceDaemonContainerLogsLimit(
-    c: Context,
-    serverId: string,
-  ): Promise<Response | null> {
-    const { success } = await containerLogsLimiter.limit({
-      key: daemonContainerLogsRateLimitKey(serverId),
     });
     if (!success) {
       return c.json({ ok: false, error: "rate_limited" }, 429);
@@ -946,16 +923,6 @@ export function registerDaemonApiRoutes<E extends Env>(
     return next();
   };
 
-  const enforceJwtContainerLogsLimit = async (
-    c: Context<DaemonApiEnv>,
-    next: Next,
-  ) => {
-    const daemonServerId = c.get("daemonServerId");
-    const limited = await enforceDaemonContainerLogsLimit(c, daemonServerId);
-    if (limited) return limited;
-    return next();
-  };
-
   daemon.post(
     "/commands/lease",
     requireDaemonJwt,
@@ -1123,85 +1090,6 @@ export function registerDaemonApiRoutes<E extends Env>(
       }
 
       return c.json({ ok: true }, 202);
-    },
-  );
-
-  /**
-   * Container log ingest. The daemon's collector batches redacted stdout/stderr
-   * lines across every container on the host and posts them here.
-   *
-   * Like `/metrics`, this must never touch the Durable Object — writes go
-   * straight to the container-log store. Nothing identifying is read from the
-   * body: `serverId` comes from the verified JWT `sub` and `organizationId`
-   * from that server's row (see `container-log-ingest.ts`).
-   *
-   * Uses its own limiter (`CONTAINER_LOGS_RATE_LIMITER`) rather than the shared
-   * daemon REST budget — container output is far burstier than enroll/session/
-   * decrypt and must not be able to starve them.
-   */
-  daemon.post(
-    "/logs/containers",
-    requireDaemonJwt,
-    enforceJwtContainerLogsLimit,
-    requireActiveDaemonKey,
-    async (c) => {
-      const serverId = c.get("daemonServerId");
-
-      const bodyRead = await readBoundedJsonBody(
-        c,
-        MAX_CONTAINER_LOG_BATCH_BODY_BYTES,
-      );
-      if (!bodyRead.ok) return bodyRead.response;
-
-      let body: unknown;
-      try {
-        body = JSON.parse(bodyRead.text);
-      } catch {
-        return c.json({ ok: false, error: "invalid json" }, 400);
-      }
-
-      const db = getDb(c);
-      if (db === undefined) {
-        return c.json({ ok: false, error: "Database unavailable" }, 503);
-      }
-      const target = await loadContainerLogIngestTarget(db, serverId);
-      if (!target) {
-        // An unowned server has no tenant to attribute output to. 403 (not
-        // 404) so a daemon cannot probe server rows.
-        return c.json({ ok: false, error: "forbidden" }, 403);
-      }
-
-      // The org switch is the authoritative retention gate, re-checked on
-      // every write. A daemon that has not yet seen the "off" presence ack
-      // keeps posting for up to a heartbeat; those batches are accepted and
-      // dropped rather than 4xx'd, because a retry would not help it either.
-      if (!target.retentionEnabled) {
-        return c.json({ ok: true, accepted: 0 }, 202);
-      }
-
-      const parsed = parseContainerLogBatchBody(body, {
-        serverId,
-        organizationId: target.organizationId,
-      });
-      if (!parsed.ok) {
-        return c.json({ ok: false, error: parsed.error }, 400);
-      }
-
-      // Container output is disposable telemetry: a store failure is warned
-      // about and the batch is dropped, never retried into the daemon as a 5xx
-      // it would only re-send. Mirrors the metrics route's await-then-202.
-      const store = getContainerLogStore(c);
-      if (store && parsed.events.length > 0) {
-        try {
-          await store.ingest(parsed.events);
-        } catch (err) {
-          console.warn(
-            `container log write failed for ${serverId}: ${String(err)}`,
-          );
-        }
-      }
-
-      return c.json({ ok: true, accepted: parsed.events.length }, 202);
     },
   );
 

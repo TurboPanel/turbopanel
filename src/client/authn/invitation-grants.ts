@@ -65,8 +65,8 @@ function parseInvitationGrantEntry(
   }
 
   // Allow/deny branches are not supported — every persisted grant is allow-only.
-  // Reject legacy `allowed` / `allow` fields so invitation JSON cannot stash
-  // invisible deny semantics.
+  // Reject `allowed` / `allow` outright so invitation JSON cannot stash
+  // invisible deny semantics behind a field nothing reads.
   if (record.allowed !== undefined || record.allow !== undefined) {
     return 'invalid'
   }

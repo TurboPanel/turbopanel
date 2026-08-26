@@ -47,6 +47,7 @@ import {
   listGitAppsHandler,
   patchGitAppHandler,
   startGithubManifestHandler,
+  syncGitAppHandler,
 } from "../client/git-apps/handlers.ts";
 import {
   emailSettingsToApiShape,
@@ -243,6 +244,12 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
     return await completeGithubManifestHandler(c, db, instanceScope);
+  });
+
+  admin.post("/git/apps/:id/sync", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+    return await syncGitAppHandler(c, db, instanceScope, c.req.param("id"));
   });
 
   admin.get("/git/apps/:id", async (c) => {

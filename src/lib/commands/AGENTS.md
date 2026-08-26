@@ -611,7 +611,7 @@ sequenceDiagram
 ### Webhook-triggered deploys
 
 A verified GitHub webhook can enqueue `environment.deploy` without a session.
-The surface lives at `GITHUB_WEBHOOK_PATH` (see `src/client/git/AGENTS.md`);
+The surface lives at `GITHUB_WEBHOOK_PATH` (see `src/webhook/AGENTS.md`);
 resolution lives in `src/client/sources/webhook-trigger.ts`. Two properties
 matter to this pipeline:
 

@@ -13,8 +13,7 @@ import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry
 import { runOfflineSweep } from './daemon/cell/offline-sweep.ts'
 import { registerAdminRoutes } from './admin/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
-import { registerGithubWebhookRoutes } from './client/git/github-webhook-routes.ts'
-import { registerGitlabWebhookRoutes } from './client/git/gitlab-webhook-routes.ts'
+import { registerWebhookRoutes } from './webhook/routes.ts'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
 import type { EmailQueue } from './lib/email/types.ts'
@@ -42,15 +41,6 @@ import {
 } from './lib/execution-logs/store-selection.ts'
 import { setExecutionLogSealSink } from './lib/execution-logs/seal-on-terminal.ts'
 import type { ExecutionLogStore } from './lib/execution-logs/types.ts'
-import {
-  isDisabledContainerLogStore,
-  parseContainerLogsEnabled,
-  resolveContainerLogStore,
-  resolveContainerLogsCloudflareConfig,
-  type PipelineLike,
-} from './lib/container-logs/store-selection.ts'
-import { setContainerLogBackendAvailable } from './daemon/container-logs-presence.ts'
-import type { ContainerLogStore } from './lib/container-logs/types.ts'
 import {
   closeWorkersRequestDb,
   openWorkersRequestDb,
@@ -82,7 +72,6 @@ let cachedSecretsConfig: SecretsConfig | null = null
 let cachedCommandQueue: CommandQueue | null = null
 let cachedServerMetricsStore: ServerMetricsStore | null = null
 let cachedExecutionLogStore: ExecutionLogStore | null = null
-let cachedContainerLogStore: ContainerLogStore | null = null
 let cachedAuthRateLimiter: AuthRateLimiter | null = null
 let cachedDaemonCellRegistryFactory:
   | ((env: CloudflareBindings, db?: ReturnType<typeof createWorkersDb>) =>
@@ -102,7 +91,6 @@ export function resetWorkerAppCachesForTests(): void {
   cachedCommandQueue = null
   cachedServerMetricsStore = null
   cachedExecutionLogStore = null
-  cachedContainerLogStore = null
   cachedAuthRateLimiter = null
   cachedDaemonCellRegistryFactory = null
 }
@@ -145,21 +133,6 @@ async function initWorkerApp(env: CloudflareBindings) {
   // Terminal command transitions run in the queue-consumer and cron isolates
   // that never see a Hono context — register the seal sink at isolate init.
   setExecutionLogSealSink(cachedExecutionLogStore)
-  // Backend availability only — NOT the retention switch. Whether a tenant
-  // retains container output is `organization.options.containerLogsEnabled`,
-  // re-read on every ingest write and every read route. The Pipelines binding
-  // is added to wrangler.jsonc per-env only once the Stream/sink/Iceberg table
-  // exist, so `env.CONTAINER_LOGS` is normally absent: anything incomplete
-  // yields the disabled no-op store (and a one-time warning when the operator
-  // asked for container logs but nothing can serve them), and the presence ack
-  // is forced off so daemons do not stream into a backend that only drops.
-  cachedContainerLogStore = resolveContainerLogStore({
-    runtime: 'workers',
-    enabled: parseContainerLogsEnabled(env.TURBOPANEL_CONTAINER_LOGS_ENABLED),
-    pipeline: (env as { CONTAINER_LOGS?: PipelineLike }).CONTAINER_LOGS,
-    r2Sql: resolveContainerLogsCloudflareConfig(env),
-  })
-  setContainerLogBackendAvailable(!isDisabledContainerLogStore(cachedContainerLogStore))
   // Email queue + signup force are resolved per request from current env/DB —
   // do not bake them into createApp() so dashboard/panel changes apply without
   // waiting for an isolate recycle. signupEnvOverride here is only a fallback
@@ -173,7 +146,6 @@ async function initWorkerApp(env: CloudflareBindings) {
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
     serverMetricsStore: cachedServerMetricsStore,
     executionLogStore: cachedExecutionLogStore,
-    containerLogStore: cachedContainerLogStore,
     dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
   })
@@ -192,22 +164,18 @@ async function initWorkerApp(env: CloudflareBindings) {
     secretsConfig: cachedSecretsConfig ?? undefined,
     restLimiter: rateLimiters.rest,
     metricsLimiter: rateLimiters.metrics,
-    containerLogsLimiter: rateLimiters.containerLogs,
   })
   registerWorkersDaemonWebSocket(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     connectLimiter: rateLimiters.connect,
   })
   // Unversioned, session-free surface: mounted on the top-level app rather than
-  // under CLIENT_API_PREFIX, and authenticated by HMAC (see
-  // `src/client/git/AGENTS.md`).
-  registerGithubWebhookRoutes(cachedApp, {
+  // under CLIENT_API_PREFIX, and authenticating itself (see
+  // `src/webhook/AGENTS.md`).
+  registerWebhookRoutes(cachedApp, {
     runtime: 'workers',
-    rateLimiter: resolveWorkersGithubWebhookRateLimiter(env),
-  })
-  registerGitlabWebhookRoutes(cachedApp, {
-    runtime: 'workers',
-    rateLimiter: resolveWorkersGitlabWebhookRateLimiter(env),
+    github: resolveWorkersGithubWebhookRateLimiter(env),
+    gitlab: resolveWorkersGitlabWebhookRateLimiter(env),
   })
   registerAdminRoutes(cachedApp, {
     secrets: cachedSessionSecrets!,
@@ -287,9 +255,6 @@ export default {
         }
         if (cachedExecutionLogStore) {
           c.set('executionLogStore', cachedExecutionLogStore)
-        }
-        if (cachedContainerLogStore) {
-          c.set('containerLogStore', cachedContainerLogStore)
         }
         await next()
       })

@@ -11,7 +11,7 @@
  * The inbound half of this feature is **not** here. Each provider's webhook
  * surface lives at `GITHUB_WEBHOOK_PATH` / `GITLAB_WEBHOOK_PATH`, outside
  * `CLIENT_API_PREFIX`, and authenticates with a provider credential rather than
- * a session or a daemon JWT — see `src/client/git/AGENTS.md`. What this file
+ * a session or a daemon JWT — see `src/webhook/AGENTS.md`. What this file
  * contributes to it is {@link resolveSourceWebhookInfo}: the endpoint URL to
  * configure, plus a warning when this instance's public URL is one the provider
  * cannot reach.
@@ -33,6 +33,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
+import { logWarn } from '../../logger.ts'
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
 import {
@@ -88,7 +89,12 @@ import {
   verifyGitlabConnectState,
 } from './provider-install-state.ts'
 import {
+  providerInstallUiReturnPath,
+  type ProviderInstallReturnError,
+} from '../git-apps/routes-helpers.ts'
+import {
   COMPOSE_SOURCE_JSONPATH,
+  parseSourceAttachBody,
   GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
   parseSourceCreateBody,
   parseSourceListFilter,
@@ -124,6 +130,7 @@ const SOURCE_SELECT = {
 const INSTALLATION_SELECT = {
   id: gitProviderInstallation.id,
   organizationId: gitProviderInstallation.organizationId,
+  appId: gitProviderInstallation.appId,
   provider: gitProviderInstallation.provider,
   externalInstallationId: gitProviderInstallation.externalInstallationId,
   accountLogin: gitProviderInstallation.accountLogin,
@@ -360,6 +367,53 @@ async function resolveConnectApp(
   return app
 }
 
+/** Postgres `unique_violation`; see the attach route's race note. */
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === '23505'
+  )
+}
+
+/** The existing binding for one repository, keyed exactly like the unique index. */
+async function findAttachedSource(
+  db: Db,
+  organizationId: string,
+  fields: { installationId: string; repositoryExternalId: string },
+): Promise<string | null> {
+  const [row] = await db
+    .select({ id: source.id })
+    .from(source)
+    .where(
+      and(
+        eq(source.organizationId, organizationId),
+        eq(source.installationId, fields.installationId),
+        eq(source.repositoryExternalId, fields.repositoryExternalId),
+      ),
+    )
+    .limit(1)
+  return row?.id ?? null
+}
+
+/**
+ * Send the operator's browser back into the console.
+ *
+ * Provider install and consent redirects are **top-level navigations**: the
+ * operator is looking at the result. Answering them with JSON — which is what
+ * these routes used to do — parks them on an API path with no way back, and
+ * because GitHub's `setup_on_update` re-runs the redirect on every
+ * repository-selection change, it happens again and again.
+ */
+function redirectToGitAppUi(
+  c: Context<AppEnv>,
+  organizationId: string | null,
+  appId: string | null,
+  query: { installed?: string; error?: ProviderInstallReturnError },
+): Response {
+  return c.redirect(providerInstallUiReturnPath(organizationId, appId, query), 302)
+}
+
 /**
  * Refuse an installation another organization already holds.
  *
@@ -483,21 +537,33 @@ async function resolveSourceWebhookInfo(
     .map((entry) => publicUrlEntryToInstallOrigin(entry))
     .filter((origin): origin is string => origin !== null)
 
+  // The app behind this source decides both halves of the URL: whether the ref
+  // belongs in the path (self-hosted only), and which origin the provider was
+  // actually told to deliver to.
   let webhookRef: string | null = null
+  let appBaseUrl: string | null = null
+  let appOrigin: string | null = null
   if (installationId) {
     const rows = await db
-      .select({ webhookRef: gitProviderApp.webhookRef })
+      .select({
+        webhookRef: gitProviderApp.webhookRef,
+        baseUrl: gitProviderApp.baseUrl,
+        webhookOrigin: gitProviderApp.webhookOrigin,
+      })
       .from(gitProviderInstallation)
       .innerJoin(gitProviderApp, eq(gitProviderInstallation.appId, gitProviderApp.id))
       .where(eq(gitProviderInstallation.id, installationId))
       .limit(1)
     webhookRef = rows[0]?.webhookRef ?? null
+    appBaseUrl = rows[0]?.baseUrl ?? null
+    appOrigin = rows[0]?.webhookOrigin ?? null
   }
 
   const reachability = webhookReachability(
-    origins,
+    appOrigin ? [appOrigin, ...origins] : origins,
     provider as WebhookProvider,
     webhookRef,
+    appBaseUrl,
   )
   return {
     webhookUrl: reachability.webhookUrl,
@@ -535,6 +601,10 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   const secrets = opts.secrets
 
   router.use('/sources', createSessionMiddleware(secrets))
+  // Listed explicitly even though `/sources/:id` would also match it — relying
+  // on a param pattern to cover a literal route is how a surface quietly loses
+  // its session gate when the patterns are reordered.
+  router.use('/sources/attach', createSessionMiddleware(secrets))
   router.use('/sources/:id', createSessionMiddleware(secrets))
   router.use('/sources/installations', createSessionMiddleware(secrets))
   router.use('/sources/installations/:id/repositories', createSessionMiddleware(secrets))
@@ -641,45 +711,44 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     return c.redirect(target.toString(), 302)
   })
 
+  /**
+   * Where GitHub sends the operator after they install the App.
+   *
+   * This is the App's `setup_url`, and `setup_on_update: true` means GitHub
+   * re-runs it whenever the repository selection changes — so it has to be
+   * idempotent and it has to land in the console, never on a JSON body.
+   */
   router.get('/sources/github/callback', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
 
+    const fail = (error: ProviderInstallReturnError, appId: string | null = null) =>
+      redirectToGitAppUi(c, organizationId, appId, { error })
+
     const secretsConfig = c.get('secretsConfig')
-    if (!secretsConfig) {
-      return c.json({ error: 'Signing unavailable — no root secret configured' }, 503)
-    }
+    if (!secretsConfig) return fail('unavailable')
 
     const state = c.req.query('state')
     const externalInstallationId = c.req.query('installation_id')
-    const setupAction = c.req.query('setup_action') ?? 'install'
-    if (!state || !externalInstallationId) {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
+    if (!state || !externalInstallationId) return fail('invalid_request')
 
     const claims = await verifyGithubInstallState(secretsConfig, state)
-    if (!claims) {
-      return c.json({ error: 'github_install_state_invalid' }, 400)
-    }
+    if (!claims) return fail('state_invalid')
     // The signed state is the authority; the live session must agree with it.
-    if (claims.organizationId !== organizationId) {
-      return c.json({ error: 'Forbidden' }, 403)
-    }
+    if (claims.organizationId !== organizationId) return fail('forbidden')
 
     const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    if (denied) return fail('forbidden', claims.appId)
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-    if (!dataEncryptionSecrets) {
-      return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
-    }
+    if (!dataEncryptionSecrets) return fail('unavailable', claims.appId)
 
     // The app comes from the signed state, not from a query param on the
     // provider's redirect — the callback URL is one GitHub controls.
     const app = await loadGitApp(db, dataEncryptionSecrets, claims.appId)
     if (!app || app.provider !== 'github' || !app.privateKeyPem) {
-      return c.json({ error: 'github_app_not_configured' }, 503)
+      return fail('not_configured', claims.appId)
     }
 
     const claimed = await assertInstallationUnclaimed(c, db, {
@@ -688,7 +757,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       provider: 'github',
       organizationId,
     })
-    if (claimed) return claimed
+    if (claimed) return fail('claimed', app.id)
 
     let account: { accountLogin: string | null; accountType: string | null }
     try {
@@ -699,7 +768,13 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         githubApiBaseFor(app),
       )
     } catch (error) {
-      return providerErrorResponse(c, error)
+      logWarn(
+        'git-sources',
+        `github installation lookup failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      )
+      return fail('provider_failed', app.id)
     }
 
     const [row] = await db
@@ -727,7 +802,9 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       })
       .returning({ id: gitProviderInstallation.id })
 
-    return c.json({ ok: true as const, id: row?.id ?? null, setupAction })
+    return redirectToGitAppUi(c, organizationId, app.id, {
+      installed: row?.id ?? 'ok',
+    })
   })
 
   /**
@@ -792,59 +869,59 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
    * row rather than returned: it is the only long-lived credential in this
    * feature, and GitLab rotates its refresh half on every use.
    */
+  /**
+   * Where GitLab sends the operator after they approve the OAuth grant.
+   *
+   * A top-level navigation like the GitHub install callback, so it redirects
+   * into the console rather than answering with a JSON body.
+   */
   router.get('/sources/gitlab/callback', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
 
+    const fail = (error: ProviderInstallReturnError, appId: string | null = null) =>
+      redirectToGitAppUi(c, organizationId, appId, { error })
+
     const secretsConfig = c.get('secretsConfig')
-    if (!secretsConfig) {
-      return c.json({ error: 'Signing unavailable — no root secret configured' }, 503)
-    }
+    if (!secretsConfig) return fail('unavailable')
 
     const state = c.req.query('state')
     const code = c.req.query('code')
-    if (!state || !code) return c.json({ error: 'Invalid request' }, 400)
+    if (!state || !code) return fail('invalid_request')
 
     const claims = await verifyGitlabConnectState(secretsConfig, state)
-    if (!claims) {
-      return c.json({ error: 'gitlab_connect_state_invalid' }, 400)
-    }
+    if (!claims) return fail('state_invalid')
     // The signed state is the authority; the live session must agree with it.
-    if (claims.organizationId !== organizationId) {
-      return c.json({ error: 'Forbidden' }, 403)
-    }
+    if (claims.organizationId !== organizationId) return fail('forbidden')
 
     const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    if (denied) return fail('forbidden', claims.appId)
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-    if (!dataEncryptionSecrets) {
-      return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
-    }
+    if (!dataEncryptionSecrets) return fail('unavailable', claims.appId)
 
     const app = await loadGitApp(db, dataEncryptionSecrets, claims.appId)
-    if (!app || app.provider !== 'gitlab') {
-      return c.json({ error: 'gitlab_oauth_not_configured' }, 503)
-    }
+    if (!app || app.provider !== 'gitlab') return fail('not_configured', claims.appId)
 
     const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
-    if (!redirectUri) return c.json({ error: 'gitlab_redirect_uri_unknown' }, 503)
+    if (!redirectUri) return fail('not_configured', app.id)
 
     let credentials
-    try {
-      credentials = gitlabOauthCredentials(app)
-    } catch (error) {
-      return providerErrorResponse(c, error)
-    }
-
     let pair
     let account
     try {
+      credentials = gitlabOauthCredentials(app)
       pair = await exchangeGitlabAuthorizationCode(credentials, { code, redirectUri })
       account = await fetchGitlabAccount(app.baseUrl, pair.token)
     } catch (error) {
-      return providerErrorResponse(c, error)
+      logWarn(
+        'git-sources',
+        `gitlab connect failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      )
+      return fail('provider_failed', app.id)
     }
 
     // GitLab's own account id is the stable handle for the connection. When the
@@ -859,7 +936,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       provider: 'gitlab',
       organizationId,
     })
-    if (claimed) return claimed
+    if (claimed) return fail('claimed', app.id)
 
     const [row] = await db
       .insert(gitProviderInstallation)
@@ -888,11 +965,11 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .returning({ id: gitProviderInstallation.id })
 
     const installationId = row?.id
-    if (!installationId) return c.json({ error: 'Failed to record connection' }, 500)
+    if (!installationId) return fail('provider_failed', app.id)
 
     await persistGitlabTokenPair(db, dataEncryptionSecrets, installationId, pair)
 
-    return c.json({ ok: true as const, id: installationId })
+    return redirectToGitAppUi(c, organizationId, app.id, { installed: installationId })
   })
 
   /**
@@ -1122,6 +1199,89 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       files: outcome.files,
       entries: outcome.entries,
     })
+  })
+
+  /**
+   * Bind a repository to this organization, reusing the binding if it exists.
+   *
+   * A `source` row is no longer something an operator creates and manages. It is
+   * created here, implicitly, at the moment a repository is attached to a
+   * project, and it never appears in the console as a thing of its own — the
+   * operator picks **app -> account -> repository** and this is what that
+   * resolves to underneath.
+   *
+   * **Idempotent by construction.** Two projects on the same repository share
+   * one row rather than racing to make two, which matters because `auto_deploy`
+   * and `default_branch` live on the row: duplicates would let one repository
+   * hold two different policies while a single push fanned out to both. The
+   * `uniq_source_organization_installation_repository` index is what makes the
+   * insert-then-fall-back safe under concurrency instead of a check-then-insert
+   * race.
+   *
+   * It commits **before** the project save that references it, because
+   * `loadOrganizationSourceIds` feeds `knownSourceIds` into the compose lint and
+   * an unknown `sourceId` fails the whole document.
+   */
+  router.post('/sources/attach', async (c) => {
+    const ctx = await resolveSourceSession(c)
+    if (ctx instanceof Response) return ctx
+    const { db, organizationId } = ctx
+
+    const denied = await assertCanCreateOr403(c, 'source', organizationId)
+    if (denied) return denied
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const fields = parseSourceAttachBody(body)
+    if (!fields) {
+      return c.json({
+        error: 'expected { installationId, repositoryExternalId, repositoryUrl, defaultBranch? }',
+      }, 400)
+    }
+
+    const installationDenied = await assertInstallationInOrganization(
+      c,
+      db,
+      organizationId,
+      fields.installationId,
+    )
+    if (installationDenied) return installationDenied
+
+    const [installation] = await db
+      .select({ provider: gitProviderInstallation.provider })
+      .from(gitProviderInstallation)
+      .where(eq(gitProviderInstallation.id, fields.installationId))
+      .limit(1)
+    if (!installation) return c.json({ error: 'Not found' }, 404)
+
+    const existing = await findAttachedSource(db, organizationId, fields)
+    if (existing) return c.json({ ok: true as const, id: existing, reused: true })
+
+    try {
+      const [inserted] = await db
+        .insert(source)
+        .values({
+          organizationId,
+          installationId: fields.installationId,
+          provider: installation.provider,
+          repositoryUrl: fields.repositoryUrl,
+          repositoryExternalId: fields.repositoryExternalId,
+          defaultBranch: fields.defaultBranch,
+        })
+        .returning({ id: source.id })
+      const id = inserted?.id
+      if (!id) return c.json({ error: 'Failed to attach source' }, 500)
+      return c.json({ ok: true as const, id, reused: false }, 201)
+    } catch (error) {
+      // Lost the race against a concurrent attach of the same repository. The
+      // unique index did its job; read back the winner rather than failing an
+      // operation that has already achieved what the caller asked for.
+      if (!isUniqueViolation(error)) throw error
+      const winner = await findAttachedSource(db, organizationId, fields)
+      if (!winner) throw error
+      return c.json({ ok: true as const, id: winner, reused: true })
+    }
   })
 
   router.post('/sources', async (c) => {

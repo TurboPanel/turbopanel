@@ -1,7 +1,12 @@
 # TurboPanel reverse proxy (production).
 #
-#   /api/*  and  /ws/*  -> Deno instance (Unix socket)
-#   everything else      -> static UI export
+#   /api/*, /ws/*, /webhook/*  -> Deno instance (Unix socket)
+#   everything else            -> static UI export
+#
+# The catch-all below answers `try_files {path} /index.html`, so ANY prefix the
+# instance owns must be matched before it. A missed prefix does not 404 — it
+# serves the SPA shell with HTTP 200, and a Git provider reads that as a
+# delivered webhook and never retries. Add the matcher when you add the surface.
 #
 # Co-located development uses a separate Caddyfile from the turbopanel/dev
 # overlay (orchestration/Caddyfile under the dev checkout). Expo proxy,
@@ -36,6 +41,18 @@
 
 	@ws path /ws/*
 	handle @ws {
+		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# Inbound Git provider webhooks. Its own top-level prefix because the caller
+	# is GitHub or GitLab — no session, no daemon JWT, no Origin — so it is a
+	# different class of traffic from /api. X-Real-IP is load-bearing here: the
+	# webhook rate limiter keys per peer address, and without it every delivery
+	# on the instance shares one bucket.
+	@webhook path /webhook/*
+	handle @webhook {
 		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
 			header_up X-Real-IP {remote_host}
 		}

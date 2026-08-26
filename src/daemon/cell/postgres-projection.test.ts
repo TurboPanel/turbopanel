@@ -4,10 +4,9 @@ import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
 
 /**
  * Metadata as it exists in the `server.metadata` jsonb column, which can carry
- * keys `ServerMetadata` no longer models (facts older daemons wrote before
- * `os` / `timeSync` moved to dedicated columns and `ips` moved under
- * `resources`). The projection must round-trip them untouched, so the fixtures
- * below deliberately keep them.
+ * keys `ServerMetadata` does not model — a daemon is free to report facts the
+ * control plane has no field for. The projection must round-trip those
+ * untouched rather than dropping them, so the fixtures below carry some.
  */
 type StoredServerMetadata = ServerMetadata & Record<string, unknown>;
 import type { ServerGeo } from "../../lib/geo/server-geo.ts";

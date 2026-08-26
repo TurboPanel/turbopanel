@@ -18,12 +18,6 @@ This is the opposite of host metrics (`src/daemon/metrics/AGENTS.md`), which
 *are* queried across servers and time and therefore *do* live in Analytics
 Engine / ClickHouse. Do not "unify" the two.
 
-It is also the opposite of **container logs**
-(`src/lib/container-logs/AGENTS.md`) — the other "logs" subsystem, and a
-storage mirror image of this one. Container output *is* queried across servers,
-services and time, so it lives in a ClickHouse analytics table with a fixed
-predicate set. Same word, opposite access pattern; keep them separate.
-
 ## Layout
 
 Bytes are date-partitioned so retention is a prefix delete. The index is **flat
@@ -115,7 +109,7 @@ because `DeleteObjects` requires a Content-MD5 neither runtime can produce.
 4. **Retention** — `sweepExpired` rides the **existing** once-a-minute
    maintenance tick (`offline-sweep.ts` on Workers cron, `DAEMON_CELL_MAINTAIN_MS`
    on Deno) alongside `sweepExpiredCommandDispatch`. No new timer, no new
-   connection. Default `EXECUTION_LOG_RETENTION_DAYS` = 30, bounded per tick by
+   connection. Default `EXECUTION_LOG_RETENTION_DAYS` = 90, bounded per tick by
    `EXECUTION_LOG_SWEEP_LIMIT` = 200, probing a bounded run of date partitions so
    one tick's list volume stays constant.
 
@@ -137,7 +131,7 @@ id under the existing 100-id batch cap. Do not add a column to "cache" it.
 | --- | --- | --- |
 | `TURBOPANEL_EXECUTION_LOG_DIR` | Deno filesystem | `<stateDir>/execution-logs` |
 | `TURBOPANEL_EXECUTION_LOG_DRIVER` | Deno | `filesystem` (or `s3`) |
-| `TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS` | Deno + Workers | `30` |
+| `TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS` | Deno + Workers | `90` |
 | `TURBOPANEL_EXECUTION_LOG_S3_ENDPOINT` / `_BUCKET` / `_REGION` / `_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | Deno s3 | — (all required) |
 | `TURBOPANEL_EXECUTION_LOG_S3_FORCE_PATH_STYLE` | Deno s3 | `1` (path-style) |
 

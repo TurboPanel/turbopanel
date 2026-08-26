@@ -59,6 +59,17 @@ export const containerSchemas = {
       updatedAt: { type: 'string', format: 'date-time' },
     },
   },
+  ContainerLogsResponse: {
+    type: 'object',
+    required: ['logs'],
+    properties: {
+      logs: {
+        type: 'string',
+        description:
+          'Bounded `docker container logs --tail` snapshot. Discarded after the response — never stored.',
+      },
+    },
+  },
   ContainersResponse: {
     type: 'object',
     required: ['containers'],
@@ -152,3 +163,49 @@ listGet.get.parameters.push(
       "Filter containers across every environment of a project — one call instead of one per environment",
   },
 )
+
+function jsonSchema(ref: string) {
+  return {
+    content: {
+      'application/json': {
+        schema: { $ref: `#/components/schemas/${ref}` },
+      },
+    },
+  }
+}
+
+Object.assign(containerPaths, {
+  '/api/client/v1/containers/{id}/logs': {
+    get: {
+      tags: ['Containers'],
+      summary: 'On-demand docker container logs tail (not stored)',
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string' },
+          description: 'TurboPanel container row id',
+        },
+        {
+          name: 'tail',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer', default: 200, maximum: 2000 },
+        },
+      ],
+      responses: {
+        200: {
+          description: 'Bounded log text',
+          ...jsonSchema('ContainerLogsResponse'),
+        },
+        409: {
+          description: 'Server offline or container has no Docker id yet',
+        },
+        503: {
+          description: 'Timeout or daemon unavailable',
+        },
+      },
+    },
+  },
+})
