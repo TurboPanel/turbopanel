@@ -24,7 +24,7 @@ etc. return **400** `{ error: "compose_invalid", issues }` (empty-draft “no
 services” warnings are allowed). Deploy uses `composeDocumentToRuntimeYaml`
 (presentation stripped). Deploy prep (`deploy-prepare.ts`) pipeline order: merge
 project+env compose → `reconcileServicesFromCompose` → interpret Swarm `deploy:`
-/ plan `task` rows (`src/lib/schedule/`) → **`allocateEnvironmentContainers`**
+/ plan `slot` rows (`src/lib/schedule/`) → **`allocateEnvironmentContainers`**
 (pre-allocate `container` rows when `project.options.containerNaming` is `uuid`,
 or `custom` with an explicit compose `services.<key>.container_name`; replica
 identity is `(service, ordinal)` with `ordinal = slot + 1`, not sibling `web-N`
@@ -79,7 +79,7 @@ audit the pin. Docker ignores `x-*`. There is no stored-compose placement
 helper, because authored compose is never a placement store. **Placement SoT is
 `environment.server_id` as a hard whole-environment pin** (never requires
 TurboFabric). When unset, `project.options.defaultServerId` is the unconstrained
-fallback and the scheduler (`src/lib/schedule/`) may place `task` rows from
+fallback and the scheduler (`src/lib/schedule/`) may place `slot` rows from
 Compose `deploy.replicas` / `mode: global` / `placement.constraints`
 (`node.labels.*` from the `label` table). A plan that would use **two or more
 servers** requires org TurboFabric (`422 turbofabric_required`); a one-server
@@ -130,7 +130,7 @@ input compiled out of runtime YAML; it is not a per-service compose pin.
 `SOURCE_BRANCH_MAX_LENGTH` / `SOURCE_COMMAND_MAX_LENGTH`; the path fields reuse
 the exported `isSafeRoot` rule that already guards `root`). It is no longer
 inert. Deploy prep resolves every binding into payload **`sourceMaterial[]`**
-(`src/client/environments/deploy-sources.ts`): the `source` row is loaded
+(`src/client/environments/deploy-sources.ts`): the `repository` row is loaded
 org-scoped, the ref resolves to a commit (GitHub REST for `provider: 'github'`;
 generic SSH passes the ref through until `ls-remote` resolution lands), a
 short-lived clone credential is minted/resealed as a `tpdaemon` envelope, a
@@ -153,11 +153,11 @@ emits a **non-blocking** advisory (`blocking: false`) rather than gating on
 `serviceKind`. **Where `sourceId` resolution lives:** the compose parser and
 linter are pure and have no database, so "does this id exist for the org?" is
 enforced at the write boundary — project/environment create + PATCH load
-`loadOrganizationSourceIds` (`src/lib/db/source-records.ts`) once per request
+`loadOrganizationRepositoryIds` (`src/lib/db/repository-records.ts`) once per request
 and pass it as `lintComposeYaml(…, { knownSourceIds })`; an unresolvable id is a
 blocking `error` at `services.<name>.x-turbopanel.source.sourceId`. When
 `knownSourceIds` is omitted the check is **skipped**, never failed. Source rows
-themselves are org-owned (`src/client/sources/routes.ts`); deleting one still
+themselves are org-owned (`src/client/repositories/routes.ts`); deleting one still
 referenced by a stored compose returns **409** `source_referenced_by_compose`.
 `ui/src/lib/compose/service-kind.ts` + `lint.ts` mirror the types and both
 rules.
@@ -211,9 +211,9 @@ Deploy does **not** send that authoring chain to daemons. After merge + schedule
 
 ### Spanning networks (TurboFabric)
 
-Spanning `network(kind='compose')` compiles to `external: true` + `name: tpn_<networkId>`; each local task's address comes from `task.address` and is emitted as `networks.<key>.ipv4_address`; multi-replica spanning services expand to `<name>-<ordinal>` so each replica carries a distinct address.
+Spanning `network(kind='compose')` compiles to `external: true` + `name: tpn_<networkId>`; each local slot's address comes from `slot.address` and is emitted as `networks.<key>.ipv4_address`; multi-replica spanning services expand to `<name>-<ordinal>` so each replica carries a distinct address.
 
 **`serviceDnsName` contract** (`src/lib/naming.ts`) is the single naming authority: most-specific-first, `('web', 1, 'env-1') → ['web-1.env-1', 'web.env-1']`, `('web', null, 'env-1') → ['web.env-1']`. Compile emits these as static `extra_hosts` for sibling services that share at least one spanning network (never the service itself, never cross-environment/cross-project). **Why the shape matters:** these entries are a stop-gap superseded by an embedded resolver in the daemon later — keeping the name set behind `serviceDnsName` makes that a drop-in swap.
 
-**`fabricNetworks[]` vs `dockerExternalNetworks[]`** — both end up as pre-`compose up` `docker network create`, but they are disjoint sets with different owners: `dockerExternalNetworks[]` are operator-registered org `network(kind='docker')` rows with `options.dockerNetworkName` (unregistered → **422** `docker_external_network_unregistered`); `fabricNetworks[]` (`{ name, subnet, gateway?, mtu? }`) are platform-owned `tpn_*` routed bridges derived from `segment` rows. **Record why:** `tpn_*` must never hit the external-network registration gate — it is allocated by the compiler, not declared by the operator, so requiring a registry row would make every spanning deploy fail. It also gives the daemon a belt-and-braces path if `server.fabric.reconcile` lands stale.
+**`fabricNetworks[]` vs `dockerExternalNetworks[]`** — both end up as pre-`compose up` `docker network create`, but they are disjoint sets with different owners: `dockerExternalNetworks[]` are operator-registered org `network(kind='docker')` rows with `options.dockerNetworkName` (unregistered → **422** `docker_external_network_unregistered`); `fabricNetworks[]` (`{ name, subnet, gateway?, mtu? }`) are platform-owned `tpn_*` routed bridges derived from `subnet` rows (compose-bridge CIDRs, not datacenter subnets). **Record why:** `tpn_*` must never hit the external-network registration gate — it is allocated by the compiler, not declared by the operator, so requiring a registry row would make every spanning deploy fail. It also gives the daemon a belt-and-braces path if `server.fabric.reconcile` lands stale.
 

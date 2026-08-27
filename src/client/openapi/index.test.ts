@@ -93,3 +93,36 @@ test('getClientOpenApiSpec registers the batched command status surface', () => 
   assertEquals('result' in record.properties, false)
   assertEquals('context' in record.properties, false)
 })
+
+test('repository OpenAPI documents forgeId on connect flows and connection rows', () => {
+  const spec = getClientOpenApiSpec('https://localhost:8443') as {
+    paths: Record<string, {
+      get?: { parameters?: Array<{ name: string; in: string }> }
+    }>
+    components: {
+      schemas: {
+        GitProviderConnectionRecord: { properties: Record<string, unknown> }
+      }
+    }
+  }
+
+  const githubInstall = spec.paths[`${CLIENT_API_PREFIX}/repositories/github/install`]
+  const gitlabOauth = spec.paths[`${CLIENT_API_PREFIX}/repositories/gitlab/oauth`]
+  assertEquals(
+    githubInstall?.get?.parameters?.some((param) => param.in === 'query' && param.name === 'forgeId'),
+    true,
+  )
+  assertEquals(
+    gitlabOauth?.get?.parameters?.some((param) => param.in === 'query' && param.name === 'forgeId'),
+    true,
+  )
+  assertEquals(
+    githubInstall?.get?.parameters?.some((param) => param.name === 'appId'),
+    false,
+  )
+  assertEquals(
+    gitlabOauth?.get?.parameters?.some((param) => param.name === 'appId'),
+    false,
+  )
+  assertExists(spec.components.schemas.GitProviderConnectionRecord.properties.forgeId)
+})

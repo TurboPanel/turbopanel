@@ -201,7 +201,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/org-context-parse.test.ts \
   src/client/org-context.test.ts \
   src/client/org-context.hostfree.test.ts \
-  src/client/principals/stewards.test.ts \
+  src/client/principals/tenancies.test.ts \
   src/client/principals/routes.test.ts \
   src/client/principals/serialize.test.ts \
   src/client/principals/store.test.ts \
@@ -228,14 +228,14 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/servers/update-status.test.ts \
   src/client/shared.test.ts \
   src/client/shared-authz-guards.test.ts \
-  src/client/sources/inspect.hostfree.test.ts \
-  src/client/sources/read-repository.hostfree.test.ts \
-  src/client/sources/provider-install-state.hostfree.test.ts \
-  src/client/git-apps/routes-helpers.hostfree.test.ts \
-  src/client/git-apps/handlers.hostfree.test.ts \
-  src/client/sources/routes-helpers.hostfree.test.ts \
-  src/client/sources/routes.hostfree.test.ts \
-  src/client/sources/webhook-trigger.hostfree.test.ts \
+  src/client/repositories/inspect.hostfree.test.ts \
+  src/client/repositories/read-repository.hostfree.test.ts \
+  src/client/repositories/provider-install-state.hostfree.test.ts \
+  src/client/forges/routes-helpers.hostfree.test.ts \
+  src/client/forges/handlers.hostfree.test.ts \
+  src/client/repositories/routes-helpers.hostfree.test.ts \
+  src/client/repositories/routes.hostfree.test.ts \
+  src/client/repositories/webhook-trigger.hostfree.test.ts \
   src/webhook/gate.hostfree.test.ts \
   src/webhook/git/github.hostfree.test.ts \
   src/webhook/git/gitlab.hostfree.test.ts \
@@ -254,6 +254,10 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/system/routes-helpers.hostfree.test.ts \
   src/client/teams/routes-helpers.hostfree.test.ts \
   src/client/teams/routes.test.ts \
+  src/client/tags/routes-helpers.hostfree.test.ts \
+  src/client/tags/routes.hostfree.test.ts \
+  src/client/tasks/routes-helpers.hostfree.test.ts \
+  src/client/tasks/routes.hostfree.test.ts \
   src/client/variables/resolve-inherited.test.ts \
   src/client/variables/resolve-inherited.hostfree.test.ts \
   src/client/variables/routes-helpers.test.ts \
@@ -398,13 +402,15 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/recovery-records.hostfree.test.ts \
   src/lib/db/releases.hostfree.test.ts \
   src/lib/db/server-metadata.test.ts \
-  src/lib/db/source-records.hostfree.test.ts \
+  src/lib/db/repository-records.hostfree.test.ts \
   src/lib/db/storage-records.hostfree.test.ts \
+  src/lib/db/tag-records.hostfree.test.ts \
+  src/lib/db/task-records.hostfree.test.ts \
   src/lib/db/webhook-delivery-records.hostfree.test.ts \
   src/lib/db/table-naming.test.ts \
   src/lib/db/boolean-column-naming.test.ts \
   src/lib/db/tls-leaf-indexes.test.ts \
-  src/lib/db/task-records.hostfree.test.ts \
+  src/lib/db/slot-records.hostfree.test.ts \
   src/lib/db/workspace-kind.test.ts \
   src/lib/docker-network-name.test.ts \
   src/lib/email/mailgun/deno-mailgun-queue.test.ts \
@@ -518,8 +524,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/tls/routes-helpers.test.ts \
   src/client/tls/routes-helpers.hostfree.test.ts \
   src/client/tls/organization-ca.hostfree.test.ts \
-  src/client/tls/rotation-fanout.hostfree.test.ts \
-  src/client/tls/rotation-lease.hostfree.test.ts \
+  src/client/tls/changeover-fanout.hostfree.test.ts \
+  src/client/tls/changeover-lease.hostfree.test.ts \
   src/client/tls/leaf-tracking.hostfree.test.ts \
   src/client/tls/leaf-renewal-sweep.hostfree.test.ts \
   src/client/variables/routes.test.ts \

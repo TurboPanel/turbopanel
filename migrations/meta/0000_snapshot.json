@@ -1,5 +1,5 @@
 {
-  "id": "564e8fcc-f752-40ed-a8fb-b2d3f26b8cd3",
+  "id": "cc0c443b-c54e-485d-81f4-ee1a29330473",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -297,6 +297,150 @@
         "binding_database_name_format_check": {
           "name": "binding_database_name_format_check",
           "value": "(char_length((database_name)::text) >= 1) AND (char_length((database_name)::text) <= 63) AND ((database_name)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.changeover": {
+      "name": "changeover",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "from_ca_generation": {
+          "name": "from_ca_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "to_ca_generation": {
+          "name": "to_ca_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "results": {
+          "name": "results",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'[]'::jsonb"
+        }
+      },
+      "indexes": {
+        "idx_changeover_organization_id": {
+          "name": "idx_changeover_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_changeover_inflight_organization": {
+          "name": "uniq_changeover_inflight_organization",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"changeover\".\"state\" = 'in_progress'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "changeover_organization_id_organization_id_fk": {
+          "name": "changeover_organization_id_organization_id_fk",
+          "tableFrom": "changeover",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "changeover_state_check": {
+          "name": "changeover_state_check",
+          "value": "\"changeover\".\"state\" IN ('in_progress','awaiting_retire','completed','failed')"
         }
       },
       "isRLSEnabled": false
@@ -755,153 +899,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.credential": {
-      "name": "credential",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "metadata": {
-          "name": "metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "options": {
-          "name": "options",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "principal_id": {
-          "name": "principal_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "secret_envelope": {
-          "name": "secret_envelope",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "idx_credential_organization_id": {
-          "name": "idx_credential_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_credential_principal_id": {
-          "name": "idx_credential_principal_id",
-          "columns": [
-            {
-              "expression": "principal_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "credential_organization_id_organization_id_fk": {
-          "name": "credential_organization_id_organization_id_fk",
-          "tableFrom": "credential",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "credential_principal_id_principal_id_fk": {
-          "name": "credential_principal_id_principal_id_fk",
-          "tableFrom": "credential",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "credential_provider_check": {
-          "name": "credential_provider_check",
-          "value": "provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',\n        'git_deploy_key')"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.datacenter": {
       "name": "datacenter",
       "schema": "",
@@ -994,12 +991,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "datacenter_name_format_check": {
-          "name": "datacenter_name_format_check",
-          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.deployment": {
@@ -1630,8 +1622,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.gitapp": {
-      "name": "gitapp",
+    "public.forge": {
+      "name": "forge",
       "schema": "",
       "columns": {
         "id": {
@@ -1752,8 +1744,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "credentials": {
-          "name": "credentials",
+        "envelopes": {
+          "name": "envelopes",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
@@ -1772,8 +1764,8 @@
         }
       },
       "indexes": {
-        "idx_gitapp_organization_id": {
-          "name": "idx_gitapp_organization_id",
+        "idx_forge_organization_id": {
+          "name": "idx_forge_organization_id",
           "columns": [
             {
               "expression": "organization_id",
@@ -1788,8 +1780,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_gitapp_provider": {
-          "name": "idx_gitapp_provider",
+        "idx_forge_provider": {
+          "name": "idx_forge_provider",
           "columns": [
             {
               "expression": "provider",
@@ -1806,9 +1798,9 @@
         }
       },
       "foreignKeys": {
-        "gitapp_organization_id_organization_id_fk": {
-          "name": "gitapp_organization_id_organization_id_fk",
-          "tableFrom": "gitapp",
+        "forge_organization_id_organization_id_fk": {
+          "name": "forge_organization_id_organization_id_fk",
+          "tableFrom": "forge",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
@@ -1822,15 +1814,15 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uniq_gitapp_webhook_ref": {
-          "name": "uniq_gitapp_webhook_ref",
+        "uniq_forge_webhook_ref": {
+          "name": "uniq_forge_webhook_ref",
           "nullsNotDistinct": false,
           "columns": [
             "webhook_ref"
           ]
         },
-        "uniq_gitapp_provider_base_external": {
-          "name": "uniq_gitapp_provider_base_external",
+        "uniq_forge_provider_base_external": {
+          "name": "uniq_forge_provider_base_external",
           "nullsNotDistinct": false,
           "columns": [
             "provider",
@@ -1838,8 +1830,8 @@
             "external_app_id"
           ]
         },
-        "uniq_gitapp_webhook_token_hash": {
-          "name": "uniq_gitapp_webhook_token_hash",
+        "uniq_forge_webhook_token_hash": {
+          "name": "uniq_forge_webhook_token_hash",
           "nullsNotDistinct": false,
           "columns": [
             "webhook_token_hash"
@@ -1848,15 +1840,15 @@
       },
       "policies": {},
       "checkConstraints": {
-        "gitapp_provider_check": {
-          "name": "gitapp_provider_check",
+        "forge_provider_check": {
+          "name": "forge_provider_check",
           "value": "provider IN ('github', 'gitlab')"
         }
       },
       "isRLSEnabled": false
     },
-    "public.installation": {
-      "name": "installation",
+    "public.connection": {
+      "name": "connection",
       "schema": "",
       "columns": {
         "id": {
@@ -1898,8 +1890,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "app_id": {
-          "name": "app_id",
+        "forge_id": {
+          "name": "forge_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -1942,8 +1934,8 @@
         }
       },
       "indexes": {
-        "idx_installation_organization_id": {
-          "name": "idx_installation_organization_id",
+        "idx_connection_organization_id": {
+          "name": "idx_connection_organization_id",
           "columns": [
             {
               "expression": "organization_id",
@@ -1958,11 +1950,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_installation_app_id": {
-          "name": "idx_installation_app_id",
+        "idx_connection_forge_id": {
+          "name": "idx_connection_forge_id",
           "columns": [
             {
-              "expression": "app_id",
+              "expression": "forge_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -1976,9 +1968,9 @@
         }
       },
       "foreignKeys": {
-        "installation_organization_id_organization_id_fk": {
-          "name": "installation_organization_id_organization_id_fk",
-          "tableFrom": "installation",
+        "connection_organization_id_organization_id_fk": {
+          "name": "connection_organization_id_organization_id_fk",
+          "tableFrom": "connection",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
@@ -1989,12 +1981,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "installation_app_id_gitapp_id_fk": {
-          "name": "installation_app_id_gitapp_id_fk",
-          "tableFrom": "installation",
-          "tableTo": "gitapp",
+        "connection_forge_id_forge_id_fk": {
+          "name": "connection_forge_id_forge_id_fk",
+          "tableFrom": "connection",
+          "tableTo": "forge",
           "columnsFrom": [
-            "app_id"
+            "forge_id"
           ],
           "columnsTo": [
             "id"
@@ -2005,20 +1997,20 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uniq_installation_organization_app_external": {
-          "name": "uniq_installation_organization_app_external",
+        "uniq_connection_organization_forge_external": {
+          "name": "uniq_connection_organization_forge_external",
           "nullsNotDistinct": false,
           "columns": [
             "organization_id",
-            "app_id",
+            "forge_id",
             "external_installation_id"
           ]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "installation_provider_check": {
-          "name": "installation_provider_check",
+        "connection_provider_check": {
+          "name": "connection_provider_check",
           "value": "provider IN ('github', 'gitlab')"
         }
       },
@@ -2298,12 +2290,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "hosting_name_format_check": {
-          "name": "hosting_name_format_check",
-          "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.invitation": {
@@ -2862,8 +2849,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "node_id": {
-          "name": "node_id",
+        "replica_id": {
+          "name": "replica_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -2943,11 +2930,11 @@
           "method": "btree",
           "with": {}
         },
-        "uniq_leaf_engine_node": {
-          "name": "uniq_leaf_engine_node",
+        "uniq_leaf_engine_replica": {
+          "name": "uniq_leaf_engine_replica",
           "columns": [
             {
-              "expression": "node_id",
+              "expression": "replica_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -3000,12 +2987,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "leaf_node_id_node_id_fk": {
-          "name": "leaf_node_id_node_id_fk",
+        "leaf_replica_id_replica_id_fk": {
+          "name": "leaf_replica_id_replica_id_fk",
           "tableFrom": "leaf",
-          "tableTo": "node",
+          "tableTo": "replica",
           "columnsFrom": [
-            "node_id"
+            "replica_id"
           ],
           "columnsTo": [
             "id"
@@ -3037,7 +3024,7 @@
         },
         "leaf_kind_keys_check": {
           "name": "leaf_kind_keys_check",
-          "value": "(\n        (\"leaf\".\"kind\" = 'ingress' AND \"leaf\".\"node_id\" IS NULL AND \"leaf\".\"managed_id\" IS NULL)\n        OR\n        (\"leaf\".\"kind\" = 'engine' AND \"leaf\".\"node_id\" IS NOT NULL AND \"leaf\".\"managed_id\" IS NOT NULL)\n      )"
+          "value": "(\n        (\"leaf\".\"kind\" = 'ingress' AND \"leaf\".\"replica_id\" IS NULL AND \"leaf\".\"managed_id\" IS NULL)\n        OR\n        (\"leaf\".\"kind\" = 'engine' AND \"leaf\".\"replica_id\" IS NOT NULL AND \"leaf\".\"managed_id\" IS NOT NULL)\n      )"
         }
       },
       "isRLSEnabled": false
@@ -3164,255 +3151,6 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.location": {
-      "name": "location",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "metadata": {
-          "name": "metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "options": {
-          "name": "options",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "storage_id": {
-          "name": "storage_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "server_id": {
-          "name": "server_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_id": {
-          "name": "credential_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "role": {
-          "name": "role",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'primary'"
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "path": {
-          "name": "path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "endpoint": {
-          "name": "endpoint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "generation": {
-          "name": "generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        }
-      },
-      "indexes": {
-        "idx_location_storage_id": {
-          "name": "idx_location_storage_id",
-          "columns": [
-            {
-              "expression": "storage_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_location_server_id": {
-          "name": "idx_location_server_id",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_location_credential_id": {
-          "name": "idx_location_credential_id",
-          "columns": [
-            {
-              "expression": "credential_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_location_storage_primary": {
-          "name": "uniq_location_storage_primary",
-          "columns": [
-            {
-              "expression": "storage_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"location\".\"role\" = 'primary'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_location_storage_server_provider": {
-          "name": "uniq_location_storage_server_provider",
-          "columns": [
-            {
-              "expression": "storage_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"location\".\"server_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "location_storage_id_storage_id_fk": {
-          "name": "location_storage_id_storage_id_fk",
-          "tableFrom": "location",
-          "tableTo": "storage",
-          "columnsFrom": [
-            "storage_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "location_server_id_server_id_fk": {
-          "name": "location_server_id_server_id_fk",
-          "tableFrom": "location",
-          "tableTo": "server",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "location_credential_id_credential_id_fk": {
-          "name": "location_credential_id_credential_id_fk",
-          "tableFrom": "location",
-          "tableTo": "credential",
-          "columnsFrom": [
-            "credential_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "location_provider_check": {
-          "name": "location_provider_check",
-          "value": "provider IN ('docker', 'path', 'block', 'nfs', 'cifs', 's3', 's3_compatible', 'sftp', 'ftp', 'webdav')"
-        },
-        "location_role_check": {
-          "name": "location_role_check",
-          "value": "role IN ('primary', 'replica', 'scratch', 'archive')"
-        },
-        "location_state_check": {
-          "name": "location_state_check",
-          "value": "state IN ('pending', 'materializing', 'ready', 'syncing', 'stale', 'failed', 'retiring')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.managed": {
@@ -3587,6 +3325,481 @@
         "managed_status_check": {
           "name": "managed_status_check",
           "value": "status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.marker": {
+      "name": "marker",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "tag_id": {
+          "name": "tag_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "service_id": {
+          "name": "service_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "datacenter_id": {
+          "name": "datacenter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "storage_id": {
+          "name": "storage_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_marker_tag_id": {
+          "name": "idx_marker_tag_id",
+          "columns": [
+            {
+              "expression": "tag_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_marker_server_id": {
+          "name": "idx_marker_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_marker_workspace_id": {
+          "name": "idx_marker_workspace_id",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_marker_project_id": {
+          "name": "idx_marker_project_id",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_marker_environment_id": {
+          "name": "idx_marker_environment_id",
+          "columns": [
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_marker_service_id": {
+          "name": "idx_marker_service_id",
+          "columns": [
+            {
+              "expression": "service_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_marker_datacenter_id": {
+          "name": "idx_marker_datacenter_id",
+          "columns": [
+            {
+              "expression": "datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_marker_storage_id": {
+          "name": "idx_marker_storage_id",
+          "columns": [
+            {
+              "expression": "storage_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_marker_server": {
+          "name": "uniq_marker_server",
+          "columns": [
+            {
+              "expression": "tag_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"marker\".\"server_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_marker_workspace": {
+          "name": "uniq_marker_workspace",
+          "columns": [
+            {
+              "expression": "tag_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"marker\".\"workspace_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_marker_project": {
+          "name": "uniq_marker_project",
+          "columns": [
+            {
+              "expression": "tag_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"marker\".\"project_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_marker_environment": {
+          "name": "uniq_marker_environment",
+          "columns": [
+            {
+              "expression": "tag_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"marker\".\"environment_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_marker_service": {
+          "name": "uniq_marker_service",
+          "columns": [
+            {
+              "expression": "tag_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "service_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"marker\".\"service_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_marker_datacenter": {
+          "name": "uniq_marker_datacenter",
+          "columns": [
+            {
+              "expression": "tag_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "datacenter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"marker\".\"datacenter_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_marker_storage": {
+          "name": "uniq_marker_storage",
+          "columns": [
+            {
+              "expression": "tag_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "storage_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"marker\".\"storage_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "marker_tag_id_tag_id_fk": {
+          "name": "marker_tag_id_tag_id_fk",
+          "tableFrom": "marker",
+          "tableTo": "tag",
+          "columnsFrom": [
+            "tag_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "marker_server_id_server_id_fk": {
+          "name": "marker_server_id_server_id_fk",
+          "tableFrom": "marker",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "marker_workspace_id_workspace_id_fk": {
+          "name": "marker_workspace_id_workspace_id_fk",
+          "tableFrom": "marker",
+          "tableTo": "workspace",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "marker_project_id_project_id_fk": {
+          "name": "marker_project_id_project_id_fk",
+          "tableFrom": "marker",
+          "tableTo": "project",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "marker_environment_id_environment_id_fk": {
+          "name": "marker_environment_id_environment_id_fk",
+          "tableFrom": "marker",
+          "tableTo": "environment",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "marker_service_id_service_id_fk": {
+          "name": "marker_service_id_service_id_fk",
+          "tableFrom": "marker",
+          "tableTo": "service",
+          "columnsFrom": [
+            "service_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "marker_datacenter_id_datacenter_id_fk": {
+          "name": "marker_datacenter_id_datacenter_id_fk",
+          "tableFrom": "marker",
+          "tableTo": "datacenter",
+          "columnsFrom": [
+            "datacenter_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "marker_storage_id_storage_id_fk": {
+          "name": "marker_storage_id_storage_id_fk",
+          "tableFrom": "marker",
+          "tableTo": "storage",
+          "columnsFrom": [
+            "storage_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "marker_exactly_one_parent_check": {
+          "name": "marker_exactly_one_parent_check",
+          "value": "((server_id IS NOT NULL)::int +\n        (workspace_id IS NOT NULL)::int +\n        (project_id IS NOT NULL)::int +\n        (environment_id IS NOT NULL)::int +\n        (service_id IS NOT NULL)::int +\n        (datacenter_id IS NOT NULL)::int +\n        (storage_id IS NOT NULL)::int) = 1"
         }
       },
       "isRLSEnabled": false
@@ -3961,245 +4174,6 @@
         "network_name_format_check": {
           "name": "network_name_format_check",
           "value": "(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.node": {
-      "name": "node",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "metadata": {
-          "name": "metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "options": {
-          "name": "options",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "managed_id": {
-          "name": "managed_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "server_id": {
-          "name": "server_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "role": {
-          "name": "role",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'primary'"
-        },
-        "replica_class": {
-          "name": "replica_class",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "is_read_eligible": {
-          "name": "is_read_eligible",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "ordinal": {
-          "name": "ordinal",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "replication_transport": {
-          "name": "replication_transport",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "private_port": {
-          "name": "private_port",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "idx_node_managed_id": {
-          "name": "idx_node_managed_id",
-          "columns": [
-            {
-              "expression": "managed_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_node_server_id": {
-          "name": "idx_node_server_id",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_node_primary": {
-          "name": "uniq_node_primary",
-          "columns": [
-            {
-              "expression": "managed_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"node\".\"role\" = 'primary'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_node_server_private_port": {
-          "name": "uniq_node_server_private_port",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "private_port",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"node\".\"private_port\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "node_managed_id_managed_id_fk": {
-          "name": "node_managed_id_managed_id_fk",
-          "tableFrom": "node",
-          "tableTo": "managed",
-          "columnsFrom": [
-            "managed_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "node_server_id_server_id_fk": {
-          "name": "node_server_id_server_id_fk",
-          "tableFrom": "node",
-          "tableTo": "server",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uniq_node_managed_ordinal": {
-          "name": "uniq_node_managed_ordinal",
-          "nullsNotDistinct": false,
-          "columns": [
-            "managed_id",
-            "ordinal"
-          ]
-        },
-        "uniq_node_managed_server": {
-          "name": "uniq_node_managed_server",
-          "nullsNotDistinct": false,
-          "columns": [
-            "managed_id",
-            "server_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "node_role_check": {
-          "name": "node_role_check",
-          "value": "\"node\".\"role\" IN ('primary','replica')"
-        },
-        "node_replica_class_check": {
-          "name": "node_replica_class_check",
-          "value": "\"node\".\"replica_class\" IS NULL OR \"node\".\"replica_class\" IN ('failover','read')"
-        },
-        "node_ordinal_positive_check": {
-          "name": "node_ordinal_positive_check",
-          "value": "\"node\".\"ordinal\" >= 1"
-        },
-        "node_transport_check": {
-          "name": "node_transport_check",
-          "value": "\"node\".\"replication_transport\" IS NULL OR \"node\".\"replication_transport\" IN ('local','fabric','datacenter','public')"
-        },
-        "node_status_check": {
-          "name": "node_status_check",
-          "value": "status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed','needs_resync')"
         }
       },
       "isRLSEnabled": false
@@ -5027,8 +5001,247 @@
       },
       "isRLSEnabled": false
     },
-    "public.rotation": {
-      "name": "rotation",
+    "public.replica": {
+      "name": "replica",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "managed_id": {
+          "name": "managed_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'primary'"
+        },
+        "replica_class": {
+          "name": "replica_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_read_eligible": {
+          "name": "is_read_eligible",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "ordinal": {
+          "name": "ordinal",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "replication_transport": {
+          "name": "replication_transport",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "private_port": {
+          "name": "private_port",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_replica_managed_id": {
+          "name": "idx_replica_managed_id",
+          "columns": [
+            {
+              "expression": "managed_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_replica_server_id": {
+          "name": "idx_replica_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_replica_primary": {
+          "name": "uniq_replica_primary",
+          "columns": [
+            {
+              "expression": "managed_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"replica\".\"role\" = 'primary'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_replica_server_private_port": {
+          "name": "uniq_replica_server_private_port",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "private_port",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"replica\".\"private_port\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "replica_managed_id_managed_id_fk": {
+          "name": "replica_managed_id_managed_id_fk",
+          "tableFrom": "replica",
+          "tableTo": "managed",
+          "columnsFrom": [
+            "managed_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "replica_server_id_server_id_fk": {
+          "name": "replica_server_id_server_id_fk",
+          "tableFrom": "replica",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_replica_managed_ordinal": {
+          "name": "uniq_replica_managed_ordinal",
+          "nullsNotDistinct": false,
+          "columns": [
+            "managed_id",
+            "ordinal"
+          ]
+        },
+        "uniq_replica_managed_server": {
+          "name": "uniq_replica_managed_server",
+          "nullsNotDistinct": false,
+          "columns": [
+            "managed_id",
+            "server_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "replica_role_check": {
+          "name": "replica_role_check",
+          "value": "\"replica\".\"role\" IN ('primary','replica')"
+        },
+        "replica_replica_class_check": {
+          "name": "replica_replica_class_check",
+          "value": "\"replica\".\"replica_class\" IS NULL OR \"replica\".\"replica_class\" IN ('failover','read')"
+        },
+        "replica_ordinal_positive_check": {
+          "name": "replica_ordinal_positive_check",
+          "value": "\"replica\".\"ordinal\" >= 1"
+        },
+        "replica_transport_check": {
+          "name": "replica_transport_check",
+          "value": "\"replica\".\"replication_transport\" IS NULL OR \"replica\".\"replication_transport\" IN ('local','fabric','datacenter','public')"
+        },
+        "replica_status_check": {
+          "name": "replica_status_check",
+          "value": "status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed','needs_resync')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.repository": {
+      "name": "repository",
       "schema": "",
       "columns": {
         "id": {
@@ -5070,50 +5283,71 @@
           "primaryKey": false,
           "notNull": true
         },
-        "from_ca_generation": {
-          "name": "from_ca_generation",
-          "type": "integer",
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
           "primaryKey": false,
-          "notNull": true,
-          "default": 0
+          "notNull": false
         },
-        "to_ca_generation": {
-          "name": "to_ca_generation",
-          "type": "integer",
+        "service_id": {
+          "name": "service_id",
+          "type": "uuid",
           "primaryKey": false,
-          "notNull": true,
-          "default": 0
+          "notNull": false
         },
-        "state": {
-          "name": "state",
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "secret_id": {
+          "name": "secret_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider": {
+          "name": "provider",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp(3) with time zone",
+        "repository_url": {
+          "name": "repository_url",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": true
         },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp(3) with time zone",
+        "repository_external_id": {
+          "name": "repository_external_id",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "results": {
-          "name": "results",
-          "type": "jsonb",
+        "default_branch": {
+          "name": "default_branch",
+          "type": "varchar(255)",
           "primaryKey": false,
-          "notNull": false,
-          "default": "'[]'::jsonb"
+          "notNull": false
+        },
+        "subdirectory": {
+          "name": "subdirectory",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "auto_deploy": {
+          "name": "auto_deploy",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'disabled'"
         }
       },
       "indexes": {
-        "idx_rotation_organization_id": {
-          "name": "idx_rotation_organization_id",
+        "idx_repository_organization_id": {
+          "name": "idx_repository_organization_id",
           "columns": [
             {
               "expression": "organization_id",
@@ -5128,27 +5362,75 @@
           "method": "btree",
           "with": {}
         },
-        "uniq_rotation_inflight_organization": {
-          "name": "uniq_rotation_inflight_organization",
+        "idx_repository_connection_id": {
+          "name": "idx_repository_connection_id",
           "columns": [
             {
-              "expression": "organization_id",
+              "expression": "connection_id",
               "isExpression": false,
               "asc": true,
-              "nulls": "last"
+              "nulls": "last",
+              "opclass": "uuid_ops"
             }
           ],
-          "isUnique": true,
-          "where": "\"rotation\".\"state\" = 'in_progress'",
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_repository_service_id": {
+          "name": "idx_repository_service_id",
+          "columns": [
+            {
+              "expression": "service_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_repository_environment_id": {
+          "name": "idx_repository_environment_id",
+          "columns": [
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_repository_secret_id": {
+          "name": "idx_repository_secret_id",
+          "columns": [
+            {
+              "expression": "secret_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
         }
       },
       "foreignKeys": {
-        "rotation_organization_id_organization_id_fk": {
-          "name": "rotation_organization_id_organization_id_fk",
-          "tableFrom": "rotation",
+        "repository_organization_id_organization_id_fk": {
+          "name": "repository_organization_id_organization_id_fk",
+          "tableFrom": "repository",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
@@ -5158,21 +5440,91 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "repository_connection_id_connection_id_fk": {
+          "name": "repository_connection_id_connection_id_fk",
+          "tableFrom": "repository",
+          "tableTo": "connection",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "repository_service_id_service_id_fk": {
+          "name": "repository_service_id_service_id_fk",
+          "tableFrom": "repository",
+          "tableTo": "service",
+          "columnsFrom": [
+            "service_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "repository_environment_id_environment_id_fk": {
+          "name": "repository_environment_id_environment_id_fk",
+          "tableFrom": "repository",
+          "tableTo": "environment",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "repository_secret_id_secret_id_fk": {
+          "name": "repository_secret_id_secret_id_fk",
+          "tableFrom": "repository",
+          "tableTo": "secret",
+          "columnsFrom": [
+            "secret_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "uniq_repository_organization_connection_repository": {
+          "name": "uniq_repository_organization_connection_repository",
+          "nullsNotDistinct": false,
+          "columns": [
+            "organization_id",
+            "connection_id",
+            "repository_external_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {
-        "rotation_state_check": {
-          "name": "rotation_state_check",
-          "value": "\"rotation\".\"state\" IN ('in_progress','awaiting_retire','completed','failed')"
+        "repository_provider_check": {
+          "name": "repository_provider_check",
+          "value": "provider IN ('github', 'gitlab', 'git')"
+        },
+        "repository_auto_deploy_check": {
+          "name": "repository_auto_deploy_check",
+          "value": "auto_deploy IN ('immediate', 'checks_passed', 'disabled')"
+        },
+        "repository_at_most_one_parent_check": {
+          "name": "repository_at_most_one_parent_check",
+          "value": "((service_id IS NOT NULL)::int +\n        (environment_id IS NOT NULL)::int) <= 1"
         }
       },
       "isRLSEnabled": false
     },
-    "public.segment": {
-      "name": "segment",
+    "public.secret": {
+      "name": "secret",
       "schema": "",
       "columns": {
         "id": {
@@ -5208,31 +5560,43 @@
           "primaryKey": false,
           "notNull": false
         },
-        "network_id": {
-          "name": "network_id",
+        "organization_id": {
+          "name": "organization_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "server_id": {
-          "name": "server_id",
+        "principal_id": {
+          "name": "principal_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "cidr": {
-          "name": "cidr",
-          "type": "cidr",
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secret_envelope": {
+          "name": "secret_envelope",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         }
       },
       "indexes": {
-        "idx_segment_network_id": {
-          "name": "idx_segment_network_id",
+        "idx_secret_organization_id": {
+          "name": "idx_secret_organization_id",
           "columns": [
             {
-              "expression": "network_id",
+              "expression": "organization_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -5244,11 +5608,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_segment_server_id": {
-          "name": "idx_segment_server_id",
+        "idx_secret_principal_id": {
+          "name": "idx_secret_principal_id",
           "columns": [
             {
-              "expression": "server_id",
+              "expression": "principal_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -5262,12 +5626,12 @@
         }
       },
       "foreignKeys": {
-        "segment_network_id_network_id_fk": {
-          "name": "segment_network_id_network_id_fk",
-          "tableFrom": "segment",
-          "tableTo": "network",
+        "secret_organization_id_organization_id_fk": {
+          "name": "secret_organization_id_organization_id_fk",
+          "tableFrom": "secret",
+          "tableTo": "organization",
           "columnsFrom": [
-            "network_id"
+            "organization_id"
           ],
           "columnsTo": [
             "id"
@@ -5275,12 +5639,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "segment_server_id_server_id_fk": {
-          "name": "segment_server_id_server_id_fk",
-          "tableFrom": "segment",
-          "tableTo": "server",
+        "secret_principal_id_principal_id_fk": {
+          "name": "secret_principal_id_principal_id_fk",
+          "tableFrom": "secret",
+          "tableTo": "principal",
           "columnsFrom": [
-            "server_id"
+            "principal_id"
           ],
           "columnsTo": [
             "id"
@@ -5290,18 +5654,14 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "segment_network_server_unique": {
-          "name": "segment_network_server_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "network_id",
-            "server_id"
-          ]
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "secret_provider_check": {
+          "name": "secret_provider_check",
+          "value": "provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',\n        'git_deploy_key')"
         }
       },
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.server": {
@@ -5816,8 +6176,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.source": {
-      "name": "source",
+    "public.slot": {
+      "name": "slot",
       "schema": "",
       "columns": {
         "id": {
@@ -5853,132 +6213,66 @@
           "primaryKey": false,
           "notNull": false
         },
-        "organization_id": {
-          "name": "organization_id",
+        "environment_id": {
+          "name": "environment_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
-        },
-        "installation_id": {
-          "name": "installation_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         },
         "service_id": {
           "name": "service_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
-        "environment_id": {
-          "name": "environment_id",
+        "server_id": {
+          "name": "server_id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_id": {
-          "name": "credential_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "repository_url": {
-          "name": "repository_url",
-          "type": "text",
+        "address": {
+          "name": "address",
+          "type": "inet",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "slot": {
+          "name": "slot",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
-        "repository_external_id": {
-          "name": "repository_external_id",
-          "type": "text",
+        "generation": {
+          "name": "generation",
+          "type": "integer",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": 0
         },
-        "default_branch": {
-          "name": "default_branch",
-          "type": "varchar(255)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "subdirectory": {
-          "name": "subdirectory",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "auto_deploy": {
-          "name": "auto_deploy",
+        "desired_state": {
+          "name": "desired_state",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'disabled'"
+          "default": "'running'"
         }
       },
       "indexes": {
-        "idx_source_organization_id": {
-          "name": "idx_source_organization_id",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_source_installation_id": {
-          "name": "idx_source_installation_id",
-          "columns": [
-            {
-              "expression": "installation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_source_service_id": {
-          "name": "idx_source_service_id",
-          "columns": [
-            {
-              "expression": "service_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_source_environment_id": {
-          "name": "idx_source_environment_id",
+        "idx_slot_environment_generation": {
+          "name": "idx_slot_environment_generation",
           "columns": [
             {
               "expression": "environment_id",
               "isExpression": false,
               "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
+              "nulls": "last"
+            },
+            {
+              "expression": "generation",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
             }
           ],
           "isUnique": false,
@@ -5986,11 +6280,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_source_credential_id": {
-          "name": "idx_source_credential_id",
+        "idx_slot_server_id": {
+          "name": "idx_slot_server_id",
           "columns": [
             {
-              "expression": "credential_id",
+              "expression": "server_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -6004,48 +6298,9 @@
         }
       },
       "foreignKeys": {
-        "source_organization_id_organization_id_fk": {
-          "name": "source_organization_id_organization_id_fk",
-          "tableFrom": "source",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "source_installation_id_installation_id_fk": {
-          "name": "source_installation_id_installation_id_fk",
-          "tableFrom": "source",
-          "tableTo": "installation",
-          "columnsFrom": [
-            "installation_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "source_service_id_service_id_fk": {
-          "name": "source_service_id_service_id_fk",
-          "tableFrom": "source",
-          "tableTo": "service",
-          "columnsFrom": [
-            "service_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "source_environment_id_environment_id_fk": {
-          "name": "source_environment_id_environment_id_fk",
-          "tableFrom": "source",
+        "slot_environment_id_environment_id_fk": {
+          "name": "slot_environment_id_environment_id_fk",
+          "tableFrom": "slot",
           "tableTo": "environment",
           "columnsFrom": [
             "environment_id"
@@ -6056,45 +6311,53 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "source_credential_id_credential_id_fk": {
-          "name": "source_credential_id_credential_id_fk",
-          "tableFrom": "source",
-          "tableTo": "credential",
+        "slot_service_id_service_id_fk": {
+          "name": "slot_service_id_service_id_fk",
+          "tableFrom": "slot",
+          "tableTo": "service",
           "columnsFrom": [
-            "credential_id"
+            "service_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "slot_server_id_server_id_fk": {
+          "name": "slot_server_id_server_id_fk",
+          "tableFrom": "slot",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uniq_source_organization_installation_repository": {
-          "name": "uniq_source_organization_installation_repository",
+        "uniq_slot_service_slot": {
+          "name": "uniq_slot_service_slot",
           "nullsNotDistinct": false,
           "columns": [
-            "organization_id",
-            "installation_id",
-            "repository_external_id"
+            "service_id",
+            "slot"
           ]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "source_provider_check": {
-          "name": "source_provider_check",
-          "value": "provider IN ('github', 'gitlab', 'git')"
+        "slot_slot_nonnegative_check": {
+          "name": "slot_slot_nonnegative_check",
+          "value": "\"slot\".\"slot\" >= 0"
         },
-        "source_auto_deploy_check": {
-          "name": "source_auto_deploy_check",
-          "value": "auto_deploy IN ('immediate', 'checks_passed', 'disabled')"
-        },
-        "source_at_most_one_parent_check": {
-          "name": "source_at_most_one_parent_check",
-          "value": "((service_id IS NOT NULL)::int +\n        (environment_id IS NOT NULL)::int) <= 1"
+        "slot_desired_state_check": {
+          "name": "slot_desired_state_check",
+          "value": "\"slot\".\"desired_state\" IN ('running','stopped','removed')"
         }
       },
       "isRLSEnabled": false
@@ -6265,121 +6528,6 @@
           "value": "char_length(\"ssh\".\"name\") >= 1"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.steward": {
-      "name": "steward",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "principal_id": {
-          "name": "principal_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "service_id": {
-          "name": "service_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "idx_steward_principal_id": {
-          "name": "idx_steward_principal_id",
-          "columns": [
-            {
-              "expression": "principal_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_steward_service_id": {
-          "name": "idx_steward_service_id",
-          "columns": [
-            {
-              "expression": "service_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "steward_principal_id_principal_id_fk": {
-          "name": "steward_principal_id_principal_id_fk",
-          "tableFrom": "steward",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "steward_service_id_service_id_fk": {
-          "name": "steward_service_id_service_id_fk",
-          "tableFrom": "steward",
-          "tableTo": "service",
-          "columnsFrom": [
-            "service_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "steward_principal_service_unique": {
-          "name": "steward_principal_service_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "principal_id",
-            "service_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.storage": {
@@ -6703,6 +6851,510 @@
       },
       "isRLSEnabled": false
     },
+    "public.copy": {
+      "name": "copy",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "storage_id": {
+          "name": "storage_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "secret_id": {
+          "name": "secret_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'primary'"
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "endpoint": {
+          "name": "endpoint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {
+        "idx_copy_storage_id": {
+          "name": "idx_copy_storage_id",
+          "columns": [
+            {
+              "expression": "storage_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_copy_server_id": {
+          "name": "idx_copy_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_copy_secret_id": {
+          "name": "idx_copy_secret_id",
+          "columns": [
+            {
+              "expression": "secret_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_copy_storage_primary": {
+          "name": "uniq_copy_storage_primary",
+          "columns": [
+            {
+              "expression": "storage_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"copy\".\"role\" = 'primary'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_copy_storage_server_provider": {
+          "name": "uniq_copy_storage_server_provider",
+          "columns": [
+            {
+              "expression": "storage_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"copy\".\"server_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "copy_storage_id_storage_id_fk": {
+          "name": "copy_storage_id_storage_id_fk",
+          "tableFrom": "copy",
+          "tableTo": "storage",
+          "columnsFrom": [
+            "storage_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "copy_server_id_server_id_fk": {
+          "name": "copy_server_id_server_id_fk",
+          "tableFrom": "copy",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "copy_secret_id_secret_id_fk": {
+          "name": "copy_secret_id_secret_id_fk",
+          "tableFrom": "copy",
+          "tableTo": "secret",
+          "columnsFrom": [
+            "secret_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "copy_provider_check": {
+          "name": "copy_provider_check",
+          "value": "provider IN ('docker', 'path', 'block', 'nfs', 'cifs', 's3', 's3_compatible', 'sftp', 'ftp', 'webdav')"
+        },
+        "copy_role_check": {
+          "name": "copy_role_check",
+          "value": "role IN ('primary', 'replica', 'scratch', 'archive')"
+        },
+        "copy_state_check": {
+          "name": "copy_state_check",
+          "value": "state IN ('pending', 'materializing', 'ready', 'syncing', 'stale', 'failed', 'retiring')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.subnet": {
+      "name": "subnet",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "network_id": {
+          "name": "network_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cidr": {
+          "name": "cidr",
+          "type": "cidr",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "idx_subnet_network_id": {
+          "name": "idx_subnet_network_id",
+          "columns": [
+            {
+              "expression": "network_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_subnet_server_id": {
+          "name": "idx_subnet_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "subnet_network_id_network_id_fk": {
+          "name": "subnet_network_id_network_id_fk",
+          "tableFrom": "subnet",
+          "tableTo": "network",
+          "columnsFrom": [
+            "network_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "subnet_server_id_server_id_fk": {
+          "name": "subnet_server_id_server_id_fk",
+          "tableFrom": "subnet",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "subnet_network_server_unique": {
+          "name": "subnet_network_server_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "network_id",
+            "server_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.tag": {
+      "name": "tag",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "color": {
+          "name": "color",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_tag_organization_id": {
+          "name": "idx_tag_organization_id",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_tag_organization_name": {
+          "name": "uniq_tag_organization_name",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lower(btrim((\"name\")::text))",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "tag_organization_id_organization_id_fk": {
+          "name": "tag_organization_id_organization_id_fk",
+          "tableFrom": "tag",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.task": {
       "name": "task",
       "schema": "",
@@ -6740,78 +7392,63 @@
           "primaryKey": false,
           "notNull": false
         },
-        "environment_id": {
-          "name": "environment_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
         "service_id": {
           "name": "service_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "server_id": {
-          "name": "server_id",
-          "type": "uuid",
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
           "primaryKey": false,
           "notNull": true
         },
-        "address": {
-          "name": "address",
-          "type": "inet",
+        "schedule": {
+          "name": "schedule",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "command": {
+          "name": "command",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "slot": {
-          "name": "slot",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "generation": {
-          "name": "generation",
-          "type": "integer",
+        "is_enabled": {
+          "name": "is_enabled",
+          "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": 0
+          "default": true
         },
-        "desired_state": {
-          "name": "desired_state",
+        "concurrency_policy": {
+          "name": "concurrency_policy",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'running'"
+          "default": "'forbid'"
+        },
+        "timeout_seconds": {
+          "name": "timeout_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
-        "idx_task_environment_generation": {
-          "name": "idx_task_environment_generation",
+        "idx_task_service_id": {
+          "name": "idx_task_service_id",
           "columns": [
             {
-              "expression": "environment_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "generation",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_task_server_id": {
-          "name": "idx_task_server_id",
-          "columns": [
-            {
-              "expression": "server_id",
+              "expression": "service_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -6825,19 +7462,6 @@
         }
       },
       "foreignKeys": {
-        "task_environment_id_environment_id_fk": {
-          "name": "task_environment_id_environment_id_fk",
-          "tableFrom": "task",
-          "tableTo": "environment",
-          "columnsFrom": [
-            "environment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "task_service_id_service_id_fk": {
           "name": "task_service_id_service_id_fk",
           "tableFrom": "task",
@@ -6850,41 +7474,24 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "task_server_id_server_id_fk": {
-          "name": "task_server_id_server_id_fk",
-          "tableFrom": "task",
-          "tableTo": "server",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uniq_task_service_slot": {
-          "name": "uniq_task_service_slot",
+        "uniq_task_service_name": {
+          "name": "uniq_task_service_name",
           "nullsNotDistinct": false,
           "columns": [
             "service_id",
-            "slot"
+            "name"
           ]
         }
       },
       "policies": {},
       "checkConstraints": {
-        "task_slot_nonnegative_check": {
-          "name": "task_slot_nonnegative_check",
-          "value": "\"task\".\"slot\" >= 0"
-        },
-        "task_desired_state_check": {
-          "name": "task_desired_state_check",
-          "value": "\"task\".\"desired_state\" IN ('running','stopped','removed')"
+        "task_concurrency_policy_check": {
+          "name": "task_concurrency_policy_check",
+          "value": "\"task\".\"concurrency_policy\" IN ('allow','forbid','replace')"
         }
       },
       "isRLSEnabled": false
@@ -7084,6 +7691,121 @@
           "columns": [
             "team_id",
             "user_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.tenancy": {
+      "name": "tenancy",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "service_id": {
+          "name": "service_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "idx_tenancy_principal_id": {
+          "name": "idx_tenancy_principal_id",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_tenancy_service_id": {
+          "name": "idx_tenancy_service_id",
+          "columns": [
+            {
+              "expression": "service_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "tenancy_principal_id_principal_id_fk": {
+          "name": "tenancy_principal_id_principal_id_fk",
+          "tableFrom": "tenancy",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "tenancy_service_id_service_id_fk": {
+          "name": "tenancy_service_id_service_id_fk",
+          "tableFrom": "tenancy",
+          "tableTo": "service",
+          "columnsFrom": [
+            "service_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "tenancy_principal_service_unique": {
+          "name": "tenancy_principal_service_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "principal_id",
+            "service_id"
           ]
         }
       },

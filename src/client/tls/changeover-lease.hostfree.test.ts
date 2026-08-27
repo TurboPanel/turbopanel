@@ -10,7 +10,7 @@ import {
   loadLatestCaRotation,
   tryBeginCaRotation,
   updateCaRotationJournal,
-} from "./rotation-lease.ts";
+} from "./changeover-lease.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

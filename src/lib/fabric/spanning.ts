@@ -8,7 +8,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-export type SpanningTask = {
+export type SpanningSlot = {
   serviceId: string
   serverId: string
 }
@@ -35,24 +35,24 @@ export function composeServiceNetworkKeys(body: unknown): string[] {
 }
 
 /**
- * Compose network keys used by tasks ∪ platform attachments on two or more
+ * Compose network keys used by slots ∪ platform attachments on two or more
  * servers. Empty when every participant lands on a single host.
  */
 export function collectSpanningComposeNetworkKeys(
   document: ComposeDocument,
-  tasks: readonly SpanningTask[],
+  slots: readonly SpanningSlot[],
   serviceRows: readonly SpanningServiceRow[],
   platformAttachments: readonly PlatformAttachment[] = [],
 ): string[] {
-  const taskServers = new Set(tasks.map((task) => task.serverId))
+  const slotServers = new Set(slots.map((slot) => slot.serverId))
   const attachmentServers = new Set(
     platformAttachments.map((attachment) => attachment.serverId),
   )
-  if (new Set([...taskServers, ...attachmentServers]).size <= 1) return []
+  if (new Set([...slotServers, ...attachmentServers]).size <= 1) return []
 
-  const serversByNetwork = serversByNetworkFromTasks(
+  const serversByNetwork = serversByNetworkFromSlots(
     document,
-    tasks,
+    slots,
     serviceRows,
   )
   addPlatformAttachmentServers(serversByNetwork, platformAttachments)
@@ -65,7 +65,7 @@ export function collectSpanningComposeNetworkKeys(
 
 export function participatingServerIdsForNetwork(
   document: ComposeDocument,
-  tasks: readonly SpanningTask[],
+  slots: readonly SpanningSlot[],
   serviceRows: readonly SpanningServiceRow[],
   networkKey: string,
   platformAttachments: readonly PlatformAttachment[] = [],
@@ -75,12 +75,12 @@ export function participatingServerIdsForNetwork(
   )
   const services = isPlainObject(document.data.services) ? document.data.services : {}
   const serverIds = new Set<string>()
-  for (const task of tasks) {
-    const name = nameByServiceId.get(task.serviceId)
+  for (const slot of slots) {
+    const name = nameByServiceId.get(slot.serviceId)
     if (!name) continue
     const body = services[name]
     if (!composeServiceNetworkKeys(body).includes(networkKey)) continue
-    serverIds.add(task.serverId)
+    serverIds.add(slot.serverId)
   }
   for (const attachment of platformAttachments) {
     if (!attachment.networkKeys.includes(networkKey)) continue
@@ -89,20 +89,20 @@ export function participatingServerIdsForNetwork(
   return [...serverIds].sort((a, b) => a.localeCompare(b))
 }
 
-function serversByNetworkFromTasks(
+function serversByNetworkFromSlots(
   document: ComposeDocument,
-  tasks: readonly SpanningTask[],
+  slots: readonly SpanningSlot[],
   serviceRows: readonly SpanningServiceRow[],
 ): Map<string, Set<string>> {
   const nameByServiceId = new Map(
     serviceRows.map((row) => [row.id, row.composeServiceName]),
   )
   const serversByServiceName = new Map<string, Set<string>>()
-  for (const task of tasks) {
-    const name = nameByServiceId.get(task.serviceId)
+  for (const slot of slots) {
+    const name = nameByServiceId.get(slot.serviceId)
     if (!name) continue
     const servers = serversByServiceName.get(name) ?? new Set<string>()
-    servers.add(task.serverId)
+    servers.add(slot.serverId)
     serversByServiceName.set(name, servers)
   }
 

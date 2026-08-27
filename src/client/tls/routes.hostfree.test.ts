@@ -203,7 +203,7 @@ async function buildTlsApp(opts: TlsAppOptions = {}): Promise<{
             : (opts.tlsRows ?? []);
           return thenableWhere(rows);
         }
-        if (name === "rotation") {
+        if (name === "changeover") {
           return thenableWhere(opts.rotationRows ?? []);
         }
         if (name === "leaf") {

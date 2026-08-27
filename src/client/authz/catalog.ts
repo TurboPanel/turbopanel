@@ -63,15 +63,15 @@ export const GRANT_ENTITY_TYPES = [
 ] as const
 
 /**
- * `source` is org-owned like `storage` / `network`: it participates in `can()`
+ * `repository` is org-owned like `storage` / `network`: it participates in `can()`
  * and `listVisible()` but is intentionally **not** in {@link GRANT_ENTITY_TYPES}
- * — there are no per-source access grants.
+ * — there are no per-repository access grants.
  */
 export const ENTITY_TYPES = [
   'organization', 'team', 'workspace', 'environment',
   'project', 'service', 'hosting', 'server', 'variable', 'managed',
   'container', 'tls', 'principal', 'storage',
-  'network', 'datacenter', 'ip', 'source',
+  'network', 'datacenter', 'ip', 'repository',
 ] as const
 export type EntityType = (typeof ENTITY_TYPES)[number]
 

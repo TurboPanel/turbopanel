@@ -17,9 +17,9 @@
 
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { gitProviderInstallation } from '../db/schema.ts'
+import { gitConnection } from '../db/schema.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
-import { type GitApp, loadGitAppForInstallation } from './git-app-records.ts'
+import { type Forge, loadForgeForConnection } from './forge-records.ts'
 import { stripTrailingSlashes } from './origin.ts'
 
 const textEncoder = new TextEncoder()
@@ -72,7 +72,7 @@ export type GithubInstallationToken = GithubApiAuth & {
  * `api.github.com`, and a GitHub Enterprise Server gets its documented
  * `<host>/api/v3` form.
  */
-export function githubApiBaseFor(app: Pick<GitApp, 'apiUrl' | 'baseUrl'>): string {
+export function githubApiBaseFor(app: Pick<Forge, 'apiUrl' | 'baseUrl'>): string {
   if (app.apiUrl) return stripTrailingSlashes(app.apiUrl)
   const baseUrl = stripTrailingSlashes(app.baseUrl)
   if (baseUrl === 'https://github.com') return GITHUB_API_BASE
@@ -189,11 +189,11 @@ async function importAppSigningKey(privateKeyPem: string): Promise<CryptoKey> {
  * (`{ iat, exp, iss }`, RS256).
  */
 export async function signGithubAppJwt(
-  appId: string,
+  forgeId: string,
   privateKeyPem: string,
   nowMs: number = Date.now(),
 ): Promise<string> {
-  const trimmedAppId = appId.trim()
+  const trimmedAppId = forgeId.trim()
   if (trimmedAppId.length === 0) {
     throw new GithubAppTokenError('github app id is not configured')
   }
@@ -301,16 +301,16 @@ export async function exchangeInstallationTokenAt(
 export async function mintGithubInstallationToken(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  installationId: string,
+  connectionId: string,
 ): Promise<GithubInstallationToken> {
   const [row] = await db
     .select({
-      provider: gitProviderInstallation.provider,
-      externalInstallationId: gitProviderInstallation.externalInstallationId,
-      suspendedAt: gitProviderInstallation.suspendedAt,
+      provider: gitConnection.provider,
+      externalInstallationId: gitConnection.externalInstallationId,
+      suspendedAt: gitConnection.suspendedAt,
     })
-    .from(gitProviderInstallation)
-    .where(eq(gitProviderInstallation.id, installationId))
+    .from(gitConnection)
+    .where(eq(gitConnection.id, connectionId))
     .limit(1)
 
   if (!row) {
@@ -323,7 +323,7 @@ export async function mintGithubInstallationToken(
     throw new GithubAppTokenError('installation is suspended', 409)
   }
 
-  const app = await loadGitAppForInstallation(db, dataEncryptionSecrets, installationId)
+  const app = await loadForgeForConnection(db, dataEncryptionSecrets, connectionId)
   if (app?.provider !== 'github') {
     throw new GithubAppTokenError('github app is not configured')
   }

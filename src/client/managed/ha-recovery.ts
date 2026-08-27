@@ -24,7 +24,7 @@ import {
   insertRecovery,
   updateRecovery,
 } from '../../lib/db/recovery-records.ts'
-import { container, managed, node, server, service } from '../../lib/db/schema.ts'
+import { container, managed, replica, server, service } from '../../lib/db/schema.ts'
 import { OrchestratorManagedHaAuthority } from './ha-authority.ts'
 import {
   nextStateAfterFence,
@@ -212,9 +212,9 @@ export function firstDatacenterId(
 
 async function markNeedsResync(db: Db, memberId: string): Promise<void> {
   await db
-    .update(node)
+    .update(replica)
     .set({ status: 'needs_resync', updatedAt: new Date().toISOString() })
-    .where(eq(node.id, memberId))
+    .where(eq(replica.id, memberId))
 }
 
 async function memberDialHost(
@@ -770,9 +770,9 @@ async function reclassifyAfterDisasterRecovery(
       })
     if (nextClass === null || nextClass === member.replicaClass) continue
     await db
-      .update(node)
+      .update(replica)
       .set({ replicaClass: nextClass, updatedAt: new Date().toISOString() })
-      .where(eq(node.id, member.id))
+      .where(eq(replica.id, member.id))
   }
 }
 

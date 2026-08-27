@@ -9,7 +9,7 @@
  * **Why this is a client route and not an admin one.** The admin surface is
  * role-gated and carries no organization context at all —
  * `createAdminAccessMiddleware` never resolves an org — so an org-scoped
- * credential editor cannot live there. Authorization here is
+ * forge editor cannot live there. Authorization here is
  * `organization:manage`, the same gate the rest of the org-owned registries use.
  *
  * Reads include instance-wide apps so the connect flow can offer them; writes
@@ -24,24 +24,24 @@ import { getDb } from '../../db.ts'
 import { assertCanManageOr403, getOrgId } from '../shared.ts'
 import {
   completeGithubManifestHandler,
-  createGitAppHandler,
-  deleteGitAppHandler,
-  getGitAppHandler,
-  listGitAppsHandler,
-  patchGitAppHandler,
+  createForgeHandler,
+  deleteForgeHandler,
+  getForgeHandler,
+  listForgesHandler,
+  patchForgeHandler,
   startGithubManifestHandler,
-  syncGitAppHandler,
+  syncForgeHandler,
 } from './handlers.ts'
 
-const GIT_APP_PATHS = [
-  '/git/apps',
-  '/git/apps/:id',
-  '/git/apps/:id/sync',
-  '/git/apps/github/manifest',
-  '/git/apps/github/manifest/callback',
+const FORGE_PATHS = [
+  '/forges',
+  '/forges/:id',
+  '/forges/:id/sync',
+  '/forges/github/manifest',
+  '/forges/github/manifest/callback',
 ] as const
 
-export function registerGitAppRoutes(
+export function registerForgeRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
 ): void {
@@ -50,7 +50,7 @@ export function registerGitAppRoutes(
   }
   const secrets = opts.secrets
 
-  for (const path of GIT_APP_PATHS) {
+  for (const path of FORGE_PATHS) {
     router.use(path, createSessionMiddleware(secrets))
   }
 
@@ -73,19 +73,19 @@ export function registerGitAppRoutes(
     return { db, organizationId }
   }
 
-  router.get('/git/apps', async (c) => {
+  router.get('/forges', async (c) => {
     const ctx = await resolve(c)
     if (ctx instanceof Response) return ctx
-    return await listGitAppsHandler(c, ctx.db, { organizationId: ctx.organizationId })
+    return await listForgesHandler(c, ctx.db, { organizationId: ctx.organizationId })
   })
 
-  router.post('/git/apps', async (c) => {
+  router.post('/forges', async (c) => {
     const ctx = await resolve(c)
     if (ctx instanceof Response) return ctx
-    return await createGitAppHandler(c, ctx.db, { organizationId: ctx.organizationId })
+    return await createForgeHandler(c, ctx.db, { organizationId: ctx.organizationId })
   })
 
-  router.post('/git/apps/github/manifest', async (c) => {
+  router.post('/forges/github/manifest', async (c) => {
     const ctx = await resolve(c)
     if (ctx instanceof Response) return ctx
     return await startGithubManifestHandler(c, ctx.db, {
@@ -93,7 +93,7 @@ export function registerGitAppRoutes(
     })
   })
 
-  router.get('/git/apps/github/manifest/callback', async (c) => {
+  router.get('/forges/github/manifest/callback', async (c) => {
     const ctx = await resolve(c)
     if (ctx instanceof Response) return ctx
     return await completeGithubManifestHandler(c, ctx.db, {
@@ -101,12 +101,12 @@ export function registerGitAppRoutes(
     })
   })
 
-  // Declared before `/git/apps/:id` is irrelevant here (different segment
+  // Declared before `/forges/:id` is irrelevant here (different segment
   // count), but keeping the action routes together makes the surface readable.
-  router.post('/git/apps/:id/sync', async (c) => {
+  router.post('/forges/:id/sync', async (c) => {
     const ctx = await resolve(c)
     if (ctx instanceof Response) return ctx
-    return await syncGitAppHandler(
+    return await syncForgeHandler(
       c,
       ctx.db,
       { organizationId: ctx.organizationId },
@@ -114,10 +114,10 @@ export function registerGitAppRoutes(
     )
   })
 
-  router.get('/git/apps/:id', async (c) => {
+  router.get('/forges/:id', async (c) => {
     const ctx = await resolve(c)
     if (ctx instanceof Response) return ctx
-    return await getGitAppHandler(
+    return await getForgeHandler(
       c,
       ctx.db,
       { organizationId: ctx.organizationId },
@@ -125,10 +125,10 @@ export function registerGitAppRoutes(
     )
   })
 
-  router.patch('/git/apps/:id', async (c) => {
+  router.patch('/forges/:id', async (c) => {
     const ctx = await resolve(c)
     if (ctx instanceof Response) return ctx
-    return await patchGitAppHandler(
+    return await patchForgeHandler(
       c,
       ctx.db,
       { organizationId: ctx.organizationId },
@@ -136,10 +136,10 @@ export function registerGitAppRoutes(
     )
   })
 
-  router.delete('/git/apps/:id', async (c) => {
+  router.delete('/forges/:id', async (c) => {
     const ctx = await resolve(c)
     if (ctx instanceof Response) return ctx
-    return await deleteGitAppHandler(
+    return await deleteForgeHandler(
       c,
       ctx.db,
       { organizationId: ctx.organizationId },

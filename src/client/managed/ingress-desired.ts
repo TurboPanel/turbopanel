@@ -5,7 +5,7 @@
  * full cluster peer sets). Co-resident engines are addressed by Docker
  * container name on `turbopanel-managed`; remote backends dial the member's
  * **private listener** (published only on that member's private address at
- * `node.private_port`) — the same path engine→engine replication
+ * `replica.private_port`) — the same path engine→engine replication
  * uses for cross-host streaming.
  */
 
@@ -39,12 +39,12 @@ import {
   container,
   environment,
   managed,
-  node,
+  replica,
   principal,
   project,
   server,
   service,
-  task,
+  slot,
   workspace,
 } from "../../lib/db/schema.ts";
 import { getManagedEngineSpec } from "../../lib/managed/index.ts";
@@ -66,8 +66,8 @@ import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
 } from "../../lib/project-options.ts";
-import { listServerSegments } from "../../lib/db/fabric-records.ts";
-import { loadListenerAttachedSegmentNames } from "./ingress-attachments.ts";
+import { listServerSubnets } from "../../lib/db/fabric-records.ts";
+import { loadListenerAttachedSubnetNames } from "./ingress-attachments.ts";
 import {
   isManagedAccessAddressError,
   type ManagedAccessAddressError,
@@ -193,13 +193,13 @@ async function attachContainerNames(
 }
 
 const MEMBER_SELECT = {
-  memberId: node.id,
-  managedId: node.managedId,
-  serverId: node.serverId,
-  role: node.role,
-  readEligible: node.isReadEligible,
-  ordinal: node.ordinal,
-  privatePort: node.privatePort,
+  memberId: replica.id,
+  managedId: replica.managedId,
+  serverId: replica.serverId,
+  role: replica.role,
+  readEligible: replica.isReadEligible,
+  ordinal: replica.ordinal,
+  privatePort: replica.privatePort,
   engine: managed.engine,
   options: managed.options,
   organizationId: server.organizationId,
@@ -212,10 +212,10 @@ async function loadMembersOnServer(
 ): Promise<MemberClusterRow[]> {
   const rows = await db
     .select(MEMBER_SELECT)
-    .from(node)
-    .innerJoin(managed, eq(node.managedId, managed.id))
-    .innerJoin(server, eq(node.serverId, server.id))
-    .where(eq(node.serverId, serverId));
+    .from(replica)
+    .innerJoin(managed, eq(replica.managedId, managed.id))
+    .innerJoin(server, eq(replica.serverId, server.id))
+    .where(eq(replica.serverId, serverId));
   return attachContainerNames(db, rows);
 }
 
@@ -229,10 +229,10 @@ async function loadClusterMembersForManagedIds(
 
   const rows = await db
     .select(MEMBER_SELECT)
-    .from(node)
-    .innerJoin(managed, eq(node.managedId, managed.id))
-    .innerJoin(server, eq(node.serverId, server.id))
-    .where(inArray(node.managedId, [...managedIds]));
+    .from(replica)
+    .innerJoin(managed, eq(replica.managedId, managed.id))
+    .innerJoin(server, eq(replica.serverId, server.id))
+    .where(inArray(replica.managedId, [...managedIds]));
 
   const attached = await attachContainerNames(db, rows);
   for (const row of attached) {
@@ -773,10 +773,10 @@ async function buildManagedIngressReconcileDesired(
   }
 
   const attachedNames = new Set(
-    await loadListenerAttachedSegmentNames(db, params.serverId),
+    await loadListenerAttachedSubnetNames(db, params.serverId),
   );
   if (attachedNames.size > 0) {
-    const segments = (await listServerSegments(db, params.serverId))
+    const segments = (await listServerSubnets(db, params.serverId))
       .filter((row) => attachedNames.has(row.name))
       .map((row) => ({ name: row.name, subnet: row.subnet }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -789,7 +789,7 @@ async function buildManagedIngressReconcileDesired(
 /**
  * Build the full `managed.ingress.reconcile` payload for a server.
  *
- * The ProxySQL stack exists on a server **iff** it hosts a managed `node` row
+ * The ProxySQL stack exists on a server **iff** it hosts a managed `replica` row
  * or a bound consumer (`loadBoundManagedIdsForServer`) — never on every org
  * server. Returns `null` when neither is true **and** no prior hierarchy
  * exists. When a prior hierarchy exists but the set is empty, returns a
@@ -815,7 +815,7 @@ export async function buildManagedIngressReconcilePayload(
 /**
  * Managed clusters whose consumers (compose services) place on `serverId`.
  * Those servers need ProxySQL routes even when they host no engine members.
- * Scoped to the target organization and server (env pin, task pin, or
+ * Scoped to the target organization and server (env pin, slot pin, or
  * unpinned env whose project default server is this server). The project
  * default match is pushed into SQL so unpinned environments that default to
  * other servers are never loaded.
@@ -830,7 +830,7 @@ export async function loadBoundManagedIdsForServer(
       managedId: principal.managedId,
       environmentServerId: environment.serverId,
       projectOptions: project.options,
-      taskServerId: task.serverId,
+      taskServerId: slot.serverId,
     })
     .from(binding)
     .innerJoin(service, eq(binding.serviceId, service.id))
@@ -838,13 +838,13 @@ export async function loadBoundManagedIdsForServer(
     .innerJoin(project, eq(environment.projectId, project.id))
     .innerJoin(workspace, eq(project.workspaceId, workspace.id))
     .innerJoin(principal, eq(binding.principalId, principal.id))
-    .leftJoin(task, eq(task.serviceId, service.id))
+    .leftJoin(slot, eq(slot.serviceId, service.id))
     .where(
       and(
         eq(workspace.organizationId, organizationId),
         or(
           eq(environment.serverId, serverId),
-          eq(task.serverId, serverId),
+          eq(slot.serverId, serverId),
           and(
             isNull(environment.serverId),
             sql`${project.options}->>'defaultServerId' = ${serverId}`,
@@ -1034,9 +1034,9 @@ export async function fanOutManagedIngressReconcile(
   );
 
   const memberIds = await db
-    .select({ serverId: node.serverId })
-    .from(node)
-    .where(eq(node.managedId, params.managedId));
+    .select({ serverId: replica.serverId })
+    .from(replica)
+    .where(eq(replica.managedId, params.managedId));
   const consumerIds = await consumerServerIdsForManaged(db, params.managedId);
   const serverIds = new Set<string>([
     ...memberIds.map((row) => row.serverId),

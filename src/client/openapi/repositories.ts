@@ -1,7 +1,7 @@
 import { buildResourceCrudPaths, clientErrorJson, resourceErrorResponses } from './shared.ts'
 
-export const sourceSchemas = {
-  OrgGitApp: {
+export const repositorySchemas = {
+  OrgForge: {
     type: 'object',
     description:
       'A Git provider application this organization may connect through: its ' +
@@ -37,17 +37,17 @@ export const sourceSchemas = {
       hasWebhookSecret: { type: 'boolean' },
     },
   },
-  OrgGitAppsResponse: {
+  OrgForgesResponse: {
     type: 'object',
     properties: {
-      apps: { type: 'array', items: { $ref: '#/components/schemas/OrgGitApp' } },
+      apps: { type: 'array', items: { $ref: '#/components/schemas/OrgForge' } },
     },
   },
-  OrgGitAppResponse: {
+  OrgForgeResponse: {
     type: 'object',
-    properties: { app: { $ref: '#/components/schemas/OrgGitApp' } },
+    properties: { app: { $ref: '#/components/schemas/OrgForge' } },
   },
-  CreateOrgGitAppBody: {
+  CreateOrgForgeBody: {
     type: 'object',
     required: ['provider', 'name', 'externalAppId'],
     properties: {
@@ -64,7 +64,7 @@ export const sourceSchemas = {
       webhookSecret: { type: ['string', 'null'] },
     },
   },
-  PatchOrgGitAppBody: {
+  PatchOrgForgeBody: {
     type: 'object',
     description:
       'Partial update — omitted keys keep their stored value, so a PATCH that ' +
@@ -84,15 +84,15 @@ export const sourceSchemas = {
       webhookSecret: { type: ['string', 'null'] },
     },
   },
-  SourceRecord: {
+  RepositoryRecord: {
     type: 'object',
     properties: {
       id: { type: 'string' },
       organizationId: { type: 'string' },
-      installationId: { type: ['string', 'null'] },
+      connectionId: { type: ['string', 'null'] },
       serviceId: { type: ['string', 'null'] },
       environmentId: { type: ['string', 'null'] },
-      credentialId: { type: ['string', 'null'] },
+      secretId: { type: ['string', 'null'] },
       provider: { type: 'string', enum: ['github', 'gitlab', 'git'] },
       repositoryUrl: { type: 'string' },
       repositoryExternalId: { type: ['string', 'null'] },
@@ -110,7 +110,7 @@ export const sourceSchemas = {
         type: ['string', 'null'],
         description:
           "Instance webhook endpoint to configure on the provider, on the provider's own " +
-          'ingress path. Present on GET /sources/{id} only, and only for github / gitlab ' +
+          'ingress path. Present on GET /repositories/{id} only, and only for github / gitlab ' +
           'sources — provider=git has no webhook surface.',
       },
       webhookReachable: {
@@ -125,17 +125,17 @@ export const sourceSchemas = {
       },
     },
   },
-  SourcesResponse: {
+  RepositoriesResponse: {
     type: 'object',
-    required: ['sources'],
+    required: ['repositories'],
     properties: {
-      sources: {
+      repositories: {
         type: 'array',
-        items: { $ref: '#/components/schemas/SourceRecord' },
+        items: { $ref: '#/components/schemas/RepositoryRecord' },
       },
     },
   },
-  CreateSourceBody: {
+  CreateRepositoryBody: {
     type: 'object',
     required: ['repositoryUrl'],
     properties: {
@@ -148,19 +148,19 @@ export const sourceSchemas = {
         type: 'string',
         description:
           'https clone URL. provider=git and deploy-key provider=gitlab additionally accept ' +
-          'ssh:// or git@host:path when credentialId is set.',
+          'ssh:// or git@host:path when secretId is set.',
       },
-      installationId: {
+      connectionId: {
         type: ['string', 'null'],
         description:
           'Required for provider=github. For provider=gitlab, supply exactly one of ' +
-          'installationId (the OAuth connection) or credentialId (a generated deploy key); ' +
+          'connectionId (the OAuth connection) or secretId (a generated deploy key); ' +
           'both together is rejected as source_auth_ambiguous.',
       },
-      credentialId: {
+      secretId: {
         type: ['string', 'null'],
         description:
-          'Deploy key from POST /sources/gitlab/deploy-keys. Not supported for provider=github.',
+          'Deploy key from POST /repositories/gitlab/deploy-keys. Not supported for provider=github.',
       },
       serviceId: {
         type: ['string', 'null'],
@@ -184,13 +184,13 @@ export const sourceSchemas = {
       options: { type: ['object', 'null'] },
     },
   },
-  PatchSourceBody: {
+  PatchRepositoryBody: {
     type: 'object',
     description:
       'Scope (serviceId / environmentId) and provider are immutable — recreate the source to rebind.',
     properties: {
-      installationId: { type: ['string', 'null'] },
-      credentialId: { type: ['string', 'null'] },
+      connectionId: { type: ['string', 'null'] },
+      secretId: { type: ['string', 'null'] },
       repositoryUrl: { type: 'string' },
       repositoryExternalId: { type: ['string', 'null'] },
       defaultBranch: { type: ['string', 'null'] },
@@ -203,11 +203,16 @@ export const sourceSchemas = {
       options: { type: ['object', 'null'] },
     },
   },
-  GitProviderInstallationRecord: {
+  GitProviderConnectionRecord: {
     type: 'object',
     properties: {
       id: { type: 'string' },
       organizationId: { type: 'string' },
+      forgeId: {
+        type: 'string',
+        description:
+          'The registered app this connection was granted through. The console groups connections by this id in the app → account → repository picker.',
+      },
       provider: { type: 'string', enum: ['github', 'gitlab'] },
       externalInstallationId: {
         type: 'string',
@@ -224,13 +229,13 @@ export const sourceSchemas = {
       updatedAt: { type: 'string', format: 'date-time' },
     },
   },
-  GitProviderInstallationsResponse: {
+  GitProviderConnectionsResponse: {
     type: 'object',
-    required: ['installations'],
+    required: ['connections'],
     properties: {
-      installations: {
+      connections: {
         type: 'array',
-        items: { $ref: '#/components/schemas/GitProviderInstallationRecord' },
+        items: { $ref: '#/components/schemas/GitProviderConnectionRecord' },
       },
     },
   },
@@ -247,12 +252,12 @@ export const sourceSchemas = {
   },
   GitlabDeployKeyResponse: {
     type: 'object',
-    required: ['ok', 'credentialId', 'publicKey', 'fingerprint'],
+    required: ['ok', 'secretId', 'publicKey', 'fingerprint'],
     properties: {
       ok: { type: 'boolean' },
-      credentialId: {
+      secretId: {
         type: 'string',
-        description: 'Pass as credentialId when creating the gitlab source.',
+        description: 'Pass as secretId when creating the gitlab source.',
       },
       publicKey: {
         type: 'string',
@@ -285,26 +290,26 @@ export const sourceSchemas = {
 }
 
 const basePaths = buildResourceCrudPaths({
-  plural: 'sources',
-  singular: 'source',
-  tag: 'Sources',
-  listSchema: 'SourcesResponse',
-  rowSchema: 'SourceRecord',
-  createSchema: 'CreateSourceBody',
-  patchSchema: 'PatchSourceBody',
+  plural: 'repositories',
+  singular: 'repository',
+  tag: 'Repositories',
+  listSchema: 'RepositoriesResponse',
+  rowSchema: 'RepositoryRecord',
+  createSchema: 'CreateRepositoryBody',
+  patchSchema: 'PatchRepositoryBody',
 })
 
-const sourcesBasePath = '/api/client/v1/sources'
-const sourceIdPath = `${sourcesBasePath}/{id}`
+const repositoriesBasePath = '/api/client/v1/repositories'
+const repositoryIdPath = `${repositoriesBasePath}/{id}`
 const security = [{ cookieAuth: [] }]
 
-const gitAppsBasePath = '/api/client/v1/git/apps'
+const gitAppsBasePath = '/api/client/v1/forges'
 
-export const sourcePaths = {
+export const repositoryPaths = {
   ...basePaths,
   [gitAppsBasePath]: {
     get: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: "List Git applications this organization may connect through",
       description:
         "The organization's own applications plus every instance-wide one. " +
@@ -316,7 +321,7 @@ export const sourcePaths = {
           description: 'Available applications',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/OrgGitAppsResponse' },
+              schema: { $ref: '#/components/schemas/OrgForgesResponse' },
             },
           },
         },
@@ -324,7 +329,7 @@ export const sourcePaths = {
       },
     },
     post: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Register a Git application for this organization',
       description:
         'Registers an existing GitHub App or GitLab OAuth application. Several ' +
@@ -335,7 +340,7 @@ export const sourcePaths = {
         required: true,
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/CreateOrgGitAppBody' },
+            schema: { $ref: '#/components/schemas/CreateOrgForgeBody' },
           },
         },
       },
@@ -344,7 +349,7 @@ export const sourcePaths = {
           description: 'The registered application',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/OrgGitAppResponse' },
+              schema: { $ref: '#/components/schemas/OrgForgeResponse' },
             },
           },
         },
@@ -366,7 +371,7 @@ export const sourcePaths = {
       { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
     ],
     get: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Read one Git application',
       security,
       responses: {
@@ -374,7 +379,7 @@ export const sourcePaths = {
           description: 'The application',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/OrgGitAppResponse' },
+              schema: { $ref: '#/components/schemas/OrgForgeResponse' },
             },
           },
         },
@@ -382,14 +387,14 @@ export const sourcePaths = {
       },
     },
     patch: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Update one Git application owned by this organization',
       security,
       requestBody: {
         required: true,
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/PatchOrgGitAppBody' },
+            schema: { $ref: '#/components/schemas/PatchOrgForgeBody' },
           },
         },
       },
@@ -398,7 +403,7 @@ export const sourcePaths = {
           description: 'The updated application',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/OrgGitAppResponse' },
+              schema: { $ref: '#/components/schemas/OrgForgeResponse' },
             },
           },
         },
@@ -415,7 +420,7 @@ export const sourcePaths = {
       },
     },
     delete: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Delete one Git application owned by this organization',
       description:
         'Cascades to the connections granted through it. Sources that named ' +
@@ -433,9 +438,9 @@ export const sourcePaths = {
       },
     },
   },
-  [`${sourcesBasePath}/attach`]: {
+  [`${repositoriesBasePath}/attach`]: {
     post: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Bind a repository to this organization, reusing an existing binding',
       description:
         'Called when a repository is attached to a project. **Idempotent**: two ' +
@@ -452,9 +457,9 @@ export const sourcePaths = {
           'application/json': {
             schema: {
               type: 'object',
-              required: ['installationId', 'repositoryExternalId', 'repositoryUrl'],
+              required: ['connectionId', 'repositoryExternalId', 'repositoryUrl'],
               properties: {
-                installationId: { type: 'string', format: 'uuid' },
+                connectionId: { type: 'string', format: 'uuid' },
                 repositoryExternalId: {
                   type: 'string',
                   description: 'Provider-side repository id — what webhook matching keys on',
@@ -510,7 +515,7 @@ export const sourcePaths = {
   },
   [`${gitAppsBasePath}/{id}/sync`]: {
     post: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: "Reconcile an app against the provider's own record of it",
       description:
         'Reads `GET /app` with the App JWT and updates the stored name, slug, ' +
@@ -531,7 +536,7 @@ export const sourcePaths = {
               schema: {
                 type: 'object',
                 properties: {
-                  app: { $ref: '#/components/schemas/OrgGitApp' },
+                  app: { $ref: '#/components/schemas/OrgForge' },
                   provider: {
                     type: 'object',
                     description:
@@ -567,7 +572,7 @@ export const sourcePaths = {
   },
   [`${gitAppsBasePath}/github/manifest`]: {
     post: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Start the GitHub App Manifest flow for this organization',
       description:
         'Returns a manifest to POST to GitHub as a form. Its ' +
@@ -590,7 +595,7 @@ export const sourcePaths = {
   },
   [`${gitAppsBasePath}/github/manifest/callback`]: {
     get: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Finish the GitHub App Manifest flow',
       description:
         "Exchanges GitHub's one-shot code for the App credentials and stores " +
@@ -612,10 +617,10 @@ export const sourcePaths = {
       },
     },
   },
-  [sourcesBasePath]: {
-    ...(basePaths[sourcesBasePath] as Record<string, unknown>),
+  [repositoriesBasePath]: {
+    ...(basePaths[repositoriesBasePath] as Record<string, unknown>),
     get: {
-      ...((basePaths[sourcesBasePath] as Record<string, unknown>).get as Record<
+      ...((basePaths[repositoriesBasePath] as Record<string, unknown>).get as Record<
         string,
         unknown
       >),
@@ -637,15 +642,15 @@ export const sourcePaths = {
       ],
     },
   },
-  [sourceIdPath]: {
-    ...(basePaths[sourceIdPath] as Record<string, unknown>),
+  [repositoryIdPath]: {
+    ...(basePaths[repositoryIdPath] as Record<string, unknown>),
     delete: {
-      ...((basePaths[sourceIdPath] as Record<string, unknown>).delete as Record<
+      ...((basePaths[repositoryIdPath] as Record<string, unknown>).delete as Record<
         string,
         unknown
       >),
       responses: {
-        ...(((basePaths[sourceIdPath] as Record<string, unknown>).delete as Record<
+        ...(((basePaths[repositoryIdPath] as Record<string, unknown>).delete as Record<
           string,
           unknown
         >).responses as Record<string, unknown>),
@@ -656,9 +661,9 @@ export const sourcePaths = {
       },
     },
   },
-  [`${sourcesBasePath}/installations`]: {
+  [`${repositoriesBasePath}/connections`]: {
     get: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'List Git provider App installations',
       description: 'Reads persisted installation rows only — no live provider call.',
       security,
@@ -667,7 +672,7 @@ export const sourcePaths = {
           description: 'Installations granted to the signed-in organization',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/GitProviderInstallationsResponse' },
+              schema: { $ref: '#/components/schemas/GitProviderConnectionsResponse' },
             },
           },
         },
@@ -675,9 +680,9 @@ export const sourcePaths = {
       },
     },
   },
-  [`${sourcesBasePath}/installations/{id}/repositories`]: {
+  [`${repositoriesBasePath}/connections/{id}/repositories`]: {
     get: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'List repositories visible to an installation',
       description:
         "Dispatches on the installation's provider: mints a short-lived credential per " +
@@ -703,9 +708,9 @@ export const sourcePaths = {
       },
     },
   },
-  [`${sourcesBasePath}/github/install`]: {
+  [`${repositoriesBasePath}/github/install`]: {
     get: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Start the GitHub App installation flow',
       description:
         'Redirects to GitHub with a signed `state` binding the flow to the caller ' +
@@ -713,7 +718,7 @@ export const sourcePaths = {
       security,
       parameters: [
         {
-          name: 'appId',
+          name: 'forgeId',
           in: 'query',
           required: true,
           schema: { type: 'string', format: 'uuid' },
@@ -728,7 +733,7 @@ export const sourcePaths = {
       responses: {
         '302': { description: 'Redirect to GitHub' },
         '400': {
-          description: 'git_app_required — no usable appId was supplied',
+          description: 'git_app_required — no usable forgeId was supplied',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '503': {
@@ -739,9 +744,9 @@ export const sourcePaths = {
       },
     },
   },
-  [`${sourcesBasePath}/github/callback`]: {
+  [`${repositoriesBasePath}/github/callback`]: {
     get: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'GitHub App installation callback',
       description:
         'Verifies the signed `state`, then upserts the installation row for the organization.',
@@ -771,9 +776,9 @@ export const sourcePaths = {
       },
     },
   },
-  [`${sourcesBasePath}/gitlab/oauth`]: {
+  [`${repositoriesBasePath}/gitlab/oauth`]: {
     get: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Start the GitLab OAuth connect flow',
       description:
         'Redirects to the GitLab authorize endpoint with a signed `state` binding the flow ' +
@@ -783,7 +788,7 @@ export const sourcePaths = {
       security,
       parameters: [
         {
-          name: 'appId',
+          name: 'forgeId',
           in: 'query',
           required: true,
           schema: { type: 'string', format: 'uuid' },
@@ -798,7 +803,7 @@ export const sourcePaths = {
       responses: {
         '302': { description: 'Redirect to GitLab' },
         '400': {
-          description: 'git_app_required — no usable appId was supplied',
+          description: 'git_app_required — no usable forgeId was supplied',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '503': {
@@ -809,9 +814,9 @@ export const sourcePaths = {
       },
     },
   },
-  [`${sourcesBasePath}/gitlab/callback`]: {
+  [`${repositoriesBasePath}/gitlab/oauth/callback`]: {
     get: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'GitLab OAuth connect callback',
       description:
         'Verifies the signed `state`, exchanges the code for a token pair, and upserts the ' +
@@ -844,9 +849,9 @@ export const sourcePaths = {
       },
     },
   },
-  [`${sourcesBasePath}/gitlab/deploy-keys`]: {
+  [`${repositoriesBasePath}/gitlab/deploy-keys`]: {
     post: {
-      tags: ['Sources'],
+      tags: ['Repositories'],
       summary: 'Generate a read-only deploy keypair',
       description:
         'Mints an Ed25519 keypair, seals the private half into a credential row, and returns ' +

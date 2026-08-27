@@ -192,7 +192,7 @@ async function githubReadAuth(
 > {
   // A GitHub source with no App installation cannot be read over the API at
   // all — the daemon clones it with the stored credential instead.
-  if (!row.installationId) return { unsupported: true }
+  if (!row.connectionId) return { unsupported: true }
   if (!ctx.dataEncryptionSecrets) {
     return { failure: 'github app credentials are unreadable' }
   }
@@ -200,7 +200,7 @@ async function githubReadAuth(
     const { token, apiBase } = await mintGithubInstallationToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
-      row.installationId,
+      row.connectionId,
     )
     return { token, apiBase }
   } catch (error) {
@@ -378,7 +378,7 @@ export const githubProvider: GitProvider = {
 
   async listRepositories(
     ctx: GitProviderContext,
-    installationId: string,
+    connectionId: string,
   ): Promise<RepositorySummary[]> {
     if (!ctx.dataEncryptionSecrets) {
       throw new GithubAppTokenError('github app credentials are unreadable')
@@ -387,7 +387,7 @@ export const githubProvider: GitProvider = {
     const { token, apiBase } = await mintGithubInstallationToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
-      installationId,
+      connectionId,
     )
     return await listGithubInstallationRepositories({ token, apiBase })
   },
@@ -487,7 +487,7 @@ export const githubProvider: GitProvider = {
     if (!params.needsCredential) {
       return { commit: { commitSha: params.requestedCommitSha ?? ref } }
     }
-    if (!row.installationId) {
+    if (!row.connectionId) {
       return { failure: 'github source has no app installation' }
     }
     if (!ctx.dataEncryptionSecrets) {
@@ -500,7 +500,7 @@ export const githubProvider: GitProvider = {
       const { token, apiBase } = await mintGithubInstallationToken(
         ctx.db,
         ctx.dataEncryptionSecrets,
-        row.installationId,
+        row.connectionId,
       )
       const auth = { token, apiBase }
       // A webhook already knows the head SHA, but not its subject or author, so

@@ -7,7 +7,7 @@
  * (`<principalHome>/sites/<serviceId>`) from the last deploy.
  * `environment.stop` is the only command that reclaims them, so delete plans it
  * **before** the rows go away (the payload is built from service / hosting /
- * steward / segment rows) and enqueues it **after** the delete commits.
+ * tenancy / subnet rows) and enqueues it **after** the delete commits.
  *
  * Reclaim is best effort: a never-deployed environment has no target server and
  * plans to `null`, and an unavailable queue must not block the delete.

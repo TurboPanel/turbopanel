@@ -93,9 +93,9 @@ test('RESOURCE_KINDS and ENTITY_TYPES include workspace-tree leaves used by auth
   assertEquals(entityTypes.includes('peer'), false)
   assertEquals(entityTypes.includes('vpn'), false)
   assertEquals(entityTypes.includes('fabric'), false)
-  assertEquals(entityTypes.includes('source'), true)
+  assertEquals(entityTypes.includes('repository'), true)
   const grantTypes: readonly string[] = GRANT_ENTITY_TYPES
-  assertEquals(grantTypes.includes('source'), false)
+  assertEquals(grantTypes.includes('repository'), false)
   const resourceKinds: readonly string[] = RESOURCE_KINDS
-  assertEquals(resourceKinds.includes('source'), false)
+  assertEquals(resourceKinds.includes('repository'), false)
 })

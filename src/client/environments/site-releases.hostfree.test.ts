@@ -112,7 +112,7 @@ test("resolveEnvironmentSiteReleases falls back to the compose key with no hosti
   ]);
 });
 
-test("resolveEnvironmentSiteReleases skips a service with no sole steward", async () => {
+test("resolveEnvironmentSiteReleases skips a service with no sole tenancy", async () => {
   // Ambiguous or absent ownership means no release was ever published under a
   // principal home, so there is nothing to reclaim.
   const ambiguous = fakeDb([

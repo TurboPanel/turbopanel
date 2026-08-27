@@ -177,7 +177,7 @@ export function getAdminOpenApiSpec(
             },
           },
         },
-        GitApp: {
+        Forge: {
           type: "object",
           description:
             "A registered Git provider application. Sealed material (App private " +
@@ -253,19 +253,19 @@ export function getAdminOpenApiSpec(
             hasWebhookSecret: { type: "boolean" },
           },
         },
-        GitAppListResponse: {
+        ForgeListResponse: {
           type: "object",
           required: ["apps"],
           properties: {
-            apps: { type: "array", items: { $ref: "#/components/schemas/GitApp" } },
+            apps: { type: "array", items: { $ref: "#/components/schemas/Forge" } },
           },
         },
-        GitAppResponse: {
+        ForgeResponse: {
           type: "object",
           required: ["app"],
-          properties: { app: { $ref: "#/components/schemas/GitApp" } },
+          properties: { app: { $ref: "#/components/schemas/Forge" } },
         },
-        GitAppCreateBody: {
+        ForgeCreateBody: {
           type: "object",
           required: ["provider", "name", "externalAppId"],
           properties: {
@@ -297,7 +297,7 @@ export function getAdminOpenApiSpec(
             },
           },
         },
-        GitAppPatchBody: {
+        ForgePatchBody: {
           type: "object",
           description:
             "Partial update — omitted keys keep their stored value, so a PATCH that " +
@@ -362,7 +362,7 @@ export function getAdminOpenApiSpec(
                 "tls",
                 "principals",
                 "storage",
-                "credentials",
+                "secrets",
                 "email",
               ],
             },
@@ -467,21 +467,21 @@ export function getAdminOpenApiSpec(
           },
         },
       },
-      [`${ADMIN_API_PREFIX}/git/apps`]: {
+      [`${ADMIN_API_PREFIX}/forges`]: {
         get: {
           tags: ["Git apps"],
           summary: "List instance-wide Git provider applications",
           description:
             "Instance-wide apps only: this surface is role-gated and carries no " +
             "organization context. An organization's own apps are managed through " +
-            "the client surface at /api/client/v1/git/apps.",
+            "the client surface at /api/client/v1/forges.",
           security: [...cookieSecurity],
           responses: {
             "200": {
               description: "Registered instance-wide apps",
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/GitAppListResponse" },
+                  schema: { $ref: "#/components/schemas/ForgeListResponse" },
                 },
               },
             },
@@ -505,7 +505,7 @@ export function getAdminOpenApiSpec(
             required: true,
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/GitAppCreateBody" },
+                schema: { $ref: "#/components/schemas/ForgeCreateBody" },
               },
             },
           },
@@ -514,7 +514,7 @@ export function getAdminOpenApiSpec(
               description: "The registered app",
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/GitAppResponse" },
+                  schema: { $ref: "#/components/schemas/ForgeResponse" },
                 },
               },
             },
@@ -530,7 +530,7 @@ export function getAdminOpenApiSpec(
           },
         },
       },
-      [`${ADMIN_API_PREFIX}/git/apps/{id}`]: {
+      [`${ADMIN_API_PREFIX}/forges/{id}`]: {
         parameters: [
           {
             name: "id",
@@ -548,7 +548,7 @@ export function getAdminOpenApiSpec(
               description: "The app",
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/GitAppResponse" },
+                  schema: { $ref: "#/components/schemas/ForgeResponse" },
                 },
               },
             },
@@ -567,7 +567,7 @@ export function getAdminOpenApiSpec(
             required: true,
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/GitAppPatchBody" },
+                schema: { $ref: "#/components/schemas/ForgePatchBody" },
               },
             },
           },
@@ -576,7 +576,7 @@ export function getAdminOpenApiSpec(
               description: "The updated app",
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/GitAppResponse" },
+                  schema: { $ref: "#/components/schemas/ForgeResponse" },
                 },
               },
             },
@@ -606,7 +606,7 @@ export function getAdminOpenApiSpec(
           },
         },
       },
-      [`${ADMIN_API_PREFIX}/git/apps/{id}/sync`]: {
+      [`${ADMIN_API_PREFIX}/forges/{id}/sync`]: {
         post: {
           tags: ["Git apps"],
           summary: "Reconcile an app against GitHub's own record of it",
@@ -629,7 +629,7 @@ export function getAdminOpenApiSpec(
               description: "The reconciled app",
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/GitAppResponse" },
+                  schema: { $ref: "#/components/schemas/ForgeResponse" },
                 },
               },
             },
@@ -643,7 +643,7 @@ export function getAdminOpenApiSpec(
           },
         },
       },
-      [`${ADMIN_API_PREFIX}/git/apps/github/manifest`]: {
+      [`${ADMIN_API_PREFIX}/forges/github/manifest`]: {
         post: {
           tags: ["Git apps"],
           summary: "Start the GitHub App Manifest flow",
@@ -682,7 +682,7 @@ export function getAdminOpenApiSpec(
           },
         },
       },
-      [`${ADMIN_API_PREFIX}/git/apps/github/manifest/callback`]: {
+      [`${ADMIN_API_PREFIX}/forges/github/manifest/callback`]: {
         get: {
           tags: ["Git apps"],
           summary: "Finish the GitHub App Manifest flow",

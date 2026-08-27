@@ -373,6 +373,32 @@ function parseCronFields(trimmed: string): CronParseResult<CronFields> {
   }
 }
 
+/**
+ * Validate a stored scheduled-task cron expression.
+ *
+ * Accepts standard five-field cron and the supported `@hourly` / `@daily` /
+ * … aliases, and keeps the authored string. Unlike {@link cronToOnCalendar},
+ * this does **not** refuse a day-of-month **and** day-of-week restriction:
+ * that union is valid cron, and a task row is configuration only — nothing
+ * is translated to a systemd timer yet.
+ */
+export function parseCronSchedule(input: unknown): CronParseResult<string> {
+  if (typeof input !== 'string') return fail('a schedule must be text')
+  const trimmed = input.trim()
+  if (trimmed.length === 0) return fail('a schedule is required')
+  if (trimmed.length > 200) return fail('that schedule is too long to be one')
+
+  if (trimmed.startsWith('@')) {
+    const alias = expandCronAlias(trimmed)
+    if (!alias.ok) return alias
+    return { ok: true, value: trimmed }
+  }
+
+  const parsed = parseCronFields(trimmed)
+  if (!parsed.ok) return parsed
+  return { ok: true, value: trimmed }
+}
+
 export function cronToOnCalendar(input: unknown): CronParseResult<string> {
   if (typeof input !== 'string') return fail('a schedule must be text')
   const trimmed = input.trim()

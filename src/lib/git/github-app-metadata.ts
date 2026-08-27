@@ -21,7 +21,7 @@ import {
   GithubAppTokenError,
   signGithubAppJwt,
 } from './github-app-token.ts'
-import type { GitApp } from './git-app-records.ts'
+import type { Forge } from './forge-records.ts'
 
 /** The subset of `GET /app` worth storing. */
 export type GithubAppMetadata = {
@@ -62,7 +62,7 @@ function readStringArray(value: unknown): string[] {
  * so a failure is something the operator asked to see. Silently keeping the
  * stale name would defeat the point of the button.
  */
-export async function fetchGithubAppMetadata(app: GitApp): Promise<GithubAppMetadata> {
+export async function fetchGithubAppMetadata(app: Forge): Promise<GithubAppMetadata> {
   if (app.provider !== 'github') {
     throw new GithubAppTokenError(`app "${app.name}" is not a github app`)
   }

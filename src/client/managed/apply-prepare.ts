@@ -596,7 +596,7 @@ async function buildOrgTlsMaterialForServer(
     organizationId: string
     serverId: string
     managedId: string
-    nodeId: string
+    replicaId: string
     extraSans?: readonly string[]
     ipAddresses?: readonly string[]
   },
@@ -608,7 +608,7 @@ async function buildOrgTlsMaterialForServer(
     organizationId,
     serverId,
     managedId,
-    nodeId,
+    replicaId,
     extraSans = [],
     ipAddresses = [],
   } = params
@@ -648,7 +648,7 @@ async function buildOrgTlsMaterialForServer(
       organizationId,
       serverId,
       managedId,
-      nodeId,
+      replicaId,
       caId: ca.signer.id,
       caGeneration: ca.signer.caGeneration,
       notAfter: organizationCaLeafNotAfterIso(),
@@ -965,7 +965,7 @@ async function attachManagedOrgTlsMaterial(
       organizationId: memberOrganizationId,
       serverId: member.serverId,
       managedId: input.managedRow.id,
-      nodeId: member.id,
+      replicaId: member.id,
       extraSans: [...containerSans, containerName],
       // Private listener IP must be an IP SAN so remote MySQL/MariaDB replicas
       // using hostaddr + VERIFY_IDENTITY match the primary leaf.

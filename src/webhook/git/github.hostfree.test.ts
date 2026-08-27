@@ -2,7 +2,7 @@
  * Route-gate coverage for the GitHub webhook surface.
  *
  * Host-free: the only database work these paths reach before answering is the
- * `gitapp` lookup behind `resolveGithubWebhookApp`, which is stubbed here.
+ * `gitapp` lookup behind `resolveGithubWebhookForge`, which is stubbed here.
  * The point of these cases is the *order* of the gate — a delivery that names
  * no registered app, one whose app has no webhook secret, and one that is
  * unsigned must each be refused before anything is written.
@@ -27,13 +27,13 @@ import {
   deployment,
   environment,
   fabric,
-  gitProviderApp,
-  gitProviderInstallation,
+  forge,
+  gitConnection,
   network,
   project,
   server,
-  source,
-  task,
+  repository,
+  slot,
 } from '../../lib/db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
@@ -45,7 +45,7 @@ import {
   sourceWatchesBranch,
   type TriggerSummary,
   triggerSummaryNeedsRetry,
-} from '../../client/sources/webhook-trigger.ts'
+} from '../../client/repositories/webhook-trigger.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -79,7 +79,7 @@ function stubAppDb(
           limit: () => Promise.resolve(rows.slice(0, 1)),
           orderBy: () => Promise.resolve(rows),
           // `loadInstallations` awaits the where() chain (no .limit). Keep that
-          // list empty so dispatch can finish without a live source graph.
+          // list empty so dispatch can finish without a live repository graph.
           then: (
             onFulfilled: (value: unknown) => unknown,
             onRejected?: (reason: unknown) => unknown,
@@ -128,7 +128,7 @@ function thenableRows(rows: unknown[]) {
 }
 
 /**
- * Table-aware source graph + empty-compose deploy stub.
+ * Table-aware repository graph + empty-compose deploy stub.
  *
  * Placement JOIN reports a pin so the trigger proceeds; the plan's
  * `environment.where()` row has no pin and no project default, so empty
@@ -141,7 +141,7 @@ function createEnqueueGraphDb(
   opts: {
     claimed?: boolean
     enqueue: 'success' | 'fail'
-    source?: { autoDeploy?: string; options?: unknown }
+    repository?: { autoDeploy?: string; options?: unknown }
   },
 ): Db {
   const composeOptions = { compose: emptyComposeDocument() }
@@ -151,14 +151,14 @@ function createEnqueueGraphDb(
     serviceId: null,
     environmentId: ENV_ID,
     defaultBranch: null,
-    autoDeploy: opts.source?.autoDeploy ?? 'immediate',
-    options: opts.source?.options ?? null,
+    autoDeploy: opts.repository?.autoDeploy ?? 'immediate',
+    options: opts.repository?.options ?? null,
   }
 
   return {
     select: () => ({
       from: (table: unknown) => {
-        if (table === gitProviderApp) {
+        if (table === forge) {
           return {
             where: () => ({
               limit: () => Promise.resolve(appRows.slice(0, 1)),
@@ -166,12 +166,12 @@ function createEnqueueGraphDb(
             }),
           }
         }
-        if (table === gitProviderInstallation) {
+        if (table === gitConnection) {
           return {
             where: () => thenableRows([{ id: INST_ROW_ID, suspendedAt: null }]),
           }
         }
-        if (table === source) {
+        if (table === repository) {
           return {
             where: () => thenableRows([sourceRow]),
           }
@@ -214,7 +214,7 @@ function createEnqueueGraphDb(
             }),
           }
         }
-        if (table === deployment || table === task) {
+        if (table === deployment || table === slot) {
           return { where: () => thenableRows([]) }
         }
         return {
@@ -278,10 +278,10 @@ async function buildApp(opts: {
   updated?: unknown[]
   /** Set a real (non-noop) command queue so dispatch can resolve a trigger. */
   dispatchReady?: boolean
-  /** Live installation + source graph; enqueue success skips persist, fail delivers a stub command. */
+  /** Live installation + repository graph; enqueue success skips persist, fail delivers a stub command. */
   graph?: {
     enqueue: 'success' | 'fail'
-    source?: { autoDeploy?: string; options?: unknown }
+    repository?: { autoDeploy?: string; options?: unknown }
   }
 }) {
   const secretsConfig = parseTestSecretsConfig('deno')
@@ -303,7 +303,7 @@ async function buildApp(opts: {
     redirectUri: null,
     webhookRef: WEBHOOK_REF,
     webhookTokenHash: null,
-    credentials: {
+    envelopes: {
       privateKeyEnvelope: await encryptSecret(dataEncryptionSecrets, 'pem-placeholder'),
       ...(opts.webhookSecret === undefined ? {} : {
         webhookSecretEnvelope: await encryptSecret(
@@ -322,7 +322,7 @@ async function buildApp(opts: {
         ? createEnqueueGraphDb(rows, {
           claimed: opts.claimed,
           enqueue: opts.graph.enqueue,
-          ...(opts.graph.source === undefined ? {} : { source: opts.graph.source }),
+          ...(opts.graph.repository === undefined ? {} : { repository: opts.graph.repository }),
         })
         : stubAppDb(rows, { claimed: opts.claimed, updated: opts.updated }),
     )
@@ -720,7 +720,7 @@ test('a signed installation without an id is unidentified', async () => {
   })
 })
 
-test('installation_repositories is noted without mutating source rows', async () => {
+test('installation_repositories is noted without mutating repository rows', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
   const res = await signedDispatch(app, JSON.stringify({
     action: 'added',
@@ -933,7 +933,7 @@ const branchPush = {
   repository: { id: 42 },
 }
 
-test('a signed push with a matched source enqueues a deploy', async () => {
+test('a signed push with a matched repository enqueues a deploy', async () => {
   const app = await buildApp({
     webhookSecret: 'shh',
     graph: { enqueue: 'success' },
@@ -982,7 +982,7 @@ test('a signed green check_suite with a parked SHA enqueues a deploy', async () 
     webhookSecret: 'shh',
     graph: {
       enqueue: 'success',
-      source: { autoDeploy: 'checks_passed', options: parkedChecks },
+      repository: { autoDeploy: 'checks_passed', options: parkedChecks },
     },
   })
   const res = await signedDispatch(app, JSON.stringify(greenCheckSuite), {
@@ -1007,7 +1007,7 @@ test('a signed green check_run with a parked SHA reports enqueue failure', async
     webhookSecret: 'shh',
     graph: {
       enqueue: 'fail',
-      source: { autoDeploy: 'checks_passed', options: parkedChecks },
+      repository: { autoDeploy: 'checks_passed', options: parkedChecks },
     },
   })
   const res = await signedDispatch(app, JSON.stringify(greenCheckRun), {

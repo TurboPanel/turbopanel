@@ -107,7 +107,7 @@ export type GithubAppManifest = {
    *
    * Distinct from `redirect_url`, which only covers the one-shot manifest
    * conversion. Without a setup URL an install finishes on GitHub with no
-   * redirect, `/sources/github/callback` never fires, and no `installation` row
+   * redirect, `/repositories/github/callback` never fires, and no `installation` row
    * is ever written — the App would exist and be installed while TurboPanel
    * showed no connected account, with nothing to recover from (the
    * `installation` webhook only updates rows that already exist).

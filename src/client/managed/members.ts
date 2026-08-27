@@ -12,7 +12,7 @@ import {
   type ResolvedPrivateEndpoint,
   resolvePrivateEndpoints,
 } from '../../lib/net/private-endpoint.ts'
-import { container, node, server } from '../../lib/db/schema.ts'
+import { container, replica, server } from '../../lib/db/schema.ts'
 import type { ManagedReplicationHealth } from '../../lib/commands/schemas.ts'
 import {
   MANAGED_PRIVATE_PORT_MAX,
@@ -76,20 +76,20 @@ export type ManagedMemberPeer = {
 }
 
 const MEMBER_RETURNING = {
-  id: node.id,
-  managedId: node.managedId,
-  serverId: node.serverId,
-  role: node.role,
-  replicaClass: node.replicaClass,
-  readEligible: node.isReadEligible,
-  ordinal: node.ordinal,
-  replicationTransport: node.replicationTransport,
-  privatePort: node.privatePort,
-  status: node.status,
-  metadata: node.metadata,
-  options: node.options,
-  createdAt: node.createdAt,
-  updatedAt: node.updatedAt,
+  id: replica.id,
+  managedId: replica.managedId,
+  serverId: replica.serverId,
+  role: replica.role,
+  replicaClass: replica.replicaClass,
+  readEligible: replica.isReadEligible,
+  ordinal: replica.ordinal,
+  replicationTransport: replica.replicationTransport,
+  privatePort: replica.privatePort,
+  status: replica.status,
+  metadata: replica.metadata,
+  options: replica.options,
+  createdAt: replica.createdAt,
+  updatedAt: replica.updatedAt,
 } as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -136,12 +136,12 @@ export async function ensureManagedPrimaryMember(
   if (primary) {
     if (primary.serverId !== serverId) {
       const [updated] = await db
-        .update(node)
+        .update(replica)
         .set({
           serverId,
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(node.id, primary.id))
+        .where(eq(replica.id, primary.id))
         .returning(MEMBER_RETURNING)
       return updated ?? primary
     }
@@ -149,7 +149,7 @@ export async function ensureManagedPrimaryMember(
   }
 
   const [inserted] = await db
-    .insert(node)
+    .insert(replica)
     .values({
       managedId,
       serverId,
@@ -159,7 +159,7 @@ export async function ensureManagedPrimaryMember(
       status: 'provisioning',
     })
     .onConflictDoNothing({
-      target: [node.managedId, node.ordinal],
+      target: [replica.managedId, replica.ordinal],
     })
     .returning(MEMBER_RETURNING)
 
@@ -182,9 +182,9 @@ export async function listManagedMembers(
 ): Promise<ManagedMemberRow[]> {
   return await db
     .select(MEMBER_RETURNING)
-    .from(node)
-    .where(eq(node.managedId, managedId))
-    .orderBy(asc(node.ordinal))
+    .from(replica)
+    .where(eq(replica.managedId, managedId))
+    .orderBy(asc(replica.ordinal))
 }
 
 /** List members for many managed ids in one query (org list path). */
@@ -195,9 +195,9 @@ export async function listManagedMembersForManagedIds(
   if (managedIds.length === 0) return []
   return await db
     .select(MEMBER_RETURNING)
-    .from(node)
-    .where(inArray(node.managedId, [...managedIds]))
-    .orderBy(asc(node.ordinal))
+    .from(replica)
+    .where(inArray(replica.managedId, [...managedIds]))
+    .orderBy(asc(replica.ordinal))
 }
 
 /** Smallest unused ordinal ≥ 2 (no replica-count ceiling). */
@@ -256,10 +256,10 @@ export async function listSerializedManagedMembers(
       ...MEMBER_RETURNING,
       serverDisplayName: server.name,
     })
-    .from(node)
-    .leftJoin(server, eq(node.serverId, server.id))
-    .where(eq(node.managedId, managedId))
-    .orderBy(asc(node.ordinal))
+    .from(replica)
+    .leftJoin(server, eq(replica.serverId, server.id))
+    .where(eq(replica.managedId, managedId))
+    .orderBy(asc(replica.ordinal))
 
   return rows.map((row) => serializeManagedMember(row, row.serverDisplayName ?? null))
 }
@@ -396,9 +396,9 @@ export async function ensureMemberPrivatePorts(
     for (const member of members) {
       if (member.privatePort !== null) {
         await db
-          .update(node)
+          .update(replica)
           .set({ privatePort: null, updatedAt: new Date().toISOString() })
-          .where(eq(node.id, member.id))
+          .where(eq(replica.id, member.id))
       }
     }
     return listManagedMembers(db, members[0]!.managedId)
@@ -408,22 +408,22 @@ export async function ensureMemberPrivatePorts(
   return await db.transaction(async (tx) => {
     const current = await tx
       .select(MEMBER_RETURNING)
-      .from(node)
-      .where(eq(node.managedId, managedId))
-      .orderBy(asc(node.ordinal))
+      .from(replica)
+      .where(eq(replica.managedId, managedId))
+      .orderBy(asc(replica.ordinal))
 
     const serverIds = [...new Set(current.map((m) => m.serverId))]
     const occupied = await tx
       .select({
-        serverId: node.serverId,
-        privatePort: node.privatePort,
-        id: node.id,
+        serverId: replica.serverId,
+        privatePort: replica.privatePort,
+        id: replica.id,
       })
-      .from(node)
+      .from(replica)
       .where(
         and(
-          inArray(node.serverId, serverIds),
-          isNotNull(node.privatePort),
+          inArray(replica.serverId, serverIds),
+          isNotNull(replica.privatePort),
         ),
       )
 
@@ -441,19 +441,19 @@ export async function ensureMemberPrivatePorts(
       }
       used.add(assigned)
       await tx
-        .update(node)
+        .update(replica)
         .set({
           privatePort: assigned,
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(node.id, member.id))
+        .where(eq(replica.id, member.id))
     }
 
     return await tx
       .select(MEMBER_RETURNING)
-      .from(node)
-      .where(eq(node.managedId, managedId))
-      .orderBy(asc(node.ordinal))
+      .from(replica)
+      .where(eq(replica.managedId, managedId))
+      .orderBy(asc(replica.ordinal))
   })
 }
 
@@ -635,7 +635,7 @@ export async function insertManagedReplicaMember(
   },
 ): Promise<ManagedMemberRow> {
   const [inserted] = await db
-    .insert(node)
+    .insert(replica)
     .values({
       managedId: params.managedId,
       serverId: params.serverId,
@@ -659,12 +659,12 @@ export async function updateManagedMemberReadEligible(
   readEligible: boolean,
 ): Promise<ManagedMemberRow | null> {
   const [updated] = await db
-    .update(node)
+    .update(replica)
     .set({
       isReadEligible: readEligible,
       updatedAt: new Date().toISOString(),
     })
-    .where(eq(node.id, memberId))
+    .where(eq(replica.id, memberId))
     .returning(MEMBER_RETURNING)
   return updated ?? null
 }
@@ -675,12 +675,12 @@ export async function updateManagedMemberReplicaClass(
   replicaClass: ManagedReplicaClass,
 ): Promise<ManagedMemberRow | null> {
   const [updated] = await db
-    .update(node)
+    .update(replica)
     .set({
       replicaClass,
       updatedAt: new Date().toISOString(),
     })
-    .where(eq(node.id, memberId))
+    .where(eq(replica.id, memberId))
     .returning(MEMBER_RETURNING)
   return updated ?? null
 }
@@ -689,7 +689,7 @@ export async function deleteManagedMember(
   db: Db,
   memberId: string,
 ): Promise<void> {
-  await db.delete(node).where(eq(node.id, memberId))
+  await db.delete(replica).where(eq(replica.id, memberId))
 }
 
 export async function findManagedMember(
@@ -698,8 +698,8 @@ export async function findManagedMember(
 ): Promise<ManagedMemberRow | null> {
   const [row] = await db
     .select(MEMBER_RETURNING)
-    .from(node)
-    .where(eq(node.id, memberId))
+    .from(replica)
+    .where(eq(replica.id, memberId))
     .limit(1)
   return row ?? null
 }
@@ -715,12 +715,12 @@ export async function markMembersApplying(
   managedId: string,
 ): Promise<void> {
   await db
-    .update(node)
+    .update(replica)
     .set({
       status: 'applying',
       updatedAt: sql`now()`,
     })
-    .where(eq(node.managedId, managedId))
+    .where(eq(replica.managedId, managedId))
 }
 
 export async function updateMemberReplicationTransport(
@@ -729,17 +729,17 @@ export async function updateMemberReplicationTransport(
   transport: PrivateEndpointTransport | null,
 ): Promise<void> {
   await db
-    .update(node)
+    .update(replica)
     .set({
       replicationTransport: transport,
       updatedAt: new Date().toISOString(),
     })
-    .where(eq(node.id, memberId))
+    .where(eq(replica.id, memberId))
 }
 
 /**
  * Project daemon-observed per-member status + replication health onto
- * `node` (never reverse-inferred from the command action).
+ * `replica` (never reverse-inferred from the command action).
  */
 export async function updateManagedMemberObservedReplication(
   db: Db,
@@ -750,9 +750,9 @@ export async function updateManagedMemberObservedReplication(
   },
 ): Promise<void> {
   const [existing] = await db
-    .select({ metadata: node.metadata })
-    .from(node)
-    .where(eq(node.id, memberId))
+    .select({ metadata: replica.metadata })
+    .from(replica)
+    .where(eq(replica.id, memberId))
     .limit(1)
   if (!existing) return
 
@@ -762,13 +762,13 @@ export async function updateManagedMemberObservedReplication(
   }
 
   await db
-    .update(node)
+    .update(replica)
     .set({
       status: observed.status,
       metadata: prev,
       updatedAt: new Date().toISOString(),
     })
-    .where(eq(node.id, memberId))
+    .where(eq(replica.id, memberId))
 }
 
 export function isManagedPrivatePortExhaustedError(

@@ -1,5 +1,5 @@
 /**
- * Host-free coverage for TurboFabric relay/segment DB helpers (no Postgres).
+ * Host-free coverage for TurboFabric relay/subnet DB helpers (no Postgres).
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
@@ -11,7 +11,7 @@ import {
   materializeSpanningNetworks,
   type FabricRecord,
 } from "./fabric-records.ts";
-import { network, relay, segment, server } from "./schema.ts";
+import { network, relay, subnet, server } from "./schema.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -182,7 +182,7 @@ function createFabricDb(opts: {
           if (table === network) {
             return thenableRows(filterRows(networks, condition));
           }
-          if (table === segment) {
+          if (table === subnet) {
             return thenableRows(filterRows(segments, condition));
           }
           return thenableRows([]);
@@ -252,7 +252,7 @@ function createFabricDb(opts: {
             ) => Promise.resolve(undefined).then(resolve, reject),
           };
         }
-        if (table === segment) {
+        if (table === subnet) {
           const insertSegmentRows = () => {
             for (const row of rows) {
               const networkId = String(row.networkId);
@@ -462,7 +462,7 @@ test("materializeSpanningNetworks returns empty map when nothing spans hosts", a
         api: { image: "api", networks: ["frontend"] },
       },
     }),
-    tasks: [
+    slots: [
       { serviceId: "svc-web", serverId: "srv-a" },
       { serviceId: "svc-api", serverId: "srv-a" },
     ],
@@ -523,7 +523,7 @@ test("materializeSpanningNetworks creates compose networks and per-server segmen
         api: { image: "api", networks: ["frontend"] },
       },
     }),
-    tasks: [
+    slots: [
       { serviceId: "svc-web", serverId: "srv-a" },
       { serviceId: "svc-api", serverId: "srv-b" },
     ],
@@ -575,7 +575,7 @@ test("materializeSpanningNetworks throws relay_missing for participating servers
             api: { image: "api", networks: ["frontend"] },
           },
         }),
-        tasks: [
+        slots: [
           { serviceId: "svc-web", serverId: "srv-a" },
           { serviceId: "svc-api", serverId: "srv-b" },
         ],
@@ -644,7 +644,7 @@ test("materializeSpanningNetworks throws fabric_segment_pool_exhausted when rela
             api: { image: "api", networks: ["frontend"] },
           },
         }),
-        tasks: [
+        slots: [
           { serviceId: "svc-web", serverId: "srv-a" },
           { serviceId: "svc-api", serverId: "srv-b" },
         ],

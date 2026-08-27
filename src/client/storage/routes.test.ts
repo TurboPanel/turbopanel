@@ -16,7 +16,7 @@ import {
 import {
   environment,
   grant,
-  location,
+  storageCopy,
   mount,
   organization,
   project,
@@ -225,11 +225,24 @@ test('storage CRUD covers list, parent filter, create, patch, and delete', async
         projectId,
         kind: 'volume',
         name: 'app-data',
-        location: { provider: 'docker', serverId },
+        storageCopy: { provider: 'docker', serverId },
       }),
     })
     assertEquals(createVolume.status, 200)
     const { id: volumeId } = await createVolume.json() as { ok: true; id: string }
+
+    const [volumeCopy] = await db
+      .select({
+        storageId: storageCopy.storageId,
+        provider: storageCopy.provider,
+        serverId: storageCopy.serverId,
+      })
+      .from(storageCopy)
+      .where(eq(storageCopy.storageId, volumeId))
+      .limit(1)
+    assertEquals(volumeCopy?.storageId, volumeId)
+    assertEquals(volumeCopy?.provider, 'docker')
+    assertEquals(volumeCopy?.serverId, serverId)
 
     const [volumeRow] = await db
       .select({ metadata: storage.metadata })
@@ -246,7 +259,7 @@ test('storage CRUD covers list, parent filter, create, patch, and delete', async
         serviceId,
         kind: 'directory',
         name: 'config',
-        location: {
+        storageCopy: {
           provider: 'path',
           serverId,
           path: '/var/lib/app/config',
@@ -290,13 +303,13 @@ test('storage CRUD covers list, parent filter, create, patch, and delete', async
     const detailBody = await detail.json() as {
       storage: {
         id: string
-        locations: Array<{ resolvedSourcePath: string | null }>
+        copies: Array<{ resolvedSourcePath: string | null }>
         mounts: Array<{ destinationPath: string }>
       }
     }
     assertEquals(detailBody.storage.id, dirId)
     assertEquals(detailBody.storage.mounts[0]?.destinationPath, '/etc/app/config')
-    assertEquals(detailBody.storage.locations[0]?.resolvedSourcePath, '/var/lib/app/config')
+    assertEquals(detailBody.storage.copies[0]?.resolvedSourcePath, '/var/lib/app/config')
 
     const patch = await app.request(`/storage/${dirId}`, {
       method: 'PATCH',
@@ -341,7 +354,7 @@ test('POST /storage rejects invalid kinds', async () => {
         projectId,
         kind: 'bind_mount',
         name: 'missing-dest',
-        location: { provider: 'path', serverId },
+        storageCopy: { provider: 'path', serverId },
       }),
     })
     assertEquals(res.status, 400)
@@ -374,7 +387,7 @@ test('POST /storage rejects ambiguous parent selection', async () => {
         environmentId,
         kind: 'volume',
         name: 'bad-parent',
-        location: { provider: 'docker', serverId },
+        storageCopy: { provider: 'docker', serverId },
       }),
     })
     assertEquals(res.status, 400)
@@ -383,7 +396,7 @@ test('POST /storage rejects ambiguous parent selection', async () => {
   })
 })
 
-test('POST /storage returns 404 when location server belongs to another org', async () => {
+test('POST /storage returns 404 when storageCopy server belongs to another org', async () => {
   await withStorageFixtures(async ({
     db,
     app,
@@ -420,7 +433,7 @@ test('POST /storage returns 404 when location server belongs to another org', as
           projectId,
           kind: 'volume',
           name: 'foreign-server',
-          location: { provider: 'docker', serverId: foreignServer!.id },
+          storageCopy: { provider: 'docker', serverId: foreignServer!.id },
         }),
       })
       assertEquals(res.status, 404)
@@ -567,7 +580,7 @@ test('POST /storage seals file content when encryption is configured', async () 
         kind: 'file',
         name: 'secrets.txt',
         content: 'hello-storage',
-        location: { provider: 'path', serverId, path: '/app/secrets.txt' },
+        storageCopy: { provider: 'path', serverId, path: '/app/secrets.txt' },
       }),
     })
     assertEquals(res.status, 200)
@@ -585,7 +598,7 @@ test('POST /storage seals file content when encryption is configured', async () 
   })
 })
 
-test('nested location and mount routes create, list, patch, and delete', async () => {
+test('nested storageCopy and mount routes create, list, patch, and delete', async () => {
   await withStorageFixtures(async ({
     db,
     app,
@@ -615,29 +628,29 @@ test('nested location and mount routes create, list, patch, and delete', async (
     assertEquals(create.status, 200)
     const { id: storageId } = await create.json() as { ok: true; id: string }
 
-    const addLoc = await app.request(`/storage/${storageId}/locations`, {
+    const addCopy = await app.request(`/storage/${storageId}/copies`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ provider: 'docker', serverId }),
     })
-    assertEquals(addLoc.status, 200)
-    const { id: locationId } = await addLoc.json() as { ok: true; id: string }
+    assertEquals(addCopy.status, 200)
+    const { id: copyId } = await addCopy.json() as { ok: true; id: string }
 
-    const listLoc = await app.request(`/storage/${storageId}/locations`, {
+    const listCopies = await app.request(`/storage/${storageId}/copies`, {
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
     })
-    assertEquals(listLoc.status, 200)
-    const locBody = await listLoc.json() as { locations: Array<{ id: string; provider: string }> }
-    assertEquals(locBody.locations.length, 1)
-    assertEquals(locBody.locations[0]?.id, locationId)
-    assertEquals(locBody.locations[0]?.provider, 'docker')
+    assertEquals(listCopies.status, 200)
+    const copyBody = await listCopies.json() as { copies: Array<{ id: string; provider: string }> }
+    assertEquals(copyBody.copies.length, 1)
+    assertEquals(copyBody.copies[0]?.id, copyId)
+    assertEquals(copyBody.copies[0]?.provider, 'docker')
 
-    const patchLoc = await app.request(`/storage/${storageId}/locations/${locationId}`, {
+    const patchCopy = await app.request(`/storage/${storageId}/copies/${copyId}`, {
       method: 'PATCH',
       headers,
       body: JSON.stringify({ state: 'ready' }),
     })
-    assertEquals(patchLoc.status, 200)
+    assertEquals(patchCopy.status, 200)
 
     const addMount = await app.request(`/storage/${storageId}/mounts`, {
       method: 'POST',
@@ -668,16 +681,16 @@ test('nested location and mount routes create, list, patch, and delete', async (
     })
     assertEquals(delMount.status, 200)
 
-    const delLoc = await app.request(`/storage/${storageId}/locations/${locationId}`, {
+    const delCopy = await app.request(`/storage/${storageId}/copies/${copyId}`, {
       method: 'DELETE',
       headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
     })
-    assertEquals(delLoc.status, 200)
+    assertEquals(delCopy.status, 200)
 
     const leftover = await db
-      .select({ id: location.id })
-      .from(location)
-      .where(eq(location.storageId, storageId))
+      .select({ id: storageCopy.id })
+      .from(storageCopy)
+      .where(eq(storageCopy.storageId, storageId))
     assertEquals(leftover.length, 0)
   })
 })

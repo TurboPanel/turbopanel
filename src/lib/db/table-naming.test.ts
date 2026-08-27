@@ -92,23 +92,35 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   if (!unique.includes('teammate')) {
     throw new TypeError('expected team-membership table "teammate"')
   }
-  if (!unique.includes('node')) {
-    throw new TypeError('expected managed-cluster participation table "node"')
+  if (!unique.includes('replica')) {
+    throw new TypeError('expected managed-cluster participation table "replica"')
   }
-  if (!unique.includes('fabric') || !unique.includes('relay') || !unique.includes('segment')) {
-    throw new TypeError('expected TurboFabric tables fabric / relay / segment')
+  if (!unique.includes('fabric') || !unique.includes('relay') || !unique.includes('subnet')) {
+    throw new TypeError('expected TurboFabric tables fabric / relay / subnet')
   }
-  if (!unique.includes('storage') || !unique.includes('location') || !unique.includes('mount')) {
-    throw new TypeError('expected storage tables storage / location / mount')
+  if (!unique.includes('storage') || !unique.includes('copy') || !unique.includes('mount')) {
+    throw new TypeError('expected storage tables storage / copy / mount')
   }
-  if (!unique.includes('credential')) {
-    throw new TypeError('expected credential table')
+  if (!unique.includes('secret')) {
+    throw new TypeError('expected secret table')
   }
-  if (!unique.includes('leaf') || !unique.includes('rotation')) {
-    throw new TypeError('expected Organization CA tables leaf / rotation')
+  if (!unique.includes('leaf') || !unique.includes('changeover')) {
+    throw new TypeError('expected Organization CA tables leaf / changeover')
   }
-  if (!unique.includes('steward')) {
-    throw new TypeError('expected principal-service table "steward"')
+  if (!unique.includes('tenancy')) {
+    throw new TypeError('expected principal-service table "tenancy"')
+  }
+  if (!unique.includes('forge') || !unique.includes('connection') || !unique.includes('repository')) {
+    throw new TypeError('expected Git tables forge / connection / repository')
+  }
+  if (!unique.includes('slot')) {
+    throw new TypeError('expected replica-slot table "slot"')
+  }
+  if (!unique.includes('tag') || !unique.includes('marker')) {
+    throw new TypeError('expected tagging tables tag / marker')
+  }
+  if (!unique.includes('task')) {
+    throw new TypeError('expected cron table "task"')
   }
   if (!unique.includes('entitlement')) {
     throw new TypeError('expected principal-runtime-grant table "entitlement"')
@@ -130,10 +142,19 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
     unique.includes('tlsleaf') ||
     unique.includes('tlsrotation') ||
     unique.includes('principal_entitlement') ||
-    unique.includes('principal_ssh_key')
+    unique.includes('principal_ssh_key') ||
+    unique.includes('gitapp') ||
+    unique.includes('installation') ||
+    unique.includes('source') ||
+    unique.includes('steward') ||
+    unique.includes('location') ||
+    unique.includes('credential') ||
+    unique.includes('node') ||
+    unique.includes('segment') ||
+    unique.includes('rotation')
   ) {
     throw new TypeError(
-      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge / vpn / peer / tlsleaf / tlsrotation / principal_entitlement / principal_ssh_key must not reappear',
+      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge / vpn / peer / tlsleaf / tlsrotation / principal_entitlement / principal_ssh_key / gitapp / installation / source / steward / location / credential / node / segment / rotation must not reappear',
     )
   }
 

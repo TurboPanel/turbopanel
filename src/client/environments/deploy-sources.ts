@@ -3,10 +3,10 @@
  * `sourceMaterial[]`.
  *
  * This is the instance half of the Git-backed release lane: it turns the
- * compose-declared source binding into everything the daemon release engine
- * needs to check out, build, and promote a release — a credential-free clone
+ * compose-declared repository binding into everything the daemon release engine
+ * needs to check out, build, and promote a release — a secret-free clone
  * URL, the exact commit to build (with the subject and author the release
- * surface shows), a short-lived clone credential sealed to the target daemon
+ * surface shows), a short-lived clone secret sealed to the target daemon
  * (`tpdaemon.…`), a `releaseId` (the on-host release directory name), and the
  * owning principal.
  *
@@ -15,21 +15,21 @@
  * route creates before that fan-out — see its doc comment for why minting one
  * per host makes an environment release impossible to roll back.
  *
- * **Provider dispatch.** Which commit to build, and whether a credential is
+ * **Provider dispatch.** Which commit to build, and whether a secret is
  * minted for the clone, is the provider's answer — this module asks
  * {@link resolveGitProvider} rather than testing `row.provider` itself. That is
- * what keeps the two credential *lanes* below down to two:
+ * what keeps the two secret *lanes* below down to two:
  *
  * - **A minted secret** (GitHub installation token, GitLab OAuth access token):
  *   short-lived, sealed straight into the payload, never persisted.
- * - **No minted secret** (generic SSH, and a GitLab source connected by deploy
- *   key): the source's existing `credential.secret_envelope` is resealed for
+ * - **No minted secret** (generic SSH, and a GitLab repository connected by deploy
+ *   key): the repository's existing `secret.secret_envelope` is resealed for
  *   the daemon recipient.
  *
  * Either way the envelope is tagged with the auth shape the daemon must use:
  * `credentialKind: 'ssh_key'` for an `ssh://…` / `git@host:path` clone (the
  * daemon installs it as a temporary identity file), `'token'` for an HTTPS
- * clone (askpass). An HTTPS credential may additionally carry
+ * clone (askpass). An HTTPS secret may additionally carry
  * `credentialUsername`, the basic-auth user the host must answer git's
  * `Username` prompt with — provider policy (GitLab's OAuth tokens authenticate
  * only as `oauth2`) expressed as opaque data, so this module and the daemon
@@ -75,11 +75,11 @@ import type {
   EnvironmentDeploySourceCredentialKind,
   EnvironmentDeploySitePrincipal,
 } from "../../lib/commands/schemas.ts";
-import { credential, source } from "../../lib/db/schema.ts";
+import { secret, repository } from "../../lib/db/schema.ts";
 import {
   loadPrincipalIdsByServiceIdForEnvironment,
   pickSolePrincipalId,
-} from "../principals/stewards.ts";
+} from "../principals/tenancies.ts";
 
 /** Prepare failures this stage can raise. Mirrors `DeployPrepareError` kinds. */
 export type DeploySourcePrepareError =
@@ -103,7 +103,7 @@ export type DeploySourcePrepareError =
  * (`reclaimRemovedReleaseTrees`), which document root each site
  * site serves from, and what goes into `deployment.json`'s `releases[]`. A
  * payload carrying one entry would read on the host as "every other service
- * lost its source" and reclaim their trees. Re-promoting a service onto the
+ * lost its repository" and reclaim their trees. Re-promoting a service onto the
  * release it already runs is an idempotent symlink swap with no build, so
  * pinning them costs nothing and keeps the payload a complete statement.
  *
@@ -195,7 +195,7 @@ export type DeploySourceResolveParams = {
   /**
    * Webhook-supplied commit, when the trigger already knows the head SHA.
    *
-   * `sourceId` names the single `source` row the trigger fired for. The pinned
+   * `sourceId` names the single `repository` row the trigger fired for. The pinned
    * `commitSha` is applied to **that** binding only — every other binding in
    * the environment resolves from its own declared/default ref, because a push
    * to one repository says nothing about the others.
@@ -210,7 +210,7 @@ export type DeploySourceResolveParams = {
    *
    * When set, this resolver produces exactly one entry — for that service, with
    * `rollbackToReleaseId` set — and performs **no** GitHub round trip, no token
-   * minting, and no credential sealing: there is nothing to clone.
+   * minting, and no secret sealing: there is nothing to clone.
    */
   rollback?: DeployRollbackRequest;
   /**
@@ -228,8 +228,8 @@ type SourceRow = {
   repositoryUrl: string;
   defaultBranch: string | null;
   subdirectory: string | null;
-  installationId: string | null;
-  credentialId: string | null;
+  connectionId: string | null;
+  secretId: string | null;
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -240,16 +240,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function collectSourceBindings(
   services: Record<string, unknown>,
 ): Array<
-  { composeServiceName: string; source: ComposeServiceSourceExtension }
+  { composeServiceName: string; repository: ComposeServiceSourceExtension }
 > {
   const out: Array<
-    { composeServiceName: string; source: ComposeServiceSourceExtension }
+    { composeServiceName: string; repository: ComposeServiceSourceExtension }
   > = [];
   for (const [name, raw] of Object.entries(services)) {
     if (!isPlainObject(raw)) continue;
     const binding = readServiceSourceExtension(raw);
     if (!binding) continue;
-    out.push({ composeServiceName: name, source: binding });
+    out.push({ composeServiceName: name, repository: binding });
   }
   return out.sort((a, b) =>
     a.composeServiceName.localeCompare(b.composeServiceName)
@@ -332,7 +332,7 @@ async function resolveDaemonRecipient(
 }
 
 /**
- * The selection's `commitSha`, but only for the source that produced it.
+ * The selection's `commitSha`, but only for the repository that produced it.
  *
  * `undefined` for every other binding — including when the selection carries a
  * SHA with no `sourceId` (nothing identifies which repository it belongs to, so
@@ -350,7 +350,7 @@ export function requestedCommitShaForSource(
 /** One compose service and the `x-turbopanel.source` block bound to it. */
 type SourceBinding = {
   composeServiceName: string;
-  source: ComposeServiceSourceExtension;
+  repository: ComposeServiceSourceExtension;
 };
 
 /** Lookups every binding in one deploy resolves against, loaded once up front. */
@@ -384,7 +384,7 @@ function noSourceBindingsResult(
 
 /**
  * Ownership: identical lookup + sole-principal rule the site pin
- * uses; more than one steward is ambiguous ownership, not a guess.
+ * uses; more than one tenancy is ambiguous ownership, not a guess.
  */
 function resolveBindingPrincipal(
   composeServiceName: string,
@@ -403,7 +403,7 @@ function resolveBindingPrincipal(
 }
 
 /**
- * Commit (and, off the rollback lane, the sealed clone credential) for one
+ * Commit (and, off the rollback lane, the sealed clone secret) for one
  * binding.
  *
  * A rollback reuses what was recorded when the pinned release was first
@@ -450,25 +450,25 @@ async function resolveBindingMaterial(
   binding: SourceBinding,
 ): Promise<EnvironmentDeploySource | DeploySourcePrepareError | Response> {
   const composeServiceName = binding.composeServiceName;
-  const row = context.sourceById.get(binding.source.sourceId);
+  const row = context.sourceById.get(binding.repository.sourceId);
   if (!row) {
     return {
       kind: "source_ref_unresolved",
       composeServiceName,
-      sourceId: binding.source.sourceId,
-      ref: binding.source.branch ?? "",
-      message: "source not found in this organization",
+      sourceId: binding.repository.sourceId,
+      ref: binding.repository.branch ?? "",
+      message: "repository not found in this organization",
     };
   }
 
-  const ref = binding.source.branch ?? row.defaultBranch ?? null;
+  const ref = binding.repository.branch ?? row.defaultBranch ?? null;
   if (!ref) {
     return {
       kind: "source_ref_unresolved",
       composeServiceName,
       sourceId: row.id,
       ref: "",
-      message: "no branch on the compose binding and no source default branch",
+      message: "no branch on the compose binding and no repository default branch",
     };
   }
 
@@ -476,7 +476,7 @@ async function resolveBindingMaterial(
   if ("kind" in owner) return owner;
 
   // Rollback: the release tree already exists on the host, so there is no
-  // commit to resolve and no credential to mint. `ref` still travels because
+  // commit to resolve and no secret to mint. `ref` still travels because
   // the wire contract requires it and the daemon ignores it on this branch;
   // `commitSha` carries the metadata the pinned release recorded, so the row
   // this deploy writes names the commit going live rather than a branch name.
@@ -489,7 +489,7 @@ async function resolveBindingMaterial(
     context,
     rollbackPin,
     // The webhook path resolves one push event into one `DeploySourceSelection`.
-    // Only the binding that names *that* source may be pinned to its SHA —
+    // Only the binding that names *that* repository may be pinned to its SHA —
     // forwarding it to every binding would deploy the triggering commit into
     // unrelated repositories (or fail the whole deploy on a SHA they do not
     // contain).
@@ -523,8 +523,8 @@ async function resolveBindingMaterial(
       params.releaseIds?.allocate(composeServiceName) ??
       newCorrelationId(),
     rollbackToReleaseId: rollbackReleaseId,
-    build: resolveSourceBuild(binding.source),
-    subdirectory: binding.source.subdirectory ?? row.subdirectory ?? undefined,
+    build: resolveSourceBuild(binding.repository),
+    subdirectory: binding.repository.subdirectory ?? row.subdirectory ?? undefined,
     credential: resolved.credential,
     credentialKind: resolved.credentialKind,
     credentialUsername: resolved.credentialUsername,
@@ -540,22 +540,22 @@ async function loadSourceResolutionContext(
   params: DeploySourceResolveParams,
   bindings: readonly SourceBinding[],
 ): Promise<SourceResolutionContext | Response> {
-  const sourceIds = [...new Set(bindings.map((b) => b.source.sourceId))];
+  const sourceIds = [...new Set(bindings.map((b) => b.repository.sourceId))];
   const sourceRows = await db
     .select({
-      id: source.id,
-      provider: source.provider,
-      repositoryUrl: source.repositoryUrl,
-      defaultBranch: source.defaultBranch,
-      subdirectory: source.subdirectory,
-      installationId: source.installationId,
-      credentialId: source.credentialId,
+      id: repository.id,
+      provider: repository.provider,
+      repositoryUrl: repository.repositoryUrl,
+      defaultBranch: repository.defaultBranch,
+      subdirectory: repository.subdirectory,
+      connectionId: repository.connectionId,
+      secretId: repository.secretId,
     })
-    .from(source)
+    .from(repository)
     .where(
       and(
-        eq(source.organizationId, params.organizationId),
-        inArray(source.id, sourceIds),
+        eq(repository.organizationId, params.organizationId),
+        inArray(repository.id, sourceIds),
       ),
     );
 
@@ -565,7 +565,7 @@ async function loadSourceResolutionContext(
   }
 
   // A rollback clones nothing, so it seals nothing — and must not fail on a
-  // server whose daemon key is momentarily unusable when no credential is
+  // server whose daemon key is momentarily unusable when no secret is
   // going to travel anyway.
   const sealForDaemon = params.mode === "deploy" && params.rollback === undefined;
   const recipient = sealForDaemon
@@ -630,15 +630,15 @@ type CommitAndCredentialParams = {
 };
 
 /**
- * Resolve the commit to build and the sealed clone credential for one source.
+ * Resolve the commit to build and the sealed clone secret for one repository.
  *
  * The provider answers the first half and *may* answer the second: a hosted
  * provider mints a short-lived token, which is sealed to the target daemon
- * here; a deploy-key source mints nothing, and its stored `credential` row is
- * resealed instead. Those are the only two lanes, and which one a source takes
+ * here; a deploy-key repository mints nothing, and its stored `secret` row is
+ * resealed instead. Those are the only two lanes, and which one a repository takes
  * is settled at write time by `assertProviderAuthShape`, not guessed here.
  *
- * Generic SSH (and a GitLab deploy-key source) has no remote SHA resolution
+ * Generic SSH (and a GitLab deploy-key repository) has no remote SHA resolution
  * yet — the ref passes through as `commitSha` and the daemon resolves it on
  * clone. A follow-up phase adds `git ls-remote` resolution so the control plane
  * pins the exact commit for those too.
@@ -688,7 +688,7 @@ async function resolveSourceCommitAndCredential(
   // recipient or an encryption key.
   if (!params.sealForDaemon) return commit;
 
-  // Lane 1 — the provider minted a credential for this one clone. Seal it
+  // Lane 1 — the provider minted a secret for this one clone. Seal it
   // straight into the payload; it is never written anywhere.
   if (prepared.minted) {
     if (!secretsConfig || !params.recipient) {
@@ -699,7 +699,7 @@ async function resolveSourceCommitAndCredential(
     return {
       ...commit,
       credentialKind: prepared.minted.kind,
-      // The provider owns the username half of an HTTPS credential (GitLab's
+      // The provider owns the username half of an HTTPS secret (GitLab's
       // OAuth tokens authenticate only as `oauth2`); it rides the payload as
       // data so nothing downstream has to know which provider minted this.
       ...(prepared.minted.username === undefined
@@ -713,22 +713,22 @@ async function resolveSourceCommitAndCredential(
     };
   }
 
-  // Lane 2 — the source clones with the deploy key it already points at.
-  // A source with no credential at all clones anonymously (a public
+  // Lane 2 — the repository clones with the deploy key it already points at.
+  // A repository with no secret at all clones anonymously (a public
   // repository), which is a valid, if unusual, configuration.
-  if (!row.credentialId) return commit;
+  if (!row.secretId) return commit;
   if (!dataEncryptionSecrets || !secretsConfig || !params.recipient) {
     return Response.json({
       error: "Encryption unavailable — no encryption key configured",
     }, { status: 503 });
   }
   const [credentialRow] = await db
-    .select({ secretEnvelope: credential.secretEnvelope })
-    .from(credential)
-    .where(eq(credential.id, row.credentialId))
+    .select({ secretEnvelope: secret.secretEnvelope })
+    .from(secret)
+    .where(eq(secret.id, row.secretId))
     .limit(1);
   if (!credentialRow) return commit;
-  // An SSH clone URL means the stored credential is a deploy key, and the
+  // An SSH clone URL means the stored secret is a deploy key, and the
   // daemon has to install it as an identity file — `GIT_ASKPASS` answers
   // password prompts, never publickey auth. Say so on the wire rather than
   // leaving the daemon to guess from the URL.

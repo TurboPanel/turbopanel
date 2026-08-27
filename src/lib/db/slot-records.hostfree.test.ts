@@ -1,11 +1,11 @@
 /**
- * Host-free coverage for task records (no Postgres).
+ * Host-free coverage for slot records (no Postgres).
  */
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
-import { task } from './schema.ts'
-import { listEnvironmentTasks, replaceEnvironmentTasks, serializeTask } from './task-records.ts'
+import { slot } from './schema.ts'
+import { listEnvironmentSlots, replaceEnvironmentSlots, serializeSlot } from './slot-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -33,13 +33,13 @@ const serviceB = '00000000-0000-4000-8000-0000000000bb'
 const serverA = '00000000-0000-4000-8000-00000000000a'
 const serverB = '00000000-0000-4000-8000-00000000000b'
 
-type ExistingTask = {
+type ExistingSlot = {
   id: string
   serviceId: string
   slot: number
 }
 
-function createTaskDb(opts?: { existing?: ExistingTask[] }): Db & {
+function createTaskDb(opts?: { existing?: ExistingSlot[] }): Db & {
   inserts: Array<Record<string, unknown>>
   conflictSets: Array<Record<string, unknown>>
   deletedIds: unknown[]
@@ -55,7 +55,7 @@ function createTaskDb(opts?: { existing?: ExistingTask[] }): Db & {
     deletedIds,
     select: () => ({
       from: (table: unknown) => {
-        if (table !== task) return { where: () => thenableRows([]) }
+        if (table !== slot) return { where: () => thenableRows([]) }
         return {
           where: () => thenableRows(existing),
         }
@@ -92,13 +92,13 @@ function createTaskDb(opts?: { existing?: ExistingTask[] }): Db & {
 
 test('sticky re-plan leaves server_id untouched and only bumps generation', async () => {
   const db = createTaskDb({
-    existing: [{ id: 'task-1', serviceId: serviceA, slot: 0 }],
+    existing: [{ id: 'slot-1', serviceId: serviceA, slot: 0 }],
   })
 
-  await replaceEnvironmentTasks(db, {
+  await replaceEnvironmentSlots(db, {
     environmentId: envId,
     generation: 7,
-    tasks: [{
+    slots: [{
       serviceId: serviceA,
       serverId: serverA,
       slot: 0,
@@ -115,7 +115,7 @@ test('sticky re-plan leaves server_id untouched and only bumps generation', asyn
   assertEquals(db.deletedIds.length, 0)
 })
 
-test('replaceEnvironmentTasks deletes removed (serviceId, slot) pairs', async () => {
+test('replaceEnvironmentSlots deletes removed (serviceId, slot) pairs', async () => {
   const db = createTaskDb({
     existing: [
       { id: 'keep', serviceId: serviceA, slot: 0 },
@@ -123,24 +123,24 @@ test('replaceEnvironmentTasks deletes removed (serviceId, slot) pairs', async ()
     ],
   })
 
-  await replaceEnvironmentTasks(db, {
+  await replaceEnvironmentSlots(db, {
     environmentId: envId,
     generation: 2,
-    tasks: [{ serviceId: serviceA, serverId: serverA, slot: 0 }],
+    slots: [{ serviceId: serviceA, serverId: serverA, slot: 0 }],
   })
 
   assertEquals(db.deletedIds.length, 1)
 })
 
-test('replaceEnvironmentTasks writes caller serverId when the planner moves a slot', async () => {
+test('replaceEnvironmentSlots writes caller serverId when the planner moves a slot', async () => {
   const db = createTaskDb({
-    existing: [{ id: 'task-1', serviceId: serviceA, slot: 0 }],
+    existing: [{ id: 'slot-1', serviceId: serviceA, slot: 0 }],
   })
 
-  await replaceEnvironmentTasks(db, {
+  await replaceEnvironmentSlots(db, {
     environmentId: envId,
     generation: 3,
-    tasks: [{ serviceId: serviceA, serverId: serverB, slot: 0 }],
+    slots: [{ serviceId: serviceA, serverId: serverB, slot: 0 }],
   })
 
   const set = db.conflictSets[0]
@@ -149,7 +149,7 @@ test('replaceEnvironmentTasks writes caller serverId when the planner moves a sl
   assertEquals(set.generation, 3)
 })
 
-test('listEnvironmentTasks orders by serviceId then slot', async () => {
+test('listEnvironmentSlots orders by serviceId then slot', async () => {
   const db = {
     select: () => ({
       from: () => ({
@@ -199,15 +199,15 @@ test('listEnvironmentTasks orders by serviceId then slot', async () => {
     }),
   } as unknown as Db
 
-  const listed = await listEnvironmentTasks(db, envId)
+  const listed = await listEnvironmentSlots(db, envId)
   assertEquals(
     listed.map((row) => `${row.serviceId}:${String(row.slot)}`),
     [`${serviceA}:0`, `${serviceA}:1`, `${serviceB}:0`],
   )
 })
 
-test('serializeTask defaults unknown desiredState to running', () => {
-  const record = serializeTask({
+test('serializeSlot defaults unknown desiredState to running', () => {
+  const record = serializeSlot({
     id: 't',
     createdAt: '2020-01-01T00:00:00.000Z',
     updatedAt: '2020-01-01T00:00:00.000Z',
@@ -226,15 +226,15 @@ test('serializeTask defaults unknown desiredState to running', () => {
   assertEquals(record.address, null)
 })
 
-test('replaceEnvironmentTasks writes and patches task.address including explicit null', async () => {
+test('replaceEnvironmentSlots writes and patches slot.address including explicit null', async () => {
   const db = createTaskDb({
-    existing: [{ id: 'task-1', serviceId: serviceA, slot: 0 }],
+    existing: [{ id: 'slot-1', serviceId: serviceA, slot: 0 }],
   })
 
-  await replaceEnvironmentTasks(db, {
+  await replaceEnvironmentSlots(db, {
     environmentId: envId,
     generation: 4,
-    tasks: [{
+    slots: [{
       serviceId: serviceA,
       serverId: serverA,
       slot: 0,
@@ -245,10 +245,10 @@ test('replaceEnvironmentTasks writes and patches task.address including explicit
   assertEquals(db.inserts[0]?.address, '203.0.113.10')
   assertEquals(db.conflictSets[0]?.address, '203.0.113.10')
 
-  await replaceEnvironmentTasks(db, {
+  await replaceEnvironmentSlots(db, {
     environmentId: envId,
     generation: 5,
-    tasks: [{
+    slots: [{
       serviceId: serviceA,
       serverId: serverA,
       slot: 0,
@@ -260,8 +260,8 @@ test('replaceEnvironmentTasks writes and patches task.address including explicit
   assertEquals(db.conflictSets[1]?.address, null)
 })
 
-test('serializeTask and listEnvironmentTasks surface a persisted address', async () => {
-  const record = serializeTask({
+test('serializeSlot and listEnvironmentSlots surface a persisted address', async () => {
+  const record = serializeSlot({
     id: 't',
     createdAt: '2020-01-01T00:00:00.000Z',
     updatedAt: '2020-01-01T00:00:00.000Z',
@@ -299,6 +299,6 @@ test('serializeTask and listEnvironmentTasks surface a persisted address', async
     }),
   } as unknown as Db
 
-  const listed = await listEnvironmentTasks(db, envId)
+  const listed = await listEnvironmentSlots(db, envId)
   assertEquals(listed[0]?.address, '203.0.113.10')
 })

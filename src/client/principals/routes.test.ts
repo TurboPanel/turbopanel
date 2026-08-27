@@ -11,7 +11,7 @@ import {
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
-  steward,
+  tenancy,
   environment,
   grant,
   organization,
@@ -188,7 +188,7 @@ async function withPrincipalFixtures(
       serverId,
     })
   } finally {
-    await db.delete(steward).where(eq(steward.serviceId, serviceId))
+    await db.delete(tenancy).where(eq(tenancy.serviceId, serviceId))
     await db.delete(principal).where(eq(principal.projectId, projectId))
     await db.delete(service).where(eq(service.id, serviceId))
     await db.delete(environment).where(eq(environment.id, environmentId))

@@ -29,15 +29,15 @@ import {
   binding,
   environment,
   managed,
-  node,
+  replica,
   principal,
   project,
   server,
   service,
-  task,
+  slot,
   workspace,
 } from "../../lib/db/schema.ts";
-import { updateCaRotationJournal } from "./rotation-lease.ts";
+import { updateCaRotationJournal } from "./changeover-lease.ts";
 
 export const ROTATION_FANOUT_BATCH_SIZE = 10;
 
@@ -147,12 +147,12 @@ async function collectMemberNodesForOrganization(
 ): Promise<void> {
   const rows = await db
     .select({
-      serverId: node.serverId,
-      managedId: node.managedId,
+      serverId: replica.serverId,
+      managedId: replica.managedId,
       serverOrganizationId: server.organizationId,
     })
-    .from(node)
-    .innerJoin(server, eq(node.serverId, server.id))
+    .from(replica)
+    .innerJoin(server, eq(replica.serverId, server.id))
     .where(eq(server.organizationId, organizationId));
 
   for (const row of rows) {
@@ -193,19 +193,19 @@ async function collectOwnedClusterMembers(
   if (ownedManagedIds.length === 0) return;
   const rows = await db
     .select({
-      serverId: node.serverId,
-      managedId: node.managedId,
+      serverId: replica.serverId,
+      managedId: replica.managedId,
       workspaceOrganizationId: workspace.organizationId,
     })
-    .from(node)
-    .innerJoin(managed, eq(node.managedId, managed.id))
+    .from(replica)
+    .innerJoin(managed, eq(replica.managedId, managed.id))
     .innerJoin(environment, eq(managed.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
     .innerJoin(workspace, eq(project.workspaceId, workspace.id))
     .where(
       and(
         eq(workspace.organizationId, organizationId),
-        inArray(node.managedId, [...ownedManagedIds]),
+        inArray(replica.managedId, [...ownedManagedIds]),
       ),
     );
   for (const row of rows) {
@@ -227,7 +227,7 @@ async function collectConsumerServers(
       managedId: principal.managedId,
       environmentServerId: environment.serverId,
       projectOptions: project.options,
-      taskServerId: task.serverId,
+      taskServerId: slot.serverId,
       workspaceOrganizationId: workspace.organizationId,
     })
     .from(binding)
@@ -236,7 +236,7 @@ async function collectConsumerServers(
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
     .innerJoin(workspace, eq(project.workspaceId, workspace.id))
-    .leftJoin(task, eq(task.serviceId, service.id))
+    .leftJoin(slot, eq(slot.serviceId, service.id))
     .where(
       and(
         eq(workspace.organizationId, organizationId),

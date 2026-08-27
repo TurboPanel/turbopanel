@@ -32,7 +32,7 @@ import {
 } from '../db/deployment-records.ts'
 import { stampRelayPublicKey, stampRelayReconcileSuccess, clearRelayAppliedPayloadHash, getFabricById } from '../db/fabric-records.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
-import { managed, node, server } from '../db/schema.ts'
+import { managed, replica, server } from '../db/schema.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
 import {
   type ManagedBackupRecord,
@@ -1056,7 +1056,7 @@ const MANAGED_OBSERVED_STATUSES = new Set(['ready', 'stopped', 'failed'])
 
 /**
  * Project daemon-observed per-member status + replication health onto
- * `node`. Only what the daemon reported — never reverse-inferred.
+ * `replica`. Only what the daemon reported — never reverse-inferred.
  */
 async function projectManagedMemberObservedStatus(
   db: Db,
@@ -1350,7 +1350,7 @@ async function cleanupDestroyedMember(
   deps: CommandConsumerDeps | undefined
 ): Promise<void> {
   if (!payload.deleteMemberAfterDestroy || !payload.memberId) return
-  await db.delete(node).where(eq(node.id, payload.memberId))
+  await db.delete(replica).where(eq(replica.id, payload.memberId))
   if (hasManagedFollowUpDeps(deps)) {
     await reapplyPrimaryAfterMemberDestroy(db, record, deps)
   }
@@ -1454,7 +1454,7 @@ export function resolveManagedIdFromPayload(type: string, payload: unknown): str
 
 /**
  * Member id on a failed managed command payload (apply always has one;
- * lifecycle/destroy/promote when fan-out targets a single node).
+ * lifecycle/destroy/promote when fan-out targets a single replica).
  * Does not invent ids — only what the typed payload already carried.
  */
 export function resolveManagedMemberIdFromFailedPayload(
@@ -1562,12 +1562,12 @@ async function markManagedRowsFailedFromCommand(
     const memberId = resolveManagedMemberIdFromFailedPayload(record.type, record.payload)
     if (memberId) {
       await db
-        .update(node)
+        .update(replica)
         .set({
           status: 'failed',
           updatedAt,
         })
-        .where(eq(node.id, memberId))
+        .where(eq(replica.id, memberId))
     }
   } catch (err) {
     const message = errorMessage(err)
@@ -1583,7 +1583,7 @@ async function markManagedRowsFailedFromCommand(
  * or time out. `managed.backup` is deliberately excluded — a read-only backup
  * failure must never mark an otherwise-healthy engine `failed`.
  *
- * Also marks the targeted `node` failed when the payload names a member —
+ * Also marks the targeted `replica` failed when the payload names a member —
  * otherwise UI cluster rows stay stuck on `provisioning` after a failed apply
  * while only `managed.status` flipped to `failed`.
  *
@@ -1683,30 +1683,30 @@ async function applyManagedPromoteSideEffect(
       // Demote first so the partial unique primary index stays satisfied.
       if (demotedMemberId) {
         await tx
-          .update(node)
+          .update(replica)
           .set({
             role: 'replica',
             status: 'needs_resync',
             updatedAt,
           })
-          .where(and(eq(node.id, demotedMemberId), eq(node.managedId, managedId)))
+          .where(and(eq(replica.id, demotedMemberId), eq(replica.managedId, managedId)))
       }
 
       if (!promotedMemberId) return
 
       await tx
-        .update(node)
+        .update(replica)
         .set({
           role: 'primary',
           status: promoteResult.status || 'ready',
           updatedAt,
         })
-        .where(and(eq(node.id, promotedMemberId), eq(node.managedId, managedId)))
+        .where(and(eq(replica.id, promotedMemberId), eq(replica.managedId, managedId)))
 
       const [promoted] = await tx
-        .select({ serverId: node.serverId })
-        .from(node)
-        .where(eq(node.id, promotedMemberId))
+        .select({ serverId: replica.serverId })
+        .from(replica)
+        .where(eq(replica.id, promotedMemberId))
         .limit(1)
 
       if (promoted) {
@@ -1801,34 +1801,34 @@ async function applyManagedRoleFlip(
   await db.transaction(async (tx) => {
     if (params.demotedMemberId) {
       await tx
-        .update(node)
+        .update(replica)
         .set({
           role: 'replica',
           status: 'needs_resync',
           updatedAt: params.updatedAt,
         })
         .where(and(
-          eq(node.id, params.demotedMemberId),
-          eq(node.managedId, params.managedId),
+          eq(replica.id, params.demotedMemberId),
+          eq(replica.managedId, params.managedId),
         ))
     }
 
     await tx
-      .update(node)
+      .update(replica)
       .set({
         role: 'primary',
         status: params.status,
         updatedAt: params.updatedAt,
       })
       .where(and(
-        eq(node.id, params.promotedMemberId),
-        eq(node.managedId, params.managedId),
+        eq(replica.id, params.promotedMemberId),
+        eq(replica.managedId, params.managedId),
       ))
 
     const [promoted] = await tx
-      .select({ serverId: node.serverId })
-      .from(node)
-      .where(eq(node.id, params.promotedMemberId))
+      .select({ serverId: replica.serverId })
+      .from(replica)
+      .where(eq(replica.id, params.promotedMemberId))
       .limit(1)
 
     if (promoted) {

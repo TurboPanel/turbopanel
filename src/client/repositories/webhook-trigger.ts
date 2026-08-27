@@ -29,7 +29,7 @@
  * only thing the provider discriminant changes is which installation rows are
  * candidates — see {@link loadInstallations}.
  *
- * **`appId` is not optional and is not a hint.** It is the registered app whose
+ * **`forgeId` is not optional and is not a hint.** It is the registered app whose
  * webhook secret verified the delivery, and it is what narrows the candidate
  * installations to the connections granted through that app. See
  * {@link loadInstallations} for why provider and external id alone are not
@@ -42,10 +42,10 @@ import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
 import {
   environment,
-  gitProviderInstallation,
+  gitConnection,
   project,
   service,
-  source,
+  repository,
   workspace,
 } from '../../lib/db/schema.ts'
 import { resolveEffectivePlacementServerId } from '../../lib/project-options.ts'
@@ -59,19 +59,19 @@ import {
 import type { WebhookGitProviderName } from '../../lib/git/git-provider.ts'
 import { COMPOSE_SOURCE_JSONPATH } from './routes-helpers.ts'
 
-/** Why a matched source did not produce a deploy. */
+/** Why a matched repository did not produce a deploy. */
 export type TriggerSkipReason =
   /** No `installation` row for this provider installation id. */
   | 'installation_unknown'
   /** The installation is marked suspended; clones would fail anyway. */
   | 'installation_suspended'
-  /** `autoDeploy: 'disabled'` — the source is wired up but not armed. */
+  /** `autoDeploy: 'disabled'` — the repository is wired up but not armed. */
   | 'auto_deploy_disabled'
-  /** The push was on a branch this source does not watch. */
+  /** The push was on a branch this repository does not watch. */
   | 'branch_not_watched'
   /** `autoDeploy: 'checks_passed'` — the SHA is parked until checks report. */
   | 'awaiting_checks'
-  /** The source is attached to nothing deployable (library entry). */
+  /** The repository is attached to nothing deployable (library entry). */
   | 'no_environment'
   /** No environment pin and no project default — nothing to deploy onto. */
   | 'server_placement_required'
@@ -84,7 +84,7 @@ export type TriggerSkipReason =
   | 'deploy_rejected'
 
 /**
- * Why a matched source failed in a way a redelivery could still fix.
+ * Why a matched repository failed in a way a redelivery could still fix.
  *
  * Kept apart from {@link TriggerSkipReason} because the two get opposite HTTP
  * answers: a skip is final and answers 2xx, a failure answers 5xx so GitHub
@@ -150,16 +150,16 @@ export function triggerSummaryNeedsRetry(summary: TriggerSummary): boolean {
 }
 
 const SOURCE_TRIGGER_SELECT = {
-  id: source.id,
-  organizationId: source.organizationId,
-  serviceId: source.serviceId,
-  environmentId: source.environmentId,
-  defaultBranch: source.defaultBranch,
-  autoDeploy: source.autoDeploy,
-  options: source.options,
+  id: repository.id,
+  organizationId: repository.organizationId,
+  serviceId: repository.serviceId,
+  environmentId: repository.environmentId,
+  defaultBranch: repository.defaultBranch,
+  autoDeploy: repository.autoDeploy,
+  options: repository.options,
 }
 
-export type TriggerSourceRow = {
+export type TriggerRepositoryRow = {
   id: string
   organizationId: string
   serviceId: string | null
@@ -180,24 +180,24 @@ async function findSourcesForRepository(
   db: Db,
   installationIds: readonly string[],
   repositoryExternalId: string,
-): Promise<TriggerSourceRow[]> {
+): Promise<TriggerRepositoryRow[]> {
   if (installationIds.length === 0) return []
   return await db
     .select(SOURCE_TRIGGER_SELECT)
-    .from(source)
+    .from(repository)
     .where(
       and(
-        inArray(source.installationId, [...installationIds]),
-        eq(source.repositoryExternalId, repositoryExternalId),
+        inArray(repository.connectionId, [...installationIds]),
+        eq(repository.repositoryExternalId, repositoryExternalId),
       ),
     )
-    .orderBy(source.createdAt)
+    .orderBy(repository.createdAt)
 }
 
 /**
  * Branch policy.
  *
- * A source with `defaultBranch` set watches exactly that branch. A source that
+ * A repository with `defaultBranch` set watches exactly that branch. A repository that
  * left it blank never picked one, so it watches **every** branch the repository
  * pushes — the alternative (guessing the repository's own default) would need a
  * live GitHub call on the hot path of every delivery and would silently change
@@ -212,15 +212,15 @@ export type WebhookTriggerDeps = {
     db: Db,
     installationIds: readonly string[],
     repositoryExternalId: string,
-  ) => Promise<TriggerSourceRow[]>
+  ) => Promise<TriggerRepositoryRow[]>
   setPendingChecks?: (
     db: Db,
-    row: TriggerSourceRow,
+    row: TriggerRepositoryRow,
     pending: PendingChecks | null,
   ) => Promise<void>
-  resolveSourceEnvironmentIds?: (
+  resolveRepositoryEnvironmentIds?: (
     db: Db,
-    row: TriggerSourceRow,
+    row: TriggerRepositoryRow,
   ) => Promise<string[]>
   resolveEnvironmentPlacement?: (
     db: Db,
@@ -234,8 +234,8 @@ function resolveTriggerIo(deps: WebhookTriggerDeps = {}) {
     loadInstallations: deps.loadInstallations ?? loadInstallations,
     findSources: deps.findSources ?? findSourcesForRepository,
     setPendingChecks: deps.setPendingChecks ?? setPendingChecks,
-    resolveSourceEnvironmentIds: deps.resolveSourceEnvironmentIds ??
-      resolveSourceEnvironmentIds,
+    resolveRepositoryEnvironmentIds: deps.resolveRepositoryEnvironmentIds ??
+      resolveRepositoryEnvironmentIds,
     resolveEnvironmentPlacement: deps.resolveEnvironmentPlacement ??
       resolveEnvironmentPlacement,
     runDeploy: deps.runDeploy ?? runEnvironmentDeployForActor,
@@ -250,7 +250,7 @@ export function sourceWatchesBranch(
   return defaultBranch.trim() === pushedBranch
 }
 
-/** Parked `checks_passed` state, stored on `source.options`. */
+/** Parked `checks_passed` state, stored on `repository.options`. */
 export type PendingChecks = {
   commitSha: string
   ref: string | null
@@ -279,16 +279,16 @@ export function readPendingChecks(options: unknown): PendingChecks | null {
 }
 
 /**
- * Park a SHA on the source until its checks report success.
+ * Park a SHA on the repository until its checks report success.
  *
- * `source.options` is reused rather than a side table: this is one small,
- * short-lived field per source that only ever matters between a push and the
+ * `repository.options` is reused rather than a side table: this is one small,
+ * short-lived field per repository that only ever matters between a push and the
  * matching `check_suite`, and it is overwritten (not appended to) by the next
  * push, so the newest commit is always the one that eventually deploys.
  */
 async function setPendingChecks(
   db: Db,
-  row: TriggerSourceRow,
+  row: TriggerRepositoryRow,
   pending: PendingChecks | null,
 ): Promise<void> {
   const options = readOptions(row.options)
@@ -296,18 +296,18 @@ async function setPendingChecks(
   else options.pendingChecks = pending
 
   await db
-    .update(source)
+    .update(repository)
     .set({
       options: Object.keys(options).length > 0 ? options : null,
       updatedAt: new Date().toISOString(),
     })
-    .where(eq(source.id, row.id))
+    .where(eq(repository.id, row.id))
 }
 
 /**
- * Environments a source can deploy, from **both** attachment models.
+ * Environments a repository can deploy, from **both** attachment models.
  *
- * A source is "attached" either by the `source.service_id` / `source.environment_id`
+ * A repository is "attached" either by the `repository.service_id` / `repository.environment_id`
  * columns, or by a compose document naming it at
  * `services.<name>.x-turbopanel.source.sourceId`. Those are independent — the
  * Services form writes the compose reference and nothing else — so a resolver
@@ -316,9 +316,9 @@ async function setPendingChecks(
  * A project-level compose reference fans out to every environment of that
  * project, because the project document is the base every environment overlays.
  */
-export async function resolveSourceEnvironmentIds(
+export async function resolveRepositoryEnvironmentIds(
   db: Db,
-  row: TriggerSourceRow,
+  row: TriggerRepositoryRow,
 ): Promise<string[]> {
   const ids = new Set<string>()
 
@@ -392,14 +392,14 @@ async function resolveEnvironmentPlacement(
  * person is shown warn-level health-check gaps before they deploy; there is no
  * person on a webhook, and leaving it false would mean a repository with one
  * warn-level gap silently stops auto-deploying with no surface anywhere to
- * acknowledge it. Enabling auto-deploy on the source is the acknowledgement.
+ * acknowledge it. Enabling auto-deploy on the repository is the acknowledgement.
  */
 async function deployEnvironmentForSource(
   c: Context<AppEnv>,
   db: Db,
   commandQueue: CommandQueue,
   params: {
-    row: TriggerSourceRow
+    row: TriggerRepositoryRow
     environmentId: string
     commitSha: string | null
     ref: string | null
@@ -431,7 +431,7 @@ async function deployEnvironmentForSource(
     acknowledgeHealthCheckWarnings: true,
     noCache: false,
     // `sourceId` is what scopes the pinned commit. The event came from exactly
-    // this source row; an environment that also binds other repositories must
+    // this repository row; an environment that also binds other repositories must
     // resolve those from their own declared/default ref, not from this SHA.
     selection: {
       ref: params.ref,
@@ -484,13 +484,13 @@ async function deployAllEnvironmentsForSource(
   db: Db,
   commandQueue: CommandQueue,
   params: {
-    row: TriggerSourceRow
+    row: TriggerRepositoryRow
     commitSha: string | null
     ref: string | null
   },
   io: ReturnType<typeof resolveTriggerIo>,
 ): Promise<TriggerOutcome[]> {
-  const environmentIds = await io.resolveSourceEnvironmentIds(db, params.row)
+  const environmentIds = await io.resolveRepositoryEnvironmentIds(db, params.row)
   if (environmentIds.length === 0) {
     return [{
       kind: 'skipped',
@@ -522,7 +522,7 @@ export type InstallationQuery = {
    * known by the time this runs, and the predicate that keeps the candidate set
    * inside one tenant — see the note on {@link loadInstallations}.
    */
-  appId: string
+  forgeId: string
   /** `null` when the delivery names no connection (GitLab). */
   externalInstallationId: string | null
 }
@@ -530,7 +530,7 @@ export type InstallationQuery = {
 /**
  * Live installation rows that could own this delivery.
  *
- * **`appId` is the load-bearing predicate.** Without it the only filters are
+ * **`forgeId` is the load-bearing predicate.** Without it the only filters are
  * provider and external id, and neither is unique across tenants: the unique
  * index is `(organization_id, app_id, external_installation_id)`, so the same
  * GitHub installation id may exist as a row for several organizations. Matching
@@ -543,9 +543,9 @@ export type InstallationQuery = {
  *
  * **What `app_id` does not do.** For an *instance-wide* app it narrows to the
  * app, not to one tenant — several organizations connect through it, and the
- * final narrowing is `source.repository_external_id`. That is only sound
+ * final narrowing is `repository.repository_external_id`. That is only sound
  * because an installation is claimed by exactly one organization per app
- * (`assertInstallationUnclaimed` in `../sources/routes.ts` enforces first-come,
+ * (`assertConnectionUnclaimed` in `../repositories/routes.ts` enforces first-come,
  * since the provider cannot tell us who is entitled to an account). Without
  * that check a second organization could register someone else's installation
  * id and receive their deliveries.
@@ -556,7 +556,7 @@ export type InstallationQuery = {
  * the project under. A `null` therefore means "every live connection granted
  * through this app is a candidate", and the repository id does the narrowing in
  * {@link findSourcesForRepository} — which is safe because it matches on the
- * provider-side project id, and a source can only carry an id the connection
+ * provider-side project id, and a repository can only carry an id the connection
  * that created it could see. Before `app_id` existed that fallback spanned
  * every GitLab connection on the instance, including other origins' projects
  * whose numeric ids happened to collide.
@@ -566,21 +566,21 @@ async function loadInstallations(
   query: InstallationQuery,
 ): Promise<{ live: string[]; suspended: number }> {
   const conditions = [
-    eq(gitProviderInstallation.provider, query.provider),
-    eq(gitProviderInstallation.appId, query.appId),
+    eq(gitConnection.provider, query.provider),
+    eq(gitConnection.forgeId, query.forgeId),
   ]
   if (query.externalInstallationId) {
     conditions.push(
-      eq(gitProviderInstallation.externalInstallationId, query.externalInstallationId),
+      eq(gitConnection.externalInstallationId, query.externalInstallationId),
     )
   }
 
   const rows = await db
     .select({
-      id: gitProviderInstallation.id,
-      suspendedAt: gitProviderInstallation.suspendedAt,
+      id: gitConnection.id,
+      suspendedAt: gitConnection.suspendedAt,
     })
-    .from(gitProviderInstallation)
+    .from(gitConnection)
     .where(and(...conditions))
 
   return {
@@ -593,7 +593,7 @@ export type PushTrigger = {
   /** Which provider delivered it — decides the candidate installation set. */
   provider: WebhookGitProviderName
   /** The registered app whose secret verified the delivery. */
-  appId: string
+  forgeId: string
   /** `null` when the delivery names no connection (GitLab). */
   externalInstallationId: string | null
   repositoryExternalId: string
@@ -615,7 +615,7 @@ export async function resolvePushTrigger(
   const io = resolveTriggerIo(deps)
   const installations = await io.loadInstallations(db, {
     provider: push.provider,
-    appId: push.appId,
+    forgeId: push.forgeId,
     externalInstallationId: push.externalInstallationId,
   })
   if (installations.live.length === 0) {
@@ -711,7 +711,7 @@ export async function resolvePushTrigger(
 export type CheckTrigger = {
   provider: WebhookGitProviderName
   /** The registered app whose secret verified the delivery. */
-  appId: string
+  forgeId: string
   /** `null` when the delivery names no connection (GitLab). */
   externalInstallationId: string | null
   repositoryExternalId: string
@@ -737,7 +737,7 @@ export async function resolveCheckTrigger(
   const io = resolveTriggerIo(deps)
   const installations = await io.loadInstallations(db, {
     provider: check.provider,
-    appId: check.appId,
+    forgeId: check.forgeId,
     externalInstallationId: check.externalInstallationId,
   })
   if (installations.live.length === 0) {
@@ -799,7 +799,7 @@ export async function resolveCheckTrigger(
  * Suspension is the provider telling us its tokens will stop working; recording
  * it here is what makes {@link loadInstallations} (and the per-provider token
  * minters) refuse further work instead of failing at clone time. Deletion is
- * treated as suspension rather than a row delete: the `source` rows that
+ * treated as suspension rather than a row delete: the `repository` rows that
  * reference the installation stay intact, so re-installing the App — or
  * re-authorizing the OAuth grant — restores them instead of orphaning every
  * repository binding.
@@ -808,7 +808,7 @@ export async function resolveCheckTrigger(
  * revoked grant surfaces as a failing token refresh, which the deploy path
  * reports as a prepare error rather than as a suspension recorded up front.
  *
- * **Scoped to `appId` for the same reason the lookup above is.** A GitHub
+ * **Scoped to `forgeId` for the same reason the lookup above is.** A GitHub
  * installation id is unique only within its App, so suspending on provider and
  * external id alone would suspend every organization's row for that account the
  * moment any one of them uninstalled.
@@ -817,7 +817,7 @@ export async function applyProviderInstallationEvent(
   db: Db,
   params: {
     provider: WebhookGitProviderName
-    appId: string
+    forgeId: string
     externalInstallationId: string
     action: string
   },
@@ -831,19 +831,19 @@ export async function applyProviderInstallationEvent(
   else return { updated: 0 }
 
   const updated = await db
-    .update(gitProviderInstallation)
+    .update(gitConnection)
     .set({ suspendedAt, updatedAt: new Date().toISOString() })
     .where(
       and(
-        eq(gitProviderInstallation.provider, params.provider),
-        eq(gitProviderInstallation.appId, params.appId),
+        eq(gitConnection.provider, params.provider),
+        eq(gitConnection.forgeId, params.forgeId),
         eq(
-          gitProviderInstallation.externalInstallationId,
+          gitConnection.externalInstallationId,
           params.externalInstallationId,
         ),
       ),
     )
-    .returning({ id: gitProviderInstallation.id })
+    .returning({ id: gitConnection.id })
 
   if (updated.length === 0) {
     logWarn(
@@ -897,7 +897,7 @@ export function resolveGithubCheckTrigger(
 
 export function applyGithubInstallationEvent(
   db: Db,
-  params: { appId: string; externalInstallationId: string; action: string },
+  params: { forgeId: string; externalInstallationId: string; action: string },
 ): Promise<{ updated: number }> {
   return applyProviderInstallationEvent(db, { provider: 'github', ...params })
 }

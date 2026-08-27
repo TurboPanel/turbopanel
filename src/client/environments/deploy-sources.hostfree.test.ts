@@ -79,8 +79,8 @@ function sourceRow(overrides: Record<string, unknown> = {}) {
     repositoryUrl: "https://example.com/org/app.git",
     defaultBranch: "main",
     subdirectory: null,
-    installationId: null,
-    credentialId: null,
+    connectionId: null,
+    secretId: null,
     ...overrides,
   };
 }
@@ -264,7 +264,7 @@ test("a missing source row is source_ref_unresolved", async () => {
     composeServiceName: "web",
     sourceId: SOURCE_ID,
     ref: "",
-    message: "source not found in this organization",
+    message: "repository not found in this organization",
   });
 });
 
@@ -279,7 +279,7 @@ test("no compose branch and no source default is source_ref_unresolved", async (
     composeServiceName: "web",
     sourceId: SOURCE_ID,
     ref: "",
-    message: "no branch on the compose binding and no source default branch",
+    message: "no branch on the compose binding and no repository default branch",
   });
 });
 
@@ -375,7 +375,7 @@ test("preview sorts bindings and pins a webhook SHA to one source only", async (
   assertEquals(result[1]?.commitSha, SHA);
 });
 
-test("ambiguous stewardship is source_principal_ambiguous", async () => {
+test("ambiguous tenancy is source_principal_ambiguous", async () => {
   const result = await resolveDeploySourceMaterial(
     mockContext(),
     fakeDb([
@@ -393,7 +393,7 @@ test("ambiguous stewardship is source_principal_ambiguous", async () => {
   });
 });
 
-test("a sole steward is pinned onto the source entry", async () => {
+test("a sole tenancy is pinned onto the source entry", async () => {
   const material: EnvironmentDeployPrincipalMaterial = {
     principalId: PRINCIPAL_ID,
     username: "deploy",
@@ -534,7 +534,7 @@ test("deploy without encryption secrets is 503 when a credential must be sealed"
   const result = await resolveDeploySourceMaterial(
     mockContext(),
     fakeDb([
-      [sourceRow({ credentialId: CREDENTIAL_ID })],
+      [sourceRow({ secretId: CREDENTIAL_ID })],
       [daemonStateRow()],
       [],
     ]),
@@ -559,7 +559,7 @@ test("deploy reseals a stored HTTPS credential as a token", async () => {
   const result = await resolveDeploySourceMaterial(
     mockContext({ secretsConfig, dataEncryptionSecrets }),
     fakeDb([
-      [sourceRow({ credentialId: CREDENTIAL_ID })],
+      [sourceRow({ secretId: CREDENTIAL_ID })],
       [daemonStateRow()],
       [],
       [{ secretEnvelope: atRest }],
@@ -593,7 +593,7 @@ test("deploy passes through an already-daemon-sealed SSH credential", async () =
     fakeDb([
       [
         sourceRow({
-          credentialId: CREDENTIAL_ID,
+          secretId: CREDENTIAL_ID,
           repositoryUrl: "git@example.com:org/app.git",
         }),
       ],
@@ -621,7 +621,7 @@ test("deploy seals a plaintext credential for the target daemon", async () => {
       ),
     }),
     fakeDb([
-      [sourceRow({ credentialId: CREDENTIAL_ID })],
+      [sourceRow({ secretId: CREDENTIAL_ID })],
       [daemonStateRow()],
       [],
       [{ secretEnvelope: "plain-deploy-key" }],
@@ -649,7 +649,7 @@ test("a missing credential row still produces a public clone entry", async () =>
       ),
     }),
     fakeDb([
-      [sourceRow({ credentialId: CREDENTIAL_ID })],
+      [sourceRow({ secretId: CREDENTIAL_ID })],
       [daemonStateRow()],
       [],
       [],

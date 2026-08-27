@@ -19,8 +19,8 @@ import {
 } from '../../surfaces.ts'
 import { logInfo } from '../../logger.ts'
 import { githubWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
-import { resolveGithubWebhookApp } from '../../lib/git/resolve-webhook-app.ts'
-import type { GitApp } from '../../lib/git/git-app-records.ts'
+import { resolveGithubWebhookForge } from '../../lib/git/resolve-webhook-forge.ts'
+import type { Forge } from '../../lib/git/forge-records.ts'
 import {
   branchFromGitRef,
   GITHUB_DELIVERY_HEADER,
@@ -36,7 +36,7 @@ import {
   resolveGithubCheckTrigger,
   resolveGithubPushTrigger,
   triggerSummaryNeedsRetry,
-} from '../../client/sources/webhook-trigger.ts'
+} from '../../client/repositories/webhook-trigger.ts'
 import {
   accepted,
   type DeliveryOutcome,
@@ -68,7 +68,7 @@ export { successfulCheckSha } from '../../lib/git/github-provider.ts'
 async function handlePush(
   c: Context<AppEnv>,
   db: Db,
-  appId: string,
+  forgeId: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
   // `githubProvider.parsePush` applies the branch-ref and identification rules;
@@ -90,7 +90,7 @@ async function handlePush(
   if (commandQueue instanceof Response) return retryable('dispatch_unavailable')
 
   const summary = await resolveGithubPushTrigger(c, db, commandQueue, {
-    appId,
+    forgeId,
     externalInstallationId: push.externalInstallationId,
     repositoryExternalId: push.repositoryExternalId,
     ref: push.ref,
@@ -103,7 +103,7 @@ async function handlePush(
 async function handleChecks(
   c: Context<AppEnv>,
   db: Db,
-  appId: string,
+  forgeId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
@@ -117,7 +117,7 @@ async function handleChecks(
   if (commandQueue instanceof Response) return retryable('dispatch_unavailable')
 
   const summary = await resolveGithubCheckTrigger(c, db, commandQueue, {
-    appId,
+    forgeId,
     externalInstallationId: check.externalInstallationId,
     repositoryExternalId: check.repositoryExternalId,
     commitSha: check.commitSha,
@@ -136,7 +136,7 @@ async function handleChecks(
  */
 async function handleInstallation(
   db: Db,
-  appId: string,
+  forgeId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
@@ -155,7 +155,7 @@ async function handleInstallation(
   const action = typeof payload.action === 'string' ? payload.action : ''
   return accepted(
     await applyGithubInstallationEvent(db, {
-      appId,
+      forgeId,
       externalInstallationId: installation,
       action,
     }),
@@ -165,32 +165,32 @@ async function handleInstallation(
 async function dispatchDelivery(
   c: Context<AppEnv>,
   db: Db,
-  appId: string,
+  forgeId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
   switch (event) {
     case 'push':
-      return await handlePush(c, db, appId, payload)
+      return await handlePush(c, db, forgeId, payload)
     case 'check_suite':
     case 'check_run':
-      return await handleChecks(c, db, appId, event, payload)
+      return await handleChecks(c, db, forgeId, event, payload)
     case 'installation':
     case 'installation_repositories':
-      return await handleInstallation(db, appId, event, payload)
+      return await handleInstallation(db, forgeId, event, payload)
     default:
       return accepted({ skipped: 'event_not_handled' })
   }
 }
 
-const githubGate: WebhookGate<GitApp> = {
+const githubGate: WebhookGate<Forge> = {
   kind: 'github',
   logScope: 'git-webhook',
   maxBodyBytes: GITHUB_WEBHOOK_MAX_BODY_BYTES,
   rateLimitKey: githubWebhookRateLimitKey,
 
   async resolve(ctx, ref) {
-    const resolution = await resolveGithubWebhookApp(
+    const resolution = await resolveGithubWebhookForge(
       ctx.db,
       ctx.dataEncryptionSecrets,
       ref,

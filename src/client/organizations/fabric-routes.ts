@@ -19,7 +19,7 @@ import {
   type FabricRecord,
   getOrganizationFabric,
   listFabricRelays,
-  listSegmentsForServers,
+  listSubnetsForServers,
   loadEndpointCaches,
   loadRelayPresharedKeyPresence,
   purgeOrganizationComposeNetworks,
@@ -75,7 +75,7 @@ async function loadFabricRelayApiRows(
   const [{ caches }, segmentsByServer, pskPresence, subnetsByServer] =
     await Promise.all([
       loadEndpointCaches(db, serverIds),
-      listSegmentsForServers(db, serverIds),
+      listSubnetsForServers(db, serverIds),
       loadRelayPresharedKeyPresence(db, relays.map((row) => row.id)),
       loadDatacenterSubnetsForServers(db, serverIds),
     ])

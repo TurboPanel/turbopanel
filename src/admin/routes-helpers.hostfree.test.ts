@@ -90,7 +90,7 @@ test('parseReencryptRequestBody defaults and validates cursor/limit', () => {
 test('isReencryptStage recognizes configured stages only', () => {
   assertEquals(isReencryptStage('variables'), true)
   assertEquals(isReencryptStage('storage'), true)
-  assertEquals(isReencryptStage('credentials'), true)
+  assertEquals(isReencryptStage('secrets'), true)
   assertEquals(isReencryptStage('email'), true)
   assertEquals(isReencryptStage('unknown'), false)
 })

@@ -22,6 +22,8 @@ import { registerEnvironmentReleaseRoutes } from './environments/release-routes.
 import { registerManagedRoutes } from './managed/routes.ts'
 import { registerEnvironmentRoutes } from './environments/routes.ts'
 import { registerVariableRoutes } from './variables/routes.ts'
+import { registerTagRoutes } from './tags/routes.ts'
+import { registerTaskRoutes } from './tasks/routes.ts'
 import { registerBindingRoutes } from './bindings/routes.ts'
 import { registerContainerRoutes } from './containers/routes.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
@@ -33,8 +35,8 @@ import {
   registerServerLimitsRoutes,
 } from './principals/routes.ts'
 import { registerStorageRoutes } from './storage/routes.ts'
-import { registerSourceRoutes } from './sources/routes.ts'
-import { registerGitAppRoutes } from './git-apps/routes.ts'
+import { registerRepositoryRoutes } from './repositories/routes.ts'
+import { registerForgeRoutes } from './forges/routes.ts'
 import { registerNetworkRoutes } from './networks/routes.ts'
 import { registerDatacenterRoutes } from './datacenters/routes.ts'
 import { registerIpRoutes } from './ips/routes.ts'
@@ -98,14 +100,16 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   registerEnvironmentLifecycleRoutes(client, opts)
   registerManagedRoutes(client, opts)
   registerVariableRoutes(client, opts)
+  registerTagRoutes(client, opts)
+  registerTaskRoutes(client, opts)
   registerBindingRoutes(client, opts)
   registerProjectRoutes(client, opts)
   registerServiceRoutes(client, opts)
   registerHostingRoutes(client, opts)
   registerContainerRoutes(client, opts)
   registerStorageRoutes(client, opts)
-  registerSourceRoutes(client, opts)
-  registerGitAppRoutes(client, opts)
+  registerRepositoryRoutes(client, opts)
+  registerForgeRoutes(client, opts)
   registerProjectPrincipalRoutes(client, opts)
   registerOrganizationLimitsRoutes(client, opts)
   registerServerLimitsRoutes(client, opts)

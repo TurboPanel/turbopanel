@@ -867,16 +867,16 @@ class rather than a versioned API — see the last row.
   ownership among public-keyed relays only. Default off (capable single-engine Docker
   standalone; no `tp0`). Enabling creates the org `fabric` row plus per-server
   `relay` rows and reconciles host interface `tp0` on enrolled servers. Spanning
-  compose networks persist per-host `segment` rows (local bridge subnet). A
+  compose networks persist per-host `subnet` rows (compose-bridge CIDR, not a datacenter subnet). A
   deploy plan that would use two or more servers without TurboFabric returns
   **422** `turbofabric_required`. Multi-server deploys **wait for membership
   convergence** (every participating relay has a public key and an applied
   payload hash that includes peers) before enqueueing `environment.deploy`
   (`422 fabric_reconcile_failed` / `409 fabric_reconcile_pending`). PUT disable
-  is a teardown (reclaims `network(kind='compose')` + `segment`).
+  is a teardown (reclaims `network(kind='compose')` + `subnet`).
   Whole-environment `environment.server_id` pins never require it. User-facing
   copy is **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` /
-  `segment`. Never ask which WireGuard network a container should join.
+  `subnet`. Never ask which WireGuard network a container should join.
   NAT rendezvous feeds `direct_nat` only from a probing peer's fresh healthy
   handshake (observer-mapped endpoints stay in candidate exchange). Path-state
   strike counters are process-local across reconcile rounds. `allowRelay` is
@@ -1033,7 +1033,7 @@ orientation; the detail moved to:
 | **Bindings**                      | `src/client/bindings/`                              | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                                                                                                     |
 | **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                                                                                                                                                                                              |
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                             |
-| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` label (API `name`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `task` (nullable `task.address`) / `label`; TurboFabric `fabric` / `relay` / `segment`; storage identity `storage` / `location` / `mount` (+ schema-only `credential`) |
+| **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` label (API `name`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `slot` (nullable `slot.address`) / `label`; TurboFabric `fabric` / `relay` / `subnet` (compose-bridge, not a datacenter subnet); storage identity `storage` / `copy` / `mount` (+ schema-only `secret`); plus `tag` / `marker` / scheduled `task` |
 | **Query cache**                   | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                                                                                                                                                                                               |
 | **TLS & certificate authorities** | `src/lib/tls/AGENTS.md`                             | Platform CA vs Organization CA boundary, org TLS library primitives, leaf issuance + `leaf` tracking, Workers/Deno renewal sweep |
 

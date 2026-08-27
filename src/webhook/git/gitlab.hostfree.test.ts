@@ -2,7 +2,7 @@
  * Route-gate coverage for the GitLab webhook surface.
  *
  * Host-free: the only database work these paths reach before answering is the
- * `gitapp` lookup behind `resolveGitlabWebhookApp`, plus the delivery-claim
+ * `gitapp` lookup behind `resolveGitlabWebhookForge`, plus the delivery-claim
  * insert. Dispatch skip/retry paths are exercised with a stub ledger so the
  * adapter's `object_kind` table can be pinned without a live provider.
  */
@@ -22,16 +22,16 @@ import {
   deployment,
   environment,
   fabric,
-  gitProviderApp,
-  gitProviderInstallation,
+  forge,
+  gitConnection,
   network,
   project,
   server,
-  source,
-  task,
+  repository,
+  slot,
 } from '../../lib/db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { hashWebhookToken } from '../../lib/git/git-app-records.ts'
+import { hashWebhookToken } from '../../lib/git/forge-records.ts'
 import {
   GITLAB_WEBHOOK_MAX_BODY_BYTES,
   registerGitlabWebhookRoutes,
@@ -101,7 +101,7 @@ function thenableRows(rows: unknown[]) {
 }
 
 /**
- * Table-aware source graph + empty-compose deploy stub.
+ * Table-aware repository graph + empty-compose deploy stub.
  *
  * Placement JOIN reports a pin so the trigger proceeds; the plan's
  * `environment.where()` row has no pin and no project default, so empty
@@ -114,7 +114,7 @@ function createEnqueueGraphDb(
   opts: {
     claimed?: boolean
     enqueue: 'success' | 'fail'
-    source?: { autoDeploy?: string; options?: unknown }
+    repository?: { autoDeploy?: string; options?: unknown }
   },
 ): Db {
   const composeOptions = { compose: emptyComposeDocument() }
@@ -124,14 +124,14 @@ function createEnqueueGraphDb(
     serviceId: null,
     environmentId: ENV_ID,
     defaultBranch: null,
-    autoDeploy: opts.source?.autoDeploy ?? 'immediate',
-    options: opts.source?.options ?? null,
+    autoDeploy: opts.repository?.autoDeploy ?? 'immediate',
+    options: opts.repository?.options ?? null,
   }
 
   return {
     select: () => ({
       from: (table: unknown) => {
-        if (table === gitProviderApp) {
+        if (table === forge) {
           return {
             where: () => ({
               limit: () => Promise.resolve(appRows.slice(0, 1)),
@@ -139,12 +139,12 @@ function createEnqueueGraphDb(
             }),
           }
         }
-        if (table === gitProviderInstallation) {
+        if (table === gitConnection) {
           return {
             where: () => thenableRows([{ id: INST_ROW_ID, suspendedAt: null }]),
           }
         }
-        if (table === source) {
+        if (table === repository) {
           return {
             where: () => thenableRows([sourceRow]),
           }
@@ -187,7 +187,7 @@ function createEnqueueGraphDb(
             }),
           }
         }
-        if (table === deployment || table === task) {
+        if (table === deployment || table === slot) {
           return { where: () => thenableRows([]) }
         }
         return {
@@ -250,7 +250,7 @@ async function buildApp(opts: {
   dispatchReady?: boolean
   graph?: {
     enqueue: 'success' | 'fail'
-    source?: { autoDeploy?: string; options?: unknown }
+    repository?: { autoDeploy?: string; options?: unknown }
   }
 }) {
   const secretsConfig = parseTestSecretsConfig('deno')
@@ -272,7 +272,7 @@ async function buildApp(opts: {
     redirectUri: null,
     webhookRef: WEBHOOK_REF,
     webhookTokenHash: opts.webhookTokenHash ?? null,
-    credentials: {
+    envelopes: {
       ...(opts.webhookSecret === undefined ? {} : {
         webhookSecretEnvelope: await encryptSecret(
           dataEncryptionSecrets,
@@ -290,7 +290,7 @@ async function buildApp(opts: {
         ? createEnqueueGraphDb(rows, {
           claimed: opts.claimed,
           enqueue: opts.graph.enqueue,
-          ...(opts.graph.source === undefined ? {} : { source: opts.graph.source }),
+          ...(opts.graph.repository === undefined ? {} : { repository: opts.graph.repository }),
         })
         : stubAppDb(rows, { claimed: opts.claimed }),
     )
@@ -754,7 +754,7 @@ const greenPipeline = {
   project: { id: 7 },
 }
 
-test('a tokened push with a matched source enqueues a deploy', async () => {
+test('a tokened push with a matched repository enqueues a deploy', async () => {
   const app = await buildApp({
     webhookSecret: WEBHOOK_SECRET,
     graph: { enqueue: 'success' },
@@ -799,7 +799,7 @@ test('a tokened successful pipeline with a parked SHA enqueues a deploy', async 
     webhookSecret: WEBHOOK_SECRET,
     graph: {
       enqueue: 'success',
-      source: { autoDeploy: 'checks_passed', options: parkedChecks },
+      repository: { autoDeploy: 'checks_passed', options: parkedChecks },
     },
   })
   const res = await app.request(post(JSON.stringify(greenPipeline), tokenHeaders({
@@ -824,7 +824,7 @@ test('a tokened successful pipeline reports enqueue failure so GitLab redelivers
     webhookSecret: WEBHOOK_SECRET,
     graph: {
       enqueue: 'fail',
-      source: { autoDeploy: 'checks_passed', options: parkedChecks },
+      repository: { autoDeploy: 'checks_passed', options: parkedChecks },
     },
   })
   const res = await app.request(post(JSON.stringify(greenPipeline), tokenHeaders({

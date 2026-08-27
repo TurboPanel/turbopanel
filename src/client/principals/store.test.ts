@@ -5,11 +5,11 @@ import { createDenoDb } from '../../db.ts'
 import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
 import { decryptSecret } from '../authn/data-encryption.ts'
 import {
-  steward,
+  tenancy,
   environment,
   grant,
   managed,
-  node,
+  replica,
   organization,
   principal,
   project,
@@ -23,7 +23,7 @@ import {
   isManagedUsernameTaken,
   isServerPrincipalUsernameTaken,
   PRINCIPAL_PROVIDERS,
-  replaceStewards,
+  replaceTenancies,
   resolveAvailableManagedRootUsername,
   SERVER_PRINCIPAL_PROVIDER,
   setPrincipalPassword,
@@ -124,7 +124,7 @@ async function withPrincipalFixtures(
     .returning({ id: principal.id })
   const principalId = insertedPrincipal!.id
 
-  await db.insert(steward).values({
+  await db.insert(tenancy).values({
     principalId,
     serviceId,
   })
@@ -139,7 +139,7 @@ async function withPrincipalFixtures(
       projectId,
     })
   } finally {
-    await db.delete(steward).where(eq(steward.principalId, principalId))
+    await db.delete(tenancy).where(eq(tenancy.principalId, principalId))
     await db.delete(principal).where(eq(principal.id, principalId))
     await db.delete(service).where(eq(service.id, serviceId))
     await db.delete(environment).where(eq(environment.id, environmentId))
@@ -345,7 +345,7 @@ test('isManagedUsernameTaken scopes by server-owning org not create chain', asyn
       status: 'ready',
     })
     .returning({ id: managed.id })
-  await db.insert(node).values({
+  await db.insert(replica).values({
     managedId: m!.id,
     serverId: srvA!.id,
     role: 'primary',
@@ -376,7 +376,7 @@ test('isManagedUsernameTaken scopes by server-owning org not create chain', asyn
     )
   } finally {
     await db.delete(principal).where(eq(principal.id, prin!.id))
-    await db.delete(node).where(eq(node.managedId, m!.id))
+    await db.delete(replica).where(eq(replica.managedId, m!.id))
     await db.delete(managed).where(eq(managed.id, m!.id))
     await db.delete(environment).where(eq(environment.id, env!.id))
     await db.delete(project).where(eq(project.id, proj!.id))
@@ -433,7 +433,7 @@ test('resolveAvailableManagedRootUsername suffixes when preferred taken', async 
     engine: 'postgres',
     status: 'ready',
   })
-  await db.insert(node).values({
+  await db.insert(replica).values({
     managedId,
     serverId: srv!.id,
     role: 'primary',
@@ -471,7 +471,7 @@ test('resolveAvailableManagedRootUsername suffixes when preferred taken', async 
     assertEquals(taken, `postgres_${hex}`)
   } finally {
     await db.delete(principal).where(eq(principal.id, prin!.id))
-    await db.delete(node).where(eq(node.managedId, managedId))
+    await db.delete(replica).where(eq(replica.managedId, managedId))
     await db.delete(managed).where(eq(managed.id, managedId))
     await db.delete(environment).where(eq(environment.id, env!.id))
     await db.delete(project).where(eq(project.id, proj!.id))
@@ -481,7 +481,7 @@ test('resolveAvailableManagedRootUsername suffixes when preferred taken', async 
   }
 })
 
-test('createPrincipal and replaceStewards write expected steward edges', async () => {
+test('createPrincipal and replaceTenancies write expected tenancy edges', async () => {
   await withPrincipalFixtures(async ({ db, serviceId }) => {
     const [secondService] = await db
       .insert(service)
@@ -512,34 +512,34 @@ test('createPrincipal and replaceStewards write expected steward edges', async (
       )
 
       let edges = await db
-        .select({ serviceId: steward.serviceId })
-        .from(steward)
-        .where(eq(steward.principalId, createdId))
+        .select({ serviceId: tenancy.serviceId })
+        .from(tenancy)
+        .where(eq(tenancy.principalId, createdId))
       assertEquals(edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)), [
         serviceId,
       ])
 
-      await replaceStewards(db, createdId, [secondServiceId])
+      await replaceTenancies(db, createdId, [secondServiceId])
       edges = await db
-        .select({ serviceId: steward.serviceId })
-        .from(steward)
-        .where(eq(steward.principalId, createdId))
+        .select({ serviceId: tenancy.serviceId })
+        .from(tenancy)
+        .where(eq(tenancy.principalId, createdId))
       assertEquals(edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)), [
         secondServiceId,
       ])
 
-      await replaceStewards(db, createdId, [serviceId, secondServiceId])
+      await replaceTenancies(db, createdId, [serviceId, secondServiceId])
       edges = await db
-        .select({ serviceId: steward.serviceId })
-        .from(steward)
-        .where(eq(steward.principalId, createdId))
+        .select({ serviceId: tenancy.serviceId })
+        .from(tenancy)
+        .where(eq(tenancy.principalId, createdId))
       assertEquals(
         edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)),
         [serviceId, secondServiceId].toSorted((a, b) => a.localeCompare(b)),
       )
     } finally {
       if (createdId) {
-        await db.delete(steward).where(eq(steward.principalId, createdId))
+        await db.delete(tenancy).where(eq(tenancy.principalId, createdId))
         await db.delete(principal).where(eq(principal.id, createdId))
       }
       await db.delete(service).where(eq(service.id, secondServiceId))

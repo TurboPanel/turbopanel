@@ -1,5 +1,5 @@
 /**
- * Pure parsing and serialization for the git-app CRUD surfaces.
+ * Pure parsing and serialization for the forge CRUD surfaces.
  *
  * Two routers mount this logic — the admin one for instance-wide apps and the
  * client one for organization-owned apps — and the only thing that differs
@@ -14,20 +14,20 @@
  */
 
 import {
-  type GitAppCreate,
+  type ForgeCreate,
   GITHUB_DEFAULT_BASE_URL,
-  type GitAppProvider,
-  type GitAppSummary,
-  type GitAppUpdate,
-  GIT_APP_PROVIDERS,
-} from '../../lib/git/git-app-records.ts'
+  type ForgeProvider,
+  type ForgeSummary,
+  type ForgeUpdate,
+  FORGE_PROVIDERS,
+} from '../../lib/git/forge-records.ts'
 import { stripTrailingSlashes } from '../../lib/git/origin.ts'
 import {
   webhookPathFor,
   type WebhookProvider,
 } from '../../lib/git/webhook-reachability.ts'
 
-export const GIT_APP_UUID_RE =
+export const FORGE_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
@@ -62,9 +62,9 @@ export function gitSourcesUiBasePath(organizationId: string | null): string {
     : `/${organizationId}/projects/git-sources`
 }
 
-/** One registered app's detail screen, where installation is completed. */
-export function gitAppUiPath(organizationId: string | null, appId: string): string {
-  return `${gitSourcesUiBasePath(organizationId)}/${encodeURIComponent(appId)}`
+/** One registered forge's detail screen, where the connection is completed. */
+export function forgeUiPath(organizationId: string | null, forgeId: string): string {
+  return `${gitSourcesUiBasePath(organizationId)}/${encodeURIComponent(forgeId)}`
 }
 
 function withQuery(base: string, query: Record<string, string | undefined>): string {
@@ -84,7 +84,7 @@ export function githubManifestUiReturnPath(
   // "repository access has not been installed yet" step lives — that is the
   // operator's actual next action, not the list.
   const base = query.created
-    ? gitAppUiPath(organizationId, query.created)
+    ? forgeUiPath(organizationId, query.created)
     : gitSourcesUiBasePath(organizationId)
   return withQuery(base, { created: query.created, error: query.error })
 }
@@ -119,11 +119,11 @@ export type ProviderInstallReturnError =
  */
 export function providerInstallUiReturnPath(
   organizationId: string | null,
-  appId: string | null,
+  forgeId: string | null,
   query: { installed?: string; error?: ProviderInstallReturnError },
 ): string {
-  const base = appId
-    ? gitAppUiPath(organizationId, appId)
+  const base = forgeId
+    ? forgeUiPath(organizationId, forgeId)
     : gitSourcesUiBasePath(organizationId)
   return withQuery(base, { installed: query.installed, error: query.error })
 }
@@ -276,14 +276,14 @@ function applyNullable(
   return true
 }
 
-export function parseGitAppCreateBody(
+export function parseForgeCreateBody(
   body: unknown,
   organizationId: string | null,
-): GitAppCreate | null {
+): ForgeCreate | null {
   if (!isPlainObject(body)) return null
 
   const provider = readRequiredString(body.provider)
-  if (!provider || !GIT_APP_PROVIDERS.includes(provider as GitAppProvider)) return null
+  if (!provider || !FORGE_PROVIDERS.includes(provider as ForgeProvider)) return null
 
   const name = readRequiredString(body.name)
   if (!name) return null
@@ -293,7 +293,7 @@ export function parseGitAppCreateBody(
 
   const parsed: Record<string, unknown> = {
     organizationId,
-    provider: provider as GitAppProvider,
+    provider: provider as ForgeProvider,
     name,
     externalAppId,
   }
@@ -307,10 +307,10 @@ export function parseGitAppCreateBody(
     if (!applyNullable(body, parsed, key)) return null
   }
 
-  return parsed as GitAppCreate
+  return parsed as ForgeCreate
 }
 
-export function parseGitAppPatchBody(body: unknown): GitAppUpdate | null {
+export function parseForgePatchBody(body: unknown): ForgeUpdate | null {
   if (!isPlainObject(body)) return null
 
   const parsed: Record<string, unknown> = {}
@@ -330,10 +330,10 @@ export function parseGitAppPatchBody(body: unknown): GitAppUpdate | null {
   // installations kept pointing at it.
   if ('provider' in body || 'organizationId' in body) return null
 
-  return parsed as GitAppUpdate
+  return parsed as ForgeUpdate
 }
 
-export type SerializedGitApp = GitAppSummary & {
+export type SerializedForge = ForgeSummary & {
   /** Ingress path this app's deliveries should arrive on. */
   webhookPath: string
   /** Absolute URL, when the instance knows a public origin. */
@@ -355,10 +355,10 @@ export type SerializedGitApp = GitAppSummary & {
  * editable through the admin surface and read-only through an organization's,
  * so it is a property of the view, not of the record.
  */
-export function serializeGitApp(
-  app: GitAppSummary,
+export function serializeForge(
+  app: ForgeSummary,
   opts: { publicOrigin: string | null; viewerOrganizationId: string | null },
-): SerializedGitApp {
+): SerializedForge {
   const webhookPath = webhookPathFor(
     app.provider as WebhookProvider,
     app.webhookRef,

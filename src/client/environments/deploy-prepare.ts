@@ -94,12 +94,12 @@ import {
   resolveServiceInstances,
 } from "../../lib/service-options.ts";
 import { validateRegisteredExternalDockerNetworks } from "./validate-docker-external-networks.ts";
-import type { DesiredTaskInput } from "../../lib/db/task-records.ts";
+import type { DesiredSlotInput } from "../../lib/db/slot-records.ts";
 import {
   localReplicaCounts,
   localServiceNames,
 } from "../../lib/schedule/planner.ts";
-import type { SpanningHostsForService } from "../../lib/schedule/task-addresses.ts";
+import type { SpanningHostsForService } from "../../lib/schedule/slot-addresses.ts";
 import {
   allocateEnvironmentContainers,
   authoredContainerNamesForAllocation,
@@ -139,7 +139,7 @@ import {
   binding,
   environment,
   ip,
-  location,
+  storageCopy,
   mount,
   organization,
   principal,
@@ -172,9 +172,9 @@ import {
 } from "../variables/resolve-inherited.ts";
 import {
   loadPrincipalIdsByServiceIdForEnvironment,
-  loadStewardPrincipalIdsForEnvironment,
+  loadTenancyPrincipalIdsForEnvironment,
   pickSolePrincipalId,
-} from "../principals/stewards.ts";
+} from "../principals/tenancies.ts";
 import {
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
@@ -479,7 +479,7 @@ export type DeployPrepareMode = "deploy" | "preview";
 /** Per-server slice of a scheduled environment deploy. */
 export type DeployScheduleSlice = {
   serverId: string;
-  tasks: readonly DesiredTaskInput[];
+  slots: readonly DesiredSlotInput[];
   serviceIdToName: ReadonlyMap<string, string>;
   spanningNetworks?: ReadonlyMap<string, string>;
   taskAddresses?: ReadonlyMap<string, ReadonlyMap<number, string>>;
@@ -876,22 +876,22 @@ export async function loadStorageMaterial(
   const locationRows = await db
     .select({
       storageId: storage.id,
-      locationId: location.id,
+      locationId: storageCopy.id,
       kind: storage.kind,
       name: storage.name,
       accessMode: storage.accessMode,
       principalId: storage.principalId,
       principalUsername: principal.username,
       contentEnvelope: storage.contentEnvelope,
-      locationServerId: location.serverId,
-      provider: location.provider,
-      role: location.role,
-      path: location.path,
-      locationOptions: location.options,
+      locationServerId: storageCopy.serverId,
+      provider: storageCopy.provider,
+      role: storageCopy.role,
+      path: storageCopy.path,
+      locationOptions: storageCopy.options,
       metadata: storage.metadata,
     })
     .from(storage)
-    .innerJoin(location, eq(location.storageId, storage.id))
+    .innerJoin(storageCopy, eq(storageCopy.storageId, storage.id))
     .leftJoin(principal, eq(storage.principalId, principal.id))
     .where(or(...scopeConditions));
 
@@ -945,7 +945,7 @@ export async function loadStorageMaterial(
   return material;
 }
 
-export async function findUnavailableStorageLocation(
+export async function findUnavailableStorageCopy(
   db: Db,
   params: {
     environmentId: string;
@@ -963,12 +963,12 @@ export async function findUnavailableStorageLocation(
       storageName: storage.name,
       accessMode: storage.accessMode,
       serviceId: mount.serviceId,
-      locationServerId: location.serverId,
-      locationRole: location.role,
+      locationServerId: storageCopy.serverId,
+      locationRole: storageCopy.role,
     })
     .from(mount)
     .innerJoin(storage, eq(mount.storageId, storage.id))
-    .leftJoin(location, eq(location.storageId, storage.id))
+    .leftJoin(storageCopy, eq(storageCopy.storageId, storage.id))
     .where(
       and(
         eq(storage.environmentId, params.environmentId),
@@ -1029,7 +1029,7 @@ function serviceIdsOnScheduledServer(
 ): string[] {
   if (!schedule) return allServiceIds;
   const ids: string[] = [];
-  for (const task of schedule.tasks) {
+  for (const task of schedule.slots) {
     if (task.serverId === serverId) ids.push(task.serviceId);
   }
   return ids;
@@ -1808,7 +1808,7 @@ async function allocateExpandDeployPipeline(
   const expansion = identityComposeExpansion(params.composeServiceNames);
   const localCounts = params.schedule
     ? localReplicaCounts(
-      params.schedule.tasks,
+      params.schedule.slots,
       params.schedule.serviceIdToName,
       params.serverId,
     )
@@ -1819,7 +1819,7 @@ async function allocateExpandDeployPipeline(
     );
   const localNames = params.schedule
     ? localServiceNames(
-      params.schedule.tasks,
+      params.schedule.slots,
       params.schedule.serviceIdToName,
       params.serverId,
     )
@@ -2101,23 +2101,23 @@ function applyScheduleToContainerSpecs(
   schedule: DeployScheduleSlice | undefined,
 ): ContainerServiceSpec[] {
   if (!schedule) return specs;
-  const tasksByService = new Map<string, DesiredTaskInput[]>();
-  for (const task of schedule.tasks) {
+  const tasksByService = new Map<string, DesiredSlotInput[]>();
+  for (const task of schedule.slots) {
     const list = tasksByService.get(task.serviceId) ?? [];
     list.push(task);
     tasksByService.set(task.serviceId, list);
   }
   const next: ContainerServiceSpec[] = [];
   for (const spec of specs) {
-    const tasks = tasksByService.get(spec.serviceId);
-    if (!tasks || tasks.length === 0) continue;
+    const slots = tasksByService.get(spec.serviceId);
+    if (!slots || slots.length === 0) continue;
     const serverIdByOrdinal = new Map<number, string>();
-    for (const task of tasks) {
+    for (const task of slots) {
       serverIdByOrdinal.set(task.slot + 1, task.serverId);
     }
     next.push({
       ...spec,
-      instances: tasks.length,
+      instances: slots.length,
       serverIdByOrdinal,
     });
   }
@@ -2130,7 +2130,7 @@ function ownsIngressForService(
   serverId: string,
 ): boolean {
   if (!schedule) return true;
-  const slots = schedule.tasks.filter((task) => task.serviceId === serviceId);
+  const slots = schedule.slots.filter((task) => task.serviceId === serviceId);
   if (slots.length === 0) return false;
   let minSlot = slots[0]!.slot;
   for (const task of slots) {
@@ -2449,7 +2449,7 @@ export async function prepareDeployCompose(
     schedule: params.schedule,
   });
 
-  const locationErr = await findUnavailableStorageLocation(db, {
+  const locationErr = await findUnavailableStorageCopy(db, {
     environmentId: params.environmentId,
     scheduledServerId: params.serverId,
     serviceIds: serviceIdsOnScheduledServer(
@@ -2544,7 +2544,7 @@ export async function prepareDeployCompose(
   if (sealed instanceof Response) return sealed;
   const { variableMaterial, storageMaterial } = sealed;
 
-  const stewardPrincipalIds = await loadStewardPrincipalIdsForEnvironment(
+  const stewardPrincipalIds = await loadTenancyPrincipalIdsForEnvironment(
     db,
     params.environmentId,
   );

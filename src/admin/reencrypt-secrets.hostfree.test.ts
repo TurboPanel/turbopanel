@@ -14,7 +14,7 @@ import {
   parseSecretsEnv,
 } from "../client/authn/secrets.ts";
 import {
-  credential,
+  secret,
   principal,
   setting,
   storage,
@@ -50,7 +50,7 @@ type StageKey =
   | "tls"
   | "principals"
   | "storage"
-  | "credentials"
+  | "secrets"
   | "email";
 
 function stageForTable(table: unknown): StageKey | null {
@@ -58,7 +58,7 @@ function stageForTable(table: unknown): StageKey | null {
   if (table === tls) return "tls";
   if (table === principal) return "principals";
   if (table === storage) return "storage";
-  if (table === credential) return "credentials";
+  if (table === secret) return "secrets";
   if (table === setting) return "email";
   return null;
 }
@@ -92,7 +92,7 @@ function stagedSweepDb(opts: {
     tls: 0,
     principals: 0,
     storage: 0,
-    credentials: 0,
+    secrets: 0,
     email: 0,
   };
   const updateApplied = opts.updateApplied ?? true;

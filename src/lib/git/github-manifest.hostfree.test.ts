@@ -29,8 +29,8 @@ const base = {
   name: 'turbopanel-quiet-heron-4f2a91',
   publicUrl: 'https://panel.example.com',
   webhookUrl: 'https://panel.example.com/webhook/github',
-  redirectUrl: 'https://panel.example.com/api/client/v1/git/apps/github/manifest/callback',
-  setupUrl: 'https://panel.example.com/api/client/v1/sources/github/callback',
+  redirectUrl: 'https://panel.example.com/api/client/v1/forges/github/manifest/callback',
+  setupUrl: 'https://panel.example.com/api/client/v1/repositories/github/callback',
 }
 
 test('visibility tracks the instance-wide toggle', () => {

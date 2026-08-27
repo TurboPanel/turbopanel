@@ -14,7 +14,7 @@ An instance may hold **more than one** GitHub App or GitLab OAuth application �
 instance-wide ones an operator registered for everybody, and organization-owned
 ones. So a delivery cannot be checked against "the" webhook secret: the surface
 has to work out *whose* secret to use before it can authenticate anything. That
-is step 2 below (`src/lib/git/resolve-webhook-app.ts`).
+is step 2 below (`src/lib/git/resolve-webhook-forge.ts`).
 
 ## Why this is its own surface
 
@@ -83,7 +83,7 @@ module on boot.
 | Path | When it is used |
 | --- | --- |
 | `/webhook/<provider>` | **Hosted providers.** github.com stamps `X-GitHub-Hook-Installation-Target-ID` on every App delivery and gitlab.com echoes the token we can digest, so the app is identifiable from the request alone and the URL stays clean — nothing internal in it. |
-| `/webhook/<provider>/:ref` | **Self-hosted providers.** `:ref` is that app's `gitapp.webhook_ref`, baked in at registration (GitHub: `hook_attributes.url` in the manifest; GitLab: the per-project hook URL). GitHub Enterprise Server and self-managed GitLab ship on their own cadence, so the header is not a safe single point of failure there — a build that omitted it would 401 every delivery with nothing in the URL to fall back to. |
+| `/webhook/<provider>/:ref` | **Self-hosted providers.** `:ref` is that app's `forge.webhook_ref`, baked in at registration (GitHub: `hook_attributes.url` in the manifest; GitLab: the per-project hook URL). GitHub Enterprise Server and self-managed GitLab ship on their own cadence, so the header is not a safe single point of failure there — a build that omitted it would 401 every delivery with nothing in the URL to fall back to. |
 
 All of them register the same handler; the ref is simply absent on the bare
 path. `webhookPathFor` in `src/lib/git/webhook-reachability.ts` decides which
@@ -102,7 +102,7 @@ that is exactly the duplication a third kind would have inherited.
    `src/daemon/rate-limit/keys.ts` that does so, because the caller has no
    identity until step 3 succeeds. **Separate buckets per provider**, so a
    pipeline-hook flood from one cannot start dropping the other's deliveries.
-2. **Resolve the app** (`resolveGithubWebhookApp` / `resolveGitlabWebhookApp`).
+2. **Resolve the app** (`resolveGithubWebhookForge` / `resolveGitlabWebhookForge`).
    Selection only — nothing is trusted yet; see "Which app sent this?" below.
    Nothing resolves → `401`, never an unauthenticated accept. Every candidate
    missing its webhook secret → `503`, because that gap is on this side.
@@ -125,7 +125,7 @@ that is exactly the duplication a third kind would have inherited.
 
 Everything answers fast and answers 2xx unless the instance itself is at fault.
 A provider reads a non-2xx as "retry me", and retrying will not conjure a server
-placement or re-arm a disabled source.
+placement or re-arm a disabled repository.
 
 **When the instance *is* at fault, that distinction is the recovery path.** A
 command queue that is down, or a deploy the shared pipeline answered 5xx to, is
@@ -138,7 +138,7 @@ that answer 2xx must never release, or a genuine redelivery would enqueue a
 second deploy. `dispatchDelivery` returns `{ retry, result }` and
 `triggerSummaryNeedsRetry` decides it from the trigger summary's `failed` count;
 a `checks_passed` SHA that was cleared before a failed enqueue is put back on
-`source.options.pendingChecks` so the redelivery has something to release.
+`repository.options.pendingChecks` so the redelivery has something to release.
 
 **Checks are a suite-level signal.** `check_run` describes one job — a repository
 with lint, unit, and e2e sends three — so releasing on the first green run would
@@ -152,7 +152,7 @@ deliberately not honored.
 ## Adding a kind
 
 Implement `WebhookGate<THolder>` and add a line to `routes.ts`. `THolder` is
-whatever that kind verifies against — a `GitApp` for the git kinds — so a kind
+whatever that kind verifies against — a `Forge` for the git kinds — so a kind
 with **no tenant at all** is as expressible as a multi-tenant one: `resolve`
 returns a single holder carrying only the instance-wide secret.
 
@@ -191,7 +191,7 @@ fronting layer, so `/webhook/<kind>` inherits it.
 | `push` (branch delete) | dropped: the all-zero `after` SHA / `deleted: true` is not a deploy trigger |
 | `check_suite` / `check_run` | **suite**-level success only; releases a SHA parked by `autoDeploy: 'checks_passed'` |
 | `installation` | `suspend` / `deleted` set `suspended_at`; `unsuspend` / `created` / `new_permissions_accepted` clear it |
-| `installation_repositories` | logged only — no `source` row is mutated |
+| `installation_repositories` | logged only — no `repository` row is mutated |
 | anything else | `204` |
 
 GitLab's table is shorter, because its webhook vocabulary is:
@@ -209,7 +209,7 @@ a failing token refresh at deploy time (a `source_ref_unresolved` prepare error)
 not as a delivery this surface could record.
 
 Installation **deletion is recorded as suspension**, not a row delete: the
-`source` rows referencing it survive, so reinstalling the App restores every
+`repository` rows referencing it survive, so reinstalling the App restores every
 repository binding instead of orphaning it.
 
 ## Providers
@@ -217,7 +217,7 @@ repository binding instead of orphaning it.
 Everything provider-specific — listing repositories, resolving a ref to a commit,
 minting a clone credential, verifying a delivery, parsing a payload — sits behind
 the `GitProvider` interface in `src/lib/git/git-provider.ts`, with one
-implementation per `source.provider` value (`github`, `gitlab`, and `git`, the
+implementation per `repository.provider` value (`github`, `gitlab`, and `git`, the
 degenerate generic-SSH one). `resolveGitProvider(row.provider)` is the single
 dispatch; deploy-prepare and the repository picker call it rather than testing
 the column. Adding a third hosted provider is a new implementation plus a row in
@@ -226,13 +226,13 @@ that registry, not another branch in four files.
 The two GitLab clone lanes are worth knowing about, because they are what keeps
 deploy-prepare down to two cases rather than four:
 
-- **OAuth connection** (`source.installation_id`) — an access token is minted per
-  deploy from the sealed pair on the installation row and sealed straight into
+- **OAuth connection** (`connectionId`) — an access token is minted per
+  deploy from the sealed pair on the connection row and sealed straight into
   the payload. GitLab **rotates the refresh token on every use**, so
   `mintGitlabAccessToken` writes the new pair back before returning; that write
   is the one place GitLab's token lifecycle is not stateless like GitHub's.
-- **Deploy key** (`source.credential_id`) — a generated read-only Ed25519 key,
-  the same lane `provider: 'git'` uses. `POST /sources/gitlab/deploy-keys` mints
+- **Deploy key** (`secretId`) — a generated read-only Ed25519 key,
+  the same lane `provider: 'git'` uses. `POST /repositories/gitlab/deploy-keys` mints
   it, seals the private half, and returns the public half **once**. That is the
   recommended non-human path: the key belongs to the project, so no individual
   leaving the organization breaks its deploys.
@@ -243,17 +243,17 @@ ambiguous pair at the write boundary rather than letting deploy-prepare guess.
 ### Registered applications, and who owns them
 
 Neither hosted provider works until an application is registered. Those live in
-the **`gitapp`** table, not in a settings row, and an instance may hold as many
+the **`forge`** table, not in a settings row, and an instance may hold as many
 as it needs:
 
 | `organization_id` | Meaning | Managed through |
 | --- | --- | --- |
-| `NULL` | **Instance-wide** — any organization may connect through it | `GET`/`POST`/`PATCH`/`DELETE` `/api/admin/v1/git/apps` (role-gated) |
-| set | Owned by that organization alone | the same verbs under `/api/client/v1/git/apps` (`organization:manage`) |
+| `NULL` | **Instance-wide** — any organization may connect through it | `GET`/`POST`/`PATCH`/`DELETE` `/api/admin/v1/forges` (role-gated) |
+| set | Owned by that organization alone | the same verbs under `/api/client/v1/forges` (`organization:manage`) |
 
 An organization *reads* instance-wide apps — the connect flow has to be able to
 offer them — but may never edit one; that is a `403`, not a `404`, because the
-caller already knows it exists. Both surfaces share `src/client/git-apps/`, so
+caller already knows it exists. Both surfaces share `src/client/forges/`, so
 the two cannot drift into accepting different shapes for the same resource. The
 admin surface deliberately sees only instance-wide rows: `createAdminAccessMiddleware`
 resolves no organization, so it has no scope in which to edit an org-owned app.
@@ -263,7 +263,7 @@ save a rename without the operator re-pasting a private key it was never shown �
 and an explicit `null` clears a nullable field. Reads report **presence only**;
 sealed material is never returned.
 
-`POST /git/apps/github/manifest` is the supported way to create a GitHub App:
+`POST /forges/github/manifest` is the supported way to create a GitHub App:
 it returns a manifest whose `hook_attributes.url` is already the new app's
 scoped webhook path, so the App is born self-identifying. GitHub then sends
 the operator's browser to `GET …/github/manifest/callback`, which stores the
@@ -274,7 +274,7 @@ A manifest App is created `public: true` on purpose — **a private GitHub App c
 only be installed on the account that owns it**, so one meant to serve several
 organizations has to be public.
 
-`installation.app_id` names the app a connection was granted through. Token
+`connection.forge_id` names the app a connection was granted through. Token
 minting resolves the app from that column (`mintGithubInstallationToken`,
 `mintGitlabAccessToken`) rather than from a single instance-wide config, which
 is what lets two connections with the same provider-side id mint against
@@ -312,16 +312,16 @@ deliveries silently landing on the wrong tenant.
 
 ### Write-boundary compatibility
 
-Ownership is not the only thing `POST`/`PATCH /sources` checks about a named
-`installationId` or `credentialId` — the row also has to belong to the lane the
-source is on:
+Ownership is not the only thing `POST`/`PATCH /repositories` checks about a named
+`connectionId` or `secretId` — the row also has to belong to the lane the
+repository is on:
 
-- `installation.provider` must equal `source.provider`. A GitLab source pointing
+- `connection.provider` must equal `repository.provider`. A GitLab repository pointing
   at a GitHub connection is unclonable: deploy-prep dispatches on
-  `source.provider`, so `mintGitlabAccessToken` would be handed a row with no
+  `repository.provider`, so `mintGitlabAccessToken` would be handed a row with no
   `oauth_envelope`.
-- `credential.provider` must be `git_deploy_key`, and only `git` / `gitlab`
-  sources may name a credential at all. `credential` is one table for every
+- `secret.provider` must be `git_deploy_key`, and only `git` / `gitlab`
+  repositories may name a credential at all. `secret` is one table for every
   sealed secret the organization holds, so an org-owned S3 or SFTP credential
   passes the ownership test and is still nothing a clone can use.
 
@@ -333,25 +333,26 @@ as a checkout error on a host hours later.
 
 ## Trigger resolution
 
-`src/client/sources/webhook-trigger.ts` turns
+`src/client/repositories/webhook-trigger.ts` turns
 `(provider, installation, repository, branch, sha)` into environments. Three
 things there are easy to get wrong:
 
-- **Both attachment models count.** A source is attached either by the
-  `source.service_id` / `source.environment_id` columns *or* by a compose
-  document naming it at `services.<name>.x-turbopanel.source.sourceId`. The
+- **Both attachment models count.** A repository is attached either by the
+  `repository.service_id` / `repository.environment_id` columns *or* by a compose
+  document naming it at `services.<name>.x-turbopanel.source.sourceId` (compose
+  document field, intentionally still named `source`). The
   Services form writes only the compose reference, so a resolver that read the
   columns alone would ignore most real bindings. Both are resolved, using the
-  same `COMPOSE_SOURCE_JSONPATH` that guards source deletion.
+  same `COMPOSE_SOURCE_JSONPATH` that guards repository deletion.
 - **It reuses the deploy pipeline.** Resolution ends in
   `runEnvironmentDeployForActor`, which is `runEnvironmentDeploy` with an
-  `actorType: 'system'` actor whose `actorId` is the triggering `source.id`.
+  `actorType: 'system'` actor whose `actorId` is the triggering `repository.id`.
   There is no second enqueue path — see the concurrency note in
   `src/lib/commands/AGENTS.md`.
 - **Every lookup is scoped to the verified app.** `loadInstallations` takes the
   `app_id` of the app whose secret verified the delivery, and that predicate is
-  load-bearing rather than an optimization: `installation` is unique on
-  `(organization_id, app_id, external_installation_id)`, so the same GitHub
+  load-bearing rather than an optimization: `connection` is unique on
+  `(organization_id, forge_id, external_installation_id)`, so the same GitHub
   installation id legitimately exists as a row for several organizations.
   Matching on provider and external id alone returned all of them, and one
   organization's push deployed another organization's environments.
@@ -364,7 +365,7 @@ things there are easy to get wrong:
   installation may be claimed by one organization per app: `installation_id`
   arrives as a query parameter the caller can retype, so the callback both
   verifies the installation exists under the App and refuses one another
-  organization already holds (`assertInstallationUnclaimed`). Without those two
+  organization already holds (`assertConnectionUnclaimed`). Without those two
   checks a second organization could name someone else's installation, and the
   shared App's key would happily mint a token for it.
 - **A GitLab delivery names no connection.** GitHub puts the installation id on
@@ -373,12 +374,12 @@ things there are easy to get wrong:
   `loadInstallations` therefore accepts a `null` external id and treats every
   live connection **granted through that app** as a candidate, with the
   provider-side project id doing the narrowing in `findSourcesForRepository`.
-  That is safe because a `source` can only carry a project id the connection
+  That is safe because a `repository` can only carry a project id the connection
   that created it could see. Scoping to the app is what keeps this from
   spanning the whole instance — including projects on a *different* GitLab
   origin whose numeric ids happen to collide, since `base_url` is per app.
 
-A source with `defaultBranch` set watches exactly that branch; one that left it
+A repository with `defaultBranch` set watches exactly that branch; one that left it
 blank watches every branch, because guessing the repository's upstream default
 would need a live provider call per delivery.
 
@@ -386,11 +387,11 @@ would need a live provider call per delivery.
 
 A LAN-only instance (`https://panel.lan:8443`, a private IP, a `.internal` name)
 can clone and mint tokens — both outbound — but no provider can deliver to it.
-`GET /sources/:id` therefore returns `webhookUrl`, `webhookReachable`, and
+`GET /repositories/:id` therefore returns `webhookUrl`, `webhookReachable`, and
 `reachabilityNote`, computed from the operator's public URL list by
-`src/lib/git/webhook-reachability.ts` **on the source's own provider path, with
-the `webhook_ref` of the app behind its installation**; a `provider: 'git'`
-source has no webhook surface and is given none, and a deploy-key source has no
+`src/lib/git/webhook-reachability.ts` **on the repository's own provider path, with
+the `webhook_ref` of the app behind its connection**; a `provider: 'git'`
+repository has no webhook surface and is given none, and a deploy-key repository has no
 app, so it falls back to the bare path. The intended alternative for those
 instances is the `ref` field on `POST /environments/:id/deploy`.
 
@@ -402,7 +403,7 @@ supplied **`commitSha`** (the webhook path already knows the pushed head) — bu
 only for the binding whose **`sourceId`** the selection names, so one push never
 pins the other repositories bound in the same environment. The commit each other
 service builds comes from its own
-`x-turbopanel.source.branch` (else the source's default branch) — never from a
+`x-turbopanel.source.branch` (else the repository's default branch) — never from a
 ref named on the request. So `PREPARE_HONORS_SOURCE_SELECTION` stays `false` and
 the route answers `501 source_ref_unsupported` to any request that sets `ref`.
 Building the declared branch while reporting `queued` for "deploy release/1.4" is

@@ -3,7 +3,7 @@ import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
 import { encryptSecret } from '../../client/authn/data-encryption.ts'
 import type { Db } from '../../db.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { gitProviderInstallation } from '../db/schema.ts'
+import { gitConnection } from '../db/schema.ts'
 import {
   GITHUB_API_ACCEPT,
   GITHUB_API_BASE,
@@ -355,7 +355,7 @@ function gitDb(opts: {
         innerJoin: joined,
         where: () => ({
           limit: () => {
-            if (table === gitProviderInstallation) {
+            if (table === gitConnection) {
               return Promise.resolve(opts.installation ? [opts.installation] : [])
             }
             return Promise.resolve([])
@@ -386,7 +386,7 @@ async function sealedApp(privateKeyPem: string, baseUrl = 'https://github.com') 
       redirectUri: null,
       webhookRef: 'ref-1',
       webhookTokenHash: null,
-      credentials: {
+      envelopes: {
         privateKeyEnvelope: await encryptSecret(secrets, privateKeyPem),
       },
     },

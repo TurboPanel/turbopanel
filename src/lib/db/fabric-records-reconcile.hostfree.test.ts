@@ -19,7 +19,7 @@ import {
   purgeOrganizationComposeNetworks,
   type RelayRecord,
 } from "./fabric-records.ts";
-import { ip, network, relay, segment, server } from "./schema.ts";
+import { ip, network, relay, subnet, server } from "./schema.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -389,7 +389,7 @@ function createReconcileDb(opts: {
               }
               return thenableRows(filterRows(networks, condition));
             }
-            if (table === segment) {
+            if (table === subnet) {
               return thenableRows(filterRows(segments, condition));
             }
             if (table === server) {
@@ -431,7 +431,7 @@ function createReconcileDb(opts: {
     },
     delete: (table: unknown) => ({
       where: (condition?: unknown) => {
-        if (table === segment) {
+        if (table === subnet) {
           const next = segments.filter((row) =>
             !segmentMatchesDelete(row, condition)
           );

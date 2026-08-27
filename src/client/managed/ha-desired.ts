@@ -1,5 +1,5 @@
 /**
- * Build + enqueue `managed.ha.reconcile` for a server's Orchestrator node.
+ * Build + enqueue `managed.ha.reconcile` for a server's Orchestrator replica.
  *
  * One Raft group per organization, on servers that host a primary or
  * `failover` replica. Remote `read`/DR-only servers do not join.
@@ -30,7 +30,7 @@ import {
   createCommandRecord,
   transitionCommand,
 } from '../../lib/db/command-records.ts'
-import { container, managed, node, principal, server, service } from '../../lib/db/schema.ts'
+import { container, managed, replica, principal, server, service } from '../../lib/db/schema.ts'
 import {
   MANAGED_HA_HTTP_PORT,
   MANAGED_HA_RAFT_PORT,
@@ -87,8 +87,8 @@ async function loadHaMembersOnServer(
 ): Promise<ManagedMemberRow[]> {
   const rows = await db
     .select()
-    .from(node)
-    .where(eq(node.serverId, serverId))
+    .from(replica)
+    .where(eq(replica.serverId, serverId))
   return rows.map((row) => ({
     id: row.id,
     managedId: row.managedId,
@@ -291,13 +291,13 @@ async function buildRaftConfig(
 ): Promise<ManagedHaRaftConfig | null> {
   const orgMembers = await db
     .select({
-      serverId: node.serverId,
-      role: node.role,
-      replicaClass: node.replicaClass,
+      serverId: replica.serverId,
+      role: replica.role,
+      replicaClass: replica.replicaClass,
     })
-    .from(node)
-    .innerJoin(managed, eq(managed.id, node.managedId))
-    .innerJoin(server, eq(server.id, node.serverId))
+    .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
+    .innerJoin(server, eq(server.id, replica.serverId))
     .where(eq(server.organizationId, organizationId))
 
   const byServer = new Map<string, Array<{ role: string; replicaClass: string | null }>>()
@@ -550,12 +550,12 @@ export async function fanOutManagedHaReconcile(
 ): Promise<void> {
   const memberIds = await db
     .select({
-      serverId: node.serverId,
-      role: node.role,
-      replicaClass: node.replicaClass,
+      serverId: replica.serverId,
+      role: replica.role,
+      replicaClass: replica.replicaClass,
     })
-    .from(node)
-    .where(eq(node.managedId, params.managedId))
+    .from(replica)
+    .where(eq(replica.managedId, params.managedId))
   const serverIds = new Set<string>(params.extraServerIds ?? [])
   for (const row of memberIds) {
     if (serverHostsManagedHa([row])) serverIds.add(row.serverId)

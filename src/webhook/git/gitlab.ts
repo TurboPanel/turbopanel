@@ -25,8 +25,8 @@ import {
 } from '../../surfaces.ts'
 import { gitlabWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
 import { gitlabProvider } from '../../lib/git/gitlab-provider.ts'
-import { resolveGitlabWebhookApp } from '../../lib/git/resolve-webhook-app.ts'
-import type { GitApp } from '../../lib/git/git-app-records.ts'
+import { resolveGitlabWebhookForge } from '../../lib/git/resolve-webhook-forge.ts'
+import type { Forge } from '../../lib/git/forge-records.ts'
 import {
   gitlabDeliveryId,
   gitlabEventName,
@@ -39,7 +39,7 @@ import {
   resolveCheckTrigger,
   resolvePushTrigger,
   triggerSummaryNeedsRetry,
-} from '../../client/sources/webhook-trigger.ts'
+} from '../../client/repositories/webhook-trigger.ts'
 import {
   accepted,
   type DeliveryOutcome,
@@ -61,7 +61,7 @@ export const GITLAB_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024
 async function handlePush(
   c: Context<AppEnv>,
   db: Db,
-  appId: string,
+  forgeId: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
   const push = gitlabProvider.parsePush(payload)
@@ -75,7 +75,7 @@ async function handlePush(
 
   const summary = await resolvePushTrigger(c, db, commandQueue, {
     provider: 'gitlab',
-    appId,
+    forgeId,
     ...push,
   })
   return { retry: triggerSummaryNeedsRetry(summary), result: summary }
@@ -84,7 +84,7 @@ async function handlePush(
 async function handlePipeline(
   c: Context<AppEnv>,
   db: Db,
-  appId: string,
+  forgeId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
@@ -98,7 +98,7 @@ async function handlePipeline(
 
   const summary = await resolveCheckTrigger(c, db, commandQueue, {
     provider: 'gitlab',
-    appId,
+    forgeId,
     ...check,
   })
   return { retry: triggerSummaryNeedsRetry(summary), result: summary }
@@ -115,16 +115,16 @@ async function handlePipeline(
 async function dispatchDelivery(
   c: Context<AppEnv>,
   db: Db,
-  appId: string,
+  forgeId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<DeliveryOutcome> {
   const kind = typeof payload.object_kind === 'string' ? payload.object_kind : event
   switch (kind) {
     case 'push':
-      return await handlePush(c, db, appId, payload)
+      return await handlePush(c, db, forgeId, payload)
     case 'pipeline':
-      return await handlePipeline(c, db, appId, kind, payload)
+      return await handlePipeline(c, db, forgeId, kind, payload)
     default:
       // Notably absent: an installation lifecycle case. GitLab has no such
       // webhook — a revoked OAuth grant surfaces as a failing token refresh at
@@ -133,14 +133,14 @@ async function dispatchDelivery(
   }
 }
 
-const gitlabGate: WebhookGate<GitApp> = {
+const gitlabGate: WebhookGate<Forge> = {
   kind: 'gitlab',
   logScope: 'git-webhook',
   maxBodyBytes: GITLAB_WEBHOOK_MAX_BODY_BYTES,
   rateLimitKey: gitlabWebhookRateLimitKey,
 
   async resolve(ctx, ref) {
-    const resolution = await resolveGitlabWebhookApp(
+    const resolution = await resolveGitlabWebhookForge(
       ctx.db,
       ctx.dataEncryptionSecrets,
       ref,

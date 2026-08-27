@@ -1,16 +1,16 @@
 /**
- * Git `source` CRUD plus the provider connect flows (GitHub App installation,
+ * Git `repository` CRUD plus the provider connect flows (GitHub App installation,
  * GitLab OAuth) and the deploy-key minter.
  *
- * `source` is an org-owned registry like `network` / `datacenter`, so authz is
+ * `repository` is an org-owned registry like `network` / `datacenter`, so authz is
  * a direct `organization_id` match plus an organization-level manage/read gate
  * — not the workspace→project ancestry walk used by the compose tree.
- * `assertNotSystemOwnedOr403` does not apply: sources are never part of the
+ * `assertNotSystemOwnedOr403` does not apply: repositories are never part of the
  * system-owned project tree.
  *
  * The inbound half of this feature is **not** here. Each provider's webhook
  * surface lives at `GITHUB_WEBHOOK_PATH` / `GITLAB_WEBHOOK_PATH`, outside
- * `CLIENT_API_PREFIX`, and authenticates with a provider credential rather than
+ * `CLIENT_API_PREFIX`, and authenticates with a provider secret rather than
  * a session or a daemon JWT — see `src/webhook/AGENTS.md`. What this file
  * contributes to it is {@link resolveSourceWebhookInfo}: the endpoint URL to
  * configure, plus a warning when this instance's public URL is one the provider
@@ -34,20 +34,20 @@ import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { logWarn } from '../../logger.ts'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../authn/secrets.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
 import {
-  credential,
-  gitProviderApp,
-  gitProviderInstallation,
+  secret,
+  forge,
+  gitConnection,
   server,
-  source,
+  repository,
 } from '../../lib/db/schema.ts'
 import {
-  type GitApp,
-  loadGitApp,
-  visibleGitAppsCondition,
-} from '../../lib/git/git-app-records.ts'
+  type Forge,
+  loadForge,
+  visibleForgesCondition,
+} from '../../lib/git/forge-records.ts'
 import {
   webhookReachability,
   type WebhookProvider,
@@ -75,6 +75,7 @@ import { fetchGitlabAccount } from '../../lib/git/gitlab-provider.ts'
 import { GitlabApiError } from '../../lib/git/gitlab-api.ts'
 import { generateSshDeployKeypair } from '../../lib/git/ssh-keypair.ts'
 import { encryptSecret } from '../authn/data-encryption.ts'
+import { canAccessOrganization } from '../org-context.ts'
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -91,7 +92,7 @@ import {
 import {
   providerInstallUiReturnPath,
   type ProviderInstallReturnError,
-} from '../git-apps/routes-helpers.ts'
+} from '../forges/routes-helpers.ts'
 import {
   COMPOSE_SOURCE_JSONPATH,
   parseSourceAttachBody,
@@ -99,7 +100,7 @@ import {
   parseSourceCreateBody,
   parseSourceListFilter,
   parseSourcePatchBody,
-  serializeInstallationRow,
+  serializeConnectionRow,
   serializeSourceRow,
   type SourceWebhookInfo,
   SOURCE_DEPLOY_KEY_PROVIDERS,
@@ -109,37 +110,37 @@ import {
 } from './routes-helpers.ts'
 
 const SOURCE_SELECT = {
-  id: source.id,
-  organizationId: source.organizationId,
-  installationId: source.installationId,
-  serviceId: source.serviceId,
-  environmentId: source.environmentId,
-  credentialId: source.credentialId,
-  provider: source.provider,
-  repositoryUrl: source.repositoryUrl,
-  repositoryExternalId: source.repositoryExternalId,
-  defaultBranch: source.defaultBranch,
-  subdirectory: source.subdirectory,
-  autoDeploy: source.autoDeploy,
-  metadata: source.metadata,
-  options: source.options,
-  createdAt: source.createdAt,
-  updatedAt: source.updatedAt,
+  id: repository.id,
+  organizationId: repository.organizationId,
+  connectionId: repository.connectionId,
+  serviceId: repository.serviceId,
+  environmentId: repository.environmentId,
+  secretId: repository.secretId,
+  provider: repository.provider,
+  repositoryUrl: repository.repositoryUrl,
+  repositoryExternalId: repository.repositoryExternalId,
+  defaultBranch: repository.defaultBranch,
+  subdirectory: repository.subdirectory,
+  autoDeploy: repository.autoDeploy,
+  metadata: repository.metadata,
+  options: repository.options,
+  createdAt: repository.createdAt,
+  updatedAt: repository.updatedAt,
 }
 
-const INSTALLATION_SELECT = {
-  id: gitProviderInstallation.id,
-  organizationId: gitProviderInstallation.organizationId,
-  appId: gitProviderInstallation.appId,
-  provider: gitProviderInstallation.provider,
-  externalInstallationId: gitProviderInstallation.externalInstallationId,
-  accountLogin: gitProviderInstallation.accountLogin,
-  accountType: gitProviderInstallation.accountType,
-  suspendedAt: gitProviderInstallation.suspendedAt,
-  metadata: gitProviderInstallation.metadata,
-  options: gitProviderInstallation.options,
-  createdAt: gitProviderInstallation.createdAt,
-  updatedAt: gitProviderInstallation.updatedAt,
+const CONNECTION_SELECT = {
+  id: gitConnection.id,
+  organizationId: gitConnection.organizationId,
+  forgeId: gitConnection.forgeId,
+  provider: gitConnection.provider,
+  externalInstallationId: gitConnection.externalInstallationId,
+  accountLogin: gitConnection.accountLogin,
+  accountType: gitConnection.accountType,
+  suspendedAt: gitConnection.suspendedAt,
+  metadata: gitConnection.metadata,
+  options: gitConnection.options,
+  createdAt: gitConnection.createdAt,
+  updatedAt: gitConnection.updatedAt,
 }
 
 type SourceSessionContext = {
@@ -164,11 +165,54 @@ export async function resolveSourceSession(
 }
 
 /**
- * Deleting a still-referenced source would make every later save of that compose
+ * Callback-only session: db, the signed-in user, and signing/encryption
+ * secrets — no organization header.
+ *
+ * GitHub's `setup_url` and GitLab's OAuth redirect are top-level browser
+ * navigations. They carry a session cookie and a signed `state`, not
+ * `X-Turbopanel-Organization-Id`. Organization comes from verified claims.
+ */
+type ProviderCallbackSession = {
+  db: Db
+  userId: string
+  secretsConfig: SecretsConfig | undefined
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
+}
+
+export async function resolveProviderCallbackSession(
+  c: Context<AppEnv>,
+): Promise<ProviderCallbackSession | Response> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+  return {
+    db,
+    userId: session.userId,
+    secretsConfig: c.get('secretsConfig'),
+    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+  }
+}
+
+async function authorizeClaimedOrganization(
+  c: Context<AppEnv>,
+  db: Db,
+  userId: string,
+  organizationId: string,
+): Promise<Response | null> {
+  const allowed = await canAccessOrganization(db, userId, organizationId)
+  if (!allowed) return c.json({ error: 'Forbidden' }, 403)
+  return assertCanManageOr403(c, 'organization', organizationId)
+}
+
+/**
+ * Deleting a still-referenced repository would make every later save of that compose
  * fail the `knownSourceIds` lint, so it is a 409 instead. Reference detection
  * itself lives in {@link COMPOSE_SOURCE_JSONPATH}.
  */
-export async function composeReferencesSource(
+export async function composeReferencesRepository(
   db: Db,
   organizationId: string,
   sourceId: string,
@@ -191,7 +235,7 @@ export async function composeReferencesSource(
           jsonb_build_object('sid', ${sourceId}::text))
       UNION ALL
       -- options.composeSource.sourceId records where a project compose was
-      -- seeded from. Deleting the source would silently orphan that
+      -- seeded from. Deleting the repository would silently orphan that
       -- provenance, and drift detection would go permanently unreadable.
       -- (No backticks in here: this is inside a JS template literal.)
       SELECT 1
@@ -223,34 +267,34 @@ export async function assertScopeInOrganization(
  * Ownership **and** provider compatibility for a named installation.
  *
  * Ownership is the security check: the FK alone would happily bind another
- * organization's connection to this source, so a foreign row is reported as
+ * organization's connection to this repository, so a foreign row is reported as
  * `Not found` rather than `Forbidden` — the check leaks no existence signal.
  *
- * The provider check is the coherence one. A `provider: 'gitlab'` source
+ * The provider check is the coherence one. A `provider: 'gitlab'` repository
  * pointing at a GitHub installation (or the reverse) is a row nothing can
- * clone: deploy-prep dispatches on `source.provider`, so
+ * clone: deploy-prep dispatches on `repository.provider`, so
  * `mintGitlabAccessToken` would be handed a row with no `oauth_envelope`, and
  * the operator would learn about it as a failed deploy on a host rather than as
  * a rejected write. The pair is settled here, at the write boundary, for the
- * same reason `assertProviderAuthShape` settles the installation/credential
+ * same reason `assertProviderAuthShape` settles the installation/secret
  * exclusivity there. A mismatch is the caller's own
  * row, so it answers `400` with a specific code rather than hiding as a `404`.
  */
-export async function assertInstallationInOrganization(
+export async function assertConnectionInOrganization(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  installationId: string | null,
+  connectionId: string | null,
   sourceProvider?: SourceProvider,
 ): Promise<Response | null> {
-  if (!installationId) return null
+  if (!connectionId) return null
   const [row] = await db
     .select({
-      organizationId: gitProviderInstallation.organizationId,
-      provider: gitProviderInstallation.provider,
+      organizationId: gitConnection.organizationId,
+      provider: gitConnection.provider,
     })
-    .from(gitProviderInstallation)
-    .where(eq(gitProviderInstallation.id, installationId))
+    .from(gitConnection)
+    .where(eq(gitConnection.id, connectionId))
     .limit(1)
   if (row?.organizationId !== organizationId) {
     return c.json({ error: 'Not found' }, 404)
@@ -262,17 +306,17 @@ export async function assertInstallationInOrganization(
 }
 
 /**
- * Ownership **and** credential-lane compatibility for a named credential.
+ * Ownership **and** secret-lane compatibility for a named secret.
  *
- * `credential` has no public CRUD, so a caller can only ever name a row it
+ * `secret` has no public CRUD, so a caller can only ever name a row it
  * learned about elsewhere — the id is still attacker-controlled, and the FK
  * alone would happily bind another organization's sealed deploy key to this
- * source. Deploy-prep reads `source.credentialId` to clone, so ownership is
- * checked here, exactly like `installationId`. A foreign row is reported as
+ * repository. Deploy-prep reads `repository.secretId` to clone, so ownership is
+ * checked here, exactly like `connectionId`. A foreign row is reported as
  * `Not found` rather than `Forbidden` so the check leaks no existence signal.
  *
- * Ownership is not enough, though: `credential` is one table for every sealed
- * secret the organization holds, so an org-owned **storage** credential (an S3
+ * Ownership is not enough, though: `secret` is one table for every sealed
+ * secret the organization holds, so an org-owned **storage** secret (an S3
  * key, an SFTP password) passes the ownership test and is still nothing a git
  * clone can use. Only the deploy-key lane may name one at all — `git` always,
  * and `gitlab` when it clones with a key instead of its OAuth connection — and
@@ -281,27 +325,27 @@ export async function assertInstallationInOrganization(
  * Anything else stores a row whose first symptom is a checkout failure on a
  * host; rejecting it here keeps that a write-time `400`.
  */
-export async function assertCredentialInOrganization(
+export async function assertSecretInOrganization(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  credentialId: string | null,
+  secretId: string | null,
   sourceProvider: SourceProvider,
 ): Promise<Response | null> {
-  if (!credentialId) return null
+  if (!secretId) return null
   const [row] = await db
     .select({
-      organizationId: credential.organizationId,
-      provider: credential.provider,
+      organizationId: secret.organizationId,
+      provider: secret.provider,
     })
-    .from(credential)
-    .where(eq(credential.id, credentialId))
+    .from(secret)
+    .where(eq(secret.id, secretId))
     .limit(1)
   if (row?.organizationId !== organizationId) {
     return c.json({ error: 'Not found' }, 404)
   }
-  // `assertProviderAuthShape` already refuses a credential on a `github`
-  // source; restated here so this function is safe to call on its own.
+  // `assertProviderAuthShape` already refuses a secret on a `github`
+  // repository; restated here so this function is safe to call on its own.
   if (!SOURCE_DEPLOY_KEY_PROVIDERS.has(sourceProvider)) {
     return c.json({ error: 'source_credential_not_supported' }, 400)
   }
@@ -332,10 +376,10 @@ export function providerErrorResponse(c: Context<AppEnv>, error: unknown): Respo
 /**
  * The registered app a connect flow was asked to run against.
  *
- * `?appId=` is required rather than defaulted, because "the" app no longer
+ * `?forgeId=` is required rather than defaulted, because "the" app no longer
  * exists: an instance may hold several per provider, and silently picking one
  * would connect the operator's account to an application they did not choose.
- * The lookup is scoped by {@link visibleGitAppsCondition}, so an organization
+ * The lookup is scoped by {@link visibleForgesCondition}, so an organization
  * can only name its own apps or instance-wide ones — a 404 for anything else,
  * which is also what hides the existence of another organization's app.
  */
@@ -345,24 +389,24 @@ export async function resolveConnectApp(
   dataEncryptionSecrets: DerivedSecretsConfig,
   organizationId: string,
   provider: 'github' | 'gitlab',
-): Promise<GitApp | Response> {
-  const appId = c.req.query('appId')?.trim() ?? ''
-  if (!UUID_RE.test(appId)) return c.json({ error: 'git_app_required' }, 400)
+): Promise<Forge | Response> {
+  const forgeId = c.req.query('forgeId')?.trim() ?? ''
+  if (!UUID_RE.test(forgeId)) return c.json({ error: 'git_app_required' }, 400)
 
   const [row] = await db
-    .select({ id: gitProviderApp.id })
-    .from(gitProviderApp)
+    .select({ id: forge.id })
+    .from(forge)
     .where(
       and(
-        eq(gitProviderApp.id, appId),
-        eq(gitProviderApp.provider, provider),
-        visibleGitAppsCondition(organizationId),
+        eq(forge.id, forgeId),
+        eq(forge.provider, provider),
+        visibleForgesCondition(organizationId),
       ),
     )
     .limit(1)
   if (!row) return c.json({ error: 'Not found' }, 404)
 
-  const app = await loadGitApp(db, dataEncryptionSecrets, row.id)
+  const app = await loadForge(db, dataEncryptionSecrets, row.id)
   if (!app) return c.json({ error: 'Not found' }, 404)
   return app
 }
@@ -380,16 +424,16 @@ export function isUniqueViolation(error: unknown): boolean {
 export async function findAttachedSource(
   db: Db,
   organizationId: string,
-  fields: { installationId: string; repositoryExternalId: string },
+  fields: { connectionId: string; repositoryExternalId: string },
 ): Promise<string | null> {
   const [row] = await db
-    .select({ id: source.id })
-    .from(source)
+    .select({ id: repository.id })
+    .from(repository)
     .where(
       and(
-        eq(source.organizationId, organizationId),
-        eq(source.installationId, fields.installationId),
-        eq(source.repositoryExternalId, fields.repositoryExternalId),
+        eq(repository.organizationId, organizationId),
+        eq(repository.connectionId, fields.connectionId),
+        eq(repository.repositoryExternalId, fields.repositoryExternalId),
       ),
     )
     .limit(1)
@@ -405,13 +449,13 @@ export async function findAttachedSource(
  * because GitHub's `setup_on_update` re-runs the redirect on every
  * repository-selection change, it happens again and again.
  */
-export function redirectToGitAppUi(
+export function redirectToForgeUi(
   c: Context<AppEnv>,
   organizationId: string | null,
-  appId: string | null,
+  forgeId: string | null,
   query: { installed?: string; error?: ProviderInstallReturnError },
 ): Response {
-  return c.redirect(providerInstallUiReturnPath(organizationId, appId, query), 302)
+  return c.redirect(providerInstallUiReturnPath(organizationId, forgeId, query), 302)
 }
 
 /**
@@ -425,29 +469,29 @@ export function redirectToGitAppUi(
  * repositories, and a push would fan out to both.
  *
  * The provider cannot tell us who is entitled to an account, so the rule is
- * first-come: one installation belongs to one organization per app, and a
+ * first-come: one connection belongs to one organization per forge, and a
  * second claim is a `409` rather than a silent duplicate. Reconnecting from the
  * organization that already owns it still works, because that is an update.
  */
-export async function assertInstallationUnclaimed(
+export async function assertConnectionUnclaimed(
   c: Context<AppEnv>,
   db: Db,
   params: {
-    appId: string
+    forgeId: string
     externalInstallationId: string
     provider: 'github' | 'gitlab'
     organizationId: string
   },
 ): Promise<Response | null> {
   const [claimed] = await db
-    .select({ organizationId: gitProviderInstallation.organizationId })
-    .from(gitProviderInstallation)
+    .select({ organizationId: gitConnection.organizationId })
+    .from(gitConnection)
     .where(
       and(
-        eq(gitProviderInstallation.appId, params.appId),
-        eq(gitProviderInstallation.provider, params.provider),
+        eq(gitConnection.forgeId, params.forgeId),
+        eq(gitConnection.provider, params.provider),
         eq(
-          gitProviderInstallation.externalInstallationId,
+          gitConnection.externalInstallationId,
           params.externalInstallationId,
         ),
       ),
@@ -518,41 +562,41 @@ export async function fetchInstallationAccount(
  * URL that looks fine and never receives anything.
  *
  * The path is provider-specific (the two ingress surfaces authenticate
- * differently and are mounted separately), so a `gitlab` source is told about
- * `GITLAB_WEBHOOK_PATH`. A `git` source has no webhook surface at all and is
+ * differently and are mounted separately), so a `gitlab` repository is told about
+ * `GITLAB_WEBHOOK_PATH`. A `git` repository has no webhook surface at all and is
  * given none.
  *
  * The URL is **per app**, not per instance: it carries the `webhook_ref` of the
- * app behind this source's installation, which is what lets a delivery name its
- * app before any secret is consulted. A source with no installation (a GitLab
- * deploy-key source) has no app, and falls back to the bare path.
+ * app behind this repository's installation, which is what lets a delivery name its
+ * app before any secret is consulted. A repository with no installation (a GitLab
+ * deploy-key repository) has no app, and falls back to the bare path.
  */
 export async function resolveSourceWebhookInfo(
   db: Db,
   provider: string,
-  installationId: string | null,
+  connectionId: string | null,
 ): Promise<SourceWebhookInfo | undefined> {
   if (provider !== 'github' && provider !== 'gitlab') return undefined
   const origins = (await getPublicUrls(db))
     .map((entry) => publicUrlEntryToInstallOrigin(entry))
     .filter((origin): origin is string => origin !== null)
 
-  // The app behind this source decides both halves of the URL: whether the ref
+  // The app behind this repository decides both halves of the URL: whether the ref
   // belongs in the path (self-hosted only), and which origin the provider was
   // actually told to deliver to.
   let webhookRef: string | null = null
   let appBaseUrl: string | null = null
   let appOrigin: string | null = null
-  if (installationId) {
+  if (connectionId) {
     const rows = await db
       .select({
-        webhookRef: gitProviderApp.webhookRef,
-        baseUrl: gitProviderApp.baseUrl,
-        webhookOrigin: gitProviderApp.webhookOrigin,
+        webhookRef: forge.webhookRef,
+        baseUrl: forge.baseUrl,
+        webhookOrigin: forge.webhookOrigin,
       })
-      .from(gitProviderInstallation)
-      .innerJoin(gitProviderApp, eq(gitProviderInstallation.appId, gitProviderApp.id))
-      .where(eq(gitProviderInstallation.id, installationId))
+      .from(gitConnection)
+      .innerJoin(forge, eq(gitConnection.forgeId, forge.id))
+      .where(eq(gitConnection.id, connectionId))
       .limit(1)
     webhookRef = rows[0]?.webhookRef ?? null
     appBaseUrl = rows[0]?.baseUrl ?? null
@@ -591,35 +635,35 @@ export async function resolveGitlabRedirectUri(
     .map((entry) => publicUrlEntryToInstallOrigin(entry))
     .find((entry): entry is string => entry !== null)
   if (!origin) return null
-  return `${origin.replace(/\/$/, '')}${CLIENT_API_PREFIX}/sources/gitlab/callback`
+  return `${origin.replace(/\/$/, '')}${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
 }
 
-export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError('session secrets are required for source routes')
+    throw new TypeError('session secrets are required for repository routes')
   }
   const secrets = opts.secrets
 
-  router.use('/sources', createSessionMiddleware(secrets))
-  // Listed explicitly even though `/sources/:id` would also match it — relying
+  router.use('/repositories', createSessionMiddleware(secrets))
+  // Listed explicitly even though `/repositories/:id` would also match it — relying
   // on a param pattern to cover a literal route is how a surface quietly loses
   // its session gate when the patterns are reordered.
-  router.use('/sources/attach', createSessionMiddleware(secrets))
-  router.use('/sources/:id', createSessionMiddleware(secrets))
-  // `/sources/:id` does not match a child segment. Inspect would otherwise
+  router.use('/repositories/attach', createSessionMiddleware(secrets))
+  router.use('/repositories/:id', createSessionMiddleware(secrets))
+  // `/repositories/:id` does not match a child segment. Inspect would otherwise
   // skip this gate and resolveSourceSession would 401 even with a valid cookie.
-  router.use('/sources/:id/inspect', createSessionMiddleware(secrets))
-  router.use('/sources/installations', createSessionMiddleware(secrets))
-  router.use('/sources/installations/:id/repositories', createSessionMiddleware(secrets))
-  router.use('/sources/github/install', createSessionMiddleware(secrets))
-  router.use('/sources/github/callback', createSessionMiddleware(secrets))
-  router.use('/sources/gitlab/oauth', createSessionMiddleware(secrets))
-  router.use('/sources/gitlab/callback', createSessionMiddleware(secrets))
-  router.use('/sources/gitlab/deploy-keys', createSessionMiddleware(secrets))
+  router.use('/repositories/:id/inspect', createSessionMiddleware(secrets))
+  router.use('/repositories/connections', createSessionMiddleware(secrets))
+  router.use('/repositories/connections/:id/repositories', createSessionMiddleware(secrets))
+  router.use('/repositories/github/install', createSessionMiddleware(secrets))
+  router.use('/repositories/github/callback', createSessionMiddleware(secrets))
+  router.use('/repositories/gitlab/oauth', createSessionMiddleware(secrets))
+  router.use('/repositories/gitlab/oauth/callback', createSessionMiddleware(secrets))
+  router.use('/repositories/gitlab/deploy-keys', createSessionMiddleware(secrets))
 
-  // Static segments are registered before `/sources/:id` so they are not
+  // Static segments are registered before `/repositories/:id` so they are not
   // swallowed by the parameterized route.
-  router.get('/sources/installations', async (c) => {
+  router.get('/repositories/connections', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -628,15 +672,15 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     if (denied) return denied
 
     const rows = await db
-      .select(INSTALLATION_SELECT)
-      .from(gitProviderInstallation)
-      .where(eq(gitProviderInstallation.organizationId, organizationId))
-      .orderBy(gitProviderInstallation.createdAt)
+      .select(CONNECTION_SELECT)
+      .from(gitConnection)
+      .where(eq(gitConnection.organizationId, organizationId))
+      .orderBy(gitConnection.createdAt)
 
-    return c.json({ installations: rows.map(serializeInstallationRow) })
+    return c.json({ connections: rows.map(serializeConnectionRow) })
   })
 
-  router.get('/sources/installations/:id/repositories', async (c) => {
+  router.get('/repositories/connections/:id/repositories', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -647,7 +691,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const id = c.req.param('id')
     if (!UUID_RE.test(id)) return c.json({ error: 'Invalid request' }, 400)
 
-    const scopeDenied = await assertInstallationInOrganization(c, db, organizationId, id)
+    const scopeDenied = await assertConnectionInOrganization(c, db, organizationId, id)
     if (scopeDenied) return scopeDenied
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -655,12 +699,12 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
     }
 
-    // The installation row says which provider to ask; every provider mints its
-    // own short-lived credential per request, uses it once, and discards it.
+    // The connection row says which provider to ask; every provider mints its
+    // own short-lived secret per request, uses it once, and discards it.
     const [installation] = await db
-      .select({ provider: gitProviderInstallation.provider })
-      .from(gitProviderInstallation)
-      .where(eq(gitProviderInstallation.id, id))
+      .select({ provider: gitConnection.provider })
+      .from(gitConnection)
+      .where(eq(gitConnection.id, id))
       .limit(1)
     if (!installation) return c.json({ error: 'Not found' }, 404)
 
@@ -673,7 +717,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
   })
 
-  router.get('/sources/github/install', async (c) => {
+  router.get('/repositories/github/install', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -703,7 +747,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const state = await signGithubInstallState(secretsConfig, {
       organizationId,
-      appId: app.id,
+      forgeId: app.id,
     })
     // The install page lives on the App's own origin, so a GitHub Enterprise
     // App sends the operator to that server rather than to github.com.
@@ -721,46 +765,51 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
    * re-runs it whenever the repository selection changes — so it has to be
    * idempotent and it has to land in the console, never on a JSON body.
    */
-  router.get('/sources/github/callback', async (c) => {
-    const ctx = await resolveSourceSession(c)
+  router.get('/repositories/github/callback', async (c) => {
+    const ctx = await resolveProviderCallbackSession(c)
     if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+    const { db, userId, secretsConfig, dataEncryptionSecrets } = ctx
 
-    const fail = (error: ProviderInstallReturnError, appId: string | null = null) =>
-      redirectToGitAppUi(c, organizationId, appId, { error })
+    const fail = (
+      organizationId: string | null,
+      error: ProviderInstallReturnError,
+      forgeId: string | null = null,
+    ) => redirectToForgeUi(c, organizationId, forgeId, { error })
 
-    const secretsConfig = c.get('secretsConfig')
-    if (!secretsConfig) return fail('unavailable')
+    if (!secretsConfig) return fail(null, 'unavailable')
 
     const state = c.req.query('state')
     const externalInstallationId = c.req.query('installation_id')
-    if (!state || !externalInstallationId) return fail('invalid_request')
+    if (!state || !externalInstallationId) return fail(null, 'invalid_request')
 
     const claims = await verifyGithubInstallState(secretsConfig, state)
-    if (!claims) return fail('state_invalid')
-    // The signed state is the authority; the live session must agree with it.
-    if (claims.organizationId !== organizationId) return fail('forbidden')
+    if (!claims) return fail(null, 'state_invalid')
 
-    const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return fail('forbidden', claims.appId)
+    const denied = await authorizeClaimedOrganization(
+      c,
+      db,
+      userId,
+      claims.organizationId,
+    )
+    if (denied) return fail(claims.organizationId, 'forbidden', claims.forgeId)
 
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-    if (!dataEncryptionSecrets) return fail('unavailable', claims.appId)
+    const organizationId = claims.organizationId
+    if (!dataEncryptionSecrets) return fail(organizationId, 'unavailable', claims.forgeId)
 
     // The app comes from the signed state, not from a query param on the
     // provider's redirect — the callback URL is one GitHub controls.
-    const app = await loadGitApp(db, dataEncryptionSecrets, claims.appId)
+    const app = await loadForge(db, dataEncryptionSecrets, claims.forgeId)
     if (app?.provider !== 'github' || !app.privateKeyPem) {
-      return fail('not_configured', claims.appId)
+      return fail(organizationId, 'not_configured', claims.forgeId)
     }
 
-    const claimed = await assertInstallationUnclaimed(c, db, {
-      appId: app.id,
+    const claimed = await assertConnectionUnclaimed(c, db, {
+      forgeId: app.id,
       externalInstallationId,
       provider: 'github',
       organizationId,
     })
-    if (claimed) return fail('claimed', app.id)
+    if (claimed) return fail(organizationId, 'claimed', app.id)
 
     let account: { accountLogin: string | null; accountType: string | null }
     try {
@@ -777,14 +826,14 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           error instanceof Error ? error.message : 'unknown error'
         }`,
       )
-      return fail('provider_failed', app.id)
+      return fail(organizationId, 'provider_failed', app.id)
     }
 
     const [row] = await db
-      .insert(gitProviderInstallation)
+      .insert(gitConnection)
       .values({
         organizationId,
-        appId: app.id,
+        forgeId: app.id,
         provider: 'github',
         externalInstallationId,
         accountLogin: account.accountLogin,
@@ -792,9 +841,9 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       })
       .onConflictDoUpdate({
         target: [
-          gitProviderInstallation.organizationId,
-          gitProviderInstallation.appId,
-          gitProviderInstallation.externalInstallationId,
+          gitConnection.organizationId,
+          gitConnection.forgeId,
+          gitConnection.externalInstallationId,
         ],
         set: {
           accountLogin: account.accountLogin,
@@ -803,9 +852,9 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           updatedAt: new Date().toISOString(),
         },
       })
-      .returning({ id: gitProviderInstallation.id })
+      .returning({ id: gitConnection.id })
 
-    return redirectToGitAppUi(c, organizationId, app.id, {
+    return redirectToForgeUi(c, organizationId, app.id, {
       installed: row?.id ?? 'ok',
     })
   })
@@ -819,7 +868,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
    * own HKDF purpose, so a state issued for the GitHub flow cannot be replayed
    * here (see `./provider-install-state.ts`).
    */
-  router.get('/sources/gitlab/oauth', async (c) => {
+  router.get('/repositories/gitlab/oauth', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -851,7 +900,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const state = await signGitlabConnectState(secretsConfig, {
       organizationId,
-      appId: app.id,
+      forgeId: app.id,
     })
     return c.redirect(
       gitlabAuthorizeUrl(
@@ -866,10 +915,10 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
    * Finish the GitLab OAuth connect flow.
    *
    * Trades the code for the initial token pair and records the connection as a
-   * `gitProviderInstallation` row — the same table GitHub installs land in, so
+   * `gitConnection` row — the same table GitHub installs land in, so
    * every downstream reader (the repository picker, the webhook trigger
    * resolver, deploy-prep) keeps one lookup. The pair itself is sealed onto that
-   * row rather than returned: it is the only long-lived credential in this
+   * row rather than returned: it is the only long-lived secret in this
    * feature, and GitLab rotates its refresh half on every use.
    */
   /**
@@ -878,37 +927,44 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
    * A top-level navigation like the GitHub install callback, so it redirects
    * into the console rather than answering with a JSON body.
    */
-  router.get('/sources/gitlab/callback', async (c) => {
-    const ctx = await resolveSourceSession(c)
+  router.get('/repositories/gitlab/oauth/callback', async (c) => {
+    const ctx = await resolveProviderCallbackSession(c)
     if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+    const { db, userId, secretsConfig, dataEncryptionSecrets } = ctx
 
-    const fail = (error: ProviderInstallReturnError, appId: string | null = null) =>
-      redirectToGitAppUi(c, organizationId, appId, { error })
+    const fail = (
+      organizationId: string | null,
+      error: ProviderInstallReturnError,
+      forgeId: string | null = null,
+    ) => redirectToForgeUi(c, organizationId, forgeId, { error })
 
-    const secretsConfig = c.get('secretsConfig')
-    if (!secretsConfig) return fail('unavailable')
+    if (!secretsConfig) return fail(null, 'unavailable')
 
     const state = c.req.query('state')
     const code = c.req.query('code')
-    if (!state || !code) return fail('invalid_request')
+    if (!state || !code) return fail(null, 'invalid_request')
 
     const claims = await verifyGitlabConnectState(secretsConfig, state)
-    if (!claims) return fail('state_invalid')
-    // The signed state is the authority; the live session must agree with it.
-    if (claims.organizationId !== organizationId) return fail('forbidden')
+    if (!claims) return fail(null, 'state_invalid')
 
-    const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return fail('forbidden', claims.appId)
+    const denied = await authorizeClaimedOrganization(
+      c,
+      db,
+      userId,
+      claims.organizationId,
+    )
+    if (denied) return fail(claims.organizationId, 'forbidden', claims.forgeId)
 
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-    if (!dataEncryptionSecrets) return fail('unavailable', claims.appId)
+    const organizationId = claims.organizationId
+    if (!dataEncryptionSecrets) return fail(organizationId, 'unavailable', claims.forgeId)
 
-    const app = await loadGitApp(db, dataEncryptionSecrets, claims.appId)
-    if (app?.provider !== 'gitlab') return fail('not_configured', claims.appId)
+    const app = await loadForge(db, dataEncryptionSecrets, claims.forgeId)
+    if (app?.provider !== 'gitlab') {
+      return fail(organizationId, 'not_configured', claims.forgeId)
+    }
 
     const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
-    if (!redirectUri) return fail('not_configured', app.id)
+    if (!redirectUri) return fail(organizationId, 'not_configured', app.id)
 
     let credentials
     let pair
@@ -924,7 +980,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           error instanceof Error ? error.message : 'unknown error'
         }`,
       )
-      return fail('provider_failed', app.id)
+      return fail(organizationId, 'provider_failed', app.id)
     }
 
     // GitLab's own account id is the stable handle for the connection. When the
@@ -933,19 +989,19 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     // OAuth application per organization, which is what a re-connect should be.
     const externalInstallationId = account.externalId ?? `client:${credentials.clientId}`
 
-    const claimed = await assertInstallationUnclaimed(c, db, {
-      appId: app.id,
+    const claimed = await assertConnectionUnclaimed(c, db, {
+      forgeId: app.id,
       externalInstallationId,
       provider: 'gitlab',
       organizationId,
     })
-    if (claimed) return fail('claimed', app.id)
+    if (claimed) return fail(organizationId, 'claimed', app.id)
 
     const [row] = await db
-      .insert(gitProviderInstallation)
+      .insert(gitConnection)
       .values({
         organizationId,
-        appId: app.id,
+        forgeId: app.id,
         provider: 'gitlab',
         externalInstallationId,
         accountLogin: account.login,
@@ -953,9 +1009,9 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       })
       .onConflictDoUpdate({
         target: [
-          gitProviderInstallation.organizationId,
-          gitProviderInstallation.appId,
-          gitProviderInstallation.externalInstallationId,
+          gitConnection.organizationId,
+          gitConnection.forgeId,
+          gitConnection.externalInstallationId,
         ],
         set: {
           accountLogin: account.login,
@@ -965,20 +1021,20 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           updatedAt: new Date().toISOString(),
         },
       })
-      .returning({ id: gitProviderInstallation.id })
+      .returning({ id: gitConnection.id })
 
-    const installationId = row?.id
-    if (!installationId) return fail('provider_failed', app.id)
+    const connectionId = row?.id
+    if (!connectionId) return fail(organizationId, 'provider_failed', app.id)
 
-    await persistGitlabTokenPair(db, dataEncryptionSecrets, installationId, pair)
+    await persistGitlabTokenPair(db, dataEncryptionSecrets, connectionId, pair)
 
-    return redirectToGitAppUi(c, organizationId, app.id, { installed: installationId })
+    return redirectToForgeUi(c, organizationId, app.id, { installed: connectionId })
   })
 
   /**
-   * Mint a read-only deploy keypair for a source that will not use OAuth.
+   * Mint a read-only deploy keypair for a repository that will not use OAuth.
    *
-   * This is the one endpoint that creates a `credential` row, and it exists
+   * This is the one endpoint that creates a `secret` row, and it exists
    * against the grain of that table's "no public CRUD" rule for a specific
    * reason: the alternative is an operator running `ssh-keygen` and pasting a
    * private key into a form, which is how private keys end up in chat logs and
@@ -991,7 +1047,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
    * the key belongs to the project, not to a person whose account leaving the
    * organization would break every deploy.
    */
-  router.post('/sources/gitlab/deploy-keys', async (c) => {
+  router.post('/repositories/gitlab/deploy-keys', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -1014,7 +1070,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const keypair = await generateSshDeployKeypair(rawName)
     const [inserted] = await db
-      .insert(credential)
+      .insert(secret)
       .values({
         organizationId,
         provider: GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
@@ -1031,20 +1087,20 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           keyType: 'ed25519',
         },
       })
-      .returning({ id: credential.id })
+      .returning({ id: secret.id })
 
-    const credentialId = inserted?.id
-    if (!credentialId) return c.json({ error: 'Failed to create deploy key' }, 500)
+    const secretId = inserted?.id
+    if (!secretId) return c.json({ error: 'Failed to create deploy key' }, 500)
 
     return c.json({
       ok: true as const,
-      credentialId,
+      secretId,
       publicKey: keypair.publicKeyOpenssh,
       fingerprint: keypair.fingerprint,
     })
   })
 
-  router.get('/sources', async (c) => {
+  router.get('/repositories', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, userId, organizationId } = ctx
@@ -1077,33 +1133,33 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
 
     const visibleIds = await listVisible(db, {
-      kind: 'source',
+      kind: 'repository',
       userId,
       organizationId,
     })
-    if (visibleIds.length === 0) return c.json({ sources: [] })
+    if (visibleIds.length === 0) return c.json({ repositories: [] })
 
     const visible = new Set(visibleIds)
-    const conditions = [eq(source.organizationId, organizationId)]
-    if (filter.serviceId) conditions.push(eq(source.serviceId, filter.serviceId))
+    const conditions = [eq(repository.organizationId, organizationId)]
+    if (filter.serviceId) conditions.push(eq(repository.serviceId, filter.serviceId))
     if (filter.environmentId) {
-      conditions.push(eq(source.environmentId, filter.environmentId))
+      conditions.push(eq(repository.environmentId, filter.environmentId))
     }
 
     const rows = await db
       .select(SOURCE_SELECT)
-      .from(source)
+      .from(repository)
       .where(and(...conditions))
-      .orderBy(source.createdAt)
+      .orderBy(repository.createdAt)
 
     return c.json({
-      sources: rows
+      repositories: rows
         .filter((row) => visible.has(row.id))
         .map((row) => serializeSourceRow(row)),
     })
   })
 
-  router.get('/sources/:id', async (c) => {
+  router.get('/repositories/:id', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -1116,15 +1172,15 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const [row] = await db
       .select(SOURCE_SELECT)
-      .from(source)
-      .where(and(eq(source.id, id), eq(source.organizationId, organizationId)))
+      .from(repository)
+      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
       .limit(1)
 
     if (!row) return c.json({ error: 'Not found' }, 404)
     return c.json({
-      source: serializeSourceRow(
+      repository: serializeSourceRow(
         row,
-        await resolveSourceWebhookInfo(db, row.provider, row.installationId),
+        await resolveSourceWebhookInfo(db, row.provider, row.connectionId),
       ),
     })
   })
@@ -1140,7 +1196,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
    * is reachable by any org member, so a fixed list bounds what a compromised
    * session can learn to "do these filenames exist".
    */
-  router.get('/sources/:id/inspect', async (c) => {
+  router.get('/repositories/:id/inspect', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -1153,8 +1209,8 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const [row] = await db
       .select(SOURCE_SELECT)
-      .from(source)
-      .where(and(eq(source.id, id), eq(source.organizationId, organizationId)))
+      .from(repository)
+      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
@@ -1163,7 +1219,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({
         error: 'ref_required',
         message:
-          'This source records no default branch; name a ref to inspect.',
+          'This repository records no default branch; name a ref to inspect.',
       }, 400)
     }
 
@@ -1178,8 +1234,8 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         repositoryUrl: row.repositoryUrl,
         defaultBranch: row.defaultBranch,
         subdirectory: row.subdirectory,
-        installationId: row.installationId,
-        credentialId: row.credentialId,
+        connectionId: row.connectionId,
+        secretId: row.secretId,
       },
       ref,
       listPath: '',
@@ -1207,7 +1263,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   /**
    * Bind a repository to this organization, reusing the binding if it exists.
    *
-   * A `source` row is no longer something an operator creates and manages. It is
+   * A `repository` row is no longer something an operator creates and manages. It is
    * created here, implicitly, at the moment a repository is attached to a
    * project, and it never appears in the console as a thing of its own — the
    * operator picks **app -> account -> repository** and this is what that
@@ -1222,15 +1278,15 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
    * race.
    *
    * It commits **before** the project save that references it, because
-   * `loadOrganizationSourceIds` feeds `knownSourceIds` into the compose lint and
+   * `loadOrganizationRepositoryIds` feeds `knownSourceIds` into the compose lint and
    * an unknown `sourceId` fails the whole document.
    */
-  router.post('/sources/attach', async (c) => {
+  router.post('/repositories/attach', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
 
-    const denied = await assertCanCreateOr403(c, 'source', organizationId)
+    const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
 
     const body = await parseJsonBody(c)
@@ -1239,22 +1295,22 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const fields = parseSourceAttachBody(body)
     if (!fields) {
       return c.json({
-        error: 'expected { installationId, repositoryExternalId, repositoryUrl, defaultBranch? }',
+        error: 'expected { connectionId, repositoryExternalId, repositoryUrl, defaultBranch? }',
       }, 400)
     }
 
-    const installationDenied = await assertInstallationInOrganization(
+    const connectionDenied = await assertConnectionInOrganization(
       c,
       db,
       organizationId,
-      fields.installationId,
+      fields.connectionId,
     )
-    if (installationDenied) return installationDenied
+    if (connectionDenied) return connectionDenied
 
     const [installation] = await db
-      .select({ provider: gitProviderInstallation.provider })
-      .from(gitProviderInstallation)
-      .where(eq(gitProviderInstallation.id, fields.installationId))
+      .select({ provider: gitConnection.provider })
+      .from(gitConnection)
+      .where(eq(gitConnection.id, fields.connectionId))
       .limit(1)
     if (!installation) return c.json({ error: 'Not found' }, 404)
 
@@ -1263,18 +1319,18 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     try {
       const [inserted] = await db
-        .insert(source)
+        .insert(repository)
         .values({
           organizationId,
-          installationId: fields.installationId,
+          connectionId: fields.connectionId,
           provider: installation.provider,
           repositoryUrl: fields.repositoryUrl,
           repositoryExternalId: fields.repositoryExternalId,
           defaultBranch: fields.defaultBranch,
         })
-        .returning({ id: source.id })
+        .returning({ id: repository.id })
       const id = inserted?.id
-      if (!id) return c.json({ error: 'Failed to attach source' }, 500)
+      if (!id) return c.json({ error: 'Failed to attach repository' }, 500)
       return c.json({ ok: true as const, id, reused: false }, 201)
     } catch (error) {
       // Lost the race against a concurrent attach of the same repository. The
@@ -1287,7 +1343,7 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
   })
 
-  router.post('/sources', async (c) => {
+  router.post('/repositories', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -1301,23 +1357,23 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const fields = parseSourceCreateBody(c, body)
     if (fields instanceof Response) return fields
 
-    const installationDenied = await assertInstallationInOrganization(
+    const connectionDenied = await assertConnectionInOrganization(
       c,
       db,
       organizationId,
-      fields.installationId,
+      fields.connectionId,
       fields.provider,
     )
-    if (installationDenied) return installationDenied
+    if (connectionDenied) return connectionDenied
 
-    const credentialDenied = await assertCredentialInOrganization(
+    const secretDenied = await assertSecretInOrganization(
       c,
       db,
       organizationId,
-      fields.credentialId,
+      fields.secretId,
       fields.provider,
     )
-    if (credentialDenied) return credentialDenied
+    if (secretDenied) return secretDenied
 
     const serviceDenied = await assertScopeInOrganization(
       c,
@@ -1338,17 +1394,17 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     if (environmentDenied) return environmentDenied
 
     const [inserted] = await db
-      .insert(source)
+      .insert(repository)
       .values({ organizationId, ...fields })
-      .returning({ id: source.id })
+      .returning({ id: repository.id })
 
     const id = inserted?.id
-    if (!id) return c.json({ error: 'Failed to create source' }, 500)
+    if (!id) return c.json({ error: 'Failed to create repository' }, 500)
 
     return c.json({ ok: true as const, id })
   })
 
-  router.patch('/sources/:id', async (c) => {
+  router.patch('/repositories/:id', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -1363,13 +1419,13 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     // partial body has to be checked against the row it lands on, not on its own.
     const [existing] = await db
       .select({
-        provider: source.provider,
-        installationId: source.installationId,
-        credentialId: source.credentialId,
-        repositoryUrl: source.repositoryUrl,
+        provider: repository.provider,
+        connectionId: repository.connectionId,
+        secretId: repository.secretId,
+        repositoryUrl: repository.repositoryUrl,
       })
-      .from(source)
-      .where(and(eq(source.id, id), eq(source.organizationId, organizationId)))
+      .from(repository)
+      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
       .limit(1)
     if (!existing) return c.json({ error: 'Not found' }, 404)
 
@@ -1378,44 +1434,44 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const patch = parseSourcePatchBody(c, body, {
       provider: existing.provider as SourceProvider,
-      installationId: existing.installationId,
-      credentialId: existing.credentialId,
+      connectionId: existing.connectionId,
+      secretId: existing.secretId,
       repositoryUrl: existing.repositoryUrl,
     })
     if (patch instanceof Response) return patch
 
     // `provider` is immutable on patch, so the row's own provider is what a
-    // newly named installation or credential has to be compatible with.
+    // newly named installation or secret has to be compatible with.
     const existingProvider = existing.provider as SourceProvider
 
-    if (patch.installationId !== undefined) {
-      const installationDenied = await assertInstallationInOrganization(
+    if (patch.connectionId !== undefined) {
+      const connectionDenied = await assertConnectionInOrganization(
         c,
         db,
         organizationId,
-        patch.installationId,
+        patch.connectionId,
         existingProvider,
       )
-      if (installationDenied) return installationDenied
+      if (connectionDenied) return connectionDenied
     }
 
-    if (patch.credentialId !== undefined) {
-      const credentialDenied = await assertCredentialInOrganization(
+    if (patch.secretId !== undefined) {
+      const secretDenied = await assertSecretInOrganization(
         c,
         db,
         organizationId,
-        patch.credentialId,
+        patch.secretId,
         existingProvider,
       )
-      if (credentialDenied) return credentialDenied
+      if (secretDenied) return secretDenied
     }
 
-    await db.update(source).set(patch).where(eq(source.id, id))
+    await db.update(repository).set(patch).where(eq(repository.id, id))
 
     return c.json({ ok: true as const })
   })
 
-  router.delete('/sources/:id', async (c) => {
+  router.delete('/repositories/:id', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
@@ -1427,17 +1483,17 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     if (denied) return denied
 
     const [existing] = await db
-      .select({ id: source.id })
-      .from(source)
-      .where(and(eq(source.id, id), eq(source.organizationId, organizationId)))
+      .select({ id: repository.id })
+      .from(repository)
+      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
       .limit(1)
     if (!existing) return c.json({ error: 'Not found' }, 404)
 
-    if (await composeReferencesSource(db, organizationId, id)) {
+    if (await composeReferencesRepository(db, organizationId, id)) {
       return c.json({ error: SOURCE_REFERENCED_BY_COMPOSE_ERROR }, 409)
     }
 
-    await db.delete(source).where(eq(source.id, id))
+    await db.delete(repository).where(eq(repository.id, id))
 
     return c.json({ ok: true as const })
   })

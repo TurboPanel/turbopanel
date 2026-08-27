@@ -99,20 +99,20 @@ import {
   upsertDeploymentTargets,
 } from "../../lib/db/deployment-records.ts";
 import {
-  type DesiredTaskInput,
-  listEnvironmentTasks,
-  replaceEnvironmentTasksInTx,
-} from "../../lib/db/task-records.ts";
+  type DesiredSlotInput,
+  listEnvironmentSlots,
+  replaceEnvironmentSlotsInTx,
+} from "../../lib/db/slot-records.ts";
 import {
   composeNetworkNamesByServer,
   type FabricSegmentMaterial,
   getOrganizationFabric,
   listEnvironmentComposeNetworks,
-  listSegmentsForServers,
+  listSubnetsForServers,
   materializeSpanningNetworks,
   purgeComposeNetworksCreatedAfter,
   purgeEnvironmentComposeNetworks,
-  releaseSegmentsForServer,
+  releaseSubnetsForServer,
 } from "../../lib/db/fabric-records.ts";
 import {
   awaitParticipatingFabricConvergence,
@@ -120,7 +120,7 @@ import {
 } from "../../lib/fabric/enqueue.ts";
 import type { FabricGateOutcome } from "../../lib/fabric/gate.ts";
 import {
-  assignTaskAddresses,
+  assignSlotAddresses,
   buildCompileAddressMaps,
   planEnvironmentDeploy,
   type PlannedDeploy,
@@ -189,7 +189,7 @@ function scheduleSliceForServer(
   planned: PlannedDeploy,
   serverId: string,
   spanning: ReadonlyMap<string, string> | undefined,
-  tasks: readonly DesiredTaskInput[],
+  slots: readonly DesiredSlotInput[],
   compileMaps: ReturnType<typeof buildCompileAddressMaps> | undefined,
   fabricNetworks: readonly EnvironmentDeployFabricNetwork[] | undefined,
   managedIngressHostsByService?: ReadonlyMap<
@@ -199,7 +199,7 @@ function scheduleSliceForServer(
 ): DeployScheduleSlice {
   return {
     serverId,
-    tasks,
+    slots,
     serviceIdToName: serviceIdToNameMap(planned.serviceRows),
     ...(spanning && spanning.size > 0 ? { spanningNetworks: spanning } : {}),
     ...(compileMaps && compileMaps.taskAddressesByService.size > 0
@@ -241,7 +241,7 @@ async function loadSpanningNetworks(
       {
         environmentId,
         document: planned.merged,
-        tasks: planned.plan.tasks,
+        slots: planned.plan.slots,
         serviceRows: planned.serviceRows,
       },
     );
@@ -250,7 +250,7 @@ async function loadSpanningNetworks(
     environmentId,
     fabric: fabricRow,
     document: planned.merged,
-    tasks: planned.plan.tasks,
+    slots: planned.plan.slots,
     serviceRows: planned.serviceRows,
     platformAttachments: attachments,
   });
@@ -323,14 +323,14 @@ async function enrichPlannedTaskAddresses(
   environmentId: string,
   extraServerIds: readonly string[] = [],
 ): Promise<{
-  tasks: DesiredTaskInput[];
+  slots: DesiredSlotInput[];
   segmentsByServer: Map<string, FabricSegmentMaterial[]>;
   networkServiceIds: Map<string, Set<string>>;
 }> {
-  const baseTasks = planned.plan.ok ? planned.plan.tasks : [];
+  const baseTasks = planned.plan.ok ? planned.plan.slots : [];
   if (!planned.plan.ok) {
     return {
-      tasks: baseTasks,
+      slots: baseTasks,
       segmentsByServer: new Map(),
       networkServiceIds: new Map(),
     };
@@ -340,8 +340,8 @@ async function enrichPlannedTaskAddresses(
     : networkServiceIdsForSpanning(planned, [...spanning.keys()]);
   if (spanning.size === 0) {
     return {
-      tasks: assignTaskAddresses({
-        tasks: baseTasks,
+      slots: assignSlotAddresses({
+        slots: baseTasks,
         existing: [],
         networkSegments: new Map(),
         networkServiceIds: new Map(),
@@ -350,21 +350,21 @@ async function enrichPlannedTaskAddresses(
       networkServiceIds,
     };
   }
-  const existing = await listEnvironmentTasks(db, environmentId);
+  const existing = await listEnvironmentSlots(db, environmentId);
   const segmentServerIds = [
     ...new Set([...planned.plan.serverIds, ...extraServerIds]),
   ];
-  const segmentsByServer = await listSegmentsForServers(
+  const segmentsByServer = await listSubnetsForServers(
     db,
     segmentServerIds,
   );
-  const tasks = assignTaskAddresses({
-    tasks: baseTasks,
+  const slots = assignSlotAddresses({
+    slots: baseTasks,
     existing,
     networkSegments: networkSegmentsFromMaterial(spanning, segmentsByServer),
     networkServiceIds,
   });
-  return { tasks, segmentsByServer, networkServiceIds };
+  return { slots, segmentsByServer, networkServiceIds };
 }
 
 async function listenerNamesForAttachments(
@@ -1189,7 +1189,7 @@ function deploymentTargetsForFanOut(
 }
 
 /**
- * Atomically bump generation, replace tasks, create deploy commands, and
+ * Atomically bump generation, replace slots, create deploy commands, and
  * persist deployment targets. Returns command refs only after commit.
  * Queue delivery stays outside. Callers must treat spanning networks as
  * committed once this returns.
@@ -1204,7 +1204,7 @@ async function persistDeployFanOut(
     projectId: string;
     organizationId: string;
     projectName: string;
-    tasks: readonly DesiredTaskInput[];
+    slots: readonly DesiredSlotInput[];
     noCache: boolean;
     selection: DeploySourceSelection;
     /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
@@ -1213,10 +1213,10 @@ async function persistDeployFanOut(
 ): Promise<CreatedDeployCommand[]> {
   return await db.transaction(async (tx) => {
     const generation = await bumpEnvironmentGeneration(tx, params.environmentId);
-    await replaceEnvironmentTasksInTx(tx, {
+    await replaceEnvironmentSlotsInTx(tx, {
       environmentId: params.environmentId,
       generation,
-      tasks: params.tasks,
+      slots: params.slots,
     });
 
     const created: CreatedDeployCommand[] = [];
@@ -1355,9 +1355,9 @@ async function preparePreviewByServer(
         planned,
         serverId,
         spanning,
-        enriched.tasks,
+        enriched.slots,
         buildCompileAddressMaps({
-          tasks: enriched.tasks,
+          slots: enriched.slots,
           serviceIdToName: args.serviceIdToName,
           serverId,
           networkServiceIds: enriched.networkServiceIds,
@@ -1684,9 +1684,9 @@ function scheduleSliceForPreparedServer(
     params.planned,
     params.serverId,
     params.spanning,
-    params.enriched.tasks,
+    params.enriched.slots,
     buildCompileAddressMaps({
-      tasks: params.enriched.tasks,
+      slots: params.enriched.slots,
       serviceIdToName: serviceIdToNameMap(params.planned.serviceRows),
       serverId: params.serverId,
       networkServiceIds: params.enriched.networkServiceIds,
@@ -1900,7 +1900,7 @@ async function stopDrainedDeployments(
     });
     if (stopped instanceof Response) return stopped;
     if (!params.attachmentServers.has(serverId)) {
-      await releaseSegmentsForServer(db, {
+      await releaseSubnetsForServer(db, {
         environmentId: params.environmentId,
         serverId,
       });
@@ -1926,7 +1926,7 @@ async function releaseOrphanedComposeNetworks(
   const releasedListeners: string[] = [];
   for (const serverId of leftoverByServer.keys()) {
     if (!participating.has(serverId)) {
-      await releaseSegmentsForServer(db, { environmentId, serverId });
+      await releaseSubnetsForServer(db, { environmentId, serverId });
       releasedListeners.push(serverId);
     }
   }
@@ -2123,7 +2123,7 @@ async function runEnvironmentDeploy(
       projectId: planned.projectId,
       organizationId: auth.organizationId,
       projectName,
-      tasks: spanningCtx.enriched.tasks,
+      slots: spanningCtx.enriched.slots,
       noCache: auth.noCache,
       selection: auth.selection,
       siteReleases,

@@ -27,7 +27,7 @@
  * across several accounts, the first-created row always wins and the other
  * installations silently stop deploying. Here the App id selects the *key* and
  * the payload's `installation.id` selects the *tenant* — see
- * `loadInstallations` in `src/client/sources/webhook-trigger.ts`.
+ * `loadInstallations` in `src/client/repositories/webhook-trigger.ts`.
  *
  * GitLab has no such header. It echoes the configured secret verbatim in
  * `X-Gitlab-Token`, so the token itself is the routing signal: apps store a
@@ -43,12 +43,12 @@
 import type { Db } from '../../db.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import {
-  findGitAppByWebhookRef,
-  findGithubAppsByExternalAppId,
-  findGitlabAppByWebhookTokenHash,
+  findForgeByWebhookRef,
+  findGithubForgesByExternalAppId,
+  findGitlabForgeByWebhookTokenHash,
   hashWebhookToken,
-  type GitApp,
-} from './git-app-records.ts'
+  type Forge,
+} from './forge-records.ts'
 
 /** Header naming the resource a GitHub webhook was created on. */
 export const GITHUB_HOOK_TARGET_ID_HEADER = 'x-github-hook-installation-target-id'
@@ -73,7 +73,7 @@ export type HeaderReader = { get(name: string): string | null }
  * keeps the one that verifies — bounded, and only reachable on the header path.
  */
 export type WebhookAppResolution =
-  | { ok: true; candidates: GitApp[] }
+  | { ok: true; candidates: Forge[] }
   | { ok: false; reason: WebhookAppFailure }
 
 export type WebhookAppFailure =
@@ -100,7 +100,7 @@ export function githubTargetAppId(headers: HeaderReader): string | null {
  * `webhookRef` is the `:ref` path segment, or `null` when the delivery arrived
  * on the unscoped path.
  */
-export async function resolveGithubWebhookApp(
+export async function resolveGithubWebhookForge(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   webhookRef: string | null,
@@ -109,7 +109,7 @@ export async function resolveGithubWebhookApp(
   const targetAppId = githubTargetAppId(headers)
 
   if (webhookRef) {
-    const app = await findGitAppByWebhookRef(db, dataEncryptionSecrets, webhookRef)
+    const app = await findForgeByWebhookRef(db, dataEncryptionSecrets, webhookRef)
     if (app?.provider !== 'github') return failed('unresolved')
     // Both signals present: they must agree. Disagreement means the URL and the
     // signing credentials belong to different apps, and accepting either one
@@ -121,7 +121,7 @@ export async function resolveGithubWebhookApp(
   }
 
   if (!targetAppId) return failed('unresolved')
-  const candidates = await findGithubAppsByExternalAppId(db, dataEncryptionSecrets, targetAppId)
+  const candidates = await findGithubForgesByExternalAppId(db, dataEncryptionSecrets, targetAppId)
   if (candidates.length === 0) return failed('unresolved')
   return { ok: true, candidates }
 }
@@ -132,21 +132,21 @@ export async function resolveGithubWebhookApp(
  * Unlike GitHub there is never more than one: the ref is unique, and so is the
  * token digest.
  */
-export async function resolveGitlabWebhookApp(
+export async function resolveGitlabWebhookForge(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   webhookRef: string | null,
   presentedToken: string | null,
 ): Promise<WebhookAppResolution> {
   if (webhookRef) {
-    const app = await findGitAppByWebhookRef(db, dataEncryptionSecrets, webhookRef)
+    const app = await findForgeByWebhookRef(db, dataEncryptionSecrets, webhookRef)
     if (app?.provider !== 'gitlab') return failed('unresolved')
     return { ok: true, candidates: [app] }
   }
 
   const token = presentedToken?.trim() ?? ''
   if (token.length === 0) return failed('unresolved')
-  const app = await findGitlabAppByWebhookTokenHash(
+  const app = await findGitlabForgeByWebhookTokenHash(
     db,
     dataEncryptionSecrets,
     await hashWebhookToken(token),
@@ -163,9 +163,9 @@ export async function resolveGitlabWebhookApp(
  * configured webhook secret are skipped rather than treated as a pass.
  */
 export async function selectVerifiedApp(
-  candidates: GitApp[],
+  candidates: Forge[],
   verify: (webhookSecret: string) => Promise<boolean>,
-): Promise<GitApp | null> {
+): Promise<Forge | null> {
   for (const candidate of candidates) {
     if (!candidate.webhookSecret) continue
     if (await verify(candidate.webhookSecret)) return candidate
@@ -174,6 +174,6 @@ export async function selectVerifiedApp(
 }
 
 /** True when every candidate is missing its webhook secret — a config gap, not a rejection. */
-export function candidatesUnconfigured(candidates: GitApp[]): boolean {
+export function candidatesUnconfigured(candidates: Forge[]): boolean {
   return candidates.every((candidate) => !candidate.webhookSecret)
 }

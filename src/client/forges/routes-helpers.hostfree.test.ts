@@ -1,5 +1,5 @@
 /**
- * Body-grammar coverage for the git-app write surfaces.
+ * Body-grammar coverage for the forge write surfaces.
  *
  * The three-state rule (absent / null / value) is what lets a settings form
  * save a rename without re-pasting a sealed key, so it is worth pinning.
@@ -9,12 +9,12 @@ import { assertEquals } from '@std/assert'
 import {
   githubManifestUiReturnPath,
   providerInstallUiReturnPath,
-  parseGitAppCreateBody,
-  parseGitAppPatchBody,
+  parseForgeCreateBody,
+  parseForgePatchBody,
   parseGithubManifestStartBody,
-  serializeGitApp,
+  serializeForge,
 } from './routes-helpers.ts'
-import type { GitAppSummary } from '../../lib/git/git-app-records.ts'
+import type { ForgeSummary } from '../../lib/git/forge-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -55,7 +55,7 @@ test('provider install redirects land on the app, never on an API path', () => {
 })
 
 test('create takes its organization from the scope, never the body', () => {
-  const parsed = parseGitAppCreateBody(
+  const parsed = parseForgeCreateBody(
     {
       provider: 'github',
       name: 'TurboPanel',
@@ -69,25 +69,25 @@ test('create takes its organization from the scope, never the body', () => {
 })
 
 test('create rejects a missing or unknown provider', () => {
-  assertEquals(parseGitAppCreateBody({ name: 'x', externalAppId: '1' }, null), null)
+  assertEquals(parseForgeCreateBody({ name: 'x', externalAppId: '1' }, null), null)
   assertEquals(
-    parseGitAppCreateBody(
+    parseForgeCreateBody(
       { provider: 'bitbucket', name: 'x', externalAppId: '1' },
       null,
     ),
     null,
   )
-  assertEquals(parseGitAppCreateBody(null, null), null)
+  assertEquals(parseForgeCreateBody(null, null), null)
   assertEquals(
-    parseGitAppCreateBody({ provider: 'github', name: '', externalAppId: '1' }, null),
+    parseForgeCreateBody({ provider: 'github', name: '', externalAppId: '1' }, null),
     null,
   )
   assertEquals(
-    parseGitAppCreateBody({ provider: 'github', name: 'x', externalAppId: '' }, null),
+    parseForgeCreateBody({ provider: 'github', name: 'x', externalAppId: '' }, null),
     null,
   )
   assertEquals(
-    parseGitAppCreateBody(
+    parseForgeCreateBody(
       { provider: 'github', name: 'x', externalAppId: '1', baseUrl: '   ' },
       null,
     ),
@@ -96,7 +96,7 @@ test('create rejects a missing or unknown provider', () => {
 })
 
 test('create applies optional secrets and a required baseUrl', () => {
-  const parsed = parseGitAppCreateBody(
+  const parsed = parseForgeCreateBody(
     {
       provider: 'gitlab',
       name: 'Acme',
@@ -113,7 +113,7 @@ test('create applies optional secrets and a required baseUrl', () => {
 })
 
 test('patch distinguishes absent, null, and a value', () => {
-  const parsed = parseGitAppPatchBody({ name: 'Renamed', clientId: null })
+  const parsed = parseForgePatchBody({ name: 'Renamed', clientId: null })
   assertEquals(parsed, { name: 'Renamed', clientId: null })
   // `privateKeyPem` was not mentioned, so it must not appear at all — an
   // undefined key is what tells the record layer to keep the sealed envelope.
@@ -123,25 +123,25 @@ test('patch distinguishes absent, null, and a value', () => {
 test('an empty string is rejected rather than treated as a clear', () => {
   // Otherwise a form that submitted a blank private-key box would silently
   // wipe a key the operator was never shown.
-  assertEquals(parseGitAppPatchBody({ privateKeyPem: '' }), null)
-  assertEquals(parseGitAppPatchBody({ webhookSecret: '   ' }), null)
-  assertEquals(parseGitAppPatchBody({ name: '' }), null)
+  assertEquals(parseForgePatchBody({ privateKeyPem: '' }), null)
+  assertEquals(parseForgePatchBody({ webhookSecret: '   ' }), null)
+  assertEquals(parseForgePatchBody({ name: '' }), null)
   // Clearing is still available — you just have to mean it.
-  assertEquals(parseGitAppPatchBody({ privateKeyPem: null }), { privateKeyPem: null })
+  assertEquals(parseForgePatchBody({ privateKeyPem: null }), { privateKeyPem: null })
 })
 
 test('patch refuses to move an app between tenants or providers', () => {
-  assertEquals(parseGitAppPatchBody({ provider: 'gitlab' }), null)
-  assertEquals(parseGitAppPatchBody({ organizationId: 'other' }), null)
+  assertEquals(parseForgePatchBody({ provider: 'gitlab' }), null)
+  assertEquals(parseForgePatchBody({ organizationId: 'other' }), null)
 })
 
 test('patch rejects a non-string where a string is expected', () => {
-  assertEquals(parseGitAppPatchBody({ clientId: 42 }), null)
-  assertEquals(parseGitAppPatchBody(null), null)
-  assertEquals(parseGitAppPatchBody([]), null)
+  assertEquals(parseForgePatchBody({ clientId: 42 }), null)
+  assertEquals(parseForgePatchBody(null), null)
+  assertEquals(parseForgePatchBody([]), null)
 })
 
-const app: GitAppSummary = {
+const app: ForgeSummary = {
   id: 'app-1',
   organizationId: null,
   provider: 'github',
@@ -164,7 +164,7 @@ const app: GitAppSummary = {
 }
 
 test('serialize marks an instance-wide app read-only only for an org viewer', () => {
-  const forOrg = serializeGitApp(app, {
+  const forOrg = serializeForge(app, {
     publicOrigin: 'https://panel.example.com',
     viewerOrganizationId: 'org-1',
   })
@@ -173,7 +173,7 @@ test('serialize marks an instance-wide app read-only only for an org viewer', ()
   assertEquals(forOrg.webhookUrl, 'https://panel.example.com/webhook/github')
 
   // The same row is editable through the admin surface.
-  const forAdmin = serializeGitApp(app, {
+  const forAdmin = serializeForge(app, {
     publicOrigin: 'https://panel.example.com',
     viewerOrganizationId: null,
   })
@@ -181,7 +181,7 @@ test('serialize marks an instance-wide app read-only only for an org viewer', ()
 })
 
 test('an org-owned app is writable by its owner', () => {
-  const owned = serializeGitApp(
+  const owned = serializeForge(
     { ...app, organizationId: 'org-1' },
     { publicOrigin: null, viewerOrganizationId: 'org-1' },
   )
@@ -192,7 +192,7 @@ test('an org-owned app is writable by its owner', () => {
 })
 
 test('a self-hosted app carries its ref; the app origin beats the instance default', () => {
-  const enterprise = serializeGitApp(
+  const enterprise = serializeForge(
     {
       ...app,
       baseUrl: 'https://github.acme.test',

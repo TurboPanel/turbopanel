@@ -4,7 +4,7 @@ import {
   localReplicaCounts,
   localServiceNames,
   planEnvironmentSchedule,
-  type ExistingTask,
+  type ExistingSlot,
   type FleetServer,
   type PlanEnvironmentInput,
   type PlannedService,
@@ -77,11 +77,11 @@ function input(overrides: Partial<PlanEnvironmentInput> = {}): PlanEnvironmentIn
 test('planEnvironmentSchedule returns the pin/default for empty services', () => {
   assertEquals(
     planEnvironmentSchedule(input({ services: [], defaultServerId: null, pinServerId: null })),
-    { ok: true, tasks: [], serverIds: [] },
+    { ok: true, slots: [], serverIds: [] },
   )
   assertEquals(
     planEnvironmentSchedule(input({ services: [], pinServerId: SERVER_A })),
-    { ok: true, tasks: [], serverIds: [SERVER_A] },
+    { ok: true, slots: [], serverIds: [SERVER_A] },
   )
   assertEquals(
     planEnvironmentSchedule(
@@ -99,7 +99,7 @@ test('planEnvironmentSchedule places a single replica on the preferred server', 
   const plan = planEnvironmentSchedule(input())
   assertEquals(plan, {
     ok: true,
-    tasks: [
+    slots: [
       {
         serviceId: SERVICE_WEB,
         serverId: SERVER_A,
@@ -112,7 +112,7 @@ test('planEnvironmentSchedule places a single replica on the preferred server', 
 })
 
 test('planEnvironmentSchedule keeps sticky placements across re-plans', () => {
-  const existing: ExistingTask[] = [
+  const existing: ExistingSlot[] = [
     { serviceId: SERVICE_WEB, slot: 0, serverId: SERVER_B },
   ]
   const plan = planEnvironmentSchedule(
@@ -121,7 +121,7 @@ test('planEnvironmentSchedule keeps sticky placements across re-plans', () => {
       services: [planned(SERVICE_WEB, 'web', { replicas: 1 })],
     }),
   )
-  assertEquals(plan.ok && plan.tasks[0]?.serverId, SERVER_B)
+  assertEquals(plan.ok && plan.slots[0]?.serverId, SERVER_B)
 })
 
 test('planEnvironmentSchedule requires TurboFabric for multi-server plans without a pin', () => {
@@ -174,7 +174,7 @@ test('planEnvironmentSchedule allows multi-server when fabric is enabled', () =>
   )
   assertEquals(plan.ok, true)
   if (plan.ok) {
-    assertEquals(plan.tasks.length, 2)
+    assertEquals(plan.slots.length, 2)
     assertEquals(plan.serverIds.length, 2)
   }
 })
@@ -190,7 +190,7 @@ test('planEnvironmentSchedule honors whole-environment pins including offline ho
       services: [planned(SERVICE_WEB, 'web', { replicas: 1 })],
     }),
   )
-  assertEquals(plan.ok && plan.tasks[0]?.serverId, SERVER_C)
+  assertEquals(plan.ok && plan.slots[0]?.serverId, SERVER_C)
 })
 
 test('planEnvironmentSchedule fails constraints and colocation conflicts', () => {
@@ -271,7 +271,7 @@ test('planEnvironmentSchedule spreads replicas across label values when fabric i
   )
   assertEquals(plan.ok, true)
   if (plan.ok) {
-    const zones = new Set(plan.tasks.map((task) => task.serverId))
+    const zones = new Set(plan.slots.map((task) => task.serverId))
     assertEquals(zones.size, 2)
   }
 })
@@ -284,7 +284,7 @@ test('planEnvironmentSchedule applies storage pins', () => {
       services: [planned(SERVICE_DB, 'db')],
     }),
   )
-  assertEquals(plan.ok && plan.tasks[0]?.serverId, SERVER_B)
+  assertEquals(plan.ok && plan.slots[0]?.serverId, SERVER_B)
 })
 
 test('planEnvironmentSchedule places global mode on every eligible server', () => {
@@ -305,13 +305,13 @@ test('planEnvironmentSchedule places global mode on every eligible server', () =
   )
   assertEquals(plan.ok, true)
   if (plan.ok) {
-    assertEquals(plan.tasks.length, 2)
+    assertEquals(plan.slots.length, 2)
     assertEquals(plan.serverIds, [SERVER_A, SERVER_B])
   }
 })
 
 test('localReplicaCounts and localServiceNames filter by server', () => {
-  const tasks = [
+  const slots = [
     {
       serviceId: SERVICE_WEB,
       serverId: SERVER_A,
@@ -335,12 +335,12 @@ test('localReplicaCounts and localServiceNames filter by server', () => {
     [SERVICE_WEB, 'web'],
     [SERVICE_DB, 'db'],
   ])
-  assertEquals(localReplicaCounts(tasks, names, SERVER_A), new Map([['web', 2]]))
-  assertEquals(localServiceNames(tasks, names, SERVER_B), new Set(['db']))
-  assertEquals(localServiceNames(tasks, names, SERVER_C), new Set())
+  assertEquals(localReplicaCounts(slots, names, SERVER_A), new Map([['web', 2]]))
+  assertEquals(localServiceNames(slots, names, SERVER_B), new Set(['db']))
+  assertEquals(localServiceNames(slots, names, SERVER_C), new Set())
   assertEquals(
     localReplicaCounts(
-      tasks,
+      slots,
       new Map([[SERVICE_WEB, 'web']]),
       SERVER_B,
     ),
@@ -364,7 +364,7 @@ test('planEnvironmentSchedule honors neq placement constraints', () => {
       ],
     }),
   )
-  assertEquals(plan.ok && plan.tasks[0]?.serverId, SERVER_B)
+  assertEquals(plan.ok && plan.slots[0]?.serverId, SERVER_B)
 })
 
 test('planEnvironmentSchedule rejects zero-replica services', () => {
@@ -391,7 +391,7 @@ test('planEnvironmentSchedule includes a shared offline pin and default once', (
   )
   assertEquals(plan.ok, true)
   if (plan.ok) {
-    assertEquals(plan.tasks[0]?.serverId, SERVER_A)
+    assertEquals(plan.slots[0]?.serverId, SERVER_A)
     assertEquals(plan.serverIds, [SERVER_A])
   }
 })

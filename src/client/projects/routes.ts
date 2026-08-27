@@ -43,7 +43,7 @@ import {
   isProjectDisplayNameTaken,
   PROJECT_NAME_IN_USE_ERROR,
 } from '../display-name-uniqueness.ts'
-import { loadOrganizationSourceIds } from '../../lib/db/source-records.ts'
+import { loadOrganizationRepositoryIds } from '../../lib/db/repository-records.ts'
 import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
@@ -278,7 +278,7 @@ async function parseCreateProjectInput(
     return c.json({ error: 'Unknown catalog code' }, 400)
   }
 
-  const knownSourceIds = await loadOrganizationSourceIds(db, organizationId)
+  const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
   const optionsResult = parseCreateProjectOptions(body, { knownSourceIds })
   if (!optionsResult.ok) {
     if ('issues' in optionsResult) {
@@ -731,7 +731,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const moveTarget = await parseProjectMoveTarget(c, db, body, organizationId)
     if (moveTarget instanceof Response) return moveTarget
 
-    const knownSourceIds = await loadOrganizationSourceIds(db, organizationId)
+    const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
     const patchFields = buildProjectPatchFields(c, body, moveTarget, knownSourceIds)
     if (patchFields instanceof Response) return patchFields
 

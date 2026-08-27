@@ -7,7 +7,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { location, mount, principal, storage } from '../../lib/db/schema.ts'
+import { storageCopy, mount, principal, storage } from '../../lib/db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -16,15 +16,15 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import { serializeLocation, serializeMount, serializeStorage } from './serialize.ts'
+import { serializeCopy, serializeMount, serializeStorage } from './serialize.ts'
 import {
   buildStorageUpdateFields,
   dockerVolumeMetadataWithId,
   isStorageContentTooLarge,
   mapStorageUniqueViolation,
   parseCreateStorageFields,
-  parseLocationPatchFields,
-  parseLocationRecord,
+  parseCopyPatchFields,
+  parseCopyRecord,
   parseMountPatchFields,
   parseMountRecord,
   parseOptionalStorageContent,
@@ -32,10 +32,10 @@ import {
   principalProjectMismatch,
   resolveStorageParentContext,
   resolveStorageProjectId,
-  scratchLocationNotMountable,
-  SCRATCH_LOCATION_NOT_MOUNTABLE_ERROR,
+  scratchCopyNotMountable,
+  SCRATCH_COPY_NOT_MOUNTABLE_ERROR,
   PARENT_FIELDS,
-  type CreateLocationFields,
+  type CreateCopyFields,
   type CreateMountFields,
   type StorageParentEntityKind,
   type StorageParentRef,
@@ -87,21 +87,21 @@ const STORAGE_SELECT = {
   updatedAt: storage.updatedAt,
 }
 
-const LOCATION_SELECT = {
-  id: location.id,
-  storageId: location.storageId,
-  serverId: location.serverId,
-  credentialId: location.credentialId,
-  provider: location.provider,
-  role: location.role,
-  state: location.state,
-  path: location.path,
-  endpoint: location.endpoint,
-  generation: location.generation,
-  metadata: location.metadata,
-  options: location.options,
-  createdAt: location.createdAt,
-  updatedAt: location.updatedAt,
+const COPY_SELECT = {
+  id: storageCopy.id,
+  storageId: storageCopy.storageId,
+  serverId: storageCopy.serverId,
+  secretId: storageCopy.secretId,
+  provider: storageCopy.provider,
+  role: storageCopy.role,
+  state: storageCopy.state,
+  path: storageCopy.path,
+  endpoint: storageCopy.endpoint,
+  generation: storageCopy.generation,
+  metadata: storageCopy.metadata,
+  options: storageCopy.options,
+  createdAt: storageCopy.createdAt,
+  updatedAt: storageCopy.updatedAt,
 }
 
 const MOUNT_SELECT = {
@@ -182,11 +182,11 @@ async function authorizeStorageMutation(
 }
 
 async function loadStorageChildren(db: StorageDb, storageIds: string[]) {
-  const locationsByStorage = new Map<string, Array<{
+  const copiesByStorage = new Map<string, Array<{
     id: string
     storageId: string
     serverId: string | null
-    credentialId: string | null
+    secretId: string | null
     provider: string
     role: string
     state: string
@@ -211,29 +211,29 @@ async function loadStorageChildren(db: StorageDb, storageIds: string[]) {
     updatedAt: string
   }>>()
   if (storageIds.length === 0) {
-    return { locationsByStorage, mountsByStorage }
+    return { copiesByStorage, mountsByStorage }
   }
 
-  const locRows = await db
-    .select(LOCATION_SELECT)
-    .from(location)
-    .where(inArray(location.storageId, storageIds))
+  const copyRows = await db
+    .select(COPY_SELECT)
+    .from(storageCopy)
+    .where(inArray(storageCopy.storageId, storageIds))
   const mountRows = await db
     .select(MOUNT_SELECT)
     .from(mount)
     .where(inArray(mount.storageId, storageIds))
 
-  for (const row of locRows) {
-    const list = locationsByStorage.get(row.storageId) ?? []
+  for (const row of copyRows) {
+    const list = copiesByStorage.get(row.storageId) ?? []
     list.push(row)
-    locationsByStorage.set(row.storageId, list)
+    copiesByStorage.set(row.storageId, list)
   }
   for (const row of mountRows) {
     const list = mountsByStorage.get(row.storageId) ?? []
     list.push(row)
     mountsByStorage.set(row.storageId, list)
   }
-  return { locationsByStorage, mountsByStorage }
+  return { copiesByStorage, mountsByStorage }
 }
 
 async function validatePrincipalRef(
@@ -288,28 +288,29 @@ async function assertStorageMountable(
   db: StorageDb,
   storageId: string,
 ): Promise<Response | null> {
-  const locRows = await db
-    .select({ role: location.role })
-    .from(location)
-    .where(eq(location.storageId, storageId))
-  if (locRows.length === 0) return null
-  const hasNonScratch = locRows.some((row) => !scratchLocationNotMountable(row.role))
+  const copyRows = await db
+    .select({ role: storageCopy.role })
+    .from(storageCopy)
+    .where(eq(storageCopy.storageId, storageId))
+  if (copyRows.length === 0) return null
+  const hasNonScratch = copyRows.some((row) => !scratchCopyNotMountable(row.role))
   if (!hasNonScratch) {
-    return c.json({ error: SCRATCH_LOCATION_NOT_MOUNTABLE_ERROR }, 400)
+    return c.json({ error: SCRATCH_COPY_NOT_MOUNTABLE_ERROR }, 400)
   }
   return null
 }
 
-async function insertLocationRow(
+async function insertCopyRow(
   db: StorageDb,
   storageId: string,
-  fields: CreateLocationFields,
+  fields: CreateCopyFields,
 ) {
   const [inserted] = await db
-    .insert(location)
+    .insert(storageCopy)
     .values({
       storageId,
       serverId: fields.serverId,
+      secretId: fields.secretId,
       provider: fields.provider,
       role: fields.role,
       state: fields.state,
@@ -318,7 +319,7 @@ async function insertLocationRow(
       metadata: fields.metadata,
       options: fields.options,
     })
-    .returning({ id: location.id })
+    .returning({ id: storageCopy.id })
   return inserted.id
 }
 
@@ -367,8 +368,8 @@ async function createStorageRecord(
   )
   if (principalError) return principalError
 
-  if (fields.location) {
-    const serverError = await validateServerInOrg(c, db, orgId, fields.location.serverId)
+  if (fields.copy) {
+    const serverError = await validateServerInOrg(c, db, orgId, fields.copy.serverId)
     if (serverError) return serverError
   }
   if (fields.mount) {
@@ -403,8 +404,8 @@ async function createStorageRecord(
           .set({ metadata: dockerVolumeMetadataWithId(fields.metadata, id) })
           .where(eq(storage.id, id))
       }
-      if (fields.location) {
-        await insertLocationRow(tx as StorageDb, id, fields.location)
+      if (fields.copy) {
+        await insertCopyRow(tx as StorageDb, id, fields.copy)
       }
       if (fields.mount) {
         await insertMountRow(tx as StorageDb, id, fields.mount)
@@ -480,8 +481,8 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
   router.use('/storage', createSessionMiddleware(secrets))
   router.use('/storage/:id', createSessionMiddleware(secrets))
-  router.use('/storage/:id/locations', createSessionMiddleware(secrets))
-  router.use('/storage/:id/locations/:locationId', createSessionMiddleware(secrets))
+  router.use('/storage/:id/copies', createSessionMiddleware(secrets))
+  router.use('/storage/:id/copies/:copyId', createSessionMiddleware(secrets))
   router.use('/storage/:id/mounts', createSessionMiddleware(secrets))
   router.use('/storage/:id/mounts/:mountId', createSessionMiddleware(secrets))
 
@@ -520,7 +521,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           eq(storage.organizationId, orgResult),
           eq(storage[parentFilter.column], parentId),
         ))
-      const { locationsByStorage, mountsByStorage } = await loadStorageChildren(
+      const { copiesByStorage, mountsByStorage } = await loadStorageChildren(
         db,
         rows.map((row) => row.id),
       )
@@ -528,7 +529,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         storage: rows.map((row) =>
           serializeStorage(
             row,
-            locationsByStorage.get(row.id) ?? [],
+            copiesByStorage.get(row.id) ?? [],
             mountsByStorage.get(row.id) ?? [],
           ),
         ),
@@ -551,7 +552,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(inArray(storage.id, visibleIds))
       .orderBy(storage.createdAt)
 
-    const { locationsByStorage, mountsByStorage } = await loadStorageChildren(
+    const { copiesByStorage, mountsByStorage } = await loadStorageChildren(
       db,
       rows.map((row) => row.id),
     )
@@ -559,7 +560,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       storage: rows.map((row) =>
         serializeStorage(
           row,
-          locationsByStorage.get(row.id) ?? [],
+          copiesByStorage.get(row.id) ?? [],
           mountsByStorage.get(row.id) ?? [],
         ),
       ),
@@ -593,11 +594,11 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const { locationsByStorage, mountsByStorage } = await loadStorageChildren(db, [id])
+    const { copiesByStorage, mountsByStorage } = await loadStorageChildren(db, [id])
     return c.json({
       storage: serializeStorage(
         row,
-        locationsByStorage.get(id) ?? [],
+        copiesByStorage.get(id) ?? [],
         mountsByStorage.get(id) ?? [],
       ),
     })
@@ -643,17 +644,17 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     return c.json({ ok: true as const })
   })
 
-  router.get('/storage/:id/locations', async (c) => {
+  router.get('/storage/:id/copies', async (c) => {
     const ctx = await resolveStorageSessionContext(c)
     if (ctx instanceof Response) return ctx
     const storageId = c.req.param('id')
     const row = await requireStorageForNested(c, ctx.db, ctx.orgId, storageId, 'read')
     if (row instanceof Response) return row
 
-    const locRows = await ctx.db
-      .select(LOCATION_SELECT)
-      .from(location)
-      .where(eq(location.storageId, storageId))
+    const copyRows = await ctx.db
+      .select(COPY_SELECT)
+      .from(storageCopy)
+      .where(eq(storageCopy.storageId, storageId))
     let principalUsername: string | null = null
     if (row.principalId) {
       const [principalRow] = await ctx.db
@@ -664,13 +665,13 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       principalUsername = principalRow?.username ?? null
     }
     return c.json({
-      locations: locRows.map((loc) =>
-        serializeLocation(loc, storageId, principalUsername),
+      copies: copyRows.map((copy) =>
+        serializeCopy(copy, storageId, principalUsername),
       ),
     })
   })
 
-  router.post('/storage/:id/locations', async (c) => {
+  router.post('/storage/:id/copies', async (c) => {
     const ctx = await resolveStorageSessionContext(c)
     if (ctx instanceof Response) return ctx
     const storageId = c.req.param('id')
@@ -679,38 +680,38 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
-    const fields = parseLocationRecord(c, body)
+    const fields = parseCopyRecord(c, body)
     if (fields instanceof Response) return fields
 
     const serverError = await validateServerInOrg(c, ctx.db, ctx.orgId, fields.serverId)
     if (serverError) return serverError
 
     try {
-      const id = await insertLocationRow(ctx.db, storageId, fields)
+      const id = await insertCopyRow(ctx.db, storageId, fields)
       return c.json({ ok: true as const, id })
     } catch (err) {
       return uniqueViolationResponse(c, err)
     }
   })
 
-  router.patch('/storage/:id/locations/:locationId', async (c) => {
+  router.patch('/storage/:id/copies/:copyId', async (c) => {
     const ctx = await resolveStorageSessionContext(c)
     if (ctx instanceof Response) return ctx
     const storageId = c.req.param('id')
-    const locationId = c.req.param('locationId')
+    const copyId = c.req.param('copyId')
     const row = await requireStorageForNested(c, ctx.db, ctx.orgId, storageId, 'manage')
     if (row instanceof Response) return row
 
     const [existing] = await ctx.db
-      .select({ id: location.id, storageId: location.storageId })
-      .from(location)
-      .where(and(eq(location.id, locationId), eq(location.storageId, storageId)))
+      .select({ id: storageCopy.id, storageId: storageCopy.storageId })
+      .from(storageCopy)
+      .where(and(eq(storageCopy.id, copyId), eq(storageCopy.storageId, storageId)))
       .limit(1)
     if (!existing) return c.json({ error: 'Not found' }, 404)
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
-    const updateFields = parseLocationPatchFields(c, body)
+    const updateFields = parseCopyPatchFields(c, body)
     if (updateFields instanceof Response) return updateFields
 
     if (typeof updateFields.serverId === 'string') {
@@ -719,25 +720,25 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     try {
-      await ctx.db.update(location).set(updateFields).where(eq(location.id, locationId))
+      await ctx.db.update(storageCopy).set(updateFields).where(eq(storageCopy.id, copyId))
       return c.json({ ok: true as const })
     } catch (err) {
       return uniqueViolationResponse(c, err)
     }
   })
 
-  router.delete('/storage/:id/locations/:locationId', async (c) => {
+  router.delete('/storage/:id/copies/:copyId', async (c) => {
     const ctx = await resolveStorageSessionContext(c)
     if (ctx instanceof Response) return ctx
     const storageId = c.req.param('id')
-    const locationId = c.req.param('locationId')
+    const copyId = c.req.param('copyId')
     const row = await requireStorageForNested(c, ctx.db, ctx.orgId, storageId, 'manage')
     if (row instanceof Response) return row
 
     const deleted = await ctx.db
-      .delete(location)
-      .where(and(eq(location.id, locationId), eq(location.storageId, storageId)))
-      .returning({ id: location.id })
+      .delete(storageCopy)
+      .where(and(eq(storageCopy.id, copyId), eq(storageCopy.storageId, storageId)))
+      .returning({ id: storageCopy.id })
     if (deleted.length === 0) return c.json({ error: 'Not found' }, 404)
     return c.json({ ok: true as const })
   })

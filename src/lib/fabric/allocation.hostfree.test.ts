@@ -8,14 +8,14 @@ import {
   hashFabricReconcileDesired,
   listFabricRelays,
   loadRelayAddressesForServers,
-  nthSegmentSubnet,
+  nthSubnetCidr,
   planRelayPath,
   fabricPairCacheKey,
   type RelayPathPlan,
   type RelayRecord,
   requireRelayHostAddress,
   requireRelayPrefix,
-  requireSegmentSubnet,
+  requireSubnetCidr,
   resolveRelayGlobalEndpointAddress,
   selectPairPresharedEnvelope,
 } from "../db/fabric-records.ts";
@@ -115,10 +115,10 @@ test("requireRelayPrefix raises fabric_prefix_pool_exhausted", () => {
   );
 });
 
-test("requireSegmentSubnet is scoped to the owning relay prefix", () => {
-  assertEquals(requireSegmentSubnet("10.192.0.0/16", []), "10.192.0.0/24");
+test("requireSubnetCidr is scoped to the owning relay prefix", () => {
+  assertEquals(requireSubnetCidr("10.192.0.0/16", []), "10.192.0.0/24");
   assertEquals(
-    requireSegmentSubnet("10.192.0.0/16", [
+    requireSubnetCidr("10.192.0.0/16", [
       "10.192.0.0/24",
       "10.193.0.0/24",
       "10.192.2.0/24",
@@ -127,17 +127,17 @@ test("requireSegmentSubnet is scoped to the owning relay prefix", () => {
   );
 });
 
-test("requireSegmentSubnet raises fabric_segment_pool_exhausted", () => {
+test("requireSubnetCidr raises fabric_segment_pool_exhausted", () => {
   assertThrows(
-    () => requireSegmentSubnet("10.192.0.0/24", ["10.192.0.0/24"]),
+    () => requireSubnetCidr("10.192.0.0/24", ["10.192.0.0/24"]),
     FabricAllocationError,
     "TurboFabric segment address pool exhausted",
   );
 });
 
-test("requireSegmentSubnet stays scoped to the relay prefix and ignores foreign CIDRs", () => {
+test("requireSubnetCidr stays scoped to the relay prefix and ignores foreign CIDRs", () => {
   assertEquals(
-    requireSegmentSubnet("10.192.0.0/16", [
+    requireSubnetCidr("10.192.0.0/16", [
       "10.193.0.0/24",
       "10.194.0.0/24",
     ]),
@@ -145,23 +145,23 @@ test("requireSegmentSubnet stays scoped to the relay prefix and ignores foreign 
   );
 });
 
-test("requireSegmentSubnet reuses the lowest gap inside a /16 relay prefix", () => {
+test("requireSubnetCidr reuses the lowest gap inside a /16 relay prefix", () => {
   const taken: string[] = [];
   for (let octet = 0; octet < 256; octet += 1) {
     taken.push(`10.192.${String(octet)}.0/24`);
   }
   taken.splice(42, 1);
   assertEquals(
-    requireSegmentSubnet("10.192.0.0/16", taken),
+    requireSubnetCidr("10.192.0.0/16", taken),
     "10.192.42.0/24",
   );
 });
 
-test("nthSegmentSubnet indexes /24 slices inside a relay prefix", () => {
-  assertEquals(nthSegmentSubnet("10.192.0.0/16", 0), "10.192.0.0/24");
-  assertEquals(nthSegmentSubnet("10.192.0.0/16", 1), "10.192.1.0/24");
-  assertEquals(nthSegmentSubnet("10.192.0.0/16", 255), "10.192.255.0/24");
-  assertEquals(nthSegmentSubnet("10.192.0.0/16", 256), null);
+test("nthSubnetCidr indexes /24 slices inside a relay prefix", () => {
+  assertEquals(nthSubnetCidr("10.192.0.0/16", 0), "10.192.0.0/24");
+  assertEquals(nthSubnetCidr("10.192.0.0/16", 1), "10.192.1.0/24");
+  assertEquals(nthSubnetCidr("10.192.0.0/16", 255), "10.192.255.0/24");
+  assertEquals(nthSubnetCidr("10.192.0.0/16", 256), null);
 });
 
 test("loadRelayAddressesForServers returns empty map for no ids and dedupes input", async () => {

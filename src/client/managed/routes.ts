@@ -11,7 +11,7 @@ import {
   container,
   environment,
   managed,
-  node,
+  replica,
   organization,
   principal,
   project,
@@ -2138,12 +2138,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     // Keep the member visible until destroy succeeds (consumer deletes the row).
     await db
-      .update(node)
+      .update(replica)
       .set({
         status: 'applying',
         updatedAt: new Date().toISOString(),
       })
-      .where(eq(node.id, member.id))
+      .where(eq(replica.id, member.id))
 
     await db
       .update(managed)

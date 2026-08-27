@@ -6,13 +6,13 @@ import {
 import type { DerivedSecretsConfig } from '../authn/secrets.ts'
 import type { Db } from '../../db.ts'
 import {
-  node,
+  replica,
   organization,
   principal,
   project,
   server,
   entitlement,
-  steward,
+  tenancy,
   workspace,
 } from '../../lib/db/schema.ts'
 
@@ -68,15 +68,15 @@ export async function isServerPrincipalUsernameTaken(
   return rows.length > 0
 }
 
-export async function replaceStewards(
+export async function replaceTenancies(
   tx: Db,
   principalId: string,
   nextServiceIds: string[],
 ): Promise<void> {
   const existing = await tx
-    .select({ serviceId: steward.serviceId })
-    .from(steward)
-    .where(eq(steward.principalId, principalId))
+    .select({ serviceId: tenancy.serviceId })
+    .from(tenancy)
+    .where(eq(tenancy.principalId, principalId))
 
   const current = new Set(existing.map((row) => row.serviceId))
   const next = new Set(nextServiceIds)
@@ -86,17 +86,17 @@ export async function replaceStewards(
 
   if (toDelete.length > 0) {
     await tx
-      .delete(steward)
+      .delete(tenancy)
       .where(
         and(
-          eq(steward.principalId, principalId),
-          inArray(steward.serviceId, toDelete),
+          eq(tenancy.principalId, principalId),
+          inArray(tenancy.serviceId, toDelete),
         ),
       )
   }
 
   if (toInsert.length > 0) {
-    await tx.insert(steward).values(
+    await tx.insert(tenancy).values(
       toInsert.map((serviceId) => ({
         principalId,
         serviceId,
@@ -200,7 +200,7 @@ export type CreatePrincipalFields = {
 }
 
 /**
- * Insert a principal row and its initial steward edges in one transaction.
+ * Insert a principal row and its initial tenancy edges in one transaction.
  * Callers are responsible for authz and field validation.
  */
 export async function createPrincipal(
@@ -221,7 +221,7 @@ export async function createPrincipal(
       .returning({ id: principal.id })
 
     if (serviceIds.length > 0) {
-      await tx.insert(steward).values(
+      await tx.insert(tenancy).values(
         serviceIds.map((serviceId) => ({
           principalId: inserted.id,
           serviceId,
@@ -383,22 +383,22 @@ export async function listManagedPrincipals(
 
 /**
  * Distinct non-null `server.organization_id` across the cluster's
- * `node` servers (server owner — not the creating org, because a
+ * `replica` servers (server owner — not the creating org, because a
  * server may host another org's cluster via grants).
  */
 export async function resolveManagedOwningOrganizationIds(
   db: Db,
   managedId: string,
-  /** Prospective member server still being added (not yet in `node`). */
+  /** Prospective member server still being added (not yet in `replica`). */
   extraServerIds: readonly string[] = [],
 ): Promise<string[]> {
   const memberOrgs = await db
     .selectDistinct({ organizationId: server.organizationId })
-    .from(node)
-    .innerJoin(server, eq(node.serverId, server.id))
+    .from(replica)
+    .innerJoin(server, eq(replica.serverId, server.id))
     .where(
       and(
-        eq(node.managedId, managedId),
+        eq(replica.managedId, managedId),
         isNotNull(server.organizationId),
       ),
     )
@@ -449,8 +449,8 @@ export async function isManagedUsernameTaken(
   const rows = await db
     .select({ id: principal.id })
     .from(principal)
-    .innerJoin(node, eq(principal.managedId, node.managedId))
-    .innerJoin(server, eq(node.serverId, server.id))
+    .innerJoin(replica, eq(principal.managedId, replica.managedId))
+    .innerJoin(server, eq(replica.serverId, server.id))
     .where(and(...conditions))
     .limit(1)
 

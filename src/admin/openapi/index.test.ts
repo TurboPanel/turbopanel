@@ -49,7 +49,7 @@ test('getAdminOpenApiSpec documents public URL and reencrypt paths', () => {
   assertEquals(reencryptCursor?.required, ['stage'])
   assertEquals(
     (reencryptCursor?.properties?.stage as SchemaObject).enum,
-    ['variables', 'tls', 'principals', 'storage', 'credentials', 'email'],
+    ['variables', 'tls', 'principals', 'storage', 'secrets', 'email'],
   )
 
   const publicUrls = spec.components.schemas.PublicUrlsPutResponse
@@ -62,12 +62,12 @@ test('getAdminOpenApiSpec documents the git app collection', () => {
     components: { schemas: Record<string, SchemaObject> }
   }
 
-  const collection = spec.paths[`${ADMIN_API_PREFIX}/git/apps`]
+  const collection = spec.paths[`${ADMIN_API_PREFIX}/forges`]
   assertExists(collection)
   assertExists(collection.get)
   assertExists(collection.post)
 
-  const item = spec.paths[`${ADMIN_API_PREFIX}/git/apps/{id}`]
+  const item = spec.paths[`${ADMIN_API_PREFIX}/forges/{id}`]
   assertExists(item)
   assertExists(item.get)
   assertExists(item.patch)
@@ -75,12 +75,12 @@ test('getAdminOpenApiSpec documents the git app collection', () => {
 
   // The manifest flow is the supported way to register a GitHub App, so both
   // of its hops have to be discoverable.
-  assertExists(spec.paths[`${ADMIN_API_PREFIX}/git/apps/github/manifest`])
-  assertExists(spec.paths[`${ADMIN_API_PREFIX}/git/apps/github/manifest/callback`])
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/forges/github/manifest`])
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/forges/github/manifest/callback`])
 
   // The write surface has to expose every field the runtime reads, or a
   // provider stays unconfigurable without direct database access.
-  const body = spec.components.schemas.GitAppCreateBody
+  const body = spec.components.schemas.ForgeCreateBody
   assertEquals(
     Object.keys(body?.properties ?? {}).sort((a, b) => a.localeCompare(b)),
     [
@@ -99,7 +99,7 @@ test('getAdminOpenApiSpec documents the git app collection', () => {
   )
 
   // Secrets are reported as presence only; the sealed values never come back.
-  const app = spec.components.schemas.GitApp
+  const app = spec.components.schemas.Forge
   const properties = Object.keys(app?.properties ?? {})
   assertEquals(properties.includes('credentials'), false)
   for (const key of ['hasPrivateKey', 'hasClientSecret', 'hasWebhookSecret']) {

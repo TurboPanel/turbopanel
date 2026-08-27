@@ -1,10 +1,10 @@
 /**
- * The git-app CRUD handlers, shared by the admin and client surfaces.
+ * The forge CRUD handlers, shared by the admin and client surfaces.
  *
  * Both surfaces expose the same resource; they differ only in **scope** and in
  * how the caller was authorized to reach it:
  *
- * | | admin (`/api/admin/v1/git/apps`) | client (`/api/client/v1/git/apps`) |
+ * | | admin (`/api/admin/v1/forges`) | client (`/api/client/v1/forges`) |
  * | --- | --- | --- |
  * | Authorized by | `user.role` (admin/superadmin) | `organization:manage` on the org |
  * | Scope | instance-wide rows (`organization_id IS NULL`) | that organization's rows |
@@ -21,19 +21,19 @@ import type { Context } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
-import { gitProviderApp } from '../../lib/db/schema.ts'
+import { forge } from '../../lib/db/schema.ts'
 import {
-  createGitApp,
-  deleteGitApp,
-  GitAppConflictError,
-  GitAppError,
+  createForge,
+  deleteForge,
+  ForgeConflictError,
+  ForgeError,
   generateWebhookRef,
-  getGitAppSummary,
-  listGitApps,
-  loadGitApp,
-  updateGitApp,
-  visibleGitAppsCondition,
-} from '../../lib/git/git-app-records.ts'
+  getForgeSummary,
+  listForges,
+  loadForge,
+  updateForge,
+  visibleForgesCondition,
+} from '../../lib/git/forge-records.ts'
 import {
   buildGithubAppManifest,
   convertGithubAppManifest,
@@ -50,18 +50,18 @@ import { webhookPathFor } from '../../lib/git/webhook-reachability.ts'
 import {
   signGithubManifestState,
   verifyGithubManifestState,
-} from '../sources/provider-install-state.ts'
+} from '../repositories/provider-install-state.ts'
 import {
-  GIT_APP_UUID_RE,
-  parseGitAppCreateBody,
+  FORGE_UUID_RE,
+  parseForgeCreateBody,
   parseGithubManifestStartBody,
-  parseGitAppPatchBody,
-  serializeGitApp,
+  parseForgePatchBody,
+  serializeForge,
   githubManifestUiReturnPath,
   type GithubManifestReturnError,
 } from './routes-helpers.ts'
 
-export type GitAppScope = {
+export type ForgeScope = {
   /** `null` = the instance-wide (admin) view. */
   organizationId: string | null
 }
@@ -97,16 +97,16 @@ async function resolvePublicOrigin(db: Db): Promise<string | null> {
  */
 async function loadVisibleApp(
   db: Db,
-  scope: GitAppScope,
+  scope: ForgeScope,
   id: string,
 ): Promise<{ id: string; organizationId: string | null } | null> {
   const [row] = await db
     .select({
-      id: gitProviderApp.id,
-      organizationId: gitProviderApp.organizationId,
+      id: forge.id,
+      organizationId: forge.organizationId,
     })
-    .from(gitProviderApp)
-    .where(and(eq(gitProviderApp.id, id), visibleGitAppsCondition(scope.organizationId)))
+    .from(forge)
+    .where(and(eq(forge.id, id), visibleForgesCondition(scope.organizationId)))
     .limit(1)
   return row ?? null
 }
@@ -120,52 +120,52 @@ async function loadVisibleApp(
  */
 function assertWritable(
   c: Context<AppEnv>,
-  scope: GitAppScope,
+  scope: ForgeScope,
   row: { organizationId: string | null },
 ): Response | null {
   if (row.organizationId === scope.organizationId) return null
   return c.json({ error: 'git_app_not_writable' }, 403)
 }
 
-export async function listGitAppsHandler(
+export async function listForgesHandler(
   c: Context<AppEnv>,
   db: Db,
-  scope: GitAppScope,
+  scope: ForgeScope,
 ): Promise<Response> {
-  const apps = await listGitApps(db, { organizationId: scope.organizationId })
+  const apps = await listForges(db, { organizationId: scope.organizationId })
   const publicOrigin = await resolvePublicOrigin(db)
   return c.json({
     apps: apps.map((app) =>
-      serializeGitApp(app, { publicOrigin, viewerOrganizationId: scope.organizationId })
+      serializeForge(app, { publicOrigin, viewerOrganizationId: scope.organizationId })
     ),
   })
 }
 
-export async function getGitAppHandler(
+export async function getForgeHandler(
   c: Context<AppEnv>,
   db: Db,
-  scope: GitAppScope,
+  scope: ForgeScope,
   id: string,
 ): Promise<Response> {
-  if (!GIT_APP_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+  if (!FORGE_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
   const visible = await loadVisibleApp(db, scope, id)
   if (!visible) return c.json({ error: 'Not found' }, 404)
 
-  const app = await getGitAppSummary(db, id)
+  const app = await getForgeSummary(db, id)
   if (!app) return c.json({ error: 'Not found' }, 404)
   const publicOrigin = await resolvePublicOrigin(db)
   return c.json({
-    app: serializeGitApp(app, {
+    app: serializeForge(app, {
       publicOrigin,
       viewerOrganizationId: scope.organizationId,
     }),
   })
 }
 
-export async function createGitAppHandler(
+export async function createForgeHandler(
   c: Context<AppEnv>,
   db: Db,
-  scope: GitAppScope,
+  scope: ForgeScope,
 ): Promise<Response> {
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!dataEncryptionSecrets) {
@@ -173,7 +173,7 @@ export async function createGitAppHandler(
   }
 
   const body = await c.req.json().catch(() => null)
-  const input = parseGitAppCreateBody(body, scope.organizationId)
+  const input = parseForgeCreateBody(body, scope.organizationId)
   if (!input) {
     return c.json({
       error:
@@ -183,30 +183,30 @@ export async function createGitAppHandler(
   }
 
   try {
-    const app = await createGitApp(db, dataEncryptionSecrets, input)
+    const app = await createForge(db, dataEncryptionSecrets, input)
     const publicOrigin = await resolvePublicOrigin(db)
     return c.json({
-      app: serializeGitApp(app, {
+      app: serializeForge(app, {
         publicOrigin,
         viewerOrganizationId: scope.organizationId,
       }),
     }, 201)
   } catch (error) {
-    if (error instanceof GitAppConflictError) {
+    if (error instanceof ForgeConflictError) {
       return c.json({ error: error.message }, 409)
     }
-    if (error instanceof GitAppError) return c.json({ error: error.message }, 400)
+    if (error instanceof ForgeError) return c.json({ error: error.message }, 400)
     throw error
   }
 }
 
-export async function patchGitAppHandler(
+export async function patchForgeHandler(
   c: Context<AppEnv>,
   db: Db,
-  scope: GitAppScope,
+  scope: ForgeScope,
   id: string,
 ): Promise<Response> {
-  if (!GIT_APP_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+  if (!FORGE_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
 
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!dataEncryptionSecrets) {
@@ -219,45 +219,45 @@ export async function patchGitAppHandler(
   if (denied) return denied
 
   const body = await c.req.json().catch(() => null)
-  const updates = parseGitAppPatchBody(body)
+  const updates = parseForgePatchBody(body)
   if (!updates) return c.json({ error: 'Invalid request' }, 400)
 
   try {
-    const app = await updateGitApp(db, dataEncryptionSecrets, id, updates)
+    const app = await updateForge(db, dataEncryptionSecrets, id, updates)
     if (!app) return c.json({ error: 'Not found' }, 404)
     const publicOrigin = await resolvePublicOrigin(db)
     return c.json({
-      app: serializeGitApp(app, {
+      app: serializeForge(app, {
         publicOrigin,
         viewerOrganizationId: scope.organizationId,
       }),
     })
   } catch (error) {
-    if (error instanceof GitAppConflictError) {
+    if (error instanceof ForgeConflictError) {
       return c.json({ error: error.message }, 409)
     }
-    if (error instanceof GitAppError) return c.json({ error: error.message }, 400)
+    if (error instanceof ForgeError) return c.json({ error: error.message }, 400)
     throw error
   }
 }
 
-export async function deleteGitAppHandler(
+export async function deleteForgeHandler(
   c: Context<AppEnv>,
   db: Db,
-  scope: GitAppScope,
+  scope: ForgeScope,
   id: string,
 ): Promise<Response> {
-  if (!GIT_APP_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+  if (!FORGE_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
 
   const visible = await loadVisibleApp(db, scope, id)
   if (!visible) return c.json({ error: 'Not found' }, 404)
   const denied = assertWritable(c, scope, visible)
   if (denied) return denied
 
-  // `installation` cascades from here, and `source.installation_id` is
+  // `gitConnection` cascades from here, and `repository.connection_id` is
   // ON DELETE SET NULL — so deleting an app disconnects its repositories
-  // rather than destroying the operator's source rows.
-  await deleteGitApp(db, id)
+  // rather than destroying the operator's repository rows.
+  await deleteForge(db, id)
   return c.body(null, 204)
 }
 
@@ -273,13 +273,13 @@ export async function deleteGitAppHandler(
  * Writable apps only. An organization looking at an instance-wide app may read
  * it but must not rewrite fields the instance admin owns.
  */
-export async function syncGitAppHandler(
+export async function syncForgeHandler(
   c: Context<AppEnv>,
   db: Db,
-  scope: GitAppScope,
+  scope: ForgeScope,
   id: string,
 ): Promise<Response> {
-  if (!GIT_APP_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+  if (!FORGE_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
 
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!dataEncryptionSecrets) {
@@ -291,7 +291,7 @@ export async function syncGitAppHandler(
   const denied = assertWritable(c, scope, visible)
   if (denied) return denied
 
-  const app = await loadGitApp(db, dataEncryptionSecrets, id)
+  const app = await loadForge(db, dataEncryptionSecrets, id)
   if (!app) return c.json({ error: 'Not found' }, 404)
   if (app.provider !== 'github') {
     // GitLab OAuth applications have no equivalent self-describing endpoint;
@@ -303,7 +303,7 @@ export async function syncGitAppHandler(
   try {
     metadata = await fetchGithubAppMetadata(app)
   } catch (error) {
-    // Always 502: every failure here is GitHub's answer to *our* credentials,
+    // Always 502: every failure here is GitHub's answer to *our* App secrets,
     // not a fault in the operator's request. A 401 from GitHub means the stored
     // private key no longer matches the App — which is worth saying out loud in
     // `detail` rather than reflecting back as a 401 the console would read as
@@ -314,7 +314,7 @@ export async function syncGitAppHandler(
     }, 502)
   }
 
-  const updated = await updateGitApp(db, dataEncryptionSecrets, id, {
+  const updated = await updateForge(db, dataEncryptionSecrets, id, {
     name: metadata.name,
     appSlug: metadata.slug,
     externalAppId: metadata.externalAppId,
@@ -326,7 +326,7 @@ export async function syncGitAppHandler(
 
   const publicOrigin = await resolvePublicOrigin(db)
   return c.json({
-    app: serializeGitApp(updated, {
+    app: serializeForge(updated, {
       publicOrigin,
       viewerOrganizationId: scope.organizationId,
     }),
@@ -351,7 +351,7 @@ export async function syncGitAppHandler(
 export async function startGithubManifestHandler(
   c: Context<AppEnv>,
   db: Db,
-  scope: GitAppScope,
+  scope: ForgeScope,
 ): Promise<Response> {
   const secretsConfig = c.get('secretsConfig')
   if (!secretsConfig) {
@@ -391,13 +391,13 @@ export async function startGithubManifestHandler(
   const origin = publicOrigin.replace(/\/$/, '')
   // GitHub sends the operator's *browser* to this URL, and a top-level
   // navigation carries no `X-Turbopanel-Organization-Id`. The org-scoped
-  // surface therefore has to pin the organization in the query string, which
-  // `parseOrgIdFromRequest` accepts as the header's equivalent. It is not a
-  // credential — the session and the signed state are what authorize the
-  // callback; this only says which org context to resolve it in.
+  // *manifest* callback still pins the organization in the query string,
+  // which `parseOrgIdFromRequest` accepts as the header's equivalent. It is
+  // not a secret — the session and the signed state are what authorize the
+  // conversion; this only says which org context to resolve it in.
   const callbackPath = scope.organizationId === null
-    ? '/api/admin/v1/git/apps/github/manifest/callback'
-    : `/api/client/v1/git/apps/github/manifest/callback?organizationId=${
+    ? '/api/admin/v1/forges/github/manifest/callback'
+    : `/api/client/v1/forges/github/manifest/callback?organizationId=${
       encodeURIComponent(scope.organizationId)
     }`
 
@@ -414,14 +414,10 @@ export async function startGithubManifestHandler(
     customGitPort: wizard.customGitPort,
   })
 
-  // The install redirect lands on the *source* callback — the one that writes
-  // the `installation` row — and carries the same organization pin, since it is
-  // also a top-level browser navigation.
-  const setupPath = scope.organizationId === null
-    ? '/api/client/v1/sources/github/callback'
-    : `/api/client/v1/sources/github/callback?organizationId=${
-      encodeURIComponent(scope.organizationId)
-    }`
+  // The install redirect lands on the *repository* callback — the one that
+  // writes the `gitConnection` row. GitHub stores a single setup URL, so this
+  // path stays org-neutral: the signed `state` carries organization and forge.
+  const setupPath = '/api/client/v1/repositories/github/callback'
 
   const manifest = buildGithubAppManifest({
     name,
@@ -441,9 +437,9 @@ export async function startGithubManifestHandler(
   })
 }
 
-function redirectToGitAppsUi(
+function redirectToForgesUi(
   c: Context<AppEnv>,
-  scope: GitAppScope,
+  scope: ForgeScope,
   query: { created?: string; error?: GithubManifestReturnError },
 ): Response {
   const location = githubManifestUiReturnPath(scope.organizationId, query)
@@ -463,30 +459,30 @@ function redirectToGitAppsUi(
 export async function completeGithubManifestHandler(
   c: Context<AppEnv>,
   db: Db,
-  scope: GitAppScope,
+  scope: ForgeScope,
 ): Promise<Response> {
   const secretsConfig = c.get('secretsConfig')
   if (!secretsConfig) {
-    return redirectToGitAppsUi(c, scope, { error: 'unavailable' })
+    return redirectToForgesUi(c, scope, { error: 'unavailable' })
   }
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!dataEncryptionSecrets) {
-    return redirectToGitAppsUi(c, scope, { error: 'unavailable' })
+    return redirectToForgesUi(c, scope, { error: 'unavailable' })
   }
 
   const state = c.req.query('state')
   const code = c.req.query('code')
   if (!state || !code) {
-    return redirectToGitAppsUi(c, scope, { error: 'invalid_request' })
+    return redirectToForgesUi(c, scope, { error: 'invalid_request' })
   }
 
   const pending = await verifyGithubManifestState(secretsConfig, state)
   if (!pending) {
-    return redirectToGitAppsUi(c, scope, { error: 'state_invalid' })
+    return redirectToForgesUi(c, scope, { error: 'state_invalid' })
   }
   // The signed state is the authority; the surface it came back on must agree.
   if (pending.organizationId !== scope.organizationId) {
-    return redirectToGitAppsUi(c, scope, { error: 'forbidden' })
+    return redirectToForgesUi(c, scope, { error: 'forbidden' })
   }
 
   let conversion
@@ -497,7 +493,7 @@ export async function completeGithubManifestHandler(
     )
   } catch (error) {
     if (error instanceof GithubManifestError) {
-      return redirectToGitAppsUi(c, scope, { error: 'conversion_failed' })
+      return redirectToForgesUi(c, scope, { error: 'conversion_failed' })
     }
     throw error
   }
@@ -506,7 +502,7 @@ export async function completeGithubManifestHandler(
     // The ref is written with the row, not corrected afterwards: GitHub's App
     // already points at that URL, so a row born with a different ref would
     // reject every delivery until someone noticed.
-    const app = await createGitApp(db, dataEncryptionSecrets, {
+    const app = await createForge(db, dataEncryptionSecrets, {
       organizationId: scope.organizationId,
       provider: 'github',
       name: pending.name,
@@ -518,7 +514,7 @@ export async function completeGithubManifestHandler(
       privateKeyPem: conversion.privateKeyPem,
       webhookSecret: conversion.webhookSecret,
       webhookRef: pending.webhookRef,
-      // GitHub's conversion response carries credentials and nothing about how
+      // GitHub's conversion response carries App secrets and nothing about how
       // the operator configured the app, so the rest comes back from the signed
       // state. Recording the origin matters most: GitHub stored one specific
       // URL and never revisits it, so this is the only way the console can show
@@ -530,13 +526,13 @@ export async function completeGithubManifestHandler(
       customGitPort: pending.customGitPort ?? null,
     })
 
-    return redirectToGitAppsUi(c, scope, { created: app.id })
+    return redirectToForgesUi(c, scope, { created: app.id })
   } catch (error) {
-    if (error instanceof GitAppConflictError) {
-      return redirectToGitAppsUi(c, scope, { error: 'conflict' })
+    if (error instanceof ForgeConflictError) {
+      return redirectToForgesUi(c, scope, { error: 'conflict' })
     }
-    if (error instanceof GitAppError) {
-      return redirectToGitAppsUi(c, scope, { error: 'create_failed' })
+    if (error instanceof ForgeError) {
+      return redirectToForgesUi(c, scope, { error: 'create_failed' })
     }
     throw error
   }

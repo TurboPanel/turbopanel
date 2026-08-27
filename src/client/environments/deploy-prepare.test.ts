@@ -33,7 +33,7 @@ import {
   expansionToRecord,
   extractComposeFromOptions,
   fabricNetworksFromSchedule,
-  findUnavailableStorageLocation,
+  findUnavailableStorageCopy,
   healthCheckAcknowledge,
   listComposeServiceKeys,
   listContainerComposeNames,
@@ -1860,7 +1860,7 @@ describe("compileRuntimeOptionsForServer", () => {
       { localReplicaCounts, localServiceNames },
       {
         serverId: "srv-1",
-        tasks: [],
+        slots: [],
         serviceIdToName: new Map(),
         spanningNetworks,
         taskAddresses,
@@ -1884,7 +1884,7 @@ describe("compileRuntimeOptionsForServer", () => {
       { localReplicaCounts },
       {
         serverId: "srv-1",
-        tasks: [],
+        slots: [],
         serviceIdToName: new Map(),
         managedIngressHostsByService: new Map(),
       },
@@ -1922,7 +1922,7 @@ describe("healthCheckAcknowledge", () => {
   });
 });
 
-describe("findUnavailableStorageLocation", () => {
+describe("findUnavailableStorageCopy", () => {
   /**
    * Drizzle-shaped double: every builder method returns the same chain, and
    * each `await` consumes the next queued result set.
@@ -1969,7 +1969,7 @@ describe("findUnavailableStorageLocation", () => {
 
   it("returns null when no services are scheduled", async () => {
     assertEquals(
-      await findUnavailableStorageLocation(fakeDb([[locationRow()]]), {
+      await findUnavailableStorageCopy(fakeDb([[locationRow()]]), {
         environmentId: "env-1",
         scheduledServerId: "srv-scheduled",
         serviceIds: [],
@@ -1980,7 +1980,7 @@ describe("findUnavailableStorageLocation", () => {
 
   it("returns null when a location is usable on the scheduled server", async () => {
     assertEquals(
-      await findUnavailableStorageLocation(fakeDb([[locationRow()]]), {
+      await findUnavailableStorageCopy(fakeDb([[locationRow()]]), {
         environmentId: "env-1",
         scheduledServerId: "srv-scheduled",
         serviceIds: ["svc-1"],
@@ -1991,7 +1991,7 @@ describe("findUnavailableStorageLocation", () => {
 
   it("treats an unpinned location as usable on any server", async () => {
     assertEquals(
-      await findUnavailableStorageLocation(
+      await findUnavailableStorageCopy(
         fakeDb([[locationRow({ locationServerId: null })]]),
         {
           environmentId: "env-1",
@@ -2004,7 +2004,7 @@ describe("findUnavailableStorageLocation", () => {
   });
 
   it("ignores scratch locations when deciding usability", async () => {
-    const result = await findUnavailableStorageLocation(
+    const result = await findUnavailableStorageCopy(
       fakeDb([[
         locationRow({ locationRole: "scratch", locationServerId: "srv-scheduled" }),
       ]]),
@@ -2022,7 +2022,7 @@ describe("findUnavailableStorageLocation", () => {
   });
 
   it("stamps primaryServerId from the primary location row", async () => {
-    const result = await findUnavailableStorageLocation(
+    const result = await findUnavailableStorageCopy(
       fakeDb([[
         locationRow({
           locationRole: "primary",
@@ -2046,7 +2046,7 @@ describe("findUnavailableStorageLocation", () => {
   });
 
   it("returns the first unusable storage when another is usable", async () => {
-    const result = await findUnavailableStorageLocation(
+    const result = await findUnavailableStorageCopy(
       fakeDb([[
         locationRow({ storageId: "st-ok", storageName: "ok" }),
         locationRow({
@@ -2070,7 +2070,7 @@ describe("findUnavailableStorageLocation", () => {
 
   it("marks a storage usable when any non-scratch location matches", async () => {
     assertEquals(
-      await findUnavailableStorageLocation(
+      await findUnavailableStorageCopy(
         fakeDb([[
           locationRow({ locationServerId: "srv-other" }),
           locationRow({ locationServerId: "srv-scheduled" }),
@@ -2099,7 +2099,7 @@ describe("fabricNetworksFromSchedule", () => {
     assertEquals(
       fabricNetworksFromSchedule({
         serverId: "srv-1",
-        tasks: [],
+        slots: [],
         serviceIdToName: new Map(),
         fabricNetworks,
       }),

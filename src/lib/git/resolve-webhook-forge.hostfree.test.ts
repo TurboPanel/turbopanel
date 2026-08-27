@@ -10,16 +10,16 @@ import type { Db } from '../../db.ts'
 import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
 import { encryptSecret } from '../../client/authn/data-encryption.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { hashWebhookToken } from './git-app-records.ts'
+import { hashWebhookToken } from './forge-records.ts'
 import {
   candidatesUnconfigured,
   githubTargetAppId,
   GITHUB_HOOK_TARGET_ID_HEADER,
   GITHUB_HOOK_TARGET_TYPE_HEADER,
-  resolveGithubWebhookApp,
-  resolveGitlabWebhookApp,
+  resolveGithubWebhookForge,
+  resolveGitlabWebhookForge,
   selectVerifiedApp,
-} from './resolve-webhook-app.ts'
+} from './resolve-webhook-forge.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -57,7 +57,7 @@ function row(input: RowInput): Record<string, unknown> {
     redirectUri: null,
     webhookRef: input.webhookRef ?? `${input.id}-ref`,
     webhookTokenHash: input.webhookTokenHash ?? null,
-    credentials: input.webhookSecretEnvelope
+    envelopes: input.webhookSecretEnvelope
       ? { webhookSecretEnvelope: input.webhookSecretEnvelope }
       : {},
   }
@@ -113,7 +113,7 @@ test('githubTargetAppId reads the App id only for app-targeted webhooks', () => 
 
 test('a path ref resolves the app outright', async () => {
   const db = stubDb([row({ id: 'app-a' })])
-  const resolved = await resolveGithubWebhookApp(db, await secrets(), 'app-a-ref', headers({}))
+  const resolved = await resolveGithubWebhookForge(db, await secrets(), 'app-a-ref', headers({}))
   assertEquals(resolved.ok, true)
   assertEquals(resolved.ok && resolved.candidates.map((app) => app.id), ['app-a'])
 })
@@ -122,7 +122,7 @@ test('a ref that disagrees with the delivery App id is refused', async () => {
   // The URL says one app, the credentials say another: accepting either would
   // route a verified delivery to the wrong tenant.
   const db = stubDb([row({ id: 'app-a', externalAppId: '9999' })])
-  const resolved = await resolveGithubWebhookApp(
+  const resolved = await resolveGithubWebhookForge(
     db,
     await secrets(),
     'app-a-ref',
@@ -133,7 +133,7 @@ test('a ref that disagrees with the delivery App id is refused', async () => {
 
 test('a ref pointing at a gitlab app is not a github candidate', async () => {
   const db = stubDb([row({ id: 'app-a', provider: 'gitlab' })])
-  const resolved = await resolveGithubWebhookApp(db, await secrets(), 'app-a-ref', headers({}))
+  const resolved = await resolveGithubWebhookForge(db, await secrets(), 'app-a-ref', headers({}))
   assertEquals(resolved, { ok: false, reason: 'unresolved' })
 })
 
@@ -144,12 +144,12 @@ test('without a ref the App id header selects every matching app', async () => {
     row({ id: 'dotcom', externalAppId: '1234' }),
     row({ id: 'ghes', externalAppId: '1234', baseUrl: 'https://github.acme.test' }),
   ])
-  const resolved = await resolveGithubWebhookApp(db, await secrets(), null, APP_HEADERS)
+  const resolved = await resolveGithubWebhookForge(db, await secrets(), null, APP_HEADERS)
   assertEquals(resolved.ok && resolved.candidates.map((app) => app.id), ['dotcom', 'ghes'])
 })
 
 test('a delivery naming no app at all is refused', async () => {
-  const resolved = await resolveGithubWebhookApp(stubDb([]), await secrets(), null, headers({}))
+  const resolved = await resolveGithubWebhookForge(stubDb([]), await secrets(), null, headers({}))
   assertEquals(resolved, { ok: false, reason: 'unresolved' })
 })
 
@@ -163,7 +163,7 @@ test('selectVerifiedApp keeps the candidate whose secret actually verifies', asy
     id: 'second',
     webhookSecretEnvelope: await encryptSecret(derived, 'right'),
   })
-  const resolved = await resolveGithubWebhookApp(
+  const resolved = await resolveGithubWebhookForge(
     stubDb([first, second]),
     derived,
     null,
@@ -183,7 +183,7 @@ test('selectVerifiedApp keeps the candidate whose secret actually verifies', asy
 
 test('candidatesUnconfigured separates a config gap from a rejection', async () => {
   const derived = await secrets()
-  const resolved = await resolveGithubWebhookApp(
+  const resolved = await resolveGithubWebhookForge(
     stubDb([row({ id: 'bare' })]),
     derived,
     'bare-ref',
@@ -192,7 +192,7 @@ test('candidatesUnconfigured separates a config gap from a rejection', async () 
   if (!resolved.ok) throw new TypeError('expected candidates')
   assertEquals(candidatesUnconfigured(resolved.candidates), true)
 
-  const configured = await resolveGithubWebhookApp(
+  const configured = await resolveGithubWebhookForge(
     stubDb([
       row({ id: 'set', webhookSecretEnvelope: await encryptSecret(derived, 'shh') }),
     ]),
@@ -215,15 +215,15 @@ test('gitlab resolves by ref, then by token digest', async () => {
     webhookTokenHash: await hashWebhookToken(token),
   })
 
-  const byRef = await resolveGitlabWebhookApp(stubDb([gitlabRow]), derived, 'gl-ref', null)
+  const byRef = await resolveGitlabWebhookForge(stubDb([gitlabRow]), derived, 'gl-ref', null)
   assertEquals(byRef.ok && byRef.candidates.map((app) => app.id), ['gl'])
 
-  const byToken = await resolveGitlabWebhookApp(stubDb([gitlabRow]), derived, null, token)
+  const byToken = await resolveGitlabWebhookForge(stubDb([gitlabRow]), derived, null, token)
   assertEquals(byToken.ok && byToken.candidates.map((app) => app.id), ['gl'])
 
   // No ref and no token is not something to guess at.
   assertEquals(
-    await resolveGitlabWebhookApp(stubDb([gitlabRow]), derived, null, '  '),
+    await resolveGitlabWebhookForge(stubDb([gitlabRow]), derived, null, '  '),
     { ok: false, reason: 'unresolved' },
   )
 })
@@ -231,7 +231,7 @@ test('gitlab resolves by ref, then by token digest', async () => {
 test('a github ref is not a gitlab candidate', async () => {
   const db = stubDb([row({ id: 'gh', provider: 'github' })])
   assertEquals(
-    await resolveGitlabWebhookApp(db, await secrets(), 'gh-ref', null),
+    await resolveGitlabWebhookForge(db, await secrets(), 'gh-ref', null),
     { ok: false, reason: 'unresolved' },
   )
 })

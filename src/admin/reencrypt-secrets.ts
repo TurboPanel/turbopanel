@@ -2,11 +2,11 @@
  * Superadmin at-rest secret re-encryption sweep.
  *
  * Re-seals `variable.value` (is_secret), `tls.privateKeyPem`,
- * `principal.password`, `storage.content_envelope`, `credential.secret_envelope`,
+ * `principal.password`, `storage.content_envelope`, `secret.secret_envelope`,
  * and email secret keys in the `SYSTEM_EMAIL` setting row onto the current
  * data-encryption key version.
  *
- * Per-blob rules (variable / TLS / principal / storage / credential / email secrets):
+ * Per-blob rules (variable / TLS / principal / storage / secret / email secrets):
  * - Valid daemon-bound `tpdaemon` → skipped (delivery envelopes are not at-rest
  *   material for this sweep; variables/TLS/principals only).
  * - Malformed `tpdaemon` or malformed `tpsecret` → failed.
@@ -40,7 +40,7 @@ import {
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import type { Db } from "../db.ts";
 import {
-  credential,
+  secret,
   principal,
   setting,
   storage,
@@ -74,7 +74,7 @@ export const REENCRYPT_STAGES = [
   "tls",
   "principals",
   "storage",
-  "credentials",
+  "secrets",
   "email",
 ] as const;
 
@@ -509,7 +509,7 @@ async function sweepStorageContentBatch(
   };
 }
 
-async function sweepCredentialSecretsBatch(
+async function sweepSecretTableBatch(
   db: Db,
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
@@ -517,14 +517,14 @@ async function sweepCredentialSecretsBatch(
   limit: number,
 ): Promise<StageBatchResult> {
   const rows = await db
-    .select({ id: credential.id, secretEnvelope: credential.secretEnvelope })
-    .from(credential)
+    .select({ id: secret.id, secretEnvelope: secret.secretEnvelope })
+    .from(secret)
     .where(
       afterId === undefined
-        ? isNotNull(credential.secretEnvelope)
-        : and(isNotNull(credential.secretEnvelope), gt(credential.id, afterId)),
+        ? isNotNull(secret.secretEnvelope)
+        : and(isNotNull(secret.secretEnvelope), gt(secret.id, afterId)),
     )
-    .orderBy(asc(credential.id))
+    .orderBy(asc(secret.id))
     .limit(limit);
 
   for (const row of rows) {
@@ -535,15 +535,15 @@ async function sweepCredentialSecretsBatch(
       original,
       async (resealed) => {
         const updated = await db
-          .update(credential)
+          .update(secret)
           .set({ secretEnvelope: resealed, updatedAt: nowIso() })
           .where(
             and(
-              eq(credential.id, row.id),
-              eq(credential.secretEnvelope, original),
+              eq(secret.id, row.id),
+              eq(secret.secretEnvelope, original),
             ),
           )
-          .returning({ id: credential.id });
+          .returning({ id: secret.id });
         return updated.length > 0;
       },
       { allowDaemonBound: true },
@@ -694,8 +694,8 @@ export async function reencryptAtRestSecrets(
           remaining,
         );
         break;
-      case "credentials":
-        batch = await sweepCredentialSecretsBatch(
+      case "secrets":
+        batch = await sweepSecretTableBatch(
           db,
           dataEncryptionSecrets,
           summary,

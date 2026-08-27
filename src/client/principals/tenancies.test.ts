@@ -2,13 +2,13 @@ import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import type { Db } from '../../db.ts'
 import {
-  loadStewardPrincipalIdsForEnvironment,
+  loadTenancyPrincipalIdsForEnvironment,
   loadPrincipalIdsByServiceIdForEnvironment,
   loadServiceIdsByPrincipalIds,
   parseServiceIdsField,
   pickSolePrincipalId,
   servicesBelongToProject,
-} from './stewards.ts'
+} from './tenancies.ts'
 
 const PID_A = '00000000-0000-4000-8000-00000000000a'
 const PID_B = '00000000-0000-4000-8000-00000000000b'
@@ -171,9 +171,9 @@ describe('servicesBelongToProject', () => {
   })
 })
 
-describe('loadStewardPrincipalIdsForEnvironment', () => {
+describe('loadTenancyPrincipalIdsForEnvironment', () => {
   it('returns sorted distinct principal ids', async () => {
-    const ids = await loadStewardPrincipalIdsForEnvironment(
+    const ids = await loadTenancyPrincipalIdsForEnvironment(
       createAssignmentSelectDb([
         { principalId: PID_B },
         { principalId: PID_A },
@@ -185,7 +185,7 @@ describe('loadStewardPrincipalIdsForEnvironment', () => {
 
   it('returns empty when no stewards exist', async () => {
     assertEquals(
-      await loadStewardPrincipalIdsForEnvironment(
+      await loadTenancyPrincipalIdsForEnvironment(
         createAssignmentSelectDb([]),
         'env-1',
       ),

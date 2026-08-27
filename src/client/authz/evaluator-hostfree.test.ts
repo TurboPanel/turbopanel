@@ -220,7 +220,7 @@ test('listVisible builds leaf queries for supported catalog resource kinds', asy
 test('listVisible maps source leaf ids', async () => {
   const sourceId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
   const visible = await listVisible(createListVisibleDb([sourceId]), {
-    kind: 'source',
+    kind: 'repository',
     userId,
     organizationId,
   })
@@ -259,7 +259,7 @@ test('can builds ancestry queries for workspace-tree entity types', async () => 
     'network',
     'datacenter',
     'ip',
-    'source',
+    'repository',
   ] as const
 
   for (const entityType of entityTypes) {

@@ -6,7 +6,7 @@
  * leaf on command metadata (`pendingTlsLeaf`) and the command consumer upserts
  * only after `managed.apply` / `managed.ingress.reconcile` succeed. Re-issuance
  * overwrites via the partial unique indexes on `leaf`
- * (`uniq_leaf_ingress_server` / `uniq_leaf_engine_node`) — no history.
+ * (`uniq_leaf_ingress_server` / `uniq_leaf_engine_replica`) — no history.
  */
 import { sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
@@ -31,7 +31,7 @@ export type UpsertTlsLeafTrackingParams = Readonly<{
   /** Engine leaves only. */
   managedId?: string;
   /** Engine leaves only. */
-  nodeId?: string;
+  replicaId?: string;
 }>;
 
 /** `notAfter` for a leaf minted now at the Organization CA default lifetime. */
@@ -93,7 +93,7 @@ export function parsePendingTlsLeafValue(
     };
   }
 
-  if (!isNonEmptyString(record.managedId) || !isNonEmptyString(record.nodeId)) {
+  if (!isNonEmptyString(record.managedId) || !isNonEmptyString(record.replicaId)) {
     return null;
   }
   return {
@@ -104,7 +104,7 @@ export function parsePendingTlsLeafValue(
     caGeneration: record.caGeneration,
     notAfter: record.notAfter,
     managedId: record.managedId,
-    nodeId: record.nodeId,
+    replicaId: record.replicaId,
     ...(issuedAt === undefined ? {} : { issuedAt }),
   };
 }
@@ -137,7 +137,7 @@ export async function commitPendingTlsLeafTracking(
 
 /**
  * Insert or overwrite the tracking row for one **deployed** leaf.
- * Ingress is keyed on `serverId`; engine is keyed on `nodeId`.
+ * Ingress is keyed on `serverId`; engine is keyed on `replicaId`.
  */
 export async function upsertTlsLeafTracking(
   db: Db,
@@ -152,7 +152,7 @@ export async function upsertTlsLeafTracking(
         serverId: params.serverId,
         kind: "ingress",
         managedId: null,
-        nodeId: null,
+        replicaId: null,
         caId: params.caId,
         caGeneration: params.caGeneration,
         notAfter: params.notAfter,
@@ -172,8 +172,8 @@ export async function upsertTlsLeafTracking(
     return;
   }
 
-  if (!params.nodeId || !params.managedId) {
-    throw new TypeError("engine leaf tracking requires nodeId and managedId");
+  if (!params.replicaId || !params.managedId) {
+    throw new TypeError("engine leaf tracking requires replicaId and managedId");
   }
 
   await db
@@ -183,14 +183,14 @@ export async function upsertTlsLeafTracking(
       serverId: params.serverId,
       kind: "engine",
       managedId: params.managedId,
-      nodeId: params.nodeId,
+      replicaId: params.replicaId,
       caId: params.caId,
       caGeneration: params.caGeneration,
       notAfter: params.notAfter,
       issuedAt,
     })
     .onConflictDoUpdate({
-      target: leaf.nodeId,
+      target: leaf.replicaId,
       targetWhere: sql`${leaf.kind} = 'engine'`,
       set: {
         organizationId: params.organizationId,

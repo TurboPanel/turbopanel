@@ -10,7 +10,7 @@ export {
   localReplicaCounts,
   localServiceNames,
   planEnvironmentSchedule,
-  type ExistingTask,
+  type ExistingSlot,
   type FleetServer,
   type PlanEnvironmentInput,
   type PlannedService,
@@ -24,8 +24,8 @@ export {
   type PlannedDeploy,
 } from './plan-deploy.ts'
 export {
-  assignTaskAddresses,
+  assignSlotAddresses,
   buildCompileAddressMaps,
   type SpanningHostsForService,
-  type TaskAddressExisting,
-} from './task-addresses.ts'
+  type SlotAddressExisting,
+} from './slot-addresses.ts'

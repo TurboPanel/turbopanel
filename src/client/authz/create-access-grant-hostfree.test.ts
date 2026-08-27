@@ -424,8 +424,8 @@ test('verifyEntityExists checks every supported entity table via select', async 
     'variable',
     'principal',
     'storage',
-    'source',
-    'gitProviderInstallation',
+    'repository',
+    'gitConnection',
     'network',
     'datacenter',
     'ip',
@@ -475,8 +475,8 @@ test('resolveEntityOrganizationId resolves org ids for select-backed entity type
     'network',
     'datacenter',
     'ip',
-    'source',
-    'gitProviderInstallation',
+    'repository',
+    'gitConnection',
   ] as const) {
     const resolved = await resolveEntityOrganizationId(selectDb, entityType, otherUuid)
     assertEquals(resolved, validUuid)

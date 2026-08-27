@@ -76,8 +76,8 @@ test('the generic provider answers unsupported rather than throwing', async () =
         repositoryUrl: 'git@example.com:o/r.git',
         defaultBranch: 'main',
         subdirectory: null,
-        installationId: null,
-        credentialId: 'c1',
+        connectionId: null,
+        secretId: 'c1',
       },
       ref: 'main',
       paths: ['docker-compose.yml'],
@@ -92,8 +92,8 @@ const GIT_ROW: GitProviderSourceRow = {
   repositoryUrl: 'git@example.com:o/r.git',
   defaultBranch: 'main',
   subdirectory: null,
-  installationId: null,
-  credentialId: 'c1',
+  connectionId: null,
+  secretId: 'c1',
 }
 
 function inspectRegistry(

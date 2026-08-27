@@ -328,12 +328,12 @@ export async function buildSystemReconcilePayload(
       ) AS has_http_ingress_demand,
       EXISTS (
         SELECT 1
-        FROM node mm
+        FROM replica mm
         WHERE mm.server_id = ${params.serverId}::uuid
       ) AS has_managed_members,
       EXISTS (
         SELECT 1
-        FROM node hm
+        FROM replica hm
         WHERE hm.server_id = ${params.serverId}::uuid
           AND (hm.role = 'primary' OR hm.replica_class = 'failover')
       ) AS has_ha_members,
@@ -660,7 +660,7 @@ export async function runSystemReconcileSweep(
           AND c.role = 'ingress'
           AND EXISTS (
             SELECT 1
-            FROM node mm
+            FROM replica mm
             WHERE mm.server_id = srv.id
           )
           AND (

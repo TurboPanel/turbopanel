@@ -23,7 +23,7 @@ import {
   organization,
   project,
   relay,
-  segment,
+  subnet,
   server,
   service,
   team,
@@ -608,7 +608,7 @@ test('DELETE /servers/:id deletes the server relay and its segments', async () =
       .returning({ id: network.id })
     const networkId = insertedNetwork!.id
 
-    await db.insert(segment).values({
+    await db.insert(subnet).values({
       createdAt: now,
       updatedAt: now,
       networkId,
@@ -631,9 +631,9 @@ test('DELETE /servers/:id deletes the server relay and its segments', async () =
       .from(relay)
       .where(eq(relay.serverId, serverId))
     const remainingSegments = await db
-      .select({ id: segment.id })
-      .from(segment)
-      .where(eq(segment.serverId, serverId))
+      .select({ id: subnet.id })
+      .from(subnet)
+      .where(eq(subnet.serverId, serverId))
     const remainingServers = await db
       .select({ id: server.id })
       .from(server)

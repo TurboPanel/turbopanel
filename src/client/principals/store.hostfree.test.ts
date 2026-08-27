@@ -16,7 +16,7 @@ import {
   listManagedPrincipals,
   lockOrganizationsForUpdate,
   PRINCIPAL_PROVIDERS,
-  replaceStewards,
+  replaceTenancies,
   resolveAvailableManagedRootUsername,
   resolveManagedOwningOrganizationIds,
   rotatePrincipalPassword,
@@ -136,7 +136,7 @@ test('isServerPrincipalUsernameTaken short-circuits blank and hits/misses', asyn
   )
 })
 
-test('replaceStewards deletes inserts and no-ops when unchanged', async () => {
+test('replaceTenancies deletes inserts and no-ops when unchanged', async () => {
   let deleted: string[] | null = null
   let inserted: unknown = null
   const tx = {
@@ -159,7 +159,7 @@ test('replaceStewards deletes inserts and no-ops when unchanged', async () => {
     }),
   } as unknown as Db
 
-  await replaceStewards(tx, 'principal', ['s1', 's3'])
+  await replaceTenancies(tx, 'principal', ['s1', 's3'])
   assertEquals(deleted, ['s2'])
   assertEquals(inserted, [
     { principalId: 'principal', serviceId: 's3' },
@@ -178,7 +178,7 @@ test('replaceStewards deletes inserts and no-ops when unchanged', async () => {
       throw new TypeError('should not insert')
     },
   } as unknown as Db
-  await replaceStewards(noopTx, 'principal', ['only'])
+  await replaceTenancies(noopTx, 'principal', ['only'])
 })
 
 test('createPrincipal inserts principal and stewards in a transaction', async () => {
@@ -438,7 +438,7 @@ test('PRINCIPAL_PROVIDERS and USERNAME_RE gate managed usernames', () => {
   assertEquals(USERNAME_RE.test('1bad'), false)
 })
 
-test('replaceStewards removes all edges when next list is empty', async () => {
+test('replaceTenancies removes all edges when next list is empty', async () => {
   let deleted = false
   const tx = {
     select: () => ({
@@ -456,7 +456,7 @@ test('replaceStewards removes all edges when next list is empty', async () => {
       throw new TypeError('should not insert')
     },
   } as unknown as Db
-  await replaceStewards(tx, 'principal', [])
+  await replaceTenancies(tx, 'principal', [])
   assertEquals(deleted, true)
 })
 

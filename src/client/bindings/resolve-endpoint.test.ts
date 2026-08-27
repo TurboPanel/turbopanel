@@ -15,7 +15,7 @@ import {
   container,
   environment,
   managed,
-  node,
+  replica,
   organization,
   project,
   server,
@@ -145,7 +145,7 @@ async function cleanupBindingEndpointOrg(
           )
           await db.delete(service).where(inArray(service.id, serviceIds))
         }
-        // `managed` + `node` cascade-delete via the environment FK.
+        // `managed` + `replica` cascade-delete via the environment FK.
         await db.delete(environment).where(
           inArray(environment.id, environmentIds),
         )
@@ -250,7 +250,7 @@ async function withBindingReachabilityFixture(
     .returning({ id: managed.id })
   const managedId = insertedManaged!.id
 
-  await db.insert(node).values({
+  await db.insert(replica).values({
     managedId,
     serverId: clusterServerId,
     role: 'primary',

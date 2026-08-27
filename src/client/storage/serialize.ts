@@ -1,8 +1,8 @@
 import { principalVolumePath } from '../../lib/naming.ts'
-import type { location, mount, storage } from '../../lib/db/schema.ts'
+import type { storageCopy, mount, storage } from '../../lib/db/schema.ts'
 
 type StorageRow = typeof storage.$inferSelect
-type LocationRow = typeof location.$inferSelect
+type CopyRow = typeof storageCopy.$inferSelect
 type MountRow = typeof mount.$inferSelect
 
 /** Subset of storage columns returned by list/get handlers. */
@@ -29,12 +29,12 @@ export type StorageSelectRow = Pick<
   principalUsername: string | null
 }
 
-export type LocationSelectRow = Pick<
-  LocationRow,
+export type CopySelectRow = Pick<
+  CopyRow,
   | 'id'
   | 'storageId'
   | 'serverId'
-  | 'credentialId'
+  | 'secretId'
   | 'provider'
   | 'role'
   | 'state'
@@ -63,32 +63,32 @@ export type MountSelectRow = Pick<
   readOnly: boolean
 }
 
-export type SerializedLocation = LocationSelectRow & {
+export type SerializedCopy = CopySelectRow & {
   /**
    * Read-only host path: explicit `path` when set, else the canonical
-   * principal volume path for principal-owned path locations, else null.
+   * principal volume path for principal-owned path copies, else null.
    * Never persisted.
    */
   resolvedSourcePath: string | null
 }
 
-export type SerializedMount = MountSelectRow // NOSONAR typescript:S6564 — public API alias parallel to SerializedLocation
+export type SerializedMount = MountSelectRow // NOSONAR typescript:S6564 — public API alias parallel to SerializedCopy
 
 export type SerializedStorage = Omit<StorageSelectRow, 'principalUsername'> & {
-  locations: SerializedLocation[]
+  copies: SerializedCopy[]
   mounts: SerializedMount[]
 }
 
-function resolveLocationPath(
-  loc: LocationSelectRow,
+function resolveCopyPath(
+  copy: CopySelectRow,
   storageId: string,
   principalUsername: string | null,
 ): string | null {
-  if (typeof loc.path === 'string' && loc.path.length > 0) {
-    return loc.path
+  if (typeof copy.path === 'string' && copy.path.length > 0) {
+    return copy.path
   }
   if (
-    loc.provider === 'path' &&
+    copy.provider === 'path' &&
     typeof principalUsername === 'string' &&
     principalUsername.length > 0
   ) {
@@ -97,14 +97,14 @@ function resolveLocationPath(
   return null
 }
 
-export function serializeLocation(
-  loc: LocationSelectRow,
+export function serializeCopy(
+  copy: CopySelectRow,
   storageId: string,
   principalUsername: string | null,
-): SerializedLocation {
+): SerializedCopy {
   return {
-    ...loc,
-    resolvedSourcePath: resolveLocationPath(loc, storageId, principalUsername),
+    ...copy,
+    resolvedSourcePath: resolveCopyPath(copy, storageId, principalUsername),
   }
 }
 
@@ -114,11 +114,11 @@ export function serializeMount(row: MountSelectRow): SerializedMount {
 
 export function serializeStorage(
   row: StorageSelectRow,
-  locations: LocationSelectRow[] = [],
+  copies: CopySelectRow[] = [],
   mounts: MountSelectRow[] = [],
 ): SerializedStorage {
-  const serializedLocations = locations.map((loc) =>
-    serializeLocation(loc, row.id, row.principalUsername),
+  const serializedCopies = copies.map((copy) =>
+    serializeCopy(copy, row.id, row.principalUsername),
   )
   return {
     id: row.id,
@@ -137,7 +137,7 @@ export function serializeStorage(
     options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    locations: serializedLocations,
+    copies: serializedCopies,
     mounts: mounts.map(serializeMount),
   }
 }

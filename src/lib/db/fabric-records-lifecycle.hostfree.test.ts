@@ -15,13 +15,13 @@ import {
   listEnvironmentComposeNetworks,
   purgeComposeNetworksCreatedAfter,
   purgeEnvironmentComposeNetworks,
-  releaseSegmentsForServer,
+  releaseSubnetsForServer,
   stampRelayPublicKey,
   stampRelayReconcileSuccess,
   updateFabricRelay,
   type FabricRecord,
 } from "./fabric-records.ts";
-import { fabric, network, relay, segment, server } from "./schema.ts";
+import { fabric, network, relay, subnet, server } from "./schema.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -318,7 +318,7 @@ function createLifecycleDb(opts: {
           if (table === network) {
             return thenableRows(filterRows(networks, condition));
           }
-          if (table === segment) {
+          if (table === subnet) {
             return thenableRows(filterRows(segments, condition));
           }
           return thenableRows([]);
@@ -442,7 +442,7 @@ function createLifecycleDb(opts: {
             ) => Promise.resolve(undefined).then(resolve, reject),
           };
         }
-        if (table === segment) {
+        if (table === subnet) {
           const insertSegmentRows = () => {
             for (const row of rows) {
               const networkId = String(row.networkId);
@@ -532,7 +532,7 @@ function createLifecycleDb(opts: {
           fabrics.length = 0;
           fabrics.push(...next);
         }
-        if (table === segment) {
+        if (table === subnet) {
           const next = segments.filter((row) => !segmentMatchesDelete(row, condition));
           segments.length = 0;
           segments.push(...next);
@@ -1055,7 +1055,7 @@ test("purgeEnvironmentComposeNetworks deletes compose networks and segments", as
   assertEquals(db.segments.length, 0);
 });
 
-test("releaseSegmentsForServer removes segments and orphan compose networks", async () => {
+test("releaseSubnetsForServer removes segments and orphan compose networks", async () => {
   const db = createLifecycleDb({
     networks: [
       {
@@ -1095,7 +1095,7 @@ test("releaseSegmentsForServer removes segments and orphan compose networks", as
     ],
   });
 
-  await releaseSegmentsForServer(db, {
+  await releaseSubnetsForServer(db, {
     environmentId: ENV,
     serverId: "srv-a",
   });

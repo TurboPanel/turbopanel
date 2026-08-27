@@ -186,8 +186,8 @@ export const tls = pgTable(
 /**
  * Durable Organization CA rotation journal (one in-flight rotation per org).
  */
-export const rotation = pgTable(
-  'rotation',
+export const changeover = pgTable(
+  'changeover',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -214,20 +214,20 @@ export const rotation = pgTable(
     results: jsonb().default([]),
   },
   (table) => [
-    index('idx_rotation_organization_id').using(
+    index('idx_changeover_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: 'rotation_organization_id_organization_id_fk',
+      name: 'changeover_organization_id_organization_id_fk',
     }).onDelete('cascade'),
-    uniqueIndex('uniq_rotation_inflight_organization')
+    uniqueIndex('uniq_changeover_inflight_organization')
       .on(table.organizationId)
       .where(sql`${table.state} = 'in_progress'`),
     check(
-      'rotation_state_check',
+      'changeover_state_check',
       sql`${table.state} IN ('in_progress','awaiting_retire','completed','failed')`,
     ),
   ],
@@ -304,10 +304,6 @@ export const datacenter = pgTable(
       foreignColumns: [organization.id],
       name: 'datacenter_organization_id_organization_id_fk',
     }).onDelete('cascade'),
-    check(
-      'datacenter_name_format_check',
-      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
-    ),
   ]
 )
 /**
@@ -874,10 +870,10 @@ export const relay = pgTable(
 /**
  * Server-local realization of a `kind='compose'` spanning network (today a
  * Docker bridge subnet carved from that relay's prefix). Implementation may
- * change; the row is the logical network's per-server segment.
+ * change; the row is the logical network's per-server subnet.
  */
-export const segment = pgTable(
-  'segment',
+export const subnet = pgTable(
+  'subnet',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -893,29 +889,29 @@ export const segment = pgTable(
     options: jsonb(),
     networkId: uuid('network_id').notNull(),
     serverId: uuid('server_id').notNull(),
-    /** Server-local subnet for this network segment. */
+    /** Server-local subnet for this network. */
     cidr: cidr().notNull(),
   },
   (table) => [
-    index('idx_segment_network_id').using(
+    index('idx_subnet_network_id').using(
       'btree',
       table.networkId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_segment_server_id').using(
+    index('idx_subnet_server_id').using(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.networkId],
       foreignColumns: [network.id],
-      name: 'segment_network_id_network_id_fk',
+      name: 'subnet_network_id_network_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'segment_server_id_server_id_fk',
+      name: 'subnet_server_id_server_id_fk',
     }).onDelete('restrict'),
-    unique('segment_network_server_unique').on(table.networkId, table.serverId),
+    unique('subnet_network_server_unique').on(table.networkId, table.serverId),
   ],
 )
 export const workspace = pgTable(
@@ -1116,12 +1112,12 @@ export const managed = pgTable(
   ]
 )
 /**
- * One server participation (node) in a managed cluster (`managed`). Exactly
+ * One server participation (replica) in a managed cluster (`managed`). Exactly
  * one `primary` per `managed_id` (partial unique); replicas use ordinals 2+.
  * Container fan-out uses `ordinal` on `(service_id, role='service', ordinal)`.
  */
-export const node = pgTable(
-  'node',
+export const replica = pgTable(
+  'replica',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -1163,58 +1159,58 @@ export const node = pgTable(
     status: text(),
   },
   (table) => [
-    index('idx_node_managed_id').using(
+    index('idx_replica_managed_id').using(
       'btree',
       table.managedId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_node_server_id').using(
+    index('idx_replica_server_id').using(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],
-      name: 'node_managed_id_managed_id_fk',
+      name: 'replica_managed_id_managed_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'node_server_id_server_id_fk',
+      name: 'replica_server_id_server_id_fk',
     }).onDelete('restrict'),
-    uniqueIndex('uniq_node_primary')
+    uniqueIndex('uniq_replica_primary')
       .on(table.managedId)
       .where(sql`${table.role} = 'primary'`),
-    uniqueIndex('uniq_node_server_private_port')
+    uniqueIndex('uniq_replica_server_private_port')
       .on(table.serverId, table.privatePort)
       .where(sql`${table.privatePort} IS NOT NULL`),
-    unique('uniq_node_managed_ordinal').on(table.managedId, table.ordinal),
-    unique('uniq_node_managed_server').on(table.managedId, table.serverId),
+    unique('uniq_replica_managed_ordinal').on(table.managedId, table.ordinal),
+    unique('uniq_replica_managed_server').on(table.managedId, table.serverId),
     check(
-      'node_role_check',
+      'replica_role_check',
       sql`${table.role} IN ('primary','replica')`,
     ),
     check(
-      'node_replica_class_check',
+      'replica_replica_class_check',
       sql`${table.replicaClass} IS NULL OR ${table.replicaClass} IN ('failover','read')`,
     ),
     check(
-      'node_ordinal_positive_check',
+      'replica_ordinal_positive_check',
       sql`${table.ordinal} >= 1`,
     ),
     check(
-      'node_transport_check',
+      'replica_transport_check',
       sql`${table.replicationTransport} IS NULL OR ${table.replicationTransport} IN ('local','fabric','datacenter','public')`,
     ),
     check(
-      'node_status_check',
+      'replica_status_check',
       sql`status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed','needs_resync')`,
     ),
   ],
 )
 /**
  * Tracking row for Organization-CA-signed managed leaves (ProxySQL frontend
- * and per-node engine). Re-issuance upserts rather than appending history
- * (partial uniques below). Declared after `node` / `managed` / `server` so
+ * and per-replica engine). Re-issuance upserts rather than appending history
+ * (partial uniques below). Declared after `replica` / `managed` / `server` so
  * those FKs resolve.
  */
 export const leaf = pgTable(
@@ -1228,10 +1224,10 @@ export const leaf = pgTable(
     serverId: uuid('server_id').notNull(),
     /** `ingress` | `engine` */
     kind: text().notNull(),
-    /** Engine leaves only — the managed cluster that owns the node. */
+    /** Engine leaves only — the managed cluster that owns the replica. */
     managedId: uuid('managed_id'),
-    /** Engine leaves only — the cluster member whose leaf this tracks. */
-    nodeId: uuid('node_id'),
+    /** Engine leaves only — the cluster replica whose leaf this tracks. */
+    replicaId: uuid('replica_id'),
     /** Signing Organization CA row (`tls.id`). */
     caId: uuid('ca_id').notNull(),
     caGeneration: integer('ca_generation').notNull(),
@@ -1253,8 +1249,8 @@ export const leaf = pgTable(
     uniqueIndex('uniq_leaf_ingress_server')
       .on(table.serverId)
       .where(sql`${table.kind} = 'ingress'`),
-    uniqueIndex('uniq_leaf_engine_node')
-      .on(table.nodeId)
+    uniqueIndex('uniq_leaf_engine_replica')
+      .on(table.replicaId)
       .where(sql`${table.kind} = 'engine'`),
     foreignKey({
       columns: [table.organizationId],
@@ -1272,9 +1268,9 @@ export const leaf = pgTable(
       name: 'leaf_managed_id_managed_id_fk',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.nodeId],
-      foreignColumns: [node.id],
-      name: 'leaf_node_id_node_id_fk',
+      columns: [table.replicaId],
+      foreignColumns: [replica.id],
+      name: 'leaf_replica_id_replica_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.caId],
@@ -1288,9 +1284,9 @@ export const leaf = pgTable(
     check(
       'leaf_kind_keys_check',
       sql`(
-        (${table.kind} = 'ingress' AND ${table.nodeId} IS NULL AND ${table.managedId} IS NULL)
+        (${table.kind} = 'ingress' AND ${table.replicaId} IS NULL AND ${table.managedId} IS NULL)
         OR
-        (${table.kind} = 'engine' AND ${table.nodeId} IS NOT NULL AND ${table.managedId} IS NOT NULL)
+        (${table.kind} = 'engine' AND ${table.replicaId} IS NOT NULL AND ${table.managedId} IS NOT NULL)
       )`,
     ),
   ],
@@ -1630,12 +1626,12 @@ export const deployment = pgTable(
 )
 /**
  * One scheduled instance of a logical service. Never mint a `service` row per
- * replica — `slot` is 0-based (unlike `container.ordinal` / `node.ordinal`,
- * which are 1-based). A task is derived scheduling state: `service_id`
- * CASCADE so deleting a service drops its tasks rather than blocking.
+ * replica — `slot` is 0-based (unlike `container.ordinal` / `replica.ordinal`,
+ * which are 1-based). A slot is derived scheduling state: `service_id`
+ * CASCADE so deleting a service drops its slots rather than blocking.
  */
-export const task = pgTable(
-  'task',
+export const slot = pgTable(
+  'slot',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -1653,7 +1649,7 @@ export const task = pgTable(
     serviceId: uuid('service_id').notNull(),
     serverId: uuid('server_id').notNull(),
     /**
-     * Cross-host address on a spanning compose network. One per task — a
+     * Cross-host address on a spanning compose network. One per slot — a
      * service typically joins one spanning network per environment.
      */
     address: inet('address'),
@@ -1663,35 +1659,82 @@ export const task = pgTable(
     desiredState: text('desired_state').default('running').notNull(),
   },
   (table) => [
-    unique('uniq_task_service_slot').on(table.serviceId, table.slot),
-    index('idx_task_environment_generation').using(
+    unique('uniq_slot_service_slot').on(table.serviceId, table.slot),
+    index('idx_slot_environment_generation').using(
       'btree',
       table.environmentId.asc(),
       table.generation.asc(),
     ),
-    index('idx_task_server_id').using(
+    index('idx_slot_server_id').using(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.environmentId],
       foreignColumns: [environment.id],
-      name: 'task_environment_id_environment_id_fk',
+      name: 'slot_environment_id_environment_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'slot_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'slot_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    check('slot_slot_nonnegative_check', sql`${table.slot} >= 0`),
+    check(
+      'slot_desired_state_check',
+      sql`${table.desiredState} IN ('running','stopped','removed')`,
+    ),
+  ],
+)
+/**
+ * Cron-style scheduled command on a service. No execution columns (no
+ * `last_run_at` / result) and no run-history table this phase.
+ */
+export const task = pgTable(
+  'task',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    serviceId: uuid('service_id').notNull(),
+    name: varchar({ length: 255 }).notNull(),
+    /** Cron expression. */
+    schedule: text().notNull(),
+    command: text().notNull(),
+    timezone: text(),
+    isEnabled: boolean('is_enabled').default(true).notNull(),
+    /** `allow` | `forbid` | `replace` */
+    concurrencyPolicy: text('concurrency_policy').default('forbid').notNull(),
+    timeoutSeconds: integer('timeout_seconds'),
+  },
+  (table) => [
+    unique('uniq_task_service_name').on(table.serviceId, table.name),
+    index('idx_task_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops'),
+    ),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
       name: 'task_service_id_service_id_fk',
     }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.serverId],
-      foreignColumns: [server.id],
-      name: 'task_server_id_server_id_fk',
-    }).onDelete('restrict'),
-    check('task_slot_nonnegative_check', sql`${table.slot} >= 0`),
     check(
-      'task_desired_state_check',
-      sql`${table.desiredState} IN ('running','stopped','removed')`,
+      'task_concurrency_policy_check',
+      sql`${table.concurrencyPolicy} IN ('allow','forbid','replace')`,
     ),
   ],
 )
@@ -1778,10 +1821,6 @@ export const hosting = pgTable(
       foreignColumns: [ip.id],
       name: 'hosting_ip_id_ip_id_fk',
     }).onDelete('set null'),
-    check(
-      'hosting_name_format_check',
-      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
-    ),
   ]
 )
 export const container = pgTable(
@@ -2118,14 +2157,14 @@ export const sshKey = pgTable(
 )
 
 /**
- * Join edge: the Linux/system principal that stewards a service (runs as /
- * owns the site tree). Deleting a principal removes its edges (cascade); a
- * service still referenced by principals cannot be deleted (restrict),
- * mirroring `container`'s restrict on `service`. Distinct from `binding`,
- * which injects managed-database credentials into a consumer service.
+ * Join edge: the Linux/system principal that runs as / owns a service (the
+ * site tree). Deleting a principal removes its edges (cascade); a service
+ * still referenced by principals cannot be deleted (restrict), mirroring
+ * `container`'s restrict on `service`. Distinct from `binding`, which injects
+ * managed-database credentials into a consumer service.
  */
-export const steward = pgTable(
-  'steward',
+export const tenancy = pgTable(
+  'tenancy',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -2141,25 +2180,25 @@ export const steward = pgTable(
     serviceId: uuid('service_id').notNull(),
   },
   (table) => [
-    index('idx_steward_principal_id').using(
+    index('idx_tenancy_principal_id').using(
       'btree',
       table.principalId.asc().nullsLast().op('uuid_ops')
     ),
-    index('idx_steward_service_id').using(
+    index('idx_tenancy_service_id').using(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops')
     ),
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
-      name: 'steward_principal_id_principal_id_fk',
+      name: 'tenancy_principal_id_principal_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
-      name: 'steward_service_id_service_id_fk',
+      name: 'tenancy_service_id_service_id_fk',
     }).onDelete('restrict'),
-    unique('steward_principal_service_unique').on(table.principalId, table.serviceId),
+    unique('tenancy_principal_service_unique').on(table.principalId, table.serviceId),
   ]
 )
 /**
@@ -2226,7 +2265,7 @@ export const binding = pgTable(
   ],
 )
 /**
- * Org-owned sealed credential for storage (and later other) providers.
+ * Org-owned sealed secret for storage (and later other) providers.
  * `secret_envelope` is one `tpsecret` payload of provider-specific JSON.
  * Transfer / NFS / S3 public CRUD is not in this slice.
  *
@@ -2236,8 +2275,8 @@ export const binding = pgTable(
  * decrypts straight to a `0600` identity file. Wrapping it in JSON would mean
  * one of the two sides had to parse it, and neither does.
  */
-export const credential = pgTable(
-  'credential',
+export const secret = pgTable(
+  'secret',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -2256,40 +2295,35 @@ export const credential = pgTable(
     provider: text().notNull(),
     name: varchar({ length: 255 }).notNull(),
     secretEnvelope: text('secret_envelope').notNull(),
-    expiresAt: timestamp('expires_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    }),
   },
   (table) => [
-    index('idx_credential_organization_id').using(
+    index('idx_secret_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_credential_principal_id').using(
+    index('idx_secret_principal_id').using(
       'btree',
       table.principalId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: 'credential_organization_id_organization_id_fk',
+      name: 'secret_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
-      name: 'credential_principal_id_principal_id_fk',
+      name: 'secret_principal_id_principal_id_fk',
     }).onDelete('restrict'),
     check(
-      'credential_provider_check',
+      'secret_provider_check',
       sql`provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
         'git_deploy_key')`,
     ),
   ],
 )
 /**
- * Logical identity of persistent data. Physical copies live on `location`;
+ * Logical identity of persistent data. Physical copies live on `copy`;
  * service attachments live on `mount`. Scope is at most one of workspace /
  * project / environment / service (zero = organization-wide).
  */
@@ -2413,8 +2447,8 @@ export const storage = pgTable(
  * One physical copy / materialization of a storage identity. Local docker/path
  * copies pin `server_id`; remote/shared copies leave it null.
  */
-export const location = pgTable(
-  'location',
+export const storageCopy = pgTable(
+  'copy',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -2430,7 +2464,7 @@ export const location = pgTable(
     options: jsonb(),
     storageId: uuid('storage_id').notNull(),
     serverId: uuid('server_id'),
-    credentialId: uuid('credential_id'),
+    secretId: uuid('secret_id'),
     provider: text().notNull(),
     role: text().default('primary').notNull(),
     state: text().default('pending').notNull(),
@@ -2439,49 +2473,49 @@ export const location = pgTable(
     generation: integer().default(0).notNull(),
   },
   (table) => [
-    index('idx_location_storage_id').using(
+    index('idx_copy_storage_id').using(
       'btree',
       table.storageId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_location_server_id').using(
+    index('idx_copy_server_id').using(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_location_credential_id').using(
+    index('idx_copy_secret_id').using(
       'btree',
-      table.credentialId.asc().nullsLast().op('uuid_ops'),
+      table.secretId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.storageId],
       foreignColumns: [storage.id],
-      name: 'location_storage_id_storage_id_fk',
+      name: 'copy_storage_id_storage_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'location_server_id_server_id_fk',
+      name: 'copy_server_id_server_id_fk',
     }).onDelete('restrict'),
     foreignKey({
-      columns: [table.credentialId],
-      foreignColumns: [credential.id],
-      name: 'location_credential_id_credential_id_fk',
+      columns: [table.secretId],
+      foreignColumns: [secret.id],
+      name: 'copy_secret_id_secret_id_fk',
     }).onDelete('restrict'),
-    uniqueIndex('uniq_location_storage_primary')
+    uniqueIndex('uniq_copy_storage_primary')
       .on(table.storageId)
       .where(sql`${table.role} = 'primary'`),
-    uniqueIndex('uniq_location_storage_server_provider')
+    uniqueIndex('uniq_copy_storage_server_provider')
       .on(table.storageId, table.serverId, table.provider)
       .where(sql`${table.serverId} IS NOT NULL`),
     check(
-      'location_provider_check',
+      'copy_provider_check',
       sql`provider IN ('docker', 'path', 'block', 'nfs', 'cifs', 's3', 's3_compatible', 'sftp', 'ftp', 'webdav')`,
     ),
     check(
-      'location_role_check',
+      'copy_role_check',
       sql`role IN ('primary', 'replica', 'scratch', 'archive')`,
     ),
     check(
-      'location_state_check',
+      'copy_state_check',
       sql`state IN ('pending', 'materializing', 'ready', 'syncing', 'stale', 'failed', 'retiring')`,
     ),
   ],
@@ -2534,12 +2568,183 @@ export const mount = pgTable(
   ],
 )
 /**
+ * Org-owned tag definition. Names are labels (app-enforced uniqueness via the
+ * per-org normalized unique index); no DB name-format CHECK.
+ */
+export const tag = pgTable(
+  'tag',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    name: varchar({ length: 255 }).notNull(),
+    description: varchar('description', { length: 255 }),
+    color: varchar({ length: 32 }),
+  },
+  (table) => [
+    index('idx_tag_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops'),
+    ),
+    uniqueIndex('uniq_tag_organization_name').on(
+      table.organizationId,
+      sql`lower(btrim((${table.name})::text))`,
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'tag_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+  ],
+)
+/**
+ * Join edge: one tag applied to exactly one taggable parent. Org is derived
+ * through `tag.organization_id` — no `organization_id` column.
+ */
+export const marker = pgTable(
+  'marker',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    tagId: uuid('tag_id').notNull(),
+    serverId: uuid('server_id'),
+    workspaceId: uuid('workspace_id'),
+    projectId: uuid('project_id'),
+    environmentId: uuid('environment_id'),
+    serviceId: uuid('service_id'),
+    datacenterId: uuid('datacenter_id'),
+    storageId: uuid('storage_id'),
+  },
+  (table) => [
+    index('idx_marker_tag_id').using(
+      'btree',
+      table.tagId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_marker_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_marker_workspace_id').using(
+      'btree',
+      table.workspaceId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_marker_project_id').using(
+      'btree',
+      table.projectId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_marker_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_marker_service_id').using(
+      'btree',
+      table.serviceId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_marker_datacenter_id').using(
+      'btree',
+      table.datacenterId.asc().nullsLast().op('uuid_ops'),
+    ),
+    index('idx_marker_storage_id').using(
+      'btree',
+      table.storageId.asc().nullsLast().op('uuid_ops'),
+    ),
+    foreignKey({
+      columns: [table.tagId],
+      foreignColumns: [tag.id],
+      name: 'marker_tag_id_tag_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'marker_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.workspaceId],
+      foreignColumns: [workspace.id],
+      name: 'marker_workspace_id_workspace_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [project.id],
+      name: 'marker_project_id_project_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'marker_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'marker_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.datacenterId],
+      foreignColumns: [datacenter.id],
+      name: 'marker_datacenter_id_datacenter_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.storageId],
+      foreignColumns: [storage.id],
+      name: 'marker_storage_id_storage_id_fk',
+    }).onDelete('cascade'),
+    uniqueIndex('uniq_marker_server')
+      .on(table.tagId, table.serverId)
+      .where(sql`${table.serverId} IS NOT NULL`),
+    uniqueIndex('uniq_marker_workspace')
+      .on(table.tagId, table.workspaceId)
+      .where(sql`${table.workspaceId} IS NOT NULL`),
+    uniqueIndex('uniq_marker_project')
+      .on(table.tagId, table.projectId)
+      .where(sql`${table.projectId} IS NOT NULL`),
+    uniqueIndex('uniq_marker_environment')
+      .on(table.tagId, table.environmentId)
+      .where(sql`${table.environmentId} IS NOT NULL`),
+    uniqueIndex('uniq_marker_service')
+      .on(table.tagId, table.serviceId)
+      .where(sql`${table.serviceId} IS NOT NULL`),
+    uniqueIndex('uniq_marker_datacenter')
+      .on(table.tagId, table.datacenterId)
+      .where(sql`${table.datacenterId} IS NOT NULL`),
+    uniqueIndex('uniq_marker_storage')
+      .on(table.tagId, table.storageId)
+      .where(sql`${table.storageId} IS NOT NULL`),
+    check(
+      'marker_exactly_one_parent_check',
+      sql`((server_id IS NOT NULL)::int +
+        (workspace_id IS NOT NULL)::int +
+        (project_id IS NOT NULL)::int +
+        (environment_id IS NOT NULL)::int +
+        (service_id IS NOT NULL)::int +
+        (datacenter_id IS NOT NULL)::int +
+        (storage_id IS NOT NULL)::int) = 1`,
+    ),
+  ],
+)
+/**
  * A registered Git provider application — a GitHub App, or a GitLab OAuth
  * application.
  *
- * Physical table name is the single lower-case word `gitapp` (repo rule — see
- * `src/lib/db/table-naming.test.ts`); the exported binding keeps the
- * fully-qualified `gitProviderApp` name used across the codebase.
+ * Physical table name is the single lower-case word `forge` (repo rule — see
+ * `src/lib/db/table-naming.test.ts`); the exported binding is `forge`.
  *
  * **`organization_id` is the scope switch.** `NULL` means instance-wide: an
  * operator registered it once and every organization may connect through it.
@@ -2559,13 +2764,13 @@ export const mount = pgTable(
  * and on a GitHub Enterprise Server instance. Holding it per app is also what
  * lets one TurboPanel instance talk to several GitLab origins at once.
  *
- * **All sealed material lives in `credentials`** as `tpsecret` envelopes
+ * **All sealed material lives in `envelopes`** as `tpsecret` envelopes
  * (`privateKeyEnvelope`, `clientSecretEnvelope`, `webhookSecretEnvelope`),
- * the same shape `installation.oauth_envelope` uses. Nothing sealed is ever
+ * the same shape `connection.oauth_envelope` uses. Nothing sealed is ever
  * returned over the API; summaries report presence only.
  */
-export const gitProviderApp = pgTable(
-  'gitapp',
+export const forge = pgTable(
+  'forge',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -2637,7 +2842,7 @@ export const gitProviderApp = pgTable(
      * Sealed material: `{ privateKeyEnvelope?, clientSecretEnvelope?,
      * webhookSecretEnvelope? }`, each a `tpsecret` string.
      */
-    credentials: jsonb().notNull(),
+    envelopes: jsonb().notNull(),
     /** Opaque routing token that appears in this app's webhook URL. */
     webhookRef: varchar('webhook_ref', { length: 64 }).notNull(),
     /**
@@ -2647,46 +2852,46 @@ export const gitProviderApp = pgTable(
     webhookTokenHash: text('webhook_token_hash'),
   },
   (table) => [
-    index('idx_gitapp_organization_id').using(
+    index('idx_forge_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_gitapp_provider').using('btree', table.provider.asc().nullsLast().op('text_ops')),
+    index('idx_forge_provider').using('btree', table.provider.asc().nullsLast().op('text_ops')),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: 'gitapp_organization_id_organization_id_fk',
+      name: 'forge_organization_id_organization_id_fk',
     }).onDelete('cascade'),
-    check('gitapp_provider_check', sql`provider IN ('github', 'gitlab')`),
-    unique('uniq_gitapp_webhook_ref').on(table.webhookRef),
-    unique('uniq_gitapp_provider_base_external').on(
+    check('forge_provider_check', sql`provider IN ('github', 'gitlab')`),
+    unique('uniq_forge_webhook_ref').on(table.webhookRef),
+    unique('uniq_forge_provider_base_external').on(
       table.provider,
       table.baseUrl,
       table.externalAppId,
     ),
-    unique('uniq_gitapp_webhook_token_hash').on(table.webhookTokenHash),
+    unique('uniq_forge_webhook_token_hash').on(table.webhookTokenHash),
   ],
 )
 /**
  * A Git provider connection granted to one organization.
  *
- * Physical table name is the single lower-case word `installation` (repo rule —
- * see `src/lib/db/table-naming.test.ts`); the exported binding keeps the
- * fully-qualified `gitProviderInstallation` name used across the codebase.
+ * Physical table name is the single lower-case word `connection` (repo rule —
+ * see `src/lib/db/table-naming.test.ts`); the exported binding is
+ * `gitConnection`.
  *
  * **What "installation" means depends on the provider.** For GitHub it is an
  * App installation and `external_installation_id` is GitHub's numeric id. For
  * GitLab there is no per-repository install: the operator connects one account
  * or group over OAuth, and the id is that account/group's GitLab id.
  *
- * **`app_id` names the application the grant was made through**, and is what
+ * **`forge_id` names the application the grant was made through**, and is what
  * makes a webhook delivery resolvable to exactly one row: an App id alone is
  * shared by every installation of that App, and a GitLab delivery names no
  * connection at all. Without it the only discriminators are provider and
  * external id, which collide across organizations.
  *
  * **No GitHub token columns.** Installation access tokens are minted on demand
- * from the sealed credentials of the `gitapp` row this one points at
+ * from the sealed envelopes of the `forge` row this one points at
  * (`src/lib/git/github-app-token.ts`) and are never persisted.
  *
  * **GitLab is the exception, and `oauth_envelope` is why.** OAuth hands out an
@@ -2695,8 +2900,8 @@ export const gitProviderApp = pgTable(
  * jsonb of `tpsecret` envelopes (never plaintext), scoped to
  * `provider = 'gitlab'` — see `src/lib/git/gitlab-oauth-token.ts`.
  */
-export const gitProviderInstallation = pgTable(
-  'installation',
+export const gitConnection = pgTable(
+  'connection',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -2712,7 +2917,7 @@ export const gitProviderInstallation = pgTable(
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     /** The registered application this connection was granted through. */
-    appId: uuid('app_id').notNull(),
+    forgeId: uuid('forge_id').notNull(),
     provider: text().notNull(),
     /** Provider-side id: a GitHub App installation, or a GitLab account/group. */
     externalInstallationId: text('external_installation_id').notNull(),
@@ -2733,28 +2938,28 @@ export const gitProviderInstallation = pgTable(
     oauthEnvelope: jsonb('oauth_envelope'),
   },
   (table) => [
-    index('idx_installation_organization_id').using(
+    index('idx_connection_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_installation_app_id').using(
+    index('idx_connection_forge_id').using(
       'btree',
-      table.appId.asc().nullsLast().op('uuid_ops'),
+      table.forgeId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: 'installation_organization_id_organization_id_fk',
+      name: 'connection_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.appId],
-      foreignColumns: [gitProviderApp.id],
-      name: 'installation_app_id_gitapp_id_fk',
+      columns: [table.forgeId],
+      foreignColumns: [forge.id],
+      name: 'connection_forge_id_forge_id_fk',
     }).onDelete('cascade'),
-    check('installation_provider_check', sql`provider IN ('github', 'gitlab')`),
-    unique('uniq_installation_organization_app_external').on(
+    check('connection_provider_check', sql`provider IN ('github', 'gitlab')`),
+    unique('uniq_connection_organization_forge_external').on(
       table.organizationId,
-      table.appId,
+      table.forgeId,
       table.externalInstallationId,
     ),
   ],
@@ -2764,8 +2969,8 @@ export const gitProviderInstallation = pgTable(
  * owning `service` **or** `environment` (zero = organization-wide library
  * entry). Mirrors `storage`'s at-most-one-parent rule.
  */
-export const source = pgTable(
-  'source',
+export const repository = pgTable(
+  'repository',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -2781,11 +2986,11 @@ export const source = pgTable(
     options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     /** Provider connection that authorizes clones; null for deploy-key sources. */
-    installationId: uuid('installation_id'),
+    connectionId: uuid('connection_id'),
     serviceId: uuid('service_id'),
     environmentId: uuid('environment_id'),
     /** Deploy key for generic-SSH and deploy-key-authorized GitLab sources. */
-    credentialId: uuid('credential_id'),
+    secretId: uuid('secret_id'),
     provider: text().notNull(),
     repositoryUrl: text('repository_url').notNull(),
     /** Provider-side repository/project id (numeric, as text) for webhook matching. */
@@ -2796,55 +3001,55 @@ export const source = pgTable(
     autoDeploy: text('auto_deploy').default('disabled').notNull(),
   },
   (table) => [
-    index('idx_source_organization_id').using(
+    index('idx_repository_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_source_installation_id').using(
+    index('idx_repository_connection_id').using(
       'btree',
-      table.installationId.asc().nullsLast().op('uuid_ops'),
+      table.connectionId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_source_service_id').using(
+    index('idx_repository_service_id').using(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_source_environment_id').using(
+    index('idx_repository_environment_id').using(
       'btree',
       table.environmentId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_source_credential_id').using(
+    index('idx_repository_secret_id').using(
       'btree',
-      table.credentialId.asc().nullsLast().op('uuid_ops'),
+      table.secretId.asc().nullsLast().op('uuid_ops'),
     ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: 'source_organization_id_organization_id_fk',
+      name: 'repository_organization_id_organization_id_fk',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.installationId],
-      foreignColumns: [gitProviderInstallation.id],
-      name: 'source_installation_id_installation_id_fk',
+      columns: [table.connectionId],
+      foreignColumns: [gitConnection.id],
+      name: 'repository_connection_id_connection_id_fk',
     }).onDelete('set null'),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
-      name: 'source_service_id_service_id_fk',
+      name: 'repository_service_id_service_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.environmentId],
       foreignColumns: [environment.id],
-      name: 'source_environment_id_environment_id_fk',
+      name: 'repository_environment_id_environment_id_fk',
     }).onDelete('cascade'),
     foreignKey({
-      columns: [table.credentialId],
-      foreignColumns: [credential.id],
-      name: 'source_credential_id_credential_id_fk',
+      columns: [table.secretId],
+      foreignColumns: [secret.id],
+      name: 'repository_secret_id_secret_id_fk',
     }).onDelete('set null'),
     /**
      * One repository binds once per organization.
      *
-     * A source is created implicitly now, when a repository is attached to a
+     * A repository is created implicitly now, when a repository is attached to a
      * project, so the same repo can be attached from two projects. Without this
      * that produces two rows for one repository — and since `auto_deploy` and
      * `default_branch` live on the row, their policies would silently diverge
@@ -2852,22 +3057,22 @@ export const source = pgTable(
      * the find-or-create in `POST /sources/attach` atomic rather than a
      * check-then-insert race.
      *
-     * Deploy-key and generic-git sources carry a null `installation_id` and are
+     * Deploy-key and generic-git sources carry a null `connection_id` and are
      * therefore not constrained here: Postgres treats nulls as distinct, which
-     * is right — those are keyed by credential, not by installation.
+     * is right — those are keyed by secret, not by connection.
      */
-    unique('uniq_source_organization_installation_repository').on(
+    unique('uniq_repository_organization_connection_repository').on(
       table.organizationId,
-      table.installationId,
+      table.connectionId,
       table.repositoryExternalId,
     ),
-    check('source_provider_check', sql`provider IN ('github', 'gitlab', 'git')`),
+    check('repository_provider_check', sql`provider IN ('github', 'gitlab', 'git')`),
     check(
-      'source_auto_deploy_check',
+      'repository_auto_deploy_check',
       sql`auto_deploy IN ('immediate', 'checks_passed', 'disabled')`,
     ),
     check(
-      'source_at_most_one_parent_check',
+      'repository_at_most_one_parent_check',
       sql`((service_id IS NOT NULL)::int +
         (environment_id IS NOT NULL)::int) <= 1`,
     ),

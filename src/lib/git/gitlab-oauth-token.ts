@@ -18,7 +18,7 @@
 
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { gitProviderInstallation } from '../db/schema.ts'
+import { gitConnection } from '../db/schema.ts'
 import {
   decryptSecret,
   encryptSecret,
@@ -26,16 +26,16 @@ import {
 } from '../../client/authn/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import {
-  type GitApp,
+  type Forge,
   GITLAB_OAUTH_SCOPES,
-  loadGitAppForInstallation,
-} from './git-app-records.ts'
+  loadForgeForConnection,
+} from './forge-records.ts'
 
 /**
  * The application-level material every GitLab grant is minted through.
  *
  * A narrow structural type rather than the whole app row: these functions do
- * token exchange and nothing else, and keeping them off `GitApp` means the
+ * token exchange and nothing else, and keeping them off `Forge` means the
  * connect flow can pass credentials it assembled from a form just as easily as
  * ones it read from the table.
  */
@@ -53,7 +53,7 @@ export type GitlabOauthCredentials = {
  * secret cannot mint anything, and every caller here is already on a path that
  * needs a token.
  */
-export function gitlabOauthCredentials(app: GitApp): GitlabOauthCredentials {
+export function gitlabOauthCredentials(app: Forge): GitlabOauthCredentials {
   if (app.provider !== 'gitlab') {
     throw new GitlabOauthTokenError(`app "${app.name}" is not a gitlab application`)
   }
@@ -263,13 +263,13 @@ export async function refreshGitlabAccessToken(
 export async function persistGitlabTokenPair(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  installationId: string,
+  connectionId: string,
   pair: GitlabTokenPair,
 ): Promise<void> {
   const [row] = await db
-    .select({ oauthEnvelope: gitProviderInstallation.oauthEnvelope })
-    .from(gitProviderInstallation)
-    .where(eq(gitProviderInstallation.id, installationId))
+    .select({ oauthEnvelope: gitConnection.oauthEnvelope })
+    .from(gitConnection)
+    .where(eq(gitConnection.id, connectionId))
     .limit(1)
   const stored = readStored(row?.oauthEnvelope)
 
@@ -288,9 +288,9 @@ export async function persistGitlabTokenPair(
   if (pair.scope) next.scope = pair.scope
 
   await db
-    .update(gitProviderInstallation)
+    .update(gitConnection)
     .set({ oauthEnvelope: next, updatedAt: new Date().toISOString() })
-    .where(eq(gitProviderInstallation.id, installationId))
+    .where(eq(gitConnection.id, connectionId))
 }
 
 function isExpired(expiresAt: string | undefined, nowMs: number): boolean {
@@ -313,16 +313,16 @@ function isExpired(expiresAt: string | undefined, nowMs: number): boolean {
 export async function mintGitlabAccessToken(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  installationId: string,
+  connectionId: string,
 ): Promise<GitlabAccessToken> {
   const [row] = await db
     .select({
-      provider: gitProviderInstallation.provider,
-      suspendedAt: gitProviderInstallation.suspendedAt,
-      oauthEnvelope: gitProviderInstallation.oauthEnvelope,
+      provider: gitConnection.provider,
+      suspendedAt: gitConnection.suspendedAt,
+      oauthEnvelope: gitConnection.oauthEnvelope,
     })
-    .from(gitProviderInstallation)
-    .where(eq(gitProviderInstallation.id, installationId))
+    .from(gitConnection)
+    .where(eq(gitConnection.id, connectionId))
     .limit(1)
 
   if (!row) throw new GitlabOauthTokenError('installation not found', 404)
@@ -365,13 +365,13 @@ export async function mintGitlabAccessToken(
   // Resolved from `installation.app_id`, not from a single instance-wide row:
   // two connections may legitimately be minted through different applications,
   // on different GitLab origins.
-  const app = await loadGitAppForInstallation(db, dataEncryptionSecrets, installationId)
+  const app = await loadForgeForConnection(db, dataEncryptionSecrets, connectionId)
   if (!app) {
     throw new GitlabOauthTokenError('gitlab oauth application is not configured')
   }
   const pair = await refreshGitlabAccessToken(gitlabOauthCredentials(app), refreshToken)
   // Write back *before* returning: the rotated refresh token is the only thing
   // that keeps this connection alive past the current token's lifetime.
-  await persistGitlabTokenPair(db, dataEncryptionSecrets, installationId, pair)
+  await persistGitlabTokenPair(db, dataEncryptionSecrets, connectionId, pair)
   return { token: pair.token, expiresAt: pair.expiresAt }
 }

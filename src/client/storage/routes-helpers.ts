@@ -14,13 +14,13 @@ export type StorageAccessMode = typeof ACCESS_MODES[number]
 export const RETENTION_POLICIES = ['retain', 'delete'] as const
 export type StorageRetention = typeof RETENTION_POLICIES[number]
 
-export const API_LOCATION_PROVIDERS = ['docker', 'path'] as const
-export type ApiLocationProvider = typeof API_LOCATION_PROVIDERS[number]
+export const API_COPY_PROVIDERS = ['docker', 'path'] as const
+export type ApiCopyProvider = typeof API_COPY_PROVIDERS[number]
 
-export const LOCATION_ROLES = ['primary', 'replica', 'scratch', 'archive'] as const
-export type LocationRole = typeof LOCATION_ROLES[number]
+export const COPY_ROLES = ['primary', 'replica', 'scratch', 'archive'] as const
+export type CopyRole = typeof COPY_ROLES[number]
 
-export const LOCATION_STATES = [
+export const COPY_STATES = [
   'pending',
   'materializing',
   'ready',
@@ -29,7 +29,7 @@ export const LOCATION_STATES = [
   'failed',
   'retiring',
 ] as const
-export type LocationState = typeof LOCATION_STATES[number]
+export type CopyState = typeof COPY_STATES[number]
 
 export const PARENT_FIELDS = [
   { bodyKey: 'workspaceId', column: 'workspaceId' as const, entityKind: 'workspace' as const },
@@ -71,19 +71,19 @@ export function isRetention(value: unknown): value is StorageRetention {
     (RETENTION_POLICIES as readonly string[]).includes(value)
 }
 
-export function isApiLocationProvider(value: unknown): value is ApiLocationProvider {
+export function isApiCopyProvider(value: unknown): value is ApiCopyProvider {
   return typeof value === 'string' &&
-    (API_LOCATION_PROVIDERS as readonly string[]).includes(value)
+    (API_COPY_PROVIDERS as readonly string[]).includes(value)
 }
 
-export function isLocationRole(value: unknown): value is LocationRole {
+export function isCopyRole(value: unknown): value is CopyRole {
   return typeof value === 'string' &&
-    (LOCATION_ROLES as readonly string[]).includes(value)
+    (COPY_ROLES as readonly string[]).includes(value)
 }
 
-export function isLocationState(value: unknown): value is LocationState {
+export function isCopyState(value: unknown): value is CopyState {
   return typeof value === 'string' &&
-    (LOCATION_STATES as readonly string[]).includes(value)
+    (COPY_STATES as readonly string[]).includes(value)
 }
 
 export function optionalStringField(value: unknown): string | null {
@@ -171,13 +171,14 @@ export function parseOptionalStorageContent(
   return value
 }
 
-export type CreateLocationFields = {
-  provider: ApiLocationProvider
+export type CreateCopyFields = {
+  provider: ApiCopyProvider
   serverId: string
   path: string | null
-  role: LocationRole
-  state: LocationState
+  role: CopyRole
+  state: CopyState
   endpoint: string | null
+  secretId: string | null
   metadata: Record<string, unknown> | null
   options: Record<string, unknown> | null
 }
@@ -197,7 +198,7 @@ export type CreateStorageFields = {
   principalId: string | null
   metadata: Record<string, unknown> | null
   options: Record<string, unknown> | null
-  location: CreateLocationFields | undefined
+  copy: CreateCopyFields | undefined
   mount: CreateMountFields | undefined
 }
 
@@ -233,10 +234,10 @@ export function isPostgresUniqueViolation(err: unknown): boolean {
   )
 }
 
-export const LOCATION_PRIMARY_EXISTS_ERROR = 'location_primary_exists'
-export const LOCATION_SERVER_PROVIDER_EXISTS_ERROR = 'location_server_provider_exists'
+export const COPY_PRIMARY_EXISTS_ERROR = 'copy_primary_exists'
+export const COPY_SERVER_PROVIDER_EXISTS_ERROR = 'copy_server_provider_exists'
 export const MOUNT_DESTINATION_IN_USE_ERROR = 'mount_destination_in_use'
-export const SCRATCH_LOCATION_NOT_MOUNTABLE_ERROR = 'scratch_location_not_mountable'
+export const SCRATCH_COPY_NOT_MOUNTABLE_ERROR = 'scratch_copy_not_mountable'
 
 function uniqueViolationMessage(err: unknown): string {
   if (err instanceof Error) return err.message
@@ -252,11 +253,11 @@ export function mapStorageUniqueViolation(
 ): { error: string; status: 409 } | null {
   if (!isPostgresUniqueViolation(err)) return null
   const message = uniqueViolationMessage(err)
-  if (message.includes('uniq_location_storage_primary')) {
-    return { error: LOCATION_PRIMARY_EXISTS_ERROR, status: 409 }
+  if (message.includes('uniq_copy_storage_primary')) {
+    return { error: COPY_PRIMARY_EXISTS_ERROR, status: 409 }
   }
-  if (message.includes('uniq_location_storage_server_provider')) {
-    return { error: LOCATION_SERVER_PROVIDER_EXISTS_ERROR, status: 409 }
+  if (message.includes('uniq_copy_storage_server_provider')) {
+    return { error: COPY_SERVER_PROVIDER_EXISTS_ERROR, status: 409 }
   }
   if (message.includes('uniq_mount_service_destination')) {
     return { error: MOUNT_DESTINATION_IN_USE_ERROR, status: 409 }
@@ -264,30 +265,31 @@ export function mapStorageUniqueViolation(
   return { error: 'conflict', status: 409 }
 }
 
-export function parseLocationRecord(
+export function parseCopyRecord(
   c: Context<AppEnv>,
-  loc: Record<string, unknown>,
-): CreateLocationFields | Response {
-  if (!isApiLocationProvider(loc.provider)) {
+  copy: Record<string, unknown>,
+): CreateCopyFields | Response {
+  if (!isApiCopyProvider(copy.provider)) {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  const serverId = requireStringField(c, loc, 'serverId')
+  const serverId = requireStringField(c, copy, 'serverId')
   if (serverId instanceof Response) return serverId
-  const role = parseEnumField(c, loc.role, LOCATION_ROLES, 'primary')
+  const role = parseEnumField(c, copy.role, COPY_ROLES, 'primary')
   if (role instanceof Response) return role
-  const state = parseEnumField(c, loc.state, LOCATION_STATES, 'pending')
+  const state = parseEnumField(c, copy.state, COPY_STATES, 'pending')
   if (state instanceof Response) return state
-  const metadata = parseJsonbObject(c, loc, 'metadata')
+  const metadata = parseJsonbObject(c, copy, 'metadata')
   if (metadata instanceof Response) return metadata
-  const options = parseJsonbObject(c, loc, 'options')
+  const options = parseJsonbObject(c, copy, 'options')
   if (options instanceof Response) return options
   return {
-    provider: loc.provider,
+    provider: copy.provider,
     serverId,
-    path: optionalStringField(loc.path),
+    path: optionalStringField(copy.path),
     role,
     state,
-    endpoint: optionalStringField(loc.endpoint),
+    endpoint: optionalStringField(copy.endpoint),
+    secretId: optionalStringField(copy.secretId),
     metadata,
     options,
   }
@@ -314,15 +316,17 @@ export function parseMountRecord(
   }
 }
 
-export function parseCreateLocationFields(
+export function parseCreateCopyFields(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
-): CreateLocationFields | undefined | Response {
-  if (body.location === undefined) return undefined
-  if (!isRecord(body.location)) {
+): CreateCopyFields | undefined | Response {
+  // Prefer the renamed copy field (`storageCopy` or `copy`).
+  const raw = body.storageCopy ?? body.copy
+  if (raw === undefined) return undefined
+  if (!isRecord(raw)) {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  return parseLocationRecord(c, body.location)
+  return parseCopyRecord(c, raw)
 }
 
 export function parseCreateMountFields(
@@ -358,13 +362,13 @@ export function parseCreateStorageFields(
   const options = parseJsonbObject(c, body, 'options')
   if (options instanceof Response) return options
 
-  const location = parseCreateLocationFields(c, body)
-  if (location instanceof Response) return location
+  const copy = parseCreateCopyFields(c, body)
+  if (copy instanceof Response) return copy
   const mount = parseCreateMountFields(c, body)
   if (mount instanceof Response) return mount
 
-  if (mount && location?.role === 'scratch') {
-    return c.json({ error: SCRATCH_LOCATION_NOT_MOUNTABLE_ERROR }, 400)
+  if (mount && copy?.role === 'scratch') {
+    return c.json({ error: SCRATCH_COPY_NOT_MOUNTABLE_ERROR }, 400)
   }
 
   return {
@@ -375,7 +379,7 @@ export function parseCreateStorageFields(
     principalId: optionalStringField(body.principalId),
     metadata,
     options,
-    location,
+    copy,
     mount,
   }
 }
@@ -402,24 +406,24 @@ export function buildStorageUpdateFields(
   return updateFields
 }
 
-export function parseLocationPatchFields(
+export function parseCopyPatchFields(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
 ): Record<string, unknown> | Response {
   const updateFields: Record<string, unknown> = {
     updatedAt: new Date().toISOString(),
   }
-  if (isApiLocationProvider(body.provider)) updateFields.provider = body.provider
+  if (isApiCopyProvider(body.provider)) updateFields.provider = body.provider
   if (typeof body.serverId === 'string') updateFields.serverId = body.serverId
   if (body.serverId === null) updateFields.serverId = null
   if (typeof body.path === 'string' || body.path === null) updateFields.path = body.path
   if (typeof body.endpoint === 'string' || body.endpoint === null) {
     updateFields.endpoint = body.endpoint
   }
-  if (isLocationRole(body.role)) updateFields.role = body.role
-  if (isLocationState(body.state)) updateFields.state = body.state
-  if (body.credentialId === null || typeof body.credentialId === 'string') {
-    updateFields.credentialId = body.credentialId
+  if (isCopyRole(body.role)) updateFields.role = body.role
+  if (isCopyState(body.state)) updateFields.state = body.state
+  if (body.secretId === null || typeof body.secretId === 'string') {
+    updateFields.secretId = body.secretId
   }
   const metadata = parseJsonbObject(c, body, 'metadata')
   if (metadata instanceof Response) return metadata
@@ -482,6 +486,6 @@ export function principalProjectMismatch(
   return principalProjectId !== expectedProjectId
 }
 
-export function scratchLocationNotMountable(role: string | null | undefined): boolean {
+export function scratchCopyNotMountable(role: string | null | undefined): boolean {
   return role === 'scratch'
 }

@@ -1,5 +1,5 @@
 /**
- * Load fleet + compose, interpret Swarm `deploy:`, and plan tasks.
+ * Load fleet + compose, interpret Swarm `deploy:`, and plan slots.
  */
 
 import { eq } from 'drizzle-orm'
@@ -8,9 +8,9 @@ import {
   resolveComposeLayerChain,
 } from '../compose/layer-chain.ts'
 import type { Db } from '../../db.ts'
-import { environment, fabric, location, mount, project, server, service, storage } from '../db/schema.ts'
+import { environment, fabric, storageCopy, mount, project, server, service, storage } from '../db/schema.ts'
 import { listServerLabelsForServers } from '../db/label-records.ts'
-import { listEnvironmentTasks } from '../db/task-records.ts'
+import { listEnvironmentSlots } from '../db/slot-records.ts'
 import {
   mergeComposeLayers,
   type ComposeDocument,
@@ -57,7 +57,7 @@ export type PlanEnvironmentDeployDeps = {
   reconcileServicesFromCompose?: typeof reconcileServicesFromCompose
   registerComposeVolumes?: typeof registerComposeVolumes
   registerComposeMounts?: typeof registerComposeMounts
-  listEnvironmentTasks?: typeof listEnvironmentTasks
+  listEnvironmentSlots?: typeof listEnvironmentSlots
   listServerLabelsForServers?: typeof listServerLabelsForServers
 }
 
@@ -101,7 +101,7 @@ export type StoragePinMountRow = {
 
 /**
  * Host-free: pin each service to its storage primary server unless the volume
- * has a shared (null-server) location.
+ * has a shared (null-server) storageCopy.
  */
 export function computeStoragePinsFromMountRows(
   rows: readonly StoragePinMountRow[],
@@ -163,19 +163,19 @@ async function loadStoragePins(
     .select({
       serviceId: mount.serviceId,
       storageId: storage.id,
-      locationServerId: location.serverId,
-      locationRole: location.role,
+      locationServerId: storageCopy.serverId,
+      locationRole: storageCopy.role,
     })
     .from(mount)
     .innerJoin(storage, eq(mount.storageId, storage.id))
-    .innerJoin(location, eq(location.storageId, storage.id))
+    .innerJoin(storageCopy, eq(storageCopy.storageId, storage.id))
     .where(eq(storage.environmentId, environmentId))
 
   return computeStoragePinsFromMountRows(rows)
 }
 
 /**
- * Plan tasks for an environment deploy. Callers map `SchedulePlan` errors to
+ * Plan slots for an environment deploy. Callers map `SchedulePlan` errors to
  * HTTP (`turbofabric_required` → 422, no eligible server → 409).
  *
  * Optional {@link PlanEnvironmentDeployDeps} lets host-free tests stub
@@ -192,7 +192,7 @@ export async function planEnvironmentDeploy(
   const reconcile = deps.reconcileServicesFromCompose ?? reconcileServicesFromCompose
   const registerVolumes = deps.registerComposeVolumes ?? registerComposeVolumes
   const registerMounts = deps.registerComposeMounts ?? registerComposeMounts
-  const listTasks = deps.listEnvironmentTasks ?? listEnvironmentTasks
+  const listTasks = deps.listEnvironmentSlots ?? listEnvironmentSlots
   const listLabels = deps.listServerLabelsForServers ?? listServerLabelsForServers
 
   const [envRow] = await db

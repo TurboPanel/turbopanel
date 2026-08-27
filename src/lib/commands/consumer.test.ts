@@ -21,7 +21,7 @@ import {
   ip,
   managed,
   network,
-  node,
+  replica,
   organization,
   principal,
   project,
@@ -2865,7 +2865,7 @@ test('processCommandEnvelope marks managed failed when managed.apply times out',
       .limit(1)
 
     const memberId = MANAGED_APPLY_PAYLOAD.memberId
-    await db.insert(node).values({
+    await db.insert(replica).values({
       id: memberId,
       managedId,
       serverId,
@@ -2905,9 +2905,9 @@ test('processCommandEnvelope marks managed failed when managed.apply times out',
 
     // Member must not stay stuck on provisioning after the apply command fails.
     const [afterMember] = await db
-      .select({ status: node.status })
-      .from(node)
-      .where(eq(node.id, memberId))
+      .select({ status: replica.status })
+      .from(replica)
+      .where(eq(replica.id, memberId))
       .limit(1)
     assertEquals(afterMember?.status, 'failed')
   })
@@ -3476,7 +3476,7 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
     await attachConnectedDaemonStatus(db, standbyServerId)
 
     const [primaryMember] = await db
-      .insert(node)
+      .insert(replica)
       .values({
         managedId,
         serverId,
@@ -3484,9 +3484,9 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
         ordinal: 1,
         status: 'ready',
       })
-      .returning({ id: node.id })
+      .returning({ id: replica.id })
     const [replicaMember] = await db
-      .insert(node)
+      .insert(replica)
       .values({
         managedId,
         serverId: standbyServerId,
@@ -3494,7 +3494,7 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
         ordinal: 2,
         status: 'ready',
       })
-      .returning({ id: node.id })
+      .returning({ id: replica.id })
 
     try {
       const record = await createCommandRecord(db, {
@@ -3534,19 +3534,19 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
 
       const members = await db
         .select({
-          id: node.id,
-          role: node.role,
-          status: node.status,
+          id: replica.id,
+          role: replica.role,
+          status: replica.status,
         })
-        .from(node)
-        .where(eq(node.managedId, managedId))
+        .from(replica)
+        .where(eq(replica.managedId, managedId))
 
       const primary = members.find((m) => m.id === primaryMember!.id)
-      const replica = members.find((m) => m.id === replicaMember!.id)
+      const replicaRow = members.find((m) => m.id === replicaMember!.id)
       assertEquals(primary?.role, 'replica')
       assertEquals(primary?.status, 'needs_resync')
-      assertEquals(replica?.role, 'primary')
-      assertEquals(replica?.status, 'ready')
+      assertEquals(replicaRow?.role, 'primary')
+      assertEquals(replicaRow?.status, 'ready')
 
       const [managedRow] = await db
         .select({ serverId: managed.serverId, status: managed.status })
@@ -3556,7 +3556,7 @@ test('processCommandEnvelope demotes old primary before promote so uniq_node_pri
       assertEquals(managedRow?.serverId, standbyServerId)
       assertEquals(managedRow?.status, 'ready')
     } finally {
-      await db.delete(node).where(eq(node.managedId, managedId))
+      await db.delete(replica).where(eq(replica.managedId, managedId))
       // Promote may have flipped managed.serverId to the standby host; point
       // it back at the original server before dropping the standby row so
       // the FK doesn't block deletion.
@@ -3863,7 +3863,7 @@ test('processCommandEnvelope does not enqueue promote when fence lifecycle fails
 test('processCommandEnvelope deletes member only after destroy success with deleteMemberAfterDestroy', async () => {
   await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
     const [memberRow] = await db
-      .insert(node)
+      .insert(replica)
       .values({
         managedId,
         serverId,
@@ -3872,7 +3872,7 @@ test('processCommandEnvelope deletes member only after destroy success with dele
         status: 'applying',
         isReadEligible: true,
       })
-      .returning({ id: node.id })
+      .returning({ id: replica.id })
     const memberId = memberRow!.id
 
     try {
@@ -3908,13 +3908,13 @@ test('processCommandEnvelope deletes member only after destroy success with dele
       )
 
       const [after] = await db
-        .select({ id: node.id })
-        .from(node)
-        .where(eq(node.id, memberId))
+        .select({ id: replica.id })
+        .from(replica)
+        .where(eq(replica.id, memberId))
         .limit(1)
       assertEquals(after, undefined)
     } finally {
-      await db.delete(node).where(eq(node.managedId, managedId))
+      await db.delete(replica).where(eq(replica.managedId, managedId))
     }
   })
 })
@@ -4003,7 +4003,7 @@ async function sweepPromoteFixtureOrganization(
     await db.delete(binding).where(inArray(binding.serviceId, serviceIds))
   }
   if (managedIds.length > 0) {
-    await db.delete(node).where(inArray(node.managedId, managedIds))
+    await db.delete(replica).where(inArray(replica.managedId, managedIds))
     await db.delete(principal).where(inArray(principal.managedId, managedIds))
   }
   // Ingress hierarchy self-heal allocates containers on every reconciled
@@ -4143,7 +4143,7 @@ async function withPromoteConsumerFixtures(
       const managedId = managedRow!.id
 
       const [primaryMemberRow] = await db
-        .insert(node)
+        .insert(replica)
         .values({
           managedId,
           serverId,
@@ -4152,9 +4152,9 @@ async function withPromoteConsumerFixtures(
           status: 'ready',
           privatePort: 45001,
         })
-        .returning({ id: node.id })
+        .returning({ id: replica.id })
       const [standbyMemberRow] = await db
-        .insert(node)
+        .insert(replica)
         .values({
           managedId,
           serverId: standbyServerId,
@@ -4164,7 +4164,7 @@ async function withPromoteConsumerFixtures(
           status: 'ready',
           privatePort: 45002,
         })
-        .returning({ id: node.id })
+        .returning({ id: replica.id })
 
       // Engine containers: a local member's ProxySQL backend address is its
       // Docker container name, so `managed.ingress.reconcile` cannot be built
@@ -4340,7 +4340,7 @@ test('processCommandEnvelope fans promote ingress reconcile out to bound consume
 test('processCommandEnvelope keeps member row failed/retryable when destroy fails', async () => {
   await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
     const [memberRow] = await db
-      .insert(node)
+      .insert(replica)
       .values({
         managedId,
         serverId,
@@ -4349,7 +4349,7 @@ test('processCommandEnvelope keeps member row failed/retryable when destroy fail
         status: 'applying',
         isReadEligible: true,
       })
-      .returning({ id: node.id })
+      .returning({ id: replica.id })
     const memberId = memberRow!.id
 
     try {
@@ -4385,14 +4385,14 @@ test('processCommandEnvelope keeps member row failed/retryable when destroy fail
       )
 
       const [after] = await db
-        .select({ id: node.id, status: node.status })
-        .from(node)
-        .where(eq(node.id, memberId))
+        .select({ id: replica.id, status: replica.status })
+        .from(replica)
+        .where(eq(replica.id, memberId))
         .limit(1)
       assertEquals(after?.id, memberId)
       assertEquals(after?.status, 'failed')
     } finally {
-      await db.delete(node).where(eq(node.managedId, managedId))
+      await db.delete(replica).where(eq(replica.managedId, managedId))
     }
   })
 })

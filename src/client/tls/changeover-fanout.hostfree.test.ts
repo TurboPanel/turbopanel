@@ -15,7 +15,7 @@ import {
   parseResumeAfterManagedId,
   runOrganizationCaRotationFanout,
   selectManagedBatchForRotation,
-} from "./rotation-fanout.ts";
+} from "./changeover-fanout.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

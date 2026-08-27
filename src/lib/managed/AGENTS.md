@@ -364,7 +364,7 @@ reserved last-usable host) so remote consumers resolve it by name. Coverage:
 
 ## Cluster members
 
-`node` is the authoritative fan-out set. `managed.server_id` remains the
+`replica` is the authoritative fan-out set (`replica.replica_class` reads awkwardly and is expected). `managed.server_id` remains the
 **primary** pin. Roles: exactly one `primary` (partial unique) plus unbounded
 replicas. Each replica has **`replica_class`** `failover` (same datacenter as
 the primary, local/datacenter transport only, promotable) or `read` (any org

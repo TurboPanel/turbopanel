@@ -41,7 +41,7 @@ export const genericGitProvider: GitProvider = {
     _ctx: GitProviderContext,
     params: PrepareCloneParams,
   ): Promise<PreparedClone> {
-    // No minted secret: the caller falls back to `source.credentialId`, which is
+    // No minted secret: the caller falls back to `source.secretId`, which is
     // the only credential a generic source has.
     return Promise.resolve({
       commit: { commitSha: params.requestedCommitSha ?? params.ref },

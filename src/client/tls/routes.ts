@@ -66,7 +66,7 @@ import {
   tryBeginCaRotation,
   updateCaRotationJournal,
   type CaRotationJournalRow,
-} from "./rotation-lease.ts";
+} from "./changeover-lease.ts";
 import { countDueTlsLeavesForOrganization } from "./leaf-renewal-sweep.ts";
 import {
   type CaRotationResultRow,
@@ -75,7 +75,7 @@ import {
   parseNeedsRedeploy,
   parseResumeAfterManagedId,
   runOrganizationCaRotationFanout,
-} from "./rotation-fanout.ts";
+} from "./changeover-fanout.ts";
 import { assertDispatchInfrastructure } from "../servers/command-dispatch.ts";
 import { listCommandRecordsByIds } from "../../lib/db/command-records.ts";
 

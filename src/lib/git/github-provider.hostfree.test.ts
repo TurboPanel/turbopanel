@@ -7,13 +7,13 @@ import { encryptSecret } from '../../client/authn/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
 import type { Db } from '../../db.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { gitProviderInstallation } from '../db/schema.ts'
+import { gitConnection } from '../db/schema.ts'
 import {
   isGitProviderFailure,
   type GitProviderContext,
   type GitProviderSourceRow,
 } from './git-provider.ts'
-import { GitAppError } from './git-app-records.ts'
+import { ForgeError } from './forge-records.ts'
 import { GITHUB_API_BASE, GithubAppTokenError } from './github-app-token.ts'
 import { GITHUB_SIGNATURE_HEADER } from './github-webhook.ts'
 import {
@@ -74,7 +74,7 @@ async function generatePkcs8Pem(): Promise<string> {
 const AUTH = { token: 'ghs', apiBase: GITHUB_API_BASE }
 const AUTH_LIST = { token: 'ghs_list', apiBase: GITHUB_API_BASE }
 
-function gitApp(credentials: Record<string, unknown>): Record<string, unknown> {
+function gitApp(envelopes: Record<string, unknown>): Record<string, unknown> {
   return {
     id: 'app-1',
     organizationId: null,
@@ -88,7 +88,7 @@ function gitApp(credentials: Record<string, unknown>): Record<string, unknown> {
     redirectUri: null,
     webhookRef: 'ref-1',
     webhookTokenHash: null,
-    credentials,
+    envelopes,
   }
 }
 
@@ -111,7 +111,7 @@ function gitDb(opts: {
         innerJoin: joined,
         where: () => ({
           limit: () => {
-            if (table === gitProviderInstallation) {
+            if (table === gitConnection) {
               return Promise.resolve(opts.installation ? [opts.installation] : [])
             }
             return Promise.resolve([])
@@ -147,8 +147,8 @@ const sourceRow: GitProviderSourceRow = {
   repositoryUrl: 'https://github.com/acme/app.git',
   defaultBranch: 'main',
   subdirectory: null,
-  installationId: 'install-1',
-  credentialId: null,
+  connectionId: 'install-1',
+  secretId: null,
 }
 
 function repoPayload(id: number, extra: Record<string, unknown> = {}) {
@@ -386,7 +386,7 @@ test('githubProvider.listRepositories and prepareClone gate credentials', async 
   )
   assertEquals(
     await githubProvider.prepareClone({ db }, {
-      row: { ...sourceRow, installationId: null },
+      row: { ...sourceRow, connectionId: null },
       ref: 'main',
       needsCredential: true,
     }),
@@ -487,7 +487,7 @@ test('githubProvider.prepareClone maps a mint failure and rethrows config errors
         ref: 'main',
         needsCredential: true,
       }),
-    GitAppError,
+    ForgeError,
     'git app private key is not sealed',
   )
 })
@@ -578,7 +578,7 @@ test('githubProvider.readRepositoryFiles aborts on transport failure', async () 
 test('githubProvider.readRepositoryFiles reports miss reasons and auth gaps', async () => {
   assertEquals(
     await githubProvider.readRepositoryFiles({ db: gitDb({}) }, {
-      row: { ...sourceRow, installationId: null },
+      row: { ...sourceRow, connectionId: null },
       ref: 'main',
       paths: ['compose.yaml'],
     }),

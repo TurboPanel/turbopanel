@@ -6,8 +6,8 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
-import { location, mount, service, storage } from '../../lib/db/schema.ts'
-import { scratchLocationNotMountable } from '../storage/routes-helpers.ts'
+import { storageCopy, mount, service, storage } from '../../lib/db/schema.ts'
+import { scratchCopyNotMountable } from '../storage/routes-helpers.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -85,11 +85,11 @@ async function loadScratchOnlyStorageIds(
   if (storageIds.length === 0) return scratchOnly
   const locRows = await db
     .select({
-      storageId: location.storageId,
-      role: location.role,
+      storageId: storageCopy.storageId,
+      role: storageCopy.role,
     })
-    .from(location)
-    .where(inArray(location.storageId, storageIds))
+    .from(storageCopy)
+    .where(inArray(storageCopy.storageId, storageIds))
   const rolesByStorage = new Map<string, string[]>()
   for (const row of locRows) {
     const roles = rolesByStorage.get(row.storageId) ?? []
@@ -97,7 +97,7 @@ async function loadScratchOnlyStorageIds(
     rolesByStorage.set(row.storageId, roles)
   }
   for (const [storageId, roles] of rolesByStorage) {
-    if (roles.length > 0 && roles.every((role) => scratchLocationNotMountable(role))) {
+    if (roles.length > 0 && roles.every((role) => scratchCopyNotMountable(role))) {
       scratchOnly.add(storageId)
     }
   }

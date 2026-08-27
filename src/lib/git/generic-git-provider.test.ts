@@ -17,8 +17,8 @@ const row = {
   repositoryUrl: 'git@github.com:org/app.git',
   defaultBranch: 'main',
   subdirectory: null,
-  installationId: null,
-  credentialId: 'cred-1',
+  connectionId: null,
+  secretId: 'cred-1',
 }
 
 test('generic git lists no repositories and rejects webhooks', async () => {

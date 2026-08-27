@@ -15,7 +15,7 @@ import {
   environment,
   ip,
   managed,
-  node,
+  replica,
   recovery,
   server,
 } from '../../lib/db/schema.ts'
@@ -287,7 +287,7 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
           }
           return thenableRows(name ? [{ containerName: name }] : [])
         }
-        if (table === node) return thenableRows(members)
+        if (table === replica) return thenableRows(members)
         return thenableRows([])
       },
     }),
@@ -319,7 +319,7 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
         if (table === managed && typeof patch.status === 'string') {
           managedStatus.push(patch.status)
         }
-        if (table === node) nodePatches.push(patch)
+        if (table === replica) nodePatches.push(patch)
         const rows = table === recovery && stored
           ? [stored]
           : table === server

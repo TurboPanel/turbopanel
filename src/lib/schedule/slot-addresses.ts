@@ -12,9 +12,9 @@ import {
   stripInetPrefixSuffix,
 } from '../ip-address.ts'
 import { reservedManagedIngressAddress } from '../fabric/cidr.ts'
-import type { DesiredTaskInput } from '../db/task-records.ts'
+import type { DesiredSlotInput } from '../db/slot-records.ts'
 
-export type TaskAddressExisting = {
+export type SlotAddressExisting = {
   serviceId: string
   slot: number
   serverId: string
@@ -28,7 +28,7 @@ export type SpanningHostsForService = {
   networks: ReadonlySet<string>
 }
 
-function taskKey(serviceId: string, slot: number): string {
+function slotKey(serviceId: string, slot: number): string {
   return `${serviceId}:${String(slot)}`
 }
 
@@ -70,10 +70,10 @@ function seedReservedAddresses(
   return { occupied, reservedByServer }
 }
 
-function stickyAddressForTask(
-  task: DesiredTaskInput,
+function stickyAddressForSlot(
+  task: DesiredSlotInput,
   cidr: string,
-  previous: TaskAddressExisting | undefined,
+  previous: SlotAddressExisting | undefined,
   reserved: string | undefined,
 ): string | null {
   const previousAddress = normalizeAddress(previous?.address)
@@ -89,19 +89,19 @@ function stickyAddressForTask(
 }
 
 function reuseStickyAddresses(
-  participating: readonly DesiredTaskInput[],
+  participating: readonly DesiredSlotInput[],
   segments: ReadonlyMap<string, string>,
-  existingByKey: ReadonlyMap<string, TaskAddressExisting>,
+  existingByKey: ReadonlyMap<string, SlotAddressExisting>,
   reservedByServer: ReadonlyMap<string, string>,
   occupied: Map<string, Set<string>>,
   assigned: Map<string, string>,
 ): void {
   for (const task of participating) {
-    const key = taskKey(task.serviceId, task.slot)
+    const key = slotKey(task.serviceId, task.slot)
     if (assigned.has(key)) continue
     const cidr = segments.get(task.serverId)
     if (!cidr) continue
-    const sticky = stickyAddressForTask(
+    const sticky = stickyAddressForSlot(
       task,
       cidr,
       existingByKey.get(key),
@@ -114,13 +114,13 @@ function reuseStickyAddresses(
 }
 
 function allocateRemainingAddresses(
-  participating: readonly DesiredTaskInput[],
+  participating: readonly DesiredSlotInput[],
   segments: ReadonlyMap<string, string>,
   occupied: Map<string, Set<string>>,
   assigned: Map<string, string>,
 ): void {
   for (const task of participating) {
-    const key = taskKey(task.serviceId, task.slot)
+    const key = slotKey(task.serviceId, task.slot)
     if (assigned.has(key)) continue
     const cidr = segments.get(task.serverId)
     if (!cidr) continue
@@ -133,15 +133,15 @@ function allocateRemainingAddresses(
 }
 
 function assignAddressesForNetwork(
-  tasks: readonly DesiredTaskInput[],
-  existingByKey: ReadonlyMap<string, TaskAddressExisting>,
+  slots: readonly DesiredSlotInput[],
+  existingByKey: ReadonlyMap<string, SlotAddressExisting>,
   segments: ReadonlyMap<string, string>,
   serviceIds: ReadonlySet<string>,
   assigned: Map<string, string>,
 ): void {
   if (serviceIds.size === 0) return
   const { occupied, reservedByServer } = seedReservedAddresses(segments)
-  const participating = tasks.filter((task) =>
+  const participating = slots.filter((task) =>
     serviceIds.has(task.serviceId) && segments.has(task.serverId)
   )
   reuseStickyAddresses(
@@ -160,16 +160,16 @@ function assignAddressesForNetwork(
  * Sticky: same `(serviceId, slot)` on the same `serverId` keeps its previous
  * address when that address still sits in the segment host range.
  */
-export function assignTaskAddresses(params: {
-  tasks: readonly DesiredTaskInput[]
-  existing: readonly TaskAddressExisting[]
+export function assignSlotAddresses(params: {
+  slots: readonly DesiredSlotInput[]
+  existing: readonly SlotAddressExisting[]
   /** composeKey → serverId → segment CIDR */
   networkSegments: ReadonlyMap<string, ReadonlyMap<string, string>>
   /** composeKey → service ids that join that network */
   networkServiceIds: ReadonlyMap<string, ReadonlySet<string>>
-}): DesiredTaskInput[] {
+}): DesiredSlotInput[] {
   const existingByKey = new Map(
-    params.existing.map((row) => [taskKey(row.serviceId, row.slot), row]),
+    params.existing.map((row) => [slotKey(row.serviceId, row.slot), row]),
   )
   const assigned = new Map<string, string>()
   const composeKeys = [...params.networkSegments.keys()].sort((a, b) => a.localeCompare(b))
@@ -179,7 +179,7 @@ export function assignTaskAddresses(params: {
     const serviceIds = params.networkServiceIds.get(composeKey)
     if (!segments || !serviceIds) continue
     assignAddressesForNetwork(
-      params.tasks,
+      params.slots,
       existingByKey,
       segments,
       serviceIds,
@@ -187,9 +187,9 @@ export function assignTaskAddresses(params: {
     )
   }
 
-  return params.tasks.map((task) => ({
+  return params.slots.map((task) => ({
     ...task,
-    address: assigned.get(taskKey(task.serviceId, task.slot)) ?? null,
+    address: assigned.get(slotKey(task.serviceId, task.slot)) ?? null,
   }))
 }
 
@@ -216,12 +216,12 @@ function networksByServiceName(
 }
 
 /**
- * Compile-time maps for `ipv4_address` (local tasks) and `extra_hosts`
- * (environment tasks that carry an address, keyed with spanning-network
+ * Compile-time maps for `ipv4_address` (local slots) and `extra_hosts`
+ * (environment slots that carry an address, keyed with spanning-network
  * membership so compile can emit sibling-only, network-scoped hosts).
  */
 export function buildCompileAddressMaps(params: {
-  tasks: readonly DesiredTaskInput[]
+  slots: readonly DesiredSlotInput[]
   serviceIdToName: ReadonlyMap<string, string>
   serverId: string
   /** composeKey → service ids that join that spanning network */
@@ -237,7 +237,7 @@ export function buildCompileAddressMaps(params: {
     params.serviceIdToName,
   )
 
-  for (const task of params.tasks) {
+  for (const task of params.slots) {
     const address = normalizeAddress(task.address)
     if (!address) continue
     const name = params.serviceIdToName.get(task.serviceId)

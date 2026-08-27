@@ -499,13 +499,11 @@ function cpuSocketsEquals(
   b: ServerCpuSocket[] | undefined,
 ): boolean {
   if (a === b) return true
-  if (!a || !b || a.length !== b.length) return false
-  for (let i = 0; i < a.length; i++) {
-    const left = a[i]
-    const right = b[i]
-    if (!left || !right || !cpuSocketEquals(left, right)) return false
-  }
-  return true
+  if (a?.length !== b?.length) return false
+  return (a ?? []).every((left, i) => {
+    const right = b?.[i]
+    return Boolean(left && right && cpuSocketEquals(left, right))
+  })
 }
 
 function gpuEquals(a: ServerGpu, b: ServerGpu): boolean {
@@ -524,13 +522,11 @@ function gpusEquals(
   b: ServerGpu[] | undefined,
 ): boolean {
   if (a === b) return true
-  if (!a || !b || a.length !== b.length) return false
-  for (let i = 0; i < a.length; i++) {
-    const left = a[i]
-    const right = b[i]
-    if (!left || !right || !gpuEquals(left, right)) return false
-  }
-  return true
+  if (a?.length !== b?.length) return false
+  return (a ?? []).every((left, i) => {
+    const right = b?.[i]
+    return Boolean(left && right && gpuEquals(left, right))
+  })
 }
 
 export function serverHostResourcesEquals(

@@ -16,10 +16,12 @@ import { projectPaths, projectSchemas } from './projects.ts'
 import { serverPaths, serverSchemas } from './servers.ts'
 import { servicePaths, serviceSchemas } from './services.ts'
 import { variablePaths, variableSchemas } from './variables.ts'
+import { tagPaths, tagSchemas } from './tags.ts'
+import { taskPaths, taskSchemas } from './tasks.ts'
 import { bindingPaths, bindingSchemas } from './bindings.ts'
 import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
-import { sourcePaths, sourceSchemas } from './sources.ts'
+import { repositoryPaths, repositorySchemas } from './repositories.ts'
 import { principalPaths, principalSchemas } from './principals.ts'
 import { deployPaths, deploySchemas } from './deploy.ts'
 import { managedPaths, managedSchemas } from './managed.ts'
@@ -62,6 +64,11 @@ export function getClientOpenApiSpec(
       { name: 'Projects', description: 'Project CRUD' },
       { name: 'Environments', description: 'Environment CRUD' },
       { name: 'Variables', description: 'Environment variable and secret management' },
+      { name: 'Tags', description: 'Organization tag registry and entity tagging' },
+      {
+        name: 'Tasks',
+        description: 'Scheduled tasks (cron) — configuration only; execution is not implemented',
+      },
       {
         name: 'Bindings',
         description:
@@ -69,7 +76,7 @@ export function getClientOpenApiSpec(
       },
       { name: 'Storage', description: 'Volumes, bind mounts, and file storage' },
       {
-        name: 'Sources',
+        name: 'Repositories',
         description:
           'Git repository bindings and Git provider App installations',
       },
@@ -92,7 +99,7 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Bindings', 'Storage', 'Sources', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
+      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Tags', 'Tasks', 'Bindings', 'Storage', 'Repositories', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
       { name: 'Infrastructure', tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'] },
       { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
@@ -118,9 +125,11 @@ export function getClientOpenApiSpec(
         ...environmentSchemas,
         ...projectSchemas,
         ...variableSchemas,
+        ...tagSchemas,
+        ...taskSchemas,
         ...bindingSchemas,
         ...storageSchemas,
-        ...sourceSchemas,
+        ...repositorySchemas,
         ...principalSchemas,
         ...deploySchemas,
         ...managedSchemas,
@@ -146,9 +155,11 @@ export function getClientOpenApiSpec(
       ...environmentPaths,
       ...projectPaths,
       ...variablePaths,
+      ...tagPaths,
+      ...taskPaths,
       ...bindingPaths,
       ...storagePaths,
-      ...sourcePaths,
+      ...repositoryPaths,
       ...principalPaths,
       ...deployPaths,
       ...managedPaths,

@@ -29,7 +29,7 @@ import {
   planEnvironmentTeardown,
   reclaimDeletedEnvironmentHosts,
 } from './teardown.ts'
-import { loadOrganizationSourceIds } from '../../lib/db/source-records.ts'
+import { loadOrganizationRepositoryIds } from '../../lib/db/repository-records.ts'
 import {
   parseCreateEnvironmentJsonb,
   parseCreateEnvironmentNames,
@@ -171,7 +171,7 @@ async function parseCreateEnvironmentInput(
     return c.json({ error: names.error }, names.status)
   }
 
-  const knownSourceIds = await loadOrganizationSourceIds(db, organizationId)
+  const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
   const jsonb = parseCreateEnvironmentJsonb(body, {
       knownSourceIds,
       layer: 'overlay',
@@ -347,7 +347,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     )
     if (serverIdError) return serverIdError
 
-    const knownSourceIds = await loadOrganizationSourceIds(db, organizationId)
+    const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
     const optionsError = applyEnvironmentOptionsPatch(
       c,
       body,

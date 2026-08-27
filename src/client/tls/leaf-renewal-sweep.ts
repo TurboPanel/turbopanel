@@ -17,7 +17,7 @@ import type { CommandQueue } from "../../lib/commands/queue.ts";
 import { leaf, setting, tls } from "../../lib/db/schema.ts";
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from "../../lib/tls/self-signed.ts";
 import { enqueueManagedIngressReconcile } from "../managed/ingress-desired.ts";
-import { enqueueApplyForManagedCluster } from "./rotation-fanout.ts";
+import { enqueueApplyForManagedCluster } from "./changeover-fanout.ts";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -71,7 +71,7 @@ export type DueTlsLeafRow = {
   serverId: string;
   kind: string;
   managedId: string | null;
-  nodeId: string | null;
+  replicaId: string | null;
   caGeneration: number;
   notAfter: string;
 };
@@ -329,7 +329,7 @@ export async function loadDueTlsLeaves(
       serverId: leaf.serverId,
       kind: leaf.kind,
       managedId: leaf.managedId,
-      nodeId: leaf.nodeId,
+      replicaId: leaf.replicaId,
       caGeneration: leaf.caGeneration,
       notAfter: leaf.notAfter,
     })

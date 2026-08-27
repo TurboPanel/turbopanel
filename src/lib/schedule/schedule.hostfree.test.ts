@@ -102,8 +102,8 @@ test('planEnvironmentSchedule keeps a one-server plan without TurboFabric', () =
   assertEquals(plan.ok, true)
   if (!plan.ok) return
   assertEquals(plan.serverIds, ['server-a'])
-  assertEquals(plan.tasks.length, 2)
-  assertEquals(plan.tasks.every((task) => task.serverId === 'server-a'), true)
+  assertEquals(plan.slots.length, 2)
+  assertEquals(plan.slots.every((task) => task.serverId === 'server-a'), true)
 })
 
 test('planEnvironmentSchedule requires TurboFabric to span hosts', () => {
@@ -159,7 +159,7 @@ test('planEnvironmentSchedule is sticky on (service, slot)', () => {
   })
   assertEquals(plan.ok, true)
   if (!plan.ok) return
-  assertEquals(plan.tasks[0]?.serverId, 'server-b')
+  assertEquals(plan.slots[0]?.serverId, 'server-b')
 })
 
 test('planEnvironmentSchedule rejects host-port over-packing', () => {
@@ -188,7 +188,7 @@ test('planEnvironmentSchedule rejects host-port over-packing', () => {
   assertEquals(plan.error, 'host_port_conflict')
 })
 
-test('localReplicaCounts groups tasks for one server', () => {
+test('localReplicaCounts groups slots for one server', () => {
   const counts = localReplicaCounts(
     [
       { serviceId: 'svc-web', serverId: 'server-a', slot: 0 },
@@ -229,5 +229,5 @@ test('planEnvironmentSchedule empty services still targets the pin', () => {
   assertEquals(plan.ok, true)
   if (!plan.ok) return
   assertEquals(plan.serverIds, ['server-a'])
-  assertEquals(plan.tasks, [])
+  assertEquals(plan.slots, [])
 })

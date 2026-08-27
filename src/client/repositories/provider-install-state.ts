@@ -66,14 +66,14 @@ type InstallStatePayload = {
    * several apps for the same provider — without it the callback would have to
    * guess which one the resulting installation belongs to.
    */
-  appId: string
+  forgeId: string
   exp: number
 }
 
 /** What a verified state proves. */
 export type InstallStateClaims = {
   organizationId: string
-  appId: string
+  forgeId: string
 }
 
 function base64urlEncode(bytes: Uint8Array): string {
@@ -114,7 +114,7 @@ export type GithubManifestStateClaims = {
    * Everything else the wizard collected.
    *
    * It rides in the signed state because the row does not exist yet and GitHub
-   * does not hand any of it back: the conversion response carries credentials
+   * does not hand any of it back: the conversion response carries App secrets
    * and nothing about how the operator configured the app. Signed rather than
    * echoed through a query param so a tampered return cannot, say, flip an
    * organization-owned app to instance-wide.
@@ -229,7 +229,7 @@ export async function signProviderInstallState(
   )
   const payload: InstallStatePayload = {
     organizationId: claims.organizationId,
-    appId: claims.appId,
+    forgeId: claims.forgeId,
     exp: Math.floor((nowMs + INSTALL_STATE_TTL_MS) / 1000),
   }
   const encodedPayload = base64urlEncode(
@@ -291,12 +291,12 @@ export async function verifyProviderInstallState(
   if (typeof payload.organizationId !== 'string' || !payload.organizationId) {
     return null
   }
-  if (typeof payload.appId !== 'string' || !payload.appId) return null
+  if (typeof payload.forgeId !== 'string' || !payload.forgeId) return null
   if (typeof payload.exp !== 'number' || payload.exp * 1000 <= nowMs) {
     return null
   }
 
-  return { organizationId: payload.organizationId, appId: payload.appId }
+  return { organizationId: payload.organizationId, forgeId: payload.forgeId }
 }
 
 /** GitHub App installation redirect state. */

@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
-import type { DesiredTaskInput } from '../db/task-records.ts'
-import { assignTaskAddresses, buildCompileAddressMaps } from './task-addresses.ts'
+import type { DesiredSlotInput } from '../db/slot-records.ts'
+import { assignSlotAddresses, buildCompileAddressMaps } from './slot-addresses.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -22,7 +22,7 @@ function task(
   serviceId: string,
   serverId: string,
   slot: number,
-): DesiredTaskInput {
+): DesiredSlotInput {
   return { serviceId, serverId, slot, desiredState: 'running' }
 }
 
@@ -33,9 +33,9 @@ function segmentsFor(
   return new Map([[composeKey, new Map(entries)]])
 }
 
-test('assignTaskAddresses first-fits the lowest free host in the segment', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [
+test('assignSlotAddresses first-fits the lowest free host in the segment', () => {
+  const assigned = assignSlotAddresses({
+    slots: [
       task(SERVICE_A, SERVER_A, 0),
       task(SERVICE_A, SERVER_A, 1),
     ],
@@ -49,9 +49,9 @@ test('assignTaskAddresses first-fits the lowest free host in the segment', () =>
   )
 })
 
-test('assignTaskAddresses keeps a sticky address across re-plan on the same server and slot', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [
+test('assignSlotAddresses keeps a sticky address across re-plan on the same server and slot', () => {
+  const assigned = assignSlotAddresses({
+    slots: [
       task(SERVICE_A, SERVER_A, 0),
       task(SERVICE_A, SERVER_A, 1),
     ],
@@ -70,9 +70,9 @@ test('assignTaskAddresses keeps a sticky address across re-plan on the same serv
   assertEquals(assigned[1]?.address, '203.0.113.1')
 })
 
-test('assignTaskAddresses reuses an address after its slot leaves the desired set', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_A, SERVER_A, 1)],
+test('assignSlotAddresses reuses an address after its slot leaves the desired set', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_A, SERVER_A, 1)],
     existing: [
       {
         serviceId: SERVICE_A,
@@ -88,9 +88,9 @@ test('assignTaskAddresses reuses an address after its slot leaves the desired se
   assertEquals(assigned[0]?.address, '203.0.113.1')
 })
 
-test('assignTaskAddresses does not collide across independent server segments', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [
+test('assignSlotAddresses does not collide across independent server segments', () => {
+  const assigned = assignSlotAddresses({
+    slots: [
       task(SERVICE_A, SERVER_A, 0),
       task(SERVICE_B, SERVER_B, 0),
     ],
@@ -105,9 +105,9 @@ test('assignTaskAddresses does not collide across independent server segments', 
   assertEquals(assigned[1]?.address, '198.51.100.1')
 })
 
-test('assignTaskAddresses reallocates when a slot is re-homed to another server', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_A, SERVER_B, 0)],
+test('assignSlotAddresses reallocates when a slot is re-homed to another server', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_A, SERVER_B, 0)],
     existing: [
       {
         serviceId: SERVICE_A,
@@ -125,9 +125,9 @@ test('assignTaskAddresses reallocates when a slot is re-homed to another server'
   assertEquals(assigned[0]?.address, '198.51.100.1')
 })
 
-test('assignTaskAddresses writes null when a task is not on a spanning network', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_B, SERVER_A, 0)],
+test('assignSlotAddresses writes null when a task is not on a spanning network', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_B, SERVER_A, 0)],
     existing: [
       {
         serviceId: SERVICE_B,
@@ -144,7 +144,7 @@ test('assignTaskAddresses writes null when a task is not on a spanning network',
 
 test('buildCompileAddressMaps keeps spanning-network membership on host entries', () => {
   const maps = buildCompileAddressMaps({
-    tasks: [
+    slots: [
       { ...task(SERVICE_A, SERVER_A, 0), address: '203.0.113.10' },
       { ...task(SERVICE_B, SERVER_B, 0), address: '198.51.100.10' },
     ],
@@ -169,9 +169,9 @@ test('buildCompileAddressMaps keeps spanning-network membership on host entries'
   assertEquals(maps.spanningHostsByService.get('cache')?.primary, '198.51.100.10')
 })
 
-test('assignTaskAddresses never allocates the reserved managed-ingress address', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_A, SERVER_A, 0)],
+test('assignSlotAddresses never allocates the reserved managed-ingress address', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_A, SERVER_A, 0)],
     existing: [
       {
         serviceId: SERVICE_A,
@@ -186,9 +186,9 @@ test('assignTaskAddresses never allocates the reserved managed-ingress address',
   assertEquals(assigned[0]?.address, '203.0.113.1')
 })
 
-test('assignTaskAddresses skips networks with empty service membership', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_A, SERVER_A, 0)],
+test('assignSlotAddresses skips networks with empty service membership', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_A, SERVER_A, 0)],
     existing: [],
     networkSegments: segmentsFor(FRONTEND, [[SERVER_A, SEGMENT_A]]),
     networkServiceIds: new Map([[FRONTEND, new Set()]]),
@@ -196,9 +196,9 @@ test('assignTaskAddresses skips networks with empty service membership', () => {
   assertEquals(assigned[0]?.address, null)
 })
 
-test('assignTaskAddresses ignores blank and malformed sticky addresses', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_A, SERVER_A, 0)],
+test('assignSlotAddresses ignores blank and malformed sticky addresses', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_A, SERVER_A, 0)],
     existing: [
       {
         serviceId: SERVICE_A,
@@ -215,7 +215,7 @@ test('assignTaskAddresses ignores blank and malformed sticky addresses', () => {
 
 test('buildCompileAddressMaps works without network membership and skips unknown services', () => {
   const maps = buildCompileAddressMaps({
-    tasks: [
+    slots: [
       { ...task(SERVICE_A, SERVER_A, 0), address: '203.0.113.10' },
       { ...task(SERVICE_B, SERVER_A, 0), address: '203.0.113.11' },
       { ...task(SERVICE_A, SERVER_A, 1), address: '' },
@@ -229,9 +229,9 @@ test('buildCompileAddressMaps works without network membership and skips unknown
   assertEquals(maps.spanningHostsByService.has('cache'), false)
 })
 
-test('assignTaskAddresses drops sticky addresses outside the segment host range', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_A, SERVER_A, 0)],
+test('assignSlotAddresses drops sticky addresses outside the segment host range', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_A, SERVER_A, 0)],
     existing: [
       {
         serviceId: SERVICE_A,
@@ -246,9 +246,9 @@ test('assignTaskAddresses drops sticky addresses outside the segment host range'
   assertEquals(assigned[0]?.address, '203.0.113.1')
 })
 
-test('assignTaskAddresses drops sticky addresses that are not parseable IPs', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_A, SERVER_A, 0)],
+test('assignSlotAddresses drops sticky addresses that are not parseable IPs', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_A, SERVER_A, 0)],
     existing: [
       {
         serviceId: SERVICE_A,
@@ -263,10 +263,10 @@ test('assignTaskAddresses drops sticky addresses that are not parseable IPs', ()
   assertEquals(assigned[0]?.address, '203.0.113.1')
 })
 
-test('assignTaskAddresses skips reserved seeding when the CIDR is too small', () => {
+test('assignSlotAddresses skips reserved seeding when the CIDR is too small', () => {
   const tiny = '203.0.113.0/31'
-  const assigned = assignTaskAddresses({
-    tasks: [
+  const assigned = assignSlotAddresses({
+    slots: [
       task(SERVICE_A, SERVER_A, 0),
       task(SERVICE_A, SERVER_A, 1),
     ],
@@ -280,10 +280,10 @@ test('assignTaskAddresses skips reserved seeding when the CIDR is too small', ()
   )
 })
 
-test('assignTaskAddresses leaves address null when the segment host range is exhausted', () => {
+test('assignSlotAddresses leaves address null when the segment host range is exhausted', () => {
   const single = '203.0.113.8/32'
-  const assigned = assignTaskAddresses({
-    tasks: [
+  const assigned = assignSlotAddresses({
+    slots: [
       task(SERVICE_A, SERVER_A, 0),
       task(SERVICE_A, SERVER_A, 1),
     ],
@@ -295,9 +295,9 @@ test('assignTaskAddresses leaves address null when the segment host range is exh
   assertEquals(assigned[1]?.address, null)
 })
 
-test('assignTaskAddresses skips compose keys without service membership metadata', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_A, SERVER_A, 0)],
+test('assignSlotAddresses skips compose keys without service membership metadata', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_A, SERVER_A, 0)],
     existing: [],
     networkSegments: new Map([
       [FRONTEND, new Map([[SERVER_A, SEGMENT_A]])],
@@ -308,9 +308,9 @@ test('assignTaskAddresses skips compose keys without service membership metadata
   assertEquals(assigned[0]?.address, '203.0.113.1')
 })
 
-test('assignTaskAddresses keeps the first network address when a task joins two spanning nets', () => {
-  const assigned = assignTaskAddresses({
-    tasks: [task(SERVICE_A, SERVER_A, 0)],
+test('assignSlotAddresses keeps the first network address when a task joins two spanning nets', () => {
+  const assigned = assignSlotAddresses({
+    slots: [task(SERVICE_A, SERVER_A, 0)],
     existing: [],
     networkSegments: new Map([
       ['backend', new Map([[SERVER_A, SEGMENT_B]])],

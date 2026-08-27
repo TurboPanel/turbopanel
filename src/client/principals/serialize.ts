@@ -32,7 +32,7 @@ export type SerializedProjectPrincipal = {
   managedId: string | null
   metadata: unknown
   options: unknown
-  /** Services this principal runs as / owns storage for (via `steward`). */
+  /** Services this principal runs as / owns storage for (via `tenancy`). */
   serviceIds: string[]
   /**
    * Runtime series this principal may execute on the host. `grantedBy` says

@@ -58,6 +58,7 @@ export { fabricNeedsRendezvous } from "./rendezvous.ts";
 
 export type FabricEnqueueTypedError =
   | "relay_endpoint_unavailable"
+  /** Compose-bridge subnet pool (table `subnet`); error code kept as-is. */
   | "fabric_segment_pool_exhausted"
   | "relay_missing";
 
@@ -75,6 +76,7 @@ export function fabricEnqueueTypedError(
       return "relay_endpoint_unavailable";
     }
     if (row.error === "fabric_segment_pool_exhausted") {
+      // Compose-bridge subnet pool (table `subnet`); error code kept as-is.
       return "fabric_segment_pool_exhausted";
     }
     if (row.error === "relay_missing") return "relay_missing";

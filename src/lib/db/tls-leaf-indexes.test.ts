@@ -22,7 +22,7 @@ test('migrations/0000_init.sql declares leaf partial unique indexes', async () =
     sql.includes('WHERE "leaf"."kind" = \'ingress\''),
     true,
   )
-  assertEquals(sql.includes('CREATE UNIQUE INDEX "uniq_leaf_engine_node"'), true)
+  assertEquals(sql.includes('CREATE UNIQUE INDEX "uniq_leaf_engine_replica"'), true)
   assertEquals(
     sql.includes('WHERE "leaf"."kind" = \'engine\''),
     true,

@@ -25,7 +25,7 @@ import {
   environment,
   grant,
   managed,
-  node,
+  replica,
   organization,
   principal,
   project,
@@ -256,7 +256,7 @@ async function withBindingFixtures(
     .returning({ id: managed.id })
   const managedId = insertedManaged!.id
 
-  await db.insert(node).values({
+  await db.insert(replica).values({
     managedId,
     serverId,
     role: 'primary',

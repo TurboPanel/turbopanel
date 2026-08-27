@@ -3,7 +3,7 @@ import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
 import { encryptSecret } from '../../client/authn/data-encryption.ts'
 import type { Db } from '../../db.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { gitProviderInstallation } from '../db/schema.ts'
+import { gitConnection } from '../db/schema.ts'
 import {
   GitlabOauthTokenError,
   exchangeGitlabAuthorizationCode,
@@ -16,7 +16,7 @@ import {
 import {
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_OAUTH_SCOPES,
-} from './git-app-records.ts'
+} from './forge-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -30,7 +30,7 @@ test('gitlabAuthorizeUrl builds the OAuth authorize endpoint', () => {
   const url = gitlabAuthorizeUrl(
     { baseUrl: GITLAB_DEFAULT_BASE_URL, clientId: 'app-id' },
     {
-      redirectUri: 'https://203.0.113.10:8443/api/client/v1/sources/gitlab/oauth/callback',
+      redirectUri: 'https://203.0.113.10:8443/api/client/v1/repositories/gitlab/oauth/callback',
       state: 'csrf-token',
     },
   )
@@ -40,7 +40,7 @@ test('gitlabAuthorizeUrl builds the OAuth authorize endpoint', () => {
   assertEquals(parsed.searchParams.get('client_id'), 'app-id')
   assertEquals(
     parsed.searchParams.get('redirect_uri'),
-    'https://203.0.113.10:8443/api/client/v1/sources/gitlab/oauth/callback',
+    'https://203.0.113.10:8443/api/client/v1/repositories/gitlab/oauth/callback',
   )
   assertEquals(parsed.searchParams.get('response_type'), 'code')
   assertEquals(parsed.searchParams.get('state'), 'csrf-token')
@@ -252,7 +252,7 @@ function gitlabDb(opts: {
         innerJoin: joined,
         where: () => ({
           limit: () => {
-            if (table === gitProviderInstallation) {
+            if (table === gitConnection) {
               return Promise.resolve(opts.installation ? [opts.installation] : [])
             }
             return Promise.resolve([])
@@ -292,7 +292,7 @@ async function sealedOauthApp() {
       redirectUri: null,
       webhookRef: 'ref-1',
       webhookTokenHash: null,
-      credentials: {
+      envelopes: {
         clientSecretEnvelope: await encryptSecret(secrets, 'app-secret'),
       },
     },

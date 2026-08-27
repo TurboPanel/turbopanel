@@ -1090,7 +1090,7 @@ export type EnvironmentDeploySite = {
   webEnv?: Record<string, string>;
   php?: EnvironmentDeployHostingPhp;
   /**
-   * When set (from a project principal ↔ service steward), the site tree
+   * When set (from a project principal ↔ service tenancy), the site tree
    * is owned by this principal and Apache php-fpm workers run as that user.
    */
   principal?: EnvironmentDeploySitePrincipal;
@@ -3062,7 +3062,7 @@ export type EnvironmentStopCommandPayload = {
    *
    * Generic on purpose — the same tree the Git release engine publishes into
    * and the native-runtime phase will run out of, not a site detail.
-   * Captured while the `service` / `steward` / `principal` rows still exist,
+   * Captured while the `service` / `tenancy` / `principal` rows still exist,
    * because by the time the daemon runs the stop they may be gone.
    */
   siteReleases?: Array<{ serviceId: string; username: string }>;

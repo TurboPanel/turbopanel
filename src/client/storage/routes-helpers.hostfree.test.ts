@@ -1,5 +1,5 @@
 /**
- * Host-free coverage for storage location/mount patch helpers (no Postgres).
+ * Host-free coverage for storage copy/mount patch helpers (no Postgres).
  */
 
 import { assertEquals } from '@std/assert'
@@ -7,12 +7,12 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import {
   isAccessMode,
-  isApiLocationProvider,
-  isLocationRole,
-  isLocationState,
+  isApiCopyProvider,
+  isCopyRole,
+  isCopyState,
   isRetention,
   parseCreateMountFields,
-  parseLocationPatchFields,
+  parseCopyPatchFields,
   parseMountPatchFields,
 } from './routes-helpers.ts'
 
@@ -45,30 +45,30 @@ test('storage enum guards accept known values only', () => {
   assertEquals(isAccessMode('shared'), false)
   assertEquals(isRetention('delete'), true)
   assertEquals(isRetention('keep'), false)
-  assertEquals(isApiLocationProvider('docker'), true)
-  assertEquals(isApiLocationProvider('s3'), false)
-  assertEquals(isLocationRole('replica'), true)
-  assertEquals(isLocationRole('leader'), false)
-  assertEquals(isLocationState('ready'), true)
-  assertEquals(isLocationState('online'), false)
+  assertEquals(isApiCopyProvider('docker'), true)
+  assertEquals(isApiCopyProvider('s3'), false)
+  assertEquals(isCopyRole('replica'), true)
+  assertEquals(isCopyRole('leader'), false)
+  assertEquals(isCopyState('ready'), true)
+  assertEquals(isCopyState('online'), false)
 })
 
-test('parseLocationPatchFields copies known fields and rejects bad jsonb', async () => {
+test('parseCopyPatchFields copies known fields and rejects bad jsonb', async () => {
   const c = mockContext()
-  await expectInvalidRequest(parseLocationPatchFields(c, { metadata: [] }))
+  await expectInvalidRequest(parseCopyPatchFields(c, { metadata: [] }))
 
-  const fields = parseLocationPatchFields(c, {
+  const fields = parseCopyPatchFields(c, {
     provider: 'path',
     serverId: 'srv-1',
     path: '/data',
     endpoint: null,
     role: 'replica',
     state: 'ready',
-    credentialId: null,
+    secretId: null,
     options: { tier: 'fast' },
   })
   if (fields instanceof Response) {
-    throw new TypeError('expected location patch fields')
+    throw new TypeError('expected copy patch fields')
   }
   assertEquals(fields.provider, 'path')
   assertEquals(fields.serverId, 'srv-1')
@@ -76,7 +76,7 @@ test('parseLocationPatchFields copies known fields and rejects bad jsonb', async
   assertEquals(fields.endpoint, null)
   assertEquals(fields.role, 'replica')
   assertEquals(fields.state, 'ready')
-  assertEquals(fields.credentialId, null)
+  assertEquals(fields.secretId, null)
   assertEquals(fields.options, { tier: 'fast' })
   assertEquals(typeof fields.updatedAt, 'string')
 })

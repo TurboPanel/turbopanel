@@ -41,14 +41,14 @@ import {
 } from "./public-urls.ts";
 import {
   completeGithubManifestHandler,
-  createGitAppHandler,
-  deleteGitAppHandler,
-  getGitAppHandler,
-  listGitAppsHandler,
-  patchGitAppHandler,
+  createForgeHandler,
+  deleteForgeHandler,
+  getForgeHandler,
+  listForgesHandler,
+  patchForgeHandler,
   startGithubManifestHandler,
-  syncGitAppHandler,
-} from "../client/git-apps/handlers.ts";
+  syncForgeHandler,
+} from "../client/forges/handlers.ts";
 import {
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
@@ -213,61 +213,61 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
   // instance may hold several apps per provider — a github.com App and a GitHub
   // Enterprise one, or separate Apps for separate customer accounts — and each
   // carries its own webhook URL so an inbound delivery can name the app that
-  // signed it before any secret is consulted (`lib/git/resolve-webhook-app.ts`).
+  // signed it before any secret is consulted (`lib/git/resolve-webhook-forge.ts`).
   //
   // Sealed material (App private key, OAuth client secret, webhook secret) is
   // written as `tpsecret` and never returned; reads report presence only.
   // Organizations manage their *own* apps through the client surface
-  // (`/api/client/v1/git/apps`) — the admin surface has no organization context
+  // (`/api/client/v1/forges`) — the admin surface has no organization context
   // and deliberately sees only instance-wide rows.
   const instanceScope = { organizationId: null };
 
-  admin.get("/git/apps", async (c) => {
+  admin.get("/forges", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
-    return await listGitAppsHandler(c, db, instanceScope);
+    return await listForgesHandler(c, db, instanceScope);
   });
 
-  admin.post("/git/apps", async (c) => {
+  admin.post("/forges", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
-    return await createGitAppHandler(c, db, instanceScope);
+    return await createForgeHandler(c, db, instanceScope);
   });
 
-  admin.post("/git/apps/github/manifest", async (c) => {
+  admin.post("/forges/github/manifest", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
     return await startGithubManifestHandler(c, db, instanceScope);
   });
 
-  admin.get("/git/apps/github/manifest/callback", async (c) => {
+  admin.get("/forges/github/manifest/callback", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
     return await completeGithubManifestHandler(c, db, instanceScope);
   });
 
-  admin.post("/git/apps/:id/sync", async (c) => {
+  admin.post("/forges/:id/sync", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
-    return await syncGitAppHandler(c, db, instanceScope, c.req.param("id"));
+    return await syncForgeHandler(c, db, instanceScope, c.req.param("id"));
   });
 
-  admin.get("/git/apps/:id", async (c) => {
+  admin.get("/forges/:id", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
-    return await getGitAppHandler(c, db, instanceScope, c.req.param("id"));
+    return await getForgeHandler(c, db, instanceScope, c.req.param("id"));
   });
 
-  admin.patch("/git/apps/:id", async (c) => {
+  admin.patch("/forges/:id", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
-    return await patchGitAppHandler(c, db, instanceScope, c.req.param("id"));
+    return await patchForgeHandler(c, db, instanceScope, c.req.param("id"));
   });
 
-  admin.delete("/git/apps/:id", async (c) => {
+  admin.delete("/forges/:id", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
-    return await deleteGitAppHandler(c, db, instanceScope, c.req.param("id"));
+    return await deleteForgeHandler(c, db, instanceScope, c.req.param("id"));
   });
 
   admin.get("/settings/email", async (c) => {

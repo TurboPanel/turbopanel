@@ -19,7 +19,7 @@ import { deriveSecretsConfig } from '../authn/secrets.ts'
 const test = Deno.test.bind(Deno)
 
 const storageId = '11111111-1111-4111-8111-111111111111'
-const locationId = '22222222-2222-4222-8222-222222222222'
+const copyId = '22222222-2222-4222-8222-222222222222'
 const mountId = '33333333-3333-4333-8333-333333333333'
 
 async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
@@ -42,10 +42,10 @@ test('storage routes return 401 without a session cookie', async () => {
     ['GET', `/storage/${storageId}`],
     ['PATCH', `/storage/${storageId}`],
     ['DELETE', `/storage/${storageId}`],
-    ['GET', `/storage/${storageId}/locations`],
-    ['POST', `/storage/${storageId}/locations`],
-    ['PATCH', `/storage/${storageId}/locations/${locationId}`],
-    ['DELETE', `/storage/${storageId}/locations/${locationId}`],
+    ['GET', `/storage/${storageId}/copies`],
+    ['POST', `/storage/${storageId}/copies`],
+    ['PATCH', `/storage/${storageId}/copies/${copyId}`],
+    ['DELETE', `/storage/${storageId}/copies/${copyId}`],
     ['GET', `/storage/${storageId}/mounts`],
     ['POST', `/storage/${storageId}/mounts`],
     ['PATCH', `/storage/${storageId}/mounts/${mountId}`],

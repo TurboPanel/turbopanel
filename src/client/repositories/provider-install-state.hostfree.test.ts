@@ -26,7 +26,7 @@ const test = Deno.test.bind(Deno)
 
 const ORG_ID = '550e8400-e29b-41d4-a716-446655440000'
 const APP_ID = '22222222-2222-4222-8222-222222222222'
-const CLAIMS = { organizationId: ORG_ID, appId: APP_ID }
+const CLAIMS = { organizationId: ORG_ID, forgeId: APP_ID }
 const NOW_MS = Date.parse('2026-01-15T12:00:00.000Z')
 
 test('sign/verify round-trips github and gitlab install state', async () => {

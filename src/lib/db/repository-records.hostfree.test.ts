@@ -4,7 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
-import { loadOrganizationSourceIds } from './source-records.ts'
+import { loadOrganizationRepositoryIds } from './repository-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -24,15 +24,15 @@ function sourceDb(rows: Array<{ id: string }>): Db {
   } as unknown as Db
 }
 
-test('loadOrganizationSourceIds returns a set of ids', async () => {
-  const ids = await loadOrganizationSourceIds(
+test('loadOrganizationRepositoryIds returns a set of ids', async () => {
+  const ids = await loadOrganizationRepositoryIds(
     sourceDb([{ id: 'src-a' }, { id: 'src-b' }]),
     'org-1',
   )
   assertEquals(ids, new Set(['src-a', 'src-b']))
 })
 
-test('loadOrganizationSourceIds returns an empty set when none exist', async () => {
-  const ids = await loadOrganizationSourceIds(sourceDb([]), 'org-1')
+test('loadOrganizationRepositoryIds returns an empty set when none exist', async () => {
+  const ids = await loadOrganizationRepositoryIds(sourceDb([]), 'org-1')
   assertEquals(ids.size, 0)
 })

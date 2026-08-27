@@ -130,7 +130,7 @@ function noopDeps(overrides: PlanEnvironmentDeployDeps = {}): PlanEnvironmentDep
     reconcileServicesFromCompose: async () => ({ created: [], orphans: [] }),
     registerComposeVolumes: async () => [],
     registerComposeMounts: async () => undefined,
-    listEnvironmentTasks: async () => [],
+    listEnvironmentSlots: async () => [],
     listServerLabelsForServers: async () => new Map(),
     ...overrides,
   }
@@ -421,7 +421,7 @@ test('planEnvironmentDeploy registers volumes/mounts and plans with pin + fabric
           ],
         ])
       },
-      listEnvironmentTasks: async () => [
+      listEnvironmentSlots: async () => [
         {
           id: 'task-1',
           createdAt: '2020-01-01T00:00:00.000Z',
@@ -457,9 +457,9 @@ test('planEnvironmentDeploy registers volumes/mounts and plans with pin + fabric
   assertEquals(result.plan.ok, true)
   if (!result.plan.ok) return
   assertEquals(result.plan.serverIds, [SERVER_A])
-  assertEquals(result.plan.tasks.length, 1)
-  assertEquals(result.plan.tasks[0]?.serviceId, SERVICE_WEB)
-  assertEquals(result.plan.tasks[0]?.serverId, SERVER_A)
+  assertEquals(result.plan.slots.length, 1)
+  assertEquals(result.plan.slots[0]?.serviceId, SERVICE_WEB)
+  assertEquals(result.plan.slots[0]?.serverId, SERVER_A)
 })
 
 test('planEnvironmentDeploy uses project defaultServerId for register when env has no pin', async () => {

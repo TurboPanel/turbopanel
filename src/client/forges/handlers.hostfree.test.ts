@@ -1,7 +1,7 @@
 /**
- * Host-free coverage for the shared git-app handlers.
+ * Host-free coverage for the shared forge handlers.
  *
- * Drizzle is a thenable chain; public-URL rows and gitapp rows are distinguished
+ * Drizzle is a thenable chain; public-URL rows and forge rows are distinguished
  * by the table object passed to `from()`. GitHub HTTP is stubbed via fetch.
  */
 
@@ -14,19 +14,19 @@ import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
 import { encryptSecret } from '../authn/data-encryption.ts'
 import { setting } from '../../lib/db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { signGithubManifestState } from '../sources/provider-install-state.ts'
-import type { GithubManifestStateClaims } from '../sources/provider-install-state.ts'
-import { registerGitAppRoutes } from './routes.ts'
+import { signGithubManifestState } from '../repositories/provider-install-state.ts'
+import type { GithubManifestStateClaims } from '../repositories/provider-install-state.ts'
+import { registerForgeRoutes } from './routes.ts'
 import {
   completeGithubManifestHandler,
-  createGitAppHandler,
-  deleteGitAppHandler,
-  getGitAppHandler,
-  listGitAppsHandler,
-  patchGitAppHandler,
+  createForgeHandler,
+  deleteForgeHandler,
+  getForgeHandler,
+  listForgesHandler,
+  patchForgeHandler,
   startGithubManifestHandler,
-  syncGitAppHandler,
-  type GitAppScope,
+  syncForgeHandler,
+  type ForgeScope,
 } from './handlers.ts'
 
 /**
@@ -40,8 +40,8 @@ const test = Deno.test.bind(Deno)
 const APP_ID = '11111111-1111-4111-8111-111111111111'
 const ORG_ID = '22222222-2222-4222-8222-222222222222'
 const NOW = '2026-03-01T00:00:00.000Z'
-const ADMIN: GitAppScope = { organizationId: null }
-const ORG: GitAppScope = { organizationId: ORG_ID }
+const ADMIN: ForgeScope = { organizationId: null }
+const ORG: ForgeScope = { organizationId: ORG_ID }
 
 function uniqueViolation(): Error {
   return Object.assign(new Error('duplicate'), { code: '23505' })
@@ -68,7 +68,7 @@ function appRow(overrides: Record<string, unknown> = {}): Record<string, unknown
     customGitUser: null,
     customGitPort: null,
     syncedAt: null,
-    credentials: {},
+    envelopes: {},
     webhookRef: 'ref-1',
     webhookTokenHash: null,
     ...overrides,
@@ -151,7 +151,7 @@ const secretsConfig = parseTestSecretsConfig('deno')
 
 type InvokeOpts = {
   db?: Db
-  scope?: GitAppScope
+  scope?: ForgeScope
   method?: string
   path?: string
   body?: unknown
@@ -183,7 +183,7 @@ async function invoke(
     headers['content-type'] = 'application/json'
     body = JSON.stringify(opts.body)
   }
-  return await app.request(opts.path ?? 'http://tp.test/git/apps', {
+  return await app.request(opts.path ?? 'http://tp.test/forges', {
     method: opts.method ?? 'GET',
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     ...(body === undefined ? {} : { body }),
@@ -237,10 +237,10 @@ function pkcs8Pem(): Promise<string> {
   return cachedPem
 }
 
-test('registerGitAppRoutes refuses to mount without session secrets', () => {
+test('registerForgeRoutes refuses to mount without session secrets', () => {
   assertThrows(
     () =>
-      registerGitAppRoutes(new Hono<AppEnv>(), {
+      registerForgeRoutes(new Hono<AppEnv>(), {
         runtime: 'deno',
         signupEnvOverride: undefined,
       }),
@@ -252,7 +252,7 @@ test('registerGitAppRoutes refuses to mount without session secrets', () => {
 test('list serializes visible apps against the first usable public origin', async () => {
   const response = await invoke(
     (c) =>
-      listGitAppsHandler(
+      listForgesHandler(
         c,
         fakeDb({
           publicUrls: ['https://panel.example.com/', 'https://hooks.example.com'],
@@ -275,7 +275,7 @@ test('list serializes visible apps against the first usable public origin', asyn
 test('list prefers an https origin and marks instance-wide apps read-only', async () => {
   const response = await invoke(
     (c) =>
-      listGitAppsHandler(
+      listForgesHandler(
         c,
         fakeDb({
           publicUrls: 'ftp://ignored.example.com, https://panel.example.com',
@@ -293,11 +293,11 @@ test('list prefers an https origin and marks instance-wide apps read-only', asyn
 })
 
 test('get rejects a non-uuid, a hidden row, and a vanished summary', async () => {
-  const badId = await invoke((c) => getGitAppHandler(c, fakeDb(), ORG, 'not-a-uuid'))
+  const badId = await invoke((c) => getForgeHandler(c, fakeDb(), ORG, 'not-a-uuid'))
   assertEquals(badId.status, 404)
 
   const hidden = await invoke((c) =>
-    getGitAppHandler(
+    getForgeHandler(
       c,
       fakeDb({ visible: [], appRows: [appRow()] }),
       ORG,
@@ -307,7 +307,7 @@ test('get rejects a non-uuid, a hidden row, and a vanished summary', async () =>
   assertEquals(hidden.status, 404)
 
   const vanished = await invoke((c) =>
-    getGitAppHandler(
+    getForgeHandler(
       c,
       fakeDb({
         visible: [{ id: APP_ID, organizationId: ORG_ID }],
@@ -322,7 +322,7 @@ test('get rejects a non-uuid, a hidden row, and a vanished summary', async () =>
 
 test('get returns the serialized app when the row is visible', async () => {
   const response = await invoke((c) =>
-    getGitAppHandler(
+    getForgeHandler(
       c,
       fakeDb({
         publicUrls: ['https://panel.example.com'],
@@ -343,14 +343,14 @@ test('get returns the serialized app when the row is visible', async () => {
 
 test('create requires encryption and a well-formed body', async () => {
   const noKey = await invoke(
-    (c) => createGitAppHandler(c, fakeDb(), ORG),
+    (c) => createForgeHandler(c, fakeDb(), ORG),
     { encrypt: false, method: 'POST', body: {} },
   )
   assertEquals(noKey.status, 503)
   assertEquals((await jsonOf(noKey)).error, 'Encryption unavailable')
 
   const invalid = await invoke(
-    (c) => createGitAppHandler(c, fakeDb(), ORG),
+    (c) => createForgeHandler(c, fakeDb(), ORG),
     { method: 'POST', rawBody: '{' },
   )
   assertEquals(invalid.status, 400)
@@ -360,13 +360,13 @@ test('create maps conflict, validation, and unexpected write failures', async ()
   const body = { provider: 'github', name: 'Acme', externalAppId: '99' }
 
   const conflict = await invoke(
-    (c) => createGitAppHandler(c, fakeDb({ insertError: uniqueViolation() }), ORG),
+    (c) => createForgeHandler(c, fakeDb({ insertError: uniqueViolation() }), ORG),
     { method: 'POST', body },
   )
   assertEquals(conflict.status, 409)
 
   const shortToken = await invoke(
-    (c) => createGitAppHandler(c, fakeDb(), ORG),
+    (c) => createForgeHandler(c, fakeDb(), ORG),
     {
       method: 'POST',
       body: { provider: 'gitlab', name: 'Acme', externalAppId: '99', webhookSecret: 'too-short' },
@@ -376,7 +376,7 @@ test('create maps conflict, validation, and unexpected write failures', async ()
 
   const unexpected = await invoke(
     (c) =>
-      createGitAppHandler(
+      createForgeHandler(
         c,
         fakeDb({ insertError: new TypeError('disk full') }),
         ORG,
@@ -389,7 +389,7 @@ test('create maps conflict, validation, and unexpected write failures', async ()
 test('create writes the row under the handler scope and answers 201', async () => {
   const response = await invoke(
     (c) =>
-      createGitAppHandler(
+      createForgeHandler(
         c,
         fakeDb({ publicUrls: ['https://panel.example.com'] }),
         ORG,
@@ -410,27 +410,27 @@ test('create writes the row under the handler scope and answers 201', async () =
 })
 
 test('patch refuses a bad id, missing encryption, a hidden row, and a foreign write', async () => {
-  const badId = await invoke((c) => patchGitAppHandler(c, fakeDb(), ORG, 'nope'), {
+  const badId = await invoke((c) => patchForgeHandler(c, fakeDb(), ORG, 'nope'), {
     method: 'PATCH',
     body: { name: 'Renamed' },
   })
   assertEquals(badId.status, 404)
 
   const noKey = await invoke(
-    (c) => patchGitAppHandler(c, fakeDb({ appRows: [appRow()] }), ORG, APP_ID),
+    (c) => patchForgeHandler(c, fakeDb({ appRows: [appRow()] }), ORG, APP_ID),
     { encrypt: false, method: 'PATCH', body: { name: 'Renamed' } },
   )
   assertEquals(noKey.status, 503)
 
   const hidden = await invoke(
-    (c) => patchGitAppHandler(c, fakeDb({ visible: [], appRows: [appRow()] }), ORG, APP_ID),
+    (c) => patchForgeHandler(c, fakeDb({ visible: [], appRows: [appRow()] }), ORG, APP_ID),
     { method: 'PATCH', body: { name: 'Renamed' } },
   )
   assertEquals(hidden.status, 404)
 
   const denied = await invoke(
     (c) =>
-      patchGitAppHandler(
+      patchForgeHandler(
         c,
         fakeDb({
           visible: [{ id: APP_ID, organizationId: null }],
@@ -445,18 +445,18 @@ test('patch refuses a bad id, missing encryption, a hidden row, and a foreign wr
   assertEquals((await jsonOf(denied)).error, 'git_app_not_writable')
 })
 
-test('patch maps invalid body, missing row, conflict, and GitAppError', async () => {
+test('patch maps invalid body, missing row, conflict, and ForgeError', async () => {
   const owned = fakeDb({ appRows: [appRow()] })
 
   const invalid = await invoke(
-    (c) => patchGitAppHandler(c, owned, ORG, APP_ID),
+    (c) => patchForgeHandler(c, owned, ORG, APP_ID),
     { method: 'PATCH', body: { name: '' } },
   )
   assertEquals(invalid.status, 400)
 
   const vanished = await invoke(
     (c) =>
-      patchGitAppHandler(
+      patchForgeHandler(
         c,
         fakeDb({
           visible: [{ id: APP_ID, organizationId: ORG_ID }],
@@ -471,14 +471,14 @@ test('patch maps invalid body, missing row, conflict, and GitAppError', async ()
 
   const conflict = await invoke(
     (c) =>
-      patchGitAppHandler(c, fakeDb({ appRows: [appRow()], updateError: uniqueViolation() }), ORG, APP_ID),
+      patchForgeHandler(c, fakeDb({ appRows: [appRow()], updateError: uniqueViolation() }), ORG, APP_ID),
     { method: 'PATCH', body: { name: 'Renamed' } },
   )
   assertEquals(conflict.status, 409)
 
   const gitlab = appRow({ provider: 'gitlab' })
   const badToken = await invoke(
-    (c) => patchGitAppHandler(c, fakeDb({ appRows: [gitlab] }), ORG, APP_ID),
+    (c) => patchForgeHandler(c, fakeDb({ appRows: [gitlab] }), ORG, APP_ID),
     { method: 'PATCH', body: { webhookSecret: 'short' } },
   )
   assertEquals(badToken.status, 400)
@@ -487,7 +487,7 @@ test('patch maps invalid body, missing row, conflict, and GitAppError', async ()
 test('patch returns the updated app and rethrows unexpected write errors', async () => {
   const ok = await invoke(
     (c) =>
-      patchGitAppHandler(
+      patchForgeHandler(
         c,
         fakeDb({
           publicUrls: ['https://panel.example.com'],
@@ -508,7 +508,7 @@ test('patch returns the updated app and rethrows unexpected write errors', async
 
   const emptyReturn = await invoke(
     (c) =>
-      patchGitAppHandler(
+      patchForgeHandler(
         c,
         fakeDb({ appRows: [appRow()], updateEmpty: true }),
         ORG,
@@ -520,7 +520,7 @@ test('patch returns the updated app and rethrows unexpected write errors', async
 
   const unexpected = await invoke(
     (c) =>
-      patchGitAppHandler(
+      patchForgeHandler(
         c,
         fakeDb({ appRows: [appRow()], updateError: new TypeError('io') }),
         ORG,
@@ -532,16 +532,16 @@ test('patch returns the updated app and rethrows unexpected write errors', async
 })
 
 test('delete is 404 unless the caller can see and write the row, then 204', async () => {
-  const badId = await invoke((c) => deleteGitAppHandler(c, fakeDb(), ORG, 'nope'))
+  const badId = await invoke((c) => deleteForgeHandler(c, fakeDb(), ORG, 'nope'))
   assertEquals(badId.status, 404)
 
   const hidden = await invoke((c) =>
-    deleteGitAppHandler(c, fakeDb({ visible: [] }), ORG, APP_ID)
+    deleteForgeHandler(c, fakeDb({ visible: [] }), ORG, APP_ID)
   )
   assertEquals(hidden.status, 404)
 
   const denied = await invoke((c) =>
-    deleteGitAppHandler(
+    deleteForgeHandler(
       c,
       fakeDb({ visible: [{ id: APP_ID, organizationId: null }] }),
       ORG,
@@ -551,33 +551,33 @@ test('delete is 404 unless the caller can see and write the row, then 204', asyn
   assertEquals(denied.status, 403)
 
   const gone = await invoke((c) =>
-    deleteGitAppHandler(c, fakeDb({ appRows: [appRow()] }), ORG, APP_ID)
+    deleteForgeHandler(c, fakeDb({ appRows: [appRow()] }), ORG, APP_ID)
   )
   assertEquals(gone.status, 204)
   assertEquals(gone.body, null)
 })
 
 test('sync refuses a bad id, missing encryption, a hidden or read-only row, and gitlab', async () => {
-  const badId = await invoke((c) => syncGitAppHandler(c, fakeDb(), ORG, 'nope'), {
+  const badId = await invoke((c) => syncForgeHandler(c, fakeDb(), ORG, 'nope'), {
     method: 'POST',
   })
   assertEquals(badId.status, 404)
 
   const noKey = await invoke(
-    (c) => syncGitAppHandler(c, fakeDb({ appRows: [appRow()] }), ORG, APP_ID),
+    (c) => syncForgeHandler(c, fakeDb({ appRows: [appRow()] }), ORG, APP_ID),
     { encrypt: false, method: 'POST' },
   )
   assertEquals(noKey.status, 503)
 
   const hidden = await invoke(
-    (c) => syncGitAppHandler(c, fakeDb({ visible: [] }), ORG, APP_ID),
+    (c) => syncForgeHandler(c, fakeDb({ visible: [] }), ORG, APP_ID),
     { method: 'POST' },
   )
   assertEquals(hidden.status, 404)
 
   const denied = await invoke(
     (c) =>
-      syncGitAppHandler(
+      syncForgeHandler(
         c,
         fakeDb({ visible: [{ id: APP_ID, organizationId: null }] }),
         ORG,
@@ -589,7 +589,7 @@ test('sync refuses a bad id, missing encryption, a hidden or read-only row, and 
 
   const missing = await invoke(
     (c) =>
-      syncGitAppHandler(
+      syncForgeHandler(
         c,
         fakeDb({
           visible: [{ id: APP_ID, organizationId: ORG_ID }],
@@ -604,7 +604,7 @@ test('sync refuses a bad id, missing encryption, a hidden or read-only row, and 
 
   const gitlab = await invoke(
     (c) =>
-      syncGitAppHandler(
+      syncForgeHandler(
         c,
         fakeDb({ appRows: [appRow({ provider: 'gitlab' })] }),
         ORG,
@@ -619,9 +619,9 @@ test('sync refuses a bad id, missing encryption, a hidden or read-only row, and 
 test('sync reports a GitHub credential failure as 502, never as 401', async () => {
   const response = await invoke(
     (c) =>
-      syncGitAppHandler(
+      syncForgeHandler(
         c,
-        fakeDb({ appRows: [appRow({ credentials: {} })] }),
+        fakeDb({ appRows: [appRow({ envelopes: {} })] }),
         ORG,
         APP_ID,
       ),
@@ -638,7 +638,7 @@ test('sync writes GitHub metadata and keeps isPublic when GitHub omitted it', as
   const sealed = await encryptSecret(await encryption(), pem)
   const db = fakeDb({
     publicUrls: ['https://panel.example.com'],
-    appRows: [appRow({ credentials: { privateKeyEnvelope: sealed }, isPublic: true })],
+    appRows: [appRow({ envelopes: { privateKeyEnvelope: sealed }, isPublic: true })],
   })
 
   await withFetch(
@@ -655,7 +655,7 @@ test('sync writes GitHub metadata and keeps isPublic when GitHub omitted it', as
       ),
     async () => {
       const response = await invoke(
-        (c) => syncGitAppHandler(c, db, ORG, APP_ID),
+        (c) => syncForgeHandler(c, db, ORG, APP_ID),
         { method: 'POST' },
       )
       assertEquals(response.status, 200)
@@ -695,10 +695,10 @@ test('sync records visibility when GitHub reports it and 404s if the update vani
     async () => {
       const ok = await invoke(
         (c) =>
-          syncGitAppHandler(
+          syncForgeHandler(
             c,
             fakeDb({
-              appRows: [appRow({ credentials: { privateKeyEnvelope: sealed } })],
+              appRows: [appRow({ envelopes: { privateKeyEnvelope: sealed } })],
             }),
             ORG,
             APP_ID,
@@ -718,10 +718,10 @@ test('sync records visibility when GitHub reports it and 404s if the update vani
     async () => {
       const vanished = await invoke(
         (c) =>
-          syncGitAppHandler(
+          syncForgeHandler(
             c,
             fakeDb({
-              appRows: [appRow({ credentials: { privateKeyEnvelope: sealed } })],
+              appRows: [appRow({ envelopes: { privateKeyEnvelope: sealed } })],
               updateEmpty: true,
             }),
             ORG,
@@ -744,9 +744,9 @@ test('sync turns a GitHub network error into 502 with the thrown message', async
     async () => {
       const response = await invoke(
         (c) =>
-          syncGitAppHandler(
+          syncForgeHandler(
             c,
-            fakeDb({ appRows: [appRow({ credentials: { privateKeyEnvelope: sealed } })] }),
+            fakeDb({ appRows: [appRow({ envelopes: { privateKeyEnvelope: sealed } })] }),
             ORG,
             APP_ID,
           ),
@@ -834,11 +834,11 @@ test('start manifest pins the org in callback URLs and keeps the app private', a
   assertEquals(fields.public, false)
   assertEquals(
     fields.redirect_url,
-    `https://panel.example.com/api/client/v1/git/apps/github/manifest/callback?organizationId=${ORG_ID}`,
+    `https://panel.example.com/api/client/v1/forges/github/manifest/callback?organizationId=${ORG_ID}`,
   )
   assertEquals(
     fields.setup_url,
-    `https://panel.example.com/api/client/v1/sources/github/callback?organizationId=${ORG_ID}`,
+    `https://panel.example.com/api/client/v1/repositories/github/callback`,
   )
   const hooks = fields.hook_attributes
   if (typeof hooks !== 'object' || hooks === null) {
@@ -868,11 +868,11 @@ test('start manifest for the admin surface is public and uses the admin callback
   assertEquals(manifest.public, true)
   assertEquals(
     manifest.redirect_url,
-    'https://panel.example.com/api/admin/v1/git/apps/github/manifest/callback',
+    'https://panel.example.com/api/admin/v1/forges/github/manifest/callback',
   )
   assertEquals(
     manifest.setup_url,
-    'https://panel.example.com/api/client/v1/sources/github/callback',
+    'https://panel.example.com/api/client/v1/repositories/github/callback',
   )
 })
 
@@ -989,7 +989,7 @@ test('complete manifest maps conversion failure, conflict, create failure, and s
   )
 })
 
-test('complete manifest maps a GitAppError to create_failed and rethrows other writes', async () => {
+test('complete manifest maps a ForgeError to create_failed and rethrows other writes', async () => {
   const state = await signedState({
     organizationId: ORG_ID,
     webhookRef: 'ref-pending',
@@ -1004,7 +1004,7 @@ test('complete manifest maps a GitAppError to create_failed and rethrows other w
         JSON.stringify({
           ...conversionPayload(),
           // Too short for the GitLab floor — but this is a github create.
-          // Force GitAppError via an empty name in the signed state instead.
+          // Force ForgeError via an empty name in the signed state instead.
         }),
         { status: 200 },
       ),

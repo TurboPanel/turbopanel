@@ -3,7 +3,7 @@ import { encryptSecret } from '../../client/authn/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
 import type { Db } from '../../db.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { gitProviderInstallation } from '../db/schema.ts'
+import { gitConnection } from '../db/schema.ts'
 import type { GitProviderContext, GitProviderSourceRow } from './git-provider.ts'
 import { GitlabOauthTokenError } from './gitlab-oauth-token.ts'
 import {
@@ -135,8 +135,8 @@ test('gitlab prepareClone preview and deploy-key lanes', async () => {
     repositoryUrl: 'https://gitlab.com/group/app.git',
     defaultBranch: 'main',
     subdirectory: null,
-    installationId: null,
-    credentialId: 'cred-1',
+    connectionId: null,
+    secretId: 'cred-1',
   }
 
   assertEquals(
@@ -160,7 +160,7 @@ test('gitlab prepareClone preview and deploy-key lanes', async () => {
 
   assertEquals(
     await gitlabProvider.prepareClone(ctx, {
-      row: { ...row, credentialId: null },
+      row: { ...row, secretId: null },
       ref: 'main',
       needsCredential: true,
     }),
@@ -195,8 +195,8 @@ const sourceRow: GitProviderSourceRow = {
   repositoryUrl: 'https://gitlab.com/group/app.git',
   defaultBranch: 'main',
   subdirectory: null,
-  installationId: null,
-  credentialId: 'cred-1',
+  connectionId: null,
+  secretId: 'cred-1',
 }
 
 test('gitlab repository reads are unsupported without an oauth connection', async () => {
@@ -217,7 +217,7 @@ test('gitlab repository reads are unsupported without an oauth connection', asyn
 
 test('gitlab repository reads fail when sealed secrets are unreadable', async () => {
   const ctx = { db: null as never }
-  const row = { ...sourceRow, installationId: 'inst-1' }
+  const row = { ...sourceRow, connectionId: 'inst-1' }
   assertEquals(
     await gitlabProvider.readRepositoryFiles(ctx, {
       row,
@@ -235,7 +235,7 @@ test('gitlab repository reads fail when sealed secrets are unreadable', async ()
 test('gitlab prepareClone without secrets cannot mint an oauth token', async () => {
   assertEquals(
     await gitlabProvider.prepareClone({ db: null as never }, {
-      row: { ...sourceRow, installationId: 'inst-1' },
+      row: { ...sourceRow, connectionId: 'inst-1' },
       ref: 'main',
       needsCredential: true,
     }),
@@ -272,7 +272,7 @@ function gitlabDb(opts: {
         innerJoin: joined,
         where: () => ({
           limit: () => {
-            if (table === gitProviderInstallation) {
+            if (table === gitConnection) {
               return Promise.resolve(opts.installation ? [opts.installation] : [])
             }
             return Promise.resolve([])
@@ -308,7 +308,7 @@ async function mintedCtx(): Promise<GitProviderContext> {
         customGitUser: null,
         customGitPort: null,
         syncedAt: null,
-        credentials: {
+        envelopes: {
           clientSecretEnvelope: await encryptSecret(secrets, 'app-secret'),
         },
       },
@@ -325,7 +325,7 @@ async function mintedCtx(): Promise<GitProviderContext> {
   }
 }
 
-const oauthRow = { ...sourceRow, installationId: 'inst-1' }
+const oauthRow = { ...sourceRow, connectionId: 'inst-1' }
 
 test('gitlab listRepositories mints a token and lists projects', async () => {
   const ctx = await mintedCtx()
@@ -591,7 +591,7 @@ test('gitlab prepareClone maps a missing app, a bad clone url, and oauth errors'
             customGitUser: null,
             customGitPort: null,
             syncedAt: null,
-            credentials: {},
+            envelopes: {},
           },
           installation: null,
         }),

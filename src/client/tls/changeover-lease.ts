@@ -1,5 +1,5 @@
 /**
- * Organization CA rotation journal lease.
+ * Organization CA changeover journal lease.
  *
  * Concurrency is the partial-unique `uniq_rotation_inflight_organization`
  * index (`state = 'in_progress'`) plus an age-bounded steal of a crashed
@@ -9,7 +9,7 @@
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
-import { rotation } from "../../lib/db/schema.ts";
+import { changeover } from "../../lib/db/schema.ts";
 
 export const CA_ROTATION_STATES = [
   "in_progress",
@@ -53,7 +53,7 @@ function isCaRotationState(value: unknown): value is CaRotationState {
 }
 
 function serializeJournalRow(
-  row: typeof rotation.$inferSelect,
+  row: typeof changeover.$inferSelect,
 ): CaRotationJournalRow | null {
   if (!isCaRotationState(row.state)) return null;
   return {
@@ -81,7 +81,7 @@ function journalIsStale(
 }
 
 /**
- * Latest Organization CA rotation journal row for this org, if any.
+ * Latest Organization CA changeover journal row for this org, if any.
  */
 export async function loadLatestCaRotation(
   db: Db,
@@ -89,9 +89,9 @@ export async function loadLatestCaRotation(
 ): Promise<CaRotationJournalRow | null> {
   const [row] = await db
     .select()
-    .from(rotation)
-    .where(eq(rotation.organizationId, organizationId))
-    .orderBy(desc(rotation.createdAt))
+    .from(changeover)
+    .where(eq(changeover.organizationId, organizationId))
+    .orderBy(desc(changeover.createdAt))
     .limit(1);
   if (!row) return null;
   return serializeJournalRow(row);
@@ -103,14 +103,14 @@ async function loadBlockingCaRotation(
 ): Promise<CaRotationJournalRow | null> {
   const [row] = await db
     .select()
-    .from(rotation)
+    .from(changeover)
     .where(
       and(
-        eq(rotation.organizationId, organizationId),
-        inArray(rotation.state, [...CA_ROTATION_BLOCKING_STATES]),
+        eq(changeover.organizationId, organizationId),
+        inArray(changeover.state, [...CA_ROTATION_BLOCKING_STATES]),
       ),
     )
-    .orderBy(desc(rotation.startedAt))
+    .orderBy(desc(changeover.startedAt))
     .limit(1);
   if (!row) return null;
   return serializeJournalRow(row);
@@ -123,7 +123,7 @@ async function insertInProgressRotation(
 ): Promise<CaRotationJournalRow | null> {
   const startedAt = nowIso(nowMs);
   const inserted = await db
-    .insert(rotation)
+    .insert(changeover)
     .values({
       organizationId,
       state: "in_progress",
@@ -131,8 +131,8 @@ async function insertInProgressRotation(
       results: [],
     })
     .onConflictDoNothing({
-      target: rotation.organizationId,
-      where: sql`${rotation.state} = 'in_progress'`,
+      target: changeover.organizationId,
+      where: sql`${changeover.state} = 'in_progress'`,
     })
     .returning();
   const row = inserted[0];
@@ -159,7 +159,7 @@ async function stealStaleInProgressRotation(
   // Preserve results / metadata / generations so crash recovery resumes the
   // in-flight journal instead of minting another Organization CA generation.
   const stolen = await db
-    .update(rotation)
+    .update(changeover)
     .set({
       startedAt,
       completedAt: null,
@@ -167,9 +167,9 @@ async function stealStaleInProgressRotation(
     })
     .where(
       and(
-        eq(rotation.id, existing.id),
-        eq(rotation.state, "in_progress"),
-        eq(rotation.startedAt, existing.startedAt),
+        eq(changeover.id, existing.id),
+        eq(changeover.state, "in_progress"),
+        eq(changeover.startedAt, existing.startedAt),
       ),
     )
     .returning();
@@ -179,8 +179,8 @@ async function stealStaleInProgressRotation(
 }
 
 /**
- * Begin or resume an Organization CA rotation. Returns `null` when another
- * rotation is `awaiting_retire`, or `in_progress` without a minted generation
+ * Begin or resume an Organization CA changeover. Returns `null` when another
+ * changeover is `awaiting_retire`, or `in_progress` without a minted generation
  * and not yet stale (mint still in flight on another isolate).
  *
  * An `in_progress` row that already minted `toCaGeneration` is returned so
@@ -215,7 +215,7 @@ export async function updateCaRotationJournal(
 ): Promise<CaRotationJournalRow | null> {
   const updatedAt = nowIso();
   const [row] = await db
-    .update(rotation)
+    .update(changeover)
     .set({
       updatedAt,
       ...(patch.state === undefined ? {} : { state: patch.state }),
@@ -231,7 +231,7 @@ export async function updateCaRotationJournal(
         ? {}
         : { completedAt: patch.completedAt }),
     })
-    .where(eq(rotation.id, rotationId))
+    .where(eq(changeover.id, rotationId))
     .returning();
   if (!row) return null;
   return serializeJournalRow(row);

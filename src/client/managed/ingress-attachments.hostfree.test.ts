@@ -6,7 +6,7 @@ import { assertEquals } from "@std/assert";
 import type { Db } from "../../db.ts";
 import type { ComposeDocument } from "../../lib/compose/types.ts";
 import {
-  loadListenerAttachedSegmentNames,
+  loadListenerAttachedSubnetNames,
   loadManagedIngressPlatformAttachments,
   reservedIngressHostsForServer,
 } from "./ingress-attachments.ts";
@@ -70,7 +70,7 @@ test("loadManagedIngressPlatformAttachments returns empty when no bindings", asy
   const result = await loadManagedIngressPlatformAttachments(db, {
     environmentId: "env-1",
     document: composeDoc({ web: { image: "nginx" } }),
-    tasks: [{ serviceId: "svc-web", serverId: "s-a" }],
+    slots: [{ serviceId: "svc-web", serverId: "s-a" }],
     serviceRows: [{ id: "svc-web", composeServiceName: "web" }],
   });
   assertEquals(result, { attachments: [], consumers: [] });
@@ -91,7 +91,7 @@ test("loadManagedIngressPlatformAttachments skips co-resident consumers", async 
     document: composeDoc({
       web: { image: "nginx", networks: ["frontend"] },
     }),
-    tasks: [{ serviceId: "svc-web", serverId: "s-a" }],
+    slots: [{ serviceId: "svc-web", serverId: "s-a" }],
     serviceRows: [{ id: "svc-web", composeServiceName: "web" }],
   });
   assertEquals(result, { attachments: [], consumers: [] });
@@ -131,7 +131,7 @@ test("loadManagedIngressPlatformAttachments builds attachments for remote consum
       api: { image: "node", networks: ["backend"] },
       skip: { image: "busybox" },
     }),
-    tasks: [
+    slots: [
       { serviceId: "svc-web", serverId: remote },
       { serviceId: "svc-api", serverId: remote },
       { serviceId: "svc-skip", serverId: remote },
@@ -176,7 +176,7 @@ test("loadManagedIngressPlatformAttachments tolerates non-object services map", 
   const result = await loadManagedIngressPlatformAttachments(db, {
     environmentId: "env-1",
     document: composeDoc(null),
-    tasks: [{ serviceId: "svc-web", serverId: "s-remote" }],
+    slots: [{ serviceId: "svc-web", serverId: "s-remote" }],
     serviceRows: [{ id: "svc-web", composeServiceName: "web" }],
   });
   // Missing body → default network key
@@ -192,7 +192,7 @@ test("loadManagedIngressPlatformAttachments tolerates non-object services map", 
   ]);
 });
 
-test("loadListenerAttachedSegmentNames returns empty without matching placement", async () => {
+test("loadListenerAttachedSubnetNames returns empty without matching placement", async () => {
   const listener = "00000000-0000-4000-8000-0000000000b1";
   const db = queuedSelectDb([
     [{
@@ -201,10 +201,10 @@ test("loadListenerAttachedSegmentNames returns empty without matching placement"
       projectOptions: null,
     }],
   ]);
-  assertEquals(await loadListenerAttachedSegmentNames(db, listener), []);
+  assertEquals(await loadListenerAttachedSubnetNames(db, listener), []);
 });
 
-test("loadListenerAttachedSegmentNames returns empty when all tasks are co-resident", async () => {
+test("loadListenerAttachedSubnetNames returns empty when all tasks are co-resident", async () => {
   const listener = "00000000-0000-4000-8000-0000000000b1";
   const db = queuedSelectDb([
     [{
@@ -218,10 +218,10 @@ test("loadListenerAttachedSegmentNames returns empty when all tasks are co-resid
       environmentId: "env-1",
     }],
   ]);
-  assertEquals(await loadListenerAttachedSegmentNames(db, listener), []);
+  assertEquals(await loadListenerAttachedSubnetNames(db, listener), []);
 });
 
-test("loadListenerAttachedSegmentNames maps remote envs to sorted tpn_ names", async () => {
+test("loadListenerAttachedSubnetNames maps remote envs to sorted tpn_ names", async () => {
   const listener = "00000000-0000-4000-8000-0000000000b1";
   const remote = "00000000-0000-4000-8000-0000000000b2";
   const netA = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -262,7 +262,7 @@ test("loadListenerAttachedSegmentNames maps remote envs to sorted tpn_ names", a
       { networkId: netA },
     ],
   ]);
-  const names = await loadListenerAttachedSegmentNames(db, listener);
+  const names = await loadListenerAttachedSubnetNames(db, listener);
   assertEquals(names, [
     `tpn_${netA}`,
     `tpn_${netB}`,

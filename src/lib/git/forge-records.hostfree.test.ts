@@ -1,5 +1,5 @@
 /**
- * Coverage for the `gitapp` record layer: the sealing contract, the
+ * Coverage for the `forge` record layer: the sealing contract, the
  * partial-update rule, and the scope predicate that decides what an
  * organization may see.
  *
@@ -13,17 +13,17 @@ import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
 import { decryptSecret, isSealedEnvelope } from '../../client/authn/data-encryption.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
-  createGitApp,
+  createForge,
   defaultBaseUrlFor,
-  GitAppConflictError,
-  GitAppError,
+  ForgeConflictError,
+  ForgeError,
   generateGitlabWebhookToken,
   generateWebhookRef,
   hashWebhookToken,
   MIN_GITLAB_WEBHOOK_TOKEN_LENGTH,
-  summarizeGitApp,
-  updateGitApp,
-} from './git-app-records.ts'
+  summarizeForge,
+  updateForge,
+} from './forge-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -68,7 +68,7 @@ function writeCapturingDb(existing?: Record<string, unknown>) {
   return { db: db as unknown as Db, captured }
 }
 
-function storedRow(credentials: Record<string, unknown>): Record<string, unknown> {
+function storedRow(envelopes: Record<string, unknown>): Record<string, unknown> {
   return {
     id: 'app-1',
     organizationId: null,
@@ -82,7 +82,7 @@ function storedRow(credentials: Record<string, unknown>): Record<string, unknown
     redirectUri: null,
     webhookRef: 'ref-1',
     webhookTokenHash: 'old-hash',
-    credentials,
+    envelopes,
   }
 }
 
@@ -104,7 +104,7 @@ test('generated refs and tokens are url-safe and unique', () => {
 test('create seals every secret and never stores plaintext', async () => {
   const derived = await secrets()
   const { db, captured } = writeCapturingDb()
-  await createGitApp(db, derived, {
+  await createForge(db, derived, {
     organizationId: null,
     provider: 'github',
     name: '  TurboPanel  ',
@@ -120,12 +120,12 @@ test('create seals every secret and never stores plaintext', async () => {
   // index over (provider, base_url, external_app_id) actually applies.
   assertEquals(values.baseUrl, 'https://github.com')
 
-  const credentials = values.credentials as Record<string, string>
-  assertEquals(isSealedEnvelope(credentials.privateKeyEnvelope), true)
-  assertEquals(isSealedEnvelope(credentials.webhookSecretEnvelope), true)
-  assertEquals(await decryptSecret(derived, credentials.privateKeyEnvelope), 'pem-material')
+  const envelopes = values.envelopes as Record<string, string>
+  assertEquals(isSealedEnvelope(envelopes.privateKeyEnvelope), true)
+  assertEquals(isSealedEnvelope(envelopes.webhookSecretEnvelope), true)
+  assertEquals(await decryptSecret(derived, envelopes.privateKeyEnvelope), 'pem-material')
   assertEquals(
-    await decryptSecret(derived, credentials.webhookSecretEnvelope),
+    await decryptSecret(derived, envelopes.webhookSecretEnvelope),
     'hmac-material',
   )
   // GitHub does not use the token digest; only GitLab does.
@@ -135,7 +135,7 @@ test('create seals every secret and never stores plaintext', async () => {
 test('create and update strip trailing slashes from baseUrl', async () => {
   const derived = await secrets()
   const created = writeCapturingDb()
-  await createGitApp(created.db, derived, {
+  await createForge(created.db, derived, {
     organizationId: null,
     provider: 'github',
     name: 'TurboPanel',
@@ -146,7 +146,7 @@ test('create and update strip trailing slashes from baseUrl', async () => {
 
   const existing = storedRow({})
   const updated = writeCapturingDb(existing)
-  await updateGitApp(updated.db, derived, 'app-1', {
+  await updateForge(updated.db, derived, 'app-1', {
     baseUrl: 'https://github.acme.test//',
   })
   assertEquals(updated.captured.set?.baseUrl, 'https://github.acme.test')
@@ -156,7 +156,7 @@ test('a gitlab webhook token is indexed by digest and length-floored', async () 
   const derived = await secrets()
   const token = 'a-sufficiently-long-gitlab-token'
   const { db, captured } = writeCapturingDb()
-  await createGitApp(db, derived, {
+  await createForge(db, derived, {
     organizationId: null,
     provider: 'gitlab',
     name: 'GitLab',
@@ -169,14 +169,14 @@ test('a gitlab webhook token is indexed by digest and length-floored', async () 
   // value would be brute-forceable offline by anyone holding the table.
   await assertRejects(
     () =>
-      createGitApp(writeCapturingDb().db, derived, {
+      createForge(writeCapturingDb().db, derived, {
         organizationId: null,
         provider: 'gitlab',
         name: 'GitLab',
         externalAppId: 'oauth-2',
         webhookSecret: 'x'.repeat(MIN_GITLAB_WEBHOOK_TOKEN_LENGTH - 1),
       }),
-    GitAppError,
+    ForgeError,
     'at least',
   )
 })
@@ -189,12 +189,12 @@ test('create rejects an empty name or external app id', async () => {
   ]) {
     await assertRejects(
       () =>
-        createGitApp(writeCapturingDb().db, derived, {
+        createForge(writeCapturingDb().db, derived, {
           organizationId: null,
           provider: 'github',
           ...input,
         }),
-      GitAppError,
+      ForgeError,
     )
   }
 })
@@ -207,13 +207,13 @@ test('an update that omits a secret keeps the sealed one', async () => {
   })
   const { db, captured } = writeCapturingDb(existing)
 
-  await updateGitApp(db, derived, 'app-1', { name: 'Renamed' })
+  await updateForge(db, derived, 'app-1', { name: 'Renamed' })
 
   const set = captured.set as Record<string, unknown>
   assertEquals(set.name, 'Renamed')
   // The whole point: a settings form can save a rename without the operator
   // re-pasting a key it was never shown.
-  assertEquals(set.credentials, {
+  assertEquals(set.envelopes, {
     clientSecretEnvelope: 'tpsecret.v1.sealed-client',
     webhookSecretEnvelope: 'tpsecret.v1.sealed-webhook',
   })
@@ -227,10 +227,10 @@ test('an explicit null clears a secret and its digest together', async () => {
     storedRow({ webhookSecretEnvelope: 'tpsecret.v1.sealed-webhook' }),
   )
 
-  await updateGitApp(db, derived, 'app-1', { webhookSecret: null })
+  await updateForge(db, derived, 'app-1', { webhookSecret: null })
 
   const set = captured.set as Record<string, unknown>
-  assertEquals(set.credentials, {})
+  assertEquals(set.envelopes, {})
   // Leaving a stale digest behind would let the fallback lookup resolve to an
   // app whose stored secret can no longer verify anything.
   assertEquals(set.webhookTokenHash, null)
@@ -243,13 +243,13 @@ test('rotating a gitlab token rewrites the digest in the same write', async () =
     storedRow({ webhookSecretEnvelope: 'tpsecret.v1.sealed-webhook' }),
   )
 
-  await updateGitApp(db, derived, 'app-1', { webhookSecret: rotated })
+  await updateForge(db, derived, 'app-1', { webhookSecret: rotated })
   assertEquals(captured.set?.webhookTokenHash, await hashWebhookToken(rotated))
 })
 
 test('updating a row that is gone answers null', async () => {
   const derived = await secrets()
-  assertEquals(await updateGitApp(writeCapturingDb().db, derived, 'missing', {}), null)
+  assertEquals(await updateForge(writeCapturingDb().db, derived, 'missing', {}), null)
 })
 
 test('create adopts a ref minted before the row existed', async () => {
@@ -259,7 +259,7 @@ test('create adopts a ref minted before the row existed', async () => {
   // The manifest flow bakes the ref into GitHub's webhook URL before the App
   // exists, so the row has to be born with that exact ref — correcting it
   // afterwards would leave a window where every delivery 401s.
-  await createGitApp(db, derived, {
+  await createForge(db, derived, {
     organizationId: null,
     provider: 'github',
     name: 'TurboPanel',
@@ -270,7 +270,7 @@ test('create adopts a ref minted before the row existed', async () => {
 
   // Without one, a fresh ref is generated.
   const plain = writeCapturingDb()
-  await createGitApp(plain.db, derived, {
+  await createForge(plain.db, derived, {
     organizationId: null,
     provider: 'github',
     name: 'TurboPanel',
@@ -299,13 +299,13 @@ test('a unique violation becomes an opaque conflict, not a 500', async () => {
 
   const error = await assertRejects(
     () =>
-      createGitApp(conflicting, derived, {
+      createForge(conflicting, derived, {
         organizationId: null,
         provider: 'github',
         name: 'TurboPanel',
         externalAppId: '1234',
       }),
-    GitAppConflictError,
+    ForgeConflictError,
   )
   // Says nothing about who holds the existing row, or which key collided.
   assertEquals(error.message.includes('organization'), false)
@@ -327,7 +327,7 @@ test('a non-unique database error is not swallowed as a conflict', async () => {
 
   await assertRejects(
     () =>
-      createGitApp(broken, derived, {
+      createForge(broken, derived, {
         organizationId: null,
         provider: 'github',
         name: 'TurboPanel',
@@ -339,7 +339,7 @@ test('a non-unique database error is not swallowed as a conflict', async () => {
 })
 
 test('summarize reports presence, never the sealed material', () => {
-  const summary = summarizeGitApp(
+  const summary = summarizeForge(
     storedRow({
       privateKeyEnvelope: 'tpsecret.v1.a',
       webhookSecretEnvelope: 'tpsecret.v1.b',
@@ -349,6 +349,6 @@ test('summarize reports presence, never the sealed material', () => {
   assertEquals(summary.hasPrivateKey, true)
   assertEquals(summary.hasWebhookSecret, true)
   assertEquals(summary.hasClientSecret, false)
-  assertEquals('credentials' in summary, false)
+  assertEquals('envelopes' in summary, false)
   assertEquals(summary.webhookRef, 'ref-1')
 })

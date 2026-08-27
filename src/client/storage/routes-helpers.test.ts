@@ -18,10 +18,10 @@ import {
   resolvePatchPrincipalId,
   resolveStorageParentContext,
   resolveStorageProjectId,
-  scratchLocationNotMountable,
+  scratchCopyNotMountable,
   STORAGE_KINDS,
   storageContentByteLength,
-  SCRATCH_LOCATION_NOT_MOUNTABLE_ERROR,
+  SCRATCH_COPY_NOT_MOUNTABLE_ERROR,
 } from './routes-helpers.ts'
 
 /**
@@ -227,7 +227,7 @@ test('parseCreateStorageFields validates required create body fields', async () 
   const ok = parseCreateStorageFields(c, {
     kind: 'directory',
     name: 'data',
-    location: { provider: 'path', serverId: 'srv-1', path: '/srv/data' },
+    storageCopy: { provider: 'path', serverId: 'srv-1', path: '/srv/data' },
     mount: { serviceId: 'svc-1', destinationPath: '/data' },
   })
   if (ok instanceof Response) {
@@ -237,22 +237,22 @@ test('parseCreateStorageFields validates required create body fields', async () 
   assertEquals(ok.name, 'data')
   assertEquals(ok.accessMode, 'single_writer')
   assertEquals(ok.retention, 'retain')
-  assertEquals(ok.location?.provider, 'path')
-  assertEquals(ok.location?.serverId, 'srv-1')
+  assertEquals(ok.copy?.provider, 'path')
+  assertEquals(ok.copy?.serverId, 'srv-1')
   assertEquals(ok.mount?.destinationPath, '/data')
 })
 
-test('parseCreateStorageFields rejects mounting a scratch location', async () => {
+test('parseCreateStorageFields rejects mounting a scratch copy', async () => {
   const c = mockContext()
   await expectErrorResponse(
     parseCreateStorageFields(c, {
       kind: 'volume',
       name: 'tmp',
-      location: { provider: 'docker', serverId: 'srv-1', role: 'scratch' },
+      storageCopy: { provider: 'docker', serverId: 'srv-1', role: 'scratch' },
       mount: { serviceId: 'svc-1', destinationPath: '/tmp' },
     }),
     400,
-    { error: SCRATCH_LOCATION_NOT_MOUNTABLE_ERROR },
+    { error: SCRATCH_COPY_NOT_MOUNTABLE_ERROR },
   )
 })
 
@@ -313,10 +313,10 @@ test('principalProjectMismatch only compares when a project is expected', () => 
   assertEquals(principalProjectMismatch(null, 'p1'), true)
 })
 
-test('scratchLocationNotMountable is true only for scratch', () => {
-  assertEquals(scratchLocationNotMountable('scratch'), true)
-  assertEquals(scratchLocationNotMountable('primary'), false)
-  assertEquals(scratchLocationNotMountable(null), false)
+test('scratchCopyNotMountable is true only for scratch', () => {
+  assertEquals(scratchCopyNotMountable('scratch'), true)
+  assertEquals(scratchCopyNotMountable('primary'), false)
+  assertEquals(scratchCopyNotMountable(null), false)
 })
 
 test('mapStorageUniqueViolation classifies known indexes', () => {
@@ -324,15 +324,15 @@ test('mapStorageUniqueViolation classifies known indexes', () => {
   assertEquals(
     mapStorageUniqueViolation({
       code: '23505',
-      message: 'uniq_location_storage_primary',
+      message: 'uniq_copy_storage_primary',
     }),
-    { error: 'location_primary_exists', status: 409 },
+    { error: 'copy_primary_exists', status: 409 },
   )
   assertEquals(
     mapStorageUniqueViolation(
-      Object.assign(new Error('uniq_location_storage_server_provider'), { code: '23505' }),
+      Object.assign(new Error('uniq_copy_storage_server_provider'), { code: '23505' }),
     ),
-    { error: 'location_server_provider_exists', status: 409 },
+    { error: 'copy_server_provider_exists', status: 409 },
   )
   assertEquals(
     mapStorageUniqueViolation(

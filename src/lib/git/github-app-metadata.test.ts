@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects } from '@std/assert'
-import type { GitApp } from './git-app-records.ts'
+import type { Forge } from './forge-records.ts'
 import { fetchGithubAppMetadata } from './github-app-metadata.ts'
 import { GithubAppTokenError, privateKeyPemToPkcs8Der } from './github-app-token.ts'
 
@@ -30,7 +30,7 @@ async function generatePkcs8Pem(): Promise<string> {
   return `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----\n`
 }
 
-function githubApp(overrides: Partial<GitApp> = {}): GitApp {
+function githubApp(overrides: Partial<Forge> = {}): Forge {
   return {
     id: 'app-1',
     organizationId: null,

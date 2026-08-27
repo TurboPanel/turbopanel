@@ -110,12 +110,12 @@ successfully **deployed** leaf state — not payload generation:
 
 | Column | Role |
 | --- | --- |
-| `kind` | `'ingress'` (ProxySQL frontend, one per server) or `'engine'` (per `node`) |
+| `kind` | `'ingress'` (ProxySQL frontend, one per server) or `'engine'` (per `replica`) |
 | `ca_id` / `ca_generation` | signing Organization CA row + generation |
 | `not_after` | leaf expiry (`timestamptz`) |
 
 Re-issuance **upserts** (partial uniques `uniq_leaf_ingress_server` /
-`uniq_leaf_engine_node`) — no history. Helpers:
+`uniq_leaf_engine_replica` on `leaf.replica_id`) — no history. Helpers:
 `src/client/tls/leaf-tracking.ts`. Mint sites (`buildOrgTlsMaterialForServer` /
 `buildOrgTlsForServer`) persist freshly minted details as command metadata
 (`pendingTlsLeaf`); the command consumer upserts `leaf` only on success of
@@ -130,7 +130,7 @@ ascending, keyset-cursor paginated (`notAfter`, `id`), `LIMIT`
 `LEAF_RENEWAL_BATCH_SIZE` (10) — never `OFFSET`, never per-org enumeration.
 
 Per due row the sweep reuses existing enqueue paths (`enqueueManagedIngressReconcile`
-/ `enqueueApplyForManagedCluster` from `rotation-fanout.ts`) — it does not fork
+/ `enqueueApplyForManagedCluster` from `changeover-fanout.ts`) — it does not fork
 a second reissue path. Successful **command** (not merely enqueue) remints a
 90-day leaf and upserts the tracking row, so the leaf drops out of the due set.
 

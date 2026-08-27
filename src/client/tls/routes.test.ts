@@ -21,7 +21,7 @@ import {
   managed,
   organization,
   project,
-  rotation,
+  changeover,
   server,
   tls,
   user,
@@ -31,7 +31,7 @@ import { mintSelfSignedCertificate } from "../../lib/tls/index.ts";
 import type { TlsMetadata } from "../../lib/tls/types.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerTlsRoutes } from "./routes.ts";
-import { ROTATION_FANOUT_BATCH_SIZE } from "./rotation-fanout.ts";
+import { ROTATION_FANOUT_BATCH_SIZE } from "./changeover-fanout.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
 import type { CommandQueue } from "../../lib/commands/queue.ts";
@@ -153,8 +153,8 @@ async function withTlsFixtures(
   try {
     await fn({ db, app, secrets, userId, organizationId });
   } finally {
-    await db.delete(rotation).where(
-      eq(rotation.organizationId, organizationId),
+    await db.delete(changeover).where(
+      eq(changeover.organizationId, organizationId),
     );
     await db.delete(tls).where(eq(tls.organizationId, organizationId));
     await db.delete(grant).where(eq(grant.actorId, userId));
@@ -459,13 +459,13 @@ test("POST /tls/ca/rotate retires prior CA and mints a new active generation", a
 
       const [journal] = await db
         .select({
-          id: rotation.id,
-          state: rotation.state,
-          fromCaGeneration: rotation.fromCaGeneration,
-          toCaGeneration: rotation.toCaGeneration,
+          id: changeover.id,
+          state: changeover.state,
+          fromCaGeneration: changeover.fromCaGeneration,
+          toCaGeneration: changeover.toCaGeneration,
         })
-        .from(rotation)
-        .where(eq(rotation.organizationId, organizationId))
+        .from(changeover)
+        .where(eq(changeover.organizationId, organizationId))
         .limit(1);
       assertEquals(journal?.id, rotateBody.rotationId);
       assertEquals(journal?.state, "awaiting_retire");
@@ -607,7 +607,7 @@ test("GET /tls/ca/download returns the Organization CA trust-bundle PEM", async 
   );
 });
 
-test("POST /tls/ca/rotate returns 409 while a rotation is in flight", async () => {
+test("POST /tls/ca/rotate returns 409 while a changeover is in flight", async () => {
   await withTlsFixtures(
     async ({ db, app, secrets, userId, organizationId }) => {
       const cookie = await sessionCookie(db, secrets, userId);
@@ -664,7 +664,7 @@ test("POST /tls/ca/retire waits for tracked command success then revokes the ret
 
       const [serverRow] = await db
         .insert(server)
-        .values({ organizationId, name: "CA rotation host" })
+        .values({ organizationId, name: "CA changeover host" })
         .returning({ id: server.id });
       const serverId = serverRow!.id;
 
@@ -682,7 +682,7 @@ test("POST /tls/ca/retire waits for tracked command success then revokes the ret
 
       try {
         await db
-          .update(rotation)
+          .update(changeover)
           .set({
             results: [{
               serverId,
@@ -691,7 +691,7 @@ test("POST /tls/ca/retire waits for tracked command success then revokes the ret
               status: "queued",
             }],
           })
-          .where(eq(rotation.id, rotateBody.rotationId));
+          .where(eq(changeover.id, rotateBody.rotationId));
 
         const earlyRetire = await app.request("/tls/ca/retire", {
           method: "POST",
@@ -783,11 +783,11 @@ test("POST /tls/ca/rotate resumes fan-out across batches until awaiting_retire",
 
         const [afterFirst] = await db
           .select({
-            state: rotation.state,
-            toCaGeneration: rotation.toCaGeneration,
+            state: changeover.state,
+            toCaGeneration: changeover.toCaGeneration,
           })
-          .from(rotation)
-          .where(eq(rotation.id, firstBody.rotationId))
+          .from(changeover)
+          .where(eq(changeover.id, firstBody.rotationId))
           .limit(1);
         assertEquals(afterFirst?.state, "in_progress");
         assertEquals(afterFirst?.toCaGeneration, 2);
@@ -808,9 +808,9 @@ test("POST /tls/ca/rotate resumes fan-out across batches until awaiting_retire",
         assertEquals(secondBody.generation, 2);
 
         const [afterSecond] = await db
-          .select({ state: rotation.state })
-          .from(rotation)
-          .where(eq(rotation.id, firstBody.rotationId))
+          .select({ state: changeover.state })
+          .from(changeover)
+          .where(eq(changeover.id, firstBody.rotationId))
           .limit(1);
         assertEquals(afterSecond?.state, "awaiting_retire");
 
@@ -840,7 +840,7 @@ test("POST /tls/ca/rotate keeps kind and managedId when one server hosts two clu
       };
       const [serverRow] = await db
         .insert(server)
-        .values({ organizationId, name: "Shared rotation host" })
+        .values({ organizationId, name: "Shared changeover host" })
         .returning({ id: server.id });
       const serverId = serverRow!.id;
       const seeded = await seedManagedClusters(db, {
@@ -928,7 +928,7 @@ test("POST /tls/ca/retire stays blocked when binding rematerialize failed", asyn
       const rotateBody = await rotate.json() as { rotationId: string };
 
       await db
-        .update(rotation)
+        .update(changeover)
         .set({
           state: "awaiting_retire",
           results: [{
@@ -939,7 +939,7 @@ test("POST /tls/ca/retire stays blocked when binding rematerialize failed", asyn
             error: "binding_ca_unavailable",
           }],
         })
-        .where(eq(rotation.id, rotateBody.rotationId));
+        .where(eq(changeover.id, rotateBody.rotationId));
 
       const retire = await app.request("/tls/ca/retire", {
         method: "POST",

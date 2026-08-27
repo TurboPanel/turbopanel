@@ -72,23 +72,23 @@ test("upsertTlsLeafTracking ingress conflicts on serverId where kind=ingress", a
   assertEquals(typeof conflicts[0]?.set.notAfter, "string");
 });
 
-test("upsertTlsLeafTracking engine conflicts on nodeId where kind=engine", async () => {
+test("upsertTlsLeafTracking engine conflicts on replicaId where kind=engine", async () => {
   const { db, conflicts } = recordingUpsertDb();
   await upsertTlsLeafTracking(db, {
     kind: "engine",
     organizationId: "org-1",
     serverId: "server-1",
     managedId: "managed-1",
-    nodeId: "node-1",
+    replicaId: "node-1",
     caId: "ca-1",
     caGeneration: 2,
     notAfter: "2026-04-01T00:00:00.000Z",
   });
   assertEquals(conflicts.length, 1);
-  assertEquals(conflicts[0]?.target, leaf.nodeId);
+  assertEquals(conflicts[0]?.target, leaf.replicaId);
 });
 
-test("upsertTlsLeafTracking engine requires nodeId and managedId", async () => {
+test("upsertTlsLeafTracking engine requires replicaId and managedId", async () => {
   const { db } = recordingUpsertDb();
   await assertRejects(
     () =>
@@ -101,7 +101,7 @@ test("upsertTlsLeafTracking engine requires nodeId and managedId", async () => {
         notAfter: "2026-04-01T00:00:00.000Z",
       }),
     TypeError,
-    "engine leaf tracking requires nodeId and managedId",
+    "engine leaf tracking requires replicaId and managedId",
   );
 });
 
@@ -111,7 +111,7 @@ test("pendingTlsLeafMetadata round-trips through parsePendingTlsLeafTracking", (
     organizationId: "org-1",
     serverId: "server-1",
     managedId: "managed-1",
-    nodeId: "node-1",
+    replicaId: "node-1",
     caId: "ca-1",
     caGeneration: 2,
     notAfter: "2026-04-01T00:00:00.000Z",

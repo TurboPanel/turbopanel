@@ -23,7 +23,7 @@ import {
   type LeafRenewalSweepDeps,
 } from "./leaf-renewal-sweep.ts";
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from "../../lib/tls/self-signed.ts";
-import { ROTATION_FANOUT_BATCH_SIZE } from "./rotation-fanout.ts";
+import { ROTATION_FANOUT_BATCH_SIZE } from "./changeover-fanout.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -356,7 +356,7 @@ test("runLeafRenewalSweepTick resumes past permanently failing earliest rows", a
     serverId: "server-early",
     kind: "unknown",
     managedId: null,
-    nodeId: null,
+    replicaId: null,
     caGeneration: 1,
     notAfter: "2026-01-01T00:00:00.000Z",
   };
@@ -366,7 +366,7 @@ test("runLeafRenewalSweepTick resumes past permanently failing earliest rows", a
     serverId: "server-later",
     kind: "unknown",
     managedId: null,
-    nodeId: null,
+    replicaId: null,
     caGeneration: 1,
     notAfter: "2026-01-02T00:00:00.000Z",
   };

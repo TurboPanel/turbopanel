@@ -20,8 +20,8 @@ import {
   network,
   datacenter,
   ip,
-  gitProviderInstallation,
-  source,
+  gitConnection,
+  repository,
 } from '../../lib/db/schema.ts'
 import {
   isGrantablePermissionKey,
@@ -219,19 +219,19 @@ export async function verifyEntityExists(
         .limit(1)
       return rows.length > 0
     }
-    case 'source': {
+    case 'repository': {
       const rows = await db
-        .select({ id: source.id })
-        .from(source)
-        .where(eq(source.id, entityId))
+        .select({ id: repository.id })
+        .from(repository)
+        .where(eq(repository.id, entityId))
         .limit(1)
       return rows.length > 0
     }
-    case 'gitProviderInstallation': {
+    case 'gitConnection': {
       const rows = await db
-        .select({ id: gitProviderInstallation.id })
-        .from(gitProviderInstallation)
-        .where(eq(gitProviderInstallation.id, entityId))
+        .select({ id: gitConnection.id })
+        .from(gitConnection)
+        .where(eq(gitConnection.id, entityId))
         .limit(1)
       return rows.length > 0
     }
@@ -312,6 +312,7 @@ export async function resolveEntityOrganizationId(
   entityType: string,
   entityId: string,
 ): Promise<string | null> {
+  if (!isUuid(entityId)) return null
   switch (entityType) {
     case 'organization':
       return entityId
@@ -463,10 +464,10 @@ export async function resolveEntityOrganizationId(
       `)
       if (rows[0]?.organization_id) return rows[0].organization_id
 
-      const stewardRows = await db.execute<{ organization_id: string }>(sql`
+      const tenancyRows = await db.execute<{ organization_id: string }>(sql`
         SELECT w.organization_id AS organization_id
         FROM principal p
-        JOIN steward st ON st.principal_id = p.id
+        JOIN tenancy st ON st.principal_id = p.id
         JOIN service s ON s.id = st.service_id
         JOIN environment e ON e.id = s.environment_id
         JOIN project pr ON pr.id = e.project_id
@@ -474,7 +475,7 @@ export async function resolveEntityOrganizationId(
         WHERE p.id = ${entityId}::uuid
         LIMIT 1
       `)
-      return stewardRows[0]?.organization_id ?? null
+      return tenancyRows[0]?.organization_id ?? null
     }
     case 'storage': {
       const rows = await db
@@ -508,19 +509,19 @@ export async function resolveEntityOrganizationId(
         .limit(1)
       return rows[0]?.organizationId ?? null
     }
-    case 'source': {
+    case 'repository': {
       const rows = await db
-        .select({ organizationId: source.organizationId })
-        .from(source)
-        .where(eq(source.id, entityId))
+        .select({ organizationId: repository.organizationId })
+        .from(repository)
+        .where(eq(repository.id, entityId))
         .limit(1)
       return rows[0]?.organizationId ?? null
     }
-    case 'gitProviderInstallation': {
+    case 'gitConnection': {
       const rows = await db
-        .select({ organizationId: gitProviderInstallation.organizationId })
-        .from(gitProviderInstallation)
-        .where(eq(gitProviderInstallation.id, entityId))
+        .select({ organizationId: gitConnection.organizationId })
+        .from(gitConnection)
+        .where(eq(gitConnection.id, entityId))
         .limit(1)
       return rows[0]?.organizationId ?? null
     }

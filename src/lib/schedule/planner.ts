@@ -5,7 +5,7 @@
  * two or more servers does.
  */
 
-import type { DesiredTaskInput } from '../db/task-records.ts'
+import type { DesiredSlotInput } from '../db/slot-records.ts'
 import type { PlacementConstraint, ServiceScheduleSpec } from './interpret.ts'
 
 export type FleetServer = {
@@ -14,7 +14,7 @@ export type FleetServer = {
   labels: Record<string, string>
 }
 
-export type ExistingTask = {
+export type ExistingSlot = {
   serviceId: string
   slot: number
   serverId: string
@@ -33,7 +33,7 @@ export type ScheduleErrorCode =
   | 'colocation_conflict'
 
 export type SchedulePlan =
-  | { ok: true; tasks: DesiredTaskInput[]; serverIds: string[] }
+  | { ok: true; slots: DesiredSlotInput[]; serverIds: string[] }
   | { ok: false; error: ScheduleErrorCode; message: string }
 
 export type PlanEnvironmentInput = {
@@ -42,7 +42,7 @@ export type PlanEnvironmentInput = {
   fabricEnabled: boolean
   servers: readonly FleetServer[]
   services: readonly PlannedService[]
-  existingTasks: readonly ExistingTask[]
+  existingTasks: readonly ExistingSlot[]
   /** Logical service id → local-storage server pin. */
   storagePins: ReadonlyMap<string, string>
 }
@@ -115,7 +115,7 @@ function eligibleForService(
 }
 
 function existingByServiceSlot(
-  existing: readonly ExistingTask[],
+  existing: readonly ExistingSlot[],
 ): Map<string, string> {
   const map = new Map<string, string>()
   for (const task of existing) {
@@ -219,16 +219,16 @@ function fail(error: ScheduleErrorCode, message: string): SchedulePlan {
 }
 
 type GroupPlaceResult =
-  | { ok: true; tasks: DesiredTaskInput[] }
+  | { ok: true; slots: DesiredSlotInput[] }
   | { ok: false; error: ScheduleErrorCode; message: string }
 
 function planEmptyEnvironment(input: PlanEnvironmentInput): SchedulePlan {
   const fallbackId = input.pinServerId ?? input.defaultServerId
-  if (!fallbackId) return { ok: true, tasks: [], serverIds: [] }
+  if (!fallbackId) return { ok: true, slots: [], serverIds: [] }
   if (!findServer(input.servers, fallbackId)) {
     return fail('no_eligible_server', 'Pinned server is not in this organization')
   }
-  return { ok: true, tasks: [], serverIds: [fallbackId] }
+  return { ok: true, slots: [], serverIds: [fallbackId] }
 }
 
 function missingPinnedServer(input: PlanEnvironmentInput): SchedulePlan | null {
@@ -280,7 +280,7 @@ function placeGroupServices(
     return fail('no_eligible_server', 'No eligible server remains after constraints')
   }
   const hosts = eligible.length > 0 ? eligible : [fallback]
-  const tasks: DesiredTaskInput[] = []
+  const slots: DesiredSlotInput[] = []
   for (const row of groupServices) {
     const placed = placeService({
       service: row,
@@ -290,9 +290,9 @@ function placeGroupServices(
       preferredId,
     })
     if ('error' in placed) return fail(placed.error, placed.message)
-    tasks.push(...placed.tasks)
+    slots.push(...placed.slots)
   }
-  return { ok: true, tasks }
+  return { ok: true, slots }
 }
 
 function placeColocationGroup(
@@ -324,7 +324,7 @@ function placeService(params: {
   existing: Map<string, string>
   requireEmptyHost: boolean
   preferredId: string | null
-}): { tasks: DesiredTaskInput[] } | { error: ScheduleErrorCode; message: string } {
+}): { slots: DesiredSlotInput[] } | { error: ScheduleErrorCode; message: string } {
   const { service, eligible, existing, requireEmptyHost, preferredId } = params
   const count = replicaCount(service.spec, eligible.length)
   if (count < 1) {
@@ -344,7 +344,7 @@ function placeService(params: {
 
   const usedLabelValues = new Map<string, number>()
   const occupied = new Set<string>()
-  const tasks: DesiredTaskInput[] = []
+  const slots: DesiredSlotInput[] = []
 
   for (let slot = 0; slot < count; slot += 1) {
     const stickyId = existing.get(`${service.serviceId}:${String(slot)}`)
@@ -367,18 +367,18 @@ function placeService(params: {
     }
     occupied.add(chosen.id)
     recordSpread(chosen, service.spec.spreadKeys, usedLabelValues)
-    tasks.push({
+    slots.push({
       serviceId: service.serviceId,
       serverId: chosen.id,
       slot,
       desiredState: 'running',
     })
   }
-  return { tasks }
+  return { slots }
 }
 
 /**
- * Plan tasks for an environment. Callers persist via `replaceEnvironmentTasks`
+ * Plan slots for an environment. Callers persist via `replaceEnvironmentSlots`
  * and `upsertDeploymentTargets`.
  */
 export function planEnvironmentSchedule(input: PlanEnvironmentInput): SchedulePlan {
@@ -398,12 +398,12 @@ export function planEnvironmentSchedule(input: PlanEnvironmentInput): SchedulePl
 
   const existing = existingByServiceSlot(input.existingTasks)
   const byId = new Map(input.services.map((row) => [row.serviceId, row]))
-  const allTasks: DesiredTaskInput[] = []
+  const allTasks: DesiredSlotInput[] = []
 
   for (const group of colocationGroups(input.services)) {
     const placed = placeColocationGroup(group, byId, pool, existing, input)
     if (!placed.ok) return placed
-    allTasks.push(...placed.tasks)
+    allTasks.push(...placed.slots)
   }
 
   const serverIds = [...new Set(allTasks.map((task) => task.serverId))]
@@ -420,16 +420,16 @@ export function planEnvironmentSchedule(input: PlanEnvironmentInput): SchedulePl
     if (byService !== 0) return byService
     return a.slot - b.slot
   })
-  return { ok: true, tasks: allTasks, serverIds }
+  return { ok: true, slots: allTasks, serverIds }
 }
 
 export function localReplicaCounts(
-  tasks: readonly DesiredTaskInput[],
+  slots: readonly DesiredSlotInput[],
   serviceIdToName: ReadonlyMap<string, string>,
   serverId: string,
 ): Map<string, number> {
   const counts = new Map<string, number>()
-  for (const task of tasks) {
+  for (const task of slots) {
     if (task.serverId !== serverId) continue
     const name = serviceIdToName.get(task.serviceId)
     if (!name) continue
@@ -439,12 +439,12 @@ export function localReplicaCounts(
 }
 
 export function localServiceNames(
-  tasks: readonly DesiredTaskInput[],
+  slots: readonly DesiredSlotInput[],
   serviceIdToName: ReadonlyMap<string, string>,
   serverId: string,
 ): Set<string> {
   const names = new Set<string>()
-  for (const task of tasks) {
+  for (const task of slots) {
     if (task.serverId !== serverId) continue
     const name = serviceIdToName.get(task.serviceId)
     if (name) names.add(name)

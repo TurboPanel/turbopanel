@@ -6,7 +6,7 @@
  *
  *  1. **No per-repository installation.** GitLab has no App install; the
  *     operator connects an account or group over OAuth once, and every project
- *     that connection can read is available. A `gitProviderInstallation` row
+ *     that connection can read is available. A `gitConnection` row
  *     with `provider: 'gitlab'` records that connection, and the OAuth token
  *     pair lives sealed on it (`./gitlab-oauth-token.ts`).
  *  2. **Deliveries name no connection.** A GitLab webhook payload identifies
@@ -62,7 +62,7 @@ import {
   listGitlabProjects,
   resolveGitlabCommit,
 } from './gitlab-api.ts'
-import { loadGitAppForInstallation } from './git-app-records.ts'
+import { loadForgeForConnection } from './forge-records.ts'
 import {
   GitlabOauthTokenError,
   mintGitlabAccessToken,
@@ -218,23 +218,23 @@ async function gitlabReadAuth(
   | GitProviderFailure
   | RepositoryReadUnsupported
 > {
-  if (!row.installationId) return { unsupported: true }
+  if (!row.connectionId) return { unsupported: true }
   if (!ctx.dataEncryptionSecrets) {
     return { failure: 'gitlab oauth credentials are unreadable' }
   }
   try {
     // The origin comes from the connection's own application, so an instance
     // may hold connections to gitlab.com and to a self-managed GitLab at once.
-    const app = await loadGitAppForInstallation(
+    const app = await loadForgeForConnection(
       ctx.db,
       ctx.dataEncryptionSecrets,
-      row.installationId,
+      row.connectionId,
     )
     if (!app) return { failure: 'gitlab oauth application is not configured' }
     const { token } = await mintGitlabAccessToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
-      row.installationId,
+      row.connectionId,
     )
     // `null` for the recorded id, matching `prepareClone`: GitProviderSourceRow
     // does not carry `repositoryExternalId`, so both paths resolve the project
@@ -254,15 +254,15 @@ export const gitlabProvider: GitProvider = {
 
   async listRepositories(
     ctx: GitProviderContext,
-    installationId: string,
+    connectionId: string,
   ): Promise<RepositorySummary[]> {
     if (!ctx.dataEncryptionSecrets) {
       throw new GitlabOauthTokenError('gitlab oauth credentials are unreadable')
     }
-    const app = await loadGitAppForInstallation(
+    const app = await loadForgeForConnection(
       ctx.db,
       ctx.dataEncryptionSecrets,
-      installationId,
+      connectionId,
     )
     if (!app) {
       throw new GitlabOauthTokenError('gitlab oauth application is not configured')
@@ -270,7 +270,7 @@ export const gitlabProvider: GitProvider = {
     const { token } = await mintGitlabAccessToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
-      installationId,
+      connectionId,
     )
     return await listGitlabProjects(app.baseUrl, token)
   },
@@ -404,8 +404,8 @@ export const gitlabProvider: GitProvider = {
     // Deploy-key lane: no OAuth connection, so nothing to mint and nothing to
     // resolve against. The stored `credential` row clones it, exactly as for
     // `provider: 'git'`.
-    if (!row.installationId) {
-      if (!row.credentialId) {
+    if (!row.connectionId) {
+      if (!row.secretId) {
         return {
           failure: 'gitlab source has neither an oauth connection nor a deploy key',
         }
@@ -418,10 +418,10 @@ export const gitlabProvider: GitProvider = {
     }
 
     try {
-      const app = await loadGitAppForInstallation(
+      const app = await loadForgeForConnection(
         ctx.db,
         ctx.dataEncryptionSecrets,
-        row.installationId,
+        row.connectionId,
       )
       if (!app) {
         return { failure: 'gitlab oauth application is not configured' }
@@ -431,7 +431,7 @@ export const gitlabProvider: GitProvider = {
       const { token } = await mintGitlabAccessToken(
         ctx.db,
         ctx.dataEncryptionSecrets,
-        row.installationId,
+        row.connectionId,
       )
 
       const projectId = gitlabProjectId(null, row.repositoryUrl)

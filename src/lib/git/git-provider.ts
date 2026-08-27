@@ -14,7 +14,7 @@
  *   3. {@link GitProvider.verifyWebhook} — is this delivery really from them.
  *   4. {@link GitProvider.parsePush} / {@link GitProvider.parseCheck} — the
  *      provider payload → the `(installation, repository, branch, sha)` tuple
- *      `src/client/sources/webhook-trigger.ts` resolves.
+ *      `src/client/repositories/webhook-trigger.ts` resolves.
  *
  * Generic SSH (`provider: 'git'`) is expressed here too, as a degenerate
  * implementation: it resolves no remote SHA (the ref passes through), mints no
@@ -46,7 +46,7 @@ import { gitlabProvider } from './gitlab-provider.ts'
  * Every provider a `source` row may name.
  *
  * Kept in step with `SOURCE_PROVIDERS` in
- * `src/client/sources/routes-helpers.ts` (which stays database-free and so
+ * `src/client/repositories/routes-helpers.ts` (which stays database-free and so
  * repeats the literal) and with the `source_provider_check` constraint in
  * `src/lib/db/schema.ts`.
  */
@@ -115,8 +115,8 @@ export type GitProviderSourceRow = {
   repositoryUrl: string
   defaultBranch: string | null
   subdirectory: string | null
-  installationId: string | null
-  credentialId: string | null
+  connectionId: string | null
+  secretId: string | null
 }
 
 /** Ambient state a provider call needs: the database plus the at-rest key. */
@@ -177,7 +177,7 @@ export function isGitProviderFailure(
  * A `push` delivery, in TurboPanel's vocabulary.
  *
  * `externalInstallationId` ties the delivery back to a
- * `gitProviderInstallation` row — GitHub's numeric App installation id, which
+ * `gitConnection` row — GitHub's numeric App installation id, which
  * every delivery carries.
  *
  * **`null` is a real answer**, and GitLab is why. GitLab has no per-repository
@@ -186,7 +186,7 @@ export function isGitProviderFailure(
  * connection for this provider is a candidate"; the provider-side repository
  * id then does the disambiguating, exactly as it already does within one GitHub
  * installation. See `loadInstallations` in
- * `src/client/sources/webhook-trigger.ts`.
+ * `src/client/repositories/webhook-trigger.ts`.
  */
 export type ProviderPushEvent = {
   externalInstallationId: string | null
@@ -256,7 +256,7 @@ export interface GitProvider {
    */
   listRepositories(
     ctx: GitProviderContext,
-    installationId: string,
+    connectionId: string,
   ): Promise<RepositorySummary[]>
 
   /**

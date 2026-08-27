@@ -216,7 +216,7 @@ export function nextFreeSubnet(
  * Lowest-free `/24` inside `relayPrefix` whose CIDR is not already held by a
  * segment that actually falls inside this prefix.
  */
-export function nextFreeSegmentSubnet(
+export function nextFreeSubnetCidr(
   relayPrefix: string,
   takenCidrs: Iterable<string>,
 ): string | null {

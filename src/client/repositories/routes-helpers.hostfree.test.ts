@@ -7,7 +7,7 @@ import {
   parseSourceListFilter,
   parseSourcePatchBody,
   parseSourceAttachBody,
-  serializeInstallationRow,
+  serializeConnectionRow,
   serializeSourceRow,
   SOURCE_REFERENCED_BY_COMPOSE_ERROR,
   validateRepositoryUrl,
@@ -22,7 +22,7 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-const INSTALL_ID = '550e8400-e29b-41d4-a716-446655440000'
+const CONNECTION_ID = '550e8400-e29b-41d4-a716-446655440000'
 const APP_ID = '11111111-1111-4111-8111-111111111111'
 const CREDENTIAL_ID = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
 const SERVICE_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
@@ -59,24 +59,24 @@ test('assertProviderAuthShape enforces mutually exclusive clone lanes', () => {
     'source_installation_required',
   )
   assertEquals(
-    assertProviderAuthShape('github', INSTALL_ID, CREDENTIAL_ID),
+    assertProviderAuthShape('github', CONNECTION_ID, CREDENTIAL_ID),
     'source_credential_not_supported',
   )
-  assertEquals(assertProviderAuthShape('github', INSTALL_ID, null), null)
+  assertEquals(assertProviderAuthShape('github', CONNECTION_ID, null), null)
 
   assertEquals(
     assertProviderAuthShape('gitlab', null, null),
     'source_installation_required',
   )
   assertEquals(
-    assertProviderAuthShape('gitlab', INSTALL_ID, CREDENTIAL_ID),
+    assertProviderAuthShape('gitlab', CONNECTION_ID, CREDENTIAL_ID),
     'source_auth_ambiguous',
   )
-  assertEquals(assertProviderAuthShape('gitlab', INSTALL_ID, null), null)
+  assertEquals(assertProviderAuthShape('gitlab', CONNECTION_ID, null), null)
   assertEquals(assertProviderAuthShape('gitlab', null, CREDENTIAL_ID), null)
 
   assertEquals(
-    assertProviderAuthShape('git', INSTALL_ID, null),
+    assertProviderAuthShape('git', CONNECTION_ID, null),
     'source_installation_not_supported',
   )
   assertEquals(assertProviderAuthShape('git', null, CREDENTIAL_ID), null)
@@ -125,7 +125,7 @@ test('validateRepositoryUrl accepts https and SSH only on credential lanes', () 
 test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', async () => {
   const c = mockContext()
   const created = parseSourceCreateBody(c, {
-    installationId: INSTALL_ID,
+    connectionId: CONNECTION_ID,
     repositoryUrl: 'https://github.com/org/repo.git',
   })
   if (created instanceof Response) {
@@ -133,7 +133,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
   }
   assertEquals(created.provider, 'github')
   assertEquals(created.autoDeploy, 'disabled')
-  assertEquals(created.installationId, INSTALL_ID)
+  assertEquals(created.connectionId, CONNECTION_ID)
   assertEquals(created.repositoryUrl, 'https://github.com/org/repo.git')
 
   await expectErrorResponse(
@@ -147,7 +147,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
   await expectErrorResponse(
     parseSourceCreateBody(c, {
       provider: 'github',
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       serviceId: SERVICE_ID,
       environmentId: ENV_ID,
       repositoryUrl: 'https://github.com/org/repo.git',
@@ -166,7 +166,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
   await expectErrorResponse(
     parseSourceCreateBody(c, {
       provider: 'github',
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       repositoryUrl: 12,
     }),
     400,
@@ -175,7 +175,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
   await expectErrorResponse(
     parseSourceCreateBody(c, {
       provider: 'github',
-      installationId: 'not-a-uuid',
+      connectionId: 'not-a-uuid',
       repositoryUrl: 'https://github.com/org/repo.git',
     }),
     400,
@@ -184,7 +184,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
   await expectErrorResponse(
     parseSourceCreateBody(c, {
       provider: 'github',
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       repositoryUrl: 'https://github.com/org/repo.git',
       subdirectory: '../escape',
     }),
@@ -194,7 +194,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
   await expectErrorResponse(
     parseSourceCreateBody(c, {
       provider: 'github',
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       repositoryUrl: 'https://github.com/org/repo.git',
       autoDeploy: 'whenever',
     }),
@@ -204,7 +204,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
   await expectErrorResponse(
     parseSourceCreateBody(c, {
       provider: 'github',
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       repositoryUrl: 'https://github.com/org/repo.git',
       metadata: ['not-jsonb'],
     }),
@@ -214,7 +214,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
 
   const withParent = parseSourceCreateBody(c, {
     provider: 'git',
-    credentialId: CREDENTIAL_ID,
+    secretId: CREDENTIAL_ID,
     serviceId: SERVICE_ID,
     repositoryUrl: 'git@git.example:org/repo.git',
     defaultBranch: 'trunk',
@@ -227,7 +227,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
     throw new TypeError('expected git create fields')
   }
   assertEquals(withParent.provider, 'git')
-  assertEquals(withParent.credentialId, CREDENTIAL_ID)
+  assertEquals(withParent.secretId, CREDENTIAL_ID)
   assertEquals(withParent.serviceId, SERVICE_ID)
   assertEquals(withParent.defaultBranch, 'trunk')
   assertEquals(withParent.subdirectory, 'apps/web')
@@ -238,8 +238,8 @@ test('parseSourcePatchBody rejects immutable scope and rechecks auth + URL', asy
   const c = mockContext()
   const existing = {
     provider: 'github' as const,
-    installationId: INSTALL_ID,
-    credentialId: null,
+    connectionId: CONNECTION_ID,
+    secretId: null,
     repositoryUrl: 'https://github.com/org/repo.git',
   }
 
@@ -254,12 +254,12 @@ test('parseSourcePatchBody rejects immutable scope and rechecks auth + URL', asy
     'source_scope_immutable',
   )
   await expectErrorResponse(
-    parseSourcePatchBody(c, { installationId: 'bad' }, existing),
+    parseSourcePatchBody(c, { connectionId: 'bad' }, existing),
     400,
     'Invalid request',
   )
   await expectErrorResponse(
-    parseSourcePatchBody(c, { installationId: null }, existing),
+    parseSourcePatchBody(c, { connectionId: null }, existing),
     400,
     'source_installation_required',
   )
@@ -292,12 +292,12 @@ test('parseSourcePatchBody rejects immutable scope and rechecks auth + URL', asy
 
   const gitExisting = {
     provider: 'git' as const,
-    installationId: null,
-    credentialId: CREDENTIAL_ID,
+    connectionId: null,
+    secretId: CREDENTIAL_ID,
     repositoryUrl: 'git@git.example:org/repo.git',
   }
   await expectErrorResponse(
-    parseSourcePatchBody(c, { credentialId: null }, gitExisting),
+    parseSourcePatchBody(c, { secretId: null }, gitExisting),
     400,
     'source_ssh_requires_credential',
   )
@@ -356,14 +356,14 @@ test('parseSourceListFilter accepts at most one UUID scope', async () => {
   )
 })
 
-test('serializeSourceRow and serializeInstallationRow fold optional facts', () => {
+test('serializeSourceRow and serializeConnectionRow fold optional facts', () => {
   const row: SourceRowLike = {
     id: SERVICE_ID,
-    organizationId: INSTALL_ID,
-    installationId: INSTALL_ID,
+    organizationId: CONNECTION_ID,
+    connectionId: CONNECTION_ID,
     serviceId: null,
     environmentId: ENV_ID,
-    credentialId: null,
+    secretId: null,
     provider: 'github',
     repositoryUrl: 'https://github.com/org/repo.git',
     repositoryExternalId: '42',
@@ -388,10 +388,10 @@ test('serializeSourceRow and serializeInstallationRow fold optional facts', () =
   assertEquals(SOURCE_REFERENCED_BY_COMPOSE_ERROR, 'source_referenced_by_compose')
 
   assertEquals(
-    serializeInstallationRow({
-      id: INSTALL_ID,
-      organizationId: INSTALL_ID,
-      appId: APP_ID,
+    serializeConnectionRow({
+      id: CONNECTION_ID,
+      organizationId: CONNECTION_ID,
+      forgeId: APP_ID,
       provider: 'github',
       externalInstallationId: '99',
       accountLogin: 'acme',
@@ -405,10 +405,10 @@ test('serializeSourceRow and serializeInstallationRow fold optional facts', () =
     true,
   )
   assertEquals(
-    serializeInstallationRow({
-      id: INSTALL_ID,
-      organizationId: INSTALL_ID,
-      appId: APP_ID,
+    serializeConnectionRow({
+      id: CONNECTION_ID,
+      organizationId: CONNECTION_ID,
+      forgeId: APP_ID,
       provider: 'gitlab',
       externalInstallationId: '1',
       accountLogin: null,
@@ -425,13 +425,13 @@ test('serializeSourceRow and serializeInstallationRow fold optional facts', () =
 
 test('attach accepts only what a repository pick can name', () => {
   const parsed = parseSourceAttachBody({
-    installationId: INSTALL_ID,
+    connectionId: CONNECTION_ID,
     repositoryExternalId: '  99  ',
     repositoryUrl: ' https://github.com/acme/app.git ',
     defaultBranch: ' trunk ',
   })
   assertEquals(parsed, {
-    installationId: INSTALL_ID,
+    connectionId: CONNECTION_ID,
     repositoryExternalId: '99',
     repositoryUrl: 'https://github.com/acme/app.git',
     defaultBranch: 'trunk',
@@ -441,7 +441,7 @@ test('attach accepts only what a repository pick can name', () => {
   // null on the row rather than an empty string.
   assertEquals(
     parseSourceAttachBody({
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       repositoryExternalId: '99',
       repositoryUrl: 'https://github.com/acme/app.git',
     })?.defaultBranch,
@@ -449,7 +449,7 @@ test('attach accepts only what a repository pick can name', () => {
   )
   assertEquals(
     parseSourceAttachBody({
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       repositoryExternalId: '99',
       repositoryUrl: 'https://github.com/acme/app.git',
       defaultBranch: '   ',
@@ -463,15 +463,15 @@ test('attach refuses the fields that make a source a managed thing', () => {
   // parent scope, the auto-deploy policy, or a deploy-key credential — the
   // second attach of a repository would otherwise differ from the first.
   const parsed = parseSourceAttachBody({
-    installationId: INSTALL_ID,
+    connectionId: CONNECTION_ID,
     repositoryExternalId: '99',
     repositoryUrl: 'https://github.com/acme/app.git',
     serviceId: SERVICE_ID,
     autoDeploy: 'immediate',
-    credentialId: INSTALL_ID,
+    secretId: CONNECTION_ID,
   })
   assertEquals(parsed !== null, true)
-  for (const key of ['serviceId', 'autoDeploy', 'credentialId', 'environmentId']) {
+  for (const key of ['serviceId', 'autoDeploy', 'secretId', 'environmentId']) {
     assertEquals(parsed !== null && key in parsed, false, `${key} must not survive`)
   }
 })
@@ -483,7 +483,7 @@ test('attach rejects a malformed body', () => {
   // is a bad request, not a 404 lookup.
   assertEquals(
     parseSourceAttachBody({
-      installationId: 'not-a-uuid',
+      connectionId: 'not-a-uuid',
       repositoryExternalId: '99',
       repositoryUrl: 'https://github.com/acme/app.git',
     }),
@@ -493,7 +493,7 @@ test('attach rejects a malformed body', () => {
   // would make the row unroutable.
   assertEquals(
     parseSourceAttachBody({
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       repositoryExternalId: '   ',
       repositoryUrl: 'https://github.com/acme/app.git',
     }),
@@ -501,7 +501,7 @@ test('attach rejects a malformed body', () => {
   )
   assertEquals(
     parseSourceAttachBody({
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       repositoryExternalId: '99',
       repositoryUrl: '',
     }),
@@ -509,7 +509,7 @@ test('attach rejects a malformed body', () => {
   )
   assertEquals(
     parseSourceAttachBody({
-      installationId: INSTALL_ID,
+      connectionId: CONNECTION_ID,
       repositoryExternalId: '99',
       repositoryUrl: 'https://github.com/acme/app.git',
       defaultBranch: 42,

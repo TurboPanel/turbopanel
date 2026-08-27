@@ -2,24 +2,24 @@ import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import { nowIso } from '../commands/ids.ts'
 import { inetAddressToString } from '../ip-address.ts'
-import { task } from './schema.ts'
+import { slot } from './schema.ts'
 
 /**
  * Scheduled instances of a logical service. Row identity and `created_at`
- * survive a re-plan (upsert on `(service_id, slot)`). A task whose `server_id`
+ * survive a re-plan (upsert on `(service_id, slot)`). A slot whose `server_id`
  * is unchanged is rewritten only for `generation` (plus `desiredState` /
- * `updatedAt`) — this helper never re-homes a task the caller did not move.
+ * `updatedAt`) — this helper never re-homes a slot the caller did not move.
  * The planner owns movement decisions by passing a different `serverId`.
  */
-export const TASK_DESIRED_STATES = Object.freeze(
+export const SLOT_DESIRED_STATES = Object.freeze(
   ['running', 'stopped', 'removed'] as const,
 )
 
-export type TaskDesiredState = (typeof TASK_DESIRED_STATES)[number]
+export type SlotDesiredState = (typeof SLOT_DESIRED_STATES)[number]
 
-type TaskDbRow = typeof task.$inferSelect
+type SlotDbRow = typeof slot.$inferSelect
 
-export type TaskRecord = {
+export type SlotRecord = {
   id: string
   createdAt: string
   updatedAt: string
@@ -30,29 +30,29 @@ export type TaskRecord = {
   serverId: string
   slot: number
   generation: number
-  desiredState: TaskDesiredState
+  desiredState: SlotDesiredState
   /**
-   * Cross-host address on a spanning compose network. A task carries at most
+   * Cross-host address on a spanning compose network. A slot carries at most
    * one address (a service typically joins one spanning network per environment).
    */
   address: string | null
 }
 
-export type DesiredTaskInput = {
+export type DesiredSlotInput = {
   serviceId: string
   serverId: string
   slot: number
-  desiredState?: TaskDesiredState
+  desiredState?: SlotDesiredState
   /** `null` clears a previously allocated spanning-network address. */
   address?: string | null
 }
 
-function isTaskDesiredState(value: string): value is TaskDesiredState {
-  return (TASK_DESIRED_STATES as readonly string[]).includes(value)
+function isSlotDesiredState(value: string): value is SlotDesiredState {
+  return (SLOT_DESIRED_STATES as readonly string[]).includes(value)
 }
 
-export function serializeTask(row: TaskDbRow): TaskRecord {
-  const desiredState = isTaskDesiredState(row.desiredState) ? row.desiredState : 'running'
+export function serializeSlot(row: SlotDbRow): SlotRecord {
+  const desiredState = isSlotDesiredState(row.desiredState) ? row.desiredState : 'running'
   return {
     id: row.id,
     createdAt: row.createdAt,
@@ -69,7 +69,7 @@ export function serializeTask(row: TaskDbRow): TaskRecord {
   }
 }
 
-function sortTasks(records: TaskRecord[]): TaskRecord[] {
+function sortSlots(records: SlotRecord[]): SlotRecord[] {
   return [...records].sort((a, b) => {
     const byService = a.serviceId.localeCompare(b.serviceId)
     if (byService !== 0) return byService
@@ -77,51 +77,51 @@ function sortTasks(records: TaskRecord[]): TaskRecord[] {
   })
 }
 
-function taskKey(serviceId: string, slot: number): string {
+function slotKey(serviceId: string, slot: number): string {
   return `${serviceId}:${String(slot)}`
 }
 
-type ReplaceEnvironmentTasksParams = {
+type ReplaceEnvironmentSlotsParams = {
   environmentId: string
   generation: number
-  tasks: readonly DesiredTaskInput[]
+  slots: readonly DesiredSlotInput[]
 }
 
 /**
  * Sticky re-plan of scheduled instances. Standalone callers get a transaction;
- * deploy persistence passes an existing `tx` via {@link replaceEnvironmentTasksInTx}.
+ * deploy persistence passes an existing `tx` via {@link replaceEnvironmentSlotsInTx}.
  */
-export async function replaceEnvironmentTasks(
+export async function replaceEnvironmentSlots(
   db: Db,
-  params: ReplaceEnvironmentTasksParams,
+  params: ReplaceEnvironmentSlotsParams,
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    await replaceEnvironmentTasksInTx(tx, params)
+    await replaceEnvironmentSlotsInTx(tx, params)
   })
 }
 
-/** Same writes as {@link replaceEnvironmentTasks} without opening a nested transaction. */
-export async function replaceEnvironmentTasksInTx(
+/** Same writes as {@link replaceEnvironmentSlots} without opening a nested transaction. */
+export async function replaceEnvironmentSlotsInTx(
   db: Db,
-  params: ReplaceEnvironmentTasksParams,
+  params: ReplaceEnvironmentSlotsParams,
 ): Promise<void> {
   const now = nowIso()
   const desiredKeys = new Set(
-    params.tasks.map((item) => taskKey(item.serviceId, item.slot)),
+    params.slots.map((item) => slotKey(item.serviceId, item.slot)),
   )
 
   const existing = await db
     .select({
-      id: task.id,
-      serviceId: task.serviceId,
-      slot: task.slot,
+      id: slot.id,
+      serviceId: slot.serviceId,
+      slot: slot.slot,
     })
-    .from(task)
-    .where(eq(task.environmentId, params.environmentId))
+    .from(slot)
+    .where(eq(slot.environmentId, params.environmentId))
 
-  for (const item of params.tasks) {
+  for (const item of params.slots) {
     await db
-      .insert(task)
+      .insert(slot)
       .values({
         environmentId: params.environmentId,
         serviceId: item.serviceId,
@@ -133,7 +133,7 @@ export async function replaceEnvironmentTasksInTx(
         updatedAt: now,
       })
       .onConflictDoUpdate({
-        target: [task.serviceId, task.slot],
+        target: [slot.serviceId, slot.slot],
         set: {
           serverId: item.serverId,
           generation: params.generation,
@@ -145,46 +145,46 @@ export async function replaceEnvironmentTasksInTx(
   }
 
   const staleIds = existing
-    .filter((row) => !desiredKeys.has(taskKey(row.serviceId, row.slot)))
+    .filter((row) => !desiredKeys.has(slotKey(row.serviceId, row.slot)))
     .map((row) => row.id)
   if (staleIds.length === 0) return
 
-  await db.delete(task).where(inArray(task.id, staleIds))
+  await db.delete(slot).where(inArray(slot.id, staleIds))
 }
 
-export async function listEnvironmentTasks(
+export async function listEnvironmentSlots(
   db: Db,
   environmentId: string,
   opts?: { generation?: number },
-): Promise<TaskRecord[]> {
-  const filter = opts?.generation === undefined ? eq(task.environmentId, environmentId) : and(
-    eq(task.environmentId, environmentId),
-    eq(task.generation, opts.generation),
+): Promise<SlotRecord[]> {
+  const filter = opts?.generation === undefined ? eq(slot.environmentId, environmentId) : and(
+    eq(slot.environmentId, environmentId),
+    eq(slot.generation, opts.generation),
   )
 
   const rows = await db
     .select()
-    .from(task)
+    .from(slot)
     .where(filter)
-    .orderBy(task.serviceId, task.slot)
+    .orderBy(slot.serviceId, slot.slot)
 
-  return sortTasks(rows.map(serializeTask))
+  return sortSlots(rows.map(serializeSlot))
 }
 
-export async function listTasksForServer(
+export async function listSlotsForServer(
   db: Db,
   params: { serverId: string; environmentId?: string },
-): Promise<TaskRecord[]> {
-  const filter = params.environmentId === undefined ? eq(task.serverId, params.serverId) : and(
-    eq(task.serverId, params.serverId),
-    eq(task.environmentId, params.environmentId),
+): Promise<SlotRecord[]> {
+  const filter = params.environmentId === undefined ? eq(slot.serverId, params.serverId) : and(
+    eq(slot.serverId, params.serverId),
+    eq(slot.environmentId, params.environmentId),
   )
 
   const rows = await db
     .select()
-    .from(task)
+    .from(slot)
     .where(filter)
-    .orderBy(task.serviceId, task.slot)
+    .orderBy(slot.serviceId, slot.slot)
 
-  return sortTasks(rows.map(serializeTask))
+  return sortSlots(rows.map(serializeSlot))
 }

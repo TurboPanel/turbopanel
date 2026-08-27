@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from '@std/assert'
-import { cronToOnCalendar, parseCronCommand } from './cron.ts'
+import { cronToOnCalendar, parseCronCommand, parseCronSchedule } from './cron.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -194,4 +194,18 @@ test('empty and oversized commands are rejected', () => {
     argvError(`/bin/x ${'a'.repeat(600)}`),
     'under 512 characters',
   )
+})
+
+test('parseCronSchedule accepts five-field cron including a day-of-month and day-of-week union', () => {
+  assertEquals(parseCronSchedule('0 0 13 * 5'), { ok: true, value: '0 0 13 * 5' })
+  assertEquals(parseCronSchedule('  @hourly  '), { ok: true, value: '@hourly' })
+  assertEquals(parseCronSchedule('30 2 * * *'), { ok: true, value: '30 2 * * *' })
+})
+
+test('parseCronSchedule rejects malformed schedules and unsupported aliases', () => {
+  assertEquals(parseCronSchedule('@reboot').ok, false)
+  assertEquals(parseCronSchedule('0 * * *').ok, false)
+  assertEquals(parseCronSchedule('@whenever').ok, false)
+  assertEquals(parseCronSchedule('').ok, false)
+  assertEquals(parseCronSchedule(7).ok, false)
 })

@@ -40,7 +40,7 @@ import { mergeProjectEnvironmentCompose } from "./deploy-prepare.ts";
 import {
   loadPrincipalIdsByServiceIdForEnvironment,
   pickSolePrincipalId,
-} from "../principals/stewards.ts";
+} from "../principals/tenancies.ts";
 
 /** One release tree to reclaim: `<principalHomeRoot>/<username>/sites/<serviceId>`. */
 export type EnvironmentSiteRelease = {
@@ -85,10 +85,10 @@ function releaseServiceIdFor(
 
 /**
  * Release trees the environment's **current** compose declares, one per service
- * that declares a source **and** has a single steward principal to publish
+ * that declares a source **and** has a single tenancy principal to publish
  * under.
  *
- * A service with no sole steward never got a release published (the daemon skips
+ * A service with no sole tenancy never got a release published (the daemon skips
  * those entries rather than guessing an owner), so there is nothing to reclaim.
  * Returns `[]` for an environment with no Git-backed services.
  *

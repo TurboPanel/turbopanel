@@ -42,8 +42,8 @@ export type SourceCreateFields = {
   defaultBranch: string | null
   subdirectory: string | null
   autoDeploy: SourceAutoDeploy
-  installationId: string | null
-  credentialId: string | null
+  connectionId: string | null
+  secretId: string | null
   serviceId: string | null
   environmentId: string | null
   metadata: Record<string, unknown> | null
@@ -51,8 +51,8 @@ export type SourceCreateFields = {
 }
 
 export type SourcePatchFields = {
-  installationId?: string | null
-  credentialId?: string | null
+  connectionId?: string | null
+  secretId?: string | null
   repositoryUrl?: string
   repositoryExternalId?: string | null
   defaultBranch?: string | null
@@ -86,7 +86,7 @@ const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
  * Repository URL policy.
  *
  * - `github` sources are App-authorized clones: **https only**. They never carry
- *   a `credentialId` (see {@link assertProviderAuthShape}), so the SSH branch
+ *   a `secretId` (see {@link assertProviderAuthShape}), so the SSH branch
  *   below is unreachable for them.
  * - `gitlab` sources are https when they clone through the OAuth connection
  *   (the minted access token is an HTTPS credential), and may additionally be
@@ -94,18 +94,18 @@ const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
  *   `git` gets, for the same reason: a deploy key authenticates publickey auth,
  *   not an askpass password prompt.
  * - `git` sources may be https, or an SSH form (`ssh://…` / `git@host:path`)
- *   — the SSH form needs a `credentialId` (the deploy key) to be usable. The
+ *   — the SSH form needs a `secretId` (the deploy key) to be usable. The
  *   deploy path carries that credential to the daemon tagged
  *   `credentialKind: 'ssh_key'`, which installs it as a temporary identity file
  *   for the clone; an https source's credential is a token instead.
  *
  * Callers must settle the auth shape **before** calling this, so the
- * `credentialId` passed in is always one the provider is allowed to use.
+ * `secretId` passed in is always one the provider is allowed to use.
  */
 export function validateRepositoryUrl(
   provider: SourceProvider,
   raw: string,
-  credentialId: string | null,
+  secretId: string | null,
 ): { ok: true; url: string } | { ok: false; error: string } {
   const url = raw.trim()
   if (url.length === 0 || url.length > SOURCE_REPOSITORY_URL_MAX_LENGTH) {
@@ -134,7 +134,7 @@ export function validateRepositoryUrl(
   if (!isSsh) {
     return { ok: false, error: 'source_repository_url_invalid' }
   }
-  if (!credentialId) {
+  if (!secretId) {
     return { ok: false, error: 'source_ssh_requires_credential' }
   }
   return { ok: true, url }
@@ -183,7 +183,7 @@ function parseOptionalJsonb(
  * - `github` clones with an installation token minted from the App: an
  *   installation is required and a credential is meaningless.
  * - `gitlab` has **two** lanes and must pick one — the OAuth connection
- *   (`installationId`) or a generated read-only deploy key (`credentialId`).
+ *   (`connectionId`) or a generated read-only deploy key (`secretId`).
  *   Both set is the case worth rejecting loudly: deploy-prep would have to
  *   guess which one to clone with, and the wrong guess is a failure that
  *   surfaces on the host rather than here.
@@ -219,20 +219,20 @@ export const SOURCE_DEPLOY_KEY_PROVIDERS: ReadonlySet<SourceProvider> = new Set<
 
 export function assertProviderAuthShape(
   provider: SourceProvider,
-  installationId: string | null,
-  credentialId: string | null,
+  connectionId: string | null,
+  secretId: string | null,
 ): string | null {
   if (provider === 'github') {
-    if (!installationId) return 'source_installation_required'
-    if (credentialId) return 'source_credential_not_supported'
+    if (!connectionId) return 'source_installation_required'
+    if (secretId) return 'source_credential_not_supported'
     return null
   }
   if (provider === 'gitlab') {
-    if (!installationId && !credentialId) return 'source_installation_required'
-    if (installationId && credentialId) return 'source_auth_ambiguous'
+    if (!connectionId && !secretId) return 'source_installation_required'
+    if (connectionId && secretId) return 'source_auth_ambiguous'
     return null
   }
-  if (installationId) return 'source_installation_not_supported'
+  if (connectionId) return 'source_installation_not_supported'
   return null
 }
 
@@ -245,13 +245,13 @@ export function parseSourceCreateBody(
     return c.json({ error: 'Invalid request' }, 400)
   }
 
-  const installationId = parseOptionalUuid(body.installationId)
-  const credentialId = parseOptionalUuid(body.credentialId)
+  const connectionId = parseOptionalUuid(body.connectionId)
+  const secretId = parseOptionalUuid(body.secretId)
   const serviceId = parseOptionalUuid(body.serviceId)
   const environmentId = parseOptionalUuid(body.environmentId)
   if (
-    !installationId.ok ||
-    !credentialId.ok ||
+    !connectionId.ok ||
+    !secretId.ok ||
     !serviceId.ok ||
     !environmentId.ok
   ) {
@@ -266,8 +266,8 @@ export function parseSourceCreateBody(
   // `validateRepositoryUrl` is one this provider may actually clone with.
   const authError = assertProviderAuthShape(
     provider,
-    installationId.value,
-    credentialId.value,
+    connectionId.value,
+    secretId.value,
   )
   if (authError) return c.json({ error: authError }, 400)
 
@@ -277,7 +277,7 @@ export function parseSourceCreateBody(
   const repositoryUrl = validateRepositoryUrl(
     provider,
     body.repositoryUrl,
-    credentialId.value,
+    secretId.value,
   )
   if (!repositoryUrl.ok) {
     return c.json({ error: repositoryUrl.error }, 400)
@@ -311,8 +311,8 @@ export function parseSourceCreateBody(
     defaultBranch: defaultBranch.value,
     subdirectory: subdirectory.value,
     autoDeploy,
-    installationId: installationId.value,
-    credentialId: credentialId.value,
+    connectionId: connectionId.value,
+    secretId: secretId.value,
     serviceId: serviceId.value,
     environmentId: environmentId.value,
     metadata: metadata.value,
@@ -330,7 +330,7 @@ type ParsedPatchField = { ok: true; value: unknown } | { ok: false }
  * reject" — and every rejection is the same generic 400. Order is preserved for
  * readability only; all entries fail the same way.
  *
- * `installationId` / `credentialId` are absent on purpose: they also feed the
+ * `connectionId` / `secretId` are absent on purpose: they also feed the
  * auth-shape and URL re-checks below, so they are parsed ahead of the loop.
  */
 const SOURCE_PATCH_FIELD_PARSERS: ReadonlyArray<
@@ -351,7 +351,7 @@ const SOURCE_PATCH_FIELD_PARSERS: ReadonlyArray<
  */
 function resolvePatchedAuthId(
   body: Record<string, unknown>,
-  key: 'installationId' | 'credentialId',
+  key: 'connectionId' | 'secretId',
   fallback: string | null,
   patch: SourcePatchFields,
 ): { ok: true; value: string | null } | { ok: false } {
@@ -365,24 +365,24 @@ function resolvePatchedAuthId(
 /**
  * URL and credential are one decision — an SSH URL is only clonable with a
  * deploy key — so a credential change re-checks the stored URL too. Without
- * that, clearing `credentialId` would strip the key off an ssh source and slip
+ * that, clearing `secretId` would strip the key off an ssh source and slip
  * past the `source_ssh_requires_credential` gate the create path enforces.
  *
  * Returns an error code, or `null` when the pair is coherent.
  */
 function applyRepositoryUrlPatch(
   body: Record<string, unknown>,
-  existing: { provider: SourceProvider; credentialId: string | null; repositoryUrl: string },
-  credentialId: string | null,
+  existing: { provider: SourceProvider; secretId: string | null; repositoryUrl: string },
+  secretId: string | null,
   patch: SourcePatchFields,
 ): string | null {
   const changed = 'repositoryUrl' in body
-  if (!changed && credentialId === existing.credentialId) return null
+  if (!changed && secretId === existing.secretId) return null
 
   const raw = changed ? body.repositoryUrl : existing.repositoryUrl
   if (typeof raw !== 'string') return 'Invalid request'
 
-  const parsed = validateRepositoryUrl(existing.provider, raw, credentialId)
+  const parsed = validateRepositoryUrl(existing.provider, raw, secretId)
   if (!parsed.ok) return parsed.error
   if (changed) patch.repositoryUrl = parsed.url
   return null
@@ -398,8 +398,8 @@ export function parseSourcePatchBody(
   body: Record<string, unknown>,
   existing: {
     provider: SourceProvider
-    installationId: string | null
-    credentialId: string | null
+    connectionId: string | null
+    secretId: string | null
     repositoryUrl: string
   },
 ): SourcePatchFields | Response {
@@ -409,19 +409,19 @@ export function parseSourcePatchBody(
 
   const patch: SourcePatchFields = { updatedAt: new Date().toISOString() }
 
-  const installationId = resolvePatchedAuthId(
+  const connectionId = resolvePatchedAuthId(
     body,
-    'installationId',
-    existing.installationId,
+    'connectionId',
+    existing.connectionId,
     patch,
   )
-  const credentialId = resolvePatchedAuthId(
+  const secretId = resolvePatchedAuthId(
     body,
-    'credentialId',
-    existing.credentialId,
+    'secretId',
+    existing.secretId,
     patch,
   )
-  if (!installationId.ok || !credentialId.ok) {
+  if (!connectionId.ok || !secretId.ok) {
     return c.json({ error: 'Invalid request' }, 400)
   }
 
@@ -430,12 +430,12 @@ export function parseSourcePatchBody(
   // create path already validated under this same rule.
   const authError = assertProviderAuthShape(
     existing.provider,
-    installationId.value,
-    credentialId.value,
+    connectionId.value,
+    secretId.value,
   )
   if (authError) return c.json({ error: authError }, 400)
 
-  const urlError = applyRepositoryUrlPatch(body, existing, credentialId.value, patch)
+  const urlError = applyRepositoryUrlPatch(body, existing, secretId.value, patch)
   if (urlError) return c.json({ error: urlError }, 400)
 
   for (const [key, parse] of SOURCE_PATCH_FIELD_PARSERS) {
@@ -493,10 +493,10 @@ export const COMPOSE_SOURCE_JSONPATH =
 export type SourceRowLike = {
   id: string
   organizationId: string
-  installationId: string | null
+  connectionId: string | null
   serviceId: string | null
   environmentId: string | null
-  credentialId: string | null
+  secretId: string | null
   provider: string
   repositoryUrl: string
   repositoryExternalId: string | null
@@ -513,7 +513,7 @@ export type SourceRowLike = {
  * Instance-wide webhook facts folded onto a single source read.
  *
  * They are properties of the *instance*, not of the row, so they are only
- * attached by `GET /sources/:id` — the list endpoint would repeat the identical
+ * attached by `GET /repositories/:id` — the list endpoint would repeat the identical
  * pair on every entry. `webhookUrl` is what the operator pastes into the App's
  * webhook settings; `reachabilityNote` is non-null exactly when this instance
  * looks unreachable from the public internet (see
@@ -529,10 +529,10 @@ export function serializeSourceRow(row: SourceRowLike, webhook?: SourceWebhookIn
   return {
     id: row.id,
     organizationId: row.organizationId,
-    installationId: row.installationId,
+    connectionId: row.connectionId,
     serviceId: row.serviceId,
     environmentId: row.environmentId,
-    credentialId: row.credentialId,
+    secretId: row.secretId,
     provider: row.provider,
     repositoryUrl: row.repositoryUrl,
     repositoryExternalId: row.repositoryExternalId,
@@ -548,7 +548,7 @@ export function serializeSourceRow(row: SourceRowLike, webhook?: SourceWebhookIn
 }
 
 /**
- * Body grammar for `POST /sources/attach`.
+ * Body grammar for `POST /repositories/attach`.
  *
  * Deliberately narrower than {@link parseSourceCreateBody}. Attaching names a
  * repository the operator picked out of a provider listing, so the fields that
@@ -558,7 +558,7 @@ export function serializeSourceRow(row: SourceRowLike, webhook?: SourceWebhookIn
  * the second attach of a repository silently different from the first.
  */
 export type SourceAttachFields = {
-  installationId: string
+  connectionId: string
   repositoryExternalId: string
   repositoryUrl: string
   defaultBranch: string | null
@@ -568,10 +568,10 @@ export function parseSourceAttachBody(body: unknown): SourceAttachFields | null 
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
   const raw = body as Record<string, unknown>
 
-  const installationId = typeof raw.installationId === 'string'
-    ? raw.installationId.trim()
+  const connectionId = typeof raw.connectionId === 'string'
+    ? raw.connectionId.trim()
     : ''
-  if (!UUID_RE.test(installationId)) return null
+  if (!UUID_RE.test(connectionId)) return null
 
   const repositoryExternalId = typeof raw.repositoryExternalId === 'string'
     ? raw.repositoryExternalId.trim()
@@ -590,14 +590,14 @@ export function parseSourceAttachBody(body: unknown): SourceAttachFields | null 
     defaultBranch = trimmed.length > 0 ? trimmed : null
   }
 
-  return { installationId, repositoryExternalId, repositoryUrl, defaultBranch }
+  return { connectionId, repositoryExternalId, repositoryUrl, defaultBranch }
 }
 
-export type InstallationRowLike = {
+export type ConnectionRowLike = {
   id: string
   organizationId: string
   /** The registered app this connection was granted through. */
-  appId: string
+  forgeId: string
   provider: string
   externalInstallationId: string
   accountLogin: string | null
@@ -609,14 +609,14 @@ export type InstallationRowLike = {
   updatedAt: string
 }
 
-export function serializeInstallationRow(row: InstallationRowLike) {
+export function serializeConnectionRow(row: ConnectionRowLike) {
   return {
     id: row.id,
     organizationId: row.organizationId,
     // Without this the console cannot tell which registered app a connection
     // came through, and the app -> account -> repository picker has no top
     // level to group by.
-    appId: row.appId,
+    forgeId: row.forgeId,
     provider: row.provider,
     externalInstallationId: row.externalInstallationId,
     accountLogin: row.accountLogin,

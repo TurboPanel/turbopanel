@@ -24,13 +24,13 @@ import {
   leaf,
   managed,
   network,
-  node,
+  replica,
   organization,
   principal,
   project,
   server,
   service,
-  task,
+  slot,
   tls,
   workspace,
 } from "../../lib/db/schema.ts";
@@ -176,7 +176,7 @@ async function withSingleClusterIngressFixture(
     .returning({ id: managed.id });
   const managedId = insertedManaged!.id;
 
-  await db.insert(node).values({
+  await db.insert(replica).values({
     managedId,
     serverId,
     role: "primary",
@@ -208,7 +208,7 @@ async function withSingleClusterIngressFixture(
     });
   } finally {
     await db.delete(principal).where(eq(principal.managedId, managedId));
-    await db.delete(node).where(eq(node.managedId, managedId));
+    await db.delete(replica).where(eq(replica.managedId, managedId));
     await db.delete(container).where(
       eq(container.id, allocation.containerRowId),
     );
@@ -685,7 +685,7 @@ async function insertBoundConsumer(
     isEmitEngineDefaults: false,
   });
   if (params.taskServerId) {
-    await db.insert(task).values({
+    await db.insert(slot).values({
       environmentId: environmentRow!.id,
       serviceId: serviceRow!.id,
       serverId: params.taskServerId,
@@ -811,7 +811,7 @@ test("loadBoundManagedIdsForServer does not scan unpinned environments that defa
     const projectIds = created.map((row) => row.projectId);
     if (serviceIds.length > 0) {
       await db.delete(binding).where(inArray(binding.serviceId, serviceIds));
-      await db.delete(task).where(inArray(task.serviceId, serviceIds));
+      await db.delete(slot).where(inArray(slot.serviceId, serviceIds));
       await db.delete(service).where(inArray(service.id, serviceIds));
     }
     if (managedIds.length > 0) {

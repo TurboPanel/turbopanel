@@ -1,7 +1,7 @@
 /**
  * ProxySQL as a platform attachment on a consuming environment's spanning
  * compose networks. Engines never join those tenant segments — only the
- * shared frontend does, and only when some consumer task is not co-resident
+ * shared frontend does, and only when some consumer slot is not co-resident
  * with the listener.
  */
 
@@ -22,9 +22,9 @@ import {
   environment,
   network,
   project,
-  segment,
+  subnet,
   service,
-  task,
+  slot,
 } from "../../lib/db/schema.ts";
 import {
   parseProjectOptions,
@@ -51,7 +51,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Listener servers that must join a consuming environment's spanning
- * networks because at least one bound consumer task is not co-resident.
+ * networks because at least one bound consumer slot is not co-resident.
  * Two queries (bindings + services); compose keys come from `document`.
  */
 export async function loadManagedIngressPlatformAttachments(
@@ -59,7 +59,7 @@ export async function loadManagedIngressPlatformAttachments(
   params: Readonly<{
     environmentId: string;
     document: ComposeDocument;
-    tasks: ReadonlyArray<{ serviceId: string; serverId: string }>;
+    slots: ReadonlyArray<{ serviceId: string; serverId: string }>;
     serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>;
   }>,
 ): Promise<ManagedIngressAttachments> {
@@ -88,11 +88,11 @@ export async function loadManagedIngressPlatformAttachments(
   const services = isPlainObject(params.document.data.services)
     ? params.document.data.services
     : {};
-  const tasksByService = new Map<string, string[]>();
-  for (const row of params.tasks) {
-    const servers = tasksByService.get(row.serviceId) ?? [];
+  const slotsByService = new Map<string, string[]>();
+  for (const row of params.slots) {
+    const servers = slotsByService.get(row.serviceId) ?? [];
     servers.push(row.serverId);
-    tasksByService.set(row.serviceId, servers);
+    slotsByService.set(row.serviceId, servers);
   }
 
   const keysByListener = new Map<string, Set<string>>();
@@ -103,7 +103,7 @@ export async function loadManagedIngressPlatformAttachments(
       parseProjectOptions(row.projectOptions),
     );
     if (!listener) continue;
-    const consumerServers = tasksByService.get(row.id) ?? [];
+    const consumerServers = slotsByService.get(row.id) ?? [];
     if (consumerServers.every((serverId) => serverId === listener)) {
       continue;
     }
@@ -136,9 +136,9 @@ export async function loadManagedIngressPlatformAttachments(
 
 /**
  * `tpn_*` host names this server's ProxySQL should join — environments where
- * this host is the listener and at least one consumer task is elsewhere.
+ * this host is the listener and at least one consumer slot is elsewhere.
  */
-export async function loadListenerAttachedSegmentNames(
+export async function loadListenerAttachedSubnetNames(
   db: Db,
   listenerServerId: string,
 ): Promise<string[]> {
@@ -166,12 +166,12 @@ export async function loadListenerAttachedSegmentNames(
 
   const taskRows = await db
     .select({
-      serviceId: task.serviceId,
-      serverId: task.serverId,
-      environmentId: task.environmentId,
+      serviceId: slot.serviceId,
+      serverId: slot.serverId,
+      environmentId: slot.environmentId,
     })
-    .from(task)
-    .where(inArray(task.serviceId, [...new Set(serviceIds)]));
+    .from(slot)
+    .where(inArray(slot.serviceId, [...new Set(serviceIds)]));
 
   const remoteEnvIds = new Set<string>();
   for (const row of taskRows) {
@@ -180,12 +180,12 @@ export async function loadListenerAttachedSegmentNames(
   if (remoteEnvIds.size === 0) return [];
 
   const segmentRows = await db
-    .select({ networkId: segment.networkId })
-    .from(segment)
-    .innerJoin(network, eq(segment.networkId, network.id))
+    .select({ networkId: subnet.networkId })
+    .from(subnet)
+    .innerJoin(network, eq(subnet.networkId, network.id))
     .where(
       and(
-        eq(segment.serverId, listenerServerId),
+        eq(subnet.serverId, listenerServerId),
         inArray(network.environmentId, [...remoteEnvIds]),
         eq(network.kind, "compose"),
       ),

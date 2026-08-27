@@ -35,7 +35,7 @@ import {
   container,
   environment,
   managed,
-  node,
+  replica,
   organization,
   principal,
   project,
@@ -328,7 +328,7 @@ function fakeDb(config: FakeDbConfig = {}): Db {
         if (table === principal) {
           return queryChain(config.principalRows ?? [])
         }
-        if (table === node) {
+        if (table === replica) {
           return queryChain(config.memberRows ?? [])
         }
         if (table === binding) {

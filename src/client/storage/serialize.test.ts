@@ -1,9 +1,9 @@
 import { assertEquals } from '@std/assert'
 import { principalVolumePath } from '../../lib/naming.ts'
 import {
-  serializeLocation,
+  serializeCopy,
   serializeStorage,
-  type LocationSelectRow,
+  type CopySelectRow,
   type StorageSelectRow,
 } from './serialize.ts'
 
@@ -38,12 +38,12 @@ function baseRow(overrides?: Partial<StorageSelectRow>): StorageSelectRow {
   }
 }
 
-function pathLocation(overrides?: Partial<LocationSelectRow>): LocationSelectRow {
+function pathLocation(overrides?: Partial<CopySelectRow>): CopySelectRow {
   return {
     id: '00000000-0000-4000-8000-0000000000aa',
     storageId: '00000000-0000-4000-8000-000000000010',
     serverId: '00000000-0000-4000-8000-000000000005',
-    credentialId: null,
+    secretId: null,
     provider: 'path',
     role: 'primary',
     state: 'pending',
@@ -58,39 +58,39 @@ function pathLocation(overrides?: Partial<LocationSelectRow>): LocationSelectRow
   }
 }
 
-test('serializeStorage omits principalUsername and nests locations/mounts', () => {
+test('serializeStorage omits principalUsername and nests copies/mounts', () => {
   const serialized = serializeStorage(baseRow({ principalUsername: 'app' }), [], [])
   assertEquals('principalUsername' in serialized, false)
-  assertEquals(serialized.locations, [])
+  assertEquals(serialized.copies, [])
   assertEquals(serialized.mounts, [])
   assertEquals(serialized.kind, 'volume')
 })
 
-test('serializeLocation prefers an explicit non-empty path', () => {
+test('serializeCopy prefers an explicit non-empty path', () => {
   const loc = pathLocation({ path: '/explicit/path' })
-  const serialized = serializeLocation(loc, loc.storageId, 'app')
+  const serialized = serializeCopy(loc, loc.storageId, 'app')
   assertEquals(serialized.resolvedSourcePath, '/explicit/path')
   assertEquals(serialized.path, '/explicit/path')
 })
 
-test('serializeLocation derives principal volume path for path locations', () => {
+test('serializeCopy derives principal volume path for path copies', () => {
   const storageId = '00000000-0000-4000-8000-000000000010'
   const loc = pathLocation({ storageId, path: null })
   assertEquals(
-    serializeLocation(loc, storageId, 'app').resolvedSourcePath,
+    serializeCopy(loc, storageId, 'app').resolvedSourcePath,
     principalVolumePath('app', storageId),
   )
 })
 
-test('serializeLocation returns null when path location lacks principal username', () => {
+test('serializeCopy returns null when path location lacks principal username', () => {
   const loc = pathLocation({ path: '' })
-  assertEquals(serializeLocation(loc, loc.storageId, null).resolvedSourcePath, null)
+  assertEquals(serializeCopy(loc, loc.storageId, null).resolvedSourcePath, null)
 })
 
-test('serializeLocation returns null for docker locations without path', () => {
+test('serializeCopy returns null for docker copies without path', () => {
   const loc = pathLocation({ provider: 'docker', path: null })
   assertEquals(
-    serializeLocation(loc, loc.storageId, 'app').resolvedSourcePath,
+    serializeCopy(loc, loc.storageId, 'app').resolvedSourcePath,
     null,
   )
 })

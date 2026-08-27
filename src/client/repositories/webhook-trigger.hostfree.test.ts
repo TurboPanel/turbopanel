@@ -7,7 +7,7 @@ import {
   applyGithubInstallationEvent,
   applyProviderInstallationEvent,
   readPendingChecks,
-  resolveSourceEnvironmentIds,
+  resolveRepositoryEnvironmentIds,
   resolveCheckTrigger,
   resolveGithubCheckTrigger,
   resolveGithubPushTrigger,
@@ -16,7 +16,7 @@ import {
   summarize,
   triggerSummaryNeedsRetry,
   type TriggerOutcome,
-  type TriggerSourceRow,
+  type TriggerRepositoryRow,
   type TriggerSummary,
   type WebhookTriggerDeps,
 } from './webhook-trigger.ts'
@@ -93,7 +93,7 @@ const unusedDb = {} as Db
 const unusedCtx = {} as Context<AppEnv>
 const unusedQueue = { enqueue: async () => {} } as CommandQueue
 
-function sourceRow(overrides: Partial<TriggerSourceRow> = {}): TriggerSourceRow {
+function sourceRow(overrides: Partial<TriggerRepositoryRow> = {}): TriggerRepositoryRow {
   return {
     id: SOURCE_ID,
     organizationId: ORG_ID,
@@ -107,14 +107,14 @@ function sourceRow(overrides: Partial<TriggerSourceRow> = {}): TriggerSourceRow 
 }
 
 function triggerDeps(
-  rows: TriggerSourceRow[],
+  rows: TriggerRepositoryRow[],
   overrides: WebhookTriggerDeps = {},
 ): WebhookTriggerDeps {
   return {
     loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
     findSources: async () => rows,
     setPendingChecks: async () => {},
-    resolveSourceEnvironmentIds: async () => [ENV_ID],
+    resolveRepositoryEnvironmentIds: async () => [ENV_ID],
     resolveEnvironmentPlacement: async () => ({
       serverId: SERVER_ID,
       organizationId: ORG_ID,
@@ -128,7 +128,7 @@ const APP_ID = '11111111-1111-4111-8111-111111111111'
 
 const samplePush = {
   provider: 'github' as const,
-  appId: APP_ID,
+  forgeId: APP_ID,
   externalInstallationId: '42',
   repositoryExternalId: '99',
   ref: 'refs/heads/trunk',
@@ -254,7 +254,7 @@ test('resolvePushTrigger deploys placed environments and maps pipeline status', 
     unusedQueue,
     samplePush,
     triggerDeps([sourceRow()], {
-      resolveSourceEnvironmentIds: async () => [],
+      resolveRepositoryEnvironmentIds: async () => [],
     }),
   )
   assertEquals(none.outcomes[0], {
@@ -372,7 +372,7 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
     unusedQueue,
     {
       provider: 'github',
-      appId: APP_ID,
+      forgeId: APP_ID,
       externalInstallationId: '42',
       repositoryExternalId: '99',
       commitSha: 'abc123def',
@@ -396,7 +396,7 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
     unusedQueue,
     {
       provider: 'github',
-      appId: APP_ID,
+      forgeId: APP_ID,
       externalInstallationId: '42',
       repositoryExternalId: '99',
       commitSha: 'abc123def',
@@ -417,7 +417,7 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
     unusedQueue,
     {
       provider: 'github',
-      appId: APP_ID,
+      forgeId: APP_ID,
       externalInstallationId: '42',
       repositoryExternalId: '99',
       commitSha: 'abc123def',
@@ -442,7 +442,7 @@ test('GitHub aliases bind the github provider discriminant', async () => {
     },
   }
   await resolveGithubPushTrigger(unusedCtx, unusedDb, unusedQueue, {
-    appId: APP_ID,
+    forgeId: APP_ID,
     externalInstallationId: '42',
     repositoryExternalId: '99',
     ref: 'refs/heads/trunk',
@@ -450,7 +450,7 @@ test('GitHub aliases bind the github provider discriminant', async () => {
     commitSha: 'abc',
   }, deps)
   await resolveGithubCheckTrigger(unusedCtx, unusedDb, unusedQueue, {
-    appId: APP_ID,
+    forgeId: APP_ID,
     externalInstallationId: '42',
     repositoryExternalId: '99',
     commitSha: 'abc',
@@ -458,7 +458,7 @@ test('GitHub aliases bind the github provider discriminant', async () => {
   assertEquals(seen, ['github', 'github'])
 })
 
-test('resolveSourceEnvironmentIds unions column pins service env and compose refs', async () => {
+test('resolveRepositoryEnvironmentIds unions column pins service env and compose refs', async () => {
   const db = {
     select: () => ({
       from: () => ({
@@ -469,7 +469,7 @@ test('resolveSourceEnvironmentIds unions column pins service env and compose ref
     }),
     execute: async () => [{ environment_id: 'compose-env' }],
   } as unknown as Db
-  const ids = await resolveSourceEnvironmentIds(
+  const ids = await resolveRepositoryEnvironmentIds(
     db,
     sourceRow({ environmentId: ENV_ID, serviceId: 'svc-1' }),
   )
@@ -479,7 +479,7 @@ test('resolveSourceEnvironmentIds unions column pins service env and compose ref
     'svc-env',
   ])
 
-  const empty = await resolveSourceEnvironmentIds(
+  const empty = await resolveRepositoryEnvironmentIds(
     {
       select: () => ({
         from: () => ({
@@ -538,12 +538,12 @@ test('installation lookup is scoped to the app that signed the delivery', async 
           // Stand in for SQL: answer with the rows of whichever app id the
           // predicate actually binds, and nothing when it binds neither.
           const bound = boundValues(condition)
-          const appId = bound.includes(APP_ID)
+          const forgeId = bound.includes(APP_ID)
             ? APP_ID
             : bound.includes(OTHER_APP)
             ? OTHER_APP
             : null
-          return Promise.resolve(appId ? rowsByApp[appId] : [])
+          return Promise.resolve(forgeId ? rowsByApp[forgeId] : [])
         },
       }),
     }),
@@ -651,7 +651,7 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
     unusedQueue,
     {
       provider: 'github',
-      appId: APP_ID,
+      forgeId: APP_ID,
       externalInstallationId: '42',
       repositoryExternalId: '99',
       commitSha: 'abc123def',
@@ -701,7 +701,7 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
     {
       loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
       findSources: async () => [sourceRow()],
-      resolveSourceEnvironmentIds: async () => [ENV_ID],
+      resolveRepositoryEnvironmentIds: async () => [ENV_ID],
       runDeploy: async () => new Response(null, { status: 204 }),
     },
   )
@@ -728,7 +728,7 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
     {
       loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
       findSources: async () => [sourceRow()],
-      resolveSourceEnvironmentIds: async () => [ENV_ID],
+      resolveRepositoryEnvironmentIds: async () => [ENV_ID],
     },
   )
   assertEquals(missingPlacement.outcomes[0], {
@@ -757,7 +757,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
   assertEquals(
     await applyProviderInstallationEvent(db, {
       provider: 'github',
-      appId: APP_ID,
+      forgeId: APP_ID,
       externalInstallationId: '42',
       action: 'new_permissions_granted',
     }),
@@ -768,7 +768,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
   assertEquals(
     await applyProviderInstallationEvent(db, {
       provider: 'github',
-      appId: APP_ID,
+      forgeId: APP_ID,
       externalInstallationId: '42',
       action: 'suspend',
     }),
@@ -780,7 +780,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
 
   assertEquals(
     await applyGithubInstallationEvent(db, {
-      appId: APP_ID,
+      forgeId: APP_ID,
       externalInstallationId: '42',
       action: 'unsuspend',
     }),
@@ -800,7 +800,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
   assertEquals(
     await applyProviderInstallationEvent(empty, {
       provider: 'gitlab',
-      appId: APP_ID,
+      forgeId: APP_ID,
       externalInstallationId: '99',
       action: 'deleted',
     }),

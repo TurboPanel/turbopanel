@@ -1,10 +1,10 @@
 /**
  * Auto-register compose top-level named volumes as `storage` + primary
- * `location` rows.
+ * `storageCopy` rows.
  *
  * Idempotency key: `(environment_id, metadata.composeVolumeKey)` where
  * `kind = 'volume'`. New managed rows stamp `metadata.dockerVolumeName` to
- * the storage UUID. External volumes upsert a location with
+ * the storage UUID. External volumes upsert a storageCopy with
  * `options.managed = false` and `options.externalName`.
  */
 
@@ -12,7 +12,7 @@ import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import type { ComposeDocument } from '../../lib/compose/types.ts'
 import { resolveDockerVolumeName } from '../../lib/naming.ts'
-import { location, storage } from '../../lib/db/schema.ts'
+import { storageCopy, storage } from '../../lib/db/schema.ts'
 
 export type RegisteredComposeVolume = {
   storageId: string
@@ -121,12 +121,12 @@ async function ensurePrimaryDockerLocation(
   },
 ): Promise<string> {
   const [existing] = await tx
-    .select({ id: location.id })
-    .from(location)
+    .select({ id: storageCopy.id })
+    .from(storageCopy)
     .where(
       and(
-        eq(location.storageId, params.storageId),
-        eq(location.role, 'primary'),
+        eq(storageCopy.storageId, params.storageId),
+        eq(storageCopy.role, 'primary'),
       ),
     )
     .limit(1)
@@ -137,7 +137,7 @@ async function ensurePrimaryDockerLocation(
     options.externalName = params.externalName
   }
   const [inserted] = await tx
-    .insert(location)
+    .insert(storageCopy)
     .values({
       storageId: params.storageId,
       serverId: params.serverId,
@@ -147,22 +147,22 @@ async function ensurePrimaryDockerLocation(
       options,
     })
     .onConflictDoNothing()
-    .returning({ id: location.id })
+    .returning({ id: storageCopy.id })
   if (inserted) return inserted.id
 
   const [winner] = await tx
-    .select({ id: location.id })
-    .from(location)
+    .select({ id: storageCopy.id })
+    .from(storageCopy)
     .where(
       and(
-        eq(location.storageId, params.storageId),
-        eq(location.role, 'primary'),
+        eq(storageCopy.storageId, params.storageId),
+        eq(storageCopy.role, 'primary'),
       ),
     )
     .limit(1)
   if (!winner) {
     throw new Error(
-      `compose volume location missing after conflict (storage=${params.storageId})`,
+      `compose volume storageCopy missing after conflict (storage=${params.storageId})`,
     )
   }
   return winner.id
@@ -183,7 +183,7 @@ function resolvedVolumeName(
 
 /**
  * Ensure each compose named volume has a `volume` storage row and a primary
- * docker location on `serverId`.
+ * docker storageCopy on `serverId`.
  */
 export async function registerComposeVolumes(
   db: Db,

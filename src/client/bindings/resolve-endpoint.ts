@@ -20,13 +20,13 @@ import type { Db } from '../../db.ts'
 import {
   binding,
   environment,
-  node,
+  replica,
   organization,
   principal,
   project,
   server,
   service,
-  task,
+  slot,
 } from '../../lib/db/schema.ts'
 import {
   managedIngressPortForEngine,
@@ -101,17 +101,17 @@ async function loadClusterMembers(
 > {
   return await db
     .select({
-      serverId: node.serverId,
-      role: node.role,
-      ordinal: node.ordinal,
-      readEligible: node.isReadEligible,
+      serverId: replica.serverId,
+      role: replica.role,
+      ordinal: replica.ordinal,
+      readEligible: replica.isReadEligible,
     })
-    .from(node)
-    .where(eq(node.managedId, managedId))
+    .from(replica)
+    .where(eq(replica.managedId, managedId))
     .orderBy(
       // Primary first, then lowest ordinal.
-      sql`CASE WHEN ${node.role} = 'primary' THEN 0 ELSE 1 END`,
-      asc(node.ordinal),
+      sql`CASE WHEN ${replica.role} = 'primary' THEN 0 ELSE 1 END`,
+      asc(replica.ordinal),
     )
 }
 
@@ -213,22 +213,22 @@ export async function resolveBindingEndpoint(
   }
 }
 
-/** Whether a managed cluster `node` row exists for this (managed, server) pair. */
+/** Whether a managed cluster `replica` row exists for this (managed, server) pair. */
 export async function memberServerIdsForManaged(
   db: Db,
   managedId: string,
 ): Promise<string[]> {
   const rows = await db
-    .select({ serverId: node.serverId })
-    .from(node)
-    .where(and(eq(node.managedId, managedId)))
+    .select({ serverId: replica.serverId })
+    .from(replica)
+    .where(and(eq(replica.managedId, managedId)))
   return rows.map((r) => r.serverId)
 }
 
 /**
  * Servers that host a compose service bound to this managed cluster.
  * Inverse of `loadBoundManagedIdsForServer`: env pin, project default, and
- * any `task.serverId`. One query — no per-service round trips.
+ * any `slot.serverId`. One query — no per-service round trips.
  */
 export async function consumerServerIdsForManaged(
   db: Db,
@@ -238,14 +238,14 @@ export async function consumerServerIdsForManaged(
     .select({
       environmentServerId: environment.serverId,
       projectOptions: project.options,
-      taskServerId: task.serverId,
+      taskServerId: slot.serverId,
     })
     .from(binding)
     .innerJoin(principal, eq(binding.principalId, principal.id))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
-    .leftJoin(task, eq(task.serviceId, service.id))
+    .leftJoin(slot, eq(slot.serviceId, service.id))
     .where(eq(principal.managedId, managedId))
 
   const ids = new Set<string>()

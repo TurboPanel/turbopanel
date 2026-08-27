@@ -1,5 +1,5 @@
 /**
- * TurboFabric desired-state helpers (`fabric` / `relay` / `segment`).
+ * TurboFabric desired-state helpers (`fabric` / `relay` / `subnet`).
  */
 
 import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
@@ -11,13 +11,13 @@ import {
   nextFreeHostAddress,
   stripInetPrefixSuffix,
 } from "../ip-address.ts";
-import { fabric, ip, network, relay, segment, server } from "./schema.ts";
+import { fabric, ip, network, relay, subnet, server } from "./schema.ts";
 import {
   composeNetworkHostName,
   hostRoute32,
   isRelayAddressUniqueViolation,
   isRelayPrefixUniqueViolation,
-  nextFreeSegmentSubnet,
+  nextFreeSubnetCidr,
   nextFreeSubnet,
   nthSubnet,
   parseFabricOptions,
@@ -114,6 +114,7 @@ export type RelayRecord = {
 export type FabricAllocationErrorKind =
   | "fabric_address_pool_exhausted"
   | "fabric_prefix_pool_exhausted"
+  /** Compose-bridge subnet pool (table `subnet`); error code kept as-is. */
   | "fabric_segment_pool_exhausted"
   | "relay_missing"
   | "relay_endpoint_unavailable";
@@ -466,11 +467,11 @@ export function requireRelayPrefix(
   return prefix;
 }
 
-export function requireSegmentSubnet(
+export function requireSubnetCidr(
   relayPrefix: string,
   takenCidrs: readonly string[],
 ): string {
-  const cidrValue = nextFreeSegmentSubnet(relayPrefix, takenCidrs);
+  const cidrValue = nextFreeSubnetCidr(relayPrefix, takenCidrs);
   if (!cidrValue) {
     throw new FabricAllocationError("fabric_segment_pool_exhausted");
   }
@@ -887,11 +888,11 @@ export async function deleteServerFabricMembership(
   db: Db,
   serverId: string,
 ): Promise<void> {
-  await db.delete(segment).where(eq(segment.serverId, serverId));
+  await db.delete(subnet).where(eq(subnet.serverId, serverId));
   await db.delete(relay).where(eq(relay.serverId, serverId));
 }
 
-export type EnvironmentComposeNetworkSegment = {
+export type EnvironmentComposeNetworkSubnet = {
   serverId: string;
   subnet: string;
 };
@@ -899,7 +900,7 @@ export type EnvironmentComposeNetworkSegment = {
 export type EnvironmentComposeNetwork = {
   networkId: string;
   hostName: string;
-  segments: EnvironmentComposeNetworkSegment[];
+  segments: EnvironmentComposeNetworkSubnet[];
 };
 
 async function deleteComposeNetworkIds(
@@ -907,7 +908,7 @@ async function deleteComposeNetworkIds(
   ids: readonly string[],
 ): Promise<void> {
   if (ids.length === 0) return;
-  await db.delete(segment).where(inArray(segment.networkId, [...ids]));
+  await db.delete(subnet).where(inArray(subnet.networkId, [...ids]));
   await db.delete(network).where(inArray(network.id, [...ids]));
 }
 
@@ -918,11 +919,11 @@ export async function listEnvironmentComposeNetworks(
   const rows = await db
     .select({
       networkId: network.id,
-      serverId: segment.serverId,
-      subnet: segment.cidr,
+      serverId: subnet.serverId,
+      subnet: subnet.cidr,
     })
     .from(network)
-    .leftJoin(segment, eq(segment.networkId, network.id))
+    .leftJoin(subnet, eq(subnet.networkId, network.id))
     .where(
       and(
         eq(network.environmentId, environmentId),
@@ -1001,7 +1002,7 @@ export async function purgeEnvironmentComposeNetworks(
 }
 
 /**
- * Drop compose `network` / `segment` rows created after `prior` was snapshotted.
+ * Drop compose `network` / `subnet` rows created after `prior` was snapshotted.
  * Used to compensate a deploy attempt that exits before deployment-target
  * writes succeed.
  */
@@ -1032,16 +1033,16 @@ export async function purgeComposeNetworksCreatedAfter(
       .map((segmentRow) => segmentRow.serverId)
       .filter((serverId) => !known.has(serverId));
     if (extraServerIds.length === 0) continue;
-    await db.delete(segment).where(
+    await db.delete(subnet).where(
       and(
-        eq(segment.networkId, row.networkId),
-        inArray(segment.serverId, extraServerIds),
+        eq(subnet.networkId, row.networkId),
+        inArray(subnet.serverId, extraServerIds),
       ),
     );
   }
 }
 
-export async function releaseSegmentsForServer(
+export async function releaseSubnetsForServer(
   db: Db,
   params: { environmentId: string; serverId: string },
 ): Promise<void> {
@@ -1056,16 +1057,16 @@ export async function releaseSegmentsForServer(
     );
   const ids = networks.map((row) => row.id);
   if (ids.length === 0) return;
-  await db.delete(segment).where(
+  await db.delete(subnet).where(
     and(
-      eq(segment.serverId, params.serverId),
-      inArray(segment.networkId, ids),
+      eq(subnet.serverId, params.serverId),
+      inArray(subnet.networkId, ids),
     ),
   );
   const remaining = await db
-    .select({ networkId: segment.networkId })
-    .from(segment)
-    .where(inArray(segment.networkId, ids));
+    .select({ networkId: subnet.networkId })
+    .from(subnet)
+    .where(inArray(subnet.networkId, ids));
   const remainingIds = new Set(remaining.map((row) => row.networkId));
   await deleteComposeNetworkIds(
     db,
@@ -1698,18 +1699,18 @@ function parseSegmentNetworkExtras(
   return extras;
 }
 
-export async function listServerSegments(
+export async function listServerSubnets(
   db: Db,
   serverId: string,
 ): Promise<FabricSegmentMaterial[]> {
   const rows = await db
     .select({
-      networkId: segment.networkId,
-      cidr: segment.cidr,
-      options: segment.options,
+      networkId: subnet.networkId,
+      cidr: subnet.cidr,
+      options: subnet.options,
     })
-    .from(segment)
-    .where(eq(segment.serverId, serverId));
+    .from(subnet)
+    .where(eq(subnet.serverId, serverId));
 
   return rows.map((row) => ({
     name: composeNetworkHostName(row.networkId),
@@ -1718,7 +1719,7 @@ export async function listServerSegments(
   }));
 }
 
-export async function listSegmentsForServers(
+export async function listSubnetsForServers(
   db: Db,
   serverIds: readonly string[],
 ): Promise<Map<string, FabricSegmentMaterial[]>> {
@@ -1728,13 +1729,13 @@ export async function listSegmentsForServers(
 
   const rows = await db
     .select({
-      serverId: segment.serverId,
-      networkId: segment.networkId,
-      cidr: segment.cidr,
-      options: segment.options,
+      serverId: subnet.serverId,
+      networkId: subnet.networkId,
+      cidr: subnet.cidr,
+      options: subnet.options,
     })
-    .from(segment)
-    .where(inArray(segment.serverId, [...serverIds]));
+    .from(subnet)
+    .where(inArray(subnet.serverId, [...serverIds]));
 
   for (const row of rows) {
     const list = byServer.get(row.serverId) ?? [];
@@ -1818,7 +1819,7 @@ export async function loadFabricReconcileSnapshot(
   ] = await Promise.all([
     loadEndpointCaches(db, serverIds),
     loadRelayPresharedKeyRows(db, relayIds),
-    listSegmentsForServers(db, serverIds),
+    listSubnetsForServers(db, serverIds),
     loadDatacenterSubnetsForServers(db, serverIds),
     loadDatacenterMembershipsForServers(db, serverIds),
   ]);
@@ -2165,7 +2166,7 @@ function isOptionsRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export async function ensureNetworkSegment(
+export async function ensureNetworkSubnet(
   db: Db,
   params: {
     networkId: string;
@@ -2174,14 +2175,14 @@ export async function ensureNetworkSegment(
   },
 ): Promise<void> {
   await db
-    .insert(segment)
+    .insert(subnet)
     .values({
       networkId: params.networkId,
       serverId: params.serverId,
       cidr: params.cidr,
     })
     .onConflictDoNothing({
-      target: [segment.networkId, segment.serverId],
+      target: [subnet.networkId, subnet.serverId],
     });
 }
 
@@ -2192,7 +2193,7 @@ export async function materializeSpanningNetworks(
     environmentId: string;
     fabric: FabricRecord;
     document: ComposeDocument;
-    tasks: ReadonlyArray<{ serviceId: string; serverId: string }>;
+    slots: ReadonlyArray<{ serviceId: string; serverId: string }>;
     serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>;
     platformAttachments?: readonly PlatformAttachment[];
   },
@@ -2200,7 +2201,7 @@ export async function materializeSpanningNetworks(
   const attachments = params.platformAttachments ?? [];
   const keys = collectSpanningComposeNetworkKeys(
     params.document,
-    params.tasks,
+    params.slots,
     params.serviceRows,
     attachments,
   );
@@ -2224,7 +2225,7 @@ export async function materializeSpanningNetworks(
 
     const serverIds = participatingServerIdsForNetwork(
       params.document,
-      params.tasks,
+      params.slots,
       params.serviceRows,
       composeKey,
       attachments,
@@ -2235,25 +2236,25 @@ export async function materializeSpanningNetworks(
         throw new FabricAllocationError("relay_missing");
       }
       const [have] = await db
-        .select({ id: segment.id })
-        .from(segment)
+        .select({ id: subnet.id })
+        .from(subnet)
         .where(
           and(
-            eq(segment.networkId, networkRow.id),
-            eq(segment.serverId, serverId),
+            eq(subnet.networkId, networkRow.id),
+            eq(subnet.serverId, serverId),
           ),
         )
         .limit(1);
       if (have) continue;
       const existing = await db
-        .select({ cidr: segment.cidr })
-        .from(segment)
-        .where(eq(segment.serverId, serverId));
+        .select({ cidr: subnet.cidr })
+        .from(subnet)
+        .where(eq(subnet.serverId, serverId));
       const taken = existing.map((row) =>
         typeof row.cidr === "string" ? row.cidr : String(row.cidr)
       );
-      const cidrValue = requireSegmentSubnet(relayRow.prefix, taken);
-      await ensureNetworkSegment(db, {
+      const cidrValue = requireSubnetCidr(relayRow.prefix, taken);
+      await ensureNetworkSubnet(db, {
         networkId: networkRow.id,
         serverId,
         cidr: cidrValue,
@@ -2263,7 +2264,7 @@ export async function materializeSpanningNetworks(
   return spanning;
 }
 
-export function nthSegmentSubnet(
+export function nthSubnetCidr(
   relayPrefix: string,
   index: number,
 ): string | null {

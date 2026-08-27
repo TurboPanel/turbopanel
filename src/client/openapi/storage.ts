@@ -3,9 +3,9 @@ import { buildResourceCrudPaths, resourceErrorResponses } from './shared.ts'
 const storageKindEnum = ['volume', 'directory', 'file'] as const
 const accessModeEnum = ['single_writer', 'multi_reader', 'multi_writer'] as const
 const retentionEnum = ['retain', 'delete'] as const
-const locationProviderEnum = ['docker', 'path'] as const
-const locationRoleEnum = ['primary', 'replica', 'scratch', 'archive'] as const
-const locationStateEnum = [
+const copyProviderEnum = ['docker', 'path'] as const
+const copyRoleEnum = ['primary', 'replica', 'scratch', 'archive'] as const
+const copyStateEnum = [
   'pending',
   'materializing',
   'ready',
@@ -28,20 +28,20 @@ export const storageSchemas = {
     type: 'string',
     enum: [...retentionEnum],
   },
-  LocationProvider: {
+  CopyProvider: {
     type: 'string',
-    enum: [...locationProviderEnum],
+    enum: [...copyProviderEnum],
     description: 'API this slice accepts docker and path only',
   },
-  LocationRole: {
+  CopyRole: {
     type: 'string',
-    enum: [...locationRoleEnum],
+    enum: [...copyRoleEnum],
   },
-  LocationState: {
+  CopyState: {
     type: 'string',
-    enum: [...locationStateEnum],
+    enum: [...copyStateEnum],
   },
-  LocationRow: {
+  CopyRow: {
     type: 'object',
     required: [
       'id',
@@ -56,17 +56,17 @@ export const storageSchemas = {
       id: { type: 'string' },
       storageId: { type: 'string' },
       serverId: { type: ['string', 'null'] },
-      credentialId: { type: ['string', 'null'] },
-      provider: { $ref: '#/components/schemas/LocationProvider' },
-      role: { $ref: '#/components/schemas/LocationRole' },
-      state: { $ref: '#/components/schemas/LocationState' },
+      secretId: { type: ['string', 'null'] },
+      provider: { $ref: '#/components/schemas/CopyProvider' },
+      role: { $ref: '#/components/schemas/CopyRole' },
+      state: { $ref: '#/components/schemas/CopyState' },
       path: { type: ['string', 'null'] },
       endpoint: { type: ['string', 'null'] },
       generation: { type: 'integer' },
       resolvedSourcePath: {
         type: ['string', 'null'],
         description:
-          'Explicit path, else principal volume path for path locations, else null',
+          'Explicit path, else principal volume path for path copies, else null',
       },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
@@ -116,9 +116,9 @@ export const storageSchemas = {
       principalId: { type: ['string', 'null'] },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
-      locations: {
+      copies: {
         type: 'array',
-        items: { $ref: '#/components/schemas/LocationRow' },
+        items: { $ref: '#/components/schemas/CopyRow' },
       },
       mounts: {
         type: 'array',
@@ -145,13 +145,13 @@ export const storageSchemas = {
       },
     },
   },
-  LocationListResponse: {
+  CopyListResponse: {
     type: 'object',
-    required: ['locations'],
+    required: ['copies'],
     properties: {
-      locations: {
+      copies: {
         type: 'array',
-        items: { $ref: '#/components/schemas/LocationRow' },
+        items: { $ref: '#/components/schemas/CopyRow' },
       },
     },
   },
@@ -165,30 +165,31 @@ export const storageSchemas = {
       },
     },
   },
-  CreateLocationRequest: {
+  CreateCopyRequest: {
     type: 'object',
     required: ['provider', 'serverId'],
     properties: {
-      provider: { $ref: '#/components/schemas/LocationProvider' },
+      provider: { $ref: '#/components/schemas/CopyProvider' },
       serverId: { type: 'string' },
       path: { type: 'string' },
       endpoint: { type: 'string' },
-      role: { $ref: '#/components/schemas/LocationRole' },
-      state: { $ref: '#/components/schemas/LocationState' },
+      role: { $ref: '#/components/schemas/CopyRole' },
+      state: { $ref: '#/components/schemas/CopyState' },
+      secretId: { type: ['string', 'null'] },
       metadata: { type: 'object' },
       options: { type: 'object' },
     },
   },
-  UpdateLocationRequest: {
+  UpdateCopyRequest: {
     type: 'object',
     properties: {
-      provider: { $ref: '#/components/schemas/LocationProvider' },
+      provider: { $ref: '#/components/schemas/CopyProvider' },
       serverId: { type: ['string', 'null'] },
       path: { type: ['string', 'null'] },
       endpoint: { type: ['string', 'null'] },
-      role: { $ref: '#/components/schemas/LocationRole' },
-      state: { $ref: '#/components/schemas/LocationState' },
-      credentialId: { type: ['string', 'null'] },
+      role: { $ref: '#/components/schemas/CopyRole' },
+      state: { $ref: '#/components/schemas/CopyState' },
+      secretId: { type: ['string', 'null'] },
       metadata: { type: 'object' },
       options: { type: 'object' },
     },
@@ -234,7 +235,7 @@ export const storageSchemas = {
       },
       metadata: { type: 'object' },
       options: { type: 'object' },
-      location: { $ref: '#/components/schemas/CreateLocationRequest' },
+      storageCopy: { $ref: '#/components/schemas/CreateCopyRequest' },
       mount: { $ref: '#/components/schemas/CreateMountRequest' },
     },
   },
@@ -273,18 +274,18 @@ export const storagePaths = {
         'Filter by workspace, project, environment, or service parent; omit to list org-visible storage including org-wide rows',
     },
   }),
-  '/api/client/v1/storage/{id}/locations': {
+  '/api/client/v1/storage/{id}/copies': {
     get: {
       tags: ['Storage'],
-      summary: 'List locations for storage',
+      summary: 'List copies for storage',
       security: nestedSecurity,
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         '200': {
-          description: 'Locations',
+          description: 'Copies',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/LocationListResponse' },
+              schema: { $ref: '#/components/schemas/CopyListResponse' },
             },
           },
         },
@@ -293,14 +294,14 @@ export const storagePaths = {
     },
     post: {
       tags: ['Storage'],
-      summary: 'Create a location',
+      summary: 'Create a copy',
       security: nestedSecurity,
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       requestBody: {
         required: true,
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/CreateLocationRequest' },
+            schema: { $ref: '#/components/schemas/CreateCopyRequest' },
           },
         },
       },
@@ -321,19 +322,19 @@ export const storagePaths = {
       },
     },
   },
-  '/api/client/v1/storage/{id}/locations/{locationId}': {
+  '/api/client/v1/storage/{id}/copies/{copyId}': {
     patch: {
       tags: ['Storage'],
-      summary: 'Update a location',
+      summary: 'Update a copy',
       security: nestedSecurity,
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-        { name: 'locationId', in: 'path', required: true, schema: { type: 'string' } },
+        { name: 'copyId', in: 'path', required: true, schema: { type: 'string' } },
       ],
       requestBody: {
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/UpdateLocationRequest' },
+            schema: { $ref: '#/components/schemas/UpdateCopyRequest' },
           },
         },
       },
@@ -351,11 +352,11 @@ export const storagePaths = {
     },
     delete: {
       tags: ['Storage'],
-      summary: 'Delete a location',
+      summary: 'Delete a copy',
       security: nestedSecurity,
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-        { name: 'locationId', in: 'path', required: true, schema: { type: 'string' } },
+        { name: 'copyId', in: 'path', required: true, schema: { type: 'string' } },
       ],
       responses: {
         '200': {

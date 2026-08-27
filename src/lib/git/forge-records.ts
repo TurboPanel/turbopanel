@@ -1,6 +1,6 @@
 /**
  * Registered Git provider applications — GitHub Apps and GitLab OAuth
- * applications — as rows in `gitapp`.
+ * applications — as rows in `forge`.
  *
  * This replaces the two singleton `setting` rows (`TURBOPANEL_GITHUB_APP`,
  * `TURBOPANEL_GITLAB_OAUTH`) that previously allowed exactly one app of each
@@ -11,19 +11,19 @@
  *
  * **`organizationId === null` means instance-wide.** Any organization may
  * connect through such an app; only an instance admin may edit it. A non-null
- * value means the app belongs to that organization alone. `visibleGitApps`
+ * value means the app belongs to that organization alone. `visibleForges`
  * is the one query that encodes "what may this organization use", and every
  * org-facing caller should go through it rather than filtering by hand.
  *
  * **Tokens are not stored here.** GitHub installation tokens are minted on
  * demand (`./github-app-token.ts`); GitLab's per-connection OAuth pair lives
- * sealed on the installation row (`./gitlab-oauth-token.ts`). This table holds
+ * sealed on the connection row (`./gitlab-oauth-token.ts`). This table holds
  * only the application-level material every connection is minted through.
  */
 
 import { and, eq, isNull, or, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { gitProviderApp, gitProviderInstallation } from '../db/schema.ts'
+import { forge, gitConnection } from '../db/schema.ts'
 import {
   decryptSecret,
   encryptSecret,
@@ -33,8 +33,8 @@ import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import { normalizeOrigin } from './origin.ts'
 
 /** Providers that have a registerable application. `git` (generic SSH) has none. */
-export const GIT_APP_PROVIDERS = ['github', 'gitlab'] as const
-export type GitAppProvider = (typeof GIT_APP_PROVIDERS)[number]
+export const FORGE_PROVIDERS = ['github', 'gitlab'] as const
+export type ForgeProvider = (typeof FORGE_PROVIDERS)[number]
 
 /** github.com, unless the operator points at a GitHub Enterprise Server. */
 export const GITHUB_DEFAULT_BASE_URL = 'https://github.com'
@@ -55,10 +55,10 @@ export const GITLAB_OAUTH_SCOPES = 'api read_repository'
  */
 export const MIN_GITLAB_WEBHOOK_TOKEN_LENGTH = 24
 
-export class GitAppError extends Error {
+export class ForgeError extends Error {
   constructor(message: string) {
     super(message)
-    this.name = 'GitAppError'
+    this.name = 'ForgeError'
   }
 }
 
@@ -75,10 +75,10 @@ export class GitAppError extends Error {
  * leak: the token is the *whole* credential on a GitLab delivery, so a
  * distinguishable response is an online guessing oracle for it.
  */
-export class GitAppConflictError extends Error {
+export class ForgeConflictError extends Error {
   constructor() {
     super('a git application with these details is already registered')
-    this.name = 'GitAppConflictError'
+    this.name = 'ForgeConflictError'
   }
 }
 
@@ -98,13 +98,13 @@ async function withConflictMapped<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run()
   } catch (error) {
-    if (isUniqueViolation(error)) throw new GitAppConflictError()
+    if (isUniqueViolation(error)) throw new ForgeConflictError()
     throw error
   }
 }
 
-/** Sealed material, held together in the row's `credentials` jsonb. */
-type StoredCredentials = {
+/** Sealed material, held together in the row's `envelopes` jsonb. */
+type StoredEnvelopes = {
   /** GitHub App private key (PEM). */
   privateKeyEnvelope?: string
   /** GitLab OAuth application secret. */
@@ -114,11 +114,11 @@ type StoredCredentials = {
 }
 
 /** Non-secret columns, shared by every view of a row. */
-export type GitAppRecord = {
+export type ForgeRecord = {
   id: string
   /** `null` = instance-wide. */
   organizationId: string | null
-  provider: GitAppProvider
+  provider: ForgeProvider
   name: string
   baseUrl: string
   /** Explicit API origin (GHES); `null` means derive it from `baseUrl`. */
@@ -139,22 +139,22 @@ export type GitAppRecord = {
 }
 
 /** Safe to return over the API: reports only whether sealed material exists. */
-export type GitAppSummary = GitAppRecord & {
+export type ForgeSummary = ForgeRecord & {
   hasPrivateKey: boolean
   hasClientSecret: boolean
   hasWebhookSecret: boolean
 }
 
 /** Unsealed. Callers must keep the result in memory only. */
-export type GitApp = GitAppRecord & {
+export type Forge = ForgeRecord & {
   privateKeyPem: string | null
   clientSecret: string | null
   webhookSecret: string | null
 }
 
-export type GitAppCreate = {
+export type ForgeCreate = {
   organizationId: string | null
-  provider: GitAppProvider
+  provider: ForgeProvider
   name: string
   baseUrl?: string | null
   apiUrl?: string | null
@@ -182,7 +182,7 @@ export type GitAppCreate = {
 }
 
 /** Partial update; omitted fields keep their stored value, `null` clears. */
-export type GitAppUpdate = {
+export type ForgeUpdate = {
   name?: string
   baseUrl?: string
   apiUrl?: string | null
@@ -211,13 +211,13 @@ function trimOrNull(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
-export function defaultBaseUrlFor(provider: GitAppProvider): string {
+export function defaultBaseUrlFor(provider: ForgeProvider): string {
   return provider === 'github' ? GITHUB_DEFAULT_BASE_URL : GITLAB_DEFAULT_BASE_URL
 }
 
-function readCredentials(value: unknown): StoredCredentials {
+function readEnvelopes(value: unknown): StoredEnvelopes {
   if (!isPlainObject(value)) return {}
-  const stored: StoredCredentials = {}
+  const stored: StoredEnvelopes = {}
   for (const key of ['privateKeyEnvelope', 'clientSecretEnvelope', 'webhookSecretEnvelope'] as const) {
     const held = value[key]
     if (typeof held === 'string' && held.length > 0) stored[key] = held
@@ -265,13 +265,13 @@ export async function hashWebhookToken(token: string): Promise<string> {
     .join('')
 }
 
-type Row = typeof gitProviderApp.$inferSelect
+type Row = typeof forge.$inferSelect
 
-function toRecord(row: Row): GitAppRecord {
+function toRecord(row: Row): ForgeRecord {
   return {
     id: row.id,
     organizationId: row.organizationId,
-    provider: row.provider as GitAppProvider,
+    provider: row.provider as ForgeProvider,
     name: row.name,
     baseUrl: row.baseUrl,
     apiUrl: row.apiUrl,
@@ -288,13 +288,13 @@ function toRecord(row: Row): GitAppRecord {
   }
 }
 
-export function summarizeGitApp(row: Row): GitAppSummary {
-  const credentials = readCredentials(row.credentials)
+export function summarizeForge(row: Row): ForgeSummary {
+  const envelopes = readEnvelopes(row.envelopes)
   return {
     ...toRecord(row),
-    hasPrivateKey: Boolean(credentials.privateKeyEnvelope),
-    hasClientSecret: Boolean(credentials.clientSecretEnvelope),
-    hasWebhookSecret: Boolean(credentials.webhookSecretEnvelope),
+    hasPrivateKey: Boolean(envelopes.privateKeyEnvelope),
+    hasClientSecret: Boolean(envelopes.clientSecretEnvelope),
+    hasWebhookSecret: Boolean(envelopes.webhookSecretEnvelope),
   }
 }
 
@@ -305,30 +305,30 @@ async function unsealOne(
 ): Promise<string | null> {
   if (!envelope) return null
   if (!isSealedEnvelope(envelope)) {
-    throw new GitAppError(`git app ${label} is not sealed`)
+    throw new ForgeError(`git app ${label} is not sealed`)
   }
   return await decryptSecret(dataEncryptionSecrets, envelope)
 }
 
-async function unsealGitApp(
+async function unsealForge(
   row: Row,
   dataEncryptionSecrets: DerivedSecretsConfig,
-): Promise<GitApp> {
-  const credentials = readCredentials(row.credentials)
+): Promise<Forge> {
+  const envelopes = readEnvelopes(row.envelopes)
   return {
     ...toRecord(row),
     privateKeyPem: await unsealOne(
-      credentials.privateKeyEnvelope,
+      envelopes.privateKeyEnvelope,
       'private key',
       dataEncryptionSecrets,
     ),
     clientSecret: await unsealOne(
-      credentials.clientSecretEnvelope,
+      envelopes.clientSecretEnvelope,
       'client secret',
       dataEncryptionSecrets,
     ),
     webhookSecret: await unsealOne(
-      credentials.webhookSecretEnvelope,
+      envelopes.webhookSecretEnvelope,
       'webhook secret',
       dataEncryptionSecrets,
     ),
@@ -340,80 +340,80 @@ async function unsealGitApp(
  * one. Pass `organizationId: null` for the instance-admin view, which lists only
  * instance-wide rows.
  */
-export function visibleGitAppsCondition(organizationId: string | null): SQL {
-  if (organizationId === null) return isNull(gitProviderApp.organizationId)
+export function visibleForgesCondition(organizationId: string | null): SQL {
+  if (organizationId === null) return isNull(forge.organizationId)
   // Never `undefined`: callers pass this straight into `and(...)`, which
   // *silently drops* undefined operands — a nullable return would degrade a
   // scoped lookup into an unscoped one, which is a cross-tenant read.
   return or(
-    isNull(gitProviderApp.organizationId),
-    eq(gitProviderApp.organizationId, organizationId),
+    isNull(forge.organizationId),
+    eq(forge.organizationId, organizationId),
   ) as SQL
 }
 
-export async function listGitApps(
+export async function listForges(
   db: Db,
-  opts: { organizationId: string | null; provider?: GitAppProvider },
-): Promise<GitAppSummary[]> {
-  const conditions: SQL[] = [visibleGitAppsCondition(opts.organizationId)]
-  if (opts.provider) conditions.push(eq(gitProviderApp.provider, opts.provider))
+  opts: { organizationId: string | null; provider?: ForgeProvider },
+): Promise<ForgeSummary[]> {
+  const conditions: SQL[] = [visibleForgesCondition(opts.organizationId)]
+  if (opts.provider) conditions.push(eq(forge.provider, opts.provider))
 
   const rows = await db
     .select()
-    .from(gitProviderApp)
+    .from(forge)
     .where(conditions.length === 1 ? conditions[0] : and(...conditions))
-    .orderBy(gitProviderApp.createdAt)
-  return rows.map(summarizeGitApp)
+    .orderBy(forge.createdAt)
+  return rows.map(summarizeForge)
 }
 
-export async function getGitAppSummary(db: Db, id: string): Promise<GitAppSummary | null> {
-  const rows = await db.select().from(gitProviderApp).where(eq(gitProviderApp.id, id)).limit(1)
-  return rows[0] ? summarizeGitApp(rows[0]) : null
+export async function getForgeSummary(db: Db, id: string): Promise<ForgeSummary | null> {
+  const rows = await db.select().from(forge).where(eq(forge.id, id)).limit(1)
+  return rows[0] ? summarizeForge(rows[0]) : null
 }
 
 /** Unsealed load by id. `null` when the row is gone. */
-export async function loadGitApp(
+export async function loadForge(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   id: string,
-): Promise<GitApp | null> {
-  const rows = await db.select().from(gitProviderApp).where(eq(gitProviderApp.id, id)).limit(1)
-  return rows[0] ? await unsealGitApp(rows[0], dataEncryptionSecrets) : null
+): Promise<Forge | null> {
+  const rows = await db.select().from(forge).where(eq(forge.id, id)).limit(1)
+  return rows[0] ? await unsealForge(rows[0], dataEncryptionSecrets) : null
 }
 
 /**
- * Unsealed load of the app an installation was granted through.
+ * Unsealed load of the forge a connection was granted through.
  *
  * This is the replacement for the old org-blind `getGithubAppConfig(db, …)` /
- * `getGitlabOauthConfig(db, …)` calls: the installation row names its app, so
+ * `getGitlabOauthConfig(db, …)` calls: the connection row names its forge, so
  * token minting no longer has to assume there is only one.
  */
-export async function loadGitAppForInstallation(
+export async function loadForgeForConnection(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  installationId: string,
-): Promise<GitApp | null> {
+  connectionId: string,
+): Promise<Forge | null> {
   const rows = await db
-    .select({ app: gitProviderApp })
-    .from(gitProviderInstallation)
-    .innerJoin(gitProviderApp, eq(gitProviderInstallation.appId, gitProviderApp.id))
-    .where(eq(gitProviderInstallation.id, installationId))
+    .select({ app: forge })
+    .from(gitConnection)
+    .innerJoin(forge, eq(gitConnection.forgeId, forge.id))
+    .where(eq(gitConnection.id, connectionId))
     .limit(1)
-  return rows[0] ? await unsealGitApp(rows[0].app, dataEncryptionSecrets) : null
+  return rows[0] ? await unsealForge(rows[0].app, dataEncryptionSecrets) : null
 }
 
 /** Webhook routing: the authoritative lookup, by the ref in the delivery URL. */
-export async function findGitAppByWebhookRef(
+export async function findForgeByWebhookRef(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   webhookRef: string,
-): Promise<GitApp | null> {
+): Promise<Forge | null> {
   const rows = await db
     .select()
-    .from(gitProviderApp)
-    .where(eq(gitProviderApp.webhookRef, webhookRef))
+    .from(forge)
+    .where(eq(forge.webhookRef, webhookRef))
     .limit(1)
-  return rows[0] ? await unsealGitApp(rows[0], dataEncryptionSecrets) : null
+  return rows[0] ? await unsealForge(rows[0], dataEncryptionSecrets) : null
 }
 
 /**
@@ -423,54 +423,54 @@ export async function findGitAppByWebhookRef(
  * Returns every match rather than the first. A numeric App id is unique per
  * origin, not globally, so github.com and a GHES instance can both hold one —
  * the caller tries each candidate's secret. Taking `.first()` here is precisely
- * the bug that makes multi-installation routing fail elsewhere.
+ * the bug that makes multi-forge routing fail elsewhere.
  */
-export async function findGithubAppsByExternalAppId(
+export async function findGithubForgesByExternalAppId(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   externalAppId: string,
-): Promise<GitApp[]> {
+): Promise<Forge[]> {
   const rows = await db
     .select()
-    .from(gitProviderApp)
+    .from(forge)
     .where(
-      and(eq(gitProviderApp.provider, 'github'), eq(gitProviderApp.externalAppId, externalAppId)),
+      and(eq(forge.provider, 'github'), eq(forge.externalAppId, externalAppId)),
     )
-    .orderBy(gitProviderApp.createdAt)
-  return await Promise.all(rows.map((row) => unsealGitApp(row, dataEncryptionSecrets)))
+    .orderBy(forge.createdAt)
+  return await Promise.all(rows.map((row) => unsealForge(row, dataEncryptionSecrets)))
 }
 
 /** Webhook routing fallback for GitLab: digest of the presented `X-Gitlab-Token`. */
-export async function findGitlabAppByWebhookTokenHash(
+export async function findGitlabForgeByWebhookTokenHash(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   tokenHash: string,
-): Promise<GitApp | null> {
+): Promise<Forge | null> {
   const rows = await db
     .select()
-    .from(gitProviderApp)
-    .where(eq(gitProviderApp.webhookTokenHash, tokenHash))
+    .from(forge)
+    .where(eq(forge.webhookTokenHash, tokenHash))
     .limit(1)
-  return rows[0] ? await unsealGitApp(rows[0], dataEncryptionSecrets) : null
+  return rows[0] ? await unsealForge(rows[0], dataEncryptionSecrets) : null
 }
 
-function assertProvider(provider: string): GitAppProvider {
+function assertProvider(provider: string): ForgeProvider {
   if (provider !== 'github' && provider !== 'gitlab') {
-    throw new GitAppError(`unsupported git app provider: ${provider}`)
+    throw new ForgeError(`unsupported git app provider: ${provider}`)
   }
   return provider
 }
 
 async function sealInto(
-  credentials: StoredCredentials,
-  key: keyof StoredCredentials,
+  envelopes: StoredEnvelopes,
+  key: keyof StoredEnvelopes,
   value: string | null | undefined,
   dataEncryptionSecrets: DerivedSecretsConfig,
 ): Promise<void> {
   if (value === undefined) return
   const trimmed = trimOrNull(value)
-  if (trimmed === null) delete credentials[key]
-  else credentials[key] = await encryptSecret(dataEncryptionSecrets, trimmed)
+  if (trimmed === null) delete envelopes[key]
+  else envelopes[key] = await encryptSecret(dataEncryptionSecrets, trimmed)
 }
 
 /**
@@ -479,41 +479,41 @@ async function sealInto(
  * app whose stored secret would then fail the constant-time compare.
  */
 async function resolveGitlabTokenHash(
-  provider: GitAppProvider,
+  provider: ForgeProvider,
   webhookSecret: string | null | undefined,
 ): Promise<string | null | undefined> {
   if (provider !== 'gitlab' || webhookSecret === undefined) return undefined
   const trimmed = trimOrNull(webhookSecret)
   if (trimmed === null) return null
   if (trimmed.length < MIN_GITLAB_WEBHOOK_TOKEN_LENGTH) {
-    throw new GitAppError(
+    throw new ForgeError(
       `gitlab webhook token must be at least ${MIN_GITLAB_WEBHOOK_TOKEN_LENGTH} characters`,
     )
   }
   return await hashWebhookToken(trimmed)
 }
 
-export async function createGitApp(
+export async function createForge(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  input: GitAppCreate,
-): Promise<GitAppSummary> {
+  input: ForgeCreate,
+): Promise<ForgeSummary> {
   const provider = assertProvider(input.provider)
   const name = trimOrNull(input.name)
-  if (!name) throw new GitAppError('name must not be empty')
+  if (!name) throw new ForgeError('name must not be empty')
   const externalAppId = trimOrNull(input.externalAppId)
-  if (!externalAppId) throw new GitAppError('externalAppId must not be empty')
+  if (!externalAppId) throw new ForgeError('externalAppId must not be empty')
 
-  const credentials: StoredCredentials = {}
-  await sealInto(credentials, 'privateKeyEnvelope', input.privateKeyPem, dataEncryptionSecrets)
-  await sealInto(credentials, 'clientSecretEnvelope', input.clientSecret, dataEncryptionSecrets)
-  await sealInto(credentials, 'webhookSecretEnvelope', input.webhookSecret, dataEncryptionSecrets)
+  const envelopes: StoredEnvelopes = {}
+  await sealInto(envelopes, 'privateKeyEnvelope', input.privateKeyPem, dataEncryptionSecrets)
+  await sealInto(envelopes, 'clientSecretEnvelope', input.clientSecret, dataEncryptionSecrets)
+  await sealInto(envelopes, 'webhookSecretEnvelope', input.webhookSecret, dataEncryptionSecrets)
 
   const tokenHash = await resolveGitlabTokenHash(provider, input.webhookSecret)
 
   const rows = await withConflictMapped(() =>
     db
-      .insert(gitProviderApp)
+      .insert(forge)
       .values({
         organizationId: input.organizationId,
         provider,
@@ -530,19 +530,19 @@ export async function createGitApp(
         isPublic: input.isPublic ?? false,
         customGitUser: trimOrNull(input.customGitUser),
         customGitPort: input.customGitPort ?? null,
-        credentials,
+        envelopes,
         webhookRef: input.webhookRef ?? generateWebhookRef(),
         webhookTokenHash: tokenHash ?? null,
       })
       .returning()
   )
-  return summarizeGitApp(rows[0])
+  return summarizeForge(rows[0])
 }
 
 function requireNonEmpty(value: string | undefined, field: string): string | undefined {
   if (value === undefined) return undefined
   const trimmed = trimOrNull(value)
-  if (!trimmed) throw new GitAppError(`${field} must not be empty`)
+  if (!trimmed) throw new ForgeError(`${field} must not be empty`)
   return trimmed
 }
 
@@ -555,9 +555,9 @@ const NULLABLE_STRING_COLUMNS = [
   'customGitUser',
 ] as const
 
-function applyGitAppColumnUpdates(
-  next: Partial<typeof gitProviderApp.$inferInsert>,
-  updates: GitAppUpdate,
+function applyForgeColumnUpdates(
+  next: Partial<typeof forge.$inferInsert>,
+  updates: ForgeUpdate,
 ): void {
   const name = requireNonEmpty(updates.name, 'name')
   if (name !== undefined) next.name = name
@@ -575,49 +575,49 @@ function applyGitAppColumnUpdates(
   if (updates.syncedAt !== undefined) next.syncedAt = updates.syncedAt
 }
 
-export async function updateGitApp(
+export async function updateForge(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   id: string,
-  updates: GitAppUpdate,
-): Promise<GitAppSummary | null> {
+  updates: ForgeUpdate,
+): Promise<ForgeSummary | null> {
   const existing = await db
     .select()
-    .from(gitProviderApp)
-    .where(eq(gitProviderApp.id, id))
+    .from(forge)
+    .where(eq(forge.id, id))
     .limit(1)
   const row = existing[0]
   if (!row) return null
 
   const provider = assertProvider(row.provider)
-  const credentials = readCredentials(row.credentials)
-  await sealInto(credentials, 'privateKeyEnvelope', updates.privateKeyPem, dataEncryptionSecrets)
-  await sealInto(credentials, 'clientSecretEnvelope', updates.clientSecret, dataEncryptionSecrets)
-  await sealInto(credentials, 'webhookSecretEnvelope', updates.webhookSecret, dataEncryptionSecrets)
+  const envelopes = readEnvelopes(row.envelopes)
+  await sealInto(envelopes, 'privateKeyEnvelope', updates.privateKeyPem, dataEncryptionSecrets)
+  await sealInto(envelopes, 'clientSecretEnvelope', updates.clientSecret, dataEncryptionSecrets)
+  await sealInto(envelopes, 'webhookSecretEnvelope', updates.webhookSecret, dataEncryptionSecrets)
 
-  const next: Partial<typeof gitProviderApp.$inferInsert> = {
-    credentials,
+  const next: Partial<typeof forge.$inferInsert> = {
+    envelopes,
     updatedAt: new Date().toISOString(),
   }
-  applyGitAppColumnUpdates(next, updates)
+  applyForgeColumnUpdates(next, updates)
 
   const tokenHash = await resolveGitlabTokenHash(provider, updates.webhookSecret)
   if (tokenHash !== undefined) next.webhookTokenHash = tokenHash
 
   const rows = await withConflictMapped(() =>
     db
-      .update(gitProviderApp)
+      .update(forge)
       .set(next)
-      .where(eq(gitProviderApp.id, id))
+      .where(eq(forge.id, id))
       .returning()
   )
-  return rows[0] ? summarizeGitApp(rows[0]) : null
+  return rows[0] ? summarizeForge(rows[0]) : null
 }
 
-export async function deleteGitApp(db: Db, id: string): Promise<boolean> {
+export async function deleteForge(db: Db, id: string): Promise<boolean> {
   const rows = await db
-    .delete(gitProviderApp)
-    .where(eq(gitProviderApp.id, id))
-    .returning({ id: gitProviderApp.id })
+    .delete(forge)
+    .where(eq(forge.id, id))
+    .returning({ id: forge.id })
   return rows.length > 0
 }

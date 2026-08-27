@@ -36,10 +36,10 @@ import {
   network,
   organization,
   project,
-  segment,
+  subnet,
   server,
   service,
-  task,
+  slot,
   user,
   workspace,
 } from "../../lib/db/schema.ts";
@@ -1636,8 +1636,8 @@ async function cleanupMultiServerFabricDeploy(
   await db.delete(deployment).where(
     eq(deployment.environmentId, params.environmentId),
   );
-  await db.delete(task).where(eq(task.environmentId, params.environmentId));
-  await db.delete(segment).where(inArray(segment.serverId, serverIds));
+  await db.delete(slot).where(eq(slot.environmentId, params.environmentId));
+  await db.delete(subnet).where(inArray(subnet.serverId, serverIds));
   await db.delete(network).where(
     and(
       eq(network.organizationId, params.organizationId),

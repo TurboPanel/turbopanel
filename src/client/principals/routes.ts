@@ -25,7 +25,7 @@ import {
   loadServiceIdsByPrincipalIds,
   parseServiceIdsField,
   servicesBelongToProject,
-} from './stewards.ts'
+} from './tenancies.ts'
 import { getCommandQueue } from '../../lib/commands/queue.ts'
 import { reconcilePrincipalAccess } from './reconcile.ts'
 import {
@@ -41,7 +41,7 @@ import {
   loadEntitlementsByPrincipalIds,
   isServerPrincipalUsernameTaken,
   replaceEntitlements,
-  replaceStewards,
+  replaceTenancies,
   SERVER_PRINCIPAL_PROVIDER,
   USERNAME_IN_USE_ERROR,
 } from './store.ts'
@@ -163,7 +163,7 @@ async function insertProjectPrincipal(
     }).returning({ id: principal.id })
 
     if (input.serviceIds.length > 0) {
-      await replaceStewards(tx, row.id, input.serviceIds)
+      await replaceTenancies(tx, row.id, input.serviceIds)
     }
     if (input.entitlements.length > 0) {
       await replaceEntitlements(tx, row.id, input.entitlements)
@@ -349,7 +349,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     }
 
     await db.transaction(async (tx) => {
-      if (patchesStewards) await replaceStewards(tx, id, serviceIds)
+      if (patchesStewards) await replaceTenancies(tx, id, serviceIds)
       if (entitlements !== undefined) {
         await replaceEntitlements(tx, id, entitlements)
       }

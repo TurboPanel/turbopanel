@@ -27,7 +27,7 @@ export const GITHUB_WEBHOOK_PATH = `${WEBHOOK_PREFIX}/github`
 /**
  * Per-app GitHub ingress.
  *
- * The `:ref` segment is the app's `gitapp.webhook_ref`. It is **not** handed out
+ * The `:ref` segment is the app's `forge.webhook_ref`. It is **not** handed out
  * for github.com, where `X-GitHub-Hook-Installation-Target-ID` names the App on
  * every delivery and the bare path resolves cleanly. It *is* handed out for
  * GitHub Enterprise Server, where that header is the least certain — a build
