@@ -93,7 +93,7 @@ type SystemReconcileEnvironmentEntry = {
   hasManagedMembers: boolean
   /**
    * True when this server is a bound consumer of a managed cluster
-   * (environment pin, project default, or task pin) — ProxySQL is desired
+   * (environment pin, project default, or slot pin) — ProxySQL is desired
    * even with no local members.
    */
   hasBoundManagedConsumers: boolean
@@ -123,7 +123,7 @@ export function resolveHostingIngressDesired(params: Readonly<{
 /**
  * Shared ProxySQL is desired when this server hosts managed members **or**
  * is a bound consumer of a managed cluster (environment pin, project
- * default, or task pin). Absent inventory alone must not keep it up once
+ * default, or slot pin). Absent inventory alone must not keep it up once
  * both are gone.
  */
 export function resolveManagedIngressDesired(params: Readonly<{
@@ -299,7 +299,7 @@ function payloadsFromEnvironmentEntries(
  *   hostname hosting on this server needs the shared Traefik, or the
  *   ingress was already observed (self-heal after first start)
  * - managed-ingress: present when this server hosts managed members **or**
- *   bound managed consumers (environment pin, project default, or task pin)
+ *   bound managed consumers (environment pin, project default, or slot pin)
  * - self-host (`turbopanel`) components are always `'present'`
  *
  * Returns an empty array when no system hierarchy is provisioned for the
@@ -345,12 +345,12 @@ export async function buildSystemReconcilePayload(
         JOIN project bp ON bp.id = be.project_id
         JOIN workspace bw ON bw.id = bp.workspace_id
         JOIN principal pr ON pr.id = b.principal_id
-        LEFT JOIN task t ON t.service_id = bs.id
+        LEFT JOIN slot sl ON sl.service_id = bs.id
         WHERE bw.organization_id = srv.organization_id
           AND pr.managed_id IS NOT NULL
           AND (
             be.server_id = ${params.serverId}::uuid
-            OR t.server_id = ${params.serverId}::uuid
+            OR sl.server_id = ${params.serverId}::uuid
             OR (
               be.server_id IS NULL
               AND bp.options->>'defaultServerId' = ${params.serverId}
