@@ -42,6 +42,27 @@ export type ComposeLintOptions = {
    * entirely rather than false-flagging.
    */
   knownSourceIds?: ReadonlySet<string>
+  /**
+   * The repository this project is bound to, when it has one.
+   *
+   * **A repository-backed project is its repository.** Every
+   * `x-turbopanel.source.sourceId` in the document has to name this row —
+   * several repositories in one project would mean several answers to "what is
+   * deployed here", and the per-service block exists for the *other* half of
+   * the question (`branch`, `subdirectory`, `buildCommand`), which is how one
+   * checkout builds two services out of a monorepo.
+   *
+   * `null` means the project has no binding yet. The rule does not go away
+   * then, it weakens to "at most one distinct id", because the save that
+   * introduces the first repository is exactly the save the project adopts it
+   * on (`project.repository_id`) — so a document that names two is rejected
+   * whether or not the column is set yet.
+   *
+   * Omitted entirely (`undefined`) skips the rule, the same way
+   * {@link ComposeLintOptions.knownSourceIds} does: a caller with no project
+   * context must not be made to false-flag.
+   */
+  projectRepositoryId?: string | null
 }
 
 /** Top-level Compose Specification keys. `x-*` extensions are always allowed. */
@@ -721,6 +742,70 @@ function compareLintIssues(a: ComposeLintIssue, b: ComposeLintIssue): number {
 }
 
 /**
+ * Collect every `x-turbopanel.source.sourceId` in the document, in file order.
+ *
+ * A second walk rather than another parameter threaded through `lintServices` →
+ * `lintService` → `lintServiceSource`: this rule is about the document as a
+ * whole, and the per-service walk has no place to hold "what did the other
+ * services say".
+ */
+function collectServiceSourceIds(
+  root: YAMLMap,
+  lineCounter: LineCounter,
+): { service: string; sourceId: string; line: number | undefined }[] {
+  const servicesNode = mapEntryValue(root, 'services')
+  if (!isMap(servicesNode)) return []
+  const found: { service: string; sourceId: string; line: number | undefined }[] = []
+  for (const item of servicesNode.items) {
+    const service = stringKey(item.key)
+    if (service === null) continue
+    const valueNode = item.value as Node | null | undefined
+    if (!isMap(valueNode)) continue
+    // Takes the *service* map: the extension lookup is its own first step.
+    const entry = serviceSourceIdNode(valueNode as YAMLMap)
+    if (!entry?.sourceId) continue
+    const sourceId = entry.sourceId.trim()
+    if (sourceId.length === 0) continue
+    found.push({ service, sourceId, line: nodeLine(entry.node, lineCounter) })
+  }
+  return found
+}
+
+/**
+ * One repository per project.
+ *
+ * Flags the *second* distinct id and every one after it, never the first: the
+ * first is the project's repository (already bound, or adopted by this very
+ * save), so pointing at it as the offender would tell the operator to remove
+ * the binding they actually want. When the project is already bound, an id that
+ * is not that one is the offender no matter where it appears.
+ */
+function lintSingleRepository(
+  root: YAMLMap,
+  lineCounter: LineCounter,
+  projectRepositoryId: string | null,
+  issues: ComposeLintIssue[],
+): void {
+  const bound = projectRepositoryId?.trim() || null
+  let adopted = bound
+  for (const entry of collectServiceSourceIds(root, lineCounter)) {
+    if (adopted === null) {
+      adopted = entry.sourceId
+      continue
+    }
+    if (entry.sourceId === adopted) continue
+    issues.push({
+      level: 'error',
+      message: bound === null
+        ? 'a project builds from one repository — every service that names a source must name the same one'
+        : `source '${entry.sourceId}' is not this project's repository — a project builds from one repository`,
+      path: `services.${entry.service}.x-turbopanel.source.sourceId`,
+      line: entry.line,
+    })
+  }
+}
+
+/**
  * Lint docker-compose YAML for structural mistakes (invalid YAML, unknown keys,
  * services missing image/build). Returns an empty list for empty input. Issues
  * are ordered by line number.
@@ -766,6 +851,9 @@ export function lintComposeYaml(
 
   const issues: ComposeLintIssue[] = []
   lintTopLevel(root, lineCounter, layer, knownSourceIds, issues)
+  if (options?.projectRepositoryId !== undefined) {
+    lintSingleRepository(root, lineCounter, options.projectRepositoryId, issues)
+  }
   return issues.sort(compareLintIssues)
 }
 

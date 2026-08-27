@@ -44,6 +44,13 @@ export type ComposeValidateOptions = {
    * cannot reach the database — the check is then skipped, not failed.
    */
   knownSourceIds?: ReadonlySet<string>
+  /**
+   * The project's bound repository, forwarded to the linter's
+   * one-repository-per-project rule. Omitted by callers with no project
+   * context — the check is then skipped, not failed; `null` means the project
+   * has no binding yet and the rule weakens to "at most one distinct id".
+   */
+  projectRepositoryId?: string | null
 }
 
 /**
@@ -66,6 +73,7 @@ export function validateComposeDocument(
 ): ComposeValidationResult {
   const layer = options?.layer ?? 'base'
   const knownSourceIds = options?.knownSourceIds
+  const projectRepositoryId = options?.projectRepositoryId
 
   if (value == null) {
     return { ok: true, document: emptyComposeDocument() }
@@ -116,7 +124,14 @@ export function validateComposeDocument(
   }
 
   const lintIssues = blockingComposeLintIssues(
-    lintComposeYaml(composeDocumentToYaml(document), { layer, knownSourceIds }),
+    lintComposeYaml(composeDocumentToYaml(document), {
+      layer,
+      knownSourceIds,
+      // Spread rather than passed straight through: `undefined` has to stay
+      // *absent* for the linter to skip the rule instead of reading it as
+      // "unbound project".
+      ...(projectRepositoryId === undefined ? {} : { projectRepositoryId }),
+    }),
   )
   if (lintIssues.length > 0) {
     return {

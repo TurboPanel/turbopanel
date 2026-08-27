@@ -43,7 +43,12 @@ import {
   isProjectDisplayNameTaken,
   PROJECT_NAME_IN_USE_ERROR,
 } from '../display-name-uniqueness.ts'
-import { loadOrganizationRepositoryIds } from '../../lib/db/repository-records.ts'
+import { UUID_RE } from '../repositories/routes-helpers.ts'
+import {
+  adoptProjectRepository,
+  loadOrganizationRepositoryIds,
+  loadProjectRepositoryId,
+} from '../../lib/db/repository-records.ts'
 import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
@@ -279,7 +284,12 @@ async function parseCreateProjectInput(
   }
 
   const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
-  const optionsResult = parseCreateProjectOptions(body, { knownSourceIds })
+  // A project being created has no binding yet, so the rule is "at most one
+  // distinct repository"; the id that survives it is adopted onto the row below.
+  const optionsResult = parseCreateProjectOptions(body, {
+    knownSourceIds,
+    projectRepositoryId: null,
+  })
   if (!optionsResult.ok) {
     if ('issues' in optionsResult) {
       return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
@@ -339,10 +349,38 @@ function parseProjectMoveTarget(
  * PATCH handler (async). Returns `null` when options were omitted; otherwise
  * the normalized object or an error Response.
  */
+/**
+ * Optional explicit re-bind of the project's repository on PATCH.
+ *
+ * Returns `undefined` when the caller did not mention `repositoryId` — the
+ * common case, where the stored binding stands. An explicit `null` unbinds.
+ *
+ * This is the *only* way to move a bound project to a different repository:
+ * adoption deliberately never overwrites an existing binding, because a compose
+ * save that silently repointed the whole project would be indistinguishable
+ * from a typo. Sent alongside the new compose, it is also what makes the swap
+ * one save rather than two — the lint below already reads this value, so the
+ * document and the binding are checked against each other, not against the
+ * binding being replaced.
+ */
+function parseProjectRepositoryRebind(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+): string | null | undefined | Response {
+  if (!('repositoryId' in body)) return undefined
+  const value = body.repositoryId
+  if (value === null) return null
+  if (typeof value !== 'string' || !UUID_RE.test(value)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  return value
+}
+
 function parseProjectPatchOptions(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
   knownSourceIds: ReadonlySet<string>,
+  projectRepositoryId: string | null,
 ): Record<string, unknown> | null | Response {
   const optionsResult = parseJsonbField(body, 'options')
   if (optionsResult === 'invalid') {
@@ -350,7 +388,10 @@ function parseProjectPatchOptions(
   }
   if (optionsResult === null) return null
 
-  const normalized = normalizeProjectPatchOptions(optionsResult, { knownSourceIds })
+  const normalized = normalizeProjectPatchOptions(optionsResult, {
+    knownSourceIds,
+    projectRepositoryId,
+  })
   if (!normalized.ok) {
     if ('issues' in normalized) {
       return c.json({ error: normalized.error, issues: normalized.issues }, 400)
@@ -363,6 +404,7 @@ function parseProjectPatchOptions(
 type ProjectPatchFields = {
   name?: string | null
   description?: string | null
+  repositoryId?: string | null
   options?: Record<string, unknown> | null
   workspaceId?: string
   updatedAt: string
@@ -373,6 +415,7 @@ function buildProjectPatchFields(
   body: Record<string, unknown>,
   moveTarget: string | undefined,
   knownSourceIds: ReadonlySet<string>,
+  projectRepositoryId: string | null,
 ): ProjectPatchFields | Response {
   let patchFields: ProjectPatchFields
   try {
@@ -381,7 +424,12 @@ function buildProjectPatchFields(
     return c.json({ error: 'Invalid request' }, 400)
   }
 
-  const optionsResult = parseProjectPatchOptions(c, body, knownSourceIds)
+  const optionsResult = parseProjectPatchOptions(
+    c,
+    body,
+    knownSourceIds,
+    projectRepositoryId,
+  )
   if (optionsResult instanceof Response) return optionsResult
   if (optionsResult !== null) {
     patchFields.options = optionsResult
@@ -410,6 +458,72 @@ async function assertDefaultServerIdInOrg(
   if (typeof serverId !== 'string') return
   if (!(await verifyServerInOrg(db, serverId, organizationId))) {
     return c.json({ error: 'Not found' }, 404)
+  }
+}
+
+type ManageableProject = {
+  db: Db
+  organizationId: string
+  userId: string
+}
+
+/**
+ * Shared preamble for the manage-scoped `/projects/:id` routes: database,
+ * session, organization membership, ownership of the `:id` path param, the
+ * `organization:manage` permission, and the system-owned guard. Returns the
+ * error Response for the first check that fails.
+ */
+async function resolveManageableProject(
+  c: Context<AppEnv>,
+  id: string,
+): Promise<ManageableProject | Response> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+  const orgResult = await getOrgId(c, session.userId)
+  if (orgResult instanceof Response) return orgResult
+
+  const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
+  if (!entityOrgId || entityOrgId !== orgResult) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
+  if (denied) return denied
+
+  const immutable = await assertNotSystemOwnedOr403(c, 'project', id)
+  if (immutable) return immutable
+
+  return { db, organizationId: orgResult, userId: session.userId }
+}
+
+type ProjectRepositoryBinding = {
+  /** `undefined` when the caller never mentioned `repositoryId`. */
+  rebind: string | null | undefined
+  /** The binding the patch should lint against: the rebind, else the stored one. */
+  projectRepositoryId: string | null
+}
+
+async function resolveProjectRepositoryBinding(
+  c: Context<AppEnv>,
+  db: Db,
+  body: Record<string, unknown>,
+  id: string,
+  knownSourceIds: ReadonlySet<string>,
+): Promise<ProjectRepositoryBinding | Response> {
+  const rebind = parseProjectRepositoryRebind(c, body)
+  if (rebind instanceof Response) return rebind
+  if (rebind && !knownSourceIds.has(rebind)) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const stored = (await loadProjectRepositoryId(db, id)) ?? null
+  return {
+    rebind,
+    projectRepositoryId: rebind === undefined ? stored : rebind,
   }
 }
 
@@ -548,6 +662,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         name: project.name,
         description: project.description,
         workspaceId: project.workspaceId,
+        repositoryId: project.repositoryId,
         metadata: project.metadata,
         options: project.options,
         createdAt: project.createdAt,
@@ -583,6 +698,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         name: project.name,
         description: project.description,
         workspaceId: project.workspaceId,
+        repositoryId: project.repositoryId,
         metadata: project.metadata,
         options: project.options,
         createdAt: project.createdAt,
@@ -631,6 +747,14 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         ...input,
         dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
       })
+      // The wizard seeds a compose draft and creates the project in one act, so
+      // the repository the operator picked arrives here inside `options` rather
+      // than as a field of its own. `empty` is excluded because it persists no
+      // options at all — adopting there would bind a repository the project's
+      // compose does not actually name.
+      if (input.projectType !== 'empty') {
+        await adoptProjectRepository(db, id, input.options, null)
+      }
       await reconcileServicesForProject(db, id)
       return c.json({ ok: true as const, id })
     } catch (err) {
@@ -645,27 +769,10 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
    * Idempotent when already configured with the same type (+ code).
    */
   router.post('/projects/:id/configure', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
-    if (denied) return denied
-
-    const immutable = await assertNotSystemOwnedOr403(c, 'project', id)
-    if (immutable) return immutable
+    const scope = await resolveManageableProject(c, id)
+    if (scope instanceof Response) return scope
+    const { db, organizationId } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -703,27 +810,10 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.patch('/projects/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
-    if (denied) return denied
-
-    const immutable = await assertNotSystemOwnedOr403(c, 'project', id)
-    if (immutable) return immutable
+    const scope = await resolveManageableProject(c, id)
+    if (scope instanceof Response) return scope
+    const { db, organizationId } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -732,8 +822,25 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (moveTarget instanceof Response) return moveTarget
 
     const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
-    const patchFields = buildProjectPatchFields(c, body, moveTarget, knownSourceIds)
+    const binding = await resolveProjectRepositoryBinding(
+      c,
+      db,
+      body,
+      id,
+      knownSourceIds,
+    )
+    if (binding instanceof Response) return binding
+    const { rebind, projectRepositoryId } = binding
+
+    const patchFields = buildProjectPatchFields(
+      c,
+      body,
+      moveTarget,
+      knownSourceIds,
+      projectRepositoryId,
+    )
     if (patchFields instanceof Response) return patchFields
+    if (rebind !== undefined) patchFields.repositoryId = rebind
 
     if (
       patchFields.name !== undefined &&
@@ -761,6 +868,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(eq(project.id, id))
 
     if (patchFields.options !== undefined) {
+      await adoptProjectRepository(db, id, patchFields.options, projectRepositoryId)
       await reconcileServicesForProject(db, id)
     }
 
@@ -768,27 +876,10 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.delete('/projects/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'project', id)
-    if (denied) return denied
-
-    const immutable = await assertNotSystemOwnedOr403(c, 'project', id)
-    if (immutable) return immutable
+    const scope = await resolveManageableProject(c, id)
+    if (scope instanceof Response) return scope
+    const { db, userId } = scope
 
     // Capture host teardown material while the service / hosting / segment
     // rows still exist; the commands go out after the cascade commits.
@@ -810,7 +901,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       c,
       db,
       teardownPlans,
-      session.userId,
+      userId,
     )
 
     return c.json({ ok: true as const })

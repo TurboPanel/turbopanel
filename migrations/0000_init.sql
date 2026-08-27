@@ -442,6 +442,7 @@ CREATE TABLE "project" (
 	"metadata" jsonb,
 	"options" jsonb,
 	"workspace_id" uuid NOT NULL,
+	"repository_id" uuid,
 	"name" varchar(255),
 	"description" varchar(255),
 	CONSTRAINT "project_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._/-]+$'::text)))
@@ -927,6 +928,7 @@ ALTER TABLE "network" ADD CONSTRAINT "network_server_id_server_id_fk" FOREIGN KE
 ALTER TABLE "passkey" ADD CONSTRAINT "passkey_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "principal" ADD CONSTRAINT "principal_project_id_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."project"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "principal" ADD CONSTRAINT "principal_managed_id_managed_id_fk" FOREIGN KEY ("managed_id") REFERENCES "public"."managed"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "project" ADD CONSTRAINT "project_repository_id_repository_id_fk" FOREIGN KEY ("repository_id") REFERENCES "public"."repository"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "project" ADD CONSTRAINT "project_workspace_id_workspace_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "recovery" ADD CONSTRAINT "recovery_managed_id_managed_id_fk" FOREIGN KEY ("managed_id") REFERENCES "public"."managed"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "relay" ADD CONSTRAINT "relay_fabric_id_fabric_id_fk" FOREIGN KEY ("fabric_id") REFERENCES "public"."fabric"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -1056,6 +1058,7 @@ CREATE INDEX "idx_passkey_user_id" ON "passkey" USING btree ("user_id" uuid_ops)
 CREATE INDEX "idx_principal_project_id" ON "principal" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_principal_managed_id" ON "principal" USING btree ("managed_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_project_workspace_id" ON "project" USING btree ("workspace_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_project_repository_id" ON "project" USING btree ("repository_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_project_workspace_system_component" ON "project" USING btree ("workspace_id",(metadata->>'component')) WHERE (metadata->>'component') IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_recovery_managed_id" ON "recovery" USING btree ("managed_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_recovery_inflight_managed" ON "recovery" USING btree ("managed_id") WHERE "recovery"."state" NOT IN ('completed','failed','blocked');--> statement-breakpoint

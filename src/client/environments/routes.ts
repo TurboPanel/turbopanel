@@ -29,7 +29,12 @@ import {
   planEnvironmentTeardown,
   reclaimDeletedEnvironmentHosts,
 } from './teardown.ts'
-import { loadOrganizationRepositoryIds } from '../../lib/db/repository-records.ts'
+import {
+  adoptProjectRepository,
+  loadEnvironmentProjectRepository,
+  loadOrganizationRepositoryIds,
+  loadProjectRepositoryId,
+} from '../../lib/db/repository-records.ts'
 import {
   parseCreateEnvironmentJsonb,
   parseCreateEnvironmentNames,
@@ -62,6 +67,8 @@ type EnvironmentPatchFields = {
 
 type CreateEnvironmentInput = {
   projectId: string
+  /** The parent project's binding, already resolved for the lint above. */
+  projectRepositoryId: string | null
   name: string | null
   description: string | null
   serverId?: string | null
@@ -95,9 +102,11 @@ function applyEnvironmentOptionsPatch(
   body: Record<string, unknown>,
   patchFields: EnvironmentPatchFields,
   knownSourceIds: ReadonlySet<string>,
+  projectRepositoryId: string | null,
 ): Response | undefined {
   const optionsResult = parseEnvironmentPatchOptions(body, {
       knownSourceIds,
+      projectRepositoryId,
       // An environment's compose IS the overlay. Linting it as `base` produced
       // a spurious advisory telling the operator that `!reset` / `!override`
       // "only take effect in an overlay compose file" — about the overlay.
@@ -172,9 +181,13 @@ async function parseCreateEnvironmentInput(
   }
 
   const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
+  // An overlay is part of its project's compose, so it answers to the same
+  // one-repository rule — and to the project's binding, not to its own.
+  const projectRepositoryId = (await loadProjectRepositoryId(db, projectId)) ?? null
   const jsonb = parseCreateEnvironmentJsonb(body, {
       knownSourceIds,
       layer: 'overlay',
+      projectRepositoryId,
     })
   if (!jsonb.ok) {
     if ('issues' in jsonb) {
@@ -187,6 +200,7 @@ async function parseCreateEnvironmentInput(
   if (serverId instanceof Response) return serverId
 
   return {
+    projectRepositoryId,
     projectId,
     name: names.name,
     description: names.description,
@@ -304,6 +318,12 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       return inserted.id
     })
 
+    await adoptProjectRepository(
+      db,
+      input.projectId,
+      input.options,
+      input.projectRepositoryId,
+    )
     await reconcileServicesForEnvironment(db, id)
 
     return c.json({ ok: true as const, id })
@@ -348,11 +368,13 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (serverIdError) return serverIdError
 
     const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
+    const parent = await loadEnvironmentProjectRepository(db, id)
     const optionsError = applyEnvironmentOptionsPatch(
       c,
       body,
       patchFields,
       knownSourceIds,
+      parent?.repositoryId ?? null,
     )
     if (optionsError) return optionsError
 
@@ -362,6 +384,14 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       .where(eq(environment.id, id))
 
     if (patchFields.options !== undefined) {
+      if (parent) {
+        await adoptProjectRepository(
+          db,
+          parent.projectId,
+          patchFields.options,
+          parent.repositoryId,
+        )
+      }
       await reconcileServicesForEnvironment(db, id)
     }
 

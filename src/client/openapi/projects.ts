@@ -8,6 +8,11 @@ export const projectSchemas = {
       name: { type: ['string', 'null'] },
       description: { type: ['string', 'null'] },
       workspaceId: { type: 'string' },
+      repositoryId: {
+        type: ['string', 'null'],
+        description:
+          'The one Git repository this project is, or null when it is not repository-backed. Every x-turbopanel.source.sourceId in the project compose must name this row.',
+      },
       metadata: {
         type: 'object',
         nullable: true,
@@ -113,6 +118,11 @@ export const projectSchemas = {
       workspaceId: {
         type: 'string',
         description: 'Move the project to another workspace in the same organization',
+      },
+      repositoryId: {
+        type: ['string', 'null'],
+        description:
+          "Re-bind the project to a different repository, or null to unbind. Validated against the compose in the same request: a document naming any other repository is rejected. Omit to keep the current binding — a project with none adopts the first repository its compose names.",
       },
       options: {
         type: 'object',

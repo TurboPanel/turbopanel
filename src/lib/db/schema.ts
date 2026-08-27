@@ -25,6 +25,7 @@ import {
   jsonb,
   integer,
   boolean,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core'
 import { cidr, inet } from './net-types.ts'
 
@@ -968,6 +969,42 @@ export const project = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     workspaceId: uuid('workspace_id').notNull(),
+    /**
+     * The one Git repository this project is. Null for a project that is not
+     * repository-backed at all (a template, a managed engine, a hand-written
+     * compose of images).
+     *
+     * **One repository, and it belongs to the project — not to a service.** A
+     * repository-backed project *is* its repository: the checkout is what the
+     * compose file, the site root, or the app process all come out of, and
+     * several repositories in one project would mean several answers to "what
+     * is deployed here". Services still carry their own
+     * `x-turbopanel.source` block for the per-service half (`branch`,
+     * `subdirectory`, `buildCommand`, …) — that is how a monorepo builds two
+     * services out of one checkout — but every `sourceId` in the project's
+     * compose has to name *this* row. The rule is enforced at the write
+     * boundary (`lintComposeYaml`, `projectRepositoryId`), because the compose
+     * parser is pure and has no database.
+     *
+     * A project with no binding yet **adopts** the first repository its compose
+     * names, on the same save. That is what lets the create wizard seed a draft
+     * and write the project in one act, and it is not a loophole: the adopting
+     * save is exactly the one the single-repository rule is checked on.
+     *
+     * `restrict` rather than `cascade`: deleting the repository out from under
+     * a project would leave compose naming an id that no longer resolves.
+     * `DELETE /repositories/:id` checks this column alongside the compose
+     * references and answers the same 409 `source_referenced_by_compose`
+     * before Postgres ever has to raise the FK violation.
+     */
+    repositoryId: uuid('repository_id').references(
+      // `AnyPgColumn` breaks a genuine type cycle — project → repository →
+      // environment → project — that TypeScript cannot infer through. Declared
+      // inline rather than in `foreignKey()` below for the same reason: the
+      // annotation has to sit on the reference itself.
+      (): AnyPgColumn => repository.id,
+      { onDelete: 'restrict' },
+    ),
     name: varchar({ length: 255 }),
     description: varchar('description', { length: 255 }),
   },
@@ -975,6 +1012,10 @@ export const project = pgTable(
     index('idx_project_workspace_id').using(
       'btree',
       table.workspaceId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_project_repository_id').using(
+      'btree',
+      table.repositoryId.asc().nullsLast().op('uuid_ops')
     ),
     foreignKey({
       columns: [table.workspaceId],

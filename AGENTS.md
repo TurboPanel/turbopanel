@@ -11,7 +11,18 @@ Minimal Hono app with dual runtimes: **Cloudflare Workers** (Wrangler) and
 
 - **License:** AGPL-3.0-only ([`LICENSE`](./LICENSE), `package.json` /
   `deno.json`). Trademarks are not granted by the software license
-  ([`TRADEMARKS.md`](./TRADEMARKS.md)). Contributions require the
+  ([`TRADEMARKS.md`](./TRADEMARKS.md)). Third-party components keep their own
+  licenses ([`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md));
+  `pnpm notices:generate` / `notices:check` enumerate the pnpm graph **and**
+  the Deno `jsr` + `npm` graphs in `deno.lock` (Deno-only npm entries are
+  merged in; peer-suffixed lock ids are parsed as `name@version`).
+  `GET /api/health` reports `{ license, revision: { commit, sourceUrl } }` so a
+  network user can identify Corresponding Source for the **exact** revision
+  (not `trunk`). `createApp()` injects `platformEnv` / `getPlatformEnv`
+  **before** the health route; the Deno entry point passes
+  `getPlatformEnv: () => Deno.env.toObject()` so systemd
+  `TURBOPANEL_REVISION` is never observed as `unknown`. Published story: `../website` `/open-source` and
+  `docs/getting-started/licensing.mdx`. Contributions require the
   [CLA](https://github.com/TurboPanel/.github/blob/trunk/CLA.md).
 - **Maturity label:** **Private alpha** (README, roadmap, site banner — keep
   identical).
@@ -359,7 +370,15 @@ vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/node/current/bin:/opt/turbop
   environment with internet access to the database — self-hosted dev, CI, or
   production. Requires **Node** only (`pnpm migrate` runs `drizzle-kit migrate`;
   no Deno prerequisite). Equivalent to
-  `pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify`.
+  `pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify --var TURBOPANEL_REVISION:$(git rev-parse HEAD)`.
+  Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a SHA.
+  Self-hosted instance-launch writes it into `runtime.env` / `runtime.dev-vars`
+  from `git rev-parse HEAD` in the instance checkout. `GET /api/health` reports
+  `{ license, revision: { commit, sourceUrl } }` so a network user can identify
+  Corresponding Source.
+- **`pnpm notices:generate` / `notices:check`** — `THIRD_PARTY_NOTICES.md` from
+  `pnpm-lock.yaml` plus the JSR/npm graph in `deno.lock`. Wired into `test:hook`
+  and CI `build.yml`.
 - **`pnpm check:workers-bundle`** — `wrangler deploy --dry-run` of
   `src/workers.ts` (no upload). Catches unresolved imports the Workers bundler
   cannot resolve (e.g. `@std/*` / `jsr:`). Wired into `.githooks/pre-commit`.
@@ -773,7 +792,9 @@ leaf certificate paths.
 
 Four versioned surfaces each have REST + WS namespaces (where applicable).
 Prefixes live in `src/surfaces.ts`; `GET /api/health` is the single
-deliberately-unversioned probe, and `/webhook/*` is a separate top-level traffic
+deliberately-unversioned probe (`{ ok, license: 'AGPL-3.0-only', revision:
+{ commit, sourceUrl } }` — `TURBOPANEL_REVISION` from systemd / `wrangler
+deploy --var`, else `unknown`). `/webhook/*` is a separate top-level traffic
 class rather than a versioned API — see the last row.
 
 | Surface                      | REST                  | WS                        | Notes                                                                                                                                                                                                                                                                                                                                                                        |

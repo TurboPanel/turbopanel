@@ -822,3 +822,103 @@ test('lintComposeYaml tag walk skips nested non-string map keys', () => {
     false,
   )
 })
+
+const OTHER_SOURCE_ID = '01989d42-9adb-7e65-bc2e-f38792c53692'
+
+/** Two services, each naming its own repository. */
+const TWO_REPOSITORIES = `services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: ${SOURCE_ID}
+  jobs:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: ${OTHER_SOURCE_ID}
+`
+
+test('lintComposeYaml skips the single-repository rule when projectRepositoryId is omitted', () => {
+  const issues = lintComposeYaml(TWO_REPOSITORIES)
+  assertEquals(
+    issues.some((issue) => issue.message.includes('one repository')),
+    false,
+  )
+})
+
+test('lintComposeYaml rejects a second repository on an unbound project', () => {
+  const issues = lintComposeYaml(TWO_REPOSITORIES, { projectRepositoryId: null })
+  const offender = issues.find((issue) =>
+    issue.path === 'services.jobs.x-turbopanel.source.sourceId'
+  )
+  assertEquals(offender?.level, 'error')
+  assertEquals(offender?.message.includes('one repository'), true)
+  // The first id is the one the project adopts, so it is never the offender.
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.web.x-turbopanel.source.sourceId' &&
+      issue.level === 'error'
+    ),
+    false,
+  )
+  assertEquals(blockingComposeLintIssues(issues).length > 0, true)
+})
+
+test('lintComposeYaml accepts several services bound to one repository', () => {
+  const issues = lintComposeYaml(
+    `services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: ${SOURCE_ID}
+        subdirectory: apps/web
+  api:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: ${SOURCE_ID}
+        subdirectory: apps/api
+`,
+    { projectRepositoryId: SOURCE_ID, knownSourceIds: new Set([SOURCE_ID]) },
+  )
+  assertEquals(
+    issues.some((issue) => issue.message.includes('one repository')),
+    false,
+  )
+  assertEquals(blockingComposeLintIssues(issues), [])
+})
+
+test('lintComposeYaml rejects a source that is not the bound project repository', () => {
+  const issues = lintComposeYaml(
+    `services:
+  web:
+    image: nginx
+    x-turbopanel:
+      source:
+        sourceId: ${OTHER_SOURCE_ID}
+`,
+    { projectRepositoryId: SOURCE_ID },
+  )
+  const offender = issues.find((issue) =>
+    issue.path === 'services.web.x-turbopanel.source.sourceId'
+  )
+  assertEquals(offender?.level, 'error')
+  assertEquals(offender?.message.includes(OTHER_SOURCE_ID), true)
+  assertEquals(offender?.message.includes("this project's repository"), true)
+})
+
+test('lintComposeYaml leaves a project with no bound services alone', () => {
+  const issues = lintComposeYaml(
+    `services:
+  db:
+    image: postgres:17
+`,
+    { projectRepositoryId: null },
+  )
+  assertEquals(
+    issues.some((issue) => issue.message.includes('one repository')),
+    false,
+  )
+})

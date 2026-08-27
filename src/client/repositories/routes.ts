@@ -234,6 +234,16 @@ export async function composeReferencesRepository(
         AND jsonb_path_exists(e.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
           jsonb_build_object('sid', ${sourceId}::text))
       UNION ALL
+      -- project.repository_id is the binding itself, and its foreign key is
+      -- ON DELETE RESTRICT. Checking it here is what turns a Postgres 23503
+      -- into the same 409 every other reference already answers with.
+      -- (No backticks in here: this is inside a JS template literal.)
+      SELECT 1
+      FROM project p
+      JOIN workspace w ON w.id = p.workspace_id
+      WHERE w.organization_id = ${organizationId}::uuid
+        AND p.repository_id = ${sourceId}::uuid
+      UNION ALL
       -- options.composeSource.sourceId records where a project compose was
       -- seeded from. Deleting the repository would silently orphan that
       -- provenance, and drift detection would go permanently unreadable.

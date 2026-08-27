@@ -84,9 +84,18 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
   return {
     OkHealth: {
       type: 'object',
-      required: ['ok'],
+      required: ['ok', 'license', 'revision'],
       properties: {
         ok: { type: 'boolean', const: true },
+        license: { type: 'string', const: 'AGPL-3.0-only' },
+        revision: {
+          type: 'object',
+          required: ['commit', 'sourceUrl'],
+          properties: {
+            commit: { type: 'string' },
+            sourceUrl: { type: 'string', format: 'uri' },
+          },
+        },
       },
     },
     ClientStatus: includeInstall ? denoClientStatusSchema : workersClientStatusSchema,

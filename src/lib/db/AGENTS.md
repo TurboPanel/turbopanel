@@ -274,8 +274,12 @@ every named CHECK / unique / index / FK constraint.
    - Constraints: `idx_workspace_organization_id` (index), `uniq_workspace_organization_turbopanel` (uniqueIndex), `workspace_name_format_check` (check), `workspace_kind_check` (check), `workspace_organization_id_organization_id_fk` (fk)
 
 17. **`project`** (Drizzle export `project`)
-   - Columns: `id`, `created_at`, `updated_at`, `metadata`, `options`, `workspace_id`, `name`, `description`
-   - Constraints: `idx_project_workspace_id` (index), `uniq_project_workspace_system_component` (uniqueIndex), `project_name_format_check` (check), `project_workspace_id_workspace_id_fk` (fk)
+   - Columns: `id`, `created_at`, `updated_at`, `metadata`, `options`, `workspace_id`, `repository_id`, `name`, `description`
+   - Constraints: `idx_project_workspace_id` (index), `idx_project_repository_id` (index), `uniq_project_workspace_system_component` (uniqueIndex), `project_name_format_check` (check), `project_workspace_id_workspace_id_fk` (fk), `project_repository_id_repository_id_fk` (fk, `ON DELETE RESTRICT`)
+   - `repository_id` is the one Git repository this project **is** (null =
+     not repository-backed). Every `x-turbopanel.source.sourceId` in the
+     project's compose has to name it — see `src/lib/compose/AGENTS.md` →
+     "One repository per project".
 
 18. **`environment`** (Drizzle export `environment`)
    - Columns: `id`, `created_at`, `updated_at`, `metadata`, `options`, `project_id`, `server_id`, `generation`, `name`, `description`
@@ -701,6 +705,7 @@ drop. Unused pairing / Better Auth / reserved columns stay **Keep**.
 | `metadata` | yes | yes | `client/managed/context.ts` (+3) |
 | `options` | yes | yes | `client/bindings/resolve-endpoint.ts` (+3) |
 | `workspace_id` | yes | yes | `client/bindings/materialize.ts` (+3) |
+| `repository_id` | yes | yes | `lib/db/repository-records.ts` (+1) |
 | `name` | yes | yes | `client/display-name-uniqueness.ts` (+2) |
 | `description` | yes | yes | `client/projects/routes.ts` |
 

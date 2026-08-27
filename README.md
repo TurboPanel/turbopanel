@@ -90,6 +90,8 @@ Report vulnerabilities privately: [turbopanel.io/security](https://turbopanel.io
 
 TurboPanel is licensed under the [GNU Affero General Public License v3.0 only (AGPL-3.0-only)](./LICENSE).
 
+Third-party components keep their own licenses; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md). A running control plane reports its exact revision and Corresponding Source URL at `GET /api/health` — not the `trunk` branch. The published model is [Licensing](https://turbopanel.io/docs/getting-started/licensing).
+
 The TurboPanel name and logos are trademarks. See [TRADEMARKS.md](./TRADEMARKS.md).
 
 Copyright (C) 2025-2026 TurboPanel contributors

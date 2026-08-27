@@ -1,5 +1,5 @@
 {
-  "id": "cc0c443b-c54e-485d-81f4-ee1a29330473",
+  "id": "7bff2f7c-ee38-40b6-920d-520296bcb366",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -4571,6 +4571,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "repository_id": {
+          "name": "repository_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "name": {
           "name": "name",
           "type": "varchar(255)",
@@ -4590,6 +4596,22 @@
           "columns": [
             {
               "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_project_repository_id": {
+          "name": "idx_project_repository_id",
+          "columns": [
+            {
+              "expression": "repository_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -4625,6 +4647,19 @@
         }
       },
       "foreignKeys": {
+        "project_repository_id_repository_id_fk": {
+          "name": "project_repository_id_repository_id_fk",
+          "tableFrom": "project",
+          "tableTo": "repository",
+          "columnsFrom": [
+            "repository_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
         "project_workspace_id_workspace_id_fk": {
           "name": "project_workspace_id_workspace_id_fk",
           "tableFrom": "project",

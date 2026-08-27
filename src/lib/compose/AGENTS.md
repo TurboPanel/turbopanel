@@ -162,6 +162,24 @@ referenced by a stored compose returns **409** `source_referenced_by_compose`.
 `ui/src/lib/compose/service-kind.ts` + `lint.ts` mirror the types and both
 rules.
 
+**One repository per project.** `project.repository_id` names the single Git
+repository a project *is*; `null` means the project is not repository-backed.
+Every `x-turbopanel.source.sourceId` in a project's compose (base **and** every
+environment overlay) has to name that row — a second distinct id is a blocking
+`error` at `services.<name>.x-turbopanel.source.sourceId`. The per-service block
+is unchanged and still carries `branch` / `subdirectory` / `buildCommand`, which
+is how one checkout builds several services out of a monorepo. Enforced by
+`lintComposeYaml(…, { projectRepositoryId })` — omitted skips the rule (same
+contract as `knownSourceIds`), `null` weakens it to "at most one distinct id"
+because the save that introduces the first repository is the one the project
+**adopts** it on (`adoptProjectRepository`, `src/lib/db/repository-records.ts`).
+Adoption never overwrites an existing binding; moving a bound project is an
+explicit `PATCH /projects/:id` with `repositoryId` (or `null` to unbind), which
+is validated against the same rule in the same save. Deleting a repository a
+project is bound to returns **409** alongside the compose reference check, and
+the FK is `ON DELETE RESTRICT` behind it. `ui/src/lib/compose/lint.ts` mirrors
+this rule too.
+
 ### Native apps (`serviceKind: node`) — `native-app.ts`
 
 `services.<name>.x-turbopanel` accepts a third **`serviceKind: node`**: a

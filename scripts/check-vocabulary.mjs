@@ -4,15 +4,18 @@
  *
  * Scans human-authored source, scripts, and maintainer docs for forbidden
  * daemon-as-agent phrasing left over from before the daemon build-identity
- * rename (`agent` -> `daemonBuild`; see `src/daemon/cell/protocol.ts`). The
- * daemon is a "daemon" / "host daemon", never an "agent" -- that word is
- * reserved for coding-agent tooling (`AGENTS.md`, `.agents/skills`) and
- * unrelated third-party terms (HTTP `User-Agent`, npm package names).
+ * rename (`agent` -> `daemonBuild`; see `src/daemon/cell/protocol.ts`) and
+ * Apple-associated glass product copy. The daemon is a "daemon" / "host
+ * daemon", never an "agent" -- that word is reserved for coding-agent
+ * tooling (`AGENTS.md`, `.agents/skills`) and unrelated third-party terms
+ * (HTTP `User-Agent`, npm package names). Shell chrome is "frosted chrome".
  *
  * Companion guard to `scripts/check-workers-bundle.mjs` -- keep the
  * forbidden-phrase list and allowlist in sync with the sibling checks in
- * `../turbopaneld/scripts/check-vocabulary.ts` and
- * `../website/scripts/check-vocabulary.mjs`.
+ * `../turbopaneld/scripts/check-vocabulary.ts`,
+ * `../website/scripts/check-vocabulary.mjs`,
+ * `../ui/src/lib/vocabulary.ts`, and
+ * `../.github/scripts/check-vocabulary.sh`.
  *
  * Usage:
  *   node scripts/check-vocabulary.mjs
@@ -26,8 +29,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SELF = path.relative(ROOT, fileURLToPath(import.meta.url))
 
 // Exact phrases, matched case-insensitively as substrings. Extend this list
-// as new daemon-as-agent regressions are found; keep the three repo copies
-// (daemon/instance/website) aligned.
+// as new daemon-as-agent or Apple-associated chrome regressions are found;
+// keep the sibling repo copies aligned.
 const FORBIDDEN_PHRASES = [
   'turbopanel agent',
   'node agent',
@@ -35,6 +38,10 @@ const FORBIDDEN_PHRASES = [
   'agent identity',
   'agent commit',
   'server.daemon.projection.agent',
+  // Spaced/hyphenated Apple product copy. CamelCase expo-glass-effect
+  // identifiers (`isLiquidGlassAvailable`) do not match these phrases.
+  'liquid glass',
+  'liquid-glass',
 ]
 
 // Lines that must never be flagged, even if a forbidden phrase substring
@@ -63,6 +70,7 @@ const SKIP_FILENAMES = new Set([
   'package-lock.json',
   'yarn.lock',
   'deno.lock',
+  'THIRD_PARTY_NOTICES.md',
 ])
 
 // Generated type declarations -- never hand-authored.
@@ -89,7 +97,7 @@ function isSkippedFile(entry, rel) {
   )
 }
 
-const SCAN_EXTENSIONS = /\.(ts|tsx|js|mjs|cjs|md|mdx|yml|yaml|sh|json)$/
+const SCAN_EXTENSIONS = /\.(ts|tsx|js|mjs|cjs|md|mdx|yml|yaml|sh|json|css)$/
 
 function* walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -121,7 +129,7 @@ for (const file of walk(ROOT)) {
     const lower = line.toLowerCase()
     for (const phrase of FORBIDDEN_PHRASES) {
       if (lower.includes(phrase)) {
-        failures.push(`${rel}:${i + 1} uses forbidden daemon-as-agent phrase "${phrase}"`)
+        failures.push(`${rel}:${i + 1} uses forbidden phrase "${phrase}"`)
       }
     }
   })
@@ -134,9 +142,10 @@ if (failures.length > 0) {
   }
   console.error(
     `\n${failures.length} problem(s) found. The daemon is a "daemon" / "host daemon" / "turbopaneld", never an "agent". ` +
-      'Update the allowlist in this script (and the daemon/website copies) if this is a legitimate coding-agent or third-party reference.',
+      'Shell chrome is "frosted chrome", never Apple-associated glass product copy. ' +
+      'Update the allowlist in this script (and the sibling repo copies) if this is a legitimate coding-agent, third-party, or expo-glass-effect identifier.',
   )
   process.exit(1)
 }
 
-console.log('check-vocabulary: no daemon-as-agent phrasing found.')
+console.log('check-vocabulary: no forbidden phrasing found.')
