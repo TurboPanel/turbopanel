@@ -261,8 +261,17 @@ test('parseSettings rejects non-objects, includes, and reserved MariaDB GTID key
     mariadbEngineSpec.parseSettings({ initialDatabase: 'bad-name' }),
     null,
   )
-  const fromNull = mariadbEngineSpec.parseSettings(null) as MariadbManagedSettings
-  assertEquals(fromNull.initialDatabase, 'appdb')
+  const fromNull = mariadbEngineSpec.parseSettings(null)
+  if (!fromNull) throw new TypeError('expected defaults for null settings')
+  assertEquals((fromNull as MariadbManagedSettings).initialDatabase, 'appdb')
+  const fromUndefined = mariadbEngineSpec.parseSettings(undefined)
+  if (!fromUndefined) {
+    throw new TypeError('expected defaults for undefined settings')
+  }
+  assertEquals(
+    (fromUndefined as MariadbManagedSettings).initialDatabase,
+    'appdb',
+  )
 })
 
 test('buildRuntimeSpec falls back when settings omit image and initialDatabase', () => {

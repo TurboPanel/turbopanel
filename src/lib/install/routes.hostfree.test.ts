@@ -10,7 +10,11 @@ import {
   createMockAuthDb,
   seedMockInstalledInstance,
 } from '../../client/authn/authn-hostfree-doubles.ts'
-import { createAuthRateLimiter } from '../../client/authn/auth-rate-limit.ts'
+import {
+  createAuthRateLimiter,
+  createFailClosedAuthRateLimiter,
+  type AuthRateLimiter,
+} from '../../client/authn/auth-rate-limit.ts'
 import { deriveSecretsConfig } from '../../client/authn/secrets.ts'
 import { INSTALL_API_PREFIX } from '../../surfaces.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -24,11 +28,50 @@ import { registerInstallRoutes } from './routes.ts'
  */
 const test = Deno.test.bind(Deno)
 
+/**
+ * Install host-auth bypass without `Deno.env.set` (no `--allow-env` needed).
+ * Production reads `TURBOPANEL_DEV_HOST_AUTH` + explicit-dev via `Deno.env.get`.
+ */
+async function withDevHostAuth(
+  fn: () => void | Promise<void>,
+): Promise<void> {
+  const env = Deno.env
+  const originalGet = env.get.bind(env)
+  const patchedGet = (key: string): string | undefined => {
+    if (key === 'TURBOPANEL_DEV_HOST_AUTH') return 'group-only'
+    if (key === 'TURBOPANEL_DEV_SURFACE') return '1'
+    if (key === 'TURBOPANEL_MODE' || key === 'TURBOPANEL_UI_MODE') {
+      return undefined
+    }
+    try {
+      return originalGet(key)
+    } catch {
+      return undefined
+    }
+  }
+
+  Object.defineProperty(env, 'get', {
+    configurable: true,
+    writable: true,
+    value: patchedGet,
+  })
+  try {
+    await fn()
+  } finally {
+    Object.defineProperty(env, 'get', {
+      configurable: true,
+      writable: true,
+      value: originalGet,
+    })
+  }
+}
+
 async function buildApp(opts: {
   runtime?: 'deno' | 'workers'
   withSecrets?: boolean
   withDb?: boolean
   installed?: boolean
+  authRateLimiter?: AuthRateLimiter
 } = {}): Promise<Hono<AppEnv>> {
   const runtime = opts.runtime ?? 'deno'
   const withSecrets = opts.withSecrets ?? true
@@ -44,13 +87,26 @@ async function buildApp(opts: {
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     if (db) c.set('db', db)
-    c.set('authRateLimiter', createAuthRateLimiter({
-      defaultPolicy: { limit: 10_000, windowMs: 60_000 },
-    }))
+    c.set(
+      'authRateLimiter',
+      opts.authRateLimiter ?? createAuthRateLimiter({
+        defaultPolicy: { limit: 10_000, windowMs: 60_000 },
+      }),
+    )
     return next()
   })
   registerInstallRoutes(app, { secrets, runtime, signupEnvOverride: undefined })
   return app
+}
+
+function completeInstallBody(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    username: 'root',
+    password: 'host-secret',
+    superadminEmail: 'admin@203.0.113.10.example',
+    superadminPassword: 'sup3r-secret!',
+    ...overrides,
+  })
 }
 
 test('POST /bootstrap returns 404 on Workers runtime', async () => {
@@ -190,7 +246,7 @@ test('POST / returns 409 when the instance is already configured', async () => {
   })
 })
 
-test('POST / returns 400 for incomplete install bodies', async () => {
+test('POST / returns 400 for incomplete install bodies and invalid JSON', async () => {
   const app = await buildApp()
   const res = await app.request(`${INSTALL_API_PREFIX}/`, {
     method: 'POST',
@@ -203,6 +259,14 @@ test('POST / returns 400 for incomplete install bodies', async () => {
   })
   assertEquals(res.status, 400)
   assertEquals(await res.json(), { ok: false, error: 'Invalid request' })
+
+  const badJson = await app.request(`${INSTALL_API_PREFIX}/`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{',
+  })
+  assertEquals(badJson.status, 400)
+  assertEquals(await badJson.json(), { ok: false, error: 'Invalid request' })
 })
 
 test('POST / returns 401 for invalid host credentials without PAM', async () => {
@@ -221,5 +285,82 @@ test('POST / returns 401 for invalid host credentials without PAM', async () => 
   assertEquals(await res.json(), {
     ok: false,
     error: 'Invalid host credentials',
+  })
+})
+
+test('POST /bootstrap and POST / return 429 when the limiter blocks', async () => {
+  const app = await buildApp({
+    authRateLimiter: createFailClosedAuthRateLimiter(),
+  })
+
+  const bootstrap = await app.request(`${INSTALL_API_PREFIX}/bootstrap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'root', password: 'x' }),
+  })
+  assertEquals(bootstrap.status, 429)
+
+  const complete = await app.request(`${INSTALL_API_PREFIX}/`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: completeInstallBody(),
+  })
+  assertEquals(complete.status, 429)
+})
+
+test('POST /bootstrap returns ok when explicit-dev host auth accepts root', async () => {
+  await withDevHostAuth(async () => {
+    const app = await buildApp()
+    const res = await app.request(`${INSTALL_API_PREFIX}/bootstrap`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'root', password: 'any-nonempty' }),
+    })
+    assertEquals(res.status, 200)
+    assertEquals(await res.json(), { ok: true })
+  })
+})
+
+test('POST / surfaces completeInstanceInstall validation errors after host auth', async () => {
+  await withDevHostAuth(async () => {
+    const app = await buildApp()
+
+    const badEmail = await app.request(`${INSTALL_API_PREFIX}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: completeInstallBody({ superadminEmail: 'not-an-email' }),
+    })
+    assertEquals(badEmail.status, 400)
+    assertEquals(await badEmail.json(), {
+      ok: false,
+      error: 'Enter a valid email address',
+    })
+
+    const badPassword = await app.request(`${INSTALL_API_PREFIX}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: completeInstallBody({ superadminPassword: 'short1!' }),
+    })
+    assertEquals(badPassword.status, 400)
+    assertEquals(await badPassword.json(), {
+      ok: false,
+      error: 'Password must be at least 8 characters',
+    })
+
+    const mockDbCannotInstall = await app.request(`${INSTALL_API_PREFIX}/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: completeInstallBody(),
+    })
+    assertEquals(mockDbCannotInstall.status, 400)
+    const failed = await mockDbCannotInstall.json()
+    if (
+      typeof failed !== 'object' || failed === null || !('error' in failed) ||
+      !('ok' in failed)
+    ) {
+      throw new TypeError('complete-install error body')
+    }
+    assertEquals(failed.ok, false)
+    assertEquals(typeof failed.error, 'string')
   })
 })

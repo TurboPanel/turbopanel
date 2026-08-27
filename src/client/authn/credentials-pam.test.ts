@@ -1,6 +1,11 @@
 import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import {
+  createEmptyMockAuthState,
+  createMockAuthDb,
+  seedMockInstalledInstance,
+} from './authn-hostfree-doubles.ts'
+import {
   isDevHostAuthMode,
   verifyInstallHostCredentials,
 } from './credentials.ts'
@@ -159,6 +164,92 @@ describe('isDevHostAuthMode development-mode gate', () => {
           'deno',
         )
         assertEquals(ok, true)
+      },
+    )
+  })
+})
+
+describe('verifyInstallHostCredentials host-free gates', () => {
+  it('rejects non-Deno runtimes before touching PAM', async () => {
+    assertEquals(
+      await verifyInstallHostCredentials('root', 'any-password', 'workers'),
+      false,
+    )
+  })
+
+  it('rejects after the instance is already installed', async () => {
+    const state = createEmptyMockAuthState()
+    seedMockInstalledInstance(state)
+    assertEquals(
+      await verifyInstallHostCredentials(
+        'root',
+        'any-password',
+        'deno',
+        createMockAuthDb(state),
+      ),
+      false,
+    )
+  })
+
+  it('rejects invalid host usernames and empty passwords', async () => {
+    assertEquals(
+      await verifyInstallHostCredentials('bad user', 'secret', 'deno'),
+      false,
+    )
+    assertEquals(
+      await verifyInstallHostCredentials('root;id', 'secret', 'deno'),
+      false,
+    )
+    assertEquals(
+      await verifyInstallHostCredentials('root', '', 'deno'),
+      false,
+    )
+  })
+
+  it('checks group membership for non-root users in the explicit-dev bypass', async () => {
+    await withEnv(
+      {
+        TURBOPANEL_DEV_HOST_AUTH: 'group-only',
+        TURBOPANEL_DEV_SURFACE: '1',
+        TURBOPANEL_MODE: null,
+        TURBOPANEL_UI_MODE: null,
+      },
+      async () => {
+        const ok = await verifyInstallHostCredentials(
+          'definitely-not-a-local-user',
+          'not-a-real-password',
+          'deno',
+        )
+        assertEquals(ok, false)
+      },
+    )
+  })
+
+})
+
+describe('isDevHostAuthMode unset / non-bypass values', () => {
+  it('returns false when the host-auth env var is missing or not group-only', async () => {
+    await withEnv(
+      {
+        TURBOPANEL_DEV_HOST_AUTH: null,
+        TURBOPANEL_DEV_SURFACE: '1',
+        TURBOPANEL_MODE: null,
+        TURBOPANEL_UI_MODE: null,
+      },
+      () => {
+        assertEquals(isDevHostAuthMode(), false)
+      },
+    )
+
+    await withEnv(
+      {
+        TURBOPANEL_DEV_HOST_AUTH: 'pam',
+        TURBOPANEL_DEV_SURFACE: '1',
+        TURBOPANEL_MODE: null,
+        TURBOPANEL_UI_MODE: null,
+      },
+      () => {
+        assertEquals(isDevHostAuthMode(), false)
       },
     )
   })

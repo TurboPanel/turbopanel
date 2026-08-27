@@ -22,11 +22,13 @@
  * while an App belonging to one organization should not be.
  */
 
+import { stringifyGithubAppId } from './github-app-id.ts'
 import {
   GITHUB_API_ACCEPT,
   GITHUB_API_VERSION,
   GITHUB_USER_AGENT,
 } from './github-app-token.ts'
+import { stripTrailingSlashes } from './origin.ts'
 
 export class GithubManifestError extends Error {
   readonly status?: number
@@ -185,7 +187,7 @@ export function githubAppCreateUrl(
   state: string,
   organizationLogin?: string | null,
 ): string {
-  const origin = baseUrl.replace(/\/+$/, '')
+  const origin = stripTrailingSlashes(baseUrl)
   const path = organizationLogin
     ? `/organizations/${encodeURIComponent(organizationLogin)}/settings/apps/new`
     : '/settings/apps/new'
@@ -241,9 +243,7 @@ export async function convertGithubAppManifest(
     throw new GithubManifestError('github manifest conversion returned no body')
   }
 
-  const externalAppId = payload.id === undefined || payload.id === null
-    ? null
-    : String(payload.id)
+  const externalAppId = stringifyGithubAppId(payload.id)
   const privateKeyPem = readString(payload.pem)
   if (!externalAppId || !privateKeyPem) {
     throw new GithubManifestError(

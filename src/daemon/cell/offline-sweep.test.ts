@@ -16,6 +16,7 @@ import type {
 } from "./contracts.ts";
 import {
   canDirectHealFromAeEvidence,
+  CONNECTED_SWEEP_BUDGET,
   isStale,
   OFFLINE_SWEEP_STALE_MS,
   resetOfflineSweepNullGraceForTests,
@@ -23,9 +24,14 @@ import {
   SELF_HEAL_SWEEP_BUDGET,
   shouldSweepExecutionLogs,
   sweepExpiredCommandDispatchSafely,
+  sweepExpiredExecutionLogsSafely,
+  sweepExpiredWebhookDeliveriesSafely,
   sweepOnce,
+  takeLastOfflineSweepScheduledTimeForTests,
   updateNullGraceBookkeeping,
 } from "./offline-sweep.ts";
+import { WEBHOOK_DELIVERY_SWEEP_LIMIT } from "../../lib/db/webhook-delivery-records.ts";
+import type { ExecutionLogStore } from "../../lib/execution-logs/types.ts";
 import {
   endOfflineSweep,
   OFFLINE_SWEEP_LEASE_MS,
@@ -809,4 +815,578 @@ it("sweepOnce: empty candidate lists return before the AE resolver", async () =>
   });
 
   assertEquals(aeCalled, false);
+});
+
+it("takeLastOfflineSweepScheduledTimeForTests returns the last cron stamp once", async () => {
+  takeLastOfflineSweepScheduledTimeForTests();
+  const scheduledTime = Date.parse("2026-01-01T00:00:00.000Z");
+  const db = createOfflineSweepLockMemoryDb();
+  await runOfflineSweep(inertEnv(), null, {
+    db,
+    scheduledTime,
+    sweepOnceDeps: {
+      listConnected: () => Promise.resolve([]),
+      listRecentlyOffline: () => Promise.resolve([]),
+      resolveActiveServerIds: () => Promise.resolve(new Map()),
+      onDisconnected: () => Promise.resolve(),
+      onConnected: () => Promise.resolve(),
+    },
+  });
+  assertEquals(takeLastOfflineSweepScheduledTimeForTests(), scheduledTime);
+  assertEquals(takeLastOfflineSweepScheduledTimeForTests(), undefined);
+});
+
+it("sweepOnce: default AE resolver is unavailable without SQL credentials", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+  const cells = new Map([[ID_A, cell]]);
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await sweepOnce(inertEnv(), inertDb(), {
+      registry: createFakeRegistry(cells),
+      listConnected: () =>
+        Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+      listRecentlyOffline: () => Promise.resolve([]),
+      onDisconnected: () => Promise.resolve(),
+      onConnected: () => Promise.resolve(),
+    });
+  } finally {
+    console.info = originalInfo;
+  }
+  assertEquals(cell.checkLivenessCalls, 1);
+  assertEquals(
+    traces.some((line) => line.includes("event=ae-unavailable")),
+    true,
+  );
+});
+
+it("sweepOnce: default AE resolver failure falls back to check-all", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+  const cells = new Map([[ID_A, cell]]);
+  const env = {
+    CLOUDFLARE_ACCOUNT_ID: "acct123",
+    TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN: "token-xyz",
+  } as CloudflareBindings;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new TypeError("ae sql boom"));
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await sweepOnce(env, inertDb(), {
+      registry: createFakeRegistry(cells),
+      listConnected: () =>
+        Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+      listRecentlyOffline: () => Promise.resolve([]),
+      onDisconnected: () => Promise.resolve(),
+      onConnected: () => Promise.resolve(),
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.info = originalInfo;
+  }
+  assertEquals(cell.checkLivenessCalls, 1);
+  assertEquals(
+    traces.some((line) => line.includes("event=ae-query-failed")),
+    true,
+  );
+});
+
+it("sweepOnce: checkLiveness throw is isolated and does not demote", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+  cell.checkLiveness = () => Promise.reject(new TypeError("rpc boom"));
+  const cells = new Map([[ID_A, cell]]);
+  const disconnected: string[] = [];
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(cells),
+    resolveActiveServerIds: () => Promise.resolve(new Map()),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: (_db, id) => {
+      disconnected.push(id);
+      return Promise.resolve();
+    },
+    onConnected: () => Promise.resolve(),
+  });
+
+  assertEquals(disconnected, []);
+});
+
+it("sweepOnce: missing checkLiveness treats the cell as stale", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const disconnected: string[] = [];
+  const registry: DaemonCellRegistry = {
+    getCell(): DaemonCell {
+      return {} as DaemonCell;
+    },
+    listOnlineServerIds(): Promise<string[]> {
+      return Promise.resolve([ID_A]);
+    },
+    getSnapshots(): Promise<Map<string, DaemonCellSnapshot>> {
+      return Promise.resolve(new Map());
+    },
+    purge(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry,
+    resolveActiveServerIds: () => Promise.resolve(new Map()),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: (_db, id) => {
+      disconnected.push(id);
+      return Promise.resolve();
+    },
+    onConnected: () => Promise.resolve(),
+  });
+
+  assertEquals(disconnected, [ID_A]);
+});
+
+it("sweepOnce: onDisconnected throw is isolated", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null });
+  const cells = new Map([[ID_A, cell]]);
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(cells),
+    resolveActiveServerIds: () => Promise.resolve(new Map()),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: () => Promise.reject(new TypeError("projection failed")),
+    onConnected: () => Promise.resolve(),
+  });
+
+  assertEquals(cell.checkLivenessCalls, 1);
+});
+
+it("sweepOnce: probed self-heal throw is isolated", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({
+    connected: true,
+    lastPingAtMs: Date.now() - 30_000,
+  });
+  const cells = new Map([[ID_A, cell]]);
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(cells),
+    resolveActiveServerIds: () => Promise.resolve(new Map()),
+    listConnected: () => Promise.resolve([]),
+    listRecentlyOffline: () =>
+      Promise.resolve([{
+        id: ID_A,
+        connectedAt: new Date().toISOString(),
+        offlineAt: new Date().toISOString(),
+      }]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.reject(new TypeError("heal failed")),
+    onConnectedFromEvidence: () => Promise.resolve(),
+  });
+
+  assertEquals(cell.checkLivenessCalls, 1);
+});
+
+it("sweepOnce: AE-direct self-heal throw is isolated", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const connectedAt = "2020-01-01T00:00:00.000Z";
+  const offlineAt = "2020-01-01T00:00:00.000Z";
+  const aeLatestMs = Date.parse("2020-01-01T00:01:00.000Z");
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(new Map()),
+    resolveActiveServerIds: () =>
+      Promise.resolve(new Map([[ID_A, aeLatestMs]])),
+    listConnected: () => Promise.resolve([]),
+    listRecentlyOffline: () =>
+      Promise.resolve([{ id: ID_A, connectedAt, offlineAt }]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => {
+      throw new TypeError("AE-direct heal must not call onConnected");
+    },
+    onConnectedFromEvidence: () =>
+      Promise.reject(new TypeError("evidence heal failed")),
+  });
+});
+
+it("sweepOnce: recently-offline id already connected is not merged twice", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+  const cells = new Map([[ID_A, cell]]);
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(cells),
+    resolveActiveServerIds: () => Promise.resolve(null),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listRecentlyOffline: () =>
+      Promise.resolve([{
+        id: ID_A,
+        connectedAt: new Date().toISOString(),
+        offlineAt: new Date().toISOString(),
+      }]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.resolve(),
+  });
+
+  assertEquals(cell.checkLivenessCalls, 1);
+});
+
+it("sweepOnce: null-grace bookkeeping is pruned when a server leaves the batch", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const t0 = 1_700_000_000_000;
+  const nullCell = createFakeCell({ connected: true, lastPingAtMs: null });
+  const warmCell = createFakeCell({
+    connected: true,
+    lastPingAtMs: t0 - 30_000,
+  });
+  const cells = new Map([
+    [ID_A, nullCell],
+    [ID_B, warmCell],
+  ]);
+  const registry = createFakeRegistry(cells);
+  const disconnected: string[] = [];
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry,
+    nowMs: t0,
+    resolveActiveServerIds: () => Promise.resolve(null),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_A, connectedAt: new Date(t0).toISOString() }]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.resolve(),
+  });
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry,
+    nowMs: t0 + 1_000,
+    resolveActiveServerIds: () => Promise.resolve(null),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_B, connectedAt: new Date(t0).toISOString() }]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.resolve(),
+  });
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry,
+    nowMs: t0 + OFFLINE_SWEEP_STALE_MS + 1,
+    resolveActiveServerIds: () => Promise.resolve(null),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_A, connectedAt: new Date(t0).toISOString() }]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: (_db, id) => {
+      disconnected.push(id);
+      return Promise.resolve();
+    },
+    onConnected: () => Promise.resolve(),
+  });
+
+  assertEquals(disconnected, []);
+});
+
+it("sweepOnce fallback logs truncated when the connected budget is exceeded", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const overBudget = CONNECTED_SWEEP_BUDGET + 1;
+  const connected = Array.from({ length: overBudget }, (_, i) => ({
+    id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    connectedAt: new Date().toISOString(),
+  }));
+  const cells = new Map(
+    connected.map((row) => [
+      row.id,
+      createFakeCell({ connected: true, lastPingAtMs: Date.now() }),
+    ]),
+  );
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await sweepOnce(inertEnv(), inertDb(), {
+      registry: createFakeRegistry(cells),
+      nowMs: 1_700_000_000_000,
+      resolveActiveServerIds: () => Promise.resolve(null),
+      listConnected: () => Promise.resolve(connected),
+      listRecentlyOffline: () => Promise.resolve([]),
+      onDisconnected: () => Promise.resolve(),
+      onConnected: () => Promise.resolve(),
+    });
+  } finally {
+    console.info = originalInfo;
+  }
+  assertEquals(
+    traces.some((line) => line.includes("event=truncated")),
+    true,
+  );
+});
+
+it("sweepOnce: an already-due deadline skips demote as budget-exhausted", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null });
+  const cells = new Map([[ID_A, cell]]);
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await sweepOnce(inertEnv(), inertDb(), {
+      registry: createFakeRegistry(cells),
+      // Probe reserve is 8s; an already-due tick deadline skips later
+      // phases immediately (left <= 0) instead of hanging a callback.
+      deadlineMs: 0,
+      resolveActiveServerIds: () => Promise.resolve(new Map()),
+      listConnected: () =>
+        Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+      listRecentlyOffline: () => Promise.resolve([]),
+      onDisconnected: () => Promise.resolve(),
+      onConnected: () => Promise.resolve(),
+    });
+  } finally {
+    console.info = originalInfo;
+  }
+  assertEquals(
+    traces.some((line) =>
+      line.includes("event=budget-exhausted") && line.includes("phase=demote")
+    ),
+    true,
+  );
+});
+
+it("sweepOnce AE: heal-direct phase timeout is budget-exhausted", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const connectedAt = "2020-01-01T00:00:00.000Z";
+  const offlineAt = "2020-01-01T00:00:00.000Z";
+  const aeLatestMs = Date.parse("2020-01-01T00:01:00.000Z");
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await sweepOnce(inertEnv(), inertDb(), {
+      registry: createFakeRegistry(new Map()),
+      deadlineMs: Date.now() + 25,
+      resolveActiveServerIds: () =>
+        Promise.resolve(new Map([[ID_A, aeLatestMs]])),
+      listConnected: () => Promise.resolve([]),
+      listRecentlyOffline: () =>
+        Promise.resolve([{ id: ID_A, connectedAt, offlineAt }]),
+      onDisconnected: () => Promise.resolve(),
+      onConnected: () => Promise.resolve(),
+      onConnectedFromEvidence: () => new Promise(() => {}),
+    });
+  } finally {
+    console.info = originalInfo;
+  }
+  assertEquals(
+    traces.some((line) =>
+      line.includes("event=budget-exhausted") &&
+      line.includes("phase=heal-direct")
+    ),
+    true,
+  );
+});
+
+it("sweepOnce fallback: an already-due deadline skips heal after demote", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await sweepOnce(inertEnv(), inertDb(), {
+      registry: createFakeRegistry(new Map()),
+      deadlineMs: 0,
+      resolveActiveServerIds: () => Promise.resolve(null),
+      listConnected: () => Promise.resolve([]),
+      listRecentlyOffline: () =>
+        Promise.resolve([{
+          id: ID_A,
+          connectedAt: new Date().toISOString(),
+          offlineAt: new Date().toISOString(),
+        }]),
+      onDisconnected: () => Promise.resolve(),
+      onConnected: () => Promise.resolve(),
+    });
+  } finally {
+    console.info = originalInfo;
+  }
+  // Fallback still enters runBoundedPhase("demote") first; an already-due
+  // deadline never reaches heal. The hanging heal-direct case covers the
+  // timeout catch on a later phase.
+  assertEquals(
+    traces.some((line) =>
+      line.includes("event=budget-exhausted") && line.includes("phase=demote")
+    ),
+    true,
+  );
+  assertEquals(
+    traces.some((line) => line.includes("phase=heal")),
+    false,
+  );
+});
+
+it("webhook-delivery sweep runs on the passed db, bounded per tick", async () => {
+  let limit: number | undefined;
+  let deleteCalls = 0;
+  const db = {
+    delete: () => ({
+      where: (condition: { queryChunks?: unknown[] }) => {
+        deleteCalls += 1;
+        limit = (condition.queryChunks ?? []).find(
+          (chunk) => typeof chunk === "number",
+        ) as number | undefined;
+        return { returning: () => Promise.resolve([{ id: "delivery-1" }]) };
+      },
+    }),
+  } as unknown as Db;
+
+  await sweepExpiredWebhookDeliveriesSafely(db);
+
+  assertEquals(deleteCalls, 1);
+  assertEquals(limit, WEBHOOK_DELIVERY_SWEEP_LIMIT);
+});
+
+it("webhook-delivery sweep failures stay isolated from the rest of the tick", async () => {
+  const db = {
+    delete: () => {
+      throw new TypeError("postgres unavailable");
+    },
+  } as unknown as Db;
+
+  await sweepExpiredWebhookDeliveriesSafely(db);
+});
+
+function fakeExecutionLogStore(
+  sweep: ExecutionLogStore["sweepExpired"],
+): ExecutionLogStore {
+  return {
+    appendChunk: () => {
+      throw new TypeError("unused");
+    },
+    readFrom: () => {
+      throw new TypeError("unused");
+    },
+    exists: () => {
+      throw new TypeError("unused");
+    },
+    seal: () => {
+      throw new TypeError("unused");
+    },
+    delete: () => {
+      throw new TypeError("unused");
+    },
+    sweepExpired: sweep,
+  };
+}
+
+it("execution-log sweep traces when transcripts were deleted", async () => {
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await sweepExpiredExecutionLogsSafely(
+      fakeExecutionLogStore(() => Promise.resolve(3)),
+      90,
+    );
+  } finally {
+    console.info = originalInfo;
+  }
+  assertEquals(
+    traces.some((line) =>
+      line.includes("event=execution-logs-swept") && line.includes("deleted=3")
+    ),
+    true,
+  );
+});
+
+it("execution-log sweep failures stay isolated from the rest of the tick", async () => {
+  await sweepExpiredExecutionLogsSafely(
+    fakeExecutionLogStore(() => Promise.reject(new TypeError("r2 down"))),
+    90,
+  );
+});
+
+it("runOfflineSweep logs lease-acquire-failed and returns", async () => {
+  const db = {
+    insert: () => {
+      throw new TypeError("lease db down");
+    },
+    $client: { end: () => Promise.resolve() },
+  } as unknown as Db;
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await runOfflineSweep(inertEnv(), null, { db });
+  } finally {
+    console.info = originalInfo;
+  }
+  assertEquals(
+    traces.some((line) => line.includes("event=lease-acquire-failed")),
+    true,
+  );
+});
+
+it("runOfflineSweep logs lease-release-failed and still finishes the tick", async () => {
+  const lock = createOfflineSweepLockMemoryDb();
+  const db = {
+    ...lock,
+    update: () => ({
+      set: () => ({
+        where: () => {
+          throw new TypeError("release failed");
+        },
+      }),
+    }),
+  } as unknown as Db;
+  const traces: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(" "));
+  };
+  try {
+    await runOfflineSweep(inertEnv(), null, {
+      db,
+      sweepOnceDeps: {
+        listConnected: () => Promise.resolve([]),
+        listRecentlyOffline: () => Promise.resolve([]),
+        resolveActiveServerIds: () => Promise.resolve(new Map()),
+        onDisconnected: () => Promise.resolve(),
+        onConnected: () => Promise.resolve(),
+      },
+    });
+  } finally {
+    console.info = originalInfo;
+  }
+  assertEquals(
+    traces.some((line) => line.includes("event=lease-release-failed")),
+    true,
+  );
+  assertEquals(
+    traces.some((line) => line.includes("event=tick-complete")),
+    true,
+  );
 });

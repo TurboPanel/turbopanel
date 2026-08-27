@@ -143,3 +143,24 @@ test('stripComposeTurbopanelExtensions looks through tagged service body', () =>
   assertEquals(composeTagOf(web), 'reset')
   assertEquals(unwrapComposeTag(web), { image: 'nginx' })
 })
+
+test('stripComposeTurbopanelExtensions leaves a tagged non-mapping services value unchanged', () => {
+  const input = doc({
+    services: makeComposeTag('override', ['web']),
+  })
+  const output = stripComposeTurbopanelExtensions(input)
+  assertEquals(composeTagOf(output.data.services), 'override')
+  assertEquals(unwrapComposeTag(output.data.services), ['web'])
+})
+
+test('stripComposeTurbopanelExtensions leaves a tagged service body without an extension unchanged', () => {
+  const input = doc({
+    services: {
+      web: makeComposeTag('override', { image: 'nginx' }),
+    },
+  })
+  const output = stripComposeTurbopanelExtensions(input)
+  const web = (output.data.services as Record<string, unknown>).web
+  assertEquals(composeTagOf(web), 'override')
+  assertEquals(unwrapComposeTag(web), { image: 'nginx' })
+})

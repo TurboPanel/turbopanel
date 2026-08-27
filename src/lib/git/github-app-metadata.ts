@@ -14,6 +14,7 @@
  * is why it is the one reconcile point.
  */
 
+import { stringifyGithubAppId } from './github-app-id.ts'
 import {
   githubApiBaseFor,
   githubApiHeaders,
@@ -94,9 +95,7 @@ export async function fetchGithubAppMetadata(app: GitApp): Promise<GithubAppMeta
     | null
   if (!payload) throw new GithubAppTokenError('github app lookup returned no body')
 
-  const externalAppId = payload.id === undefined || payload.id === null
-    ? null
-    : String(payload.id)
+  const externalAppId = stringifyGithubAppId(payload.id)
   const name = typeof payload.name === 'string' ? payload.name.trim() : ''
   if (!externalAppId || name.length === 0) {
     throw new GithubAppTokenError('github app lookup returned no id or name')

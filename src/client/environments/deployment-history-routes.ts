@@ -11,7 +11,7 @@ import {
   listEnvironmentDeploymentHistory,
 } from '../../lib/db/deployment-history.ts'
 
-function parseLimit(raw: string | undefined): number | null {
+export function parseLimit(raw: string | undefined): number | null {
   if (raw === undefined || raw === '') return DEPLOYMENT_HISTORY_DEFAULT_LIMIT
   const parsed = Number(raw)
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > DEPLOYMENT_HISTORY_MAX_LIMIT) {

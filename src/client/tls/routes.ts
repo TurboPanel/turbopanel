@@ -352,7 +352,7 @@ async function resolveRotatedOrganizationCa(
   }
 }
 
-function overlayRotationResults(
+export function overlayRotationResults(
   rows: readonly CaRotationResultRow[],
   records: readonly { id: string; status: string; error: string | null }[],
 ) {
@@ -370,7 +370,7 @@ function overlayRotationResults(
   });
 }
 
-function rotationCommandsSucceeded(
+export function rotationCommandsSucceeded(
   rows: readonly CaRotationResultRow[],
   records: readonly { id: string; status: string }[],
 ): boolean {
@@ -382,7 +382,7 @@ function rotationCommandsSucceeded(
   return true;
 }
 
-function rotationNeedsCommands(targets: {
+export function rotationNeedsCommands(targets: {
   managedIds: readonly string[];
   ingressServerIds: readonly string[];
 }): boolean {
@@ -484,7 +484,7 @@ type TlsRowPatch = {
   updatedAt: string;
 };
 
-function buildTlsRowPatch(
+export function buildTlsRowPatch(
   body: Record<string, unknown>,
   existing: {
     options: unknown;

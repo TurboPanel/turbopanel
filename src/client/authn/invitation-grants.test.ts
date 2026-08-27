@@ -66,6 +66,9 @@ test('parseInvitationGrants rejects allowed and allow fields', () => {
 test('parseInvitationGrants rejects invalid shapes', () => {
   assertEquals(parseInvitationGrants(null), null)
   assertEquals(parseInvitationGrants({}), null)
+  assertEquals(parseInvitationGrants('grants'), null)
+  assertEquals(parseInvitationGrants([null]), null)
+  assertEquals(parseInvitationGrants(['organization']), null)
   assertEquals(parseInvitationGrants([]), null)
   assertEquals(
     parseInvitationGrants([{ entityType: 'organization', entityId: organizationId }]),
@@ -97,6 +100,19 @@ test('parseInvitationGrants rejects invalid shapes', () => {
 test('resolveInvitationGrants falls back to defaults when raw is invalid', () => {
   const grants = resolveInvitationGrants(undefined, organizationId)
   assertEquals(grants, defaultInvitationGrants(organizationId))
+})
+
+test('resolveInvitationGrants keeps a valid parsed grant list', () => {
+  const raw = [
+    {
+      entityType: 'organization',
+      entityId: organizationId,
+      permissionKey: 'organization:own',
+    },
+  ]
+  const grants = resolveInvitationGrants(raw, organizationId)
+  assertEquals(grants.length, 1)
+  assertEquals(grants[0]?.permissionKey, 'organization:own')
 })
 
 test('InvitationGrantValidationError carries the HTTP status', () => {
@@ -164,6 +180,21 @@ test('materializeInvitationGrants inserts validated grant rows', async () => {
   await materializeInvitationGrants(db, 'user-1', defaultInvitationGrants(orgId), orgId)
   assertEquals(inserts.length, 1)
   assertEquals((inserts[0] as { permission: string }).permission, 'organization:manage')
+})
+
+test('materializeInvitationGrants rejects missing grant targets', async () => {
+  const orgId = '00000000-0000-4000-8000-000000000001'
+  await assertRejects(
+    () =>
+      materializeInvitationGrants(
+        mockGrantDb(false),
+        'user-1',
+        defaultInvitationGrants(orgId),
+        orgId,
+      ),
+    InvitationGrantValidationError,
+    'Entity not found',
+  )
 })
 
 test('materializeInvitationGrants rejects incompatible permission keys', async () => {

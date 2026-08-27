@@ -30,6 +30,7 @@ import {
   isSealedEnvelope,
 } from '../../client/authn/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
+import { normalizeOrigin } from './origin.ts'
 
 /** Providers that have a registerable application. `git` (generic SSH) has none. */
 export const GIT_APP_PROVIDERS = ['github', 'gitlab'] as const
@@ -208,11 +209,6 @@ function trimOrNull(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
-}
-
-/** Drop a trailing slash so `baseUrl` compares (and concatenates) predictably. */
-function normalizeOrigin(value: string): string {
-  return value.trim().replace(/\/+$/, '')
 }
 
 export function defaultBaseUrlFor(provider: GitAppProvider): string {

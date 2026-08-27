@@ -85,8 +85,9 @@ test('the ref rides in the path only for a self-hosted origin', () => {
     '/webhook/gitlab/ref-1',
   )
 
-  // A trailing slash is not a different origin.
+  // A trailing slash is not a different origin — one slash or several.
   assertEquals(webhookPathFor('github', 'ref-1', 'https://github.com/'), '/webhook/github')
+  assertEquals(webhookPathFor('github', 'ref-1', 'https://github.com///'), '/webhook/github')
 
   // No ref, or no origin, means the bare path.
   assertEquals(webhookPathFor('github', null, 'https://github.acme.test'), '/webhook/github')

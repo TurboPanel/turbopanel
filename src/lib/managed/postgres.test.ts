@@ -709,12 +709,21 @@ test('standby without hostaddr omits hostaddr from primary_conninfo', () => {
   assertEquals(conf.includes("primary_slot_name = 'tp_member_2'"), true)
 })
 
-test('parseSettings rejects non-objects; null falls through to defaults', () => {
+test('parseSettings rejects non-objects; null/undefined fall through to defaults', () => {
   assertEquals(postgresEngineSpec.parseSettings('postgres'), null)
   assertEquals(postgresEngineSpec.parseSettings([]), null)
-  const fromNull = postgresEngineSpec.parseSettings(null) as PostgresManagedSettings
-  assertEquals(fromNull.initialDatabase, 'postgres')
+  const fromNull = postgresEngineSpec.parseSettings(null)
+  if (!fromNull) throw new TypeError('expected defaults for null settings')
+  assertEquals((fromNull as PostgresManagedSettings).initialDatabase, 'postgres')
   assertEquals(fromNull.exposure.enabled, false)
+  const fromUndefined = postgresEngineSpec.parseSettings(undefined)
+  if (!fromUndefined) {
+    throw new TypeError('expected defaults for undefined settings')
+  }
+  assertEquals(
+    (fromUndefined as PostgresManagedSettings).initialDatabase,
+    'postgres',
+  )
 })
 
 test('buildRuntimeSpec falls back when settings omit image and initialDatabase', () => {

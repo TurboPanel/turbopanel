@@ -8,6 +8,7 @@ import {
   assertGatewayRelaysReady,
   assertServerDatacenterReady,
   resolveDerivedAdvertisedCidrsByRelay,
+  serverIsMemberOfDatacenter,
 } from './datacenter-networks.ts'
 
 /**
@@ -464,6 +465,54 @@ test('resolveDerivedAdvertisedCidrsByRelay assigns a shared subnet to the smalle
   )
   assertEquals(map.get('r-aaa'), ['203.0.113.0/24'])
   assertEquals(map.get('r-zzz'), [])
+})
+
+test('serverIsMemberOfDatacenter is true when a pin row exists', async () => {
+  const db = createQueuedDb([[{ id: 'ip-1' }]])
+  assertEquals(await serverIsMemberOfDatacenter(db, 'srv-1', 'dc-a'), true)
+})
+
+test('serverIsMemberOfDatacenter is false when no pin exists', async () => {
+  const db = createQueuedDb([[]])
+  assertEquals(await serverIsMemberOfDatacenter(db, 'srv-1', 'dc-a'), false)
+})
+
+test('resolveDerivedAdvertisedCidrsByRelay dedupes identical IPv4 cidrs', () => {
+  const map = resolveDerivedAdvertisedCidrsByRelay(
+    [{
+      id: 'r-gw',
+      serverId: 'srv-1',
+      role: 'gateway',
+      advertisedCidrs: [],
+    }],
+    new Map([
+      ['srv-1', [
+        {
+          networkId: 'net-a',
+          cidr: '203.0.113.0/24',
+          version: 4,
+          name: null,
+        },
+        {
+          networkId: 'net-a-dup',
+          cidr: '203.0.113.0/24',
+          version: 4,
+          name: null,
+        },
+      ]],
+    ]),
+  )
+  assertEquals(map.get('r-gw'), ['203.0.113.0/24'])
+})
+
+test('loadDatacenterSubnets coerces non-string ids and names', async () => {
+  const db = createQueuedDb([[
+    { id: 17, datacenterId: 'dc-a', cidr: '203.0.113.0/24', name: 9 },
+  ]])
+  const map = await loadDatacenterSubnets(db, ['dc-a'])
+  assertEquals(map.get('dc-a'), [
+    { networkId: '', cidr: '203.0.113.0/24', version: 4, name: null },
+  ])
 })
 
 test('assertGatewayRelaysReady accepts a multi-subnet datacenter and still emits the two gateway wire codes', async () => {

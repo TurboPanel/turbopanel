@@ -1,9 +1,14 @@
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import {
+  familiesInDatacenter,
   isPrivateEndpointError,
+  loadPublicAddressesForServers,
   loadServerDatacenterAddress,
+  loadServerFabricAddress,
   loadServerPublicAddress,
+  pinAddressForDatacenter,
+  preferredFamilyOrder,
   privateEndpointErrorResponse,
   resolvePrivateEndpoint,
   resolvePrivateEndpoints,
@@ -88,17 +93,25 @@ function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndp
           : fixture.singleAddress === null
           ? []
           : [{ address: fixture.singleAddress }]
+        const limited = {
+          orderBy() {
+            return {
+              limit() {
+                return rows
+              },
+            }
+          },
+        }
         return {
           from() {
             return {
               where() {
+                return limited
+              },
+              innerJoin() {
                 return {
-                  orderBy() {
-                    return {
-                      limit() {
-                        return rows
-                      },
-                    }
+                  where() {
+                    return limited
                   },
                 }
               },
@@ -736,4 +749,129 @@ test('private_family_mismatch surfaces under every purpose before fabric or publ
       expected,
     )
   }
+})
+
+test('loadServerFabricAddress returns the address or null', async () => {
+  assertEquals(
+    await loadServerFabricAddress(
+      createFixtureDb({ singleAddress: '10.250.0.1' }),
+      's1',
+    ),
+    '10.250.0.1',
+  )
+  assertEquals(
+    await loadServerFabricAddress(createFixtureDb({ singleAddress: null }), 's1'),
+    null,
+  )
+  assertEquals(
+    await loadServerFabricAddress(
+      createFixtureDb({ singleAddress: 'not-an-ip' }),
+      's1',
+    ),
+    'not-an-ip',
+  )
+})
+
+test('loadPublicAddressesForServers skips empty input and later duplicate rows', async () => {
+  const empty = await loadPublicAddressesForServers(createFixtureDb({}), [])
+  assertEquals(empty.size, 0)
+
+  const map = await loadPublicAddressesForServers(
+    createFixtureDb({
+      publicAddresses: [
+        { serverId: 's2', address: '203.0.113.20' },
+        { serverId: 's2', address: '203.0.113.21' },
+        { serverId: '', address: '203.0.113.22' },
+        { serverId: 's3', address: 'not-an-ip' },
+      ],
+    }),
+    ['s2', 's3'],
+  )
+  assertEquals(map.get('s2'), '203.0.113.20')
+  assertEquals(map.has('s3'), false)
+})
+
+test('resolvePrivateEndpoint skips blank fabric relay addresses', async () => {
+  const db = createFixtureDb({
+    memberships: [
+      membershipPin('s1', 'dc-a', '203.0.113.1'),
+      membershipPin('s2', 'dc-b', '198.51.100.2'),
+    ],
+    relays: [
+      {
+        relayId: 'r1',
+        serverId: 's1',
+        fabricId: 'fabric-1',
+        fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+        address: '',
+      },
+      {
+        relayId: 'r2',
+        serverId: 's2',
+        fabricId: 'fabric-1',
+        fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+        address: '',
+      },
+    ],
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
+})
+
+test('preferredFamilyOrder and pinAddressForDatacenter honor address preference', () => {
+  assertEquals(preferredFamilyOrder('ipv4'), [4, 6])
+  assertEquals(preferredFamilyOrder('ipv6'), [6, 4])
+
+  const fromPins = [
+    {
+      ipId: 'a4',
+      serverId: 's1',
+      datacenterId: 'dc-a',
+      networkId: null,
+      address: '203.0.113.1',
+      family: 4 as const,
+    },
+    {
+      ipId: 'a6',
+      serverId: 's1',
+      datacenterId: 'dc-a',
+      networkId: null,
+      address: '2001:db8::1',
+      family: 6 as const,
+    },
+  ]
+  const toPins = [
+    {
+      ipId: 'b4',
+      serverId: 's2',
+      datacenterId: 'dc-a',
+      networkId: null,
+      address: '203.0.113.2',
+      family: 4 as const,
+    },
+    {
+      ipId: 'b6',
+      serverId: 's2',
+      datacenterId: 'dc-a',
+      networkId: null,
+      address: '2001:db8::2',
+      family: 6 as const,
+    },
+  ]
+  assertEquals(familiesInDatacenter(fromPins, 'dc-a'), new Set([4, 6]))
+  assertEquals(
+    pinAddressForDatacenter(fromPins, toPins, 'dc-a', 'ipv4'),
+    '203.0.113.2',
+  )
+  assertEquals(
+    pinAddressForDatacenter(fromPins, toPins, 'dc-missing', 'ipv6'),
+    null,
+  )
 })

@@ -146,3 +146,31 @@ services:
   assertEquals(roundTrip.includes('# services section'), true)
   assertEquals(roundTrip.includes('# trailing note'), true)
 })
+
+test('yaml round-trip coerces boolean mapping keys and skips complex keys', () => {
+  const source = `true: keep
+[bad]: skip
+services:
+  web:
+    image: nginx:alpine
+`
+  const doc = yamlToComposeDocument(source)
+  assertEquals(Object.hasOwn(doc.data, 'true'), true)
+  assertEquals(Object.hasOwn(doc.data, '[bad]'), false)
+
+  const yaml = composeDocumentToYaml(doc)
+  // yaml quotes the reserved boolean token so the key is not dumped as `true:`.
+  assertEquals(yaml.includes('keep'), true)
+  assertEquals(yaml.includes('[bad]'), false)
+})
+
+test('yaml round-trip applies key blankLines through spaceBefore', () => {
+  const source = `services:
+  web:
+    image: nginx:alpine
+`
+  const doc = yamlToComposeDocument(source)
+  doc.presentation.blankLines = { 'services#key': 1 }
+  const yaml = composeDocumentToYaml(doc)
+  assertEquals(yaml.includes('services:'), true)
+})

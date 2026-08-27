@@ -2,7 +2,13 @@ import { assertEquals } from '@std/assert'
 import type { PrivateEndpointError } from '../../lib/net/private-endpoint.ts'
 import { SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME } from '../system/hierarchy.ts'
 import type { ManagedMemberRow } from './members.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
+import type { CommandQueue } from '../../lib/commands/queue.ts'
+import type { Db } from '../../db.ts'
 import {
+  enqueueManagedHaReconcile,
+  fanOutManagedHaReconcile,
   haClusterMemberRole,
   haClusterReplicaClass,
   haIdentity,
@@ -161,4 +167,49 @@ test('haIdentity and haTeardownIfPresent describe an absent Orchestrator', () =>
     containerName: undefined as unknown as string,
   })
   assertEquals(unnamed?.identity.containerName, 'svc-ha')
+})
+
+test('enqueueManagedHaReconcile is not_needed when the server has no organization', async () => {
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+  const secrets = parseTestSecretsConfig()
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secrets, 'data-encryption')
+  const result = await enqueueManagedHaReconcile(
+    db,
+    { enqueue: () => Promise.resolve() } as CommandQueue,
+    {
+      serverId: SERVER_A,
+      actorType: 'system',
+      actorId: 'actor-1',
+      secretsConfig: secrets,
+      dataEncryptionSecrets,
+    },
+  )
+  assertEquals(result, { ok: false, reason: 'not_needed' })
+})
+
+test('fanOutManagedHaReconcile no-ops when no HA hosts are present', async () => {
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => Promise.resolve([]),
+      }),
+    }),
+  } as unknown as Db
+  const secrets = parseTestSecretsConfig()
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secrets, 'data-encryption')
+  await fanOutManagedHaReconcile(db, { enqueue: () => Promise.resolve() } as CommandQueue, {
+    managedId: 'mgd-1',
+    actorType: 'system',
+    actorId: 'actor-1',
+    secretsConfig: secrets,
+    dataEncryptionSecrets,
+  })
 })

@@ -1,6 +1,9 @@
 import { assertEquals } from '@std/assert'
-import type { GitProvider } from '../../lib/git/git-provider.ts'
-import { INSPECT_PROBE_PATHS } from './inspect.ts'
+import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type { Db } from '../../db.ts'
+import type { GitProvider, GitProviderSourceRow } from '../../lib/git/git-provider.ts'
+import { createServerPresenceDb } from '../managed/server-status-test-db.ts'
+import { inspectRepository, INSPECT_PROBE_PATHS } from './inspect.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -81,4 +84,99 @@ test('the generic provider answers unsupported rather than throwing', async () =
     },
   )
   assertEquals(read, { unsupported: true })
+})
+
+const GIT_ROW: GitProviderSourceRow = {
+  id: 's1',
+  provider: 'git',
+  repositoryUrl: 'git@example.com:o/r.git',
+  defaultBranch: 'main',
+  subdirectory: null,
+  installationId: null,
+  credentialId: 'c1',
+}
+
+function inspectRegistry(
+  record: { status: string; result?: unknown; error?: string },
+): DaemonCellRegistry {
+  return {
+    getCell: () => ({
+      createRequestAndWait: () => Promise.resolve(record),
+    }),
+  } as unknown as DaemonCellRegistry
+}
+
+test('inspectRepository falls back to 503 when a bare git remote has no registry', async () => {
+  const outcome = await inspectRepository({
+    db: {} as Db,
+    registry: null,
+    dataEncryptionSecrets: { current: { version: 1, key: {} as CryptoKey }, fallbacks: [] },
+    organizationId: 'org-1',
+    row: GIT_ROW,
+    ref: 'main',
+    serverIds: ['server-1'],
+  })
+  assertEquals(outcome.ok, false)
+  if (outcome.ok) throw new TypeError('expected failure')
+  assertEquals(outcome.status, 503)
+  assertEquals(outcome.error, 'no_daemon_available')
+})
+
+test('inspectRepository maps daemon no_daemon_available to 503', async () => {
+  const outcome = await inspectRepository({
+    db: createServerPresenceDb('server-1', false),
+    registry: inspectRegistry({ status: 'done', result: { ok: true } }),
+    dataEncryptionSecrets: null,
+    organizationId: 'org-1',
+    row: GIT_ROW,
+    ref: 'main',
+    serverIds: ['server-1'],
+    listPath: 'src',
+    daemonCredential: { credential: 'tok', credentialKind: 'token' },
+  })
+  assertEquals(outcome.ok, false)
+  if (outcome.ok) throw new TypeError('expected failure')
+  assertEquals(outcome.status, 503)
+  assertEquals(outcome.error, 'no_daemon_available')
+})
+
+test('inspectRepository maps a daemon timeout to 502', async () => {
+  const outcome = await inspectRepository({
+    db: createServerPresenceDb('server-1', true),
+    registry: inspectRegistry({ status: 'expired' }),
+    dataEncryptionSecrets: null,
+    organizationId: 'org-1',
+    row: GIT_ROW,
+    ref: 'main',
+    paths: ['package.json'],
+    serverIds: ['server-1'],
+  })
+  assertEquals(outcome.ok, false)
+  if (outcome.ok) throw new TypeError('expected failure')
+  assertEquals(outcome.status, 502)
+  assertEquals(outcome.error, 'timeout')
+})
+
+test('inspectRepository returns daemon files when the generic provider is unsupported', async () => {
+  const outcome = await inspectRepository({
+    db: createServerPresenceDb('server-1', true),
+    registry: inspectRegistry({
+      status: 'done',
+      result: {
+        ok: true,
+        commitSha: 'deadbeef',
+        files: [{ path: 'package.json', found: true, content: '{}', bytes: 2 }],
+        entries: [{ path: '.', kind: 'dir' }],
+      },
+    }),
+    dataEncryptionSecrets: null,
+    organizationId: 'org-1',
+    row: GIT_ROW,
+    ref: 'main',
+    serverIds: ['server-1'],
+  })
+  if (!outcome.ok) throw new TypeError('expected success')
+  assertEquals(outcome.via, 'daemon')
+  assertEquals(outcome.commitSha, 'deadbeef')
+  assertEquals(outcome.files[0]?.path, 'package.json')
 })

@@ -690,4 +690,112 @@ describe('apply-variables', () => {
     assertEquals(build.secrets.length, 1)
     assertEquals((api.secrets as unknown[]).length, 1)
   })
+
+  it('normalizes list-form environment KEY:value, mixed separators, and skips non-strings', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      web: {
+        image: 'nginx',
+        environment: [12, 'PORT:3000', 'MIXED=keep:tail', 'BARE'],
+      },
+    }
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [],
+      perServiceEntries: new Map(),
+    }))
+    const env = (result.document.data.services as Record<string, Record<string, unknown>>)
+      .web.environment as Record<string, string>
+    assertEquals(env.PORT, '3000')
+    assertEquals(env.MIXED, 'keep:tail')
+    assertEquals(env.BARE, '')
+    assertEquals('12' in env, false)
+  })
+
+  it('skips services that are not mappings and treats a non-mapping services value as empty', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      web: 'not-a-mapping',
+      api: { image: 'node:22' },
+    }
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'PORT',
+        value: '3000',
+        isSecret: false,
+        isLiteral: false,
+        forBuild: false,
+        forRuntime: true,
+      }],
+      perServiceEntries: new Map(),
+    }))
+    const services = result.document.data.services as Record<string, unknown>
+    assertEquals(services.web, 'not-a-mapping')
+    assertEquals(
+      (services.api as { environment: { PORT: string } }).environment.PORT,
+      composeInterpolationRef(serviceEnvInterpolationKey('api', 'PORT')),
+    )
+
+    const emptyServices = emptyComposeDocument()
+    emptyServices.data.services = ['web']
+    const skipped = mustApply(applyVariablesToComposeDocument(emptyServices, {
+      globalEntries: [],
+      perServiceEntries: new Map(),
+    }))
+    assertEquals(skipped.document.data.services, {})
+  })
+
+  it('collects scoped secrets and rejects ${SECRET} interpolation from a scope map', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      web: { image: 'nginx', environment: { X: '${SCOPE_SECRET}' } },
+    }
+    const result = applyVariablesToComposeDocument(doc, {
+      globalEntries: [],
+      perServiceEntries: new Map(),
+      perServiceScopes: new Map([
+        ['web', {
+          environment: undefined,
+          organization: new Map([
+            ['SCOPE_SECRET', {
+              key: 'SCOPE_SECRET',
+              value: 'scoped-secret',
+              isSecret: true,
+              isLiteral: false,
+              forBuild: false,
+              forRuntime: true,
+            }],
+          ]),
+        }],
+      ]),
+    })
+    if (!isApplyVariablesError(result)) {
+      throw new TypeError('expected secret interpolation error')
+    }
+    assertEquals(result.kind, 'variable_secret_interpolation')
+  })
+
+  it('clears empty build.args after resolving the last secret ref', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = {
+      api: {
+        image: 'node:22',
+        build: { args: { TOKEN: '{$TOKEN}' } },
+      },
+    }
+    const result = mustApply(applyVariablesToComposeDocument(doc, {
+      globalEntries: [{
+        key: 'TOKEN',
+        value: 'only-arg',
+        isSecret: true,
+        isLiteral: false,
+        forBuild: true,
+        forRuntime: false,
+      }],
+      perServiceEntries: new Map(),
+    }))
+    const build = (result.document.data.services as Record<string, Record<string, unknown>>)
+      .api.build as { args?: Record<string, string>; secrets: unknown[] }
+    assertEquals(build.args, undefined)
+    assertEquals(build.secrets.length, 1)
+  })
 })

@@ -187,6 +187,34 @@ test('awaitFabricReconcile returns failed when a later poll is terminal', async 
   })
 })
 
+test('awaitFabricReconcile treats missing command rows as queued', async () => {
+  const db = createCommandStatusDb([[]])
+  const outcome = await awaitFabricReconcile(db, {
+    commands: [{ serverId: 's1', commandId: 'missing' }],
+    timeoutMs: 0,
+    pollIntervalMs: 1,
+    sleep: () => Promise.reject(new TypeError('should not sleep')),
+    now: () => 0,
+  })
+  assertEquals(outcome.kind, 'pending')
+  if (outcome.kind === 'pending') {
+    assertEquals(outcome.pending, [{ serverId: 's1', commandId: 'missing' }])
+  }
+})
+
+test('awaitFabricReconcile uses the default sleep between polls', async () => {
+  const db = createCommandStatusDb([
+    [commandRow('c1', 's1', 'queued')],
+    [commandRow('c1', 's1', 'succeeded')],
+  ])
+  const outcome = await awaitFabricReconcile(db, {
+    commands: [{ serverId: 's1', commandId: 'c1' }],
+    timeoutMs: 50,
+    pollIntervalMs: 1,
+  })
+  assertEquals(outcome, { kind: 'ready' })
+})
+
 test('composeNetworkNamesByServer maps unique sorted names per server', () => {
   const rows: EnvironmentComposeNetwork[] = [
     {

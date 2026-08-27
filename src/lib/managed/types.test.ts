@@ -16,7 +16,9 @@ const test = Deno.test.bind(Deno)
 test('isManagedEngineCode accepts only known codes', () => {
   assertEquals(isManagedEngineCode('postgres'), true)
   assertEquals(isManagedEngineCode('mysql'), true)
+  assertEquals(isManagedEngineCode('mariadb'), true)
   assertEquals(isManagedEngineCode('redis'), true)
+  assertEquals(isManagedEngineCode('clickhouse'), true)
   assertEquals(isManagedEngineCode('Postgres'), false)
   assertEquals(isManagedEngineCode(''), false)
 })
@@ -30,6 +32,7 @@ test('parseManagedStatus accepts known statuses and rejects others', () => {
   assertEquals(parseManagedStatus('weird'), null)
   assertEquals(parseManagedStatus(12), null)
   assertEquals(parseManagedStatus(null), null)
+  assertEquals(parseManagedStatus(undefined), null)
 })
 
 test('isManagedBackupArtifactExtension accepts dump/sql only', () => {

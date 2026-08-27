@@ -21,6 +21,7 @@ import {
   type GitAppUpdate,
   GIT_APP_PROVIDERS,
 } from '../../lib/git/git-app-records.ts'
+import { stripTrailingSlashes } from '../../lib/git/origin.ts'
 import {
   webhookPathFor,
   type WebhookProvider,
@@ -221,10 +222,10 @@ export function parseGithubManifestStartBody(
   const { apiUrl, organizationLogin, webhookOrigin, customGitUser } = optionals
   return {
     name,
-    baseUrl: (baseUrlRaw ?? GITHUB_DEFAULT_BASE_URL).replace(/\/+$/, ''),
+    baseUrl: stripTrailingSlashes(baseUrlRaw ?? GITHUB_DEFAULT_BASE_URL),
     apiUrl,
     organizationLogin,
-    webhookOrigin: webhookOrigin ? webhookOrigin.replace(/\/+$/, '') : null,
+    webhookOrigin: webhookOrigin ? stripTrailingSlashes(webhookOrigin) : null,
     pullRequestAccess: access === 'write' ? 'write' : 'read',
     customGitUser,
     customGitPort,

@@ -17,6 +17,7 @@
 
 import { isLoopbackOrPrivateHostname } from '../install-tls.ts'
 import { GITHUB_WEBHOOK_PATH, GITLAB_WEBHOOK_PATH } from '../../surfaces.ts'
+import { normalizeOrigin } from './origin.ts'
 
 export type WebhookReachability = {
   /** Full URL to paste into the App's webhook settings, or `null` when unknown. */
@@ -84,7 +85,7 @@ export function webhookPathNeedsRef(
   baseUrl?: string | null,
 ): boolean {
   if (!baseUrl) return false
-  return baseUrl.trim().replace(/\/+$/, '') !== HOSTED_PROVIDER_ORIGINS[provider]
+  return normalizeOrigin(baseUrl) !== HOSTED_PROVIDER_ORIGINS[provider]
 }
 
 /**

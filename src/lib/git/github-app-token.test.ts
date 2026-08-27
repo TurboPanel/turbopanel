@@ -11,6 +11,7 @@ import {
   GITHUB_USER_AGENT,
   GithubAppTokenError,
   exchangeInstallationTokenAt,
+  githubApiBaseFor,
   githubApiHeaders,
   mintGithubInstallationToken,
   privateKeyPemToPkcs8Der,
@@ -61,6 +62,25 @@ test('privateKeyPemToPkcs8Der rejects invalid PEM', () => {
     () => privateKeyPemToPkcs8Der('-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----'),
     GithubAppTokenError,
     'unsupported github app private key PEM label',
+  )
+})
+
+test('githubApiBaseFor strips trailing slashes and maps github.com', () => {
+  assertEquals(
+    githubApiBaseFor({ apiUrl: null, baseUrl: 'https://github.com' }),
+    GITHUB_API_BASE,
+  )
+  assertEquals(
+    githubApiBaseFor({ apiUrl: null, baseUrl: 'https://github.com///' }),
+    GITHUB_API_BASE,
+  )
+  assertEquals(
+    githubApiBaseFor({ apiUrl: null, baseUrl: 'https://github.acme.test/' }),
+    'https://github.acme.test/api/v3',
+  )
+  assertEquals(
+    githubApiBaseFor({ apiUrl: 'https://ghe.example/api/v3///', baseUrl: 'https://ghe.example' }),
+    'https://ghe.example/api/v3',
   )
 })
 

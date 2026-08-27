@@ -1,11 +1,17 @@
 import { assertEquals } from '@std/assert'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
+  GITHUB_INSTALL_STATE_PURPOSE,
+  GITHUB_INSTALL_STATE_TTL_MS,
+  GITHUB_MANIFEST_STATE_PURPOSE,
+  INSTALL_STATE_PURPOSES,
   INSTALL_STATE_TTL_MS,
   signGithubInstallState,
+  signGithubManifestState,
   signGitlabConnectState,
   signProviderInstallState,
   verifyGithubInstallState,
+  verifyGithubManifestState,
   verifyGitlabConnectState,
   verifyProviderInstallState,
 } from './provider-install-state.ts'
@@ -81,4 +87,110 @@ test('verifyProviderInstallState rejects expired, malformed, and unsigned state'
     await verifyProviderInstallState(secrets, 'github', parts.join('.'), NOW_MS),
     null,
   )
+})
+
+test('install-state purposes stay distinct and share the ten-minute TTL', () => {
+  assertEquals(INSTALL_STATE_PURPOSES.github, 'github-app-install-state')
+  assertEquals(INSTALL_STATE_PURPOSES.gitlab, 'gitlab-oauth-connect-state')
+  assertEquals(GITHUB_INSTALL_STATE_PURPOSE, INSTALL_STATE_PURPOSES.github)
+  assertEquals(GITHUB_MANIFEST_STATE_PURPOSE, 'github-app-manifest-state')
+  assertEquals(GITHUB_INSTALL_STATE_TTL_MS, INSTALL_STATE_TTL_MS)
+})
+
+test('sign/verify round-trips a GitHub manifest state including optional fields', async () => {
+  const secrets = parseTestSecretsConfig()
+  const claims = {
+    organizationId: ORG_ID,
+    webhookRef: 'ref-1',
+    baseUrl: 'https://github.com',
+    name: 'TurboPanel',
+    webhookOrigin: 'https://panel.example',
+    apiUrl: 'https://api.github.com',
+    isPublic: true,
+    pullRequestAccess: 'write' as const,
+    customGitUser: 'git',
+    customGitPort: 2222,
+  }
+  const state = await signGithubManifestState(secrets, claims, NOW_MS)
+  assertEquals(state.startsWith('tpinstall.v1.'), true)
+  assertEquals(await verifyGithubManifestState(secrets, state, NOW_MS), claims)
+})
+
+test('manifest state treats a null organization as the instance-wide admin flow', async () => {
+  const secrets = parseTestSecretsConfig()
+  const state = await signGithubManifestState(
+    secrets,
+    {
+      organizationId: null,
+      webhookRef: 'ref-admin',
+      baseUrl: 'https://github.com',
+      name: 'Instance',
+    },
+    NOW_MS,
+  )
+  assertEquals(await verifyGithubManifestState(secrets, state, NOW_MS), {
+    organizationId: null,
+    webhookRef: 'ref-admin',
+    baseUrl: 'https://github.com',
+    name: 'Instance',
+    webhookOrigin: null,
+    apiUrl: null,
+    isPublic: false,
+    pullRequestAccess: 'read',
+    customGitUser: null,
+    customGitPort: null,
+  })
+})
+
+test('verifyGithubManifestState rejects expired, malformed, and unsigned state', async () => {
+  const secrets = parseTestSecretsConfig()
+  const state = await signGithubManifestState(
+    secrets,
+    { organizationId: ORG_ID, webhookRef: 'r', baseUrl: 'https://github.com', name: 'App' },
+    NOW_MS,
+  )
+
+  assertEquals(
+    await verifyGithubManifestState(secrets, state, NOW_MS + INSTALL_STATE_TTL_MS + 1),
+    null,
+  )
+  assertEquals(await verifyGithubManifestState(secrets, 'not-an-envelope', NOW_MS), null)
+  assertEquals(
+    await verifyGithubManifestState(secrets, 'tpinstall.v1.not-base64.also-not', NOW_MS),
+    null,
+  )
+
+  const parts = state.split('.')
+  parts[3] = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  assertEquals(await verifyGithubManifestState(secrets, parts.join('.'), NOW_MS), null)
+})
+
+test('verifyGithubManifestState rejects empty required fields', async () => {
+  const secrets = parseTestSecretsConfig()
+  const emptyName = await signGithubManifestState(
+    secrets,
+    { organizationId: ORG_ID, webhookRef: 'r', baseUrl: 'https://github.com', name: '' },
+    NOW_MS,
+  )
+  assertEquals(await verifyGithubManifestState(secrets, emptyName, NOW_MS), null)
+
+  const emptyRef = await signGithubManifestState(
+    secrets,
+    { organizationId: ORG_ID, webhookRef: '', baseUrl: 'https://github.com', name: 'App' },
+    NOW_MS,
+  )
+  assertEquals(await verifyGithubManifestState(secrets, emptyRef, NOW_MS), null)
+})
+
+test('signGithubManifestState defaults nowMs so a freshly signed state verifies', async () => {
+  const secrets = parseTestSecretsConfig()
+  const state = await signGithubManifestState(secrets, {
+    organizationId: ORG_ID,
+    webhookRef: 'fresh',
+    baseUrl: 'https://github.com',
+    name: 'Fresh',
+  })
+  const claims = await verifyGithubManifestState(secrets, state)
+  assertEquals(claims?.name, 'Fresh')
+  assertEquals(claims?.pullRequestAccess, 'read')
 })

@@ -148,7 +148,7 @@ type SourceSessionContext = {
   organizationId: string
 }
 
-async function resolveSourceSession(
+export async function resolveSourceSession(
   c: Context<AppEnv>,
 ): Promise<SourceSessionContext | Response> {
   const db = getDb(c)
@@ -168,7 +168,7 @@ async function resolveSourceSession(
  * fail the `knownSourceIds` lint, so it is a 409 instead. Reference detection
  * itself lives in {@link COMPOSE_SOURCE_JSONPATH}.
  */
-async function composeReferencesSource(
+export async function composeReferencesSource(
   db: Db,
   organizationId: string,
   sourceId: string,
@@ -204,7 +204,7 @@ async function composeReferencesSource(
   return rows[0]?.referenced === true
 }
 
-async function assertScopeInOrganization(
+export async function assertScopeInOrganization(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
@@ -236,7 +236,7 @@ async function assertScopeInOrganization(
  * exclusivity there. A mismatch is the caller's own
  * row, so it answers `400` with a specific code rather than hiding as a `404`.
  */
-async function assertInstallationInOrganization(
+export async function assertInstallationInOrganization(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
@@ -281,7 +281,7 @@ async function assertInstallationInOrganization(
  * Anything else stores a row whose first symptom is a checkout failure on a
  * host; rejecting it here keeps that a write-time `400`.
  */
-async function assertCredentialInOrganization(
+export async function assertCredentialInOrganization(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
@@ -320,7 +320,7 @@ async function assertCredentialInOrganization(
  * a recognised provider error rethrows — a bug here should surface as a 500,
  * not be laundered into a plausible-looking 502.
  */
-function providerErrorResponse(c: Context<AppEnv>, error: unknown): Response {
+export function providerErrorResponse(c: Context<AppEnv>, error: unknown): Response {
   const known = error instanceof GithubAppTokenError ||
     error instanceof GitlabOauthTokenError ||
     error instanceof GitlabApiError
@@ -339,7 +339,7 @@ function providerErrorResponse(c: Context<AppEnv>, error: unknown): Response {
  * can only name its own apps or instance-wide ones — a 404 for anything else,
  * which is also what hides the existence of another organization's app.
  */
-async function resolveConnectApp(
+export async function resolveConnectApp(
   c: Context<AppEnv>,
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
@@ -368,7 +368,7 @@ async function resolveConnectApp(
 }
 
 /** Postgres `unique_violation`; see the attach route's race note. */
-function isUniqueViolation(error: unknown): boolean {
+export function isUniqueViolation(error: unknown): boolean {
   return (
     typeof error === 'object' &&
     error !== null &&
@@ -377,7 +377,7 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 /** The existing binding for one repository, keyed exactly like the unique index. */
-async function findAttachedSource(
+export async function findAttachedSource(
   db: Db,
   organizationId: string,
   fields: { installationId: string; repositoryExternalId: string },
@@ -405,7 +405,7 @@ async function findAttachedSource(
  * because GitHub's `setup_on_update` re-runs the redirect on every
  * repository-selection change, it happens again and again.
  */
-function redirectToGitAppUi(
+export function redirectToGitAppUi(
   c: Context<AppEnv>,
   organizationId: string | null,
   appId: string | null,
@@ -429,7 +429,7 @@ function redirectToGitAppUi(
  * second claim is a `409` rather than a silent duplicate. Reconnecting from the
  * organization that already owns it still works, because that is an update.
  */
-async function assertInstallationUnclaimed(
+export async function assertInstallationUnclaimed(
   c: Context<AppEnv>,
   db: Db,
   params: {
@@ -475,7 +475,7 @@ async function assertInstallationUnclaimed(
  * covers exactly the case that matters: `404` is what GitHub returns for an
  * installation this App cannot see.
  */
-async function fetchInstallationAccount(
+export async function fetchInstallationAccount(
   appJwt: string,
   externalInstallationId: string,
   apiBase: string = GITHUB_API_BASE,
@@ -527,7 +527,7 @@ async function fetchInstallationAccount(
  * app before any secret is consulted. A source with no installation (a GitLab
  * deploy-key source) has no app, and falls back to the bare path.
  */
-async function resolveSourceWebhookInfo(
+export async function resolveSourceWebhookInfo(
   db: Db,
   provider: string,
   installationId: string | null,
@@ -582,7 +582,7 @@ async function resolveSourceWebhookInfo(
  * uses, for the same reason: behind the local Caddy → Unix socket the request
  * origin is not an address GitLab could ever redirect a browser back to.
  */
-async function resolveGitlabRedirectUri(
+export async function resolveGitlabRedirectUri(
   db: Db,
   configured: string | null,
 ): Promise<string | null> {
@@ -606,6 +606,9 @@ export function registerSourceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   // its session gate when the patterns are reordered.
   router.use('/sources/attach', createSessionMiddleware(secrets))
   router.use('/sources/:id', createSessionMiddleware(secrets))
+  // `/sources/:id` does not match a child segment. Inspect would otherwise
+  // skip this gate and resolveSourceSession would 401 even with a valid cookie.
+  router.use('/sources/:id/inspect', createSessionMiddleware(secrets))
   router.use('/sources/installations', createSessionMiddleware(secrets))
   router.use('/sources/installations/:id/repositories', createSessionMiddleware(secrets))
   router.use('/sources/github/install', createSessionMiddleware(secrets))

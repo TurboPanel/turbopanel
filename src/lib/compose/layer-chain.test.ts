@@ -8,6 +8,12 @@ import {
 } from './layer-chain.ts'
 import { emptyComposeDocument } from './index.ts'
 
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
 const test = Deno.test.bind(Deno)
 
 const doc = (data: Record<string, unknown>) => ({
@@ -96,4 +102,58 @@ test('a malformed compose document fails the whole chain', () => {
     environmentFilename: 'docker-compose.staging.yml',
   })
   assertEquals(isComposeChainError(chain), true)
+})
+
+test('extractComposeOverlays skips non-objects and entries missing id or filename', () => {
+  assertEquals(
+    extractComposeOverlays({
+      composeOverlays: [
+        null,
+        'skip',
+        { filename: 'docker-compose.a.yml', document: doc({}) },
+        { id: 'b', document: doc({}) },
+        { id: 'c', filename: 'docker-compose.c.yml', document: doc({}) },
+      ],
+    }).map((overlay) => overlay.id),
+    ['c'],
+  )
+})
+
+test('extractComposeOverlays falls back name to id and keeps a complete origin', () => {
+  const overlays = extractComposeOverlays({
+    composeOverlays: [{
+      id: 'overlay-1',
+      filename: 'docker-compose.extra.yml',
+      document: doc({}),
+      origin: {
+        sourceId: 'src-1',
+        ref: 'trunk',
+        path: 'compose/extra.yml',
+        commitSha: 'abc1234',
+      },
+    }],
+  })
+  assertEquals(overlays[0]?.name, 'overlay-1')
+  assertEquals(overlays[0]?.origin, {
+    sourceId: 'src-1',
+    ref: 'trunk',
+    path: 'compose/extra.yml',
+    commitSha: 'abc1234',
+  })
+})
+
+test('extractComposeOverlays drops an incomplete origin and non-array overlays', () => {
+  const overlays = extractComposeOverlays({
+    composeOverlays: [{
+      id: 'overlay-2',
+      name: 'named',
+      filename: 'docker-compose.extra.yml',
+      document: doc({}),
+      origin: { sourceId: 'src-1', ref: 'trunk' },
+    }],
+  })
+  assertEquals(overlays[0]?.name, 'named')
+  assertEquals(overlays[0]?.origin, undefined)
+  assertEquals(extractComposeOverlays({ composeOverlays: { id: 'x' } }), [])
+  assertEquals(extractComposeOverlays([]), [])
 })

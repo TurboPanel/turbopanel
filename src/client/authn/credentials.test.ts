@@ -231,6 +231,38 @@ test('verifyCredentials accepts root on Deno before install in dev group-only mo
   }
 })
 
+test('verifyCredentials rejects root on Deno when PAM authentication fails', async () => {
+  const saved = new Map<string, string | undefined>()
+  for (const key of [
+    'TURBOPANEL_DEV_HOST_AUTH',
+    'TURBOPANEL_DEV_SURFACE',
+    'TURBOPANEL_MODE',
+    'TURBOPANEL_UI_MODE',
+  ] as const) {
+    saved.set(key, Deno.env.get(key))
+  }
+  try {
+    Deno.env.delete('TURBOPANEL_DEV_HOST_AUTH')
+    Deno.env.delete('TURBOPANEL_DEV_SURFACE')
+    Deno.env.delete('TURBOPANEL_MODE')
+    Deno.env.delete('TURBOPANEL_UI_MODE')
+
+    const db = createMockAuthDb(createEmptyMockAuthState())
+    const result = await verifyCredentials(
+      PAM_ROOT_USERNAME,
+      'not-a-real-password',
+      'deno',
+      db,
+    )
+    assertEquals(result.ok, false)
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) Deno.env.delete(key)
+      else Deno.env.set(key, value)
+    }
+  }
+})
+
 test('verifyCredentials rejects root on Deno after mock install', async () => {
   const state = createEmptyMockAuthState()
   seedMockInstalledInstance(state)

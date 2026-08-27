@@ -77,6 +77,39 @@ test('create rejects a missing or unknown provider', () => {
     ),
     null,
   )
+  assertEquals(parseGitAppCreateBody(null, null), null)
+  assertEquals(
+    parseGitAppCreateBody({ provider: 'github', name: '', externalAppId: '1' }, null),
+    null,
+  )
+  assertEquals(
+    parseGitAppCreateBody({ provider: 'github', name: 'x', externalAppId: '' }, null),
+    null,
+  )
+  assertEquals(
+    parseGitAppCreateBody(
+      { provider: 'github', name: 'x', externalAppId: '1', baseUrl: '   ' },
+      null,
+    ),
+    null,
+  )
+})
+
+test('create applies optional secrets and a required baseUrl', () => {
+  const parsed = parseGitAppCreateBody(
+    {
+      provider: 'gitlab',
+      name: 'Acme',
+      externalAppId: '9',
+      baseUrl: 'https://gitlab.example.com',
+      clientSecret: 'from-gitlab',
+      webhookSecret: null,
+    },
+    null,
+  )
+  assertEquals(parsed?.baseUrl, 'https://gitlab.example.com')
+  assertEquals(parsed?.clientSecret, 'from-gitlab')
+  assertEquals(parsed?.webhookSecret, null)
 })
 
 test('patch distinguishes absent, null, and a value', () => {
@@ -181,7 +214,7 @@ test('the manifest wizard normalizes what it accepts and rejects the rest', () =
   assertEquals(
     parseGithubManifestStartBody({
       name: '  Acme Panel  ',
-      baseUrl: 'https://github.acme.test/',
+      baseUrl: 'https://github.acme.test///',
       webhookOrigin: 'https://hooks.example.com//',
       customGitPort: '2222',
       pullRequestAccess: 'write',
@@ -197,6 +230,23 @@ test('the manifest wizard normalizes what it accepts and rejects the rest', () =
       customGitPort: 2222,
     },
   )
+})
+
+test('the manifest wizard defaults github.com and read access when omitted', () => {
+  assertEquals(
+    parseGithubManifestStartBody({ name: 'Acme Panel' }),
+    {
+      name: 'Acme Panel',
+      baseUrl: 'https://github.com',
+      apiUrl: null,
+      organizationLogin: null,
+      webhookOrigin: null,
+      pullRequestAccess: 'read',
+      customGitUser: null,
+      customGitPort: null,
+    },
+  )
+  assertEquals(parseGithubManifestStartBody({ name: 'Acme Panel', baseUrl: 7 }), null)
 })
 
 test('a manifest body with a mistyped field is refused whole', () => {

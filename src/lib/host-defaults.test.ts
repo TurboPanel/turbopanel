@@ -68,6 +68,11 @@ test("parseNtpDefaultsInput rejects empty objects and invalid hosts", () => {
   assertEquals(parseNtpDefaultsInput({}).ok, false);
   assertEquals(parseNtpDefaultsInput({ servers: [] }).ok, false);
   assertEquals(parseNtpDefaultsInput({ servers: ["not a host"] }).ok, false);
+  assertEquals(parseNtpDefaultsInput({ fallbackServers: [] }).ok, false);
+  assertEquals(
+    parseNtpDefaultsInput({ fallbackServers: ["not a host"] }).ok,
+    false,
+  );
   assertEquals(parseNtpDefaultsInput({ enabled: "yes" }).ok, false);
   assertEquals(parseNtpDefaultsInput([]).ok, false);
 });
@@ -80,6 +85,14 @@ test("parseNtpDefaults is lenient on jsonb reads", () => {
   assertEquals(
     parseNtpDefaults({ servers: ["time.google.com"] }),
     { servers: ["time.google.com"] },
+  );
+  assertEquals(
+    parseNtpDefaults({ fallbackServers: ["pool.ntp.org"] }),
+    { fallbackServers: ["pool.ntp.org"] },
+  );
+  assertEquals(
+    parseNtpDefaults({ fallbackServers: ["not a host"] }),
+    undefined,
   );
 });
 

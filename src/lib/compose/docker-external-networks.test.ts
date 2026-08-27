@@ -173,6 +173,29 @@ test('collectServiceComposeNetworkKeys returns empty for null networks', () => {
   assertEquals(collectServiceComposeNetworkKeys({ networks: null }), [])
 })
 
+test('collectServiceComposeNetworkKeys returns empty for a non-mapping service or non-collection networks', () => {
+  assertEquals(collectServiceComposeNetworkKeys(null), [])
+  assertEquals(collectServiceComposeNetworkKeys('web'), [])
+  assertEquals(collectServiceComposeNetworkKeys({ networks: 12 }), [])
+  assertEquals(collectServiceComposeNetworkKeys({ networks: '   ' }), [])
+})
+
+test('readComposeExternalDockerNetworkName rejects a non-string explicit name', () => {
+  assertEquals(
+    readComposeExternalDockerNetworkName('backend', {
+      external: true,
+      name: 12,
+    }),
+    'backend',
+  )
+  assertEquals(
+    readComposeExternalDockerNetworkName('backend', {
+      external: { name: 12 },
+    }),
+    'backend',
+  )
+})
+
 test('pruneUnreferencedComposeNetworks returns undefined for empty networks input', () => {
   assertEquals(
     pruneUnreferencedComposeNetworks({ api: { image: 'node:22' } }, undefined),

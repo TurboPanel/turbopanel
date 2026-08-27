@@ -132,6 +132,26 @@ test('create seals every secret and never stores plaintext', async () => {
   assertEquals(values.webhookTokenHash, null)
 })
 
+test('create and update strip trailing slashes from baseUrl', async () => {
+  const derived = await secrets()
+  const created = writeCapturingDb()
+  await createGitApp(created.db, derived, {
+    organizationId: null,
+    provider: 'github',
+    name: 'TurboPanel',
+    externalAppId: '1234',
+    baseUrl: 'https://github.acme.test///',
+  })
+  assertEquals(created.captured.values?.baseUrl, 'https://github.acme.test')
+
+  const existing = storedRow({})
+  const updated = writeCapturingDb(existing)
+  await updateGitApp(updated.db, derived, 'app-1', {
+    baseUrl: 'https://github.acme.test//',
+  })
+  assertEquals(updated.captured.set?.baseUrl, 'https://github.acme.test')
+})
+
 test('a gitlab webhook token is indexed by digest and length-floored', async () => {
   const derived = await secrets()
   const token = 'a-sufficiently-long-gitlab-token'

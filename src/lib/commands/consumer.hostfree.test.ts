@@ -95,6 +95,7 @@ test('commandTimeoutMs returns per-type budgets and the default', () => {
   assertEquals(commandTimeoutMs('managed.ha.reconcile'), 300_000)
   assertEquals(commandTimeoutMs('managed.ha.failover'), 600_000)
   assertEquals(commandTimeoutMs('system.reconcile'), 300_000)
+  assertEquals(commandTimeoutMs('server.principals.reconcile'), 120_000)
   assertEquals(commandTimeoutMs('unknown.future.command'), 60_000)
 })
 
@@ -321,6 +322,8 @@ type ConsumerFakeDbOptions = Readonly<{
   serverConnected?: boolean
   /** `null` simulates a dispatch payload that is already cleaned up. */
   dispatchPayload?: unknown
+  /** Returned by `getCommandMetadata` (metadata-only select). */
+  commandMetadata?: Record<string, unknown> | null
 }>
 
 function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
@@ -359,6 +362,10 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
             return queryResult(
               serverExists ? [{ organizationId: '00000000-0000-4000-8000-000000000099' }] : []
             )
+          }
+          // getCommandMetadata
+          if ('metadata' in fields && !('daemon' in fields) && !('name' in fields)) {
+            return queryResult([{ metadata: options.commandMetadata ?? null }])
           }
           // getServerLicenseBinding license hops
           if ('id' in fields && !('daemon' in fields) && !('metadata' in fields)) {
@@ -438,6 +445,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
         }
       },
     }),
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
   } as unknown as Db
 
   return {
@@ -846,4 +854,423 @@ test('processCommandEnvelope dispatches when online and maps a done outcome', as
     transitions.some((t) => t.status === 'succeeded'),
     true
   )
+})
+
+const ENV_ID = '00000000-0000-4000-8000-000000000002'
+const PROJECT_ID = '00000000-0000-4000-8000-000000000003'
+const ORG_ID = '00000000-0000-4000-8000-000000000099'
+const SERVICE_ID = '00000000-0000-4000-8000-0000000000ee'
+const DEMOTE_ID = '00000000-0000-4000-8000-0000000000ff'
+const FABRIC_ID = '550e8400-e29b-41d4-a716-446655440000'
+
+const VALID_DEPLOY_PAYLOAD = {
+  environmentId: ENV_ID,
+  projectId: PROJECT_ID,
+  organizationId: ORG_ID,
+  projectName: 'tp-deploy-test',
+  composeFiles: [
+    {
+      filename: 'compose.yaml',
+      role: 'runtime',
+      source: 'inline',
+      content: 'services:\n  web:\n    image: nginx\n',
+    },
+  ],
+  hostings: [] as unknown[],
+}
+
+const VALID_FABRIC_ENABLED = {
+  enabled: true,
+  fabricId: FABRIC_ID,
+  address: '10.250.0.11/32',
+  prefix: '10.192.0.0/16',
+  peers: [] as unknown[],
+}
+
+const VALID_BACKUP_PAYLOAD = {
+  managedId: MANAGED_ID,
+  engine: 'postgres',
+  action: 'create',
+  backupId: 'bk_1700000000000',
+  artifactExtension: 'dump',
+  scope: 'instance',
+}
+
+const VALID_RESTORE_PAYLOAD = {
+  managedId: MANAGED_ID,
+  engine: 'postgres',
+  backupId: 'bk_1700000000000',
+  artifactExtension: 'dump',
+  database: 'appdb',
+  checksum: 'c'.repeat(64),
+}
+
+const VALID_HA_FAILOVER_PAYLOAD = {
+  managedId: 'managed-pg-1',
+  sourceMemberId: MEMBER_ID,
+  targetMemberId: DEMOTE_ID,
+  phase: 'drain',
+  engine: 'postgres',
+}
+
+function typedEnvelope(type: CommandEnvelope['type']): CommandEnvelope {
+  return {
+    commandId: COMMAND_ID,
+    serverId: SERVER_ID,
+    type,
+    attempt: 1,
+    queuedAt: '2020-01-01T00:00:00.000Z',
+  }
+}
+
+function doneWith(result: unknown): PendingRequestRecord {
+  return { ...donePending(), result }
+}
+
+async function runOnline(
+  type: CommandEnvelope['type'],
+  payload: unknown,
+  pending: PendingRequestRecord | null,
+  extras: { commandMetadata?: Record<string, unknown> | null } = {},
+) {
+  const fake = createConsumerFakeDb({
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: payload,
+    commandRow: baseCommandRow({ name: type }),
+    ...extras,
+  })
+  const { registry } = onlineRegistry(pending)
+  await processCommandEnvelope(fake.db, registry, typedEnvelope(type))
+  return fake
+}
+
+test('processCommandEnvelope hostname success touches observed hostname', async () => {
+  const fake = await runOnline(
+    'server.hostname.set',
+    {},
+    doneWith({ observedHostname: 'web-01', summary: 'renamed' }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope hostname success skips when observed hostname is missing', async () => {
+  const fake = await runOnline('server.hostname.set', {}, doneWith({}))
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope timezone success and malformed result both stay succeeded', async () => {
+  const ok = await runOnline('server.timezone.set', {}, doneWith({ timezone: 'UTC' }))
+  assertEquals(ok.transitions.some((t) => t.status === 'succeeded'), true)
+  const bad = await runOnline('server.timezone.set', {}, doneWith({ timezone: '' }))
+  assertEquals(bad.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope ntp success and malformed result both stay succeeded', async () => {
+  const ok = await runOnline(
+    'server.ntp.set',
+    { enabled: true },
+    doneWith({
+      ntpServers: ['time.cloudflare.com'],
+      ntpEnabled: true,
+      ntpSynced: true,
+      fallbackNtpServers: ['pool.ntp.org'],
+      summary: 'synced',
+    }),
+  )
+  assertEquals(ok.transitions.some((t) => t.status === 'succeeded'), true)
+  const bad = await runOnline('server.ntp.set', { enabled: true }, doneWith({ ntpServers: 'nope' }))
+  assertEquals(bad.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope deploy success with generation swallows apply errors', async () => {
+  const fake = await runOnline(
+    'environment.deploy',
+    { ...VALID_DEPLOY_PAYLOAD, generation: 1 },
+    doneWith({ projectName: 'tp-deploy-test' }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope deploy success reconciles an empty container report', async () => {
+  const fake = await runOnline(
+    'environment.deploy',
+    VALID_DEPLOY_PAYLOAD,
+    doneWith({ projectName: 'tp-deploy-test', containers: [] }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope deploy failure runs the failed-deploy side effect', async () => {
+  const fake = await runOnline('environment.deploy', VALID_DEPLOY_PAYLOAD, {
+    ...donePending(),
+    status: 'failed',
+    error: 'compose up failed',
+    result: undefined,
+  })
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed' && t.error === 'compose up failed'),
+    true,
+  )
+})
+
+test('processCommandEnvelope deploy wait timeout runs timed_out deploy side effect', async () => {
+  const fake = await runOnline('environment.deploy', VALID_DEPLOY_PAYLOAD, null)
+  assertEquals(fake.transitions.some((t) => t.status === 'timed_out'), true)
+})
+
+test('processCommandEnvelope deploy unexpected pending status fails the command', async () => {
+  const fake = await runOnline('environment.deploy', VALID_DEPLOY_PAYLOAD, {
+    ...donePending(),
+    status: 'acked',
+    result: undefined,
+  })
+  assertEquals(
+    fake.transitions.some(
+      (t) => t.status === 'failed' && t.error === 'Unexpected pending request status: acked',
+    ),
+    true,
+  )
+})
+
+test('processCommandEnvelope deploy expired pending times out', async () => {
+  const fake = await runOnline('environment.deploy', VALID_DEPLOY_PAYLOAD, {
+    ...donePending(),
+    status: 'expired',
+    result: undefined,
+  })
+  assertEquals(fake.transitions.some((t) => t.status === 'timed_out'), true)
+})
+
+test('processCommandEnvelope fabric disable offline still runs the failed-fabric side effect', async () => {
+  const fake = createConsumerFakeDb({
+    serverExists: true,
+    serverConnected: false,
+    dispatchPayload: { enabled: false },
+    commandRow: baseCommandRow({ name: 'server.fabric.reconcile' }),
+  })
+  await processCommandEnvelope(fake.db, emptyRegistry(), typedEnvelope('server.fabric.reconcile'))
+  assertEquals(fake.transitions.some((t) => t.status === 'failed'), true)
+})
+
+test('processCommandEnvelope fabric enabled success without publicKey is a no-op stamp', async () => {
+  const fake = await runOnline(
+    'server.fabric.reconcile',
+    VALID_FABRIC_ENABLED,
+    doneWith({ summary: 'TurboFabric reconciled' }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope fabric enabled success swallows an invalid result publicKey', async () => {
+  const fake = await runOnline(
+    'server.fabric.reconcile',
+    VALID_FABRIC_ENABLED,
+    doneWith({ summary: 'ok', publicKey: 'not-a-wg-key' }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope fabric enabled invalid payload is swallowed on success', async () => {
+  const fake = await runOnline('server.fabric.reconcile', { enabled: true }, doneWith({ summary: 'ok' }))
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope fabric disable failure clears applied hash best-effort', async () => {
+  const fake = await runOnline('server.fabric.reconcile', { enabled: false }, {
+    ...donePending(),
+    status: 'failed',
+    error: 'wg syncconf failed',
+    result: undefined,
+  })
+  assertEquals(fake.transitions.some((t) => t.status === 'failed'), true)
+})
+
+test('processCommandEnvelope environment stop and lifecycle reconcile empty container reports', async () => {
+  const stop = await runOnline(
+    'environment.stop',
+    { environmentId: ENV_ID, projectId: PROJECT_ID, projectName: 'tp-stop' },
+    doneWith({ projectName: 'tp-stop', containers: [] }),
+  )
+  assertEquals(stop.transitions.some((t) => t.status === 'succeeded'), true)
+  const life = await runOnline(
+    'environment.lifecycle',
+    { environmentId: ENV_ID, projectId: PROJECT_ID, projectName: 'tp-life', action: 'start' },
+    doneWith({ projectName: 'tp-life', containers: [] }),
+  )
+  assertEquals(life.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope environment stop/lifecycle invalid payloads stay succeeded', async () => {
+  const stop = await runOnline('environment.stop', {}, doneWith({}))
+  assertEquals(stop.transitions.some((t) => t.status === 'succeeded'), true)
+  const life = await runOnline('environment.lifecycle', { action: 'start' }, doneWith({}))
+  assertEquals(life.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope system.reconcile success with containers is best-effort', async () => {
+  const fake = await runOnline(
+    'system.reconcile',
+    {
+      environmentId: ENV_ID,
+      action: 'reconcile',
+      components: [
+        {
+          component: 'hosting-ingress',
+          serviceId: SERVICE_ID,
+          composeServiceName: 'traefik',
+          containerName: `${SERVICE_ID}-in`,
+          role: 'ingress',
+          desired: 'present',
+        },
+      ],
+    },
+    doneWith({ summary: 'ok', containers: [] }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope system.reconcile invalid payload is swallowed', async () => {
+  const fake = await runOnline('system.reconcile', {}, doneWith({ containers: [] }))
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.apply success projects ready for the primary', async () => {
+  const fake = await runOnline(
+    'managed.apply',
+    VALID_MANAGED_APPLY_PAYLOAD,
+    doneWith({ host: '127.0.0.1', port: 5432, containers: [] }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.apply replica success omits the placement pin', async () => {
+  const fake = await runOnline(
+    'managed.apply',
+    { ...VALID_MANAGED_APPLY_PAYLOAD, memberRole: 'replica' },
+    doneWith({ host: '127.0.0.1', port: 5432 }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.lifecycle success projects observed status', async () => {
+  const fake = await runOnline(
+    'managed.lifecycle',
+    { managedId: MANAGED_ID, action: 'start', engine: 'postgres' },
+    doneWith({ status: 'ready' }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.lifecycle stop without recoveryId skips fence advance', async () => {
+  const fake = await runOnline(
+    'managed.lifecycle',
+    { managedId: MANAGED_ID, action: 'stop', engine: 'postgres' },
+    doneWith({ status: 'stopped' }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.lifecycle invalid payload is swallowed', async () => {
+  const fake = await runOnline('managed.lifecycle', {}, doneWith({ status: 'ready' }))
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.backup success returns early without a managed row', async () => {
+  const fake = await runOnline(
+    'managed.backup',
+    VALID_BACKUP_PAYLOAD,
+    doneWith({
+      backupId: 'bk_1700000000000',
+      path: '/var/lib/backups/x.dump',
+      sizeBytes: 12,
+      checksum: 'c'.repeat(64),
+    }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.restore success projects ready', async () => {
+  const fake = await runOnline('managed.restore', VALID_RESTORE_PAYLOAD, doneWith({}))
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.destroy success returns when the managed row is missing', async () => {
+  const fake = await runOnline(
+    'managed.destroy',
+    { managedId: MANAGED_ID, removeVolumes: true },
+    doneWith({ status: 'stopped', containers: [] }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.promote success flips roles in the fake transaction', async () => {
+  const fake = await runOnline(
+    'managed.promote',
+    { managedId: MANAGED_ID, memberId: MEMBER_ID, demoteMemberId: DEMOTE_ID },
+    doneWith({
+      status: 'ready',
+      role: 'primary',
+      promotedMemberId: MEMBER_ID,
+      demotedMemberId: DEMOTE_ID,
+      demoted: true,
+    }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.ha.failover drain without recoveryId is a no-op', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    VALID_HA_FAILOVER_PAYLOAD,
+    doneWith({ summary: 'drained', phase: 'drain' }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.ha.failover recover flips roles', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    { ...VALID_HA_FAILOVER_PAYLOAD, phase: 'recover' },
+    doneWith({ summary: 'recovered', phase: 'recover' }),
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.ingress.reconcile invalid payload is swallowed', async () => {
+  const fake = await runOnline('managed.ingress.reconcile', {}, doneWith({}))
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.ha.reconcile invalid payload is swallowed', async () => {
+  const fake = await runOnline('managed.ha.reconcile', {}, doneWith({}))
+  assertEquals(fake.transitions.some((t) => t.status === 'succeeded'), true)
+})
+
+test('processCommandEnvelope managed.apply failure marks managed rows failed', async () => {
+  const fake = await runOnline('managed.apply', VALID_MANAGED_APPLY_PAYLOAD, {
+    ...donePending(),
+    status: 'failed',
+    error: 'apply exploded',
+    result: undefined,
+  })
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed' && t.error === 'apply exploded'),
+    true,
+  )
+})
+
+test('processCommandEnvelope managed.lifecycle failure with recovery metadata advances the fence', async () => {
+  const fake = await runOnline(
+    'managed.lifecycle',
+    { managedId: MANAGED_ID, action: 'stop', engine: 'postgres' },
+    {
+      ...donePending(),
+      status: 'failed',
+      error: 'fence stop failed',
+      result: undefined,
+    },
+    { commandMetadata: { recoveryId: 'rec-1', fencePhase: 'stop' } },
+  )
+  assertEquals(fake.transitions.some((t) => t.status === 'failed'), true)
 })

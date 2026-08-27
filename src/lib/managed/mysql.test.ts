@@ -407,8 +407,17 @@ test("parseSettings rejects non-objects and system schemas; null uses defaults",
     mysqlEngineSpec.parseSettings({ initialDatabase: 12 }),
     null,
   );
-  const fromNull = mysqlEngineSpec.parseSettings(null) as MysqlManagedSettings;
-  assertEquals(fromNull.initialDatabase, "appdb");
+  const fromNull = mysqlEngineSpec.parseSettings(null);
+  if (!fromNull) throw new TypeError("expected defaults for null settings");
+  assertEquals((fromNull as MysqlManagedSettings).initialDatabase, "appdb");
+  const fromUndefined = mysqlEngineSpec.parseSettings(undefined);
+  if (!fromUndefined) {
+    throw new TypeError("expected defaults for undefined settings");
+  }
+  assertEquals(
+    (fromUndefined as MysqlManagedSettings).initialDatabase,
+    "appdb",
+  );
 });
 
 test("buildRuntimeSpec falls back when settings omit image and initialDatabase", () => {

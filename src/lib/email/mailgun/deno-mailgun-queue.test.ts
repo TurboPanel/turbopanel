@@ -84,3 +84,59 @@ test('createDenoMailgunQueue enqueue is a no-op when credentials are blank', asy
   })
   await queue.enqueue(sampleJob)
 })
+
+test('resolveDenoMailgunQueue returns null when the domain is blank', async () => {
+  assertEquals(
+    await resolveDenoMailgunQueue(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+      TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-test-only',
+      TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: '   ',
+    }),
+    null,
+  )
+})
+
+test('createDenoMailgunQueue enqueue posts when Mailgun is configured', async () => {
+  const originalFetch = globalThis.fetch
+  let fetchCount = 0
+  globalThis.fetch = (() => {
+    fetchCount += 1
+    return Promise.resolve(new Response('', { status: 200 }))
+  }) as typeof fetch
+
+  try {
+    const queue = createDenoMailgunQueue({
+      db: undefined,
+      env: {
+        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-test-only',
+        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
+        TURBOPANEL_SYSTEM_EMAIL__FROM: 'noreply@example.com',
+      },
+    })
+    await queue.enqueue(sampleJob)
+    assertEquals(fetchCount, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('createDenoMailgunQueue enqueue swallows a failed Mailgun send', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response('bad key', { status: 401 }))) as typeof fetch
+
+  try {
+    const queue = createDenoMailgunQueue({
+      db: undefined,
+      env: {
+        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-test-only',
+        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
+      },
+    })
+    await queue.enqueue(sampleJob)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

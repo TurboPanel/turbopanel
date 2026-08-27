@@ -148,7 +148,10 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/environments/deploy-prepare.test.ts \
   src/client/environments/deploy-layers.test.ts \
   src/client/environments/deploy-routes.test.ts \
+  src/client/environments/deploy-routes.hostfree.test.ts \
   src/client/environments/deploy-sources.hostfree.test.ts \
+  src/client/environments/release-routes.hostfree.test.ts \
+  src/client/environments/deployment-history-routes.hostfree.test.ts \
   src/client/environments/php-availability.test.ts \
   src/client/environments/register-compose-volumes.test.ts \
   src/client/environments/register-compose-volumes.hostfree.test.ts \
@@ -171,6 +174,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/access-address.hostfree.test.ts \
   src/client/managed/ha-authority.hostfree.test.ts \
   src/client/managed/ha-desired.hostfree.test.ts \
+  src/client/managed/ha-event.hostfree.test.ts \
   src/client/managed/ha-recovery.hostfree.test.ts \
   src/client/managed/ha-recovery-pure.test.ts \
   src/client/managed/ingress-desired.test.ts \
@@ -203,6 +207,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/principals/store.test.ts \
   src/client/principals/ssh-keys.hostfree.test.ts \
   src/client/principals/store.hostfree.test.ts \
+  src/client/principals/reconcile.hostfree.test.ts \
   src/client/principals/routes-helpers.hostfree.test.ts \
   src/client/projects/catalog/catalog.test.ts \
   src/client/projects/catalog/scaffold.test.ts \
@@ -218,17 +223,22 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/servers/metrics-routes.test.ts \
   src/client/servers/metrics-routes-helpers.hostfree.test.ts \
   src/client/servers/routes.test.ts \
+  src/client/servers/routes.hostfree.test.ts \
   src/client/servers/routes-helpers.hostfree.test.ts \
   src/client/servers/update-status.test.ts \
   src/client/shared.test.ts \
   src/client/shared-authz-guards.test.ts \
   src/client/sources/inspect.hostfree.test.ts \
+  src/client/sources/read-repository.hostfree.test.ts \
   src/client/sources/provider-install-state.hostfree.test.ts \
   src/client/git-apps/routes-helpers.hostfree.test.ts \
+  src/client/git-apps/handlers.hostfree.test.ts \
   src/client/sources/routes-helpers.hostfree.test.ts \
+  src/client/sources/routes.hostfree.test.ts \
   src/client/sources/webhook-trigger.hostfree.test.ts \
   src/webhook/gate.hostfree.test.ts \
   src/webhook/git/github.hostfree.test.ts \
+  src/webhook/git/gitlab.hostfree.test.ts \
   src/client/storage/serialize.test.ts \
   src/client/storage/routes-helpers.test.ts \
   src/client/storage/routes.test.ts \
@@ -405,8 +415,13 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/email/smtp/amqp-topology.test.ts \
   src/lib/email/smtp/deno-amqp-queue.test.ts \
   src/lib/email/smtp/smtp-resolve.test.ts \
+  src/lib/email/smtp/workers-shims.test.ts \
   src/lib/email/templates.test.ts \
   src/lib/email/validate-address.test.ts \
+  mailer/db.test.ts \
+  mailer/mailgun-sender.test.ts \
+  mailer/mailpit-sender.test.ts \
+  mailer/smtp-sender.test.ts \
   src/lib/geo/server-geo.test.ts \
   src/lib/geo/self-hosted-geo-provider.test.ts \
   src/lib/git/ \
@@ -474,6 +489,9 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/environments/routes.hostfree.test.ts \
   src/client/environments/deploy-routes-helpers.hostfree.test.ts \
   src/client/environments/deploy-routes-authz.hostfree.test.ts \
+  src/client/environments/deploy-routes.hostfree.test.ts \
+  src/client/environments/release-routes.hostfree.test.ts \
+  src/client/environments/deployment-history-routes.hostfree.test.ts \
   src/client/hostings/routes.test.ts \
   src/client/hostings/routes-helpers.hostfree.test.ts \
   src/client/hostings/routes.hostfree.test.ts \
@@ -496,6 +514,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/services/routes-helpers.hostfree.test.ts \
   src/client/services/routes.hostfree.test.ts \
   src/client/tls/routes.test.ts \
+  src/client/tls/routes.hostfree.test.ts \
   src/client/tls/routes-helpers.test.ts \
   src/client/tls/routes-helpers.hostfree.test.ts \
   src/client/tls/organization-ca.hostfree.test.ts \

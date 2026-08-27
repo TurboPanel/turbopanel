@@ -278,3 +278,91 @@ test('a malformed body is rejected after the claim, not before verification', as
   assertEquals(trace.includes('verify:shh'), true)
   assertEquals(trace.includes('dispatch'), false)
 })
+
+test('a JSON value that is not an object is rejected after the claim', async () => {
+  // parsePayload only accepts a plain object — an array is well-formed JSON
+  // but not a delivery this gate can dispatch.
+  const trace: Trace = []
+  const res = await (await buildApp(trace)).request(post('[]'))
+  assertEquals(res.status, 400)
+  assertEquals(trace.includes('verify:shh'), true)
+  assertEquals(trace.includes('dispatch'), false)
+})
+
+test('an oversized body without content-length is refused after buffering', async () => {
+  const trace: Trace = []
+  const app = await buildApp(trace)
+  const res = await app.request(
+    new Request(`http://instance${PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: `{"pad":"${'x'.repeat(80)}"}`,
+    }),
+  )
+  assertEquals(res.status, 413)
+  assertEquals(trace.includes('dispatch'), false)
+})
+
+test('a missing database answers 503 before resolution', async () => {
+  const trace: Trace = []
+  const app = new Hono<AppEnv>()
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    parseTestSecretsConfig('deno'),
+    'data-encryption',
+  )
+  app.use('*', (c, next) => {
+    c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    return next()
+  })
+  registerWebhookGate(app, [PATH], {
+    kind: 'github',
+    logScope: 'stub-webhook',
+    maxBodyBytes: 64,
+    rateLimitKey: () => 'stub',
+    resolve: () => {
+      trace.push('resolve')
+      return Promise.resolve({ ok: true as const, candidates: [{ secret: 'shh' }] })
+    },
+    isUnconfigured: () => false,
+    unconfiguredError: 'stub_not_configured',
+    verify: () => Promise.resolve(true),
+    deliveryId: () => Promise.resolve('d'),
+    eventName: () => 'push',
+    dispatch: () => Promise.resolve(accepted({})),
+  } satisfies WebhookGate<StubHolder>, { runtime: 'deno' })
+
+  const res = await app.request(post())
+  assertEquals(res.status, 503)
+  assertEquals(await res.json(), { error: 'Database unavailable' })
+  assertEquals(trace, [])
+})
+
+test('missing encryption secrets answer 503 before resolution', async () => {
+  const trace: Trace = []
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', stubDb(trace, true))
+    return next()
+  })
+  registerWebhookGate(app, [PATH], {
+    kind: 'github',
+    logScope: 'stub-webhook',
+    maxBodyBytes: 64,
+    rateLimitKey: () => 'stub',
+    resolve: () => {
+      trace.push('resolve')
+      return Promise.resolve({ ok: true as const, candidates: [{ secret: 'shh' }] })
+    },
+    isUnconfigured: () => false,
+    unconfiguredError: 'stub_not_configured',
+    verify: () => Promise.resolve(true),
+    deliveryId: () => Promise.resolve('d'),
+    eventName: () => 'push',
+    dispatch: () => Promise.resolve(accepted({})),
+  } satisfies WebhookGate<StubHolder>, { runtime: 'deno' })
+
+  const res = await app.request(post())
+  assertEquals(res.status, 503)
+  assertEquals(await res.json(), { error: 'Encryption unavailable' })
+  assertEquals(trace, [])
+})

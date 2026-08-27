@@ -163,6 +163,22 @@ test("parseCaRotationResults and parseResumeAfterManagedId ignore malformed entr
   assertEquals(parseNeedsRedeploy(null), []);
 });
 
+test("enumerateOrganizationRotationTargets drops blank member ids", async () => {
+  const db = rotationTargetsDb({
+    memberNodes: [
+      { serverId: "", managedId: MANAGED_A, serverOrganizationId: ORG_A },
+      { serverId: SERVER_A, managedId: "", serverOrganizationId: ORG_A },
+    ],
+    ownedManaged: [],
+    ownedClusterMembers: [],
+    consumers: [],
+  });
+  const targets = await enumerateOrganizationRotationTargets(db, ORG_A);
+  assertEquals(targets.members, []);
+  assertEquals(targets.managedIds, []);
+  assertEquals(targets.ingressServerIds, []);
+});
+
 test("enumerateOrganizationRotationTargets never returns another org's node or managed ids", async () => {
   const db = rotationTargetsDb({
     memberNodes: [

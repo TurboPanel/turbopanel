@@ -49,7 +49,7 @@ const RELEASE_ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$/
 const COMPOSE_SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/
 
 /** `null` for an unusable value; `undefined` for "not supplied". */
-function parseLimit(raw: string | undefined): number | null | undefined {
+export function parseLimit(raw: string | undefined): number | null | undefined {
   if (raw === undefined || raw === '') return undefined
   const parsed = Number(raw)
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > SERVICE_RELEASES_MAX_LIMIT) {
@@ -61,7 +61,7 @@ function parseLimit(raw: string | undefined): number | null | undefined {
 type RollbackBody = { composeServiceName: string; releaseId: string }
 
 /** The commit metadata a pinned release already recorded, carried forward. */
-function releasePin(release: ServiceReleaseRecord): DeployRollbackReleasePin {
+export function releasePin(release: ServiceReleaseRecord): DeployRollbackReleasePin {
   return {
     releaseId: release.releaseId,
     // A rollback resolves no ref, so what the new release row records has to
@@ -99,7 +99,7 @@ function releasePin(release: ServiceReleaseRecord): DeployRollbackReleasePin {
  * fresh from its compose binding, which every host can do — rather than pinned
  * to an id a host has never seen.
  */
-function releaseByService(
+export function releaseByService(
   releases: readonly ServiceReleaseRecord[],
   target: ServiceReleaseRecord,
   targetServerIds: ReadonlySet<string>
@@ -114,7 +114,7 @@ function releaseByService(
   return pinned
 }
 
-function parseRollbackBody(body: Record<string, unknown>): RollbackBody | null {
+export function parseRollbackBody(body: Record<string, unknown>): RollbackBody | null {
   const composeServiceName = body.composeServiceName
   const releaseId = body.releaseId
   if (typeof composeServiceName !== 'string' || !COMPOSE_SERVICE_NAME_RE.test(composeServiceName)) {

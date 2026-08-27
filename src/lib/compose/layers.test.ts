@@ -247,3 +247,48 @@ test('stripComposeTurbopanelExtensions looks through tagged service bodies', () 
   assertEquals(composeTagOf(web), 'override')
   assertEquals(unwrapComposeTag(web), { image: 'nginx' })
 })
+
+test('collectSiteServiceNames looks through a tagged services mapping', () => {
+  const names = collectSiteServiceNames(doc({
+    services: makeComposeTag('override', {
+      site: {
+        'x-turbopanel': { serviceKind: 'site', engine: 'nginx' },
+      },
+      app: {
+        'x-turbopanel': { serviceKind: 'node', source: { sourceId: 'src-1' } },
+      },
+      api: { image: 'node:22' },
+    }),
+  }))
+  assertEquals([...names].sort((a, b) => a.localeCompare(b)), ['app', 'site'])
+})
+
+test('collectSiteServiceNames ignores a non-mapping services value', () => {
+  assertEquals([...collectSiteServiceNames(doc({ services: ['web'] }))], [])
+  assertEquals([...collectSiteServiceNames(doc({ services: 'web' }))], [])
+})
+
+test('stripSiteServicesFromLayer self-detects through a tagged services mapping', () => {
+  const document = doc({
+    services: makeComposeTag('override', {
+      site: {
+        'x-turbopanel': { serviceKind: 'site', engine: 'nginx' },
+      },
+      api: { image: 'node:22' },
+    }),
+  })
+  const next = stripSiteServicesFromLayer(document)
+  assertEquals(composeTagOf(next.data.services), 'override')
+  const services = unwrapComposeTag(next.data.services) as Record<string, unknown>
+  assertEquals('site' in services, false)
+  assertEquals((services.api as { image: string }).image, 'node:22')
+})
+
+test('stripSiteServicesFromLayer leaves a tagged non-mapping services value unchanged', () => {
+  const document = doc({
+    services: makeComposeTag('override', ['web']),
+  })
+  const next = stripSiteServicesFromLayer(document, new Set(['web']))
+  assertEquals(composeTagOf(next.data.services), 'override')
+  assertEquals(unwrapComposeTag(next.data.services), ['web'])
+})

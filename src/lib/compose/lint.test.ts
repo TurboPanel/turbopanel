@@ -655,6 +655,46 @@ test('lintComposeYaml skips list-form environment entries with no separator', ()
   )
 })
 
+test('lintComposeYaml lints colon-form and mixed-separator list environment values', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx
+    environment:
+      - COLON:prefix-{$PORT}
+      - MIXED=prefix-{$PORT}:tail
+`)
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment[0]'),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) => issue.path === 'services.web.environment[1]'),
+    true,
+  )
+})
+
+test('lintComposeYaml treats a blank image string as missing', () => {
+  const issues = lintComposeYaml(`services:
+  app:
+    image: "   "
+`)
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.app' && issue.message.includes('image')
+    ),
+    true,
+  )
+})
+
+test('lintComposeYaml skips boolean top-level keys', () => {
+  const issues = lintComposeYaml(`true: ignored
+services:
+  web:
+    image: nginx
+`)
+  assertEquals(issues.some((issue) => issue.path === 'true'), false)
+})
+
 test('lintComposeYaml advisories a tagged top-level networks key on the base layer', () => {
   const source = `networks: !override
   front: {}

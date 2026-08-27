@@ -1226,3 +1226,61 @@ test('expose boolean entries scalar-dedup via String()', () => {
     false,
   ])
 })
+
+test('labels / environment list: both = and : pick the earlier separator', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        labels: ['app=web:prod'],
+        environment: ['FOO=bar:baz'],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        labels: ['app=web:staging', 'role:api=1'],
+        environment: ['FOO=bar:qux', 'BARE'],
+      },
+    },
+  })
+  const web = servicesOf(mergeComposeOverlay(base, overlay)).web
+  assertEquals(web.labels, ['app=web:staging', 'role:api=1'])
+  assertEquals(web.environment, ['FOO=bar:qux', 'BARE'])
+})
+
+test('ports: numeric target and published stringify in long syntax', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: 'nginx',
+        ports: [{ target: 80, published: 8080 }],
+      },
+    },
+  })
+  const overlay = docFrom({
+    services: {
+      web: {
+        ports: [{ target: 80, published: 8080 }, { target: 443, published: 8443 }],
+      },
+    },
+  })
+  assertEquals(servicesOf(mergeComposeOverlay(base, overlay)).web.ports, [
+    { target: 80, published: 8080 },
+    { target: 443, published: 8443 },
+  ])
+})
+
+test('mergeComposeOverlay with a missing overlay returns the unwrapped base', () => {
+  const base = docFrom({
+    services: {
+      web: {
+        image: makeComposeTag('override', 'nginx'),
+      },
+    },
+  })
+  const merged = mergeComposeOverlay(base)
+  assertEquals(servicesOf(merged).web.image, 'nginx')
+  assertEquals(mergeComposeDocuments([]).data, emptyComposeDocument().data)
+})

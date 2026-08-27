@@ -20,6 +20,7 @@ import type { Db } from '../../db.ts'
 import { gitProviderInstallation } from '../db/schema.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import { type GitApp, loadGitAppForInstallation } from './git-app-records.ts'
+import { stripTrailingSlashes } from './origin.ts'
 
 const textEncoder = new TextEncoder()
 
@@ -72,8 +73,8 @@ export type GithubInstallationToken = GithubApiAuth & {
  * `<host>/api/v3` form.
  */
 export function githubApiBaseFor(app: Pick<GitApp, 'apiUrl' | 'baseUrl'>): string {
-  if (app.apiUrl) return app.apiUrl.replace(/\/+$/, '')
-  const baseUrl = app.baseUrl.replace(/\/+$/, '')
+  if (app.apiUrl) return stripTrailingSlashes(app.apiUrl)
+  const baseUrl = stripTrailingSlashes(app.baseUrl)
   if (baseUrl === 'https://github.com') return GITHUB_API_BASE
   return `${baseUrl}/api/v3`
 }
@@ -323,7 +324,7 @@ export async function mintGithubInstallationToken(
   }
 
   const app = await loadGitAppForInstallation(db, dataEncryptionSecrets, installationId)
-  if (!app || app.provider !== 'github') {
+  if (app?.provider !== 'github') {
     throw new GithubAppTokenError('github app is not configured')
   }
   if (!app.privateKeyPem) {

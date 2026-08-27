@@ -600,6 +600,52 @@ test('dockerOptions field value rejects and empty object collapses', () => {
     parseManagedDockerOptions({ ulimits: {} })?.ulimits,
     {},
   )
+  assertEquals(parseManagedDockerOptions(null), null)
+  assertEquals(
+    parseManagedSettingsBase({ dockerOptions: null }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { extraEnv: { OK: 1 } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({
+      dockerOptions: { labels: { ok: 1 } },
+    }),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase(
+      { dockerOptions: { extraEnv: { MYSQL_DATABASE: 'x' } } },
+      MYSQL_RESERVED_ENV_KEYS,
+    ),
+    null,
+  )
+  assertEquals(
+    parseManagedSettingsBase({ dockerOptions: { extraEnv: {} } })
+      ?.dockerOptions,
+    { extraEnv: {} },
+  )
+})
+
+test('clampManagedResources yields an empty resources object when none were set', () => {
+  const settings = parseManagedSettingsBase(undefined)
+  if (!settings) throw new TypeError('expected default settings')
+  assertEquals(
+    clampManagedResources(
+      settings,
+      { maxCpus: 1, maxMemoryBytes: 1024 },
+      { maxCpus: 1, maxMemoryBytes: 1024 },
+    ).resources,
+    {},
+  )
+})
+
+test('ssl.mode omitted on an explicit ssl object still inherits', () => {
+  assertEquals(parseManagedSettingsBase({ ssl: { mode: undefined } })?.ssl, {})
 })
 
 test('image tag-only rejects and non-finite resource numbers', () => {

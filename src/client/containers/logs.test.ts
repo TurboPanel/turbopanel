@@ -77,6 +77,98 @@ test('fetchContainerLogTail returns 409 when the target server is offline', asyn
   assertEquals(await response.json(), { error: 'server_offline' })
 })
 
+test('fetchContainerLogTail returns 503 when the cell wait expires', async () => {
+  const registry = {
+    getCell: () => ({
+      createRequestAndWait: () => Promise.resolve({ status: 'expired' }),
+    }),
+  } as unknown as DaemonCellRegistry
+  const response = await fetchContainerLogTail(
+    mockContext(registry),
+    createServerPresenceDb('server-1', true),
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+  )
+  if (!(response instanceof Response)) {
+    throw new TypeError('expected Response')
+  }
+  assertEquals(response.status, 503)
+  assertEquals(await response.json(), { error: 'timeout waiting for container logs' })
+})
+
+test('fetchContainerLogTail returns 500 when the cell wait fails', async () => {
+  const withError = await fetchContainerLogTail(
+    mockContext({
+      getCell: () => ({
+        createRequestAndWait: () =>
+          Promise.resolve({ status: 'failed', error: 'docker gone' }),
+      }),
+    } as unknown as DaemonCellRegistry),
+    createServerPresenceDb('server-1', true),
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+  )
+  if (!(withError instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(withError.status, 500)
+  assertEquals(await withError.json(), { error: 'docker gone' })
+
+  const withoutError = await fetchContainerLogTail(
+    mockContext({
+      getCell: () => ({
+        createRequestAndWait: () => Promise.resolve({ status: 'failed' }),
+      }),
+    } as unknown as DaemonCellRegistry),
+    createServerPresenceDb('server-1', true),
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+  )
+  if (!(withoutError instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(withoutError.status, 500)
+  assertEquals(await withoutError.json(), { error: 'failed to fetch container logs' })
+})
+
+test('fetchContainerLogTail returns 500 when the result has no logs string', async () => {
+  for (const result of [null, 'plain', { logs: 12 }, { logs: null }, []]) {
+    const response = await fetchContainerLogTail(
+      mockContext({
+        getCell: () => ({
+          createRequestAndWait: () => Promise.resolve({ status: 'done', result }),
+        }),
+      } as unknown as DaemonCellRegistry),
+      createServerPresenceDb('server-1', true),
+      { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+    )
+    if (!(response instanceof Response)) throw new TypeError('expected Response')
+    assertEquals(response.status, 500)
+    assertEquals(await response.json(), { error: 'invalid container logs result' })
+  }
+})
+
+test('fetchContainerLogTail returns 503 when the cell wait throws', async () => {
+  const asError = await fetchContainerLogTail(
+    mockContext({
+      getCell: () => ({
+        createRequestAndWait: () => Promise.reject(new TypeError('socket closed')),
+      }),
+    } as unknown as DaemonCellRegistry),
+    createServerPresenceDb('server-1', true),
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+  )
+  if (!(asError instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(asError.status, 503)
+  assertEquals(await asError.json(), { error: 'socket closed' })
+
+  const asString = await fetchContainerLogTail(
+    mockContext({
+      getCell: () => ({
+        createRequestAndWait: () => Promise.reject('cell down'),
+      }),
+    } as unknown as DaemonCellRegistry),
+    createServerPresenceDb('server-1', true),
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+  )
+  if (!(asString instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(asString.status, 503)
+  assertEquals(await asString.json(), { error: 'cell down' })
+})
+
 test('fetchContainerLogTail returns docker logs on success', async () => {
   const registry = {
     getCell: () => ({

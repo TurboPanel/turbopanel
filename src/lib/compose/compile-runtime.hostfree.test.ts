@@ -1290,3 +1290,44 @@ test("compileRuntimeComposeDocument skips extra_hosts that already use name: for
     .web;
   assertEquals(web?.extra_hosts, ["api.env-1:192.0.2.9"]);
 });
+
+test("compileRuntimeComposeDocument omits managed ingress extra_hosts when the service has no spanning keys", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: { image: "nginx", networks: ["local"] },
+      },
+      networks: { local: {} },
+    }),
+    {
+      spanningNetworks: new Map([["fabric", "tpn_fabric"]]),
+      managedIngressHostsByService: new Map([
+        ["web", [{ name: "svc-in", address: "203.0.113.254" }]],
+      ]),
+    },
+  );
+  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
+    .web;
+  assertEquals("extra_hosts" in (web ?? {}), false);
+});
+
+test("compileRuntimeComposeDocument keeps non-mapping service entries and skips non-string volume mounts", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      volumes: { data: {} },
+      secrets: { dbpass: { file: "/run/secrets/db" } },
+      services: {
+        web: {
+          image: "nginx",
+          volumes: [12, { target: "/unused" }, "data:/var/lib/data"],
+          build: { context: ".", secrets: ["dbpass"] },
+        },
+        broken: "not-a-mapping",
+      },
+    }),
+  );
+  const services = compiled.data.services as Record<string, unknown>;
+  assertEquals(services.broken, "not-a-mapping");
+  assertEquals(compiled.data.volumes, { data: {} });
+  assertEquals(compiled.data.secrets, { dbpass: { file: "/run/secrets/db" } });
+});

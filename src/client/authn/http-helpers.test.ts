@@ -122,6 +122,30 @@ test('buildSessionResponse sets needsInstall false after mock install', async ()
   assertEquals(payload.needsInstall, false)
 })
 
+test('isVerificationDevLoggingEnabled stays false on Deno outside development mode', () => {
+  const saved = new Map<string, string | undefined>()
+  for (const key of ['TURBOPANEL_MODE', 'TURBOPANEL_UI_MODE', 'TURBOPANEL_DEV_SURFACE'] as const) {
+    saved.set(key, Deno.env.get(key))
+  }
+  try {
+    Deno.env.delete('TURBOPANEL_MODE')
+    Deno.env.delete('TURBOPANEL_UI_MODE')
+    Deno.env.delete('TURBOPANEL_DEV_SURFACE')
+    assertEquals(
+      isVerificationDevLoggingEnabled({
+        runtime: 'deno',
+        signupEnvOverride: undefined,
+      }),
+      false,
+    )
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) Deno.env.delete(key)
+      else Deno.env.set(key, value)
+    }
+  }
+})
+
 test('isVerificationDevLoggingEnabled stays false on Workers', () => {
   assertEquals(
     isVerificationDevLoggingEnabled({
@@ -157,7 +181,18 @@ test('isVerificationDevLoggingEnabled is true in explicit development mode', () 
 
 test('parseSignupBody validates email and password shape', () => {
   assertEquals(parseSignupBody(null).ok, false)
+  assertEquals(parseSignupBody(['email', 'password']).ok, false)
   assertEquals(parseSignupBody({ email: 'bad', password: 'short' }).ok, false)
+  assertEquals(parseSignupBody({ email: '', password: 'Sup3r-secret!' }).ok, false)
+  assertEquals(parseSignupBody({ email: 'ok@example.com', password: '' }).ok, false)
+  const weakPassword = parseSignupBody({
+    email: 'ok@example.com',
+    password: 'abcdefgh',
+  })
+  if (weakPassword.ok) {
+    throw new TypeError('expected password policy rejection')
+  }
+  assertEquals(weakPassword.error.includes('number'), true)
   const valid = parseSignupBody({
     email: 'signup-parse@example.com',
     password: 'Sup3r-secret!',
@@ -529,6 +564,132 @@ test('registerAuthnRoutes session returns user payload for signed cookie', async
   const body = await readJsonBody<{ ok: boolean; email: string }>(res)
   assertEquals(body.ok, true)
   assertEquals(body.email, sessionData.email)
+})
+
+test('enforceAuthRateLimit returns null when limiter allows', async () => {
+  const app = new Hono()
+  let result: Response | null | undefined
+  app.post('/rate-test', async (c) => {
+    result = await enforceAuthRateLimit(c, 'sign-in', 'user@example.com', 'deno')
+    return c.text('ok')
+  })
+  await app.request('/rate-test', {
+    method: 'POST',
+    headers: { 'X-Real-IP': '203.0.113.12' },
+  })
+  assertEquals(result, null)
+})
+
+test('sign-in on HTTPS sets a Secure session cookie', async () => {
+  const state = createEmptyMockAuthState()
+  const password = 'Sup3r-secret!'
+  seedMockCredentialUser(state, {
+    id: crypto.randomUUID(),
+    email: 'https-user@example.com',
+    password: await hashPassword(password),
+    isEmailVerified: true,
+  })
+  const db = createMockAuthDb(withMockLogin(state, 'https-user@example.com'))
+  const { app } = await buildAuthApp({ db, runtime: 'workers' })
+
+  const res = await app.request('https://panel.example.com/api/client/v1/auth/sign-in', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'CF-Connecting-IP': '203.0.113.21',
+    },
+    body: JSON.stringify({ email: 'https-user@example.com', password }),
+  })
+  assertEquals(res.status, 200)
+  const cookie = res.headers.get('Set-Cookie') ?? ''
+  assertEquals(cookie.includes('Secure'), true)
+  assertEquals(cookie.includes(HTTPS_SESSION_COOKIE_NAME), true)
+})
+
+test('Workers sign-up returns 503 when verification enqueue fails', async () => {
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, true)
+  const { app } = await buildAuthApp({
+    db: createMockAuthDb(state),
+    runtime: 'workers',
+    signupEnvOverride: '1',
+    emailQueue: {
+      enqueue: () => Promise.reject(new Error('smtp down')),
+    },
+    platformEnv: {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+      TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-test',
+      TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'example.com',
+      TURBOPANEL_SYSTEM_EMAIL__FROM: 'noreply@example.com',
+    },
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.22' },
+    body: JSON.stringify({ email: 'enqueue-fail@example.com', password: 'Sup3r-secret!' }),
+  })
+  assertEquals(res.status, 503)
+  const body = await readJsonBody<{ error: string }>(res)
+  assertEquals(body.error.includes('verification email'), true)
+})
+
+test('sign-up treats unique-violation races as a successful duplicate', async () => {
+  const uniqueErr = Object.assign(new Error('duplicate key value violates user_email_unique'), {
+    code: '23505',
+    constraint_name: 'user_email_unique',
+  })
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+    transaction: () => Promise.reject(uniqueErr),
+  }
+  const { app } = await buildAuthApp({
+    db: db as never,
+    runtime: 'workers',
+    signupEnvOverride: '1',
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.23' },
+    body: JSON.stringify({ email: 'race@example.com', password: 'Sup3r-secret!' }),
+  })
+  assertEquals(res.status, 201)
+})
+
+test('sign-up treats unique-violation races with only a message as success', async () => {
+  const uniqueErr = Object.assign(new Error('duplicate key user_email_unique'), {
+    code: '23505',
+    cause: 'not-an-object',
+  })
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([]),
+        }),
+      }),
+    }),
+    transaction: () => Promise.reject(uniqueErr),
+  }
+  const { app } = await buildAuthApp({
+    db: db as never,
+    runtime: 'workers',
+    signupEnvOverride: '1',
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.24' },
+    body: JSON.stringify({ email: 'race-msg@example.com', password: 'Sup3r-secret!' }),
+  })
+  assertEquals(res.status, 201)
 })
 
 test('enforceAuthRateLimit returns 429 when limiter blocks', async () => {

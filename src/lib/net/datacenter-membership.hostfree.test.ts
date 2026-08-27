@@ -4,13 +4,23 @@
 
 import { assertEquals } from '@std/assert'
 import {
+  countUnassignedServersAmong,
+  isReportedPrivateAddress,
+  loadDatacenterDisplayNames,
+  loadDatacenterMembershipsForDatacenter,
   loadDatacenterMembershipsForServers,
+  loadServerDatacenterPinAddress,
+  loadSiteNetworkId,
+  normalizeReportedPrivateAddresses,
+  reportedAddressesFromServerMetadata,
   reportedCidrForAddress,
   resolveSubnetForAddress,
+  sharedDatacenterIds,
   siteCidrForAddress,
   validateMemberPinAddress,
 } from './datacenter-membership.ts'
 import type { DatacenterSubnetRow } from './datacenter-networks.ts'
+import type { ServerReportedIp } from '../../server-addresses.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -27,18 +37,22 @@ function createQueuedDb(
   return {
     select() {
       const value = queue[i++] ?? []
+      const chain = {
+        async limit() {
+          return value
+        },
+        then(
+          resolve: (v: unknown) => unknown,
+          reject?: (e: unknown) => unknown,
+        ) {
+          return Promise.resolve(value).then(resolve, reject)
+        },
+      }
       return {
         from() {
           return {
             where() {
-              return {
-                then(
-                  resolve: (v: unknown) => unknown,
-                  reject?: (e: unknown) => unknown,
-                ) {
-                  return Promise.resolve(value).then(resolve, reject)
-                },
-              }
+              return chain
             },
           }
         },
@@ -232,4 +246,203 @@ test('loadDatacenterMembershipsForServers derives family for v4 and v6 pins', as
       family: 6,
     },
   ])
+})
+
+test('resolveSubnetForAddress returns null for a blank address', () => {
+  assertEquals(resolveSubnetForAddress([V4_SUBNET], '   '), null)
+})
+
+test('validateMemberPinAddress rejects invalid CIDR and invalid addresses', () => {
+  const metadata = {
+    ips: [
+      {
+        address: '203.0.113.10',
+        version: 4,
+        scope: 'private',
+        cidr: '203.0.113.0/24',
+      },
+    ],
+  }
+  assertEquals(
+    validateMemberPinAddress('203.0.113.10', 'not-a-cidr', metadata),
+    { ok: false, error: 'invalid_cidr' },
+  )
+  assertEquals(
+    validateMemberPinAddress('not-an-ip', [V4_SUBNET], metadata),
+    { ok: false, error: 'invalid_address' },
+  )
+  assertEquals(
+    validateMemberPinAddress('   ', '203.0.113.0/24', metadata),
+    { ok: false, error: 'invalid_address' },
+  )
+})
+
+test('reported address helpers normalize private daemon IPs', () => {
+  const metadata: { ips: ServerReportedIp[] } = {
+    ips: [
+      { address: '203.0.113.10', version: 4, scope: 'private' },
+      { address: 'not-an-ip', version: 4, scope: 'private' },
+      { address: '203.0.113.99', version: 4, scope: 'public' },
+    ],
+  }
+  assertEquals(normalizeReportedPrivateAddresses(metadata.ips), [
+    '203.0.113.10',
+  ])
+  assertEquals(reportedAddressesFromServerMetadata(metadata), [
+    '203.0.113.10',
+  ])
+  assertEquals(isReportedPrivateAddress(metadata, '203.0.113.10/32'), true)
+  assertEquals(isReportedPrivateAddress(metadata, '203.0.113.11'), false)
+})
+
+test('sharedDatacenterIds returns a sorted unique intersection', () => {
+  assertEquals(
+    sharedDatacenterIds(
+      [
+        {
+          ipId: 'a1',
+          serverId: 's1',
+          datacenterId: 'dc-b',
+          networkId: null,
+          address: '203.0.113.1',
+          family: 4,
+        },
+        {
+          ipId: 'a2',
+          serverId: 's1',
+          datacenterId: 'dc-a',
+          networkId: null,
+          address: '198.51.100.1',
+          family: 4,
+        },
+        {
+          ipId: 'a3',
+          serverId: 's1',
+          datacenterId: 'dc-b',
+          networkId: null,
+          address: '203.0.113.2',
+          family: 4,
+        },
+      ],
+      [
+        {
+          ipId: 'b1',
+          serverId: 's2',
+          datacenterId: 'dc-b',
+          networkId: null,
+          address: '203.0.113.20',
+          family: 4,
+        },
+        {
+          ipId: 'b2',
+          serverId: 's2',
+          datacenterId: 'dc-c',
+          networkId: null,
+          address: '192.0.2.1',
+          family: 4,
+        },
+      ],
+    ),
+    ['dc-b'],
+  )
+})
+
+test('loadDatacenterMembershipsForDatacenter skips incomplete pins', async () => {
+  const db = createQueuedDb([[
+    {
+      ipId: 'ip-ok',
+      serverId: 's1',
+      datacenterId: 'dc-a',
+      networkId: 'net-v4',
+      address: '203.0.113.10',
+    },
+    {
+      ipId: 'ip-orphan',
+      serverId: null,
+      datacenterId: 'dc-a',
+      networkId: 'net-v4',
+      address: '203.0.113.11',
+    },
+    {
+      ipId: 'ip-empty-dc',
+      serverId: 's2',
+      datacenterId: null,
+      networkId: 'net-v4',
+      address: '203.0.113.12',
+    },
+    {
+      ipId: 'ip-bad-family',
+      serverId: 's3',
+      datacenterId: 'dc-a',
+      networkId: 'net-v4',
+      address: 'not-an-ip',
+    },
+  ]])
+  assertEquals(await loadDatacenterMembershipsForDatacenter(db, 'dc-a'), [
+    {
+      ipId: 'ip-ok',
+      serverId: 's1',
+      datacenterId: 'dc-a',
+      networkId: 'net-v4',
+      address: '203.0.113.10',
+      family: 4,
+    },
+  ])
+})
+
+test('loadServerDatacenterPinAddress returns the address or null', async () => {
+  assertEquals(
+    await loadServerDatacenterPinAddress(
+      createQueuedDb([[{ address: '203.0.113.10' }]]),
+      's1',
+      'dc-a',
+    ),
+    '203.0.113.10',
+  )
+  assertEquals(
+    await loadServerDatacenterPinAddress(createQueuedDb([[]]), 's1', 'dc-a'),
+    null,
+  )
+})
+
+test('loadDatacenterDisplayNames maps ids and skips empty input', async () => {
+  assertEquals((await loadDatacenterDisplayNames(createQueuedDb([[]]), [])).size, 0)
+  const map = await loadDatacenterDisplayNames(
+    createQueuedDb([[
+      { id: 'dc-a', name: 'Alpha' },
+      { id: 'dc-b', name: null },
+    ]]),
+    ['dc-a', 'dc-b'],
+  )
+  assertEquals(map.get('dc-a'), 'Alpha')
+  assertEquals(map.get('dc-b'), null)
+})
+
+test('loadSiteNetworkId returns the first site subnet or null', async () => {
+  assertEquals(
+    await loadSiteNetworkId(
+      createQueuedDb([[{ id: 'net-1', cidr: '203.0.113.0/24' }]]),
+      'dc-a',
+    ),
+    { networkId: 'net-1', cidr: '203.0.113.0/24' },
+  )
+  assertEquals(
+    await loadSiteNetworkId(createQueuedDb([[{ id: 'net-1', cidr: null }]]), 'dc-a'),
+    null,
+  )
+})
+
+test('countUnassignedServersAmong counts servers without pins', async () => {
+  const db = createQueuedDb([[
+    {
+      ipId: 'ip-1',
+      serverId: 's1',
+      datacenterId: 'dc-a',
+      networkId: 'net-v4',
+      address: '203.0.113.10',
+    },
+  ]])
+  const result = await countUnassignedServersAmong(db, ['s1', 's2', 's3'])
+  assertEquals([...result.memberServerIds], ['s1'])
+  assertEquals(result.unassignedCount, 2)
 })

@@ -90,10 +90,28 @@ test('isRelayPrefixUniqueViolation matches uniq_relay_fabric_prefix', () => {
 test('cidrContains and nextFreeSubnet skip taken subnets', () => {
   assertEquals(cidrContains('10.192.0.0/16', '10.192.1.0/24'), true)
   assertEquals(cidrContains('10.192.0.0/16', '10.193.0.0/24'), false)
+  assertEquals(cidrContains('10.192.0.0/24', '10.192.0.0/16'), false)
+  assertEquals(cidrContains('not-a-cidr', '10.192.0.0/24'), false)
+  assertEquals(cidrContains('2001:db8::/32', '2001:db8::/64'), false)
   assertEquals(nextFreeSubnet('10.192.0.0/16', 24, []), '10.192.0.0/24')
   assertEquals(
     nextFreeSubnet('10.192.0.0/16', 24, ['10.192.0.0/24', '10.192.2.0/24']),
     '10.192.1.0/24',
   )
   assertEquals(nextFreeSubnet('10.192.0.0/24', 24, ['10.192.0.0/24']), null)
+})
+
+test('cidrOverlaps and nth helpers reject unusable prefixes', () => {
+  assertEquals(cidrOverlaps('not-a-cidr', '10.250.0.0/16'), false)
+  assertEquals(cidrOverlaps('2001:db8::/32', '10.250.0.0/16'), false)
+  assertEquals(nthHostAddress('10.250.0.0/31', 0), null)
+  assertEquals(nthHostAddress('10.250.0.0/32', 0), null)
+  assertEquals(nthSubnet('10.192.0.0/16', 12, 0), null)
+  assertEquals(nthSubnet('10.192.0.0/16', 33, 0), null)
+  assertEquals(pickDefaultFabricHostCidr([
+    '10.250.0.0/16',
+    '10.251.0.0/16',
+    '10.252.0.0/16',
+    '10.253.0.0/16',
+  ]), null)
 })

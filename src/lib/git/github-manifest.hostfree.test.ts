@@ -8,10 +8,12 @@
  * operator can correct from the console.
  */
 
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import {
   buildGithubAppManifest,
+  convertGithubAppManifest,
   githubAppCreateUrl,
+  GithubManifestError,
   GITHUB_MANIFEST_EVENTS,
 } from './github-manifest.ts'
 
@@ -122,5 +124,165 @@ test('an org-owned App is created under that organization on GitHub', () => {
   assertEquals(
     githubAppCreateUrl('https://github.acme.test/', 'st8', 'acme'),
     'https://github.acme.test/organizations/acme/settings/apps/new?state=st8',
+  )
+  assertEquals(
+    githubAppCreateUrl('https://github.acme.test///', 'st8'),
+    'https://github.acme.test/settings/apps/new?state=st8',
+  )
+})
+
+function withFetch(
+  handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const original = globalThis.fetch
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input)
+    return Promise.resolve(handler(url, init))
+  }) as typeof fetch
+  return fn().finally(() => {
+    globalThis.fetch = original
+  })
+}
+
+test('GithubManifestError records an optional status', () => {
+  const error = new GithubManifestError('boom', 422)
+  assertEquals(error.name, 'GithubManifestError')
+  assertEquals(error.status, 422)
+})
+
+test('convertGithubAppManifest posts the one-shot code and maps credentials', async () => {
+  await withFetch((url, init) => {
+    assertEquals(url, 'https://api.github.com/app-manifests/tmp%2Fcode/conversions')
+    assertEquals(init?.method, 'POST')
+    return new Response(
+      JSON.stringify({
+        id: 88,
+        slug: 'quiet-heron',
+        client_id: 'Iv1.abc',
+        client_secret: 'secret',
+        pem: '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----',
+        webhook_secret: 'hook',
+      }),
+      { status: 201 },
+    )
+  }, async () => {
+    assertEquals(
+      await convertGithubAppManifest('https://api.github.com', 'tmp/code'),
+      {
+        externalAppId: '88',
+        appSlug: 'quiet-heron',
+        clientId: 'Iv1.abc',
+        clientSecret: 'secret',
+        privateKeyPem: '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----',
+        webhookSecret: 'hook',
+      },
+    )
+  })
+})
+
+test('convertGithubAppManifest treats empty optional strings as absent', async () => {
+  await withFetch(
+    () =>
+      new Response(
+        JSON.stringify({
+          id: '9',
+          slug: '',
+          client_id: '',
+          pem: '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----',
+        }),
+        { status: 200 },
+      ),
+    async () => {
+      assertEquals(
+        await convertGithubAppManifest('https://api.github.com', 'code'),
+        {
+          externalAppId: '9',
+          appSlug: null,
+          clientId: null,
+          clientSecret: null,
+          privateKeyPem: '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----',
+          webhookSecret: null,
+        },
+      )
+    },
+  )
+})
+
+test('convertGithubAppManifest maps transport and HTTP failures', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = (() => Promise.reject(new Error('reset'))) as typeof fetch
+  try {
+    await assertRejects(
+      () => convertGithubAppManifest('https://api.github.com', 'code'),
+      GithubManifestError,
+      'github manifest conversion failed: reset',
+    )
+  } finally {
+    globalThis.fetch = original
+  }
+
+  globalThis.fetch = (() => Promise.reject('offline')) as typeof fetch
+  try {
+    await assertRejects(
+      () => convertGithubAppManifest('https://api.github.com', 'code'),
+      GithubManifestError,
+      'github manifest conversion failed: network error',
+    )
+  } finally {
+    globalThis.fetch = original
+  }
+
+  await withFetch(() => new Response('nope', { status: 404 }), async () => {
+    await assertRejects(
+      () => convertGithubAppManifest('https://api.github.com', 'code'),
+      GithubManifestError,
+      'github manifest conversion failed (404)',
+    )
+  })
+})
+
+test('convertGithubAppManifest rejects an empty or incomplete body', async () => {
+  await withFetch(() => new Response('not-json', { status: 200 }), async () => {
+    await assertRejects(
+      () => convertGithubAppManifest('https://api.github.com', 'code'),
+      GithubManifestError,
+      'returned no body',
+    )
+  })
+  await withFetch(
+    () => new Response(JSON.stringify({ id: null, pem: 'x' }), { status: 200 }),
+    async () => {
+      await assertRejects(
+        () => convertGithubAppManifest('https://api.github.com', 'code'),
+        GithubManifestError,
+        'returned no app id or private key',
+      )
+    },
+  )
+  await withFetch(
+    () => new Response(JSON.stringify({ id: 1, pem: '' }), { status: 200 }),
+    async () => {
+      await assertRejects(
+        () => convertGithubAppManifest('https://api.github.com', 'code'),
+        GithubManifestError,
+        'returned no app id or private key',
+      )
+    },
+  )
+  // An object id must not stringify to "[object Object]".
+  await withFetch(
+    () =>
+      new Response(
+        JSON.stringify({ id: { value: 1 }, pem: '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----' }),
+        { status: 200 },
+      ),
+    async () => {
+      await assertRejects(
+        () => convertGithubAppManifest('https://api.github.com', 'code'),
+        GithubManifestError,
+        'returned no app id or private key',
+      )
+    },
   )
 })

@@ -424,6 +424,8 @@ test('verifyEntityExists checks every supported entity table via select', async 
     'variable',
     'principal',
     'storage',
+    'source',
+    'gitProviderInstallation',
     'network',
     'datacenter',
     'ip',
@@ -473,6 +475,8 @@ test('resolveEntityOrganizationId resolves org ids for select-backed entity type
     'network',
     'datacenter',
     'ip',
+    'source',
+    'gitProviderInstallation',
   ] as const) {
     const resolved = await resolveEntityOrganizationId(selectDb, entityType, otherUuid)
     assertEquals(resolved, validUuid)
@@ -588,6 +592,38 @@ test('createAccessGrant rejects team actors from another organization', async ()
     throw new TypeError('cross-org team actor should return 400')
   }
   assertEquals(result.error, 'Team must belong to the same organization as the entity')
+})
+
+test('createAccessGrant rejects missing team and organization actors', async () => {
+  const missingTeam = await createAccessGrant(
+    createGrantFlowDb({ userExists: false }),
+    {
+      entityType: 'organization',
+      entityId: validUuid,
+      actorType: 'team',
+      actorId: otherUuid,
+      permissionKey: 'organization:manage',
+    },
+  )
+  if (missingTeam.ok || missingTeam.status !== 404) {
+    throw new TypeError('missing team actor should return 404')
+  }
+  assertEquals(missingTeam.error, 'Team not found')
+
+  const missingOrg = await createAccessGrant(
+    createGrantFlowDb({ userExists: false }),
+    {
+      entityType: 'organization',
+      entityId: validUuid,
+      actorType: 'organization',
+      actorId: validUuid,
+      permissionKey: 'organization:manage',
+    },
+  )
+  if (missingOrg.ok || missingOrg.status !== 404) {
+    throw new TypeError('missing organization actor should return 404')
+  }
+  assertEquals(missingOrg.error, 'Organization not found')
 })
 
 test('createAccessGrant rejects organization actors that do not match the entity org', async () => {
