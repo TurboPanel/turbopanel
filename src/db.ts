@@ -41,7 +41,7 @@ export type WorkersDbOptions = {
 /**
  * Self-hosted Deno: up to 10 concurrent connections.
  * No idle_timeout — let connections live for the process lifetime so postgres.js
- * never has to recreate them mid-request. Tilt restarts the process anyway.
+ * never has to recreate them mid-request. systemd restarts the process anyway.
  * backoff: () => 0 — disable exponential reconnect delay; options.shared.retries
  * can accumulate to 6+ on any connection error and the default backoff(6)*1000 ≈
  * 7300ms, causing the entire pool to pause for ~7s waiting to reconnect. With a

@@ -357,9 +357,10 @@ vagrant ssh -c 'export PATH="/opt/turbopanel/vendor/node/current/bin:/opt/turbop
   `.dev.vars` generation.
 - `pnpm install` — installs Hono and Wrangler into `node_modules/` for Workers
   bundling
-- Local **Tilt** Wrangler secrets still live in `dev/.env` → `sync-env.sh` →
-  instance `.dev.vars`; that path is separate from managed Ansible installs
-  above.
+- Local Wrangler secrets come from Ansible-generated
+  `/etc/turbopanel/instance/runtime.dev-vars` (`TURBOPANEL_SECRETS`), symlinked
+  into the checkout as `.dev.vars` by `scripts/workers-serve.sh`; that path is
+  separate from managed Ansible installs above.
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for
   full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so
   Docker Caddy (`host.docker.internal`) can reach the dev server; default
@@ -505,12 +506,13 @@ id before deploy). Types: `worker-configuration.d.ts`
 bindings.
 
 **Local dev (`wrangler dev`):** do not commit `localConnectionString` in
-`wrangler.jsonc`. Tilt `sync-env.sh` writes
-`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` to `instance/.env`
-(derived from `dev/.env` `POSTGRES_*`, or override in `dev/.env`). Wrangler
-loads `.env` into `process.env` before applying Hyperdrive bindings — the Worker
-connects directly to local Postgres (no Hyperdrive pooling/caching in this
-mode). **`TURBOPANEL_DATABASE_URL`** (or **`DATABASE_URL`** for tooling) in the
+`wrangler.jsonc`. The daemon's `instance-launch` Ansible role writes
+`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` into
+`/etc/turbopanel/instance/runtime.env` (from the converge-generated Postgres
+credentials), and `scripts/workers-serve.sh` symlinks it into the checkout as
+`.env`. Wrangler loads `.env` into `process.env` before applying Hyperdrive
+bindings — the Worker connects directly to local Postgres (no Hyperdrive
+pooling/caching in this mode). **`TURBOPANEL_DATABASE_URL`** (or **`DATABASE_URL`** for tooling) in the
 same file is for migrations/Drizzle/sync and may use different credentials than
 the Hyperdrive runtime user in production.
 

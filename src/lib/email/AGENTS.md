@@ -10,17 +10,17 @@ The `src/lib/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob
 
 ### Deno vs Workers paths
 
-- **Deno (self-hosted)** — always publishes email jobs through RabbitMQ via `src/lib/email/smtp/deno-amqp-queue.ts`. The Deno instance itself does not deliver email — it only publishes to RabbitMQ; the **`mailer/`** consumer (`turbopanel-mailer.service`) handles delivery. The mailer is installed by the `instance-launch` role; in Tilt dev it is the `mailer` resource. When the broker is unreachable (or `TURBOPANEL_AMQP_URL` is explicitly empty), the instance uses a noop queue — it does not send Mailgun directly from the instance process.
+- **Deno (self-hosted)** — always publishes email jobs through RabbitMQ via `src/lib/email/smtp/deno-amqp-queue.ts`. The Deno instance itself does not deliver email — it only publishes to RabbitMQ; the **`mailer/`** consumer (`turbopanel-mailer.service`) handles delivery. The mailer is installed by the `instance-launch` role in both dev and managed installs. When the broker is unreachable (or `TURBOPANEL_AMQP_URL` is explicitly empty), the instance uses a noop queue — it does not send Mailgun directly from the instance process.
 - **Workers** — `src/lib/email/mailgun/workers-queue.ts` (`createWorkersMailgunQueue`) sends directly to Mailgun inside `enqueue` via `sendMailgunJob`. There is no AMQP/RabbitMQ involvement. Cloudflare Workers provides concurrency control, retries, and durability at the platform level, so a queue consumer is unnecessary. Confirmed in `src/workers.ts`: each fetch resolves `resolveWorkersEmailQueue` from the current DB settings + `platformEnv` (not a permanently cached queue) so admin `PUT /api/admin/v1/settings/email` takes effect without a Worker restart.
 
-The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on managed hosts (installed by the `instance-launch` role). In Tilt dev it is the standalone `mailer` resource (Deno mode only). See "Deno mailer throttling and prefetch" below for rate/burst/prefetch behavior.
+The **`mailer/`** consumer runs as **`turbopanel-mailer.service`** on both dev and managed hosts (installed by the `instance-launch` role; Deno mode only). See "Deno mailer throttling and prefetch" below for rate/burst/prefetch behavior.
 
 - **Deno instance** — publishes jobs to RabbitMQ via AMQP. In dev, Ansible injects `TURBOPANEL_SYSTEM_EMAIL__PROVIDER=smtp`, `TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST=127.0.0.1`, and `TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT=1025` so the instance can resolve the `from` address and SMTP config without any DB configuration.
 - **Mailer worker (`turbopanel-mailer.service`)** — in dev, Ansible injects `TURBOPANEL_SYSTEM_EMAIL__PROVIDER=mailpit` and `MAILPIT_API_URL=http://127.0.0.1:8025`, so the mailer uses `MailerMailpitSender` (Mailpit HTTP API) — **no SMTP installation required on the worker platform**. In production, uses `smtp` or `mailgun` from DB/env settings.
 
 | Variable | Runtime | Purpose |
 |---|---|---|
-| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (from `/etc/turbopanel/rabbitmq/.rabbitmq_pass`; Tilt dev default `amqp://guest:guest@localhost:19828`) |
+| `TURBOPANEL_AMQP_URL` | Deno | RabbitMQ connection URL (from `/etc/turbopanel/rabbitmq/.rabbitmq_pass`; dev RabbitMQ listens on `127.0.0.1:5672`) |
 | `TURBOPANEL_DATABASE_URL` | Deno mailer | Postgres for DB-backed SMTP settings (`setting` table); same URL as the instance |
 | `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path used by the Daemon Cell Redis backend (`src/daemon/cell/redis/client.ts`); default `/run/turbopanel/redis.sock` |
 | `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |

@@ -52,6 +52,8 @@ import { parseManagedResidual } from '../../client/managed/serialize.ts'
 
 const dbUrl = getDatabaseUrl()
 
+const MANAGED_NETWORK = '00000000-0000-4000-8000-0000000000ee'
+
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
  *
@@ -1573,6 +1575,7 @@ test('processCommandEnvelope reconciles containers on managed.ingress.reconcile 
         type: 'managed.ingress.reconcile',
         payload: {
           serverId,
+          managedNetwork: MANAGED_NETWORK,
           clusters: [],
         },
       })
@@ -1697,6 +1700,7 @@ test('processCommandEnvelope clears pins when managed.ingress.reconcile reports 
         type: 'managed.ingress.reconcile',
         payload: {
           serverId,
+          managedNetwork: MANAGED_NETWORK,
           clusters: [],
         },
       })
@@ -2300,6 +2304,7 @@ const MANAGED_APPLY_PAYLOAD = {
   engine: 'postgres',
   projectName: 'tp-managed-pg',
   containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-1',
+  managedNetwork: MANAGED_NETWORK,
   image: 'docker.io/library/postgres:18-alpine',
   containerPort: 5432,
   composeYaml: 'services:\n  postgres:\n    image: postgres:18-alpine\n',
@@ -3623,66 +3628,68 @@ test('processCommandEnvelope enqueues pendingStandbyApplies only after primary s
       containerName: '01936b3e-aaaa-bbbb-cccc-123456789abc-2',
     }
 
-    const queue = createRecordingCommandQueue()
-    const record = await createCommandRecord(db, {
-      serverId,
-      ...TEST_COMMAND_ACTOR,
-      type: 'managed.apply',
-      payload: {
-        managedId,
-        environmentId,
-        ...MANAGED_APPLY_PAYLOAD,
-      },
-      metadata: {
-        pendingStandbyApplies: [
-          {
-            serverId: standbyServerId,
-            memberId: standbyMemberId,
-            payload: standbyPayload,
-          },
-        ],
-      },
-    })
-
-    const registry = createDispatchMockRegistry(serverId, {
-      waitForRequestResult: {
+    try {
+      const queue = createRecordingCommandQueue()
+      const record = await createCommandRecord(db, {
         serverId,
-        requestId: record.id,
-        requestKind: 'command-dispatch',
-        status: 'done',
-        createdAt: record.createdAt,
-        expiresAt: record.createdAt,
-        finishedAt: new Date().toISOString(),
-        result: {
-          host: '203.0.113.10',
-          port: 5432,
-          containers: [
+        ...TEST_COMMAND_ACTOR,
+        type: 'managed.apply',
+        payload: {
+          managedId,
+          environmentId,
+          ...MANAGED_APPLY_PAYLOAD,
+        },
+        metadata: {
+          pendingStandbyApplies: [
             {
-              serviceId,
-              composeServiceName: 'postgres',
-              containerId: 'managed-cid',
-              containerName: MANAGED_APPLY_PAYLOAD.containerName,
-              status: 'running',
-              role: 'service',
+              serverId: standbyServerId,
+              memberId: standbyMemberId,
+              payload: standbyPayload,
             },
           ],
         },
-      },
-    })
+      })
 
-    await processCommandEnvelope(
-      db,
-      registry,
-      buildEnvelope(record, serverId),
-      { commandQueue: queue },
-    )
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: {
+            host: '203.0.113.10',
+            port: 5432,
+            containers: [
+              {
+                serviceId,
+                composeServiceName: 'postgres',
+                containerId: 'managed-cid',
+                containerName: MANAGED_APPLY_PAYLOAD.containerName,
+                status: 'running',
+                role: 'service',
+              },
+            ],
+          },
+        },
+      })
 
-    assertEquals(queue.envelopes.length, 1)
-    assertEquals(queue.envelopes[0]?.type, 'managed.apply')
-    assertEquals(queue.envelopes[0]?.serverId, standbyServerId)
+      await processCommandEnvelope(
+        db,
+        registry,
+        buildEnvelope(record, serverId),
+        { commandQueue: queue },
+      )
 
-    await db.delete(command).where(eq(command.serverId, standbyServerId))
-    await db.delete(server).where(eq(server.id, standbyServerId))
+      assertEquals(queue.envelopes.length, 1)
+      assertEquals(queue.envelopes[0]?.type, 'managed.apply')
+      assertEquals(queue.envelopes[0]?.serverId, standbyServerId)
+    } finally {
+      await db.delete(command).where(eq(command.serverId, standbyServerId))
+      await db.delete(server).where(eq(server.id, standbyServerId))
+    }
   })
 })
 
