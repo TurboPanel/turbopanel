@@ -9,6 +9,7 @@ import {
 import { extractCloudflareGeo } from "../lib/geo/server-geo.ts";
 import type { RateLimiter } from "./rate-limit/contracts.ts";
 import { daemonConnectRateLimitKey } from "./rate-limit/keys.ts";
+import { resolvePeerAddress } from "../lib/peer-address.ts";
 
 const CELL_SERVER_ID_HEADER = "X-Turbopanel-Cell-Server-Id";
 const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
@@ -47,9 +48,15 @@ export function buildWorkersDaemonCellForwardHeaders(
     headers.set(CELL_GEO_HEADER, JSON.stringify(geo));
   }
 
-  const connectingIp = options.cfConnectingIp?.trim();
-  if (connectingIp) {
-    headers.set(REAL_IP_HEADER, connectingIp);
+  // The edge strips any client-supplied CF-Connecting-IP, so this is the one
+  // address a Workers deployment can trust. Same resolver as the Deno
+  // transport so both agree on what "peer address" means.
+  const peer = resolvePeerAddress(
+    { cfConnectingIp: options.cfConnectingIp },
+    { runtime: "workers" },
+  );
+  if (peer) {
+    headers.set(REAL_IP_HEADER, peer.address);
   }
 
   return headers;

@@ -167,8 +167,10 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
         ips: emptyServerIps(),
       }, 422);
     }
-    const { collectServerIps } = await import("../server-addresses-deno.ts");
-    const ips = collectServerIps();
+    const { collectServerIps, readDefaultRouteInterfaces } = await import(
+      "../server-addresses-deno.ts"
+    );
+    const ips = collectServerIps(readDefaultRouteInterfaces());
     return c.json({ ok: true, source: "instance", ips });
   });
 

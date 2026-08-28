@@ -247,7 +247,26 @@ export const serverSchemas = {
       remoteAddress: {
         type: ['string', 'null'],
         description:
-          'Client IP as seen by the instance (X-Real-IP from Caddy). Null when offline or co-located on a Unix socket.',
+          'Raw peer address as seen by the instance (CF-Connecting-IP through a trusted Cloudflare Tunnel, else X-Real-IP from Caddy). Diagnostic — prefer `address`. Null when offline or co-located on a Unix socket.',
+      },
+      address: {
+        type: ['string', 'null'],
+        description:
+          'Best-known network address for this host. The observed peer address when it is routable and agrees with the daemon, otherwise the daemon-reported interface address — the observed one is the proxy or forwarded port on co-located and development installs. Null when unknown or co-located.',
+      },
+      addressSource: {
+        type: ['string', 'null'],
+        enum: ['observed', 'interface', 'local', null],
+        description:
+          'Which fact `address` came from: `observed` (peer address on the wire, incl. CF-Connecting-IP through a Cloudflare Tunnel), `interface` (daemon-reported host interface), `local` (co-located Unix socket).',
+      },
+      addressScope: {
+        type: ['string', 'null'],
+        enum: ['public', 'private', null],
+      },
+      addressInterface: {
+        type: ['string', 'null'],
+        description: 'Host interface `address` belongs to, when known.',
       },
       lastInboundAt: {
         type: ['string', 'null'],
@@ -534,6 +553,25 @@ export const serverSchemas = {
       statusChangedAt: { type: ['string', 'null'], format: 'date-time' },
       hostname: { type: ['string', 'null'] },
       remoteAddress: { type: ['string', 'null'] },
+      address: {
+        type: ['string', 'null'],
+        description:
+          'Best-known network address for this host. The observed peer address when it is routable and agrees with the daemon, otherwise the daemon-reported interface address — the observed one is the proxy or forwarded port on co-located and development installs. Null when unknown or co-located.',
+      },
+      addressSource: {
+        type: ['string', 'null'],
+        enum: ['observed', 'interface', 'local', null],
+        description:
+          'Which fact `address` came from: `observed` (peer address on the wire, incl. CF-Connecting-IP through a Cloudflare Tunnel), `interface` (daemon-reported host interface), `local` (co-located Unix socket).',
+      },
+      addressScope: {
+        type: ['string', 'null'],
+        enum: ['public', 'private', null],
+      },
+      addressInterface: {
+        type: ['string', 'null'],
+        description: 'Host interface `address` belongs to, when known.',
+      },
       geo: { type: ['object', 'null'], additionalProperties: true },
       colocatedWithInstance: { type: 'boolean' },
     },

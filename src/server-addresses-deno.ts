@@ -1,5 +1,11 @@
 import type { ServerReportedIp, ServerReportedIpScope } from './server-addresses.ts'
 
+/** Default-route interface name per address family, as read from the kernel. */
+export type DefaultRouteInterfaces = {
+  v4?: string
+  v6?: string
+}
+
 function isLoopbackIpv4(address: string): boolean {
   return address.startsWith('127.')
 }
@@ -147,7 +153,7 @@ function rememberIp(
     byAddress.set(entry.address, entry)
     return
   }
-  if (!existing.cidr && entry.cidr) {
+  if ((!existing.cidr && entry.cidr) || (!existing.preferred && entry.preferred)) {
     byAddress.set(entry.address, entry)
   }
 }
@@ -157,17 +163,94 @@ function buildReportedIp(
   version: 4 | 6,
   scope: ServerReportedIpScope,
   addr: Deno.NetworkInterfaceInfo,
+  defaultRoute: DefaultRouteInterfaces | undefined,
 ): ServerReportedIp {
   const entry: ServerReportedIp = { address, version, scope }
   const cidr = cidrForAddress(address, addr)
   if (cidr) entry.cidr = cidr
   const iface = addr.name.trim()
   if (iface.length > 0 && iface.length <= 64) entry.interface = iface
+  const routeIface = version === 4 ? defaultRoute?.v4 : defaultRoute?.v6
+  if (routeIface && routeIface === entry.interface) entry.preferred = true
   return entry
 }
 
-/** Deno-only: collect host interface IPs (matches daemon `collectServerIps`). */
-export function collectServerIps(): ServerReportedIp[] {
+const IPV4_DEFAULT_DESTINATION = '00000000'
+const IPV6_UNSPECIFIED = '0'.repeat(32)
+
+/**
+ * Default-route interface for IPv4, from `/proc/net/route`: the row whose
+ * destination and mask are both zero, lowest metric first when a host has
+ * several uplinks.
+ */
+function parseIpv4DefaultRouteInterface(text: string): string | undefined {
+  let best: { iface: string; metric: number } | undefined
+  for (const line of text.split('\n').slice(1)) {
+    const fields = line.trim().split(/\s+/)
+    if (fields.length < 8) continue
+    const [iface, destination, , , , , metric, mask] = fields
+    if (destination !== IPV4_DEFAULT_DESTINATION) continue
+    if (mask !== IPV4_DEFAULT_DESTINATION) continue
+    const parsedMetric = Number(metric)
+    const weight = Number.isFinite(parsedMetric) ? parsedMetric : 0
+    if (!best || weight < best.metric) best = { iface, metric: weight }
+  }
+  return best?.iface
+}
+
+/** Default-route interface for IPv6 (`::/0`), from `/proc/net/ipv6_route`. */
+function parseIpv6DefaultRouteInterface(text: string): string | undefined {
+  let best: { iface: string; metric: number } | undefined
+  for (const line of text.split('\n')) {
+    const fields = line.trim().split(/\s+/)
+    if (fields.length < 10) continue
+    if (fields[0] !== IPV6_UNSPECIFIED || fields[1] !== '00') continue
+    const iface = fields.at(-1)
+    if (!iface || iface === 'lo') continue
+    const parsedMetric = Number.parseInt(fields[5], 16)
+    const weight = Number.isFinite(parsedMetric) ? parsedMetric : 0
+    if (!best || weight < best.metric) best = { iface, metric: weight }
+  }
+  return best?.iface
+}
+
+function readRouteTable(path: string): string | undefined {
+  try {
+    return Deno.readTextFileSync(path)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Read this host's default-route interface per family. Best-effort: an empty
+ * object on a non-Linux host, or when `/proc` is not readable.
+ */
+export function readDefaultRouteInterfaces(): DefaultRouteInterfaces {
+  const out: DefaultRouteInterfaces = {}
+  const v4 = readRouteTable('/proc/net/route')
+  if (v4) {
+    const iface = parseIpv4DefaultRouteInterface(v4)
+    if (iface) out.v4 = iface
+  }
+  const v6 = readRouteTable('/proc/net/ipv6_route')
+  if (v6) {
+    const iface = parseIpv6DefaultRouteInterface(v6)
+    if (iface) out.v6 = iface
+  }
+  return out
+}
+
+/**
+ * Deno-only: collect host interface IPs (matches daemon `collectServerIps`).
+ *
+ * Pass {@link readDefaultRouteInterfaces} output to mark addresses on the
+ * default-route NIC as `preferred`, so multi-homed hosts advertise the address
+ * a peer can actually reach them on rather than an arbitrary sorted-first one.
+ */
+export function collectServerIps(
+  defaultRoute?: DefaultRouteInterfaces,
+): ServerReportedIp[] {
   const byAddress = new Map<string, ServerReportedIp>()
 
   for (const addr of Deno.networkInterfaces()) {
@@ -177,12 +260,12 @@ export function collectServerIps(): ServerReportedIp[] {
       if (isPrivateIpv4(addr.address)) {
         rememberIp(
           byAddress,
-          buildReportedIp(addr.address, 4, 'private', addr),
+          buildReportedIp(addr.address, 4, 'private', addr, defaultRoute),
         )
       } else if (isPublicIpv4(addr.address)) {
         rememberIp(
           byAddress,
-          buildReportedIp(addr.address, 4, 'public', addr),
+          buildReportedIp(addr.address, 4, 'public', addr, defaultRoute),
         )
       }
       continue
@@ -191,12 +274,12 @@ export function collectServerIps(): ServerReportedIp[] {
     if (isPrivateIpv6(addr.address)) {
       rememberIp(
         byAddress,
-        buildReportedIp(addr.address, 6, 'private', addr),
+        buildReportedIp(addr.address, 6, 'private', addr, defaultRoute),
       )
     } else if (isPublicIpv6(addr.address)) {
       rememberIp(
         byAddress,
-        buildReportedIp(addr.address, 6, 'public', addr),
+        buildReportedIp(addr.address, 6, 'public', addr, defaultRoute),
       )
     }
   }

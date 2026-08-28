@@ -11,6 +11,12 @@ export type ServerReportedIp = {
   cidr?: string
   /** Host interface name (e.g. `eth0`, `enp1s0`). */
   interface?: string
+  /**
+   * Daemon-side marker: this address sits on the interface carrying the host's
+   * default route for its family. On multi-homed hosts it is the address a
+   * peer would actually reach the host on, so it wins address selection.
+   */
+  preferred?: boolean
 }
 
 /** Workers-safe empty IP list for runtimes without host interface access. */
@@ -37,6 +43,10 @@ function parseOptionalCidr(value: unknown): string | undefined {
   return alignedNetworkCidr(value) ?? undefined
 }
 
+function parseOptionalPreferred(value: unknown): true | undefined {
+  return value === true ? true : undefined
+}
+
 function parseOptionalInterface(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const iface = value.trim()
@@ -60,6 +70,7 @@ function parseServerIpEntry(
   if (cidr) row.cidr = cidr
   const iface = parseOptionalInterface(entry.interface)
   if (iface) row.interface = iface
+  if (parseOptionalPreferred(entry.preferred)) row.preferred = true
   return row
 }
 
@@ -124,7 +135,8 @@ export function serverIpsEquals(
       l.version !== r.version ||
       l.scope !== r.scope ||
       l.cidr !== r.cidr ||
-      l.interface !== r.interface
+      l.interface !== r.interface ||
+      l.preferred !== r.preferred
     ) {
       return false
     }
@@ -145,12 +157,35 @@ export function preferredIpv4FromIps(
   ips: ServerReportedIp[] | null | undefined,
 ): string | undefined {
   if (!ips) return undefined
-  const publicV4 = ips.find((row) => row.scope === 'public' && row.version === 4)
-  if (publicV4) return publicV4.address
-  const privateV4 = ips.find(
-    (row) => row.scope === 'private' && row.version === 4,
+  return pickIpv4(ips, 'public') ?? pickIpv4(ips, 'private')
+}
+
+/**
+ * First IPv4 in `scope`, preferring an address the daemon marked as sitting on
+ * the default-route interface. Without that marker the list is sorted by
+ * address, which on a multi-homed host picks an arbitrary NIC.
+ */
+function pickIpv4(
+  ips: ServerReportedIp[],
+  scope: ServerReportedIpScope,
+): string | undefined {
+  const matching = ips.filter(
+    (row) => row.scope === scope && row.version === 4,
   )
-  return privateV4?.address
+  const onDefaultRoute = matching.find((row) => row.preferred === true)
+  return (onDefaultRoute ?? matching[0])?.address
+}
+
+/** First IPv6 in `scope`, default-route interface first. */
+function pickIpv6(
+  ips: ServerReportedIp[],
+  scope: ServerReportedIpScope,
+): string | undefined {
+  const matching = ips.filter(
+    (row) => row.scope === scope && row.version === 6,
+  )
+  const onDefaultRoute = matching.find((row) => row.preferred === true)
+  return (onDefaultRoute ?? matching[0])?.address
 }
 
 /**
@@ -164,5 +199,23 @@ export function publicIpv4FromIps(
   ips: ServerReportedIp[] | null | undefined,
 ): string | undefined {
   if (!ips) return undefined
-  return ips.find((row) => row.scope === 'public' && row.version === 4)?.address
+  return pickIpv4(ips, 'public')
+}
+
+/**
+ * Best host-reported address in daemon-preference order: public IPv4, public
+ * IPv6, private IPv4, private IPv6 — each preferring the default-route NIC.
+ *
+ * Used when the address the control plane observed on the wire is a proxy
+ * artifact (loopback behind a local reverse proxy, or a forwarded port in
+ * development) rather than the host's own address.
+ */
+export function bestReportedAddress(
+  ips: ServerReportedIp[] | null | undefined,
+): ServerReportedIp | undefined {
+  if (!ips) return undefined
+  const address = pickIpv4(ips, 'public') ?? pickIpv6(ips, 'public') ??
+    pickIpv4(ips, 'private') ?? pickIpv6(ips, 'private')
+  if (!address) return undefined
+  return ips.find((row) => row.address === address)
 }

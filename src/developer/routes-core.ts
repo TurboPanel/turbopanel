@@ -28,7 +28,10 @@ import {
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
 import { organization, server } from '../lib/db/schema.ts'
-import { collectServerIps } from '../server-addresses-deno.ts'
+import {
+  collectServerIps,
+  readDefaultRouteInterfaces,
+} from '../server-addresses-deno.ts'
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 import {
@@ -165,7 +168,7 @@ export function buildDeveloperRouter(
   })
 
   developer.get('/instance/addresses', (c) => {
-    const ips = collectServerIps()
+    const ips = collectServerIps(readDefaultRouteInterfaces())
     return c.json({ ok: true, source: 'instance', ips })
   })
 

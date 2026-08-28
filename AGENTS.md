@@ -449,6 +449,7 @@ dev user. In **production** it is **`2770 tp:tp`** (setgid) so the
 | `TURBOPANEL_TLS_CA_KEY`     | `/var/lib/turbopanel/tls/ca.key` | Durable **Platform CA** private key                                                                                                                                                                                                                           |
 | `TURBOPANEL_TLS_CA_BUNDLE`  | `/var/lib/turbopanel/tls/ca-bundle.pem` | Current+retired **Platform CA** PEM bundle served at `GET /api/daemon/v1/instance/ca`                                                                                                                                                                      |
 | `TURBOPANEL_TLS_EXTRA_SANS` | —                              | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`)                                                                                                                                                                                                                                                           |
+| `TURBOPANEL_TRUSTED_PROXY_CIDRS` | `127.0.0.0/8,::1/128`     | Peer addresses whose `CF-Connecting-IP` / `X-Forwarded-For` the instance believes. Set it when a Cloudflare Tunnel connector or other reverse proxy runs on a **different host** than the instance. **Replaces** the loopback default — include loopback explicitly if Caddy is still co-located. See **Caddy (production) → Server addresses**. |
 | `TURBOPANEL_PUBLIC_URLS`    | —                              | Comma-separated list of URLs/hosts this control plane is reachable at (e.g. `https://panel.example.com,https://huey.lan:8443`). Persisted in the `setting` table by the admin API; read by `generate-self-signed-cert.mjs` to derive cert SANs. Also consulted by `resolvePublicBaseUrl` as the preferred install-command host. |
 
 Path resolution lives in `src/server-paths.ts`. It ships **FHS defaults** —
@@ -673,11 +674,54 @@ The instance uses that header to deduplicate daemon WebSocket reconnects
 (without it, every reconnect looked like a new fleet member behind the proxy),
 and to key the webhook rate limiter per peer address.
 
+Each site block also strips `CF-Connecting-IP`, `True-Client-IP`, and
+`X-Forwarded-For` from any peer that is **not** loopback, so only a connector
+running beside Caddy can present them. See **Server addresses** below.
+
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
 set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
 (Expo proxy, plaintext `:8880`, optional wrangler upstream,
 `/downloads/daemon` + installer at `/run.sh`). See **`../dev/AGENTS.md`**
 (Ansible overlay / Caddyfile).
+
+### Server addresses
+
+`src/lib/peer-address.ts` is the one place that answers "what address is
+this server at". Two distinct questions, deliberately separated:
+
+**Connect time — `resolvePeerAddress()`.** Turns the request headers into
+the peer address stored on the daemon projection. `CF-Connecting-IP` (and
+`X-Forwarded-For`) are read **only when the immediate peer is a trusted proxy**,
+which by default means loopback: the Deno instance listens on a Unix socket, so
+its only direct callers are local processes — Caddy, or a `cloudflared`
+connector beside it. A daemon that dialled Caddy over the network arrives with a
+non-loopback `X-Real-IP` and cannot forge its own address. Widen the trusted set
+with `TURBOPANEL_TRUSTED_PROXY_CIDRS` (comma-separated CIDRs) when the connector
+runs on another host; the value **replaces** the loopback default rather than
+extending it. A loopback value inside a forwarding header is ignored, because
+Caddy synthesizes `X-Forwarded-For: 127.0.0.1` for a loopback peer and that
+would shadow the `X-Real-IP` fallback. Absent every header means a co-located
+daemon dialled the socket: the `__direct__` sentinel, not an error. Workers read
+`CF-Connecting-IP` and nothing else — the edge strips any client copy.
+
+**Read time — `resolveServerAddress()`.** The address on the wire is frequently
+*not* the host's address, so `shapeServerPresenceFields()` reconciles it against
+the interfaces the daemon reported before any reader sees it, and returns
+`address` / `addressSource` / `addressScope` / `addressInterface`. Order:
+`__direct__` → public observed → observed that the daemon also reports on an
+interface → the daemon's best reported interface → an unmatched private observed
+address. **The interface fallback is the whole point.** Behind a co-located
+reverse proxy, or through a forwarded port — every development Vagrant guest,
+which forwards over SSH — the wire address is `127.0.0.1` for *every* server, so
+the panel showed `127.0.0.1` for a LAN host, a Cloudflare Tunnel host, and a
+remote host alike. `remoteAddress` is still exposed, raw, for diagnostics.
+
+Daemons mark the addresses on their **default-route interface** `preferred`
+(`readDefaultRouteInterfaces()`, from `/proc/net/route` and
+`/proc/net/ipv6_route`), so a multi-homed host advertises the NIC a peer would
+actually reach it on instead of whichever address sorted first. The instance
+does the same for its own addresses, which is what builds the install-command
+URL in `resolve-public-base-url.ts`.
 
 ### Certs and entrypoint
 

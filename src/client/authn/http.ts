@@ -46,6 +46,10 @@ import {
   getSharedAuthRateLimiter,
 } from './auth-rate-limit.ts'
 import { isExplicitDevelopmentMode } from '../../dev-mode.ts'
+import {
+  parseTrustedProxyCidrs,
+  resolvePeerAddress,
+} from '../../lib/peer-address.ts'
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
@@ -113,26 +117,41 @@ function requestTls(c: Context, runtime: 'deno' | 'workers') {
 }
 
 /**
- * Resolve the client IP for rate-limit keying from trusted runtime data only.
+ * Resolve the client IP for rate-limit keying and session records, from trusted
+ * runtime data only.
  *
- * - Workers: prefer `CF-Connecting-IP` (edge-stamped). Ignore client-supplied
- *   `X-Real-IP` / `X-Forwarded-For`.
- * - Deno: trust `X-Real-IP` only when served behind the local Caddy → Unix
- *   socket path (the instance does not accept remote TCP). Ignore
- *   `X-Forwarded-For` (client-spoofable).
+ * Shares `resolvePeerAddress` with the daemon transports so one trust model
+ * covers every inbound surface:
+ *
+ * - Workers: `CF-Connecting-IP` (edge-stamped; any client copy is stripped).
+ * - Deno: `X-Real-IP` is Caddy's own socket peer. When that peer is a trusted
+ *   local proxy — loopback by default, so a `cloudflared` connector beside the
+ *   instance — `CF-Connecting-IP` / `X-Forwarded-For` are read instead. Behind a
+ *   Cloudflare Tunnel that is the difference between per-visitor rate-limit
+ *   buckets and every visitor sharing the `127.0.0.1` bucket.
  */
 export function resolveClientIp(
   c: Context,
   runtime: 'deno' | 'workers',
 ): string | null {
-  if (runtime === 'workers') {
-    const cfConnectingIp = c.req.header('CF-Connecting-IP')?.trim()
-    return cfConnectingIp || null
-  }
+  return resolvePeerAddress({
+    realIp: c.req.header('X-Real-IP'),
+    forwardedFor: c.req.header('X-Forwarded-For'),
+    cfConnectingIp: c.req.header('CF-Connecting-IP'),
+  }, { runtime, trustedProxyCidrs: trustedProxyCidrs() })?.address ?? null
+}
 
-  // Deno behind local Caddy (Unix socket) — Caddy stamps X-Real-IP.
-  const realIp = c.req.header('X-Real-IP')?.trim()
-  return realIp || null
+/**
+ * Env-configured trusted proxies, read once per process. `Deno.env` is absent
+ * on Workers, where the trusted-proxy list is unused.
+ */
+let cachedTrustedProxyCidrs: string[] | undefined
+function trustedProxyCidrs(): string[] {
+  cachedTrustedProxyCidrs ??= parseTrustedProxyCidrs(
+    (globalThis as { Deno?: { env?: { get(key: string): string | undefined } } })
+      .Deno?.env?.get('TURBOPANEL_TRUSTED_PROXY_CIDRS'),
+  )
+  return cachedTrustedProxyCidrs
 }
 
 let failClosedWorkersLimiter: AuthRateLimiter | undefined

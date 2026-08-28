@@ -28,6 +28,11 @@ import {
   resolveEffectiveSshPort,
   type NtpDefaults,
 } from '../../lib/host-defaults.ts'
+import {
+  DIRECT_ATTACH_SENTINEL,
+  resolveServerAddress,
+} from '../../lib/peer-address.ts'
+import { parseServerIps } from '../../server-addresses.ts'
 
 export const SERVER_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -444,10 +449,25 @@ export function shapeServerPresenceFields(
   colocated: boolean,
 ) {
   const os = live?.os ?? null
+  const ips = parseServerIps(live?.ips) ?? null
+  // The wire address is not always the host's address: behind a co-located
+  // reverse proxy, a Cloudflare Tunnel connector, or a forwarded port it is
+  // the proxy's. `resolveServerAddress` reconciles it against the interfaces
+  // the daemon reports so readers get one address that is actually the host's.
+  const address = resolveServerAddress({
+    remoteAddress: colocated ? DIRECT_ATTACH_SENTINEL : live?.remoteAddress,
+    ips,
+  })
   return {
     connected: live?.connected ?? false,
     hostname: live?.hostname ?? null,
     remoteAddress: live?.remoteAddress ?? null,
+    /** Best-known network address for this host; `null` until one is known. */
+    address: address && address.source !== 'local' ? address.address : null,
+    /** Which fact `address` came from: `observed` | `interface` | `local`. */
+    addressSource: address?.source ?? null,
+    addressScope: address && address.source !== 'local' ? address.scope : null,
+    addressInterface: address?.interface ?? null,
     colocatedWithInstance: colocated,
     lastInboundAt: live?.lastInboundAt ?? null,
     connectedAt: live?.connectedAt ?? null,
@@ -455,7 +475,7 @@ export function shapeServerPresenceFields(
     geo: live?.geo ?? null,
     ...shapeServerOsFields(os),
     resources: live?.resources ?? null,
-    ips: live?.ips ?? null,
+    ips: ips ?? live?.ips ?? null,
     timeSync: live?.timeSync ?? null,
     docker: live?.docker ?? null,
     runtimes: live?.runtimes ?? null,

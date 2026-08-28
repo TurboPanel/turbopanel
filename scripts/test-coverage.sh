@@ -275,6 +275,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/rehydrate-secrets.hostfree.test.ts \
   src/daemon/execution-log-ingest.hostfree.test.ts \
   src/daemon/execution-log-ingest-route.hostfree.test.ts \
+  src/lib/peer-address.hostfree.test.ts \
   src/daemon/cell/contracts.test.ts \
   src/daemon/cell/do-storage-classify.test.ts \
   src/daemon/deno-ws.test.ts \

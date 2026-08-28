@@ -2,7 +2,10 @@ import type { Context } from 'hono'
 import { getPublicUrls, publicUrlEntryToInstallOrigin } from '../admin/public-urls.ts'
 import { getDb } from '../db.ts'
 import { preferredIpv4FromIps } from '../server-addresses.ts'
-import { collectServerIps } from '../server-addresses-deno.ts'
+import {
+  collectServerIps,
+  readDefaultRouteInterfaces,
+} from '../server-addresses-deno.ts'
 
 function readCaddyPort(): string {
   if (typeof Deno === 'undefined') return '8443'
@@ -105,7 +108,9 @@ export async function resolvePublicBaseUrl(
 
   const port = readCaddyPort()
   if (typeof Deno !== 'undefined') {
-    const host = preferredIpv4FromIps(collectServerIps()) || 'localhost'
+    const host =
+      preferredIpv4FromIps(collectServerIps(readDefaultRouteInterfaces())) ||
+      'localhost'
     return `https://${host}:${port}`
   }
 

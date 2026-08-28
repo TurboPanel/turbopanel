@@ -29,6 +29,11 @@ import {
   DEVELOPER_WS_PATH,
 } from "../surfaces.ts";
 import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
+import {
+  DIRECT_ATTACH_SENTINEL,
+  parseTrustedProxyCidrs,
+  resolvePeerAddress,
+} from "../lib/peer-address.ts";
 import { resourcesFromDaemonPresence } from "../lib/db/server-metadata.ts";
 import { touchServerMetadata } from "../server-registry.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
@@ -334,7 +339,26 @@ export type DaemonWebSocketOptions = {
   inboundMessageLimit?: number;
   inboundMessageWindowMs?: number;
   commandQueue?: CommandQueue;
+  /**
+   * Peer addresses whose forwarding headers are believed. Defaults to loopback
+   * (`TURBOPANEL_TRUSTED_PROXY_CIDRS` widens it for a connector on another
+   * host); see `peer-address.ts`.
+   */
+  trustedProxyCidrs?: readonly string[];
 };
+
+/**
+ * Env-configured trusted proxies, read once per process. `Deno.env` is absent
+ * on Workers, where this transport is not registered at all.
+ */
+let cachedTrustedProxyCidrs: string[] | undefined;
+function trustedProxyCidrs(): string[] {
+  cachedTrustedProxyCidrs ??= parseTrustedProxyCidrs(
+    (globalThis as { Deno?: { env?: { get(key: string): string | undefined } } })
+      .Deno?.env?.get("TURBOPANEL_TRUSTED_PROXY_CIDRS"),
+  );
+  return cachedTrustedProxyCidrs;
+}
 
 export function registerDaemonWebSocket<E extends Env>(
   app: Hono<E>,
@@ -383,9 +407,20 @@ export function registerDaemonWebSocket<E extends Env>(
     }
 
     return upgradeWebSocket((c) => {
-      const remoteAddress = c.req.header("x-real-ip")?.trim() ||
-        c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
-      const identityAddress = remoteAddress ?? "__direct__";
+      // CF-Connecting-IP is honoured only when the immediate peer is a trusted
+      // local proxy, so a Cloudflare Tunnel in front of the instance reports
+      // the daemon's real address while a daemon dialling Caddy directly
+      // cannot forge one. See `peer-address.ts`.
+      const peer = resolvePeerAddress({
+        realIp: c.req.header("x-real-ip"),
+        forwardedFor: c.req.header("x-forwarded-for"),
+        cfConnectingIp: c.req.header("cf-connecting-ip"),
+      }, {
+        runtime: "deno",
+        trustedProxyCidrs: options.trustedProxyCidrs ?? trustedProxyCidrs(),
+      });
+      const remoteAddress = peer?.address;
+      const identityAddress = remoteAddress ?? DIRECT_ATTACH_SENTINEL;
       const connectedAt = new Date().toISOString();
 
       let connectionId: string | undefined;
@@ -524,7 +559,7 @@ export function registerDaemonWebSocket<E extends Env>(
             return;
           }
 
-          if (identityAddress === "__direct__") {
+          if (identityAddress === DIRECT_ATTACH_SENTINEL) {
             const daemonRow = await getServerDaemonStateByServerId(
               db,
               payload.sub,
@@ -557,8 +592,8 @@ export function registerDaemonWebSocket<E extends Env>(
             remoteAddress: identityAddress,
           });
 
-          const connectedFromSuffix = remoteAddress
-            ? ` from ${remoteAddress}`
+          const connectedFromSuffix = peer
+            ? ` from ${peer.address} (${peer.source})`
             : "";
           daemonCellLog(
             "INFO",
@@ -567,7 +602,7 @@ export function registerDaemonWebSocket<E extends Env>(
             `daemon connected${connectedFromSuffix}`,
           );
 
-          if (identityAddress === "__direct__") {
+          if (identityAddress === DIRECT_ATTACH_SENTINEL) {
             assignColocatedDaemonOnConnect(db, registry);
           }
 

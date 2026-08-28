@@ -9,10 +9,13 @@ import {
   deriveIpVersion,
   formatCidr,
   inferSiteCidrFromAddress,
+  ipAddressScope,
   ipToBigInt,
+  isRoutableHostAddress,
   isValidCidr,
   isValidIpAddress,
   nextFreeHostAddress,
+  normalizeIpAddress,
   parseCidr,
   parseIpVersion,
 } from "./ip-address.ts";
@@ -167,4 +170,44 @@ test("nextFreeHostAddress strips inet /prefix suffixes from used set", () => {
     nextFreeHostAddress("203.0.113.0/30", ["203.0.113.1/32"]),
     "203.0.113.2",
   );
+});
+
+test("normalizeIpAddress canonicalizes the forms proxies actually emit", () => {
+  assertEquals(normalizeIpAddress("  203.0.113.9  "), "203.0.113.9");
+  assertEquals(normalizeIpAddress("203.0.113.9/32"), "203.0.113.9");
+  assertEquals(normalizeIpAddress("::ffff:203.0.113.9"), "203.0.113.9");
+  assertEquals(normalizeIpAddress("[2001:db8::5]"), "2001:db8::5");
+  assertEquals(normalizeIpAddress("fe80::1%eth0"), "fe80::1");
+  assertEquals(normalizeIpAddress("not-an-ip"), null);
+  assertEquals(normalizeIpAddress(undefined), null);
+  assertEquals(normalizeIpAddress(42), null);
+});
+
+test("ipAddressScope separates reachable host addresses from artifacts", () => {
+  assertEquals(ipAddressScope("203.0.113.9"), "public");
+  assertEquals(ipAddressScope("2001:db8::5"), "public");
+  assertEquals(ipAddressScope("10.0.0.5"), "private");
+  assertEquals(ipAddressScope("172.16.0.1"), "private");
+  assertEquals(ipAddressScope("192.168.1.50"), "private");
+  assertEquals(ipAddressScope("100.64.0.3"), "private");
+  assertEquals(ipAddressScope("fd00::1"), "private");
+  assertEquals(ipAddressScope("127.0.0.1"), "loopback");
+  assertEquals(ipAddressScope("::1"), "loopback");
+  assertEquals(ipAddressScope("169.254.10.1"), "link-local");
+  assertEquals(ipAddressScope("fe80::1"), "link-local");
+  // Never a host address a peer could reach.
+  assertEquals(ipAddressScope("0.0.0.0"), null);
+  assertEquals(ipAddressScope("::"), null);
+  assertEquals(ipAddressScope("224.0.0.1"), null);
+  assertEquals(ipAddressScope("255.255.255.255"), null);
+  assertEquals(ipAddressScope("ff02::1"), null);
+  assertEquals(ipAddressScope("garbage"), null);
+});
+
+test("isRoutableHostAddress accepts private and public only", () => {
+  assertEquals(isRoutableHostAddress("203.0.113.9"), true);
+  assertEquals(isRoutableHostAddress("192.168.1.50"), true);
+  assertEquals(isRoutableHostAddress("127.0.0.1"), false);
+  assertEquals(isRoutableHostAddress("fe80::1"), false);
+  assertEquals(isRoutableHostAddress(""), false);
 });

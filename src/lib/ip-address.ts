@@ -357,3 +357,82 @@ export function nextFreeHostAddress(
   }
   return null
 }
+
+const IPV4_MAPPED_PREFIX_RE = /^(?:::ffff:|::ffff:0:)/i
+
+/**
+ * Canonicalize an address as it arrives off the wire.
+ *
+ * Strips a `%zone` suffix, an `inet` `/prefix` suffix, `[]` brackets, and
+ * unwraps IPv4-mapped IPv6 (`::ffff:203.0.113.9` → `203.0.113.9`). Reverse
+ * proxies and socket APIs emit all four forms for what is one address, and
+ * every downstream comparison here is string equality.
+ *
+ * Returns `null` when the result is not a valid IP.
+ */
+export function normalizeIpAddress(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  let candidate = stripInetPrefixSuffix(value.trim())
+  if (candidate.startsWith('[') && candidate.endsWith(']')) {
+    candidate = candidate.slice(1, -1)
+  }
+  const zone = candidate.indexOf('%')
+  if (zone > 0) candidate = candidate.slice(0, zone)
+  const mapped = candidate.replace(IPV4_MAPPED_PREFIX_RE, '')
+  if (mapped !== candidate && IPV4_ADDRESS_RE.test(mapped)) return mapped
+  return isValidIpAddress(candidate) ? candidate : null
+}
+
+export type IpAddressScope = 'loopback' | 'link-local' | 'private' | 'public'
+
+const LOOPBACK_CIDRS = ['127.0.0.0/8', '::1/128'] as const // NOSONAR typescript:S1313 — IANA loopback classification ranges
+const LINK_LOCAL_CIDRS = [
+  '169.254.0.0/16', // NOSONAR typescript:S1313 — RFC3927 IPv4 link-local classification
+  'fe80::/10', // NOSONAR typescript:S1313 — RFC4291 IPv6 link-local classification
+] as const
+/**
+ * Not globally routable, but a real host address a peer on the same network
+ * can reach. `100.64.0.0/10` (RFC 6598) is here because carrier-grade NAT and
+ * Tailscale both hand out addresses from it.
+ */
+const PRIVATE_CIDRS = [
+  '10.0.0.0/8', // NOSONAR typescript:S1313 — RFC1918 private classification
+  '172.16.0.0/12', // NOSONAR typescript:S1313 — RFC1918 private classification
+  '192.168.0.0/16', // NOSONAR typescript:S1313 — RFC1918 private classification
+  '100.64.0.0/10', // NOSONAR typescript:S1313 — RFC6598 CGNAT classification
+  'fc00::/7', // NOSONAR typescript:S1313 — RFC4193 ULA classification
+] as const
+/** Never a host address: unspecified, multicast, broadcast. */
+const UNUSABLE_CIDRS = [
+  '0.0.0.0/8', // NOSONAR typescript:S1313 — unspecified IPv4, not a host
+  '224.0.0.0/4', // NOSONAR typescript:S1313 — IPv4 multicast classification
+  '255.255.255.255/32', // NOSONAR typescript:S1313 — IPv4 limited broadcast, not a host
+  '::/128', // NOSONAR typescript:S1313 — unspecified IPv6, not a host
+  'ff00::/8', // NOSONAR typescript:S1313 — IPv6 multicast classification
+] as const
+
+function matchesAny(address: string, cidrs: readonly string[]): boolean {
+  return cidrs.some((cidr) => addressInCidr(address, cidr))
+}
+
+/**
+ * Classify an address for "can a peer reach the host on this?".
+ *
+ * `null` means the value is not an address a host can be reached on at all
+ * (malformed, unspecified, multicast, broadcast).
+ */
+export function ipAddressScope(value: string): IpAddressScope | null {
+  const address = normalizeIpAddress(value)
+  if (!address) return null
+  if (matchesAny(address, UNUSABLE_CIDRS)) return null
+  if (matchesAny(address, LOOPBACK_CIDRS)) return 'loopback'
+  if (matchesAny(address, LINK_LOCAL_CIDRS)) return 'link-local'
+  if (matchesAny(address, PRIVATE_CIDRS)) return 'private'
+  return 'public'
+}
+
+/** True when a peer on some network could reach the host at this address. */
+export function isRoutableHostAddress(value: string): boolean {
+  const scope = ipAddressScope(value)
+  return scope === 'private' || scope === 'public'
+}
