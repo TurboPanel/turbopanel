@@ -1384,12 +1384,21 @@ export type EnvironmentDeployCommandPayload = {
    */
   ingressServices?: EnvironmentDeployIngressService[];
   /**
-   * Shared HTTP loopback Traefik identity (`turbopanel-ingress` / compose
-   * service `traefik`). Present when this deploy routes HTTP hostnames.
-   * `containerName` must equal `<serviceId>-in` (platform hosting-ingress
-   * service, not the tenant Adminer/web service).
+   * Shared HTTP loopback Traefik identity (compose service `traefik`).
+   * Present when this deploy routes HTTP hostnames. `containerName` must
+   * equal `<serviceId>-in` (platform hosting-ingress service, not the tenant
+   * Adminer/web service).
    */
   hostingIngress?: EnvironmentDeployIngressService;
+  /**
+   * Docker network name of the shared hosting ingress — the `hosting-ingress`
+   * system component's allocated `serviceId` (a bare UUID). Names the external
+   * network every routed container and every tenant Traefik joins, and the
+   * shared proxy's own compose project. Required exactly when `hostings` is
+   * non-empty; absent otherwise. Rides the wire rather than being
+   * reconstructed from a literal, the same way `managedNetwork` does.
+   */
+  hostingIngressNetwork?: string;
   /** External Docker networks referenced in compose — ensured on the host before compose up. */
   dockerExternalNetworks?: string[];
   /**
@@ -1400,12 +1409,20 @@ export type EnvironmentDeployCommandPayload = {
    */
   fabricNetworks?: EnvironmentDeployFabricNetwork[];
   /**
-   * Compose service names that must join the daemon's shared managed-ingress
-   * network (`turbopanel-managed`) so a managed-database binding endpoint
-   * (a ProxySQL container name) resolves. Platform-managed — never
-   * operator-registered like `dockerExternalNetworks`.
+   * Compose service names that must join the server-owner organization's
+   * managed network so a managed-database binding endpoint (a ProxySQL
+   * container name) resolves. Platform-managed — never operator-registered
+   * like `dockerExternalNetworks`. The Docker network name itself rides the
+   * sibling {@link EnvironmentDeployCommandPayload.managedNetwork} field
+   * rather than being reconstructed from a literal.
    */
   managedNetworkServices?: string[];
+  /**
+   * Docker network name of the server-owner organization's managed network
+   * (the `network.kind = 'managed'` row's bare UUID). Required when
+   * `managedNetworkServices` is non-empty; absent otherwise.
+   */
+  managedNetwork?: string;
   /**
    * When true, the daemon runs `docker compose build --no-cache --pull`
    * before `up` (cacheless redeploy).
@@ -2689,6 +2706,74 @@ function parseDeployFabricNetworks(
   return value.map(parseDeployFabricNetworkEntry);
 }
 
+/**
+ * The organization's managed Docker network name — a `network.kind='managed'`
+ * row's bare UUID. Validated as a Docker resource name so a skewed/forged
+ * control plane cannot smuggle an arbitrary string into a daemon `docker
+ * network` argument.
+ */
+function parseManagedNetworkName(value: unknown, message: string): string {
+  if (!isString(value) || !isValidDockerResourceName(value)) {
+    throw new TypeError(message);
+  }
+  return value;
+}
+
+/**
+ * `managedNetwork` is required exactly when at least one compose service joins
+ * it; an unused value is rejected rather than silently dropped.
+ */
+function parseDeployManagedNetwork(
+  value: unknown,
+  services: string[] | undefined,
+): string | undefined {
+  if (services === undefined || services.length === 0) {
+    if (value !== undefined) {
+      throw new Error("Invalid environment.deploy payload");
+    }
+    return undefined;
+  }
+  return parseManagedNetworkName(value, "Invalid environment.deploy payload");
+}
+
+/**
+ * `hostingIngressNetwork` is required exactly when this deploy carries at
+ * least one hosting — every routed container joins the shared ingress network,
+ * and a tcp/udp-only deploy needs it for its per-service Traefik even though
+ * `hostingIngress` (the HTTP proxy identity) is absent. An unused value is
+ * rejected rather than silently dropped, mirroring `managedNetwork`.
+ *
+ * The value names *both* the shared ingress Docker network and the shared
+ * Traefik compose project, so it is validated with the stricter Compose
+ * `name:` rule the daemon enforces at render time
+ * (`assertSafeComposeProjectName` in `turbopaneld/src/deploy/ingress.ts`)
+ * rather than the broader Docker-resource rule — otherwise a payload parses
+ * here and dies only during apply. When `hostingIngress` is present it must
+ * also equal that service's `serviceId`: the shared hosting-ingress network
+ * and compose project are both named by the system component's allocated
+ * service UUID, and a skewed payload would otherwise persist one identity
+ * while deploying the project/network under another.
+ */
+function parseDeployHostingIngressNetwork(
+  value: unknown,
+  hostingCount: number,
+  hostingIngress: EnvironmentDeployIngressService | undefined,
+): string | undefined {
+  if (hostingCount === 0) {
+    if (value !== undefined) {
+      throw new Error("Invalid environment.deploy payload");
+    }
+    return undefined;
+  }
+  if (!isString(value) || !isComposeProjectName(value)) {
+    throw new TypeError("Invalid environment.deploy payload");
+  }
+  if (hostingIngress !== undefined && value !== hostingIngress.serviceId) {
+    throw new Error("Invalid environment.deploy payload");
+  }
+  return value;
+}
+
 function parseDeployManagedNetworkServices(
   value: unknown,
 ): string[] | undefined {
@@ -2946,10 +3031,15 @@ export function parseEnvironmentDeployPayload(
     throw new Error("Invalid environment.deploy payload");
   }
   const strings = requireDeployPayloadStrings(value);
+  const managedNetworkServices = parseDeployManagedNetworkServices(
+    value.managedNetworkServices,
+  );
+  const hostings = parseDeployHostings(value.hostings);
+  const hostingIngress = parseDeployHostingIngress(value.hostingIngress);
   return {
     ...strings,
     composeFiles: parseDeployComposeFiles(value.composeFiles),
-    hostings: parseDeployHostings(value.hostings),
+    hostings,
     ...omitUndefinedEntries({
       sites: parseDeploySites(
         value.sites,
@@ -2957,13 +3047,20 @@ export function parseEnvironmentDeployPayload(
       nativeAppServices: parseDeployNativeAppServices(value.nativeAppServices),
       sourceMaterial: parseDeploySourceMaterial(value.sourceMaterial),
       ingressServices: parseDeployIngressServices(value.ingressServices),
-      hostingIngress: parseDeployHostingIngress(value.hostingIngress),
+      hostingIngress,
+      hostingIngressNetwork: parseDeployHostingIngressNetwork(
+        value.hostingIngressNetwork,
+        hostings.length,
+        hostingIngress,
+      ),
       dockerExternalNetworks: parseDeployDockerExternalNetworks(
         value.dockerExternalNetworks,
       ),
       fabricNetworks: parseDeployFabricNetworks(value.fabricNetworks),
-      managedNetworkServices: parseDeployManagedNetworkServices(
-        value.managedNetworkServices,
+      managedNetworkServices,
+      managedNetwork: parseDeployManagedNetwork(
+        value.managedNetwork,
+        managedNetworkServices,
       ),
       noCache: parseOptionalDeployNoCache(value.noCache),
       tlsMaterial: parseDeployTlsMaterial(value.tlsMaterial),
@@ -3718,6 +3815,11 @@ export type ManagedApplyCommandPayload = {
   projectName: string;
   /** Compose `container_name` — `<service.id>-<memberOrdinal>` from pre-allocation. */
   containerName: string;
+  /**
+   * Docker network name of the server-owner organization's managed network
+   * (the `network.kind = 'managed'` row's bare UUID).
+   */
+  managedNetwork: string;
   image: string;
   containerPort: number;
   composeYaml: string;
@@ -3911,6 +4013,11 @@ export type ManagedIngressReconcileCluster = {
 export type ManagedIngressReconcileCommandPayload = {
   serverId: string;
   /**
+   * Docker network name of the server-owner organization's managed network
+   * (the `network.kind = 'managed'` row's bare UUID).
+   */
+  managedNetwork: string;
+  /**
    * Every host address the client listeners publish on. More than one entry
    * when an access scope resolves to distinct interfaces (datacenter private IP
    * plus TurboFabric `tp0`); empty/absent means no host publish at all.
@@ -3991,6 +4098,11 @@ export type ManagedHaCluster = {
 /** Must stay in sync with the daemon `managed.ha.reconcile` shape. */
 export type ManagedHaReconcileCommandPayload = {
   serverId: string;
+  /**
+   * Docker network name of the server-owner organization's managed network
+   * (the `network.kind = 'managed'` row's bare UUID).
+   */
+  managedNetwork: string;
   desired: ManagedHaReconcileDesired;
   raft: ManagedHaRaftConfig | null;
   clusters: ManagedHaCluster[];
@@ -4661,6 +4773,8 @@ export function parseManagedApplyPayload(
     !isComposeProjectName(value.projectName) ||
     !isString(value.containerName) ||
     !isValidDockerResourceName(value.containerName) ||
+    !isString(value.managedNetwork) ||
+    !isValidDockerResourceName(value.managedNetwork) ||
     !isString(value.image) ||
     !isValidManagedImageRef(value.image) ||
     !isValidPortNumber(value.containerPort) ||
@@ -4729,6 +4843,7 @@ export function parseManagedApplyPayload(
     engine: value.engine,
     projectName: value.projectName,
     containerName: value.containerName,
+    managedNetwork: value.managedNetwork,
     image: value.image,
     containerPort: value.containerPort,
     composeYaml: value.composeYaml,
@@ -5409,6 +5524,10 @@ export function parseManagedIngressReconcilePayload(
   const orgTlsMaterial = parseManagedApplyOrgTlsMaterial(value.orgTlsMaterial);
   const payload: ManagedIngressReconcileCommandPayload = {
     serverId: value.serverId,
+    managedNetwork: parseManagedNetworkName(
+      value.managedNetwork,
+      "Invalid managed.ingress.reconcile payload",
+    ),
     clusters: value.clusters.map(parseManagedIngressReconcileCluster),
   };
   if (orgTlsMaterial !== undefined) {
@@ -5648,6 +5767,10 @@ export function parseManagedHaReconcilePayload(
   const orgTlsMaterial = parseManagedApplyOrgTlsMaterial(value.orgTlsMaterial);
   const payload: ManagedHaReconcileCommandPayload = {
     serverId: value.serverId,
+    managedNetwork: parseManagedNetworkName(
+      value.managedNetwork,
+      "Invalid managed.ha.reconcile payload",
+    ),
     desired: value.desired,
     raft,
     clusters: value.clusters.map(parseManagedHaCluster),

@@ -327,18 +327,24 @@ export function registerNetworkRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanOr403(c, 'organization:manage', 'network', id)
     if (denied) return denied
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const scopePatchDenied = rejectImmutableNetworkScopePatch(c, body)
-    if (scopePatchDenied) return scopePatchDenied
-
     const [existing] = await db
       .select({ kind: network.kind })
       .from(network)
       .where(eq(network.id, id))
       .limit(1)
     if (!existing) return c.json({ error: 'Not found' }, 404)
+
+    // Platform-allocated org-wide managed-engine network — the registry row is
+    // read-only to operators, so refuse before reading any patch body.
+    if (existing.kind === 'managed') {
+      return c.json({ error: 'managed_network_immutable' }, 400)
+    }
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+
+    const scopePatchDenied = rejectImmutableNetworkScopePatch(c, body)
+    if (scopePatchDenied) return scopePatchDenied
 
     const patchFields = parseNetworkPatchFields(c, body, existing.kind)
     if (patchFields instanceof Response) return patchFields
@@ -367,6 +373,19 @@ export function registerNetworkRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const denied = await assertCanOr403(c, 'organization:manage', 'network', id)
     if (denied) return denied
+
+    const [existing] = await db
+      .select({ kind: network.kind })
+      .from(network)
+      .where(eq(network.id, id))
+      .limit(1)
+    if (!existing) return c.json({ error: 'Not found' }, 404)
+
+    // Platform-allocated org-wide managed-engine network — reclaiming it is
+    // not an operator action.
+    if (existing.kind === 'managed') {
+      return c.json({ error: 'managed_network_immutable' }, 400)
+    }
 
     await db.delete(network).where(eq(network.id, id))
 

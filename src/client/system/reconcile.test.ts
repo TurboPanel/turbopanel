@@ -5,18 +5,22 @@ import { createDenoDb } from '../../db.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
 import {
+  binding,
   command,
   dispatch,
   container,
   environment,
   hosting,
+  managed,
   organization,
+  principal,
   project,
   server,
   service,
   workspace,
 } from '../../lib/db/schema.ts'
 import {
+  ensureManagedIngressHierarchy,
   ensureSelfHostSystemHierarchy,
   ensureSystemHierarchy,
   SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
@@ -571,5 +575,179 @@ test('enqueueSystemReconcile passes restart action into the command payload', as
       .limit(1)
     const payload = record?.payload as { action?: string } | null
     assertEquals(payload?.action, 'restart')
+  })
+})
+
+/**
+ * Consumer-only server: a tenant service on this host is bound to a managed
+ * cluster whose members all live elsewhere, so no local `replica` row exists.
+ * Only the managed-ingress (ProxySQL) hierarchy is provisioned, so any sweep
+ * enqueue must come from the managed-ingress candidate branch.
+ */
+async function withConsumerOnlyManagedFixtures(
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    serverId: string
+    queue: ReturnType<typeof createRecordingCommandQueue>
+  }) => Promise<void>,
+): Promise<void> {
+  if (!dbUrl) {
+    console.warn(
+      'Skipping consumer-only managed-ingress tests: TURBOPANEL_DATABASE_URL not set',
+    )
+    return
+  }
+
+  const db = createDenoDb()
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ name: 'Managed Consumer Sweep Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      name: 'Managed Consumer Sweep Server',
+      isConnected: true,
+      statusChangedAt: now,
+      // Hosting off so the hosting-ingress branch can never be the reason a
+      // candidate row appears.
+      options: { hosting: { enabled: false } },
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  await ensureManagedIngressHierarchy(db, { organizationId, serverId })
+
+  const [ws] = await db
+    .insert(workspace)
+    .values({ organizationId, name: 'Tenant Workspace' })
+    .returning({ id: workspace.id })
+  const [proj] = await db
+    .insert(project)
+    .values({
+      workspaceId: ws!.id,
+      name: 'Tenant Project',
+      metadata: { type: 'docker-compose' },
+    })
+    .returning({ id: project.id })
+  // Consumer environment pinned to this server; the cluster lives elsewhere.
+  const [consumerEnv] = await db
+    .insert(environment)
+    .values({ projectId: proj!.id, serverId, name: 'Production' })
+    .returning({ id: environment.id })
+  const [consumerSvc] = await db
+    .insert(service)
+    .values({
+      environmentId: consumerEnv!.id,
+      name: 'app',
+      composeServiceName: 'app',
+    })
+    .returning({ id: service.id })
+
+  // Managed cluster with no `replica` row on this server (no members at all).
+  const [clusterEnv] = await db
+    .insert(environment)
+    .values({ projectId: proj!.id, serverId: null, name: 'Managed' })
+    .returning({ id: environment.id })
+  const [cluster] = await db
+    .insert(managed)
+    .values({
+      environmentId: clusterEnv!.id,
+      serverId: null,
+      name: 'app-db',
+      engine: 'postgres',
+      status: 'ready',
+    })
+    .returning({ id: managed.id })
+  const [account] = await db
+    .insert(principal)
+    .values({
+      kind: 'database',
+      provider: 'postgres',
+      username: 'appuser',
+      managedId: cluster!.id,
+    })
+    .returning({ id: principal.id })
+  const [bound] = await db
+    .insert(binding)
+    .values({
+      principalId: account!.id,
+      serviceId: consumerSvc!.id,
+      databaseName: 'appdb',
+    })
+    .returning({ id: binding.id })
+
+  const queue = createRecordingCommandQueue()
+  try {
+    await fn({ db, serverId, queue })
+  } finally {
+    await db.delete(binding).where(eq(binding.id, bound!.id))
+    await db.delete(principal).where(eq(principal.id, account!.id))
+    await db.delete(managed).where(eq(managed.id, cluster!.id))
+    await cleanupOrg(db, organizationId, serverId)
+  }
+}
+
+test('runSystemReconcileSweep enqueues for a consumer-only managed-ingress server', async () => {
+  await withConsumerOnlyManagedFixtures(async ({ db, serverId, queue }) => {
+    // ProxySQL row is still pending / has no Docker id — post-boot self-heal.
+    const result = await runSystemReconcileSweep(db, queue)
+    assertEquals(result.enqueued, 1)
+    assertEquals(queue.envelopes.length, 1)
+    assertEquals(queue.envelopes[0]?.serverId, serverId)
+    assertEquals(queue.envelopes[0]?.type, 'system.reconcile')
+
+    // The payload for that server wants ProxySQL up on bound consumers alone.
+    const payloads = await buildSystemReconcilePayload(db, { serverId })
+    assertEquals(payloads.length, 1)
+    assertEquals(payloads[0]?.components[0]?.desired, 'present')
+
+    // Throttle: a second sweep inside the window must not enqueue again.
+    const secondQueue = createRecordingCommandQueue()
+    const second = await runSystemReconcileSweep(db, secondQueue)
+    assertEquals(second.enqueued, 0)
+    assertEquals(secondQueue.envelopes.length, 0)
+  })
+})
+
+test('runSystemReconcileSweep re-observes a consumer-only ProxySQL after reconnect', async () => {
+  await withConsumerOnlyManagedFixtures(async ({ db, serverId, queue }) => {
+    // Inventory still says running from before the offline window; only the
+    // recent `status_changed_at` (fixture default = now) makes it a candidate.
+    await db
+      .update(container)
+      .set({ status: 'running', containerId: 'stale-proxysql-cid' })
+      .where(eq(container.serverId, serverId))
+
+    const result = await runSystemReconcileSweep(db, queue)
+    assertEquals(result.enqueued, 1)
+    assertEquals(queue.envelopes.length, 1)
+    assertEquals(queue.envelopes[0]?.serverId, serverId)
+  })
+})
+
+test('runSystemReconcileSweep skips a steady-state consumer-only ProxySQL', async () => {
+  await withConsumerOnlyManagedFixtures(async ({ db, serverId, queue }) => {
+    const staleOnlineAt = new Date(
+      Date.now() - SYSTEM_RECONCILE_MIN_INTERVAL_MS - 60_000,
+    ).toISOString()
+    await db
+      .update(server)
+      .set({ statusChangedAt: staleOnlineAt })
+      .where(eq(server.id, serverId))
+    await db
+      .update(container)
+      .set({ status: 'running', containerId: 'running-proxysql-cid' })
+      .where(eq(container.serverId, serverId))
+
+    const result = await runSystemReconcileSweep(db, queue)
+    assertEquals(result.enqueued, 0)
+    assertEquals(queue.envelopes.length, 0)
   })
 })

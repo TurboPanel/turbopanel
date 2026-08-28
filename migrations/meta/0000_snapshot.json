@@ -1,5 +1,5 @@
 {
-  "id": "7bff2f7c-ee38-40b6-920d-520296bcb366",
+  "id": "3ba8776e-551f-4e3d-a614-950c5edff606",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -4116,6 +4116,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "uniq_network_organization_managed": {
+          "name": "uniq_network_organization_managed",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"network\".\"kind\" = 'managed'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -4165,11 +4181,11 @@
       "checkConstraints": {
         "network_kind_check": {
           "name": "network_kind_check",
-          "value": "kind IN ('datacenter', 'docker', 'compose')"
+          "value": "kind IN ('datacenter', 'docker', 'compose', 'managed')"
         },
         "network_single_scope_check": {
           "name": "network_single_scope_check",
-          "value": "(\n        (\"network\".\"kind\" = 'datacenter' AND \"network\".\"datacenter_id\" IS NOT NULL AND \"network\".\"server_id\" IS NULL AND \"network\".\"environment_id\" IS NULL AND \"network\".\"cidr\" IS NOT NULL) OR\n        (\"network\".\"kind\" = 'docker' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"environment_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'compose' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"server_id\" IS NULL)\n      )"
+          "value": "(\n        (\"network\".\"kind\" = 'datacenter' AND \"network\".\"datacenter_id\" IS NOT NULL AND \"network\".\"server_id\" IS NULL AND \"network\".\"environment_id\" IS NULL AND \"network\".\"cidr\" IS NOT NULL) OR\n        (\"network\".\"kind\" = 'docker' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"environment_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'compose' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"server_id\" IS NULL) OR\n        (\"network\".\"kind\" = 'managed' AND \"network\".\"datacenter_id\" IS NULL AND \"network\".\"server_id\" IS NULL AND \"network\".\"environment_id\" IS NULL AND \"network\".\"cidr\" IS NULL)\n      )"
         },
         "network_name_format_check": {
           "name": "network_name_format_check",

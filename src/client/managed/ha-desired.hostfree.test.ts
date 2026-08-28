@@ -30,6 +30,8 @@ import {
 const test = Deno.test.bind(Deno)
 
 const SERVER_A = '550e8400-e29b-41d4-a716-446655440000'
+/** Org-wide managed Docker network name — a `network.kind='managed'` row id. */
+const MANAGED_NETWORK = '9f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f'
 const SERVER_B = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
 const REMOTE_HOST = '203.0.113.10'
 
@@ -142,7 +144,7 @@ test('haIdentity and haTeardownIfPresent describe an absent Orchestrator', () =>
     composeServiceName: SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
     containerName: 'svc-ha-ha',
   })
-  assertEquals(haTeardownIfPresent(SERVER_A, null), null)
+  assertEquals(haTeardownIfPresent(SERVER_A, null, MANAGED_NETWORK), null)
 
   const payload = haTeardownIfPresent(SERVER_A, {
     workspaceId: 'ws',
@@ -151,9 +153,10 @@ test('haIdentity and haTeardownIfPresent describe an absent Orchestrator', () =>
     serviceId: 'svc-ha',
     containerRowId: 'row',
     containerName: 'svc-ha-ha',
-  })
+  }, MANAGED_NETWORK)
   assertEquals(payload?.desired, 'absent')
   assertEquals(payload?.serverId, SERVER_A)
+  assertEquals(payload?.managedNetwork, MANAGED_NETWORK)
   assertEquals(payload?.identity.containerName, 'svc-ha-ha')
   assertEquals(payload?.clusters, [])
   assertEquals(payload?.raft, null)
@@ -165,7 +168,7 @@ test('haIdentity and haTeardownIfPresent describe an absent Orchestrator', () =>
     serviceId: 'svc-ha',
     containerRowId: 'row',
     containerName: undefined as unknown as string,
-  })
+  }, MANAGED_NETWORK)
   assertEquals(unnamed?.identity.containerName, 'svc-ha')
 })
 

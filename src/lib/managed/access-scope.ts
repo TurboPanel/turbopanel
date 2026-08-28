@@ -8,7 +8,7 @@
  *
  * | Scope         | Client path                                                     |
  * | ------------- | --------------------------------------------------------------- |
- * | `local`       | loopback + `turbopanel-managed` / spanning segments only        |
+ * | `local`       | loopback + the org managed network / spanning segments only     |
  * | `datacenter`  | ProxySQL published on the server's datacenter private address   |
  * | `turbofabric` | ProxySQL published on the server's TurboFabric (`tp0`) address  |
  * | `public`      | ProxySQL published on all interfaces                            |

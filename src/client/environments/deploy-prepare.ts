@@ -88,12 +88,14 @@ import {
 import {
   parseProjectOptions,
   resolveContainerNaming,
+  resolveEffectivePlacementServerId,
 } from "../../lib/project-options.ts";
 import {
   parseServiceOptions,
   resolveServiceInstances,
 } from "../../lib/service-options.ts";
 import { validateRegisteredExternalDockerNetworks } from "./validate-docker-external-networks.ts";
+import { ensureOrganizationManagedNetwork } from "../../lib/db/fabric-records.ts";
 import type { DesiredSlotInput } from "../../lib/db/slot-records.ts";
 import {
   localReplicaCounts,
@@ -390,12 +392,17 @@ export type PreparedDeployCompose = {
    */
   fabricNetworks: EnvironmentDeployFabricNetwork[];
   /**
-   * Compose service names that must join the daemon's shared managed-ingress
-   * network so their managed-database binding endpoint (a ProxySQL container
-   * name) resolves. Disjoint from `dockerExternalNetworks` — this is a
-   * platform network, never operator-registered.
+   * Compose service names that must join the server-owner organization's
+   * managed network so their managed-database binding endpoint (a ProxySQL
+   * container name) resolves. Disjoint from `dockerExternalNetworks` — this is
+   * a platform network, never operator-registered.
    */
   managedNetworkServices: string[];
+  /**
+   * Docker network name of that managed network. Present only when
+   * `managedNetworkServices` is non-empty — nothing joins it otherwise.
+   */
+  managedNetwork?: string;
   /** Pre-allocated container rows for this deploy (uuid / explicit-name paths). */
   containers: ContainerAllocation[];
   /**
@@ -1525,63 +1532,105 @@ function buildServiceRowByCloneName(
   return serviceRowByCloneName;
 }
 
-/** Service ids (within this environment) that own at least one active binding. */
+/**
+ * Service ids (within this environment) that own at least one active binding,
+ * split by whether the ProxySQL listener a binding resolves to is co-resident
+ * with `serverId` (the placement rule `resolveBindingEndpoint` uses: the
+ * consuming service's environment pin, else its project default).
+ *
+ * Co-residency is tracked per binding rather than per compose service: a
+ * service holding one binding served by a remote listener and another served
+ * by this host's ProxySQL needs both `extra_hosts` **and** the organization's
+ * managed network.
+ */
 async function loadServiceIdsWithBindings(
   db: Db,
   serviceIds: readonly string[],
-): Promise<Set<string>> {
-  if (serviceIds.length === 0) return new Set();
+  serverId: string,
+): Promise<{ bound: Set<string>; coResident: Set<string> }> {
+  const bound = new Set<string>();
+  const coResident = new Set<string>();
+  if (serviceIds.length === 0) return { bound, coResident };
   const rows = await db
-    .select({ serviceId: binding.serviceId })
+    .select({
+      serviceId: binding.serviceId,
+      environmentServerId: environment.serverId,
+      projectOptions: project.options,
+    })
     .from(binding)
+    .innerJoin(service, eq(binding.serviceId, service.id))
+    .innerJoin(environment, eq(service.environmentId, environment.id))
+    .innerJoin(project, eq(environment.projectId, project.id))
     .where(inArray(binding.serviceId, [...serviceIds]));
-  return new Set(rows.map((row) => row.serviceId));
+  for (const row of rows) {
+    bound.add(row.serviceId);
+    const listener = resolveEffectivePlacementServerId(
+      row.environmentServerId,
+      parseProjectOptions(row.projectOptions),
+    );
+    if (listener === serverId) coResident.add(row.serviceId);
+  }
+  return { bound, coResident };
 }
 
 /**
  * Compose service names (post multi-instance expansion) that consume a
- * managed-database binding and therefore must join the daemon's shared
- * managed-ingress Docker network (`turbopanel-managed`) so their resolved
- * binding endpoint (a ProxySQL container name) is dial-able — see
+ * managed-database binding and therefore must join the server-owner
+ * organization's managed Docker network so their resolved binding endpoint
+ * (a ProxySQL container name) is dial-able — see
  * `resolveBindingEndpoint` in `../bindings/resolve-endpoint.ts`.
  */
 async function resolveManagedNetworkComposeServiceNames(
   db: Db,
   serviceRows: ServiceRow[],
   expansion: Map<string, string[]>,
-): Promise<string[]> {
+  serverId: string,
+): Promise<{ bound: string[]; coResident: Set<string> }> {
   const boundServiceIds = await loadServiceIdsWithBindings(
     db,
     serviceRows.map((row) => row.id),
+    serverId,
   );
-  if (boundServiceIds.size === 0) return [];
+  if (boundServiceIds.bound.size === 0) {
+    return { bound: [], coResident: new Set() };
+  }
 
   const names = new Set<string>();
+  const coResident = new Set<string>();
   for (const row of serviceRows) {
-    if (!boundServiceIds.has(row.id)) continue;
+    if (!boundServiceIds.bound.has(row.id)) continue;
     for (
       const cloneName of expansion.get(row.composeServiceName) ??
         [row.composeServiceName]
     ) {
       names.add(cloneName);
+      if (boundServiceIds.coResident.has(row.id)) coResident.add(cloneName);
     }
   }
-  return [...names].sort((a, b) => a.localeCompare(b));
+  return {
+    bound: [...names].sort((a, b) => a.localeCompare(b)),
+    coResident,
+  };
 }
 
 /**
  * Bound compose services that should join this server's local ProxySQL
- * network. Remote extra_hosts on one service must not drop that attachment
- * for co-resident bindings on the same server.
+ * network. Remote extra_hosts must not drop that attachment — neither on a
+ * sibling service, nor on the same service when it also holds a binding
+ * served by this host's listener (`coResidentNames`), which would otherwise
+ * break one of the two sets of connections.
  */
 function localManagedNetworkServiceNames(
   boundLogicalNames: readonly string[],
   remoteHostsByService: ReadonlyMap<string, unknown> | undefined,
+  coResidentNames?: ReadonlySet<string>,
 ): string[] {
   if (!remoteHostsByService || remoteHostsByService.size === 0) {
     return [...boundLogicalNames];
   }
-  return boundLogicalNames.filter((name) => !remoteHostsByService.has(name));
+  return boundLogicalNames.filter((name) =>
+    coResidentNames?.has(name) === true || !remoteHostsByService.has(name)
+  );
 }
 
 /**
@@ -2209,6 +2258,7 @@ async function toPreparedDeployResult(
     dockerExternalNetworks: string[];
     fabricNetworks?: readonly EnvironmentDeployFabricNetwork[];
     managedNetworkServices: string[];
+    managedNetwork?: string;
     containers: ContainerAllocation[];
     ingressServices: EnvironmentDeployIngressService[];
     expansion: Map<string, string[]>;
@@ -2240,6 +2290,9 @@ async function toPreparedDeployResult(
     dockerExternalNetworks: parts.dockerExternalNetworks,
     fabricNetworks: parts.fabricNetworks ? [...parts.fabricNetworks] : [],
     managedNetworkServices: parts.managedNetworkServices,
+    ...(parts.managedNetwork === undefined
+      ? {}
+      : { managedNetwork: parts.managedNetwork }),
     containers: parts.containers,
     ingressServices: parts.ingressServices,
     composeServiceExpansion: expansionToRecord(parts.expansion),
@@ -2394,7 +2447,10 @@ export async function prepareDeployCompose(
     .limit(1);
 
   const [serverRow] = await db
-    .select({ options: server.options })
+    .select({
+      options: server.options,
+      organizationId: server.organizationId,
+    })
     .from(server)
     .where(eq(server.id, params.serverId))
     .limit(1);
@@ -2627,16 +2683,19 @@ export async function prepareDeployCompose(
   // Sites and native `node` apps are host-native (stripped from
   // `composeYaml` above) and never join a Docker network — exclude them even if
   // a binding was somehow attached to one.
-  const boundNames = (
-    await resolveManagedNetworkComposeServiceNames(
-      db,
-      serviceRows,
-      pipeline.expansion,
-    )
-  ).filter((name) => !hostNativeNames.has(name));
+  const managedBindings = await resolveManagedNetworkComposeServiceNames(
+    db,
+    serviceRows,
+    pipeline.expansion,
+    params.serverId,
+  );
+  const boundNames = managedBindings.bound.filter(
+    (name) => !hostNativeNames.has(name),
+  );
   const managedLogicalNames = localManagedNetworkServiceNames(
     boundNames,
     params.schedule?.managedIngressHostsByService,
+    managedBindings.coResident,
   );
 
   // Effective document = the same post-split container document serialized as
@@ -2662,6 +2721,14 @@ export async function prepareDeployCompose(
     managedLogicalNames,
     expansion,
   );
+  // Scoped to the server owner, matching the ProxySQL frontend the joining
+  // services dial. Skipped entirely when nothing joins — a deploy that touches
+  // no managed binding must not allocate the org's network row as a side effect.
+  const managedNetwork = managedNetworkServices.length === 0
+    ? undefined
+    : (await ensureOrganizationManagedNetwork(db, {
+      organizationId: serverRow?.organizationId ?? params.organizationId,
+    })).hostName;
   const composeYaml = runtimeComposeYamlOrEmpty(compiled.document);
   const composeFiles = renderRuntimeComposeFiles(composeYaml);
 
@@ -2678,6 +2745,7 @@ export async function prepareDeployCompose(
     dockerExternalNetworks,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),
     managedNetworkServices,
+    ...(managedNetwork === undefined ? {} : { managedNetwork }),
     containers: pipeline.containers,
     ingressServices: pipeline.ingressServices,
     expansion,

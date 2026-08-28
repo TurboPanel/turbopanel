@@ -7,7 +7,20 @@ import { buildPatchUpdateFields, parseName, parseJsonbObject } from '../shared.t
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/** Operator-creatable kinds — `POST /networks` accepts only these. */
 export const NETWORK_KINDS = new Set(['datacenter', 'docker'])
+
+/**
+ * Kinds accepted by `?kind=` on `GET /networks`. Wider than
+ * {@link NETWORK_KINDS}: `managed` rows are platform-allocated (never
+ * operator-created) but must stay listable. `compose` stays out — those rows
+ * are readable by id only.
+ */
+export const NETWORK_FILTER_KINDS = new Set([
+  'datacenter',
+  'docker',
+  'managed',
+])
 
 export function parseUuidQueryParam(
   c: Context,
@@ -22,7 +35,7 @@ export function parseUuidQueryParam(
 export function resolveKindQueryFilter(c: Context): string | undefined | Response {
   const kindFilter = c.req.query('kind')?.trim()
   if (!kindFilter) return undefined
-  if (!NETWORK_KINDS.has(kindFilter)) {
+  if (!NETWORK_FILTER_KINDS.has(kindFilter)) {
     return c.json({ error: 'Invalid request' }, 400)
   }
   return kindFilter
@@ -105,6 +118,25 @@ export function applyCidrPatch(
   return c.json({ error: 'Invalid request' }, 400)
 }
 
+function applyOptionsPatch(
+  c: Context,
+  body: Record<string, unknown>,
+  kind: string,
+  patchFields: NetworkPatchFields,
+): Response | null {
+  const optionsResult = parseJsonbObject(c, body, 'options')
+  if (optionsResult instanceof Response) return optionsResult
+  if (optionsResult === null) return null
+  if (kind !== 'docker') {
+    patchFields.options = optionsResult
+    return null
+  }
+  const dockerOptions = requireDockerNetworkOptions(c, optionsResult)
+  if (dockerOptions instanceof Response) return dockerOptions
+  patchFields.options = dockerOptions
+  return null
+}
+
 /**
  * `kind: docker` rows register long-lived host Docker networks for compose
  * `networks.*.external`. Require a valid `options.dockerNetworkName`.
@@ -125,6 +157,14 @@ export function parseNetworkPatchFields(
   body: Record<string, unknown>,
   kind: string,
 ): NetworkPatchFields | Response {
+  // `kind: managed` rows are platform-allocated and read-only: the name, CIDR
+  // and `options.dockerNetworkName` all derive from the row itself, so any
+  // operator patch would desync the registry from the on-host Docker network.
+  // Refuse the whole body outright.
+  if (kind === 'managed') {
+    return c.json({ error: 'managed_network_immutable' }, 400)
+  }
+
   let patchFields: NetworkPatchFields
   try {
     patchFields = buildPatchUpdateFields(body)
@@ -147,17 +187,8 @@ export function parseNetworkPatchFields(
   if (metadataResult instanceof Response) return metadataResult
   if (metadataResult !== null) patchFields.metadata = metadataResult
 
-  const optionsResult = parseJsonbObject(c, body, 'options')
-  if (optionsResult instanceof Response) return optionsResult
-  if (optionsResult !== null) {
-    if (kind === 'docker') {
-      const dockerOptions = requireDockerNetworkOptions(c, optionsResult)
-      if (dockerOptions instanceof Response) return dockerOptions
-      patchFields.options = dockerOptions
-    } else {
-      patchFields.options = optionsResult
-    }
-  }
+  const optionsDenied = applyOptionsPatch(c, body, kind, patchFields)
+  if (optionsDenied) return optionsDenied
 
   return patchFields
 }

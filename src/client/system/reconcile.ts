@@ -16,7 +16,7 @@
  * payload (optionally scoped to a single `environmentId`).
  */
 
-import { sql } from 'drizzle-orm'
+import { sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
 import type { CommandQueue } from '../../lib/commands/queue.ts'
@@ -141,6 +141,55 @@ export function resolveManagedHaDesired(params: Readonly<{
   hasHaMembers: boolean
 }>): 'present' | 'absent' {
   return params.hasHaMembers ? 'present' : 'absent'
+}
+
+/**
+ * `EXISTS` projection for "this server hosts at least one managed cluster
+ * member". Shared by the payload query and the sweep candidate query.
+ */
+function managedMembersExists(serverIdExpr: SQL): SQL {
+  return sql`EXISTS (
+        SELECT 1
+        FROM replica mm
+        WHERE mm.server_id = ${serverIdExpr}
+      )`
+}
+
+/**
+ * `EXISTS` projection for "this server is a bound consumer of a managed
+ * cluster" — environment pin, project default, or slot pin, scoped to the
+ * server-owner organization.
+ *
+ * Shared by {@link buildSystemReconcilePayload} (which derives the
+ * `managed-ingress` desired state from it) and {@link runSystemReconcileSweep}
+ * (which decides whether the server is a sweep candidate at all). A
+ * consumer-only server hosts no `replica` rows, so local member presence alone
+ * would never let post-boot self-heal run there.
+ */
+function boundManagedConsumersExists(
+  serverIdExpr: SQL,
+  organizationIdExpr: SQL,
+): SQL {
+  return sql`EXISTS (
+        SELECT 1
+        FROM binding b
+        JOIN service bs ON bs.id = b.service_id
+        JOIN environment be ON be.id = bs.environment_id
+        JOIN project bp ON bp.id = be.project_id
+        JOIN workspace bw ON bw.id = bp.workspace_id
+        JOIN principal pr ON pr.id = b.principal_id
+        LEFT JOIN slot sl ON sl.service_id = bs.id
+        WHERE bw.organization_id = ${organizationIdExpr}
+          AND pr.managed_id IS NOT NULL
+          AND (
+            be.server_id = ${serverIdExpr}
+            OR sl.server_id = ${serverIdExpr}
+            OR (
+              be.server_id IS NULL
+              AND bp.options->>'defaultServerId' = (${serverIdExpr})::text
+            )
+          )
+      )`
 }
 
 /** Build the per-environment component list from its identity + service rows. */
@@ -309,6 +358,12 @@ export async function buildSystemReconcilePayload(
   db: Db,
   params: Readonly<{ serverId: string }>,
 ): Promise<SystemReconcileCommandPayload[]> {
+  const serverIdExpr = sql`${params.serverId}::uuid`
+  const boundConsumers = boundManagedConsumersExists(
+    serverIdExpr,
+    sql`srv.organization_id`,
+  )
+
   const rows = await db.execute<SystemReconcileQueryRow>(sql`
     SELECT
       e.id AS environment_id,
@@ -326,37 +381,14 @@ export async function buildSystemReconcilePayload(
           AND jsonb_typeof(h.options->'hostnames') = 'array'
           AND jsonb_array_length(h.options->'hostnames') > 0
       ) AS has_http_ingress_demand,
-      EXISTS (
-        SELECT 1
-        FROM replica mm
-        WHERE mm.server_id = ${params.serverId}::uuid
-      ) AS has_managed_members,
+      ${managedMembersExists(serverIdExpr)} AS has_managed_members,
       EXISTS (
         SELECT 1
         FROM replica hm
         WHERE hm.server_id = ${params.serverId}::uuid
           AND (hm.role = 'primary' OR hm.replica_class = 'failover')
       ) AS has_ha_members,
-      EXISTS (
-        SELECT 1
-        FROM binding b
-        JOIN service bs ON bs.id = b.service_id
-        JOIN environment be ON be.id = bs.environment_id
-        JOIN project bp ON bp.id = be.project_id
-        JOIN workspace bw ON bw.id = bp.workspace_id
-        JOIN principal pr ON pr.id = b.principal_id
-        LEFT JOIN slot sl ON sl.service_id = bs.id
-        WHERE bw.organization_id = srv.organization_id
-          AND pr.managed_id IS NOT NULL
-          AND (
-            be.server_id = ${params.serverId}::uuid
-            OR sl.server_id = ${params.serverId}::uuid
-            OR (
-              be.server_id IS NULL
-              AND bp.options->>'defaultServerId' = ${params.serverId}
-            )
-          )
-      ) AS has_bound_managed_consumers,
+      ${boundConsumers} AS has_bound_managed_consumers,
       c.container_id AS ingress_container_id,
       c.status AS ingress_status
     FROM environment e
@@ -586,6 +618,10 @@ export async function enqueueSystemReconcileIfConnected(
  *   can be stale after reconnect
  * - self-host (`turbopanel`) database/queue/analytics containers not running
  *   or missing a Docker id
+ * - managed-ingress (ProxySQL) on servers that host managed members **or**
+ *   are bound managed consumers (environment pin, project default, or slot
+ *   pin) — the same test `buildSystemReconcilePayload` derives desired state
+ *   from, so a consumer-only server still self-heals after boot / reconnect
  *
  * Never enqueue solely because hierarchy stamped a pending `-in` row —
  * bare server enroll / hosting-enabled inventory must not pull Traefik up.
@@ -609,6 +645,13 @@ export async function runSystemReconcileSweep(
   const selfHostComposeServiceNameList = sql.join(
     SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES.map((name) => sql`${name}`),
     sql.raw(', '),
+  )
+
+  // Consumer-only servers host no `replica` rows; the same bound-consumer test
+  // `buildSystemReconcilePayload` uses keeps them sweep candidates.
+  const sweepBoundConsumers = boundManagedConsumersExists(
+    sql`srv.id`,
+    sql`srv.organization_id`,
   )
 
   const candidates = await db.execute<{ server_id: string }>(sql`
@@ -658,10 +701,9 @@ export async function runSystemReconcileSweep(
           p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
           AND s.name = ${SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME}
           AND c.role = 'ingress'
-          AND EXISTS (
-            SELECT 1
-            FROM replica mm
-            WHERE mm.server_id = srv.id
+          AND (
+            ${managedMembersExists(sql`srv.id`)}
+            OR ${sweepBoundConsumers}
           )
           AND (
             c.status <> 'running'

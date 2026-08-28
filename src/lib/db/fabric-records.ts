@@ -24,6 +24,7 @@ import {
   pickDefaultFabricHostCidr,
   RELAY_PREFIX_LENGTH,
 } from "../fabric/cidr.ts";
+import { managedNetworkName } from "../naming.ts";
 import {
   collectSpanningComposeNetworkKeys,
   participatingServerIdsForNetwork,
@@ -2156,6 +2157,72 @@ export async function ensureComposeNetworkRow(
     .update(network)
     .set({
       options: { composeKey: params.composeKey, dockerNetworkName: hostName },
+      updatedAt: nowIso(),
+    })
+    .where(eq(network.id, row.id));
+  return { id: row.id, hostName };
+}
+
+async function loadManagedNetworkRow(
+  db: Db,
+  organizationId: string,
+): Promise<{ id: string; hostName: string } | null> {
+  const [row] = await db
+    .select({ id: network.id, options: network.options })
+    .from(network)
+    .where(
+      and(
+        eq(network.organizationId, organizationId),
+        eq(network.kind, "managed"),
+      ),
+    )
+    .limit(1);
+  if (!row) return null;
+
+  const options = isOptionsRecord(row.options) ? row.options : {};
+  const pinned = options.dockerNetworkName;
+  const hostName = typeof pinned === "string" && pinned.length > 0
+    ? pinned
+    : managedNetworkName(row.id);
+  return { id: row.id, hostName };
+}
+
+/**
+ * Platform-allocated org-wide managed-engine network. At most one row per
+ * organization (`uniq_network_organization_managed`); the Docker network name
+ * is the row's own bare UUID, stamped into `options.dockerNetworkName`.
+ *
+ * Never operator-created — `POST /networks` rejects `kind: 'managed'`.
+ */
+export async function ensureOrganizationManagedNetwork(
+  db: Db,
+  params: { organizationId: string },
+): Promise<{ id: string; hostName: string }> {
+  const existing = await loadManagedNetworkRow(db, params.organizationId);
+  if (existing) return existing;
+
+  const [row] = await db
+    .insert(network)
+    .values({
+      organizationId: params.organizationId,
+      kind: "managed",
+    })
+    .onConflictDoNothing()
+    .returning({ id: network.id });
+
+  if (!row) {
+    // A concurrent caller won the partial unique index — converge on its row
+    // instead of failing the allocation.
+    const raced = await loadManagedNetworkRow(db, params.organizationId);
+    if (!raced) throw new Error("managed network insert failed");
+    return raced;
+  }
+
+  const hostName = managedNetworkName(row.id);
+  await db
+    .update(network)
+    .set({
+      options: { dockerNetworkName: hostName },
       updatedAt: nowIso(),
     })
     .where(eq(network.id, row.id));

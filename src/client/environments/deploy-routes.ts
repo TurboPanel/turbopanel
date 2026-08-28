@@ -892,6 +892,8 @@ type DeployCommandCreateParams = DeployActor & {
   sourceMaterial: EnvironmentDeploySource[];
   ingressServices: EnvironmentDeployIngressService[];
   hostingIngress?: EnvironmentDeployIngressService;
+  /** Set only when `hostings` is non-empty (see prepare). */
+  hostingIngressNetwork?: string;
   tlsMaterial: EnvironmentDeployTlsMaterial[];
   variableMaterial: EnvironmentDeployVariableMaterial[];
   storageMaterial: EnvironmentDeployStorageMaterial[];
@@ -900,6 +902,8 @@ type DeployCommandCreateParams = DeployActor & {
   dockerExternalNetworks: string[];
   fabricNetworks: EnvironmentDeployFabricNetwork[];
   managedNetworkServices: string[];
+  /** Set only when `managedNetworkServices` is non-empty (see prepare). */
+  managedNetwork?: string;
   noCache: boolean;
   generation: number;
   desiredHash: string;
@@ -917,6 +921,8 @@ type PreparedServerDeploy = {
   tlsMaterial: EnvironmentDeployTlsMaterial[];
   listenerPorts: ManagedIngressPorts;
   hostingIngress?: EnvironmentDeployIngressService;
+  /** Set whenever this server's slice carries hostings (see prepare). */
+  hostingIngressNetwork?: string;
 };
 
 /**
@@ -999,6 +1005,7 @@ async function createDeployCommand(
         sourceMaterial: params.sourceMaterial,
         ingressServices: params.ingressServices,
         hostingIngress: params.hostingIngress,
+        hostingIngressNetwork: params.hostingIngressNetwork,
         tlsMaterial: params.tlsMaterial,
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
@@ -1007,6 +1014,7 @@ async function createDeployCommand(
         dockerExternalNetworks: params.dockerExternalNetworks,
         fabricNetworks: params.fabricNetworks,
         managedNetworkServices: params.managedNetworkServices,
+        managedNetwork: params.managedNetwork,
         noCache: params.noCache ? true : undefined,
       }),
       listenerPorts: params.listenerPorts,
@@ -1125,6 +1133,9 @@ function createParamsForPreparedServer(
     sourceMaterial: row.prepared.sourceMaterial,
     ingressServices: row.prepared.ingressServices,
     ...(row.hostingIngress ? { hostingIngress: row.hostingIngress } : {}),
+    ...(row.hostingIngressNetwork
+      ? { hostingIngressNetwork: row.hostingIngressNetwork }
+      : {}),
     tlsMaterial: row.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: row.prepared.storageMaterial,
@@ -1133,6 +1144,9 @@ function createParamsForPreparedServer(
     dockerExternalNetworks: row.prepared.dockerExternalNetworks,
     fabricNetworks: row.prepared.fabricNetworks,
     managedNetworkServices: row.prepared.managedNetworkServices,
+    ...(row.prepared.managedNetwork === undefined
+      ? {}
+      : { managedNetwork: row.prepared.managedNetwork }),
     noCache: params.noCache,
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
@@ -1706,21 +1720,41 @@ function scheduleSliceForPreparedServer(
   );
 }
 
+type ResolvedHostingIngress = {
+  /** HTTP proxy identity — set only when an HTTP hosting actually routes. */
+  hostingIngress?: EnvironmentDeployIngressService;
+  /**
+   * Shared ingress Docker network / compose project name: the same
+   * `hosting-ingress` component `serviceId`. Set whenever this deploy carries
+   * hostings at all — a tcp/udp-only deploy has no HTTP proxy identity but its
+   * per-service Traefik still joins this network.
+   */
+  hostingIngressNetwork?: string;
+};
+
 async function resolveSharedHttpHostingIngress(
   db: Db,
   organizationId: string,
   serverId: string,
   hostings: readonly DeployHostingPayload[],
-): Promise<EnvironmentDeployIngressService | undefined> {
-  if (!hostingsNeedSharedHttpIngress(hostings)) return undefined;
+): Promise<ResolvedHostingIngress> {
+  if (hostings.length === 0) return {};
   const hierarchy = await ensureSystemHierarchy(db, {
     organizationId,
     serverId,
   });
+  // The network name is the component's own serviceId — never a literal.
+  const resolved: ResolvedHostingIngress = {
+    hostingIngressNetwork: hierarchy.serviceId,
+  };
+  if (!hostingsNeedSharedHttpIngress(hostings)) return resolved;
   return {
-    serviceId: hierarchy.serviceId,
-    composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-    containerName: hierarchy.containerName,
+    ...resolved,
+    hostingIngress: {
+      serviceId: hierarchy.serviceId,
+      composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
+      containerName: hierarchy.containerName,
+    },
   };
 }
 
@@ -1806,12 +1840,13 @@ async function prepareOneServerDeploy(
     serverRow?.organizationId ?? params.auth.organizationId,
   );
 
-  const hostingIngress = await resolveSharedHttpHostingIngress(
-    db,
-    params.auth.organizationId,
-    params.serverId,
-    hostings,
-  );
+  const { hostingIngress, hostingIngressNetwork } =
+    await resolveSharedHttpHostingIngress(
+      db,
+      params.auth.organizationId,
+      params.serverId,
+      hostings,
+    );
 
   return {
     serverId: params.serverId,
@@ -1820,6 +1855,7 @@ async function prepareOneServerDeploy(
     tlsMaterial,
     listenerPorts,
     ...(hostingIngress ? { hostingIngress } : {}),
+    ...(hostingIngressNetwork ? { hostingIngressNetwork } : {}),
   };
 }
 

@@ -1114,7 +1114,7 @@ represented as `container` rows.
 | PostgreSQL                                                        | `docker run turbopanel-database`     | Compose service `database`                                      | service + container row                  |
 | RabbitMQ                                                          | `docker run turbopanel-queue`        | Compose service `queue`                                         | service + container row                  |
 | ClickHouse                                                        | `docker run turbopanel-analytics`    | Compose service `analytics`                                     | service + container row                  |
-| ProxySQL (managed DB ingress)                                     | daemon compose `turbopanel-proxysql` | Compose service `proxysql` / system component `managed-ingress` | service + container row when provisioned (`role: 'ingress'`, `<serviceId>-in`) |
+| ProxySQL (managed DB ingress)                                     | daemon compose, project = its own `serviceId` | Compose service `proxysql` / system component `managed-ingress` | service + container row when provisioned (`role: 'ingress'`, `<serviceId>-in`) |
 | Control plane (`turbopanel-instance.service`)                     | systemd + Deno                       | stays host-native                                               | none                                     |
 | Control-plane Caddy                                               | vendored binary                      | stays host-native                                               | none                                     |
 | Hosting Caddy                                                     | vendored binary + systemd            | stays host-native                                               | none                                     |
@@ -1135,22 +1135,25 @@ stops, or self-heals them (no restart-via-`system.reconcile` path — see
 `SYSTEM_OPERATE_COMPONENTS` in `src/client/system/routes.ts`, which only lists
 `hosting-ingress`).
 
-**ProxySQL / managed-ingress** is a separate compose project
-(`turbopanel-proxysql`) under `/etc/turbopanel/proxysql/`. Ansible role
+**ProxySQL / managed-ingress** is a separate compose project — the allocated
+`managed-ingress` `serviceId` — under `/etc/turbopanel/proxysql/`. Ansible role
 `proxysql` installs host prerequisites (dirs, `admin.cnf`, base static
-`proxysql.cnf` when absent, `turbopanel-proxysql-stack.service`,
-`turbopanel-managed` network). The **daemon** writes `docker-compose.yml` and
-the durable dynamic config on `managed.ingress.reconcile` and can self-heal via
-`system.reconcile` (`selfHeal: proxysql`). It is **not** part of
-`turbopanel-system` and is **not** inspect-only. The inventory container is
-`role: 'ingress'` named `<serviceId>-in` — distinct from the bare-uuid
-`turbopanel-system` rows and from the `-ha` Orchestrator. Client SQL enters
-ProxySQL's published `15432`/`13306` listeners; managed engines never publish
-arbitrary host ports. When a binding consumer is not co-resident, ProxySQL also
-joins `turbopanel-managed` **plus each consuming environment's spanning `tpn_*`
-network** (pinned to the reserved last-usable host address). Tenant
-docker-compose raw TCP/UDP Traefik remains a separate pattern
-(`turbopanel-ingress-<serviceId>`).
+`proxysql.cnf` when absent, `turbopanel-proxysql-stack.service`). It does
+**not** create the organization's managed Docker network and does **not**
+template a project name: both are control-plane-allocated identifiers Ansible
+cannot know at converge time. The **daemon** writes `docker-compose.yml` and
+the durable dynamic config on `managed.ingress.reconcile` (creating the managed
+network first) and can self-heal via `system.reconcile` (`selfHeal: proxysql`).
+It is **not** part of `turbopanel-system` and is **not** inspect-only. The
+inventory container is `role: 'ingress'` named `<serviceId>-in` — distinct from
+the bare-uuid `turbopanel-system` rows and from the `-ha` Orchestrator. Client
+SQL enters ProxySQL's published `15432`/`13306` listeners; managed engines never
+publish arbitrary host ports. When a binding consumer is not co-resident,
+ProxySQL also joins the organization's managed network **plus each consuming
+environment's spanning `tpn_*` network** (pinned to the reserved last-usable
+host address). Tenant docker-compose raw TCP/UDP Traefik remains a separate
+pattern (compose project = the bare `<serviceId>`). Managed-network naming:
+`src/lib/db/AGENTS.md` → `network` `kind: 'managed'`.
 
 ### Container name suffix contract
 
@@ -1162,6 +1165,15 @@ Canonical mapping (implementation: `src/lib/naming.ts`):
 | `<serviceId>-<ordinal>` | multi-instance tenant service; **all** managed engine members (including a lone primary) | `service` |
 | `<serviceId>-in` | per-service/hosting Traefik **and** shared ProxySQL `managed-ingress` | `ingress` |
 | `<serviceId>-ha` | per-org Orchestrator `managed-ha` (documented exception) | `turbopanel` |
+
+Two different components legitimately land on `-in` / `role: 'ingress'` — the
+shared HTTP Traefik (`hosting-ingress`) and the shared ProxySQL
+(`managed-ingress`) — so **the suffix alone never disambiguates them**. What
+does: the `com.turbopanel.system.component` label, and the **compose project**,
+which is each component's own allocated `serviceId`. Both projects are bare
+UUIDs; there is no `turbopanel-ingress` / `turbopanel-proxysql` literal to key
+off. Only the self-hosted instance stack keeps a human-readable project name
+(`turbopanel-system`).
 
 **Why instance/Caddy/daemon/Redis stay host-native rather than joining the
 compose stack:**

@@ -20,6 +20,7 @@ import {
   isReservedPrincipalUsername,
   isValidDockerResourceName,
   managedContainerName,
+  managedNetworkName,
   principalHomeDir,
   principalSshDir,
   principalVolumePath,
@@ -108,6 +109,20 @@ test('managed-ingress container name is ingressContainerNameFromService (shared 
     ingressContainerNameFromService(serviceId),
     `${serviceId}-in`,
   )
+})
+
+test('managedNetworkName returns the network UUID unchanged', () => {
+  const networkId = '01936b3e-8c7a-7b2d-a1f0-123456789abc'
+  assertEquals(managedNetworkName(networkId), networkId)
+})
+
+test('managedNetworkName rejects ids outside the Docker name allowlist', () => {
+  assertThrows(
+    () => managedNetworkName('has space'),
+    TypeError,
+    'Invalid managed network id',
+  )
+  assertThrows(() => managedNetworkName(''), TypeError)
 })
 
 test('dockerVolumeNameFromStorageId returns the storage UUID', () => {

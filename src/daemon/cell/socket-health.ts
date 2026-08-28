@@ -25,7 +25,7 @@ export const HALF_OPEN_CLOSE_MS = 150_000
 
 /**
  * Absolute cap on a single WebSocket's lifetime. A healthy daemon reconnects
- * seamlessly, so this is a rare, cheap event for good sockets; for any future
+ * on its own, so this is a rare, cheap event for good sockets; for any future
  * "stuck awake" regression it guarantees the connection (and its billing) is
  * torn down within this window instead of running unbounded.
  */

@@ -47,6 +47,18 @@ export function managedContainerName(serviceId: string, ordinal = 1): string {
   return name
 }
 
+/**
+ * Docker network name for a `network.kind = 'managed'` row is the row's own
+ * bare UUID — no prefix. Distinct from `composeNetworkHostName`, which
+ * prefixes `kind = 'compose'` spanning networks with `tpn_`.
+ */
+export function managedNetworkName(networkId: string): string {
+  if (!isValidDockerResourceName(networkId)) {
+    throw new TypeError(`Invalid managed network id: ${networkId}`)
+  }
+  return networkId
+}
+
 /** Suffix for Traefik ingress container names (`<serviceId>-in`). */
 export const INGRESS_CONTAINER_NAME_SUFFIX = '-in'
 

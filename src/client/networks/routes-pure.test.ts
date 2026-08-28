@@ -135,13 +135,49 @@ test('buildNetworkCreateValues omits null optional fields', () => {
   )
 })
 
-test('resolveKindQueryFilter accepts datacenter and docker only', () => {
+test('resolveKindQueryFilter accepts datacenter, docker and managed only', () => {
   const c = mockContext()
   assertEquals(resolveKindQueryFilter(c), undefined)
   assertEquals(resolveKindQueryFilter(mockContext({ kind: 'docker' })), 'docker')
-  const bad = resolveKindQueryFilter(mockContext({ kind: 'vpn' }))
-  if (!(bad instanceof Response)) throw new TypeError('expected response')
-  assertEquals(bad.status, 400)
+  assertEquals(
+    resolveKindQueryFilter(mockContext({ kind: 'datacenter' })),
+    'datacenter',
+  )
+  assertEquals(resolveKindQueryFilter(mockContext({ kind: 'managed' })), 'managed')
+  for (const kind of ['vpn', 'compose']) {
+    const bad = resolveKindQueryFilter(mockContext({ kind }))
+    if (!(bad instanceof Response)) throw new TypeError('expected response')
+    assertEquals(bad.status, 400)
+  }
+})
+
+test('parseNetworkKind rejects platform-allocated kinds', async () => {
+  const c = mockContext()
+  for (const kind of ['managed', 'compose']) {
+    await expectErrorResponse(
+      parseNetworkKind(c, { kind }) as Response,
+      400,
+      'Invalid request',
+    )
+  }
+})
+
+test('parseNetworkPatchFields refuses every patch on a managed network', async () => {
+  const c = mockContext()
+  const bodies: Record<string, unknown>[] = [
+    { options: { dockerNetworkName: 'operator-supplied' } },
+    { name: 'Managed' },
+    { cidr: '10.42.0.0/24' },
+    { metadata: { note: 'operator' } },
+    {},
+  ]
+  for (const body of bodies) {
+    await expectErrorResponse(
+      parseNetworkPatchFields(c, body, 'managed') as Response,
+      400,
+      'managed_network_immutable',
+    )
+  }
 })
 
 test('parseUuidQueryParam validates list filter UUIDs', () => {

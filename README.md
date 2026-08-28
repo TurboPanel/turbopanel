@@ -1,6 +1,6 @@
 # TurboPanel
 
-**Open-source control plane for deploying and operating apps, databases, and servers.**
+**Host more. Manage less.** The open-source control plane for everything you host — websites, apps, databases, and the servers under them, run from one place.
 
 [![Release](https://img.shields.io/github/v/release/TurboPanel/turbopanel?label=release)](https://github.com/TurboPanel/turbopanel/releases)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=turbopanel_turbopanel)
@@ -26,6 +26,8 @@ TurboPanel gives operators one console for multi-server fleets, application depl
 - **Same experience everywhere** — identical product surface on TurboPanel High Availability and self-hosted; only operational responsibility differs
 
 ## Choose how to run it
+
+**We run the panel. You run what matters.** TurboPanel High Availability keeps the control plane on a global edge network — fast and always on, with nothing extra for you to operate. Self-host it when you need to; let us run it when you don't.
 
 | | **TurboPanel High Availability** | **Self-hosted** |
 | --- | --- | --- |

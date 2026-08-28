@@ -30,6 +30,7 @@ import {
   createCommandRecord,
   transitionCommand,
 } from '../../lib/db/command-records.ts'
+import { ensureOrganizationManagedNetwork } from '../../lib/db/fabric-records.ts'
 import { container, managed, replica, principal, server, service } from '../../lib/db/schema.ts'
 import {
   MANAGED_HA_HTTP_PORT,
@@ -71,9 +72,11 @@ export type EnqueueManagedHaReconcileResult =
 function haTeardownPayload(
   serverId: string,
   identity: ManagedHaReconcileCommandPayload['identity'],
+  managedNetwork: string,
 ): ManagedHaReconcileCommandPayload {
   return {
     serverId,
+    managedNetwork,
     desired: 'absent',
     raft: null,
     clusters: [],
@@ -415,11 +418,13 @@ export function haIdentity(
 export function haTeardownIfPresent(
   serverId: string,
   existing: SystemHierarchyIds | null,
+  managedNetwork: string,
 ): ManagedHaReconcileCommandPayload | null {
   if (!existing) return null
   return haTeardownPayload(
     serverId,
     haIdentity(existing.serviceId, existing.containerName ?? existing.serviceId),
+    managedNetwork,
   )
 }
 
@@ -435,11 +440,25 @@ export async function buildManagedHaReconcilePayload(
   if (!serverRow?.organizationId) return null
   const organizationId = serverRow.organizationId
 
+  // Every `managed.ha.reconcile` payload carries the server-owner org's managed
+  // network, teardown included — but the row is allocated lazily, only once a
+  // payload is actually going to be emitted, so a reconcile that decides there
+  // is nothing to do leaves no network behind.
+  const resolveManagedNetworkName = async () =>
+    (await ensureOrganizationManagedNetwork(db, { organizationId })).hostName
+
   const localMembers = await loadHaMembersOnServer(db, params.serverId)
   const hostsHa = serverHostsManagedHa(localMembers)
   const existing = await findManagedHaHierarchy(db, { serverId: params.serverId })
 
-  if (!hostsHa) return haTeardownIfPresent(params.serverId, existing)
+  if (!hostsHa) {
+    if (!existing) return null
+    return haTeardownIfPresent(
+      params.serverId,
+      existing,
+      await resolveManagedNetworkName(),
+    )
+  }
 
   const hierarchy = await ensureManagedHaHierarchy(db, {
     organizationId,
@@ -449,7 +468,14 @@ export async function buildManagedHaReconcilePayload(
 
   const raft = await buildRaftConfig(db, organizationId, params.serverId)
   if (!raft) {
-    return { ...haTeardownPayload(params.serverId, identity), desired: 'absent' }
+    return {
+      ...haTeardownPayload(
+        params.serverId,
+        identity,
+        await resolveManagedNetworkName(),
+      ),
+      desired: 'absent',
+    }
   }
 
   const clusters = await buildHaClustersForServer(db, params, localMembers)
@@ -482,6 +508,7 @@ export async function buildManagedHaReconcilePayload(
 
   return {
     serverId: params.serverId,
+    managedNetwork: await resolveManagedNetworkName(),
     desired: 'present',
     raft,
     clusters,

@@ -59,8 +59,8 @@ export type CompileRuntimeOptions = {
    * Per-service static `extra_hosts` for the ProxySQL listener
    * (`<serviceId>-in`) on hosts that are not co-resident with it.
    * Merged only into the bound consumer (and expanded clones that share
-   * that spanning network). Co-resident consumers join
-   * `turbopanel-managed` instead and must not receive these entries.
+   * that spanning network). Co-resident consumers join the organization's
+   * managed network instead and must not receive these entries.
    */
   managedIngressHostsByService?: ReadonlyMap<
     string,

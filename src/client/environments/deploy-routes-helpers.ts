@@ -542,7 +542,7 @@ export function validateDeployMaterials(
 
 /**
  * True when any hosting routes HTTP hostnames through the shared loopback
- * Traefik (`turbopanel-ingress`). Empty hostnames and `tcp`/`udp` hostings
+ * Traefik. Empty hostnames and `tcp`/`udp` hostings
  * do not need that proxy.
  */
 export function hostingsNeedSharedHttpIngress(

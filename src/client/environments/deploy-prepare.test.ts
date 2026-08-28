@@ -110,6 +110,30 @@ describe("deploy-prepare helpers", () => {
     );
   });
 
+  it("keeps managedNetworkServices for a service with both remote hosts and a local binding", () => {
+    // `managedNetworkServices` is this list after expansion. `api` consumes
+    // two managed clusters: one served by a remote ProxySQL (extra_hosts) and
+    // one by this host's listener. Dropping the local attachment because
+    // remote hosts exist would break the second set of connections.
+    const remote = new Map([
+      ["api", [{ name: "svc-in", address: "203.0.113.254" }]],
+      ["worker", [{ name: "svc-in", address: "203.0.113.254" }]],
+    ]);
+    assertEquals(
+      localManagedNetworkServiceNames(
+        ["api", "worker"],
+        remote,
+        new Set(["api"]),
+      ),
+      ["api"],
+    );
+    // Without a co-resident binding the service still stays off the network.
+    assertEquals(
+      localManagedNetworkServiceNames(["api", "worker"], remote, new Set()),
+      [],
+    );
+  });
+
   it("warns only when the operator sets healthCheck.policy to warn", () => {
     const merged = assertComposeDocument({
       version: 1,

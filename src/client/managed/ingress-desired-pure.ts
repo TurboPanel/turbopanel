@@ -238,7 +238,7 @@ export type IngressBackendBuildResult =
   }
 
 /**
- * Co-resident member → Docker container name on `turbopanel-managed`.
+ * Co-resident member → Docker container name on the organization's managed network.
  * Remote members need a private port + endpoint resolution (caller).
  */
 export function buildLocalOrMissingPortBackend(

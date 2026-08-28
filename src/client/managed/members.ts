@@ -590,9 +590,9 @@ async function resolvePeerEndpointsByPurpose(
  * Resolve peer endpoints for one member (reachability of every other member
  * from this member's server). Used when building apply payloads.
  *
- * Co-resident peers are dialled by Docker container name on `turbopanel-managed`
- * (never host loopback). Remote peers use the private address + allocated
- * `private_port` private listener, resolved with the per-link ladder from
+ * Co-resident peers are dialled by Docker container name on the organization's
+ * managed network (never host loopback). Remote peers use the private address
+ * + allocated `private_port` private listener, resolved with the per-link ladder from
  * `replicationPurposeForMemberPair` — a failover peer never silently falls back
  * to fabric/public just because a read replica in the same cluster may.
  */

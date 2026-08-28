@@ -955,12 +955,16 @@ test("POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames", a
           composeServiceName: string;
           containerName: string;
         };
+        hostingIngressNetwork?: string;
       };
       assertEquals(payload.hostingIngress, {
         serviceId: traefikServiceId,
         composeServiceName: "traefik",
         containerName: `${traefikServiceId}-in`,
       });
+      // The shared ingress Docker network is that same component serviceId —
+      // the daemon must never reconstruct it from a literal.
+      assertEquals(payload.hostingIngressNetwork, traefikServiceId);
     } finally {
       if (hostingServiceId) {
         await db.delete(hosting).where(eq(hosting.serviceId, hostingServiceId));

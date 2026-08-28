@@ -29,6 +29,8 @@ const PRINCIPAL_ID = '00000000-0000-4000-8000-000000000001'
 const SERVER_ID = '00000000-0000-4000-8000-0000000000bb'
 const HA_SERVICE_ID = '00000000-0000-4000-8000-0000000000cc'
 const MEMBER_ID = '00000000-0000-4000-8000-0000000000dd'
+/** Org-wide managed Docker network name — a `network.kind='managed'` row id. */
+const MANAGED_NETWORK = '00000000-0000-4000-8000-0000000000ee'
 const PEM =
   '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
 
@@ -255,6 +257,7 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
   const containerName = managedHaContainerNameFromService(HA_SERVICE_ID)
   const payload = parseManagedHaReconcilePayload({
     serverId: SERVER_ID,
+    managedNetwork: MANAGED_NETWORK,
     desired: 'present',
     raft: {
       nodeId: SERVER_ID,
@@ -297,11 +300,13 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
   })
   assertEquals(payload.raft?.advertiseAddress, '203.0.113.10')
   assertEquals(payload.clusters[0]?.members[0]?.promotionRule, 'prefer')
+  assertEquals(payload.managedNetwork, MANAGED_NETWORK)
 
   assertThrows(
     () =>
       parseManagedHaReconcilePayload({
         serverId: SERVER_ID,
+        managedNetwork: MANAGED_NETWORK,
         desired: 'present',
         raft: {
           nodeId: SERVER_ID,
@@ -324,6 +329,7 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
     () =>
       parseManagedHaReconcilePayload({
         serverId: SERVER_ID,
+        managedNetwork: MANAGED_NETWORK,
         desired: 'present',
         raft: null,
         clusters: [
@@ -358,6 +364,7 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
     () =>
       parseManagedHaReconcilePayload({
         serverId: SERVER_ID,
+        managedNetwork: MANAGED_NETWORK,
         desired: 'present',
         raft: null,
         clusters: [],
@@ -369,6 +376,35 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
       }),
     TypeError,
     'Invalid managed.ha.reconcile identity',
+  )
+})
+
+test('parseManagedHaReconcilePayload requires a Docker-safe managedNetwork', () => {
+  const containerName = managedHaContainerNameFromService(HA_SERVICE_ID)
+  const base = {
+    serverId: SERVER_ID,
+    desired: 'present' as const,
+    raft: null,
+    clusters: [],
+    identity: {
+      serviceId: HA_SERVICE_ID,
+      composeServiceName: 'orchestrator',
+      containerName,
+    },
+  }
+  assertThrows(
+    () => parseManagedHaReconcilePayload(base),
+    TypeError,
+    'Invalid managed.ha.reconcile payload',
+  )
+  assertThrows(
+    () =>
+      parseManagedHaReconcilePayload({
+        ...base,
+        managedNetwork: 'not a docker name',
+      }),
+    TypeError,
+    'Invalid managed.ha.reconcile payload',
   )
 })
 

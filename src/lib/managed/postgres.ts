@@ -79,7 +79,7 @@ const RESERVED_CONF_KEYS = new Set([
   'primary_slot_name',
 ])
 
-/** Docker bridge CIDR for hostssl ProxySQL client access on turbopanel-managed. */
+/** Docker bridge CIDR for hostssl ProxySQL client access on the org managed network. */
 const MANAGED_DOCKER_NETWORK_CIDR = '172.16.0.0/12' // NOSONAR typescript:S1313 — Docker's default bridge-network address space, not a real host
 
 const HBA_FILE_PATH = '/etc/postgresql/pg_hba.conf'
@@ -296,7 +296,7 @@ function buildPlatformPgHba(
     '# local socket for engine admin',
     `local   all             ${rootUsername}                                trust`,
     'local   all             all                                     peer',
-    `# ProxySQL / co-resident clients on turbopanel-managed (${MANAGED_DOCKER_NETWORK_CIDR})`,
+    `# ProxySQL / co-resident clients on the managed network (${MANAGED_DOCKER_NETWORK_CIDR})`,
     `hostssl all             all             ${MANAGED_DOCKER_NETWORK_CIDR}       scram-sha-256`,
   ]
 

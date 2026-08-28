@@ -92,8 +92,8 @@ async function resolveListenerPortForServer(
  * Every endpoint this cluster is reachable at, widest scope first.
  *
  * Empty when exposure is disabled: nothing is published to the host at all, and
- * co-located consumers dial the ProxySQL container over `turbopanel-managed`
- * (see `resolveBindingEndpoint`) rather than any host address.
+ * co-located consumers dial the ProxySQL container over the organization's
+ * managed network (see `resolveBindingEndpoint`) rather than any host address.
  */
 export async function resolveManagedAccessEndpoints(
   db: Db,

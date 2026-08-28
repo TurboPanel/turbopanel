@@ -4,7 +4,7 @@
  * A placed consuming service always dials **its own server's** ProxySQL
  * listener (Postgres family / MySQL family ports, defaulting to 15432 / 13306
  * and overridable per organization), addressed by Docker
- * container name on the shared {@link MANAGED_INGRESS_NETWORK} — never a
+ * container name on the organization's managed network — never a
  * host-published address and never the engine-native port. That listener
  * routes to local or remote engine backends over the private path
  * (configured by `managed.ingress.reconcile` on the consumer host). This is
@@ -118,8 +118,8 @@ async function loadClusterMembers(
 /**
  * Docker container name and client port of `serverId`'s ProxySQL frontend,
  * provisioning the per-server managed-ingress hierarchy if it does not exist
- * yet. Reachable from any compose service on the same host that joins
- * {@link MANAGED_INGRESS_NETWORK} — never a `127.0.0.1` / host-published
+ * yet. Reachable from any compose service on the same host that joins the
+ * organization's managed network — never a `127.0.0.1` / host-published
  * address, which a container cannot dial across its own network namespace.
  *
  * The listener port comes from the **server-owner** organization, not the
@@ -169,7 +169,7 @@ async function listenerForServer(
  * What host/port does service *S* dial for managed cluster *M*?
  *
  * Placed consumers always use **their own server's** ProxySQL listener
- * (by container name, over {@link MANAGED_INGRESS_NETWORK}) so traffic stays
+ * (by container name, over the organization's managed network) so traffic stays
  * on-box and ProxySQL peers over private/VPN to remote engines. This is
  * independent of the cluster's `exposure` setting — same-host container
  * reachability never depends on whether ProxySQL also publishes a host port.

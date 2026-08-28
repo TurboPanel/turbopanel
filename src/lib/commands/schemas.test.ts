@@ -787,12 +787,16 @@ test("parseNtpSetResult rejects missing or malformed ntpServers", () => {
   );
 });
 
+/** Org-wide managed Docker network name — a `network.kind='managed'` row id. */
+const MANAGED_NETWORK = "00000000-0000-4000-8000-0000000000ee";
+
 const VALID_MANAGED_APPLY = {
   managedId: "00000000-0000-4000-8000-000000000001",
   environmentId: "00000000-0000-4000-8000-000000000002",
   engine: "postgres",
   projectName: "tp-managed-pg",
   containerName: "01936b3e-aaaa-bbbb-cccc-123456789abc-1",
+  managedNetwork: MANAGED_NETWORK,
   image: "docker.io/library/postgres:18-alpine",
   containerPort: 5432,
   composeYaml: "services:\n  postgres:\n    image: postgres:18-alpine\n",
@@ -1153,6 +1157,7 @@ test("parseCommandPayload and parseCommandResult dispatch by type", () => {
 
 test("parseManagedApplyPayload accepts a valid fixture", () => {
   const payload = parseManagedApplyPayload(VALID_MANAGED_APPLY);
+  assertEquals(payload.managedNetwork, MANAGED_NETWORK);
   assertEquals(payload.engine, "postgres");
   assertEquals(payload.projectName, "tp-managed-pg");
   assertEquals(payload.credentials.length, 1);
@@ -2413,8 +2418,91 @@ test("parseCommandPayload accepts and dedupes managedNetworkServices", () => {
     composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  app:\\n    image: node:22\\n" }],
     hostings: [],
     managedNetworkServices: ["app", "app"],
-  }) as { managedNetworkServices?: string[] };
+    managedNetwork: MANAGED_NETWORK,
+  }) as { managedNetworkServices?: string[]; managedNetwork?: string };
   assertEquals(parsed.managedNetworkServices, ["app"]);
+  assertEquals(parsed.managedNetwork, MANAGED_NETWORK);
+});
+
+test("parseEnvironmentDeployPayload pairs managedNetwork with its services", () => {
+  // Nothing joins the network — carrying a name for it would be dead weight
+  // the daemon could act on, so it is rejected rather than dropped.
+  assertEquals(
+    (parseEnvironmentDeployPayload(BASE_ENVIRONMENT_DEPLOY) as {
+      managedNetwork?: string;
+    }).managedNetwork,
+    undefined,
+  );
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        managedNetwork: MANAGED_NETWORK,
+      }),
+    Error,
+    "Invalid environment.deploy payload",
+  );
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        managedNetworkServices: ["app"],
+      }),
+    Error,
+    "Invalid environment.deploy payload",
+  );
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        managedNetworkServices: ["app"],
+        managedNetwork: "not a docker name",
+      }),
+    Error,
+    "Invalid environment.deploy payload",
+  );
+});
+
+test("parseManagedApplyPayload rejects a non-Docker managedNetwork", () => {
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        managedNetwork: "not a docker name",
+      }),
+    Error,
+    "Invalid managed.apply payload",
+  );
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        managedNetwork: undefined,
+      }),
+    Error,
+    "Invalid managed.apply payload",
+  );
+});
+
+test("parseManagedIngressReconcilePayload rejects a non-Docker managedNetwork", () => {
+  assertThrows(
+    () =>
+      parseManagedIngressReconcilePayload({
+        ...VALID_MANAGED_INGRESS_RECONCILE,
+        managedNetwork: "not a docker name",
+      }),
+    TypeError,
+    "Invalid managed.ingress.reconcile payload",
+  );
+  assertThrows(
+    () =>
+      parseManagedIngressReconcilePayload({
+        ...VALID_MANAGED_INGRESS_RECONCILE,
+        managedNetwork: undefined,
+      }),
+    TypeError,
+    "Invalid managed.ingress.reconcile payload",
+  );
 });
 
 test("parseCommandPayload rejects invalid managedNetworkServices entries", () => {
@@ -2428,6 +2516,23 @@ test("parseCommandPayload rejects invalid managedNetworkServices entries", () =>
         composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
         hostings: [],
         managedNetworkServices: [123],
+      }),
+    Error,
+    "Invalid managedNetworkServices entry",
+  );
+  // Compose service keys never contain spaces — kept explicit so the daemon
+  // contracts parser (`parseManagedNetworkServiceName`) cannot drift wider.
+  assertThrows(
+    () =>
+      parseCommandPayload("environment.deploy" as CommandType, {
+        environmentId: "env-1",
+        projectId: "proj-1",
+        organizationId: "org-1",
+        projectName: "tp-demo",
+        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+        hostings: [],
+        managedNetworkServices: ["bad name"],
+        managedNetwork: MANAGED_NETWORK,
       }),
     Error,
     "Invalid managedNetworkServices entry",
@@ -2639,6 +2744,7 @@ test("isSystemComponentKey accepts only system component keys", () => {
 
 const VALID_MANAGED_INGRESS_RECONCILE = {
   serverId: "00000000-0000-4000-8000-0000000000ab",
+  managedNetwork: MANAGED_NETWORK,
   bindAddresses: ["203.0.113.10"],
   orgTlsMaterial: {
     certificatePem:
@@ -2682,6 +2788,7 @@ test("parseManagedIngressReconcilePayload accepts a valid fixture", () => {
     VALID_MANAGED_INGRESS_RECONCILE,
   );
   assertEquals(payload.serverId, VALID_MANAGED_INGRESS_RECONCILE.serverId);
+  assertEquals(payload.managedNetwork, MANAGED_NETWORK);
   assertEquals(payload.bindAddresses, ["203.0.113.10"]);
   assertEquals(payload.clusters.length, 1);
   assertEquals(payload.clusters[0]?.protocolPort, 5432);
@@ -2810,11 +2917,14 @@ test("parseManagedIngressReconcilePayload rejects incomplete or hostile input", 
     }).clusters[0]?.protocolPort,
     15432,
   );
+  // Teardown still names the network — the field is unconditional on the wire.
   const teardown = parseManagedIngressReconcilePayload({
     serverId: VALID_MANAGED_INGRESS_RECONCILE.serverId,
+    managedNetwork: MANAGED_NETWORK,
     clusters: [],
   });
   assertEquals(teardown.clusters, []);
+  assertEquals(teardown.managedNetwork, MANAGED_NETWORK);
   assertEquals(teardown.orgTlsMaterial, undefined);
   assertEquals(teardown.identity, undefined);
 });
@@ -2992,6 +3102,9 @@ test("parsePingResult keeps lifecycle hop timestamps", () => {
 test("parseEnvironmentDeployPayload parses rich hostings and optional material", () => {
   const result = parseEnvironmentDeployPayload({
     ...BASE_ENVIRONMENT_DEPLOY,
+    // Required whenever hostings are present — the `hosting-ingress` system
+    // component's allocated serviceId, not a readable literal.
+    hostingIngressNetwork: '00000000-0000-4000-8000-0000000000bb',
     hostings: [
       {
         hostingId: "h1",
@@ -3114,6 +3227,85 @@ test("parseEnvironmentDeployPayload rejects hostingIngress that is not traefik",
       }),
     Error,
     "Invalid environment.deploy hostingIngress",
+  );
+});
+
+test("parseEnvironmentDeployPayload ties hostingIngressNetwork to the hostingIngress serviceId", () => {
+  const hosting = {
+    hostingId: "h1",
+    serviceId: "s1",
+    composeServiceName: "web",
+    hostnames: ["app.example.com"],
+  };
+  const hostingIngress = {
+    serviceId: INGRESS_SERVICE_ID,
+    composeServiceName: "traefik",
+    containerName: `${INGRESS_SERVICE_ID}-in`,
+  };
+  // The shared hosting-ingress network *is* the component's compose project,
+  // so both must be the same allocated serviceId.
+  const result = parseEnvironmentDeployPayload({
+    ...BASE_ENVIRONMENT_DEPLOY,
+    hostings: [hosting],
+    hostingIngress,
+    hostingIngressNetwork: INGRESS_SERVICE_ID,
+  });
+  assertEquals(result.hostingIngressNetwork, INGRESS_SERVICE_ID);
+
+  // A skewed payload would persist one identity and deploy the network /
+  // compose project under another.
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        hostings: [hosting],
+        hostingIngress,
+        hostingIngressNetwork: "00000000-0000-4000-8000-0000000000bb",
+      }),
+    Error,
+    "Invalid environment.deploy payload",
+  );
+});
+
+test("parseEnvironmentDeployPayload rejects a Compose-invalid hostingIngressNetwork", () => {
+  const hosting = {
+    hostingId: "h1",
+    serviceId: "s1",
+    composeServiceName: "web",
+    hostnames: ["app.example.com"],
+  };
+  // Accepted by the Docker resource rule but rejected by the daemon's Compose
+  // `name:` guard (uppercase, `.`, leading `-`, empty, over 64 chars) — reject
+  // here so the deploy never dies at render time instead.
+  for (
+    const network of [
+      "Ingress-Net",
+      "ingress.net",
+      "-ingress",
+      "",
+      "a".repeat(65),
+      42,
+    ]
+  ) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...BASE_ENVIRONMENT_DEPLOY,
+          hostings: [hosting],
+          hostingIngressNetwork: network,
+        }),
+      TypeError,
+      "Invalid environment.deploy payload",
+    );
+  }
+  // The bare allocated UUID stays valid under both rules.
+  assertEquals(
+    parseEnvironmentDeployPayload({
+      ...BASE_ENVIRONMENT_DEPLOY,
+      hostings: [hosting],
+      hostingIngressNetwork: INGRESS_SERVICE_ID,
+    }).hostingIngressNetwork,
+    INGRESS_SERVICE_ID,
   );
 });
 

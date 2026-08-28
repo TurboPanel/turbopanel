@@ -885,3 +885,140 @@ test('POST /networks returns 404 when datacenterId belongs to another org', asyn
     await db.delete(organization).where(eq(organization.id, otherOrg!.id))
   })
 })
+
+test('GET /networks?kind=managed lists the platform-allocated managed network', async () => {
+  await withNetworkFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const now = new Date().toISOString()
+    const [dc] = await db
+      .insert(datacenter)
+      .values({ organizationId, name: 'Managed DC', createdAt: now, updatedAt: now })
+      .returning({ id: datacenter.id })
+    await db.insert(network).values({
+      organizationId,
+      datacenterId: dc!.id,
+      kind: 'datacenter',
+      cidr: '10.9.0.0/24',
+      name: 'Managed Site LAN',
+      createdAt: now,
+      updatedAt: now,
+    })
+    const [managedNet] = await db
+      .insert(network)
+      .values({
+        organizationId,
+        kind: 'managed',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: network.id })
+    await db
+      .update(network)
+      .set({ options: { dockerNetworkName: managedNet!.id } })
+      .where(eq(network.id, managedNet!.id))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { cookie, [ORG_ID_HEADER]: organizationId }
+
+    const res = await app.request('/networks?kind=managed', { headers })
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      networks: Array<{ id: string; kind: string; options: Record<string, unknown> }>
+    }
+    assertEquals(body.networks.map((row) => row.id), [managedNet!.id])
+    assertEquals(body.networks[0]?.kind, 'managed')
+    assertEquals(body.networks[0]?.options, { dockerNetworkName: managedNet!.id })
+  })
+})
+
+test('POST /networks rejects kind=managed', async () => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request('/networks', {
+      method: 'POST',
+      headers: {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ organizationId, kind: 'managed' }),
+    })
+    assertEquals(res.status, 400)
+    assertEquals((await res.json() as { error: string }).error, 'Invalid request')
+  })
+})
+
+test('PATCH /networks/:id refuses every patch on a managed network', async () => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const now = new Date().toISOString()
+    const [managedNet] = await db
+      .insert(network)
+      .values({ organizationId, kind: 'managed', createdAt: now, updatedAt: now })
+      .returning({ id: network.id })
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const patches: Record<string, unknown>[] = [
+      { options: { dockerNetworkName: 'operator-supplied' } },
+      { name: 'Operator rename' },
+      { cidr: '10.42.0.0/24' },
+      { metadata: { note: 'operator' } },
+    ]
+    for (const patch of patches) {
+      const res = await app.request(`/networks/${managedNet!.id}`, {
+        method: 'PATCH',
+        headers: {
+          cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(patch),
+      })
+      assertEquals(res.status, 400)
+      assertEquals(
+        (await res.json() as { error: string }).error,
+        'managed_network_immutable',
+      )
+    }
+
+    const [unchanged] = await db
+      .select({ name: network.name, cidr: network.cidr, options: network.options })
+      .from(network)
+      .where(eq(network.id, managedNet!.id))
+      .limit(1)
+    assertEquals(unchanged?.name, null)
+    assertEquals(unchanged?.cidr, null)
+  })
+})
+
+test('DELETE /networks/:id refuses a managed network', async () => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const now = new Date().toISOString()
+    const [managedNet] = await db
+      .insert(network)
+      .values({ organizationId, kind: 'managed', createdAt: now, updatedAt: now })
+      .returning({ id: network.id })
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/networks/${managedNet!.id}`, {
+      method: 'DELETE',
+      headers: { cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    assertEquals(res.status, 400)
+    assertEquals(
+      (await res.json() as { error: string }).error,
+      'managed_network_immutable',
+    )
+
+    const [still] = await db
+      .select({ id: network.id })
+      .from(network)
+      .where(eq(network.id, managedNet!.id))
+      .limit(1)
+    assertEquals(still?.id, managedNet!.id)
+  })
+})

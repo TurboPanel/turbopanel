@@ -37,6 +37,7 @@ import {
   privateEndpointErrorResponse,
   resolvePrivateEndpoint,
 } from '../../lib/net/private-endpoint.ts'
+import { ensureOrganizationManagedNetwork } from '../../lib/db/fabric-records.ts'
 import { managed, principal, server as serverTable, tls } from '../../lib/db/schema.ts'
 import {
   issueLeafCertificate,
@@ -676,7 +677,8 @@ type ResolvedMemberPrivateBind = {
  * the publish can never disagree with the dial.
  *
  * Returns `undefined` when no remote peer needs a published bind (single-member
- * or all co-resident — those dial the container name on `turbopanel-managed`),
+ * or all co-resident — those dial the container name on the organization's
+ * managed network),
  * a `PrivateEndpointError` when a peer has no path to this member, and
  * `managed_listener_bind_conflict` when peers disagree on the address or
  * transport: the wire payload carries exactly one `privateListener`, so a mixed
@@ -924,8 +926,26 @@ function attachOptionalPayloadFields(
 }
 
 /**
- * Resolve this member's org organization, ensure the ingress hierarchy, and
- * mint + attach its org-CA leaf material onto `payload`.
+ * Owning organization of the member's server. Scopes both the org-CA leaf and
+ * the org-wide managed Docker network — a member placed on another org's
+ * server follows that server's org, not the caller's.
+ */
+async function resolveMemberOrganizationId(
+  db: Db,
+  input: BuildManagedApplyInput,
+  member: ManagedMemberRow,
+): Promise<string> {
+  const [memberServer] = await db
+    .select({ organizationId: serverTable.organizationId })
+    .from(serverTable)
+    .where(eq(serverTable.id, member.serverId))
+    .limit(1)
+  return memberServer?.organizationId ?? input.organizationId
+}
+
+/**
+ * Ensure the ingress hierarchy for this member's org and mint + attach its
+ * org-CA leaf material onto `payload`.
  */
 async function attachManagedOrgTlsMaterial(
   db: Db,
@@ -937,20 +957,22 @@ async function attachManagedOrgTlsMaterial(
     memberInput: BuildRuntimeSpecInput['member'] | undefined
     containerSans: readonly string[]
     containerName: string
+    memberOrganizationId: string
     payload: ManagedApplyCommandPayload
   },
 ): Promise<
   | { pendingTlsLeaf: UpsertTlsLeafTrackingParams }
   | ManagedApplyPrepareError
 > {
-  const { input, member, memberInput, containerSans, containerName, payload } = params
-  const [memberServer] = await db
-    .select({ organizationId: serverTable.organizationId })
-    .from(serverTable)
-    .where(eq(serverTable.id, member.serverId))
-    .limit(1)
-  const memberOrganizationId = memberServer?.organizationId ??
-    input.organizationId
+  const {
+    input,
+    member,
+    memberInput,
+    containerSans,
+    containerName,
+    memberOrganizationId,
+    payload,
+  } = params
 
   await ensureManagedIngressHierarchy(db, {
     organizationId: memberOrganizationId,
@@ -1044,6 +1066,13 @@ async function buildPayloadForMember(
     members.length,
   )
 
+  // Both the payload's `managedNetwork` and the org-CA leaf below are scoped
+  // to the member server's owning org — resolved once, used by both.
+  const memberOrganizationId = await resolveMemberOrganizationId(db, input, member)
+  const managedNetwork = await ensureOrganizationManagedNetwork(db, {
+    organizationId: memberOrganizationId,
+  })
+
   const memberOrdinals = members.map((m) => m.ordinal)
   const allocation = await ensureManagedContainerAllocation(db, {
     environmentId: input.environmentId,
@@ -1097,8 +1126,11 @@ async function buildPayloadForMember(
     managedId: input.managedRow.id,
     environmentId: input.environmentId,
     engine: input.spec.engine,
-    projectName: `turbopanel-managed-${input.managedRow.id}`,
+    // Bare `managed` row UUID — the daemon's `managedComposeProject` returns
+    // the same value, and the two must stay in lockstep.
+    projectName: input.managedRow.id,
     containerName: allocation.containerName,
+    managedNetwork: managedNetwork.hostName,
     image: input.settings.image ?? input.spec.defaultImage,
     // Engine-native listen port inside the container — not the ingress listener.
     containerPort: input.spec.defaultPort,
@@ -1134,6 +1166,7 @@ async function buildPayloadForMember(
       memberInput,
       containerSans,
       containerName: allocation.containerName,
+      memberOrganizationId,
       payload,
     },
   )

@@ -3,8 +3,8 @@
  *
  * Desired state is derived from all managed members on the server (and their
  * full cluster peer sets). Co-resident engines are addressed by Docker
- * container name on `turbopanel-managed`; remote backends dial the member's
- * **private listener** (published only on that member's private address at
+ * container name on the organization's managed network; remote backends dial
+ * the member's **private listener** (published only on that member's private address at
  * `replica.private_port`) — the same path engine→engine replication
  * uses for cross-host streaming.
  */
@@ -66,7 +66,10 @@ import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
 } from "../../lib/project-options.ts";
-import { listServerSubnets } from "../../lib/db/fabric-records.ts";
+import {
+  ensureOrganizationManagedNetwork,
+  listServerSubnets,
+} from "../../lib/db/fabric-records.ts";
 import { loadListenerAttachedSubnetNames } from "./ingress-attachments.ts";
 import {
   isManagedAccessAddressError,
@@ -661,6 +664,13 @@ async function buildManagedIngressReconcileDesired(
     serverRow.organizationId;
   if (!organizationId) return null;
 
+  // Server-owner org, not a member's org: one ProxySQL frontend per host joins
+  // exactly one managed network, the same scope the listener ports use below.
+  // The network row itself is allocated lazily, only on the branches that
+  // actually emit a payload — a reconcile that finds nothing to do must not
+  // leave a `managed` network behind for an org that never used one.
+  const serverOwnerOrganizationId = serverRow.organizationId ?? organizationId;
+
   const boundManagedIds = await loadBoundManagedIdsForServer(
     db,
     params.serverId,
@@ -676,7 +686,16 @@ async function buildManagedIngressReconcileDesired(
       serverId: params.serverId,
     });
     if (!existing) return null;
-    return { payload: { serverId: params.serverId, clusters: [] } };
+    const teardownNetwork = await ensureOrganizationManagedNetwork(db, {
+      organizationId: serverOwnerOrganizationId,
+    });
+    return {
+      payload: {
+        serverId: params.serverId,
+        managedNetwork: teardownNetwork.hostName,
+        clusters: [],
+      },
+    };
   }
 
   const hierarchy = await ensureManagedIngressHierarchy(db, {
@@ -694,7 +713,7 @@ async function buildManagedIngressReconcileDesired(
   // server, so they come from the server owner.
   const listenerPorts = await loadManagedIngressPorts(
     db,
-    serverRow.organizationId ?? organizationId,
+    serverOwnerOrganizationId,
   );
 
   const enabledScopes: Array<ManagedSqlAccessScope | undefined> = [];
@@ -735,10 +754,10 @@ async function buildManagedIngressReconcileDesired(
     backendAddresses,
   });
   // Bindings (`resolveBindingEndpoint`) always dial ProxySQL by this
-  // container's own Docker name over `turbopanel-managed`, regardless of the
-  // public `bindAddress` — the leaf cert must carry it as a SAN or
-  // `sslmode=verify-full` binding connections fail hostname verification
-  // even though the TCP path is reachable.
+  // container's own Docker name over the organization's managed network,
+  // regardless of the public `bindAddress` — the leaf cert must carry it as a
+  // SAN or `sslmode=verify-full` binding connections fail hostname
+  // verification even though the TCP path is reachable.
   const listenerSansWithHierarchy = mergeHierarchyContainerSan(
     listenerSans,
     hierarchy.containerName,
@@ -754,8 +773,13 @@ async function buildManagedIngressReconcileDesired(
   );
   if ("kind" in orgTlsMaterial) return orgTlsMaterial;
 
+  const managedNetwork = await ensureOrganizationManagedNetwork(db, {
+    organizationId: serverOwnerOrganizationId,
+  });
+
   const payload: ManagedIngressReconcileCommandPayload = {
     serverId: params.serverId,
+    managedNetwork: managedNetwork.hostName,
     orgTlsMaterial: orgTlsMaterial.material,
     // Always both listeners: ProxySQL configures them in one file, so sending
     // only the families present today would unbind the other on the next apply.
@@ -793,7 +817,9 @@ async function buildManagedIngressReconcileDesired(
  * or a bound consumer (`loadBoundManagedIdsForServer`) — never on every org
  * server. Returns `null` when neither is true **and** no prior hierarchy
  * exists. When a prior hierarchy exists but the set is empty, returns a
- * teardown payload `{ serverId, clusters: [] }` with no bindAddress / TLS.
+ * teardown payload `{ serverId, managedNetwork, clusters: [] }` — the
+ * organization's managed network is carried on every payload, teardown
+ * included — with no bindAddress / TLS.
  */
 export async function buildManagedIngressReconcilePayload(
   db: Db,

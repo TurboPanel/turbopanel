@@ -558,8 +558,14 @@ export const dispatch = pgTable(
 /**
  * Org-owned network registry: datacenter site CIDRs (`kind = 'datacenter'`;
  * a datacenter may own multiple CIDR rows), external Docker registrations
- * (`kind = 'docker'`, optional `server_id`), and TurboFabric logical spanning
- * networks (`kind = 'compose'`).
+ * (`kind = 'docker'`, optional `server_id`), TurboFabric logical spanning
+ * networks (`kind = 'compose'`), and the org-wide managed-engine network
+ * (`kind = 'managed'`).
+ *
+ * `managed` is platform-allocated, never operator-created: at most one row per
+ * organization (`uniq_network_organization_managed`), no datacenter/server/
+ * environment scope and no CIDR — the Docker network name lives in
+ * `options.dockerNetworkName` and is the row's own bare UUID.
  */
 export const network = pgTable(
   'network',
@@ -620,20 +626,25 @@ export const network = pgTable(
     }).onDelete('restrict'),
     check(
       'network_kind_check',
-      sql`kind IN ('datacenter', 'docker', 'compose')`
+      sql`kind IN ('datacenter', 'docker', 'compose', 'managed')`
     ),
     check(
       'network_single_scope_check',
       sql`(
         (${table.kind} = 'datacenter' AND ${table.datacenterId} IS NOT NULL AND ${table.serverId} IS NULL AND ${table.environmentId} IS NULL AND ${table.cidr} IS NOT NULL) OR
         (${table.kind} = 'docker' AND ${table.datacenterId} IS NULL AND ${table.environmentId} IS NULL) OR
-        (${table.kind} = 'compose' AND ${table.datacenterId} IS NULL AND ${table.serverId} IS NULL)
+        (${table.kind} = 'compose' AND ${table.datacenterId} IS NULL AND ${table.serverId} IS NULL) OR
+        (${table.kind} = 'managed' AND ${table.datacenterId} IS NULL AND ${table.serverId} IS NULL AND ${table.environmentId} IS NULL AND ${table.cidr} IS NULL)
       )`
     ),
     /** Unique CIDR per datacenter — a datacenter may own multiple CIDR rows. */
     uniqueIndex('uniq_network_datacenter_cidr')
       .on(table.datacenterId, table.cidr)
       .where(sql`${table.kind} = 'datacenter'`),
+    /** At most one platform-allocated managed-engine network per organization. */
+    uniqueIndex('uniq_network_organization_managed')
+      .on(table.organizationId)
+      .where(sql`${table.kind} = 'managed'`),
     check(
       'network_name_format_check',
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`

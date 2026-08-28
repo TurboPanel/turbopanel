@@ -59,7 +59,8 @@ function minimalPayload(
     managedId: 'm1',
     environmentId: 'e1',
     engine: 'postgres',
-    projectName: 'turbopanel-managed-m1',
+    // The compose project is the bare `managed` row id — no readable prefix.
+    projectName: 'm1',
     containerName: 'svc-1',
     image: 'postgres:18',
     containerPort: 5432,

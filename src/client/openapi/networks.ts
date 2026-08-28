@@ -8,7 +8,7 @@ export const networkSchemas = {
       organizationId: { type: 'string', format: 'uuid' },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       serverId: { type: ['string', 'null'], format: 'uuid' },
-      kind: { type: 'string', enum: ['datacenter', 'docker'] },
+      kind: { type: 'string', enum: ['datacenter', 'docker', 'managed'] },
       cidr: { type: ['string', 'null'] },
       name: { type: ['string', 'null'] },
       metadata: { type: ['object', 'null'] },
@@ -56,7 +56,7 @@ export const networkSchemas = {
         type: 'string',
         enum: ['datacenter', 'docker'],
         description:
-          'Scope pairing: datacenter requires datacenterId (no serverId) — a datacenter may own multiple CIDR rows (one `network(kind=\'datacenter\')` per subnet); docker may optionally pin serverId for a host-local external network and must not set datacenterId (network_scope_required / network_single_scope_conflict on 400).',
+          'Scope pairing: datacenter requires datacenterId (no serverId) — a datacenter may own multiple CIDR rows (one `network(kind=\'datacenter\')` per subnet); docker may optionally pin serverId for a host-local external network and must not set datacenterId (network_scope_required / network_single_scope_conflict on 400). The `compose` and `managed` kinds are platform-allocated and rejected here with `Invalid request`.',
       },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       serverId: { type: ['string', 'null'], format: 'uuid' },
@@ -128,7 +128,7 @@ export const networkPaths: Record<string, unknown> = {
           in: 'query',
           schema: {
             type: 'string',
-            enum: ['datacenter', 'docker'],
+            enum: ['datacenter', 'docker', 'managed'],
           },
         },
       ],
@@ -270,7 +270,8 @@ export const networkPaths: Record<string, unknown> = {
           },
         },
         '400': {
-          description: 'Invalid request',
+          description:
+            'Invalid request — `docker_network_name_required` when patching options on a kind=docker network; `managed_network_immutable` for any patch of the platform-allocated kind=managed network, which is read-only.',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '401': {
@@ -311,6 +312,11 @@ export const networkPaths: Record<string, unknown> = {
               },
             },
           },
+        },
+        '400': {
+          description:
+            '`managed_network_immutable` — the platform-allocated kind=managed network cannot be deleted by an operator.',
+          content: { 'application/json': { schema: clientErrorJson } },
         },
         '401': {
           description: 'Unauthorized',
