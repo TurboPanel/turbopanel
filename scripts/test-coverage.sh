@@ -186,8 +186,11 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/managed/routes.hostfree.test.ts \
   src/client/managed/backups.test.ts \
   src/client/managed/context.test.ts \
+  src/client/managed/destroy-fanout.hostfree.test.ts \
+  src/client/managed/host-exposure.hostfree.test.ts \
   src/client/managed/logs.test.ts \
   src/client/managed/members.hostfree.test.ts \
+  src/client/managed/monitor-credential.hostfree.test.ts \
   src/client/managed/options.test.ts \
   src/client/managed/routes-helpers.test.ts \
   src/client/managed/routes-helpers.promote.test.ts \
@@ -366,6 +369,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/commands/queue.test.ts \
   src/lib/commands/schemas.test.ts \
   src/lib/commands/schemas-parsers.hostfree.test.ts \
+  src/lib/commands/stale-sweep.hostfree.test.ts \
   src/lib/commands/types.test.ts \
   src/lib/commands/workers-queue.test.ts \
   src/lib/compose/ \
