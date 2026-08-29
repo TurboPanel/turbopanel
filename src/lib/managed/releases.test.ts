@@ -6,6 +6,7 @@ import {
   isSameManagedSeries,
   MANAGED_ENGINE_RELEASES,
   managedAllowedImagesForEngine,
+  managedCreatableReleasesForEngine,
   managedReleasesForEngine,
   requireDefaultManagedImage,
   resolveManagedImage,
@@ -25,7 +26,7 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test('catalog pins the supported series per engine', () => {
+test('catalog pins the catalogued series per engine', () => {
   assertEquals(
     managedReleasesForEngine('postgres').map((release) => release.series),
     ['18', '17', '16', '15'],
@@ -41,6 +42,40 @@ test('catalog pins the supported series per engine', () => {
   // Engines with no shipped spec have no catalog.
   assertEquals(managedReleasesForEngine('redis'), [])
   assertEquals(managedReleasesForEngine('unknown'), [])
+})
+
+test('only the three verified series are creatable', () => {
+  assertEquals(
+    managedCreatableReleasesForEngine('postgres').map((r) => r.series),
+    ['18'],
+  )
+  assertEquals(
+    managedCreatableReleasesForEngine('mysql').map((r) => r.series),
+    ['9.7'],
+  )
+  assertEquals(
+    managedCreatableReleasesForEngine('mariadb').map((r) => r.series),
+    ['12.3'],
+  )
+  assertEquals(managedCreatableReleasesForEngine('redis'), [])
+})
+
+test('the explicit gate is the only way to reach an untested series', () => {
+  assertEquals(
+    managedCreatableReleasesForEngine('postgres', { includeUntested: true }).map(
+      (r) => r.series,
+    ),
+    ['18', '17', '16', '15'],
+  )
+  assertEquals(resolveManagedImage('postgres', '17'), undefined)
+  assertEquals(
+    resolveManagedImage('postgres', '17', undefined, { includeUntested: true }),
+    'docker.io/library/postgres:17-alpine',
+  )
+  assertEquals(
+    managedAllowedImagesForEngine('postgres', { includeUntested: true })?.length,
+    8,
+  )
 })
 
 test('exactly one default release per engine', () => {
@@ -91,7 +126,7 @@ test('requireDefaultManagedImage throws for engines without a catalog', () => {
   }
 })
 
-test('settings allowlists are derived from the catalog', () => {
+test('settings allowlists are derived from the tested catalog only', () => {
   assertEquals(
     POSTGRES_ALLOWED_IMAGES,
     managedAllowedImagesForEngine('postgres'),
@@ -101,37 +136,51 @@ test('settings allowlists are derived from the catalog', () => {
     MARIADB_ALLOWED_IMAGES,
     managedAllowedImagesForEngine('mariadb'),
   )
-  // Default series + default variant is the head of the derived list.
-  assertEquals(
-    POSTGRES_ALLOWED_IMAGES[0],
+  // Tested series only — both variants of each, catalog order.
+  assertEquals(POSTGRES_ALLOWED_IMAGES, [
     'docker.io/library/postgres:18-alpine',
-  )
-  assertEquals(MYSQL_ALLOWED_IMAGES[0], 'docker.io/library/mysql:9.7')
-  assertEquals(MARIADB_ALLOWED_IMAGES[0], 'docker.io/library/mariadb:12.3')
+    'docker.io/library/postgres:18',
+  ])
+  assertEquals(MYSQL_ALLOWED_IMAGES, [
+    'docker.io/library/mysql:9.7',
+    'docker.io/library/mysql:9.7-oraclelinux9',
+  ])
+  assertEquals(MARIADB_ALLOWED_IMAGES, [
+    'docker.io/library/mariadb:12.3',
+    'docker.io/library/mariadb:12.3-ubi',
+  ])
+  // An untested series' image is not accepted anywhere.
+  assert(!POSTGRES_ALLOWED_IMAGES.includes('docker.io/library/postgres:17'))
+  assert(!MYSQL_ALLOWED_IMAGES.includes('docker.io/library/mysql:8.4'))
+  assert(!MARIADB_ALLOWED_IMAGES.includes('docker.io/library/mariadb:11.8'))
   assertEquals(managedAllowedImagesForEngine('redis'), undefined)
 })
 
 test('resolveManagedImage maps series + variant to an image', () => {
   assertEquals(
-    resolveManagedImage('postgres', '16'),
-    'docker.io/library/postgres:16-alpine',
+    resolveManagedImage('postgres', '18'),
+    'docker.io/library/postgres:18-alpine',
   )
   assertEquals(
-    resolveManagedImage('postgres', '16', 'debian'),
-    'docker.io/library/postgres:16',
+    resolveManagedImage('postgres', '18', 'debian'),
+    'docker.io/library/postgres:18',
   )
   assertEquals(
-    resolveManagedImage('mysql', '8.4', 'oraclelinux9'),
-    'docker.io/library/mysql:8.4-oraclelinux9',
+    resolveManagedImage('mysql', '9.7', 'oraclelinux9'),
+    'docker.io/library/mysql:9.7-oraclelinux9',
   )
   assertEquals(
-    resolveManagedImage('mariadb', '11.4', 'ubi'),
-    'docker.io/library/mariadb:11.4-ubi',
+    resolveManagedImage('mariadb', '12.3', 'ubi'),
+    'docker.io/library/mariadb:12.3-ubi',
   )
   // Unknown series / variant / engine → undefined (caller returns 422).
   assertEquals(resolveManagedImage('postgres', '14'), undefined)
-  assertEquals(resolveManagedImage('postgres', '16', 'ubi'), undefined)
+  assertEquals(resolveManagedImage('postgres', '18', 'ubi'), undefined)
   assertEquals(resolveManagedImage('redis', '7'), undefined)
+  // Untested but catalogued → also undefined without the gate.
+  assertEquals(resolveManagedImage('postgres', '16'), undefined)
+  assertEquals(resolveManagedImage('mysql', '8.4', 'oraclelinux9'), undefined)
+  assertEquals(resolveManagedImage('mariadb', '11.4', 'ubi'), undefined)
 })
 
 test('describeManagedImage round-trips every catalog image', () => {
@@ -141,6 +190,7 @@ test('describeManagedImage round-trips every catalog image', () => {
         engine: release.engine,
         series: release.series,
         lifecycle: release.lifecycle,
+        tested: release.tested,
         variantId: variant.id,
       })
     }
@@ -150,6 +200,14 @@ test('describeManagedImage round-trips every catalog image', () => {
     undefined,
   )
   assertEquals(describeManagedImage('docker.io/library/redis:7'), undefined)
+  // An untested series still resolves — an existing row must render its version.
+  assertEquals(describeManagedImage('docker.io/library/mysql:8.4'), {
+    engine: 'mysql',
+    series: '8.4',
+    lifecycle: 'lts',
+    tested: false,
+    variantId: 'debian',
+  })
 })
 
 test('isSameManagedSeries allows variant swaps and blocks series changes', () => {

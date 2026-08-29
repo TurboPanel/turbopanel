@@ -9,7 +9,7 @@
  * uses for cross-host streaming.
  */
 
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
 import {
   decryptSecret,
@@ -23,6 +23,7 @@ import {
 } from "../../daemon/authn/server-identity-db.ts";
 import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
 import type { CommandQueue } from "../../lib/commands/queue.ts";
+import { ensureServerMonitorCredential } from "./monitor-credential.ts";
 import type {
   ManagedApplyOrgTlsMaterial,
   ManagedIngressReconcileBackend,
@@ -35,24 +36,16 @@ import {
   transitionCommand,
 } from "../../lib/db/command-records.ts";
 import {
-  binding,
   container,
-  environment,
   managed,
   replica,
   principal,
-  project,
   server,
   service,
-  slot,
-  workspace,
 } from "../../lib/db/schema.ts";
 import { getManagedEngineSpec } from "../../lib/managed/index.ts";
 import type { ManagedIngressPorts } from "../../lib/managed/ingress-ports.ts";
-import {
-  DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
-  type ManagedSqlAccessScope,
-} from "../../lib/managed/access-scope.ts";
+import type { ManagedSqlAccessScope } from "../../lib/managed/access-scope.ts";
 import type { ManagedSettings } from "../../lib/managed/settings.ts";
 import type { ManagedSslMode } from "../../lib/managed/ssl.ts";
 import type { ManagedEngineCode } from "../../lib/managed/types.ts";
@@ -62,10 +55,6 @@ import {
   type PrivateEndpointPurpose,
   resolvePrivateEndpoints,
 } from "../../lib/net/private-endpoint.ts";
-import {
-  parseProjectOptions,
-  resolveEffectivePlacementServerId,
-} from "../../lib/project-options.ts";
 import {
   ensureOrganizationManagedNetwork,
   listServerSubnets,
@@ -77,6 +66,8 @@ import {
   resolveManagedBindAddress,
 } from "./access-address.ts";
 import { consumerServerIdsForManaged } from "../bindings/resolve-endpoint.ts";
+import { loadBoundManagedIdsForServer } from "./ingress-bound-consumers.ts";
+import { requestedExposureScope } from "./host-exposure.ts";
 import { materializeBindingsForPrincipal } from "../bindings/materialize.ts";
 import { compatLogWarn } from "../../log-compat.ts";
 import {
@@ -144,6 +135,8 @@ export {
   hostgroupsForClusterIndex,
   unionExposureScopes,
 } from "./ingress-desired-pure.ts";
+
+export { loadBoundManagedIdsForServer } from "./ingress-bound-consumers.ts";
 
 type MemberClusterRow = {
   memberId: string;
@@ -434,9 +427,9 @@ function resolveClusterBackends(
 }
 
 /**
- * Build one cluster entry for `managedId`, recording its access scope (if
- * exposure is enabled) onto `enabledScopes`. Returns `null` when the cluster has no
- * members or an unrecognized engine (nothing to reconcile for it).
+ * Build one cluster entry for `managedId`, recording its requested access scope
+ * (`undefined` when exposure is off) onto `enabledScopes`. Returns `null` when
+ * the cluster has no members or an unrecognized engine (nothing to reconcile).
  */
 function buildIngressClusterFromLoaded(
   managedId: string,
@@ -457,11 +450,11 @@ function buildIngressClusterFromLoaded(
   const parsed = parseManagedRowOptions(spec, sample.options);
   const settings: ManagedSettings = parsed?.settings ??
     { ...spec.defaultSettings };
-  if (settings.exposure.enabled) {
-    enabledScopes.push(
-      settings.exposure.scope ?? DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
-    );
-  }
+  // One entry per cluster, `undefined` when it wants no host publish. The
+  // union of these is the host's published scope set — the same derivation the
+  // connection surface uses (`./host-exposure.ts`), so what an operator is told
+  // is dialable is exactly what gets published.
+  enabledScopes.push(requestedExposureScope(settings.exposure));
 
   const hostgroups = hostgroupsForClusterIndex(index);
   const listener = protocolListenerForEngine(
@@ -497,6 +490,18 @@ function buildIngressClusterFromLoaded(
  * set because one frontend serves every cluster on the host and two clusters
  * may legitimately want two different interfaces; an unresolvable scope fails
  * the whole reconcile rather than publishing a surprise address.
+ *
+ * An empty result (no cluster on the host asked for a publish) is the whole
+ * enforcement of the exposure toggle: the daemon publishes no `ports:` at all
+ * and the engines are reachable only over the organization's managed Docker
+ * network. It must never be widened to "publish on every interface anyway".
+ *
+ * The converse is a real limitation, not an oversight: one exposed cluster
+ * publishes the listener for **every** cluster on the host, because ProxySQL
+ * serves them all on one port and has no per-user source ACL. Splitting that
+ * needs a per-cluster published port or a host firewall keyed on
+ * `settings.exposure`. Until then `resolveManagedEffectiveExposure` reports the
+ * co-residency instead of pretending the neighbour is unreachable.
  */
 async function resolveIngressBindAddresses(
   db: Db,
@@ -803,6 +808,33 @@ async function buildManagedIngressReconcileDesired(
     payload.bindAddresses = bindAddresses;
   }
 
+  // This server's own monitor credential: the daemon sets ProxySQL's global
+  // monitor user/password from it and rewrites host `monitor.cnf`. Engines
+  // learn every fronting server's credential via `managed.apply` monitorUsers.
+  {
+    const monitorCred = await ensureServerMonitorCredential(
+      db,
+      params.dataEncryptionSecrets,
+      params.serverId,
+    );
+    const daemonState = await getServerDaemonStateByServerId(
+      db,
+      params.serverId,
+    );
+    if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
+      return { kind: "daemon_key_unavailable", serverId: params.serverId };
+    }
+    payload.monitor = {
+      username: monitorCred.username,
+      password: await resealSecretForDaemon(
+        params.secretsConfig,
+        params.dataEncryptionSecrets,
+        { serverId: params.serverId, keyId: daemonState.key.id },
+        monitorCred.passwordSealed,
+      ),
+    };
+  }
+
   const attachedNames = new Set(
     await loadListenerAttachedSubnetNames(db, params.serverId),
   );
@@ -843,61 +875,6 @@ export async function buildManagedIngressReconcilePayload(
   const built = await buildManagedIngressReconcileDesired(db, params);
   if (built === null || "kind" in built) return built;
   return built.payload;
-}
-
-/**
- * Managed clusters whose consumers (compose services) place on `serverId`.
- * Those servers need ProxySQL routes even when they host no engine members.
- * Scoped to the target organization and server (env pin, slot pin, or
- * unpinned env whose project default server is this server). The project
- * default match is pushed into SQL so unpinned environments that default to
- * other servers are never loaded.
- */
-export async function loadBoundManagedIdsForServer(
-  db: Db,
-  serverId: string,
-  organizationId: string,
-): Promise<string[]> {
-  const rows = await db
-    .select({
-      managedId: principal.managedId,
-      environmentServerId: environment.serverId,
-      projectOptions: project.options,
-      taskServerId: slot.serverId,
-    })
-    .from(binding)
-    .innerJoin(service, eq(binding.serviceId, service.id))
-    .innerJoin(environment, eq(service.environmentId, environment.id))
-    .innerJoin(project, eq(environment.projectId, project.id))
-    .innerJoin(workspace, eq(project.workspaceId, workspace.id))
-    .innerJoin(principal, eq(binding.principalId, principal.id))
-    .leftJoin(slot, eq(slot.serviceId, service.id))
-    .where(
-      and(
-        eq(workspace.organizationId, organizationId),
-        or(
-          eq(environment.serverId, serverId),
-          eq(slot.serverId, serverId),
-          and(
-            isNull(environment.serverId),
-            sql`${project.options}->>'defaultServerId' = ${serverId}`,
-          ),
-        ),
-      ),
-    );
-
-  const ids = new Set<string>();
-  for (const row of rows) {
-    if (!row.managedId) continue;
-    const placement = resolveEffectivePlacementServerId(
-      row.environmentServerId,
-      parseProjectOptions(row.projectOptions),
-    );
-    if (placement === serverId || row.taskServerId === serverId) {
-      ids.add(row.managedId);
-    }
-  }
-  return [...ids];
 }
 
 export type EnqueueManagedIngressReconcileResult =

@@ -38,7 +38,7 @@ const MAX_IDENTIFIER_LENGTH = 63
 
 const TLS_CERT_PATH = '/etc/postgresql/tls/server.crt'
 const TLS_KEY_PATH = '/etc/postgresql/tls/server.key'
-const CONFIG_CONTAINER_PATH = '/etc/postgresql/postgresql.conf'
+const CONFIG_CONTAINER_PATH = '/etc/postgresql/conf/postgresql.conf'
 const TLS_DIR_CONTAINER = '/etc/postgresql/tls'
 const DATA_VOLUME_TARGET = '/var/lib/postgresql'
 
@@ -82,7 +82,7 @@ const RESERVED_CONF_KEYS = new Set([
 /** Docker bridge CIDR for hostssl ProxySQL client access on the org managed network. */
 const MANAGED_DOCKER_NETWORK_CIDR = '172.16.0.0/12' // NOSONAR typescript:S1313 — Docker's default bridge-network address space, not a real host
 
-const HBA_FILE_PATH = '/etc/postgresql/pg_hba.conf'
+const HBA_FILE_PATH = '/etc/postgresql/conf/pg_hba.conf'
 const SSL_ROOTCERT_PATH = '/etc/postgresql/tls/ca.crt'
 
 export type PostgresManagedSettings = ManagedSettings & {
@@ -196,7 +196,7 @@ function buildPlatformPostgresqlConf(
     '# TurboPanel managed PostgreSQL — platform base (do not edit above the operator block)',
     "listen_addresses = '*'",
     'port = 5432',
-    "hba_file = '/etc/postgresql/pg_hba.conf'",
+    `hba_file = '${HBA_FILE_PATH}'`,
     // Streaming replication (primary and standby) — always on so a single-member
     // cluster can grow to multi-member without a restart-level wal_level change.
     'wal_level = replica',
@@ -281,12 +281,68 @@ function peerHbaAddress(peer: string): string | null {
 
 /**
  * Platform-owned pg_hba.conf. Owning HBA is required so the private listener
- * can be published safely (replication entries + SSL-only managed-net users).
+ * can be published safely (peer-scoped ingress + replication entries +
+ * SSL-only managed-net users).
  *
  * Note: `hostssl all …` does **not** match physical replication connections
  * (`database = replication`). Co-resident standbys need an explicit
  * `hostssl replication …` rule on the managed Docker network CIDR.
  */
+/**
+ * Peer member servers AND cross-host consumer servers host ProxySQL ingress
+ * instances that dial this engine's private listener with regular users
+ * (`tp_monitor` health checks and client traffic for read-splitting) —
+ * admit them for non-replication databases, host-scoped. `hostssl all` does
+ * not match database=replication, so the explicit replication rules still
+ * govern streaming (consumers never get those).
+ */
+function buildIngressSourceHbaLines(
+  input: BuildRuntimeSpecInput,
+  peerAddresses: readonly string[],
+): string[] {
+  const ingressSources = new Set<string>()
+  for (
+    const source of [
+      ...peerAddresses,
+      ...(input.member?.clientSourceAddresses ?? []),
+    ]
+  ) {
+    const addr = peerHbaAddress(source)
+    if (addr) ingressSources.add(addr)
+  }
+  return [...ingressSources].map((addr) =>
+    `hostssl all             all             ${addr}                 scram-sha-256`
+  )
+}
+
+function buildReplicationHbaLines(
+  replUser: string | undefined,
+  peerAddresses: readonly string[],
+): string[] {
+  if (!replUser || peerAddresses.length === 0) return []
+  const out: string[] = []
+  let hasLocalPeer = false
+  for (const peer of peerAddresses) {
+    const addr = peerHbaAddress(peer)
+    if (addr) {
+      out.push(
+        `hostssl replication     ${replUser}        ${addr}                 scram-sha-256`,
+      )
+    } else {
+      hasLocalPeer = true
+    }
+  }
+  if (hasLocalPeer) {
+    // Co-resident standbys dial via Docker DNS (container name). Physical
+    // replication uses database=replication, which is not covered by
+    // `hostssl all`.
+    out.push(
+      `hostssl replication     ${replUser}        ${MANAGED_DOCKER_NETWORK_CIDR}       scram-sha-256`,
+    )
+  }
+  return out
+}
+
 function buildPlatformPgHba(
   input: BuildRuntimeSpecInput,
   rootUsername: string,
@@ -301,31 +357,13 @@ function buildPlatformPgHba(
   ]
 
   const peerAddresses = input.member?.replication?.peerAddresses ?? []
-  const replUser = input.member?.replication?.username
-  if (replUser && peerAddresses.length > 0) {
-    let hasLocalPeer = false
-    for (const peer of peerAddresses) {
-      const addr = peerHbaAddress(peer)
-      if (addr) {
-        lines.push(
-          `hostssl replication     ${replUser}        ${addr}                 scram-sha-256`,
-        )
-      } else {
-        hasLocalPeer = true
-      }
-    }
-    if (hasLocalPeer) {
-      // Co-resident standbys dial via Docker DNS (container name). Physical
-      // replication uses database=replication, which is not covered by
-      // `hostssl all` above.
-      lines.push(
-        `hostssl replication     ${replUser}        ${MANAGED_DOCKER_NETWORK_CIDR}       scram-sha-256`,
-      )
-    }
-  }
-
-  // Reject everything else over the published private listener.
   lines.push(
+    ...buildIngressSourceHbaLines(input, peerAddresses),
+    ...buildReplicationHbaLines(
+      input.member?.replication?.username,
+      peerAddresses,
+    ),
+    // Reject everything else over the published private listener.
     'host    all             all             all                     reject',
     '',
   )
@@ -416,6 +454,13 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     POSTGRES_DB: initialDatabase,
     /** Placeholder only — plaintext must never appear in a runtime spec. */
     POSTGRES_PASSWORD: ManagedSecretPlaceholder,
+    // Pin the data directory: postgres:18 images moved their default PGDATA
+    // to /var/lib/postgresql/<major>/docker, while the daemon's standby
+    // bootstrap (pg_basebackup seed, PG_VERSION/standby.signal probes) targets
+    // `<volume>/data`. Without the pin the engine initdbs a standalone
+    // cluster the seed never touches. PGDATA is in
+    // POSTGRES_RESERVED_ENV_KEYS, so user extraEnv cannot override it.
+    PGDATA: `${DATA_VOLUME_TARGET}/data`,
   }
 
   const healthcheck = buildHealthcheck(ROOT_USERNAME, initialDatabase)
@@ -425,17 +470,19 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     restart: settings.dockerOptions?.restart ?? 'unless-stopped',
     environment: env,
     command: ['postgres', '-c', `config_file=${CONFIG_CONTAINER_PATH}`],
-    // Named volume at the parent path — PG18 stores data under $PGDATA
-    // (mirrors daemon/orchestration/roles/postgres volume convention).
+    // Named volume at the parent path — the engine stores data under the
+    // pinned $PGDATA (`<volume>/data`, see the env block above).
     //
-    // Mount config as individual files — never bind the whole `./config` tree
-    // over `/etc/postgresql` then nest `./tls` under `/etc/postgresql/tls`.
-    // Docker cannot create that nested mountpoint under a read-only parent
-    // (`read-only file system` / OCI mkdirat fail).
+    // Mount config as a DIRECTORY at a sibling mountpoint of `./tls` — never
+    // as single-file binds. A single-file bind pins the inode at container
+    // create, and the daemon rewrites config via unlink-then-create, so the
+    // running engine would never see updated pg_hba/postgresql.conf and
+    // `pg_reload_conf()` would reload stale (or orphaned-unreadable) content.
+    // The sibling mountpoint (`/etc/postgresql/conf`) also avoids nesting
+    // `./tls` under a read-only `./config` parent (OCI mkdirat fail).
     volumes: [
       `${volumeName}:${DATA_VOLUME_TARGET}`,
-      `./config/postgresql.conf:${CONFIG_CONTAINER_PATH}:ro`,
-      `./config/pg_hba.conf:${HBA_FILE_PATH}:ro`,
+      `./config:/etc/postgresql/conf:ro`,
     ],
     healthcheck: {
       test: healthcheck.test,

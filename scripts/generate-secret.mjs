@@ -61,21 +61,21 @@ function middleHasUnderscore(secret) {
   return false
 }
 
-function ensureMiddleUnderscore(chars) {
+function ensureMiddleUnderscore(chars, length = SECRET_LENGTH) {
   if (middleHasUnderscore(chars.join(''))) return
-  const pos = 1 + randomInt(46)
+  const pos = 1 + randomInt(length - 2)
   chars[pos] = '_'
 }
 
-export function generateSecret() {
-  const chars = randomChars(ALPHABET, SECRET_LENGTH).split('')
+export function generateSecret(length = SECRET_LENGTH) {
+  const chars = randomChars(ALPHABET, length).split('')
 
   if (chars[0] === '_') chars[0] = randomChar(WITHOUT_UNDERSCORE)
-  if (chars[SECRET_LENGTH - 1] === '_') {
-    chars[SECRET_LENGTH - 1] = randomChar(WITHOUT_UNDERSCORE)
+  if (chars[length - 1] === '_') {
+    chars[length - 1] = randomChar(WITHOUT_UNDERSCORE)
   }
 
-  ensureMiddleUnderscore(chars)
+  ensureMiddleUnderscore(chars, length)
   return chars.join('')
 }
 

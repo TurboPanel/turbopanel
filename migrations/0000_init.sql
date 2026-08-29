@@ -357,6 +357,15 @@ CREATE TABLE "marker" (
         (storage_id IS NOT NULL)::int) = 1)
 );
 --> statement-breakpoint
+CREATE TABLE "monitor" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"server_id" uuid NOT NULL,
+	"username" varchar(64) NOT NULL,
+	"secret_envelope" text NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "mount" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -921,6 +930,7 @@ ALTER TABLE "marker" ADD CONSTRAINT "marker_environment_id_environment_id_fk" FO
 ALTER TABLE "marker" ADD CONSTRAINT "marker_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "marker" ADD CONSTRAINT "marker_datacenter_id_datacenter_id_fk" FOREIGN KEY ("datacenter_id") REFERENCES "public"."datacenter"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "marker" ADD CONSTRAINT "marker_storage_id_storage_id_fk" FOREIGN KEY ("storage_id") REFERENCES "public"."storage"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "monitor" ADD CONSTRAINT "monitor_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "mount" ADD CONSTRAINT "mount_storage_id_storage_id_fk" FOREIGN KEY ("storage_id") REFERENCES "public"."storage"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "mount" ADD CONSTRAINT "mount_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "network" ADD CONSTRAINT "network_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -1047,6 +1057,7 @@ CREATE UNIQUE INDEX "uniq_marker_environment" ON "marker" USING btree ("tag_id",
 CREATE UNIQUE INDEX "uniq_marker_service" ON "marker" USING btree ("tag_id","service_id") WHERE "marker"."service_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_marker_datacenter" ON "marker" USING btree ("tag_id","datacenter_id") WHERE "marker"."datacenter_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_marker_storage" ON "marker" USING btree ("tag_id","storage_id") WHERE "marker"."storage_id" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_monitor_server" ON "monitor" USING btree ("server_id");--> statement-breakpoint
 CREATE INDEX "idx_mount_storage_id" ON "mount" USING btree ("storage_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_mount_service_id" ON "mount" USING btree ("service_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_network_server_id" ON "network" USING btree ("server_id" uuid_ops);--> statement-breakpoint

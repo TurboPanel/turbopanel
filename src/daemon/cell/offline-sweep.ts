@@ -70,6 +70,10 @@ import {
   sweepExpiredCommandDispatch,
 } from "../../lib/db/command-records.ts";
 import {
+  releaseStuckManagedApplying,
+  sweepStaleCommands,
+} from "../../lib/commands/stale-sweep.ts";
+import {
   sweepExpiredWebhookDeliveries,
   WEBHOOK_DELIVERY_SWEEP_LIMIT,
 } from "../../lib/db/webhook-delivery-records.ts";
@@ -889,6 +893,24 @@ export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
     }
   } catch (err) {
     sweepTrace("command-dispatch-sweep-failed", {
+      error: sweepErrorMessage(err),
+    });
+  }
+  // Recover commands stranded non-terminal by a mid-run restart (the
+  // consumer's timeout lives only in memory), then unwedge managed rows
+  // stuck at 'applying' with no live command left. Same isolation: a
+  // failure here never aborts the other sweeps.
+  try {
+    const timedOut = await sweepStaleCommands(db);
+    const released = await releaseStuckManagedApplying(db);
+    if (timedOut > 0 || released.length > 0) {
+      sweepTrace("stale-command-swept", {
+        timedOut,
+        releasedManaged: released.length,
+      });
+    }
+  } catch (err) {
+    sweepTrace("stale-command-sweep-failed", {
       error: sweepErrorMessage(err),
     });
   }

@@ -19,6 +19,10 @@ export async function writeDrizzleKitConfig(url: string, configPath: string): Pr
   }`
     : `{ url: ${JSON.stringify(parts.tcpUrl ?? url)} }`
 
+  // `public.migration` (bookkeeping, `id SERIAL PRIMARY KEY`) is a documented
+  // single-writer exception to the UUID primary-key invariant — keep the table
+  // name in sync with drizzle.config.mjs; see src/lib/db/AGENTS.md
+  // ("Documented exception: public.migration").
   const configContent = `import { defineConfig } from 'drizzle-kit'
 export default defineConfig({
   schema: './src/lib/db/schema.ts',

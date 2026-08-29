@@ -157,6 +157,11 @@ export function getManagedReservedEnvKeys(engine: string): ReadonlySet<string> {
  * the settings save path) must never be able to run an unsupported or EOL
  * major version.
  *
+ * These are the **tested** series only (`ManagedEngineRelease.tested`):
+ * PostgreSQL 18, MySQL 9.7, MariaDB 12.3, each with both of its base-OS
+ * variants. A series the catalog merely knows about — so an already-persisted
+ * image can still be named — is not accepted here.
+ *
  * Ordering is catalog order (default series first, default variant first), so
  * the head of each list is that engine's default image.
  */

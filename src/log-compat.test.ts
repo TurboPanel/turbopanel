@@ -1,6 +1,11 @@
 import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
-import { compatLogError, compatLogInfo, compatLogWarn } from './log-compat.ts'
+import {
+  compatLogError,
+  compatLogInfo,
+  compatLogWarn,
+  stripLogInjection,
+} from './log-compat.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -59,4 +64,8 @@ test('compatLogInfo splits CRLF and bare CR newlines', () => {
   } finally {
     writeStub.restore()
   }
+})
+
+test('stripLogInjection replaces CR LF and tab', () => {
+  assertEquals(stripLogInjection('a\r\nb\tc'), 'a__b_c')
 })

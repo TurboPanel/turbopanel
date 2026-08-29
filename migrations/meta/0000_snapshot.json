@@ -1,5 +1,5 @@
 {
-  "id": "3ba8776e-551f-4e3d-a614-950c5edff606",
+  "id": "c7d8c513-e0c8-4dfc-b586-a4427a86a84c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -3802,6 +3802,88 @@
           "value": "((server_id IS NOT NULL)::int +\n        (workspace_id IS NOT NULL)::int +\n        (project_id IS NOT NULL)::int +\n        (environment_id IS NOT NULL)::int +\n        (service_id IS NOT NULL)::int +\n        (datacenter_id IS NOT NULL)::int +\n        (storage_id IS NOT NULL)::int) = 1"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.monitor": {
+      "name": "monitor",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "username": {
+          "name": "username",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secret_envelope": {
+          "name": "secret_envelope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "uniq_monitor_server": {
+          "name": "uniq_monitor_server",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "monitor_server_id_server_id_fk": {
+          "name": "monitor_server_id_server_id_fk",
+          "tableFrom": "monitor",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.mount": {

@@ -248,6 +248,39 @@ test("decideIngressBindScopes covers omit/public/resolve", () => {
   });
 });
 
+test("decideIngressBindScopes omits the publish when no cluster is exposed", () => {
+  // Regression: the exposure toggle is the only thing standing between a
+  // disabled cluster and the network (no host firewall, no ProxySQL source
+  // ACL), so an all-zero host must publish nothing — never `0.0.0.0` on the
+  // grounds that the setting is "recorded intent".
+  for (const scopes of [[], [undefined], [undefined, undefined, undefined]]) {
+    assertEquals(decideIngressBindScopes(scopes), { kind: "omit" });
+  }
+});
+
+test("decideIngressBindScopes publishes for a mixed host from the enabled clusters only", () => {
+  // One host, three clusters: two disabled, one asking for `datacenter`. The
+  // shared listener publishes exactly the enabled cluster's address — it does
+  // not widen to all interfaces because two neighbours are off, and it does not
+  // omit because one neighbour is on.
+  assertEquals(
+    decideIngressBindScopes([undefined, "datacenter", undefined]),
+    { kind: "resolve", scopes: ["datacenter"] },
+  );
+  // A disabled cluster next to a `public` one: the publish really is
+  // all-interfaces, and the connection surface reports the disabled cluster as
+  // reachable (`viaCoResidentCluster`) rather than private.
+  assertEquals(
+    decideIngressBindScopes([undefined, "public"]),
+    { kind: "public_all_interfaces", addresses: ["0.0.0.0"] },
+  );
+  // Two enabled clusters on different interfaces publish both, not the widest.
+  assertEquals(
+    decideIngressBindScopes([undefined, "datacenter", "turbofabric"]),
+    { kind: "resolve", scopes: ["turbofabric", "datacenter"] },
+  );
+});
+
 test("decideIngressBindScopes ignores undefined and collapses public", () => {
   assertEquals(
     decideIngressBindScopes([undefined, "local", undefined]),

@@ -11,6 +11,7 @@
  * existing `cachedServerMetricsStore` precedent in `workers.ts`.
  */
 
+import { stripLogInjection } from "../../log-compat.ts";
 import type { ServerMetricsStore, ServerStatusEvent } from "./types.ts";
 import { rateLimitedMetricsLog } from "./validation.ts";
 
@@ -63,7 +64,7 @@ function logStatusWriteFailed(serverId: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   rateLimitedMetricsLog(serverId, "status_write_failed", (reason) => {
     console.error(
-      `server status metrics write failed serverId=${serverId} reason=${reason}: ${message}`,
+      `server status metrics write failed serverId=${stripLogInjection(serverId)} reason=${stripLogInjection(reason)}: ${stripLogInjection(message)}`,
     );
   });
 }

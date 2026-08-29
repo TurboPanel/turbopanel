@@ -72,11 +72,13 @@ export {
   isSameManagedSeries,
   MANAGED_ENGINE_RELEASES,
   managedAllowedImagesForEngine,
+  managedCreatableReleasesForEngine,
   type ManagedEngineLifecycle,
   type ManagedEngineRelease,
   type ManagedImageDescriptor,
   type ManagedImageVariant,
   managedReleasesForEngine,
+  type ManagedReleaseGate,
   requireDefaultManagedImage,
   resolveManagedImage,
 } from './releases.ts'

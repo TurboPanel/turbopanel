@@ -13,6 +13,7 @@ import {
   loadServerRowsForFleetPresence,
 } from '../../daemon/cell/postgres-projection.ts'
 import { license, server } from '../../lib/db/schema.ts'
+import { redactServerOptions } from '../../lib/db/server-metadata.ts'
 import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
 import { runApprovedCachedReadModel } from '../cached-query.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
@@ -56,7 +57,9 @@ export type ServersListDisplayPayload = {
  *
  * Cached SELECT (#1) reads no auth/session/secret columns — only the listed
  * display/projection fields — and contains none of the stable/volatile
- * functions above.
+ * functions above. `options` is passed through {@link redactServerOptions}
+ * before it is returned (and therefore before it is cached), so a secret-bearing
+ * key left on the jsonb by an older control plane never reaches Redis.
  */
 async function loadCachedListRows(
   readDb: Db,
@@ -80,7 +83,13 @@ async function loadCachedListRows(
     .where(inArray(server.id, visibleIds))
     .orderBy(server.createdAt)
 
-  return rows as ServersListRow[]
+  // Redact before returning, so the cache stores the redacted rows: what goes
+  // into Redis is what goes to the client, and neither ever holds a
+  // secret-bearing `options` key (see `REDACTED_SERVER_OPTION_KEYS`).
+  return (rows as ServersListRow[]).map((row) => ({
+    ...row,
+    options: redactServerOptions(row.options),
+  }))
 }
 
 async function resolveServersListEnrichment(

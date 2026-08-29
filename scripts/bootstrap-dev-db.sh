@@ -16,6 +16,8 @@ export TURBOPANEL_DATABASE_URL
 export CI=1
 
 cd "$ROOT"
+# `pnpm migrate` preflights the server first (scripts/check-postgres-compat.mjs):
+# migrations require PostgreSQL 18+ / a working uuidv7() before drizzle-kit runs.
 echo "bootstrap-dev-db: applying migrations"
 pnpm migrate
 echo "bootstrap-dev-db: done"

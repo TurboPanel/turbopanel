@@ -15,6 +15,8 @@ import {
   parseServerHostResources,
   parseServerOptions,
   parseServerOsMetadata,
+  redactServerOptions,
+  REDACTED_SERVER_OPTION_KEYS,
   parseServerTimeSync,
   resolveEffectiveServerTimezone,
   resolveServerOsLogoKey,
@@ -711,4 +713,44 @@ test('parseServerRuntimeMetadata degrades to undefined rather than throwing', ()
   assertEquals(parseServerRuntimeMetadata('php'), undefined)
   assertEquals(parseServerRuntimeMetadata({ php: 'yes' }), undefined)
   assertEquals(parseServerRuntimeMetadata({}), undefined)
+})
+
+test('redactServerOptions strips secret-bearing keys and nothing else', () => {
+  // `managedMonitor` held a sealed ProxySQL monitor password before the
+  // credential moved to the `monitor` table. `server.options` is returned by
+  // the server routes and cached in Redis, so a row that still carries it must
+  // be scrubbed at every boundary.
+  assertEquals(REDACTED_SERVER_OPTION_KEYS.includes('managedMonitor'), true)
+  assertEquals(
+    redactServerOptions({
+      timezone: 'UTC',
+      sshPort: 2222,
+      managedMonitor: {
+        username: 'tp_monitor_0123456789ab',
+        passwordSealed: 'tpsecret.v1.deadbeef',
+      },
+    }),
+    { timezone: 'UTC', sshPort: 2222 },
+  )
+})
+
+test('redactServerOptions passes through anything with nothing to strip', () => {
+  const clean = { timezone: 'UTC' }
+  // Same reference — the common path must not allocate a copy per row.
+  assertEquals(redactServerOptions(clean) === clean, true)
+  assertEquals(redactServerOptions(null), null)
+  assertEquals(redactServerOptions(undefined), undefined)
+  assertEquals(redactServerOptions('nope'), 'nope')
+  assertEquals(redactServerOptions([1, 2]), [1, 2])
+})
+
+test('parseServerOptions never surfaces a secret-bearing key', () => {
+  // Second line of defence: even unredacted jsonb cannot reach a response
+  // through the parsed shape, because the parser is an allowlist.
+  const parsed = parseServerOptions({
+    timezone: 'UTC',
+    managedMonitor: { username: 'x', passwordSealed: 'tpsecret.v1.y' },
+  })
+  assertEquals(parsed, { timezone: 'UTC' })
+  assertEquals(JSON.stringify(parsed).includes('passwordSealed'), false)
 })

@@ -194,6 +194,18 @@ export function collectProxySqlListenerSans(params: {
  * - No enabled exposure → omit every published port (daemon publishes nothing)
  * - `public` → explicit all-interfaces (`0.0.0.0`), no per-scope lookup
  * - anything else → caller resolves one host address per scope
+ *
+ * **The publish is the enforcement.** Docker's published port is the only
+ * layer that stands between a disabled cluster and the network today: there is
+ * no host firewall yet, and ProxySQL has no per-user source ACL. So an empty
+ * decision must stay empty — returning an all-interfaces bind because "the
+ * exposure toggle is only recorded intent" hands every credential on the host
+ * to the internet. The daemon already honours this contract (an absent/empty
+ * `bindAddresses` means "publish nothing"; see `managed-ingress-reconcile.ts`),
+ * which is why the toggle can be enforced from here.
+ *
+ * Flapping the compose publish on a toggle costs a ProxySQL restart. That is
+ * the intended price of turning host access off, not a reason to leave it on.
  */
 export type IngressBindScopeDecision =
   | { kind: 'omit' }

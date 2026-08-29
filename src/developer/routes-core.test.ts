@@ -835,6 +835,41 @@ describe("developer organization and server routes", () => {
     expect(body.organizations[0]?.displayName).toBe("Dev Org");
   });
 
+  it("never returns a managedMonitor secret from server options", async () => {
+    // `server.options` is returned verbatim here. The sealed ProxySQL monitor
+    // password moved to the `monitor` table, but a row written by an older
+    // control plane can still carry the key — the developer surface is still a
+    // response and must not publish it.
+    const db = createRoutesCoreMockDb({
+      servers: [{
+        id: SERVER_ID,
+        name: "Edge",
+        organizationId: ORG_ID,
+        options: {
+          tier: "dev",
+          managedMonitor: {
+            username: "tp_monitor_0123456789ab",
+            passwordSealed: "tpsecret.v1.deadbeef",
+          },
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        connected: true,
+      }],
+    });
+    const { app } = await createTestApp({ db });
+
+    const response = await app.request(`${DEVELOPER_API_PREFIX}/servers`);
+    expect(response.status).toBe(200);
+    const raw = await response.text();
+    expect(raw).not.toContain("managedMonitor");
+    expect(raw).not.toContain("passwordSealed");
+    expect(raw).not.toContain("tpsecret.v1.deadbeef");
+    const body = JSON.parse(raw) as {
+      servers: Array<{ options: Record<string, unknown> }>;
+    };
+    expect(body.servers[0]?.options).toEqual({ tier: "dev" });
+  });
+
   it("creates, lists, and patches servers with validation", async () => {
     const db = createRoutesCoreMockDb({
       servers: [{

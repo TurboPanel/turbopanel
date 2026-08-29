@@ -42,8 +42,40 @@ export type ManagedEngineRelease = {
   lifecycle: ManagedEngineLifecycle
   /** Exactly one release per engine is the default for new clusters. */
   isDefault: boolean
+  /**
+   * This series has been validated end-to-end (create, replicate, promote,
+   * backup/restore) against the daemon's engine handlers.
+   *
+   * Only a tested series is creatable: {@link managedCreatableReleasesForEngine}
+   * and the derived image allowlists filter on it, so an untested series is
+   * refused by the settings parser, the `managed.apply` payload parser, the
+   * daemon mirror, and the UI picker alike. Untested entries stay in
+   * {@link MANAGED_ENGINE_RELEASES} only so {@link describeManagedImage} can
+   * still name a row that was written while the series was offered.
+   */
+  tested: boolean
   /** Display order; the first entry is this series' default variant. */
   variants: readonly ManagedImageVariant[]
+}
+
+/**
+ * Explicit opt-in to untested series.
+ *
+ * There is deliberately no ambient/env form: an untested series must be
+ * enabled by the caller that knows it is safe (today only the catalog's own
+ * test suite), never by a stray environment variable on a production control
+ * plane.
+ */
+export type ManagedReleaseGate = {
+  /** Include series whose `tested` flag is false. Defaults to `false`. */
+  includeUntested?: boolean
+}
+
+function isReleaseCreatable(
+  release: ManagedEngineRelease,
+  gate: ManagedReleaseGate | undefined,
+): boolean {
+  return release.tested || gate?.includeUntested === true
 }
 
 const DEBIAN = 'Debian'
@@ -51,12 +83,14 @@ const DEBIAN = 'Debian'
 function postgresRelease(
   series: string,
   isDefault = false,
+  tested = false,
 ): ManagedEngineRelease {
   return {
     engine: 'postgres',
     series,
     lifecycle: 'supported',
     isDefault,
+    tested,
     variants: [
       {
         id: 'alpine',
@@ -77,12 +111,17 @@ function postgresRelease(
  * Debian tag is the default and Oracle's own Oracle Linux 9 build is the
  * alternative.
  */
-function mysqlRelease(series: string, isDefault = false): ManagedEngineRelease {
+function mysqlRelease(
+  series: string,
+  isDefault = false,
+  tested = false,
+): ManagedEngineRelease {
   return {
     engine: 'mysql',
     series,
     lifecycle: 'lts',
     isDefault,
+    tested,
     variants: [
       {
         id: 'debian',
@@ -102,12 +141,14 @@ function mysqlRelease(series: string, isDefault = false): ManagedEngineRelease {
 function mariadbRelease(
   series: string,
   isDefault = false,
+  tested = false,
 ): ManagedEngineRelease {
   return {
     engine: 'mariadb',
     series,
     lifecycle: 'lts',
     isDefault,
+    tested,
     variants: [
       {
         id: 'debian',
@@ -124,44 +165,81 @@ function mariadbRelease(
 }
 
 /**
- * Supported series for new clusters, newest first per engine.
+ * Every series the catalog knows about, newest first per engine.
  *
  * PostgreSQL stops at 15 rather than upstream's oldest supported major (14) to
  * keep the replication/promotion test matrix bounded. MySQL 8.0 is absent
  * because it reached EOL in April 2026 — an EOL series must never be
  * creatable.
+ *
+ * **Knowing about a series is not offering it.** Only PostgreSQL 18, MySQL 9.7
+ * and MariaDB 12.3 carry `tested: true`; every other entry exists so
+ * {@link describeManagedImage} can still name an already-persisted image, and
+ * is refused everywhere a new image can be chosen. Promote a series by
+ * flipping its `tested` argument here **and** in the two mirrors
+ * (`turbopaneld/src/instance/commands/contracts.ts`,
+ * `ui/src/lib/managed-releases.ts`), never in one place alone.
  */
 export const MANAGED_ENGINE_RELEASES: readonly ManagedEngineRelease[] = [
-  postgresRelease('18', true),
+  postgresRelease('18', true, true),
   postgresRelease('17'),
   postgresRelease('16'),
   postgresRelease('15'),
-  mysqlRelease('9.7', true),
+  mysqlRelease('9.7', true, true),
   mysqlRelease('8.4'),
-  mariadbRelease('12.3', true),
+  mariadbRelease('12.3', true, true),
   mariadbRelease('11.8'),
   mariadbRelease('11.4'),
   mariadbRelease('10.11'),
 ]
 
-/** Releases for `engine` in display order; empty when the engine has no catalog yet. */
+/**
+ * Every catalogued release for `engine` in display order — **including
+ * untested series**. Use it to describe or label an image that already exists;
+ * use {@link managedCreatableReleasesForEngine} for anything that can produce a
+ * new `settings.image`. Empty when the engine has no catalog yet.
+ */
 export function managedReleasesForEngine(
   engine: string,
 ): readonly ManagedEngineRelease[] {
   return MANAGED_ENGINE_RELEASES.filter((release) => release.engine === engine)
 }
 
-/** The default series for `engine`, or `undefined` when the engine has no catalog. */
+/**
+ * Releases `engine` may be created on, in display order.
+ *
+ * Tested series only unless `gate.includeUntested` is set. This is the single
+ * filter behind the derived image allowlists, the create-time series
+ * resolution, and the UI picker — an untested series is never creatable by
+ * default.
+ */
+export function managedCreatableReleasesForEngine(
+  engine: string,
+  gate?: ManagedReleaseGate,
+): readonly ManagedEngineRelease[] {
+  return managedReleasesForEngine(engine).filter((release) =>
+    isReleaseCreatable(release, gate)
+  )
+}
+
+/**
+ * The default series for `engine`, or `undefined` when the engine has no
+ * creatable release. Never returns an untested series without the gate.
+ */
 export function defaultManagedRelease(
   engine: string,
+  gate?: ManagedReleaseGate,
 ): ManagedEngineRelease | undefined {
-  const releases = managedReleasesForEngine(engine)
+  const releases = managedCreatableReleasesForEngine(engine, gate)
   return releases.find((release) => release.isDefault) ?? releases[0]
 }
 
 /** Default image (default series, default variant) for `engine`. */
-export function defaultManagedImage(engine: string): string | undefined {
-  return defaultManagedRelease(engine)?.variants[0]?.image
+export function defaultManagedImage(
+  engine: string,
+  gate?: ManagedReleaseGate,
+): string | undefined {
+  return defaultManagedRelease(engine, gate)?.variants[0]?.image
 }
 
 /**
@@ -180,23 +258,36 @@ export function requireDefaultManagedImage(engine: ManagedEngineCode): string {
 
 /**
  * Every image reference `engine` accepts, in display order (default series
- * first). This is the derived form of the old hand-written allowlists.
+ * first). This is the derived form of the old hand-written allowlists, and it
+ * covers **tested series only** — an untested series' images are not accepted
+ * by the settings parser, the `managed.apply` payload parser, or the daemon.
+ *
+ * `undefined` (not `[]`) still means "this engine has no curated allowlist";
+ * an engine that has a catalog but no tested series returns an empty list,
+ * which correctly refuses every image.
  */
 export function managedAllowedImagesForEngine(
   engine: string,
+  gate?: ManagedReleaseGate,
 ): readonly string[] | undefined {
-  const releases = managedReleasesForEngine(engine)
-  if (releases.length === 0) return undefined
-  return releases.flatMap((release) => release.variants.map((variant) => variant.image))
+  if (managedReleasesForEngine(engine).length === 0) return undefined
+  return managedCreatableReleasesForEngine(engine, gate).flatMap((release) =>
+    release.variants.map((variant) => variant.image)
+  )
 }
 
-/** Resolve `series` + optional `variantId` (default variant when omitted) to an image. */
+/**
+ * Resolve `series` + optional `variantId` (default variant when omitted) to an
+ * image. Untested series resolve to `undefined` without the gate, so create
+ * returns `managed_version_unsupported` rather than silently starting one.
+ */
 export function resolveManagedImage(
   engine: string,
   series: string,
   variantId?: string,
+  gate?: ManagedReleaseGate,
 ): string | undefined {
-  const release = managedReleasesForEngine(engine).find(
+  const release = managedCreatableReleasesForEngine(engine, gate).find(
     (row) => row.series === series,
   )
   if (!release) return undefined
@@ -208,6 +299,8 @@ export type ManagedImageDescriptor = {
   engine: ManagedEngineCode
   series: string
   lifecycle: ManagedEngineLifecycle
+  /** False for a series that is catalogued but not creatable — surface a warning. */
+  tested: boolean
   variantId: string
 }
 
@@ -215,7 +308,9 @@ export type ManagedImageDescriptor = {
  * Reverse-lookup an allowlisted image to its catalog identity, so responses can
  * report `engineSeries` / `imageVariant` without persisting a second copy.
  * Returns `undefined` for an image outside the catalog (an engine with no
- * catalog, or a row written before a series was retired).
+ * catalog, or a row written before a series was retired). Untested series are
+ * described here on purpose — an existing row must still render its version
+ * even though the series can no longer be chosen (`tested: false`).
  */
 export function describeManagedImage(
   image: string,
@@ -227,6 +322,7 @@ export function describeManagedImage(
           engine: release.engine,
           series: release.series,
           lifecycle: release.lifecycle,
+          tested: release.tested,
           variantId: variant.id,
         }
       }

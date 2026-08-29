@@ -304,6 +304,20 @@ test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', asy
     await verifyCertificateSignature(material.certificatePem, material.caCertPem),
     true,
   )
+
+  // Managed leaves must carry the clientAuth EKU — ProxySQL presents them as
+  // client certs on proxy-to-server connections, and Postgres rejects a
+  // serverAuth-only leaf with "unsuitable certificate purpose" once
+  // ssl_ca_file is set.
+  const derBase64 = material.certificatePem
+    .replace(/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s/g, '')
+  const der = Uint8Array.from(atob(derBase64), (c) => c.charCodeAt(0))
+  // OID 1.3.6.1.5.5.7.3.2 (id-kp-clientAuth) as DER TLV.
+  const clientAuthOid = [0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02]
+  const containsClientAuth = der.some((_, i) =>
+    clientAuthOid.every((byte, j) => der[i + j] === byte)
+  )
+  assertEquals(containsClientAuth, true)
 })
 
 test('buildManagedOrgTlsMaterial org A leaf does not validate against org B CA bundle', async () => {

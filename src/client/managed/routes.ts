@@ -117,6 +117,7 @@ import {
   buildManagedReleaseView,
   buildManagedSslView,
   resolveManagedAccessEndpoints,
+  resolveManagedEffectiveExposure,
   buildManagedDeleteHardResponse,
   buildManagedDeleteQueuedResponse,
   buildManagedDestroyQueuedResponse,
@@ -321,6 +322,104 @@ async function clearPendingNullIdContainersForEnvironment(
       ),
     )
   }
+}
+
+/**
+ * Force-delete cleanup: remove the managed runtime's DB rows (service
+ * container rows, member rows, and the managed row itself) so
+ * `deleteProjectCascade` stops gating on them. Only for `?force=true` —
+ * destroys are enqueued best-effort and sweeps mop up leftover containers.
+ */
+async function deleteManagedRuntimeRows(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  environmentId: string,
+  managedId: string,
+): Promise<void> {
+  const envServices = await db
+    .select({ id: service.id })
+    .from(service)
+    .where(eq(service.environmentId, environmentId))
+  const serviceIds = envServices.map((s) => s.id)
+  if (serviceIds.length > 0) {
+    await db.delete(container).where(
+      and(
+        inArray(container.serviceId, serviceIds),
+        eq(container.role, 'service'),
+      ),
+    )
+  }
+  await db.delete(replica).where(eq(replica.managedId, managedId))
+  await db.delete(managed).where(eq(managed.id, managedId))
+}
+
+/**
+ * Destroy fan-out + response for DELETE …/managed. `?force=true` is a
+ * best-effort teardown for a wedged/partially-offline cluster — skip online
+ * checks and replica gating, enqueue destroys everywhere, and hard-delete
+ * the rows so the project can be removed (leftover containers on
+ * unreachable hosts are swept later). Non-force surfaces any replica
+ * destroy failure and leaves the primary + managed row intact for a retry.
+ */
+async function runManagedDeleteFanout(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  commandQueue: CommandQueue,
+  params: {
+    userId: string
+    environmentId: string
+    managedId: string
+    targetServerId: string
+  },
+): Promise<Response> {
+  const { userId, environmentId, managedId, targetServerId } = params
+  const force = c.req.query('force') === 'true'
+  const members = await listManagedMembers(db, managedId)
+  if (!force) {
+    for (const member of members) {
+      const offline = await assertTargetServerOnline(c, db, member.serverId)
+      if (offline) return offline
+    }
+  }
+
+  // Single-click delete: stamp deleteAfterDestroy on primary only so the
+  // managed row is deleted exactly once after the last host teardown.
+  // Replicas tear down before the primary, sequenced by the command consumer
+  // rather than by this handler: `enqueueManagedDestroyFanout` returns as soon
+  // as the replica commands are durably enqueued, and the deferred primary
+  // destroy is released only after every replica's side effects succeed.
+  // A `failed` row here means a replica could not be enqueued at all — the
+  // primary and the managed row stay intact for a retry or a force-delete.
+  const enqueued = await enqueueManagedDestroyFanout(c, db, commandQueue, {
+    userId,
+    managedId,
+    removeVolumes: true,
+    members,
+    deleteAfterDestroy: true,
+    environmentId,
+    force,
+  })
+  if (enqueued instanceof Response) return enqueued
+
+  if (!force && enqueued.some((r) => r.status === 'failed')) {
+    return c.json(
+      {
+        error: 'managed_destroy_failed',
+        results: enqueued,
+      },
+      502,
+    )
+  }
+
+  if (force) {
+    // Hard-delete now: clear the runtime rows so `deleteProjectCascade`
+    // stops gating on them, regardless of destroy outcomes. Report as
+    // deleted — the UI has nothing left to track.
+    await clearPendingNullIdContainersForEnvironment(db, environmentId)
+    await deleteManagedRuntimeRows(db, environmentId, managedId)
+    return c.json(buildManagedDeleteHardResponse())
+  }
+
+  return c.json(buildManagedDeleteQueuedResponse(enqueued, targetServerId))
 }
 
 async function deleteManagedCompensation(
@@ -576,6 +675,7 @@ async function prepareApplyForManaged(
     dropDatabases?: string[]
     omitPrincipalIds?: string[]
     excludeMemberIds?: string[]
+    forceResyncMemberIds?: string[]
   },
 ): Promise<PreparedManagedApply | Response> {
   const commandQueue = await assertManagedApplyReady(
@@ -602,6 +702,7 @@ async function prepareApplyForManaged(
     dropDatabases: extra?.dropDatabases,
     omitPrincipalIds: extra?.omitPrincipalIds,
     excludeMemberIds: extra?.excludeMemberIds,
+    forceResyncMemberIds: extra?.forceResyncMemberIds,
   })
   if (isPrepareError(prepared)) {
     return mapManagedApplyPrepareError(c, prepared)
@@ -1007,6 +1108,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         exposure: parsed.settings.exposure,
       })
       : []
+    // What the shared ProxySQL actually publishes, which is not always what
+    // this cluster asked for: an exposed co-resident cluster publishes the
+    // listener for every cluster on the host. The UI labels the toggle from
+    // this, not from `settings.exposure` alone.
+    const exposure = serverId
+      ? await resolveManagedEffectiveExposure(db, {
+        serverId,
+        exposure: parsed.settings.exposure,
+      })
+      : null
 
     const serverRows = serverId
       ? await db
@@ -1030,6 +1141,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       }),
       connection,
       endpoints,
+      exposure,
       settings: parsed.settings,
       ssl: buildManagedSslView(
         parsed.settings.ssl.mode,
@@ -1240,24 +1352,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       managedId: row.id,
       serverId: targetServerId,
     })
-    const members = await listManagedMembers(db, row.id)
-    for (const member of members) {
-      const offline = await assertTargetServerOnline(c, db, member.serverId)
-      if (offline) return offline
-    }
-
-    // Single-click delete: stamp deleteAfterDestroy on primary only so the
-    // managed row is deleted exactly once after the last host teardown.
-    const enqueued = await enqueueManagedDestroyFanout(c, db, commandQueue, {
+    return await runManagedDeleteFanout(c, db, commandQueue, {
       userId: auth.userId,
+      environmentId,
       managedId: row.id,
-      removeVolumes: true,
-      members,
-      deleteAfterDestroy: true,
+      targetServerId,
     })
-    if (enqueued instanceof Response) return enqueued
-
-    return c.json(buildManagedDeleteQueuedResponse(enqueued, targetServerId))
   })
 
   router.post('/environments/:id/managed/root-password', async (c) => {
@@ -2182,6 +2282,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         removeVolumes: true,
         memberId: member.id,
         deleteMemberAfterDestroy: true,
+        environmentId,
       },
       expiresAtMs: 600_000,
       metadata: primaryPrepared
@@ -2199,6 +2300,73 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       commandId: destroyOne.commandId,
       serverId: destroyOne.serverId,
     }))
+  })
+
+  /**
+   * Operator-forced standby re-seed — the sanctioned way past `needs_resync`
+   * (`bootstrapStandby` never auto-rewinds an initialized non-standby data
+   * dir). Runs a full apply fan-out with `forceResync` stamped on the target
+   * member's standby payload: the daemon wipes its data directory and takes a
+   * fresh basebackup from the current primary.
+   */
+  router.post('/environments/:id/managed/members/:memberId/resync', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const environmentId = c.req.param('id')
+    const memberId = c.req.param('memberId')
+    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    if (auth instanceof Response) return auth
+
+    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
+    if (ctx instanceof Response) return ctx
+
+    const row = await findManagedForEnvironment(db, environmentId)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    const member = await findManagedMember(db, memberId)
+    if (member?.managedId !== row.id) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    if (member.role === 'primary') {
+      return c.json({ error: 'managed_member_is_primary' }, 409)
+    }
+
+    const offline = await assertTargetServerOnline(c, db, member.serverId)
+    if (offline) return offline
+
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const primaryServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (primaryServerId instanceof Response) return primaryServerId
+
+    const prepared = await prepareApplyForManaged(
+      c,
+      db,
+      ctx,
+      row,
+      options,
+      primaryServerId,
+      { forceResyncMemberIds: [member.id] },
+    )
+    if (prepared instanceof Response) return prepared
+
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+      userId: auth.userId,
+      managedId: row.id,
+      members: prepared.members,
+    })
+    if (enqueued instanceof Response) return enqueued
+
+    const primary = pickPrimaryCommandResult(enqueued)
+    return c.json({
+      ok: true as const,
+      results: enqueued,
+      commandId: primary?.commandId,
+      serverId: primary?.serverId ?? primaryServerId,
+      status: 'queued' as const,
+    })
   })
 
   router.post('/environments/:id/managed/members/:memberId/promote', async (c) => {

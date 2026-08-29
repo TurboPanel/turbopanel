@@ -8,6 +8,7 @@ import {
   defaultManagedRelease,
   describeManagedImage,
   isSameManagedSeries,
+  type ManagedReleaseGate,
   resolveManagedImage,
 } from '../../lib/managed/releases.ts'
 import type { ManagedConnectionRole } from '../../lib/commands/schemas.ts'
@@ -17,7 +18,6 @@ import {
 } from '../../lib/managed/ingress-ports.ts'
 import { type ManagedSslMode, resolveManagedSslMode } from '../../lib/managed/ssl.ts'
 import {
-  DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
   isManagedSqlAccessScope,
   type ManagedSqlAccessScope,
 } from '../../lib/managed/access-scope.ts'
@@ -26,6 +26,7 @@ import { parseOrganizationOptions } from '../../lib/organization-options.ts'
 import { BadRequestError, parseName, requireStringField } from '../shared.ts'
 import { USERNAME_RE } from '../principals/store.ts'
 import { LOOPBACK_BIND, resolveManagedDialHost } from './access-address.ts'
+import { resolveManagedEffectiveExposure } from './host-exposure.ts'
 import type { ManagedContext } from './context.ts'
 import { parseManagedRowOptions, type ManagedRowOptions } from './options.ts'
 import { evaluateManagedPromoteLagGate } from '../../lib/managed/promote-lag.ts'
@@ -34,6 +35,10 @@ import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import type { ManagedResidualMetadata } from './serialize.ts'
 
 export { evaluateManagedPromoteLagGate }
+export {
+  type ManagedEffectiveExposure,
+  resolveManagedEffectiveExposure,
+} from './host-exposure.ts'
 
 /** One reachable client endpoint on the shared ProxySQL frontend. */
 export type ManagedAccessEndpoint = {
@@ -48,13 +53,19 @@ export type ManagedAccessEndpoint = {
  * `public` publishes on all interfaces, so every narrower address is reachable
  * too and is worth showing an operator; a narrower scope publishes exactly one
  * address and must not imply the others exist.
+ *
+ * Input is the **host's** published scopes, not one cluster's request: the
+ * shared ProxySQL publishes once for every cluster it fronts, so a cluster with
+ * its own toggle off is genuinely dialable when a co-resident cluster is
+ * exposed (see `./host-exposure.ts`). Reporting the cluster's own intent here
+ * would tell an operator a reachable database is unreachable.
  */
-function dialScopesForExposure(
-  exposure: ManagedSettings['exposure'],
+function dialScopesForPublishedScopes(
+  publishedScopes: readonly ManagedSqlAccessScope[],
 ): ManagedSqlAccessScope[] {
-  if (!exposure.enabled) return []
-  const scope = exposure.scope ?? DEFAULT_MANAGED_SQL_ACCESS_SCOPE
-  if (scope !== 'public') return [scope]
+  const widest = publishedScopes[0]
+  if (widest === undefined) return []
+  if (widest !== 'public') return [...publishedScopes]
   return ['public', 'turbofabric', 'datacenter', 'local']
 }
 
@@ -91,9 +102,15 @@ async function resolveListenerPortForServer(
 /**
  * Every endpoint this cluster is reachable at, widest scope first.
  *
- * Empty when exposure is disabled: nothing is published to the host at all, and
- * co-located consumers dial the ProxySQL container over the organization's
- * managed network (see `resolveBindingEndpoint`) rather than any host address.
+ * Empty when **no** cluster on the host is exposed: nothing is published to the
+ * host at all, and co-located consumers dial the ProxySQL container over the
+ * organization's managed network (see `resolveBindingEndpoint`) rather than any
+ * host address.
+ *
+ * Non-empty for an unexposed cluster that shares a host with an exposed one —
+ * that listener really does front it. Callers that need to distinguish "this
+ * cluster asked for it" from "a neighbour did" read
+ * {@link resolveManagedEffectiveExposure}.
  */
 export async function resolveManagedAccessEndpoints(
   db: Db,
@@ -104,7 +121,11 @@ export async function resolveManagedAccessEndpoints(
     exposure: ManagedSettings['exposure']
   }>,
 ): Promise<ManagedAccessEndpoint[]> {
-  const scopes = dialScopesForExposure(params.exposure)
+  const effective = await resolveManagedEffectiveExposure(db, {
+    serverId: params.serverId,
+    exposure: params.exposure,
+  })
+  const scopes = dialScopesForPublishedScopes(effective.scopes)
   if (scopes.length === 0) return []
 
   const port = await resolveListenerPortForServer(db, params)
@@ -123,9 +144,12 @@ export async function resolveManagedAccessEndpoints(
  * The single endpoint used for the primary DSN and the listener TLS SANs.
  *
  * Widest scope wins so the advertised host is the one an operator outside the
- * host can actually reach. Unexposed clusters keep reporting loopback: the DSN
- * shape stays useful, and the connection surface separately reports that no host
- * endpoint is published.
+ * host can actually reach. Clusters on a host that publishes nothing keep
+ * reporting loopback: the DSN shape stays useful, and the connection surface
+ * separately reports that no host endpoint is published.
+ *
+ * `null` means "asked to be exposed, but no address resolved" — a real
+ * misconfiguration worth surfacing rather than papering over with loopback.
  */
 export async function resolveManagedConnectionListener(
   db: Db,
@@ -240,6 +264,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/members',
     '/environments/:id/managed/members/:memberId',
     '/environments/:id/managed/members/:memberId/promote',
+    '/environments/:id/managed/members/:memberId/resync',
     '/organizations/:id/managed',
   ]
 }
@@ -307,12 +332,17 @@ export const MANAGED_SERIES_IMMUTABLE_ERROR = 'managed_series_immutable'
  * image, which is how every existing client creates a cluster. `imageVariant`
  * alone selects that variant of the default series. An unknown series or
  * variant is a **422** rather than a generic settings rejection so the UI can
- * say which version was refused (an EOL or never-supported major must not be
- * creatable).
+ * say which version was refused (an EOL, never-supported, or merely untested
+ * major must not be creatable).
+ *
+ * Only **tested** series resolve. `gate.includeUntested` is the one explicit
+ * opt-in — the catalog's own suites use it to prove an untested series is
+ * refused by default rather than absent from the catalog.
  */
 export function parseManagedVersionSelection(
   engine: string,
   body: Record<string, unknown>,
+  gate?: ManagedReleaseGate,
 ):
   | { ok: true; image?: string }
   | { ok: false; error: string; status: 400 | 422 } {
@@ -327,12 +357,12 @@ export function parseManagedVersionSelection(
     return { ok: false, error: 'Invalid imageVariant', status: 400 }
   }
 
-  const series = seriesRaw ?? defaultManagedRelease(engine)?.series
+  const series = seriesRaw ?? defaultManagedRelease(engine, gate)?.series
   if (series === undefined) {
     return { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 }
   }
 
-  const image = resolveManagedImage(engine, series, variantRaw)
+  const image = resolveManagedImage(engine, series, variantRaw, gate)
   if (image === undefined) {
     return { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 }
   }
@@ -965,6 +995,7 @@ export function buildEmptyManagedDetailResponse(
     managed: null,
     connection: null,
     endpoints: [] as const,
+    exposure: null,
     settings: null,
     ssl: buildManagedSslView(undefined, organizationSslMode),
     release: null,
@@ -996,6 +1027,11 @@ export type ManagedReleaseView = {
   series: string
   variantId: string
   lifecycle: string
+  /**
+   * False when the running series is catalogued but no longer creatable — the
+   * UI surfaces it as unsupported rather than silently showing a normal version.
+   */
+  tested: boolean
   image: string
 }
 
@@ -1017,6 +1053,7 @@ export function buildManagedReleaseView(
     series: descriptor.series,
     variantId: descriptor.variantId,
     lifecycle: descriptor.lifecycle,
+    tested: descriptor.tested,
     image,
   }
 }

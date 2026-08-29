@@ -184,6 +184,13 @@ export type BuildRuntimeSpecInput = {
        */
       transport?: 'datacenter' | 'fabric' | 'public'
     }
+    /**
+     * Cross-host **consumer** server addresses (servers with bindings whose
+     * ProxySQL dials this engine's private listener with client/monitor
+     * users). Admitted by pg_hba / engine account host scoping alongside
+     * `replication.peerAddresses`; never granted replication.
+     */
+    clientSourceAddresses?: string[]
   }
   /** When true, use org-CA leaf paths for engine SSL (multi-member / verify-full). */
   useOrgTls?: boolean

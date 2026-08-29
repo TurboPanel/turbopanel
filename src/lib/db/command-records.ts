@@ -234,6 +234,38 @@ export async function getCommandMetadata(
 }
 
 /**
+ * Take a one-shot claim on a command row, so exactly one caller runs a
+ * follow-up.
+ *
+ * Several sibling commands can finish at once and each notice that a fan-out
+ * gate is now satisfied. They all try to claim the same anchor row; the
+ * conditional UPDATE means Postgres picks the winner and everyone else gets
+ * `false`. Idempotent by construction — a second call for the same `flag` never
+ * claims again, so a redelivered command cannot double-enqueue the follow-up.
+ *
+ * `flag` must be a fixed identifier from the calling code, never user input:
+ * it becomes a jsonb key.
+ */
+export async function claimCommandMetadataFlag(
+  db: Db,
+  commandId: string,
+  flag: string,
+): Promise<boolean> {
+  const claimed = await db
+    .update(command)
+    .set({
+      metadata: sql`COALESCE(${command.metadata}, '{}'::jsonb) || jsonb_build_object(${flag}::text, ${nowIso()}::text)`,
+    })
+    .where(
+      // `jsonb_exists(...)` rather than the `?` operator: `?` is a placeholder
+      // token in several drivers and does not survive every SQL-building path.
+      sql`${command.id} = ${commandId} AND NOT jsonb_exists(COALESCE(${command.metadata}, '{}'::jsonb), ${flag})`,
+    )
+    .returning({ id: command.id })
+  return claimed.length > 0
+}
+
+/**
  * The only sanctioned read of the daemon execution payload. Returns `null` once
  * the dispatch row has been cleaned up (success) or swept (expired failure).
  */

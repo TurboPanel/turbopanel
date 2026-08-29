@@ -80,10 +80,14 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 18)
+  assertEquals(paths.length, 19)
   assertEquals(paths.includes('/environments/:id/managed/logs'), true)
   assertEquals(
     paths.includes('/environments/:id/managed/members/:memberId/promote'),
+    true,
+  )
+  assertEquals(
+    paths.includes('/environments/:id/managed/members/:memberId/resync'),
     true,
   )
   assertEquals(paths.includes('/organizations/:id/managed'), true)
@@ -136,20 +140,84 @@ test('parseManagedVersionSelection resolves a catalog series and variant', () =>
   assertEquals(parseManagedVersionSelection('postgres', {}), { ok: true })
 
   assertEquals(
-    parseManagedVersionSelection('postgres', { engineSeries: '16' }),
-    { ok: true, image: 'docker.io/library/postgres:16-alpine' },
+    parseManagedVersionSelection('postgres', { engineSeries: '18' }),
+    { ok: true, image: 'docker.io/library/postgres:18-alpine' },
   )
   assertEquals(
     parseManagedVersionSelection('postgres', {
-      engineSeries: '16',
+      engineSeries: '18',
       imageVariant: 'debian',
     }),
-    { ok: true, image: 'docker.io/library/postgres:16' },
+    { ok: true, image: 'docker.io/library/postgres:18' },
   )
   // Variant alone applies to the default series.
   assertEquals(
     parseManagedVersionSelection('postgres', { imageVariant: 'debian' }),
     { ok: true, image: 'docker.io/library/postgres:18' },
+  )
+})
+
+test('create accepts only the three verified series', () => {
+  // The only creatable series per engine, both of their base-OS variants.
+  assertEquals(
+    parseManagedVersionSelection('mysql', { engineSeries: '9.7' }),
+    { ok: true, image: 'docker.io/library/mysql:9.7' },
+  )
+  assertEquals(
+    parseManagedVersionSelection('mysql', {
+      engineSeries: '9.7',
+      imageVariant: 'oraclelinux9',
+    }),
+    { ok: true, image: 'docker.io/library/mysql:9.7-oraclelinux9' },
+  )
+  assertEquals(
+    parseManagedVersionSelection('mariadb', { engineSeries: '12.3' }),
+    { ok: true, image: 'docker.io/library/mariadb:12.3' },
+  )
+
+  // Every other catalogued series is refused — it is known, not tested.
+  for (const [engine, series] of [
+    ['postgres', '17'],
+    ['postgres', '16'],
+    ['postgres', '15'],
+    ['mysql', '8.4'],
+    ['mariadb', '11.8'],
+    ['mariadb', '11.4'],
+    ['mariadb', '10.11'],
+  ] as const) {
+    assertEquals(
+      parseManagedVersionSelection(engine, { engineSeries: series }),
+      { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 },
+      `${engine} ${series} must not be creatable`,
+    )
+  }
+})
+
+test('the explicit gate is the only way to create an untested series', () => {
+  assertEquals(
+    parseManagedVersionSelection(
+      'postgres',
+      { engineSeries: '17' },
+      { includeUntested: true },
+    ),
+    { ok: true, image: 'docker.io/library/postgres:17-alpine' },
+  )
+  assertEquals(
+    parseManagedVersionSelection(
+      'mysql',
+      { engineSeries: '8.4', imageVariant: 'oraclelinux9' },
+      { includeUntested: true },
+    ),
+    { ok: true, image: 'docker.io/library/mysql:8.4-oraclelinux9' },
+  )
+  // The gate widens the catalog, it does not disable validation.
+  assertEquals(
+    parseManagedVersionSelection(
+      'postgres',
+      { engineSeries: '14' },
+      { includeUntested: true },
+    ),
+    { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 },
   )
 })
 
@@ -185,15 +253,24 @@ test('mergeCreateSettings applies a resolved catalog image', () => {
   const merged = mergeCreateSettings(
     postgresEngineSpec,
     { exposure: { enabled: true, scope: 'datacenter' } },
-    'docker.io/library/postgres:17-alpine',
+    'docker.io/library/postgres:18',
   )
   if (!merged) throw new TypeError('expected merged settings')
-  assertEquals(merged.image, 'docker.io/library/postgres:17-alpine')
+  assertEquals(merged.image, 'docker.io/library/postgres:18')
   assertEquals(merged.exposure.scope, 'datacenter')
 
   // An image outside the engine allowlist is rejected by parseSettings.
   assertEquals(
     mergeCreateSettings(postgresEngineSpec, {}, 'docker.io/library/mysql:9.7'),
+    null,
+  )
+  // An untested series never reaches settings — the gate is in the parser too.
+  assertEquals(
+    mergeCreateSettings(
+      postgresEngineSpec,
+      {},
+      'docker.io/library/postgres:17-alpine',
+    ),
     null,
   )
 })
@@ -233,8 +310,10 @@ test('buildManagedReleaseView derives catalog identity from the image', () => {
     series: '18',
     variantId: 'alpine',
     lifecycle: 'supported',
+    tested: true,
     image: 'docker.io/library/postgres:18-alpine',
   })
+  // A row written while 16 was still offered still renders — flagged untested.
   assertEquals(
     buildManagedReleaseView(postgresEngineSpec, {
       ...base,
@@ -244,6 +323,7 @@ test('buildManagedReleaseView derives catalog identity from the image', () => {
       series: '16',
       variantId: 'debian',
       lifecycle: 'supported',
+      tested: false,
       image: 'docker.io/library/postgres:16',
     },
   )

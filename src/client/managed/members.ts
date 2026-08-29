@@ -392,6 +392,13 @@ export async function ensureMemberPrivatePorts(
 ): Promise<ManagedMemberRow[] | ManagedPrivatePortExhaustedError> {
   if (members.length === 0) return []
 
+  // Operate strictly on the given subset. Callers may exclude a member being
+  // destroyed (delete-member prepare) — reloading the full member list here
+  // used to resurrect the excluded member, so the prepare then built a
+  // payload for it against the just-cleared primary listener and failed with
+  // `private_path_unavailable`.
+  const inputIds = new Set(members.map((m) => m.id))
+
   if (members.length <= 1) {
     for (const member of members) {
       if (member.privatePort !== null) {
@@ -401,16 +408,20 @@ export async function ensureMemberPrivatePorts(
           .where(eq(replica.id, member.id))
       }
     }
-    return listManagedMembers(db, members[0]!.managedId)
+    return (await listManagedMembers(db, members[0]!.managedId))
+      .filter((m) => inputIds.has(m.id))
   }
 
   const managedId = members[0]!.managedId
   return await db.transaction(async (tx) => {
-    const current = await tx
+    // Full member list only for occupied-port accounting — excluded members'
+    // ports must still count as taken on their servers.
+    const current = (await tx
       .select(MEMBER_RETURNING)
       .from(replica)
       .where(eq(replica.managedId, managedId))
-      .orderBy(asc(replica.ordinal))
+      .orderBy(asc(replica.ordinal)))
+      .filter((m) => inputIds.has(m.id))
 
     const serverIds = [...new Set(current.map((m) => m.serverId))]
     const occupied = await tx
@@ -449,11 +460,12 @@ export async function ensureMemberPrivatePorts(
         .where(eq(replica.id, member.id))
     }
 
-    return await tx
+    return (await tx
       .select(MEMBER_RETURNING)
       .from(replica)
       .where(eq(replica.managedId, managedId))
-      .orderBy(asc(replica.ordinal))
+      .orderBy(asc(replica.ordinal)))
+      .filter((m) => inputIds.has(m.id))
   })
 }
 

@@ -13,6 +13,7 @@ import {
   loadServerRowsForFleetPresence,
 } from '../../daemon/cell/postgres-projection.ts'
 import { license, server } from '../../lib/db/schema.ts'
+import { redactServerOptions } from '../../lib/db/server-metadata.ts'
 import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
 import { runApprovedCachedReadModel } from '../cached-query.ts'
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
@@ -56,6 +57,9 @@ export type ServerDetailDisplayPayload = {
  * Cached SELECT (#1) reads no auth/session/secret columns — only the listed
  * display/projection fields — and contains none of the stable/volatile
  * functions above. Never select `daemon` / auth columns on the cached path.
+ * `options` is passed through {@link redactServerOptions} before it is returned
+ * (and therefore before it is cached), so a secret-bearing key left on the jsonb
+ * by an older control plane never reaches Redis.
  */
 async function loadCachedDetailRow(
   readDb: Db,
@@ -78,7 +82,11 @@ async function loadCachedDetailRow(
     )
     .limit(1)
 
-  return (row as ServerDetailRow | undefined) ?? null
+  const detail = row as ServerDetailRow | undefined
+  if (!detail) return null
+  // Redact before returning, so the cache stores the redacted row (see
+  // `REDACTED_SERVER_OPTION_KEYS`).
+  return { ...detail, options: redactServerOptions(detail.options) }
 }
 
 async function resolveServerDetailEnrichment(

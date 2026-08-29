@@ -751,6 +751,43 @@ test('ensureMemberPrivatePorts clears leftover ports on single-member clusters',
   assertEquals(await ensureMemberPrivatePorts({} as Db, []), [])
 })
 
+test('ensureMemberPrivatePorts never resurrects members excluded from the input', async () => {
+  // Delete-member prepare passes only the surviving primary; the DB still
+  // holds the replica being destroyed. The refreshed result must not include
+  // it — resurrecting it made the prepare build a payload for the removed
+  // member against the just-cleared primary listener (private_path_unavailable).
+  const sole = member({
+    id: 'p',
+    serverId: 's',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: 45_010,
+  })
+  const cleared = member({ ...sole, privatePort: null })
+  const doomedReplica = member({
+    id: 'r',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    privatePort: 45_000,
+  })
+  const simpleDb = {
+    update: () => ({
+      set: () => ({ where: () => Promise.resolve([]) }),
+    }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve([cleared, doomedReplica]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+
+  const result = await ensureMemberPrivatePorts(simpleDb, [sole])
+  assertEquals(result, [cleared])
+})
+
 test('ensureMemberPrivatePorts allocates free private ports per server', async () => {
   const primary = member({
     id: 'p',

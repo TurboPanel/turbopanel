@@ -8,6 +8,11 @@
  *   id → created_at → updated_at → metadata → options → …remaining columns
  * If a table has one of those JSONB columns, it must have both — and both are
  * always nullable (`jsonb()`, never `.notNull()`).
+ *
+ * Primary keys are UUIDv7 (`DEFAULT uuidv7()`, PostgreSQL 18+) under a
+ * primary/standby model with one writable primary; sharded/distributed SQL is
+ * out of scope. Guarded by `primary-key.test.ts` — see AGENTS.md (Multi-node
+ * PostgreSQL model) before changing key strategy.
  */
 
 import { sql } from 'drizzle-orm'
@@ -1343,6 +1348,52 @@ export const leaf = pgTable(
     ),
   ],
 )
+/**
+ * Per-server ProxySQL backend monitor credential (control-plane minted).
+ *
+ * A **secret-bearing table**, deliberately separate from `server.options`:
+ * `options` is operator-facing configuration that `GET /servers`,
+ * `GET /servers/:id`, and the developer routes return verbatim, and that the
+ * approved cached read models copy into Redis. A sealed password must never
+ * ride along on any of those paths, so it lives here where nothing
+ * client-facing selects it.
+ *
+ * One row per server (`uniq_monitor_server`): ProxySQL's monitor credential is
+ * a single global per instance and one ProxySQL runs per host. Cascades with
+ * the server so a deleted host leaves no orphaned secret behind.
+ */
+export const monitor = pgTable(
+  'monitor',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** Deterministic `tp_monitor_<serverId prefix>`; engine identifier limits apply. */
+    username: varchar({ length: 64 }).notNull(),
+    /**
+     * Data-encryption sealed password (`ENVELOPE_PREFIX_SECRET`). Resealed to a
+     * `tpdaemon` envelope per recipient at send time — never shipped as stored.
+     */
+    secretEnvelope: text('secret_envelope').notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_monitor_server').on(table.serverId),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'monitor_server_id_server_id_fk',
+    }).onDelete('cascade'),
+  ],
+)
+
 /**
  * Durable HA journal for one managed cluster. At most one in-flight recovery
  * per `managed_id` (partial unique on non-terminal states). Member ids are

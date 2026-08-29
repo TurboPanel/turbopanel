@@ -54,11 +54,26 @@ managed service's user-facing version is an **engine series** (`18`, `9.7`,
 `settings.image` remains the persisted field — series/variant are recovered from
 it with `describeManagedImage`, so there is no second copy to drift.
 
-| Engine   | Default  | Also creatable    |
-| -------- | -------- | ----------------- |
-| Postgres | **18**   | 17, 16, 15        |
-| MySQL    | **9.7**  | 8.4               |
-| MariaDB  | **12.3** | 11.8, 11.4, 10.11 |
+**Catalogued is not creatable.** Each release carries `tested: boolean`, and
+only a tested series can be created, saved into `settings.image`, or reach the
+daemon. Untested entries stay in the catalog for one reason: `describeManagedImage`
+must still be able to name an image an existing row already holds.
+
+| Engine   | Creatable (tested) | Catalogued but untested |
+| -------- | ------------------ | ----------------------- |
+| Postgres | **18**             | 17, 16, 15              |
+| MySQL    | **9.7**            | 8.4                     |
+| MariaDB  | **12.3**           | 11.8, 11.4, 10.11       |
+
+Each creatable series offers both of its base-OS variants, so the derived
+allowlists hold six images in total. `managedCreatableReleasesForEngine` is the
+single filter; `managedReleasesForEngine` still returns everything for naming.
+The one way past it is an explicit `ManagedReleaseGate` (`{ includeUntested:
+true }`) passed by a caller that knows better — today only the catalog's own
+suites. There is deliberately **no** environment-variable form: an untested
+series must not become creatable because of a stray env var on a production
+control plane. Promoting a series means flipping `tested` here **and** in both
+mirrors in the same change.
 
 PostgreSQL stops at 15 (not upstream's oldest supported major, 14) to bound the
 replication/promotion test matrix. MySQL 8.0 is **absent** — it reached EOL in
@@ -69,8 +84,8 @@ Debian tag with the vendor-published Oracle Linux 9 (MySQL) / UBI (MariaDB)
 variant as the alternative for RPM-based hosts; PostgreSQL's Alpine variant
 stays its default for footprint.
 
-**Adding or retiring a series** means editing `MANAGED_ENGINE_RELEASES` here
-plus the two mirrors, in the same change:
+**Adding, promoting, or retiring a series** means editing
+`MANAGED_ENGINE_RELEASES` here plus the two mirrors, in the same change:
 
 | Layer                           | File                                                                                  | Pinned by                      |
 | ------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------ |
@@ -91,8 +106,9 @@ every spec's `parseSettings`, as does `parseManagedApplyPayload`
 **Create-time selection:** `POST …/managed` accepts `engineSeries` +
 `imageVariant` (`parseManagedVersionSelection` in
 `../../client/managed/routes-helpers.ts`), resolved to an image and merged into
-settings; unknown series/variant is **422** `managed_version_unsupported`.
-Omitting both takes the engine default.
+settings; an unknown **or untested** series/variant is **422**
+`managed_version_unsupported`. Omitting both takes the engine default (always a
+tested series).
 
 **Series are immutable after create.** `PATCH …/managed` refuses a settings
 change that moves the cluster to a different series (**422**
@@ -104,8 +120,9 @@ migration between two managed databases, not an in-place image change; that
 migration flow is a `Future:` seam.
 
 `GET …/managed` returns a `release` view (`series` / `variantId` / `lifecycle` /
-`image`, via `buildManagedReleaseView`) so the UI can show a version without
-parsing tags.
+`tested` / `image`, via `buildManagedReleaseView`) so the UI can show a version
+without parsing tags — and flag a cluster still running a series that is no
+longer creatable.
 
 MySQL/MariaDB use **socket-auth platform admin accounts** seeded by
 `initdb/00-turbopanel.sql` (MySQL `auth_socket` / MariaDB built-in
@@ -173,11 +190,15 @@ KiB cap), `exposure` (`ManagedSqlAccessScope` from `access-scope.ts`: `local` |
 `null`. **`ssl.mode` is optional and unset by default** — an absent mode means
 "inherit" (see **Client TLS (SSL mode)**), so `DEFAULT_MANAGED_SETTINGS.ssl` is
 `{}`. Legacy stored `ssl.enabled` booleans still parse: `false` → `disable`,
-`true` → `require`; explicit `mode` wins when both are present. Exposure
-controls which interface ProxySQL publishes on for that cluster's member servers
-(see `access-address.ts` / `ingress-desired.ts`), **not** per-service published
-ports. One-release read of retired `exposure.bind` (`public` | `datacenter` |
-`local`) migrates to the same-named `scope`; new writes must use `scope`.
+`true` → `require`; explicit `mode` wins when both are present. Exposure is
+**recorded access intent only**: ProxySQL's client listener ports are always
+published on all interfaces (`decideIngressBindScopes` in
+`ingress-desired-pure.ts` unconditionally returns `0.0.0.0` — changing binds
+requires a ProxySQL restart, so exposure toggles must never flap the compose
+publish). Access control today is credential auth + org-CA TLS; the future
+host firewall will enforce `exposure.scope`. One-release read of retired
+`exposure.bind` (`public` | `datacenter` | `local`) migrates to the same-named
+`scope`; new writes must use `scope`.
 
 ## Client routing (connection role, not regex)
 
@@ -380,12 +401,43 @@ without a data migration. Multi-member apply also ensures a platform
 `managedReplication` principal (not listed as a client user), builds
 **per-member** `postgresql.conf` + `pg_hba.conf` (platform-owned HBA), and ships
 an org-CA engine leaf for `sslmode=verify-full` on both the ProxySQL backend leg
-and `primary_conninfo`. Leaf `notAfter` + signing `ca_generation` are persisted
+and `primary_conninfo`. Both roles carry `replication.peerAddresses` (standbys
+too): every member server hosts a ProxySQL ingress that dials each engine's
+private listener with regular users (`tp_monitor` + client traffic), so the HBA
+admits peers with `hostssl all` rules alongside the `hostssl replication`
+entries — a peer-less standby HBA rejects cross-host monitor/read traffic.
+Cross-host **consumer** servers (bound apps elsewhere) are admitted the same
+way via `member.clientSourceAddresses` → payload `ingressSourceAddresses`
+(pg_hba `hostssl all` + daemon firewall + MySQL/MariaDB account host scoping);
+consumers never receive replication rules.
+Managed leaves are minted serverAuth **+ clientAuth** (`includeClientAuth` in
+`buildManagedOrgTlsMaterial`): ProxySQL presents them as client certs on
+proxy-to-server connections and Postgres verifies purpose once `ssl_ca_file`
+is set. ProxySQL backend monitor credentials are control-plane minted **per
+server** (`client/managed/monitor-credential.ts`: `tp_monitor_<serverId
+prefix>`, sealed on the dedicated `monitor` table — **never** `server.options`,
+which the server routes return verbatim and the cached read models copy into
+Redis) — shipped on
+`managed.ingress.reconcile` (`payload.monitor`, this server's own) and on
+primary `managed.apply` (`monitorUsers[]`, every fronting server: members +
+bound consumers) so each server's ProxySQL monitors every backend with its
+own identity; standbys inherit the roles via WAL. Leaf `notAfter` + signing `ca_generation` are persisted
 on `leaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`
 command metadata — see `src/lib/tls/AGENTS.md` → Leaf tracking + renewal sweep)
 — not at payload generation. Member CRUD: `GET/POST …/managed/members`
 (`replicaClass` default `failover`), `PATCH/DELETE …/members/:memberId`
-(`readEligible` / `replicaClass` conversion), `POST …/members/:memberId/promote`
+(`readEligible` / `replicaClass` conversion),
+`POST …/members/:memberId/resync` (operator-forced re-seed: full apply fan-out
+with `forceResync` on the target standby payload — the daemon wipes its data
+dir and re-basebackups from the primary; the only way past `needs_resync`),
+`DELETE …/managed` destroys **replicas first (awaited, bounded 180s), then the
+primary** — the primary's `deleteAfterDestroy` outcome removes the managed row,
+and destroy side effects are row-independent (`payload.environmentId`) so
+concurrent outcomes never skip container-row cleanup or ingress teardown.
+`?force=true` skips online checks and replica gating, enqueues best-effort
+destroys, hard-deletes the runtime rows, and returns `deleted: true` (sweeps
+mop up leftover containers).
+`POST …/members/:memberId/promote`
 (lag-gated; **failover** class required — `{ force: true }` bypasses lag/health
 only, never class). Read-class promotion is
 `POST …/managed/disaster-recovery/promote` (`{ memberId, confirm: true }`).

@@ -169,7 +169,10 @@ function buildPlatformMycnf(
   )
 
   if (input.member?.role === 'standby') {
-    lines.push('read_only=ON', 'super_read_only=ON')
+    // MariaDB has no super_read_only (MySQL-only; MDEV-18441) — an unknown
+    // variable in my.cnf kills mariadbd at startup. read_only still blocks
+    // non-SUPER writes; the platform admin bypasses it by design.
+    lines.push('read_only=ON')
   }
 
   lines.push('', '# --- operator config ---')

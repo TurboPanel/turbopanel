@@ -253,3 +253,77 @@ test('cachedServerDetailReadModel returns null presence when preload is empty', 
   assertEquals(result?.presence, null)
   assertEquals(result?.colocatedWithInstance, false)
 })
+
+/**
+ * A sealed ProxySQL monitor password used to live on
+ * `server.options.managedMonitor`. It now lives on the `monitor` table, but a
+ * row written by an older control plane can still carry the key — and this read
+ * model both returns `options` to the client and writes it to Redis.
+ */
+const LEGACY_MONITOR_OPTIONS = {
+  timezone: 'UTC',
+  managedMonitor: {
+    username: 'tp_monitor_0123456789ab',
+    passwordSealed: 'tpsecret.v1.deadbeef',
+  },
+}
+
+test('cachedServerDetailReadModel never returns a managedMonitor secret', async () => {
+  const row: ServerDetailRow = {
+    id: 'srv-1',
+    name: 'Primary',
+    organizationId: 'org-1',
+    licenseId: null,
+    options: LEGACY_MONITOR_OPTIONS,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  }
+  const db = createStubDb({ detailRows: [row], presenceRows: [] })
+  const cache = createPassthroughQueryCache(db)
+
+  const result = await cachedServerDetailReadModel(
+    fakeContext({ db, queryCache: cache }),
+    { organizationId: 'org-1', serverId: 'srv-1' },
+  )
+
+  assertEquals(result?.row.options, { timezone: 'UTC' })
+  const serialized = JSON.stringify(result)
+  assertEquals(serialized.includes('managedMonitor'), false)
+  assertEquals(serialized.includes('passwordSealed'), false)
+})
+
+test('cachedServerDetailReadModel never caches a managedMonitor secret in redis', async () => {
+  const row: ServerDetailRow = {
+    id: 'srv-1',
+    name: 'Primary',
+    organizationId: 'org-1',
+    licenseId: null,
+    options: LEGACY_MONITOR_OPTIONS,
+    createdAt: '2024-01-01T00:00:00.000Z',
+  }
+  const db = createStubDb({ detailRows: [row], presenceRows: [] })
+  const store = new Map<string, string>()
+  const cache = createRedisQueryCache({
+    client: {
+      get: (key: string) => Promise.resolve(store.get(key) ?? null),
+      set: (key: string, value: string) => {
+        store.set(key, value)
+        return Promise.resolve()
+      },
+    } as unknown as RedisCellClient,
+    db,
+  })
+
+  const ctx = fakeContext({ db, queryCache: cache })
+  const opts = { organizationId: 'org-1', serverId: 'srv-1' }
+
+  await cachedServerDetailReadModel(ctx, opts)
+  const cached = [...store.values()].join('\n')
+  assertEquals(cached.length > 0, true)
+  assertEquals(cached.includes('managedMonitor'), false)
+  assertEquals(cached.includes('passwordSealed'), false)
+
+  // The second call is served from that cache entry — still no secret.
+  const second = await cachedServerDetailReadModel(ctx, opts)
+  assertEquals(second?.row.options, { timezone: 'UTC' })
+  assertEquals(JSON.stringify(second).includes('passwordSealed'), false)
+})

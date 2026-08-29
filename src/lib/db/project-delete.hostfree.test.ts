@@ -19,7 +19,7 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-type ContainerRow = { id: string; status: string | null }
+type ContainerRow = { id: string; status: string | null; role?: string }
 type DeleteCall = { table: string; ids: string[] }
 
 function createCascadeMockDb(scenario: {
@@ -143,8 +143,8 @@ test('deleteProjectCascade rejects active containers before transaction', async 
     environmentIds: ['env-1'],
     serviceIds: ['svc-1'],
     containers: [
-      { id: 'c1', status: 'exited' },
-      { id: 'c2', status: 'running' },
+      { id: 'c1', status: 'exited', role: 'service' },
+      { id: 'c2', status: 'running', role: 'service' },
     ],
   })
   const result = await deleteProjectCascade(db, 'proj-1')
@@ -153,6 +153,23 @@ test('deleteProjectCascade rejects active containers before transaction', async 
     error: PROJECT_HAS_RUNNING_SERVICES_ERROR,
   })
   assertEquals(stats.transactions, 0)
+})
+
+test('deleteProjectCascade ignores running platform components (ingress/ha)', async () => {
+  // ProxySQL / Orchestrator rows are shared per-server infrastructure — a
+  // project must never be held hostage by them; their lifecycle is
+  // server-scoped (destroy fan-out + orphan sweep).
+  const { db, stats } = createCascadeMockDb({
+    environmentIds: ['env-1'],
+    serviceIds: ['svc-1'],
+    containers: [
+      { id: 'c1', status: 'exited', role: 'service' },
+      { id: 'c2', status: 'running', role: 'ingress' },
+    ],
+  })
+  const result = await deleteProjectCascade(db, 'proj-1')
+  assertEquals(result, { ok: true })
+  assertEquals(stats.transactions, 1)
 })
 
 test('deleteProjectCascade cascades stopped containers inside a transaction', async () => {

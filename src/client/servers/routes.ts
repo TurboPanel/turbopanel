@@ -16,6 +16,7 @@ import { parseOrganizationOptions } from '../../lib/organization-options.ts'
 import { parseDatacenterOptions } from '../../lib/datacenter-options.ts'
 import {
   parseServerOptions,
+  redactServerOptions,
   type ServerOptions,
 } from '../../lib/db/server-metadata.ts'
 import { isActiveContainerStatus } from '../../lib/db/project-delete.ts'
@@ -662,6 +663,11 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         )
         return {
           ...row,
+          // Belt to the read model's braces: the loader strips secret-bearing
+          // `options` keys before caching, and the response strips them again
+          // in case a stale cache entry predates that. See
+          // `REDACTED_SERVER_OPTION_KEYS`.
+          options: redactServerOptions(row.options),
           datacenters,
           ...shapeServerPresenceFields(live, colocatedIds.has(row.id)),
           ...timezoneFields,
@@ -1138,6 +1144,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       ok: true,
       server: {
         ...display.row,
+        // See the list route: redacted again at the response boundary so a
+        // cache entry written before the redaction cannot leak.
+        options: redactServerOptions(display.row.options),
         datacenters,
         ...shapeServerPresenceFields(live, display.colocatedWithInstance),
         ...timezoneFields,

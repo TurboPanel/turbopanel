@@ -291,7 +291,16 @@ export type CreateManagedPrincipalInput = {
   username: string
   kind?: string
   metadata?: Record<string, unknown> | null
+  /**
+   * Override the generated password length. Replication principals use
+   * {@link REPLICATION_PASSWORD_LENGTH} — MySQL caps `SOURCE_PASSWORD` in
+   * `CHANGE REPLICATION SOURCE` at 32 chars (error 3056).
+   */
+  passwordLength?: number
 }
+
+/** MySQL rejects replication passwords longer than 32 chars (error 3056). */
+export const REPLICATION_PASSWORD_LENGTH = 32
 
 /**
  * Insert a managed-engine principal with a freshly generated sealed password
@@ -310,7 +319,10 @@ export async function createManagedPrincipal(
     throw new TypeError('invalid provider')
   }
 
-  const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets)
+  const { plaintext, sealed } = await generateSealedSecret(
+    dataEncryptionSecrets,
+    input.passwordLength !== undefined ? { length: input.passwordLength } : undefined,
+  )
   const [inserted] = await db
     .insert(principal)
     .values({
@@ -554,6 +566,7 @@ export async function ensureManagedReplicationPrincipal(
     managedId: params.managedId,
     provider: params.provider,
     username,
+    passwordLength: REPLICATION_PASSWORD_LENGTH,
     metadata: { managedReplication: true },
   })
   return {

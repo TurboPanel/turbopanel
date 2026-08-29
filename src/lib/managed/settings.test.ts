@@ -84,10 +84,15 @@ test('getManagedAllowedImages / isManagedImageAllowed expose the curated allowli
     isManagedImageAllowed('postgres', 'docker.io/library/postgres:18-alpine'),
     true,
   )
-  // Non-default catalog series are allowed; a bare major with no catalog tag is not.
+  // The catalog's default variant of a tested series is allowed.
+  assertEquals(
+    isManagedImageAllowed('postgres', 'docker.io/library/postgres:18'),
+    true,
+  )
+  // Catalogued but untested (`tested: false`) is refused, same as never-catalogued.
   assertEquals(
     isManagedImageAllowed('postgres', 'docker.io/library/postgres:17'),
-    true,
+    false,
   )
   assertEquals(
     isManagedImageAllowed('postgres', 'docker.io/library/postgres:14'),
@@ -97,9 +102,10 @@ test('getManagedAllowedImages / isManagedImageAllowed expose the curated allowli
     isManagedImageAllowed('mysql', 'docker.io/library/mysql:9.7'),
     true,
   )
+  // Catalogued but untested — refused, same as EOL.
   assertEquals(
     isManagedImageAllowed('mysql', 'docker.io/library/mysql:8.4'),
-    true,
+    false,
   )
   // EOL since April 2026 — must never be creatable.
   assertEquals(
@@ -116,7 +122,7 @@ test('getManagedAllowedImages / isManagedImageAllowed expose the curated allowli
   )
   assertEquals(
     isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:10.11'),
-    true,
+    false,
   )
   assertEquals(
     isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:11'),
@@ -155,14 +161,23 @@ test('parseManagedSettingsBase enforces the engine allowlist when engine is pass
     ),
     null,
   )
-  // A non-default catalog series is accepted (create-time version choice).
+  // The tested series' non-default variant is accepted (create-time choice).
+  assertEquals(
+    parseManagedSettingsBase(
+      { image: 'docker.io/library/postgres:18' },
+      undefined,
+      'postgres',
+    )?.image,
+    'docker.io/library/postgres:18',
+  )
+  // A catalogued-but-untested series is refused just like an unknown one.
   assertEquals(
     parseManagedSettingsBase(
       { image: 'docker.io/library/postgres:17-alpine' },
       undefined,
       'postgres',
-    )?.image,
-    'docker.io/library/postgres:17-alpine',
+    ),
+    null,
   )
   assertEquals(
     parseManagedSettingsBase(

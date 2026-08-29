@@ -1125,6 +1125,40 @@ export function serverDockerMetadataEquals(
   return a.version === b.version && a.composeVersion === b.composeVersion
 }
 
+/**
+ * `server.options` keys that must never leave the control plane.
+ *
+ * `options` is returned verbatim by `GET /servers`, `GET /servers/:id` and the
+ * developer server routes, and the approved cached read models copy the whole
+ * jsonb into Redis — so a secret written there is published to every reader and
+ * cached outside Postgres. `managedMonitor` was such a key (a sealed ProxySQL
+ * monitor password); it now lives on the `monitor` table
+ * (`src/client/managed/monitor-credential.ts`). This list is the belt to that
+ * change's braces: rows written before the move, or by a control plane that
+ * skipped it, still must not be served or cached.
+ *
+ * Nothing is ever added here as a way to keep storing a secret on `options` —
+ * a new secret belongs in its own table.
+ */
+export const REDACTED_SERVER_OPTION_KEYS: readonly string[] = ['managedMonitor']
+
+/**
+ * `server.options` with every {@link REDACTED_SERVER_OPTION_KEYS} entry removed.
+ *
+ * Apply this at the boundary of anything that serializes or caches the raw
+ * jsonb — the read models cache what this returns, never the row as selected.
+ * Returns the input untouched when there is nothing to strip, so the common
+ * path allocates nothing.
+ */
+export function redactServerOptions<T>(value: T): T {
+  if (!isRecord(value)) return value
+  const present = REDACTED_SERVER_OPTION_KEYS.filter((key) => key in value)
+  if (present.length === 0) return value
+  const copy = { ...value }
+  for (const key of present) delete copy[key]
+  return copy as T
+}
+
 /** Parse operator-controlled `server.options` jsonb. */
 export function parseServerOptions(value: unknown): ServerOptions | null {
   if (!isRecord(value)) return null

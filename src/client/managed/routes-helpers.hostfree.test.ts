@@ -478,6 +478,8 @@ test('empty detail / delete / destroy / promote response shapes', () => {
     managed: null,
     connection: null,
     endpoints: [],
+    // Nothing placed yet, so there is no host whose publish could be reported.
+    exposure: null,
     settings: null,
     // No org default configured, so a not-yet-created cluster still reports the
     // platform TLS policy it will inherit.

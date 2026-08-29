@@ -35,6 +35,22 @@ export type ProjectDeleteResult =
   }
 
 /**
+ * Only tenant `service` containers gate deletion. Platform components
+ * recorded against the environment (`ingress` ProxySQL, `ha` Orchestrator)
+ * are shared per-server infrastructure whose lifecycle is server-scoped
+ * ("does this server still front anything?") — the destroy fan-out and the
+ * orphan sweep own their teardown, and a project must never be held hostage
+ * by them.
+ */
+function hasActiveServiceContainer(
+  rows: ReadonlyArray<{ status: string | null; role: string | null }>,
+): boolean {
+  return rows.some((row) =>
+    row.role === 'service' && isActiveContainerStatus(row.status ?? undefined)
+  )
+}
+
+/**
  * Cascade-delete a project and all child resources after verifying no active
  * containers remain and no managed-engine rows still exist. Order: container →
  * hosting → service → environment → project. Variables cascade via FK.
@@ -74,14 +90,13 @@ export async function deleteProjectCascade(
         .select({
           id: container.id,
           status: container.status,
+          role: container.role,
         })
         .from(container)
         .where(inArray(container.serviceId, serviceIds))
 
-      for (const row of containerRows) {
-        if (isActiveContainerStatus(row.status)) {
-          return { ok: false, error: 'project_has_running_services' }
-        }
+      if (hasActiveServiceContainer(containerRows)) {
+        return { ok: false, error: 'project_has_running_services' }
       }
 
       const hostingRows = await db

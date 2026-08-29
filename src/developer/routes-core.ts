@@ -28,6 +28,7 @@ import {
   type DaemonOutboundEnvelope,
 } from '../daemon/cell/protocol.ts'
 import { organization, server } from '../lib/db/schema.ts'
+import { redactServerOptions } from '../lib/db/server-metadata.ts'
 import {
   collectServerIps,
   readDefaultRouteInterfaces,
@@ -380,7 +381,15 @@ export function buildDeveloperRouter(
       })
       .from(server)
       .orderBy(server.createdAt)
-    return c.json({ servers: rows })
+    // Same redaction as the client routes: a developer surface is still a
+    // response, and `options` must never carry a secret-bearing key
+    // (`REDACTED_SERVER_OPTION_KEYS`).
+    return c.json({
+      servers: rows.map((row) => ({
+        ...row,
+        options: redactServerOptions(row.options),
+      })),
+    })
   })
 
   developer.post('/servers', async (c) => {

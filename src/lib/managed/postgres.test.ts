@@ -460,6 +460,52 @@ test('buildPlatformPgHba grants replication for co-resident peers and /128 for I
   )
   // IPv6 must not be written as /32.
   assertEquals(hba.includes('2001:db8::10/32'), false)
+  // Peer servers host ProxySQL ingress instances (tp_monitor + client
+  // traffic) — non-replication access must be admitted host-scoped.
+  assertEquals(
+    hba.includes(
+      'hostssl all             all             203.0.113.20/32                 scram-sha-256',
+    ),
+    true,
+  )
+  assertEquals(
+    hba.includes(
+      'hostssl all             all             2001:db8::10/128                 scram-sha-256',
+    ),
+    true,
+  )
+  // Container-name peers are co-resident and covered by the managed-network
+  // CIDR rule — they must not leak into address-literal lines.
+  assertEquals(hba.includes('tp-managed-engine-1'), false)
+})
+
+test('buildPlatformPgHba admits cross-host consumer servers without replication', () => {
+  const settings = defaultSettings()
+  const spec = postgresEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings,
+    rootUsername: 'postgres',
+    useOrgTls: true,
+    member: {
+      role: 'primary',
+      ordinal: 1,
+      privateListener: { address: '203.0.113.10', port: 15432 },
+      replication: {
+        username: 'tp_repl',
+        peerAddresses: ['203.0.113.20'],
+      },
+      clientSourceAddresses: ['203.0.113.99'],
+    },
+  })
+  const hba = spec.configFiles.find((f) => f.path === 'pg_hba.conf')?.contents ?? ''
+  assertEquals(
+    hba.includes(
+      'hostssl all             all             203.0.113.99/32                 scram-sha-256',
+    ),
+    true,
+  )
+  // Consumers never get replication rules.
+  assertEquals(hba.includes('hostssl replication     tp_repl        203.0.113.99'), false)
 })
 
 test('buildPlatformPgHba scopes a public replica to its own address', () => {
@@ -534,6 +580,12 @@ test('standby primary_conninfo has no passfile (no durable auth plaintext)', () 
   // No durable auth/ volume mount for standby.
   const volumes = spec.service.volumes as string[]
   assertEquals(volumes.some((v) => v.includes('./auth')), false)
+  // Config must be a DIRECTORY mount — single-file binds pin the inode at
+  // container create, so daemon rewrites (unlink+create) would be invisible
+  // to the running engine and pg_reload_conf() would reload stale content.
+  assertEquals(volumes.includes('./config:/etc/postgresql/conf:ro'), true)
+  assertEquals(volumes.some((v) => v.includes('./config/')), false)
+  assertEquals(conf.includes("hba_file = '/etc/postgresql/conf/pg_hba.conf'"), true)
 })
 
 test('buildRuntimeSpec applies dockerOptions onto compose service and env', () => {

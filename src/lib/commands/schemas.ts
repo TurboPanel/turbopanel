@@ -3840,6 +3840,25 @@ export type ManagedApplyCommandPayload = {
   /** Direct replication config when the cluster has more than one member. */
   replication?: ManagedApplyReplication;
   credentials: ManagedApplyCredential[];
+  /**
+   * Per-server ProxySQL monitor credentials for every server fronting this
+   * cluster (members + bound consumers). Primary payloads only — the engine
+   * creates one monitor role per server and standbys inherit them via WAL.
+   * Passwords are daemon-bound `tpdaemon` envelopes.
+   */
+  monitorUsers?: Array<{ username: string; password: string }>;
+  /**
+   * Operator-forced standby re-seed: the daemon skips bootstrap probes,
+   * clears the data directory, and seeds fresh from the primary. Standby
+   * payloads only — the sanctioned way past `needs_resync`.
+   */
+  forceResync?: boolean;
+  /**
+   * Cross-host consumer server addresses whose ProxySQL dials this engine's
+   * private listener (client + monitor traffic). Admitted by the daemon
+   * firewall and by engine account host scoping; never granted replication.
+   */
+  ingressSourceAddresses?: string[];
   databases?: ManagedApplyDatabaseOp[];
   /** Transient usernames to drop after credentials are applied (never root). */
   dropUsers?: string[];
@@ -3891,6 +3910,13 @@ export type ManagedDestroyCommandPayload = {
   managedId: string;
   removeVolumes: boolean;
   memberId?: string;
+  /**
+   * Instance-only marker (never read by the daemon): the environment that
+   * owned the managed service, so destroy side effects (container-row
+   * reconcile, ingress teardown) survive the managed row being deleted by a
+   * concurrent member's `deleteAfterDestroy` outcome.
+   */
+  environmentId?: string;
   /**
    * Instance-only marker (never read by the daemon) distinguishing an API
    * hard-delete request from a future "destroy runtime only" action. When
@@ -4037,6 +4063,14 @@ export type ManagedIngressReconcileCommandPayload = {
    */
   listenerPorts?: ManagedIngressPorts;
   clusters: ManagedIngressReconcileCluster[];
+  /**
+   * This server's own ProxySQL backend monitor credential (control-plane
+   * minted, per server). The daemon sets the ProxySQL monitor globals from it
+   * and rewrites host `monitor.cnf`. Password is a daemon-bound `tpdaemon`
+   * envelope. Absent on teardown payloads and from older control planes
+   * (daemon falls back to the host-seeded `monitor.cnf`).
+   */
+  monitor?: { username: string; password: string };
   segments?: Array<{ name: string; subnet: string }>;
   /**
    * ProxySQL system-component identity. Present on apply so remote hosts can
@@ -4756,6 +4790,32 @@ function parseManagedApplyOrgTlsMaterial(
   };
 }
 
+/** Optional wire fields added after the base payload shape (skew-tolerant). */
+function parseManagedApplyOptionalWireFields(
+  value: Record<string, unknown>,
+): Pick<
+  ManagedApplyCommandPayload,
+  "monitorUsers" | "forceResync" | "ingressSourceAddresses"
+> {
+  const out: Pick<
+    ManagedApplyCommandPayload,
+    "monitorUsers" | "forceResync" | "ingressSourceAddresses"
+  > = {};
+  if (value.monitorUsers !== undefined) {
+    out.monitorUsers = parseManagedMonitorUsers(value.monitorUsers);
+  }
+  if (value.forceResync === true) {
+    out.forceResync = true;
+  }
+  if (
+    Array.isArray(value.ingressSourceAddresses) &&
+    value.ingressSourceAddresses.every((entry) => isString(entry))
+  ) {
+    out.ingressSourceAddresses = value.ingressSourceAddresses as string[];
+  }
+  return out;
+}
+
 export function parseManagedApplyPayload(
   value: unknown,
 ): ManagedApplyCommandPayload {
@@ -4860,6 +4920,7 @@ export function parseManagedApplyPayload(
     ...(privateListener === undefined ? {} : { privateListener }),
     ...(replication === undefined ? {} : { replication }),
     credentials: parseManagedApplyCredentials(value.credentials),
+    ...parseManagedApplyOptionalWireFields(value),
     ...(databases === undefined ? {} : { databases }),
     ...(dropUsers === undefined ? {} : { dropUsers }),
     ...(tlsMaterial === undefined ? {} : { tlsMaterial }),
@@ -4987,6 +5048,12 @@ export function parseManagedDestroyPayload(
       throw new Error("Invalid managed.destroy payload");
     }
     payload.memberId = value.memberId;
+  }
+  if (value.environmentId !== undefined) {
+    if (!isString(value.environmentId) || !UUID_RE.test(value.environmentId)) {
+      throw new Error("Invalid managed.destroy payload");
+    }
+    payload.environmentId = value.environmentId;
   }
   return payload;
 }
@@ -5307,6 +5374,34 @@ function parseManagedIngressReconcileBackend(
   };
 }
 
+/** One `{ username, password-envelope }` monitor credential. */
+function parseManagedMonitorCredential(
+  value: unknown,
+  label: string,
+): { username: string; password: string } {
+  if (
+    !isRecord(value) ||
+    !isString(value.username) ||
+    !isSafeUsername(value.username) ||
+    !isString(value.password) ||
+    !value.password.startsWith(DAEMON_ENVELOPE_PREFIX)
+  ) {
+    throw new TypeError(`Invalid ${label} monitor credential`);
+  }
+  return { username: value.username, password: value.password };
+}
+
+function parseManagedMonitorUsers(
+  value: unknown,
+): Array<{ username: string; password: string }> {
+  if (!Array.isArray(value)) {
+    throw new TypeError("Invalid managed.apply monitorUsers");
+  }
+  return value.map((entry) =>
+    parseManagedMonitorCredential(entry, "managed.apply")
+  );
+}
+
 function parseManagedIngressReconcileUser(
   value: unknown,
 ): ManagedIngressReconcileUser {
@@ -5541,6 +5636,12 @@ export function parseManagedIngressReconcilePayload(
   if (value.listenerPorts !== undefined) {
     payload.listenerPorts = parseManagedIngressListenerPorts(
       value.listenerPorts,
+    );
+  }
+  if (value.monitor !== undefined) {
+    payload.monitor = parseManagedMonitorCredential(
+      value.monitor,
+      "managed.ingress.reconcile",
     );
   }
   if (value.segments !== undefined) {

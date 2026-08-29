@@ -1,5 +1,10 @@
 const encoder = new TextEncoder()
 
+/** Chained replace pattern Sonar S5145 recognizes for log-injection sanitization. */
+export function stripLogInjection(text: string): string {
+  return text.replaceAll('\n', '_').replaceAll('\r', '_').replaceAll('\t', '_')
+}
+
 function splitMessageLines(message: string): string[] {
   const normalized = message.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
   const lines = normalized.split('\n')
@@ -30,7 +35,7 @@ function writeStructured(
     return
   }
 
-  const tagged = `[${component}] ${message}`
+  const tagged = `[${stripLogInjection(component)}] ${stripLogInjection(message)}`
   if (level === 'INFO') {
     console.log(tagged)
   } else if (level === 'WARN') {

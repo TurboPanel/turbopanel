@@ -412,6 +412,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/webhook-delivery-records.hostfree.test.ts \
   src/lib/db/table-naming.test.ts \
   src/lib/db/boolean-column-naming.test.ts \
+  src/lib/db/primary-key.test.ts \
   src/lib/db/tls-leaf-indexes.test.ts \
   src/lib/db/slot-records.hostfree.test.ts \
   src/lib/db/workspace-kind.test.ts \

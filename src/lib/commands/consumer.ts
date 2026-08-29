@@ -7,7 +7,7 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import type { DaemonCellRegistry, PendingRequestRecord } from '../../daemon/cell/contracts.ts'
 import { generateDeliveryId } from '../../daemon/cell/protocol.ts'
@@ -16,6 +16,7 @@ import { getServerLicenseBinding, touchServerMetadata } from '../../server-regis
 import { commandConsumerTrace } from '../../logger.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 import {
+  claimCommandMetadataFlag,
   type CommandRecord,
   createCommandRecord,
   getCommandDispatchPayload,
@@ -32,7 +33,12 @@ import {
 } from '../db/deployment-records.ts'
 import { stampRelayPublicKey, stampRelayReconcileSuccess, clearRelayAppliedPayloadHash, getFabricById } from '../db/fabric-records.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
-import { managed, replica, server } from '../db/schema.ts'
+import { command, container, managed, replica, server, service } from '../db/schema.ts'
+import {
+  MANAGED_DESTROY_GATE_CLAIM_KEY,
+  MANAGED_DESTROY_GATE_METADATA_KEY,
+  parseManagedDestroyGate,
+} from '../../client/managed/destroy-gate.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
 import {
   type ManagedBackupRecord,
@@ -1051,6 +1057,118 @@ async function enqueuePendingStandbyApplies(
   }
 }
 
+/**
+ * Release the deferred primary `managed.destroy` once every replica of the
+ * fan-out has succeeded.
+ *
+ * Same shape as {@link enqueuePendingStandbyApplies}: the route enqueues the
+ * replicas, records what must happen afterwards on their command metadata, and
+ * returns. Here the gate is an **AND across siblings** rather than a single
+ * predecessor — the primary's `deleteAfterDestroy` removes the `managed` row,
+ * so it must not run while another host is still tearing its replica down.
+ *
+ * Every replica command carries the same gate and reaches this function, so the
+ * work is: is every sibling `succeeded` yet, and am I the one that enqueues?
+ * The second question is settled by a conditional UPDATE on a deterministic
+ * anchor row, not by "am I last" — two replicas can finish in the same instant
+ * and both see a satisfied gate.
+ *
+ * A replica that fails, expires, or never enqueues simply never opens the gate.
+ * The primary keeps no command row, the `managed` row survives, and the
+ * operator can retry or force-delete (which skips the gate).
+ */
+async function enqueuePendingManagedDestroys(
+  db: Db,
+  record: DispatchableCommandRecord,
+  deps: CommandConsumerDeps | undefined
+): Promise<void> {
+  if (!deps?.commandQueue || isNoopCommandQueue(deps.commandQueue)) return
+
+  const meta = await getCommandMetadata(db, record.id)
+  const gate = parseManagedDestroyGate(meta?.[MANAGED_DESTROY_GATE_METADATA_KEY])
+  if (!gate || gate.followups.length === 0) return
+
+  const siblings = await loadManagedDestroyGateCommands(db, gate.gateId)
+  // One command row per gated replica, all succeeded — anything less means a
+  // sibling is still running, failed, or was never created.
+  if (siblings.length !== gate.memberIds.length) return
+  if (!siblings.every((sibling) => sibling.status === 'succeeded')) return
+
+  // Deterministic anchor so simultaneous completions contend for one row.
+  const anchorCommandId = siblings
+    .map((sibling) => sibling.id)
+    .toSorted((a, b) => a.localeCompare(b))[0]
+  if (!anchorCommandId) return
+  const claimed = await claimCommandMetadataFlag(
+    db,
+    anchorCommandId,
+    MANAGED_DESTROY_GATE_CLAIM_KEY
+  )
+  if (!claimed) return
+
+  const commandQueue = deps.commandQueue
+  for (const followup of gate.followups) {
+    let payload: unknown
+    try {
+      payload = parseManagedDestroyPayload(followup.payload)
+    } catch {
+      continue
+    }
+    const expiresAt = new Date(Date.now() + 600_000).toISOString()
+    try {
+      const next = await createCommandRecord(db, {
+        serverId: followup.serverId,
+        actorType: record.actorEntityType,
+        actorId: record.actorEntityId,
+        type: 'managed.destroy',
+        payload,
+        expiresAt,
+      })
+      const envelope: CommandEnvelope = {
+        commandId: next.id,
+        serverId: followup.serverId,
+        type: 'managed.destroy',
+        attempt: 1,
+        queuedAt: next.queuedAt ?? next.createdAt,
+      }
+      try {
+        await commandQueue.enqueue(envelope)
+      } catch {
+        await transitionCommand(db, next.id, {
+          status: 'failed',
+          error: 'Command queue unavailable',
+        })
+      }
+    } catch (err) {
+      const message = errorMessage(err)
+      compatLogWarn(
+        'command-consumer',
+        `primary destroy follow-up failed for command ${record.id}: ${message}`
+      )
+    }
+  }
+}
+
+/**
+ * Every command stamped with this gate, with its status.
+ *
+ * Keyed on the gate id in jsonb rather than a stored command-id list, because
+ * the gate is written at insert time — before any sibling's id exists. Reads
+ * `command` only: the `dispatch` payload is deleted once a command succeeds,
+ * which is precisely the state this query has to see.
+ */
+async function loadManagedDestroyGateCommands(
+  db: Db,
+  gateId: string
+): Promise<Array<{ id: string; status: string }>> {
+  return await db
+    .select({ id: command.id, status: command.status })
+    .from(command)
+    .where(
+      sql`${command.metadata}->${MANAGED_DESTROY_GATE_METADATA_KEY}->>'gateId' = ${gateId}`
+    )
+}
+
 /** Observed statuses the consumer may project onto `managed.status`. */
 const MANAGED_OBSERVED_STATUSES = new Set(['ready', 'stopped', 'failed'])
 
@@ -1350,7 +1468,41 @@ async function cleanupDestroyedMember(
   deps: CommandConsumerDeps | undefined
 ): Promise<void> {
   if (!payload.deleteMemberAfterDestroy || !payload.memberId) return
+  const [member] = await db
+    .select({ serverId: replica.serverId, ordinal: replica.ordinal })
+    .from(replica)
+    .where(eq(replica.id, payload.memberId))
+    .limit(1)
   await db.delete(replica).where(eq(replica.id, payload.memberId))
+  // The destroy already tore down the runtime — drop the member's container
+  // allocation row too, or the status panel keeps a phantom EXITED entry
+  // (`reconcileEnvironmentContainers` only resets rows on an empty report,
+  // which is stop semantics, not removal).
+  if (member) {
+    const [managedRow] = await db
+      .select({ environmentId: managed.environmentId })
+      .from(managed)
+      .where(eq(managed.id, payload.managedId))
+      .limit(1)
+    if (managedRow) {
+      const serviceRows = await db
+        .select({ id: service.id })
+        .from(service)
+        .where(eq(service.environmentId, managedRow.environmentId))
+      if (serviceRows.length > 0) {
+        await db
+          .delete(container)
+          .where(
+            and(
+              eq(container.serverId, member.serverId),
+              inArray(container.serviceId, serviceRows.map((row) => row.id)),
+              eq(container.ordinal, member.ordinal),
+              eq(container.role, 'service'),
+            ),
+          )
+      }
+    }
+  }
   if (hasManagedFollowUpDeps(deps)) {
     await reapplyPrimaryAfterMemberDestroy(db, record, deps)
   }
@@ -1391,19 +1543,29 @@ async function applyManagedDestroySideEffect(
       record.id,
       record.type
     )
-    const [row] = await db
-      .select({ environmentId: managed.environmentId })
-      .from(managed)
-      .where(eq(managed.id, payload.managedId))
-      .limit(1)
-    if (!row) return
-    await reconcileContainersSafely(
-      db,
-      record,
-      envelope,
-      row.environmentId,
-      destroyResult.containers
-    )
+    // Payload-first environmentId: concurrent member destroys must not lose
+    // their side effects when the primary's outcome (deleteAfterDestroy)
+    // already deleted the managed row — an early `if (!row) return` here left
+    // the other servers' container rows 'running' (blocking project delete)
+    // and skipped their ProxySQL ingress teardown entirely.
+    let environmentId = payload.environmentId
+    if (!environmentId) {
+      const [row] = await db
+        .select({ environmentId: managed.environmentId })
+        .from(managed)
+        .where(eq(managed.id, payload.managedId))
+        .limit(1)
+      environmentId = row?.environmentId
+    }
+    if (environmentId) {
+      await reconcileContainersSafely(
+        db,
+        record,
+        envelope,
+        environmentId,
+        destroyResult.containers
+      )
+    }
 
     // `applyManagedDestroySideEffect` only runs from `applySucceededSideEffects`
     // (the command already reported `succeeded`), so a `deleteAfterDestroy`
@@ -1417,6 +1579,9 @@ async function applyManagedDestroySideEffect(
 
     await cleanupDestroyedMember(db, record, payload, deps)
     await reconcileManagedIngressAfterDestroy(db, envelope, deps)
+    // Replica teardown is done and its side effects above have committed —
+    // release the primary destroy if this was the last replica of the fan-out.
+    await enqueuePendingManagedDestroys(db, record, deps)
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(

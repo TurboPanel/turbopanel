@@ -123,6 +123,25 @@ function cachedServerRow() {
   }
 }
 
+/**
+ * A cached row that still carries the pre-`monitor`-table sealed ProxySQL
+ * password on `server.options`. The read model strips it before caching, but a
+ * cache entry written by an older control plane can still hold one — the route
+ * must refuse to serve it either way.
+ */
+function cachedServerRowWithLegacyMonitorSecret() {
+  return {
+    ...cachedServerRow(),
+    options: {
+      timezone: 'UTC',
+      managedMonitor: {
+        username: 'tp_monitor_0123456789ab',
+        passwordSealed: 'tpsecret.v1.deadbeef',
+      },
+    },
+  }
+}
+
 function serverRowSelect(options: Record<string, unknown> = {}) {
   const row = { id: SERVER_ID, options }
   return {
@@ -909,4 +928,59 @@ test('PUT /servers/:id/labels returns 400 for invalid JSON and invalid keys', as
     throw new TypeError('expected label validation error')
   }
   assertEquals(body.error.includes('invalid'), true)
+})
+
+test('GET /servers never returns a managedMonitor secret from a stale cache entry', async () => {
+  const { app, cookie } = await buildSessionApp({
+    withServerRow: true,
+    executeQueue: [[{ item_id: SERVER_ID }]],
+    queryCache: {
+      getReadModel: (opts) => {
+        if (opts.readModel === 'servers-list') {
+          return Promise.resolve([cachedServerRowWithLegacyMonitorSecret()])
+        }
+        return Promise.resolve([])
+      },
+    },
+  })
+  const res = await app.request('/servers', {
+    headers: sessionHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  const raw = await res.text()
+  assertEquals(raw.includes('managedMonitor'), false)
+  assertEquals(raw.includes('passwordSealed'), false)
+  assertEquals(raw.includes('tpsecret.v1.deadbeef'), false)
+  // The operator-facing options survive the redaction.
+  const body = JSON.parse(raw) as {
+    servers: Array<{ options: Record<string, unknown> }>
+  }
+  assertEquals(body.servers[0]?.options, { timezone: 'UTC' })
+})
+
+test('GET /servers/:id never returns a managedMonitor secret from a stale cache entry', async () => {
+  const { app, cookie } = await buildSessionApp({
+    withServerRow: true,
+    defaultAllowed: true,
+    queryCache: {
+      getReadModel: (opts) => {
+        if (opts.readModel === 'server-detail') {
+          return Promise.resolve(cachedServerRowWithLegacyMonitorSecret())
+        }
+        return Promise.resolve(null)
+      },
+    },
+  })
+  const res = await app.request(`/servers/${SERVER_ID}`, {
+    headers: sessionHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  const raw = await res.text()
+  assertEquals(raw.includes('managedMonitor'), false)
+  assertEquals(raw.includes('passwordSealed'), false)
+  assertEquals(raw.includes('tpsecret.v1.deadbeef'), false)
+  const body = JSON.parse(raw) as {
+    server: { options: Record<string, unknown> }
+  }
+  assertEquals(body.server.options, { timezone: 'UTC' })
 })

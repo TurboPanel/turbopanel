@@ -307,8 +307,9 @@ export async function resealSecretForDaemon(
  */
 export async function generateSealedSecret(
   dataEncryptionSecrets: DerivedSecretsConfig,
+  opts?: { length?: number },
 ): Promise<{ plaintext: string; sealed: string }> {
-  const plaintext = generatePassword();
+  const plaintext = generatePassword(opts?.length);
   const sealed = await encryptSecret(dataEncryptionSecrets, plaintext);
   return { plaintext, sealed };
 }

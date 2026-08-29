@@ -19,6 +19,10 @@ import {
   sweepExpiredCommandDispatch,
 } from "./lib/db/command-records.ts";
 import {
+  releaseStuckManagedApplying,
+  sweepStaleCommands,
+} from "./lib/commands/stale-sweep.ts";
+import {
   sweepExpiredWebhookDeliveries,
   WEBHOOK_DELIVERY_SWEEP_LIMIT,
 } from "./lib/db/webhook-delivery-records.ts";
@@ -444,6 +448,21 @@ export async function startDenoServer(
         });
       } catch (err) {
         logWarn("daemon-cell", `command dispatch sweep error: ${String(err)}`);
+      }
+      // Recover commands stranded non-terminal by a mid-run restart (the
+      // consumer's timeout lives only in memory), then unwedge managed rows
+      // stuck at 'applying' with no live command left.
+      try {
+        const swept = await sweepStaleCommands(db);
+        const released = await releaseStuckManagedApplying(db);
+        if (swept > 0 || released.length > 0) {
+          logWarn(
+            "daemon-cell",
+            `stale command sweep: timed out ${swept}, released managed ${released.join(",") || "none"}`,
+          );
+        }
+      } catch (err) {
+        logWarn("daemon-cell", `stale command sweep error: ${String(err)}`);
       }
       // Workers parity (offline-sweep cron): drop webhook delivery ids past the
       // replay-protection retention window.

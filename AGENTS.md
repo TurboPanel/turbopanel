@@ -124,94 +124,12 @@ change. Future agents read `AGENTS.md` first.
 
 ### SonarQube (CI-based analysis)
 
-- Analysis runs in GitHub Actions (`.github/workflows/build.yml` **SonarQube**
-  job — SonarCloud wizard layout) with `SONAR_TOKEN` and
-  `sonar-project.properties` (`sonar.projectKey=turbopanel_turbopanel`,
-  `sonar.organization=turbopanel`). The job runs checks +
-  **`pnpm test:coverage`** (`scripts/test-coverage.sh`), which merges Vitest
-  Istanbul + Deno V8 LCOV into a single **`coverage/lcov.info`**
-  (`sonar.javascript.lcov.reportPaths=coverage/lcov.info` in
-  `sonar-project.properties` — **not** comma-separated dual paths; SonarCloud
-  effectively only imported Deno hits that way, so Workers/DO files showed 0%
-  despite real Istanbul coverage). Merge pairs SF records **by covered-line
-  count** (higher LH is primary). Secondary may only raise shared hits or add
-  **executed** lines — never zero-hit transitive rows. When Vitest only imported
-  a Deno-tested module (`LH:0`), Deno unit hits become primary so Sonar no
-  longer reports false 0% on `db-url` / `allocate-containers` / similar.
-  Dilution of healthy Workers/DO Istanbul reports (e.g. offline-sweep →
-  `do-registry.ts`) is still avoided because Deno zero-hit extras never expand
-  LF when Vitest has more covered lines. Vitest `SF:` paths are normalized
-  repo-relative like Deno. The script asserts non-zero Vitest hits for
-  `src/daemon/cell/do.ts`, `do-registry.ts`, and `workers-ws.ts` before merge,
-  and re-checks those LH floors on the **merged** `coverage/lcov.info`.
-  Intermediate reports remain at `coverage/vitest/lcov.info` and
-  `coverage/deno.lcov` for debugging:
-  - **Vitest** (`coverage/vitest/lcov.info`) — Workers-pool suites
-    (`vitest.config.ts` `test.include`), provider **`istanbul`**. The default
-    `v8` provider cannot run inside workerd (no `node:inspector`), but
-    `@cloudflare/vitest-pool-workers` bridges Istanbul counters back to Node, so
-    `vitest run --coverage` is a real, non-zero report — **do not** assume
-    Vitest coverage is unavailable. This is the _only_ LCOV source for
-    Durable-Object / admin / other Workers-only code that no Deno suite imports
-    (`src/daemon/cell/do.ts`, `src/daemon/workers-ws.ts`,
-    `src/admin/public-urls.ts`, …).
-  - **Deno** (`coverage/deno.lcov`) — host-free Deno suites listed in
-    `scripts/test-coverage.sh`, via `deno coverage --lcov` (native V8). Then the
-    scan runs with `sonar.qualitygate.wait=true`; if the quality gate fails, the
-    workflow stops. **Coverage attribution (three independent traps — check all
-    when Sonar shows 0% / low % while local Vitest is healthy):** (1) a new Deno
-    `*.test.ts` file must be added to the `deno test` file list in
-    `scripts/test-coverage.sh` — prefer host-free unit suites there;
-    DB/Redis/integration suites stay out of LCOV. (2) a new Workers/DO test file
-    must be added to `vitest.config.ts` `test.include` — that list is an
-    explicit file enumeration, not a glob, because most `*.test.ts` files use
-    Deno-only APIs and cannot run under the Workers pool; a file left off
-    `test.include` never runs at all, coverage or not. Traps (1) and (2) are
-    now enforced by **`pnpm check:test-inventory`**
-    (`scripts/check-test-inventory.mjs`, wired into `test:hook` and CI
-    `build.yml`): it fails when any `*.test.ts` is claimed by neither list, when
-    a list entry names a file that no longer exists, or when a file is claimed
-    by both. A suite that needs a service CI does not start (Redis, ClickHouse)
-    goes in that script's `SERVICE_DEPENDENT` map **with a reason** — that map
-    is the only sanctioned way to leave a suite out of both runners. (3) LCOV smart merge must
-    stay in place — do not reintroduce full-record Vitest-wins (drops Deno hits
-    for imported-but-untested modules) or naive Deno+Vitest line-union (dilutes
-    Workers/DO with zero-hit transitive SF rows). Selective Workers/DO 0% with a
-    healthy overall project coverage % is almost always an LCOV merge/path bug,
-    not Automatic Analysis (AA being on fails the CI scanner entirely).
-- **`sonar.sources` / `sonar.tests` / `sonar.test.inclusions`** must stay set in
-  `sonar-project.properties` (and mirrored in vestigial
-  `.sonarcloud.properties`). Tests are co-located (`**/*.test.ts` under
-  `src`/`mailer`); helpers that do not match the scanner's name heuristics
-  (`src/test-fixtures/**`, `*-hostfree-doubles.ts`, `server-status-test-db.ts`,
-  `fake-redis-cell-client.ts`, `workers-vitest.ts`, `vitest-env.d.ts`) belong in
-  `test.inclusions` + `coverage.exclusions` so they are never main-code. Leaving
-  `sonar.tests` unset only yields an INFO and heuristic classification that
-  mis-labels those helpers.
-- **Automatic Analysis must stay off** for `turbopanel_turbopanel` (SonarCloud →
-  project **Administration → Analysis Method**). CI and Automatic Analysis
-  cannot run together — Automatic Analysis enabled makes the CI scanner fail.
-  There is no Sonar MCP `toggle_automatic_analysis` tool; change this only in
-  the SonarCloud UI.
-- Sonar-way **Coverage on New Code ≥ 80%** needs LCOV on CI. After switching
-  from Automatic Analysis, reset **New Code** (Administration → New Code) so the
-  baseline is not months of uncovered history, or the gate will fail even with
-  fresh coverage reports.
-- Drizzle-generated SQL under **`migrations/`** must stay excluded
-  (`**/migrations/**`) — never “fix” smells in those files.
-- Hand-authored OpenAPI under `src/client/openapi/**` and
-  `src/daemon/openapi/**` is excluded from **duplication (CPD)** via
-  `sonar.cpd.exclusions` (keep `sonar-project.properties` and the vestigial
-  `.sonarcloud.properties` in sync). Schema/path blocks are intentionally
-  repetitive across resources; refactor route/runtime code instead of twisting
-  OpenAPI to please CPD.
-- **SonarLint Connected Mode** does **not** honor
-  `sonarlint.analysisExcludesStandalone` or local `.sonarcloud.properties` /
-  `sonar-project.properties`. It only applies exclusions synced from the
-  SonarCloud project **Administration → General Settings → Analysis Scope →
-  Source File Exclusions**. Keep `**/migrations/**` there too (then SonarLint →
-  Update binding / reconnect) or IDE will still raise `plsql:*` on drizzle-kit
-  SQL.
+CI analysis config, the Vitest+Deno LCOV coverage merge, analysis-scope /
+exclusion rules, and the coverage-attribution traps moved to
+[`scripts/AGENTS.md`](./scripts/AGENTS.md). Read it before touching
+`scripts/test-coverage.sh`, `sonar-project.properties`, the SonarQube CI job,
+or when SonarCloud shows suspicious 0% coverage. Style rules Sonar enforces on
+everyday code stay below (**TypeScript style**).
 
 ### Type-checking
 
@@ -487,8 +405,18 @@ client uses `prepare: true` (see Workers Hyperdrive below); the Deno client uses
 `src/db.ts`; schema in `src/lib/db/schema.ts`; drizzle-kit config in
 `drizzle.config.ts`. **Read `src/lib/db/AGENTS.md` before touching schema or the
 database.** Schema changes are versioned in `migrations/`; `pnpm migrate`
-applies pending SQL during Workers deploy. Applied versions are recorded in
-`public.migration`.
+applies pending SQL during Workers deploy (after a preflight that requires
+PostgreSQL 18+ / built-in `uuidv7()` — `scripts/check-postgres-compat.mjs`).
+Applied versions are recorded in `public.migration`.
+
+**Multi-node model:** "multi-node PostgreSQL" means primary/standby
+replication with exactly one writable primary (streaming replication for
+HA/failover; logical replication for read replicas/DR). UUIDv7 primary keys
+remove sequence coordination across writers and failovers — they are **not**
+distributed-SQL readiness, and sharded/distributed SQL (Citus, CockroachDB,
+YugabyteDB, …) is out of scope for this schema. See `src/lib/db/AGENTS.md`
+(Multi-node PostgreSQL model) before changing key strategy or targeting a
+distributed engine.
 
 | Runtime            | Factory                                                                      | When connected                                                                                                                                                         |
 | ------------------ | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -662,184 +590,17 @@ playbook, which installs `/etc/tmpfiles.d/turbopanel.conf` and applies it with
 
 ## Caddy (production)
 
-This repo's `Caddyfile` is **production-only**. Caddy terminates TLS and routes:
+This repo's `Caddyfile` is **production-only** — full detail in
+[`caddy.md`](./caddy.md) (server addresses, certs/entrypoint, daemon TLS trust
+model, static UI). The one rule that must not be missed:
 
-- `/api/*`, `/ws/*`, and `/webhook/*` → Deno instance
-  (`unix:///run/turbopanel/instance.sock`)
-- everything else → static UI export (`TURBOPANEL_UI_ROOT`, default
-  `/opt/turbopanel/share/ui`)
-
-**The catch-all is why the prefix list is load-bearing.** It answers
-`try_files {path} /index.html`, so a prefix the instance owns but Caddy does not
-match is served the SPA shell with **HTTP 200** rather than a 404. For a Git
-webhook that means the provider records a successful delivery and never
-retries — silent, unrecoverable loss. The same trap exists on Workers, where
-the UI worker holds the apex as a custom domain with
-`not_found_handling: "single-page-application"`; add the prefix to `routes` in
-`wrangler.jsonc` at the same time. `src/surfaces.test.ts` pins the strings.
-
-`reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on all three.
-The instance uses that header to deduplicate daemon WebSocket reconnects
-(without it, every reconnect looked like a new fleet member behind the proxy),
-and to key the webhook rate limiter per peer address.
-
-Each site block also strips `CF-Connecting-IP`, `True-Client-IP`, and
-`X-Forwarded-For` from any peer that is **not** loopback, so only a connector
-running beside Caddy can present them. See **Server addresses** below.
-
-**Co-located development** does not use this file. When `turbopanel_dev_user` is
-set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
-(Expo proxy, plaintext `:8880`, optional wrangler upstream,
-`/downloads/daemon` + installer at `/run.sh`). See **`../dev/AGENTS.md`**
-(Ansible overlay / Caddyfile).
-
-### Server addresses
-
-`src/lib/peer-address.ts` is the one place that answers "what address is
-this server at". Two distinct questions, deliberately separated:
-
-**Connect time — `resolvePeerAddress()`.** Turns the request headers into
-the peer address stored on the daemon projection. `CF-Connecting-IP` (and
-`X-Forwarded-For`) are read **only when the immediate peer is a trusted proxy**,
-which by default means loopback: the Deno instance listens on a Unix socket, so
-its only direct callers are local processes — Caddy, or a `cloudflared`
-connector beside it. A daemon that dialled Caddy over the network arrives with a
-non-loopback `X-Real-IP` and cannot forge its own address. Widen the trusted set
-with `TURBOPANEL_TRUSTED_PROXY_CIDRS` (comma-separated CIDRs) when the connector
-runs on another host; the value **replaces** the loopback default rather than
-extending it. A loopback value inside a forwarding header is ignored, because
-Caddy synthesizes `X-Forwarded-For: 127.0.0.1` for a loopback peer and that
-would shadow the `X-Real-IP` fallback. Absent every header means a co-located
-daemon dialled the socket: the `__direct__` sentinel, not an error. Workers read
-`CF-Connecting-IP` and nothing else — the edge strips any client copy.
-
-**Read time — `resolveServerAddress()`.** The address on the wire is frequently
-*not* the host's address, so `shapeServerPresenceFields()` reconciles it against
-the interfaces the daemon reported before any reader sees it, and returns
-`address` / `addressSource` / `addressScope` / `addressInterface`. Order:
-`__direct__` → public observed → observed that the daemon also reports on an
-interface → the daemon's best reported interface → an unmatched private observed
-address. **The interface fallback is the whole point.** Behind a co-located
-reverse proxy, or through a forwarded port — every development Vagrant guest,
-which forwards over SSH — the wire address is `127.0.0.1` for *every* server, so
-the panel showed `127.0.0.1` for a LAN host, a Cloudflare Tunnel host, and a
-remote host alike. `remoteAddress` is still exposed, raw, for diagnostics.
-
-Daemons mark the addresses on their **default-route interface** `preferred`
-(`readDefaultRouteInterfaces()`, from `/proc/net/route` and
-`/proc/net/ipv6_route`), so a multi-homed host advertises the NIC a peer would
-actually reach it on instead of whichever address sorted first. The instance
-does the same for its own addresses, which is what builds the install-command
-URL in `resolve-public-base-url.ts`.
-
-### Certs and entrypoint
-
-Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs`
-Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp` in production.
-
-- Entrypoint: `https://<host>:8443` (this `Caddyfile`) — binds all interfaces;
-  use `localhost` or the machine's LAN IP.
-- Self-hosted TLS uses a **Platform CA** stored in the durable state tree
-  (`/var/lib/turbopanel/tls/ca.crt` + `ca.key`, plus `ca-bundle.pem` for
-  current+retired overlap). The Caddy **leaf** stays under the instance
-  `certs/` dir (`self-signed.crt` + `.key`). **`auto_https off` is mandatory
-  and must never be removed.** Caddy must never auto-provision certs via ACME or
-  on-demand TLS. All cert issuance goes through
-  `scripts/generate-self-signed-cert.mjs` (self-hosted, **Platform CA**) or an
-  explicitly-configured publicly-trusted cert. The `instance-certs-apply.yml`
-  playbook is the runtime **leaf-only** cert-regen path triggered by the admin
-  public-URL apply action — it never passes `TURBOPANEL_TLS_CA_ROTATE`.
-  `ensureCa()` validates readable existing durable **Platform CA** files,
-  rotates when requested, or mints a new durable root — and refuses to mint
-  over an unreadable existing **Platform CA**. Rotation is opt-in
-  (`TURBOPANEL_TLS_CA_ROTATE=1`) and keeps the outgoing **Platform CA** root in
-  the bundle until daemons ack `server.tls.trust.reconcile`. Daemons fetch the
-  bundle from `GET /api/daemon/v1/instance/ca`. Trust the **Platform CA** in
-  browsers/OS to avoid warnings. The **Organization CA** and org TLS library
-  (`/api/client/v1/tls`, `/tls/ca`) are a separate per-organization store for
-  managed-database / ProxySQL / replication leaves and must never write
-  **Platform CA** paths — see `src/lib/tls/AGENTS.md`. **Future:** tenant
-  **hosting** leaves (Caddy-fronted web services) remain operator-pinned library
-  certificates or Caddy `tls internal`. They are never issued by the
-  Organization CA.
-- Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO`
-  for Deno).
-
-There is **no** plaintext HTTP listener in the production Caddyfile. Co-located
-`:8880` lives only in the dev overlay Caddyfile.
-
-### Daemon TLS trust model (3 paths)
-
-The daemon validates the instance server cert on **every** connect — both chain
-trust **and** hostname (SAN). There is **no** insecure/skip-verification mode at
-runtime (the old `TURBOPANEL_TLS_INSECURE` daemon env was dead and was removed;
-`run.sh --insecure-tls` only affects the bootstrap `curl -k` downloads). Three
-valid configurations:
-
-| Path                          | Platform CA trust                                                                                                  | SAN requirement                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Self-signed (self-hosted)** | Daemon trusts the downloaded **Platform CA** bundle (`TURBOPANEL_INSTANCE_CA` → `/etc/turbopanel/instance-ca.pem`, fetched from `GET /api/daemon/v1/instance/ca`). Instance material lives under `/var/lib/turbopanel/tls/` (`ca.crt` / `ca.key` / `ca-bundle.pem`) — not the replaceable checkout. Distinct from the **Organization CA** (`src/lib/tls/AGENTS.md`). | The leaf cert **must** include the hostname the daemon dials. SANs are derived from the configured public URL(s) — `TURBOPANEL_PUBLIC_URL` / `TURBOPANEL_BASE_URL` / `TURBOPANEL_INSTANCE_URL` and `TURBOPANEL_TLS_EXTRA_SANS` (see `scripts/generate-self-signed-cert.mjs`). Never hardcode the hostname.                                                                                                                    |
-| **Let's Encrypt**             | Publicly-valid → daemon uses the **system trust store** (ship **no** `TURBOPANEL_INSTANCE_CA`)                     | The real cert already covers the public hostname.                                                                                                                                                                                                                                                                                                                                                                             |
-| **Cloudflare tunnel / proxy** | Cloudflare's edge cert is publicly-valid → **system trust**                                                        | Daemon dials the public Cloudflare hostname, which the edge cert already covers. **Caveat:** behind a tunnel the instance cannot auto-discover its own public hostname (cloudflared dials out), so the reachable URL(s) must be **declared by the operator** (admin surface / `TURBOPANEL_PUBLIC_URL`), not auto-detected. The self-signed origin leg (cloudflared → local Caddy) is separate from what the daemon validates. |
-
-Note: `Deno.createHttpClient({ caCerts })` **adds** to the system roots (does
-not replace them), so configuring the **Platform CA** does not break validation
-of publicly-trusted certs. The daemon re-reads `instance-ca.pem` on each
-reconnect (mtime+size cache) and parks TLS chain/SAN/expiry failures as
-`tls-trust` instead of looping every 30 s. Control-plane rotation appends the
-outgoing **Platform CA** to the bundle, then fans `server.tls.trust.reconcile`
-over the existing WSS session so the new anchor lands **before** the old one is
-retired.
-
-**Install command TLS** follows the selected origin (`src/lib/install-tls.ts`),
-not “we are in development”:
-
-- HTTPS on a non-443 port, loopback, RFC1918, or reserved LAN TLDs (`.lan` /
-  `.local` / …) → `curl -k` + `TURBOPANEL_INSECURE_TLS=1` (Platform CA)
-- HTTPS on port 443 for a public hostname (Cloudflare/ngrok tunnel, opt-in Let’s
-  Encrypt, uploaded cert) → system trust; **no** `-k`
-- Plaintext `http://` (dev `:8880`) → no TLS flags
-
-Let’s Encrypt and uploaded certificates for the **control-plane origin** are
-operator opt-in. Caddy keeps `auto_https off` — the platform never obtains a
-public certificate unless the operator explicitly requests it. A Cloudflare
-tunnel presents a publicly-trusted cert at the edge; the origin can stay on the
-**Platform CA**.
-
-Dev overlay install commands also set
-`TURBOPANEL_DL_BASE=<origin>/downloads/daemon` so remote servers fetch the
-compiled daemon from this instance, never `dl.trbp.nl`.
-
-### Static UI
-
-Caddy serves the exported web build from `TURBOPANEL_UI_ROOT` (default
-`/opt/turbopanel/share/ui`). On co-located hosts, `TURBOPANEL_UI_MODE=static`
-also disables `isDeveloperSurfaceEnabled()` (see `src/dev-mode.ts`) and stops
-`turbopanel-ui.service` via the `instance-launch` role — while still loading the
-**dev** overlay Caddyfile when `turbopanel_dev_user` is set (plaintext `:8880`
-remains available).
-
-Build the static export locally or switch via the dev console **Switch to
-production build** (runs `ui-build` → `instance-build` → `instance-launch`). For
-a compiled instance binary, `deno task compile` in this repo produces
-`dist/turbopanel-instance` from `src/deno.ts` with production `--allow-*` flags
-baked in at compile time. Development source mode runs `src/deno-dev.ts`.
-
-Manual export + Caddy:
-
-```bash
-cd ../ui && pnpm export
-cd ../turbopanel
-TURBOPANEL_UI_ROOT=../ui/dist caddy run --config Caddyfile --adapter caddyfile
-```
-
-Caddy serves files from `TURBOPANEL_UI_ROOT` (default
-`/opt/turbopanel/share/ui`; the local manual example above sets `../ui/dist`)
-and falls back to `/index.html` for client-side routes (SPA), matching the
-Cloudflare Workers asset routing in `ui/wrangler.jsonc`.
-
-Set `CADDY_TLS_CERT` / `CADDY_TLS_KEY` only when overriding the default server
-leaf certificate paths.
+**The catch-all is why the prefix list is load-bearing.** Caddy answers
+`try_files {path} /index.html`, so a prefix the instance owns but Caddy does
+not match is served the SPA shell with **HTTP 200** rather than a 404. For a
+Git webhook that means the provider records a successful delivery and never
+retries — silent, unrecoverable loss. The same trap exists on Workers
+(`not_found_handling: "single-page-application"`); add the prefix to `routes`
+in `wrangler.jsonc` at the same time. `src/surfaces.test.ts` pins the strings.
 
 ## API / WS surfaces (versioned)
 
@@ -877,187 +638,11 @@ class rather than a versioned API — see the last row.
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes
   (`wrangler.jsonc`) moved together. The external CDN node installer must fetch
   the CA from the new `/api/daemon/v1/instance/ca` path.
-- **Server timezone / NTP (client surface):** daemon hello + change-detected
-  heartbeats persist `timeSync` onto `server.timezone` /
-  `is_time_sync_enabled` / `ntp_servers` / `ntp_last_synced_at`, and nest
-  addresses on `server.metadata.resources.ips` (legacy top-level `ips` still
-  accepted). Hello-only host inventory is `server.metadata.resources.cpus[]`
-  (per-socket `vendorId` / `cores` / `threads` / `cache` / clocks) and
-  `gpus[]`; leftover `resources.cpu` is lifted on read. Docker CLI / Compose plugin versions project onto
-  `server.metadata.docker` the same way, but **only when Docker is installed**
-  (the key is omitted otherwise). `GET /api/client/v1/servers` and
-  `GET /servers/:id` return those facts plus an **effective timezone** =
-  `server.options.timezone` unless
-  `organization.options.enforceServerTimezone` is true (then org
-  `defaultServerTimezone` wins; otherwise the daemon-reported `server.timezone`
-  column). Commands: `POST /servers/:id/timezone`
-  (`server.timezone.set`, also persists the server override) and
-  `POST /servers/:id/ntp` (`server.ntp.set`) — manage-gated, create-then-poll.
-  Org record: `GET`/`PATCH /organizations/:id` — GET is access-gated (same
-  visibility as the org list: team membership, owner/manager grant, or
-  platform admin; missing or inaccessible → **404**); PATCH is manage-gated
-  (`{ name }` required, any characters except control characters,
-  ≤255, cannot clear;
-  names are not unique). Returns `{ organization }` / `{ ok, organization }`.
-  Org defaults: `GET`/`PUT /organizations/:id/default-timezone`. Picker source:
-  `GET /timezones` (`listTimezones()` / `isAllowedTimezone()`). Detail rows use
-  the `server-detail` cached read model (mirrors `servers-list`).
-- **Host defaults (client surface):** org → datacenter → server cascade stored
-  in existing `options` jsonb (`src/lib/host-defaults.ts`). Most specific
-  configured value wins; SSH falls back to **22**. Keys: `sshPort` (1–65535),
-  `ntp` (`enabled` / `servers` / `fallbackServers` — desired config, not
-  observed `timeSync`), `defaultFabricEnabled` (**organization only**; a
-  preference that does **not** create or tear down the mesh). Timezone stays
-  on its own enforce resolver (`resolveEffectiveServerTimezone`) — do not add
-  a soft timezone default into this cascade.
-  `GET`/`PUT /organizations/:id/host-defaults` is manage-gated (jsonb `||`
-  merge; JSON `null` clears a key). Datacenter `PATCH` **replaces** parsed
-  `options` (UI must `mergeDatacenterOptions`). Server `PATCH options.sshPort`
-  / `ntp` (`null` inherits). List/detail expose effective `sshPort` /
-  `sshPortSource` / `ntpDefaults` / `ntpDefaultsSource`; detail also adds
-  `datacenterDefaultTimezone` / `datacenterEnforceServerTimezone`. Saving
-  defaults does **not** rewrite sshd or enqueue NTP/timezone commands.
-  Multi-DC membership inherits from the first pin after sort by datacenter
-  id (same as timezone).
-- **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` —
-  read-gated GET and manage-gated PUT; PUT is replace-all
-  (`{ labels: { key: value } }`, no per-key DELETE). `GET /servers/:id` includes
-  `labels` from a primary-connection read (not the cached `server-detail` row).
-  Keys use the Docker engine-label charset so `placement.constraints`
-  `node.labels.*` parses cleanly.
-- **TurboFabric (client surface):** `GET`/`PUT /organizations/:id/fabric` —
-  manage-gated opt-in, plus `PATCH /organizations/:id/fabric/relays/:serverId`
-  and `POST /organizations/:id/fabric/apply`. TurboFabric **is** the org
-  WireGuard mesh (one per org, interface `tp0`); `relay` carries the mesh
-  identity (address, gateway/member role, advertised LAN CIDRs plus
-  `resolvedAdvertisedCidrs` for the effective IPv4 list, keepalive,
-  endpoint override, write-only PSK). GET fabric returns diagnostics-only
-  per-relay `paths[]` (`peerServerId`, `selected` path kind, optional
-  `endpoint` / `viaServerId` / `lastHandshakeAt` / `latencyMs`, `degraded`)
-  plus `allowRelay` / `effectiveAllowRelay` / `preferredGatewayIds` /
-  `gatewayEligible`. Org PUT accepts `allowRelay` (tightening-only; default
-  off). Relay PATCH accepts `allowRelay` (`null` inherits org) and
-  `preferredGatewayIds`. Reconcile assigns derived CIDR
-  ownership among public-keyed relays only. Default off (capable single-engine Docker
-  standalone; no `tp0`). Enabling creates the org `fabric` row plus per-server
-  `relay` rows and reconciles host interface `tp0` on enrolled servers. Spanning
-  compose networks persist per-host `subnet` rows (compose-bridge CIDR, not a datacenter subnet). A
-  deploy plan that would use two or more servers without TurboFabric returns
-  **422** `turbofabric_required`. Multi-server deploys **wait for membership
-  convergence** (every participating relay has a public key and an applied
-  payload hash that includes peers) before enqueueing `environment.deploy`
-  (`422 fabric_reconcile_failed` / `409 fabric_reconcile_pending`). PUT disable
-  is a teardown (reclaims `network(kind='compose')` + `subnet`).
-  Whole-environment `environment.server_id` pins never require it. User-facing
-  copy is **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` /
-  `subnet`. Never ask which WireGuard network a container should join.
-  NAT rendezvous feeds `direct_nat` only from a probing peer's fresh healthy
-  handshake (observer-mapped endpoints stay in candidate exchange). Path-state
-  strike counters are process-local across reconcile rounds. `allowRelay` is
-  reserved for a future relay slot and does not loosen gateway datacenter
-  locality.
-- **Compiled runtime compose:** users author project + optional environment
-  ComposeDocuments. Deploy compiles **one** `compose.yaml` (`role: 'runtime'`)
-  per participating server plus a project `.env` for non-secrets. Secret
-  `{$KEY}` / `{$scope.KEY}` refs compile to Compose standalone `secrets:` files
-  under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (YAML
-  holds paths only). Preview **Prepared** shows that snapshot (plus `servers[]`
-  only when scheduled across more than one host), redacted `.env`, and
-  `secretPlan[]`. Runtime YAML includes `x-turbopanel.placement.server_id` as
-  compile-time audit metadata. Preview **Merged** stays the user-authored merge
-  (including `{$…}`) plus the live pin for review.
-  `POST /api/daemon/v1/deployments/secrets/rehydrate` reseals current registry
-  values after daemon boot because `/run` is tmpfs.
-- **Org server seat capacity:** `organization.options.maxServers`
-  (`null`/omitted = unlimited). `GET`/`PUT /organizations/:id/server-capacity`;
-  `POST /licenses` returns **409** `server_capacity_exceeded` when enrolled
-  servers + unconsumed keys fill the cap. Optional create `name` (legacy
-  `displayName` accepted on input) is omitted when blank and otherwise uses
-  `normalizeDisplayName` / `isValidDisplayName` (**400** for control characters
-  or over-length).
-  `GET`/`DELETE /licenses` are
-  owner-only; the UI **Pending keys** page lists unbound keys (OpenAPI
-  `name`). Self-hosted operators set the cap;
-  Workers/Stripe billing will write the same field later.
-- **Org managed-database defaults:** `organization.options.managedDatabase`
-  (`src/lib/managed/org-defaults.ts`). `GET`/`PUT
-  /organizations/:id/managed-defaults` (manage-gated) — today only `sslMode`, the
-  default client TLS policy inherited by managed SQL services that set no
-  override; `null` clears it and services fall back to the platform `require`.
-  These are **inheritance sources**, not applied configuration: saving one never
-  overwrites a service that configured its own value, and the effective mode is
-  resolved per read (`resolveManagedSslMode`) rather than stored. Canonical
-  detail: `src/lib/managed/AGENTS.md` → **Client TLS (SSL mode)**.
-- **Org default environment name:**
-  `organization.options.defaultEnvironmentName` (unset = `Production`).
-  `GET`/`PUT /organizations/:id/default-environment` (manage-gated) names the
-  environment scaffolded by project create / configure. Matching for existing
-  literal "production" catalog environments is unchanged.
-- **Project default server:** `project.options.defaultServerId` (optional UUID).
-  Environments without their own `server_id` inherit it at deploy / lifecycle /
-  stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline
-  picker; env-level pins still override.
-- **Environment lifecycle:** `POST /environments/:id/lifecycle` (`start` /
-  `stop` / `restart`) is non-destructive (`environment.lifecycle`);
-  `POST /environments/:id/stop` tears down compose including volumes
-  (`environment.stop`). Canonical detail: `src/lib/commands/AGENTS.md`.
-- **Containers list filters:** `GET /api/client/v1/containers` joins `service`,
-  so every serialized row carries **`environmentId`** (denormalized
-  `service.environmentId`). `?environmentId=` narrows already-visible rows to
-  that environment; `?projectId=` narrows to every environment of a project, so
-  a client scoping a whole project makes **one** call instead of one per
-  environment. Both AND with `serviceId` / `serverId` / `status` and neither
-  widens `listVisible`.
-- **Datacenters (routing domains, many subnets):** There is no singular
-  `server.datacenter_id`. Membership is an `ip` pin (`scope='datacenter'` +
-  `serverId` + `datacenterId` + **required** `networkId`), unrestricted count
-  per `(server, datacenter)`, deduped by address (`uniq_ip_org_address`;
-  `ip_datacenter_member_network_check`). A server may hold pins in many
-  datacenters. A datacenter owns **many** `network(kind='datacenter')` subnets
-  (v4 and/or v6), unique per `(datacenter_id, cidr)` via
-  **`uniq_network_datacenter_cidr`**; **all subnets in a datacenter are assumed
-  mutually routable** — the datacenter *is* the routing domain, there are no
-  per-pair adjacency records. `POST /datacenters` body is
-  `{ name?, description?, members: [{ serverId, address }],
-  sourceServerId? }` — at least one member is required; addresses must be
-  daemon-reported private IPs; the first subnet is **derived** from that seed
-  member’s reported interface prefix (`ips[].cidr` where `scope='private'`,
-  aligned network form) when present — operator `cidr` is ignored. Hello ingest
-  maps current `resources.ips` (and legacy top-level `ips[]` / the pre-rename
-  `addresses` object (`privateIpv4` / …)) so remotes that have not rebuilt yet
-  still appear as members. When the daemon still reports
-  `{ address, version, scope }` without a prefix, create infers a typical LAN
-  (`/24` IPv4, `/64` IPv6). Missing reported private IP → **400**
-  `address_cidr_unreported`. Extra members no longer have to fall inside one
-  CIDR — a non-matching reported prefix **auto-creates** another subnet in the
-  same txn (**409** `subnet_overlaps` when that range collides org-wide, including
-  among auto-derived CIDRs in the same create or member-add request). Create
-  writes site subnet(s) + member pins in one txn.
-  `POST|DELETE /datacenters/:id/members` add/remove pins (member add auto-derives
-  the same way; member delete removes **every** pin for that server in the
-  datacenter). Manual subnet CRUD:
-  `POST|PATCH|DELETE /datacenters/:id/subnets[/:networkId]` (manage-gated;
-  `cidr` immutable on PATCH). Name suggestions
-  (`GET /datacenters/name-suggestions`) group geo/ASN from servers with zero
-  memberships. List/detail expose `privateCidrs` (one entry per subnet) plus
-  detail `subnets[]` and `options.addressPreference`. Server list/detail expose
-  `datacenters: { id, name }[]`. `DELETE /datacenters/:id` returns
-  **409** `datacenter_has_members` while any membership pin remains; otherwise
-  **every** `kind='datacenter'` network is deleted with the datacenter
-  (**409** `datacenter_has_networks` only for leftover non-site / docker rows).
-  `src/lib/net/private-endpoint.ts` resolves reachability
-  (`local` → `fabric` → `datacenter`) in an **address-family aware** way: it
-  intersects the source and target pin families in the shared datacenter and
-  orders candidates by `datacenter.options.addressPreference` (default **IPv6**,
-  RFC 6724), never returning a family the source does not hold; a shared
-  datacenter with no common family is **422** `private_family_mismatch`. Fabric
-  dials over `tp0`. Shared membership + **at least one** subnet gate
-  managed-cluster private placement (`assertDatacenterHasCidr` /
-  `assertServerDatacenterReady` in `src/lib/net/datacenter-networks.ts`). New
-  error codes: **400** `invalid_cidr` / `address_not_in_any_subnet`, **409**
-  `address_in_use` / `subnet_overlaps` / `subnet_has_members`, **422**
-  `private_family_mismatch` (alongside existing `datacenter_has_members` /
-  `datacenter_has_networks`).
+
+Per-feature client-surface behavior notes (timezone/NTP, host defaults,
+labels, TurboFabric, compiled compose, org options, containers, datacenters /
+subnets / addresses, …) moved to `src/client/AGENTS.md` → **Client surface
+feature notes**.
 
 ## Storage classification (four workloads)
 
@@ -1105,7 +690,12 @@ orientation; the detail moved to:
 | **Compose documents**             | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/lib/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                                                                                                          |
 | **Managed engines**               | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL and `managed.ha.reconcile` for per-org Orchestrator (lazy: HA only on servers that host a primary or `failover` replica). Promote / DR / auto-failover journal in `recovery`; detection is unsolicited `managed-ha-event`. All status reads are Postgres-backed (`GET …/managed/status` includes `error` when status is `failed`); engine logs use cell `managed-logs-request`. Container stdout uses the same correlated cell round trip (`docker container logs` on demand) and is never stored |
 | **Bindings**                      | `src/client/bindings/`                              | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                                                                                                     |
+| **Client API routes**             | `src/client/AGENTS.md`                              | Per-endpoint permission contract for the `/api/client/v1/*` surface: access/permission endpoints + the full resource-tree CRUD table (moved from `src/lib/db/AGENTS.md`)                                                                                                                                                                                                                                                                                          |
 | **Authentication**                | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                                                                                                                                                                                              |
+| **CI analysis & coverage**        | `scripts/AGENTS.md`                                 | SonarCloud CI job, Vitest+Deno LCOV merge (`test-coverage.sh`), analysis-scope rules, coverage-attribution traps                                                                                                                                                                                                                                                                                                                                                  |
+| **System components**             | `src/client/system/AGENTS.md`                       | Self-host platform component inventory (`container`-tracked vs host-native), container name suffix contract |
+| **OpenAPI & Scalar**              | `src/client/openapi/AGENTS.md`                      | Hand-authored specs per surface, Scalar embeds, CPD exclusion |
+| **Client route contract**         | `src/client/routes-contract.md`                     | Per-route method/path/permission table for `/api/client/v1/*` (referenced from `src/client/AGENTS.md`) |
 | **Email**                         | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                             |
 | **Database & schema**             | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` label (API `name`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `slot` (nullable `slot.address`) / `label`; TurboFabric `fabric` / `relay` / `subnet` (compose-bridge, not a datacenter subnet); storage identity `storage` / `copy` / `mount` (+ schema-only `secret`); plus `tag` / `marker` / scheduled `task` |
 | **Query cache**                   | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                                                                                                                                                                                               |
@@ -1113,177 +703,13 @@ orientation; the detail moved to:
 
 ## Self-host system inventory
 
-Co-located (self-hosted) installs run a fixed set of platform components on the
-same host as the instance. Some of them are Postgres/`container`-tracked
-inventory managed by the daemon; the rest stay host-native and are never
-represented as `container` rows.
-
-| Component                                                         | Today                                | Decision                                                        | Inventory                                |
-| ----------------------------------------------------------------- | ------------------------------------ | --------------------------------------------------------------- | ---------------------------------------- |
-| PostgreSQL                                                        | `docker run turbopanel-database`     | Compose service `database`                                      | service + container row                  |
-| RabbitMQ                                                          | `docker run turbopanel-queue`        | Compose service `queue`                                         | service + container row                  |
-| ClickHouse                                                        | `docker run turbopanel-analytics`    | Compose service `analytics`                                     | service + container row                  |
-| ProxySQL (managed DB ingress)                                     | daemon compose, project = its own `serviceId` | Compose service `proxysql` / system component `managed-ingress` | service + container row when provisioned (`role: 'ingress'`, `<serviceId>-in`) |
-| Control plane (`turbopanel-instance.service`)                     | systemd + Deno                       | stays host-native                                               | none                                     |
-| Control-plane Caddy                                               | vendored binary                      | stays host-native                                               | none                                     |
-| Hosting Caddy                                                     | vendored binary + systemd            | stays host-native                                               | none                                     |
-| `turbopaneld.service`                                             | native / Deno JS                     | stays host-native                                               | none                                     |
-| Redis                                                             | vendored `.deb`, unix socket         | stays host-native                                               | none                                     |
-| Mailer, dbstudio, Expo UI, website, mailpit, tabix, redis-insight | systemd / dev-only                   | excluded                                                        | none                                     |
-
-`project.metadata.component` maps to project display names (`src/client/system/hierarchy.ts` — single source of truth): `hosting-ingress` → HTTP/HTTPS Ingress, `managed-ingress` → Database Ingress, `managed-ha` → Database High-Availability, `turbopanel` → Self Hosted TurboPanel Instance.
-
-The three databases/brokers above are provisioned into the `turbopanel-system`
-Compose project (see daemon `src/deploy/AGENTS.md` → **Shared HTTP ingress
-identity**) so their container identity/status is inspectable through the same
-`container` table and client `GET /api/client/v1/containers` surface as tenant
-deploys — with `role: 'turbopanel'` and `service.composeServiceName` in
-`database` / `queue` / `analytics`. They remain **inspect-only**: the daemon
-reports their `docker compose ps` identity for inventory but never starts,
-stops, or self-heals them (no restart-via-`system.reconcile` path — see
-`SYSTEM_OPERATE_COMPONENTS` in `src/client/system/routes.ts`, which only lists
-`hosting-ingress`).
-
-**ProxySQL / managed-ingress** is a separate compose project — the allocated
-`managed-ingress` `serviceId` — under `/etc/turbopanel/proxysql/`. Ansible role
-`proxysql` installs host prerequisites (dirs, `admin.cnf`, base static
-`proxysql.cnf` when absent, `turbopanel-proxysql-stack.service`). It does
-**not** create the organization's managed Docker network and does **not**
-template a project name: both are control-plane-allocated identifiers Ansible
-cannot know at converge time. The **daemon** writes `docker-compose.yml` and
-the durable dynamic config on `managed.ingress.reconcile` (creating the managed
-network first) and can self-heal via `system.reconcile` (`selfHeal: proxysql`).
-It is **not** part of `turbopanel-system` and is **not** inspect-only. The
-inventory container is `role: 'ingress'` named `<serviceId>-in` — distinct from
-the bare-uuid `turbopanel-system` rows and from the `-ha` Orchestrator. Client
-SQL enters ProxySQL's published `15432`/`13306` listeners; managed engines never
-publish arbitrary host ports. When a binding consumer is not co-resident,
-ProxySQL also joins the organization's managed network **plus each consuming
-environment's spanning `tpn_*` network** (pinned to the reserved last-usable
-host address). Tenant docker-compose raw TCP/UDP Traefik remains a separate
-pattern (compose project = the bare `<serviceId>`). Managed-network naming:
-`src/lib/db/AGENTS.md` → `network` `kind: 'managed'`.
-
-### Container name suffix contract
-
-Canonical mapping (implementation: `src/lib/naming.ts`):
-
-| Container name | Who | `container.role` |
-| --- | --- | --- |
-| `<serviceId>` | single-instance tenant service; self-host stack (`database` / `queue` / `analytics`) | `service` / `turbopanel` |
-| `<serviceId>-<ordinal>` | multi-instance tenant service; **all** managed engine members (including a lone primary) | `service` |
-| `<serviceId>-in` | per-service/hosting Traefik **and** shared ProxySQL `managed-ingress` | `ingress` |
-| `<serviceId>-ha` | per-org Orchestrator `managed-ha` (documented exception) | `turbopanel` |
-
-Two different components legitimately land on `-in` / `role: 'ingress'` — the
-shared HTTP Traefik (`hosting-ingress`) and the shared ProxySQL
-(`managed-ingress`) — so **the suffix alone never disambiguates them**. What
-does: the `com.turbopanel.system.component` label, and the **compose project**,
-which is each component's own allocated `serviceId`. Both projects are bare
-UUIDs; there is no `turbopanel-ingress` / `turbopanel-proxysql` literal to key
-off. Only the self-hosted instance stack keeps a human-readable project name
-(`turbopanel-system`).
-
-**Why instance/Caddy/daemon/Redis stay host-native rather than joining the
-compose stack:**
-
-- The control plane needs `pamtester`/PAM to gate the self-hosted install
-  wizard, `systemctl`/`git` access to check for and apply trunk updates, and
-  ownership of `/run/turbopanel/instance.sock` at a specific uid/gid so the
-  co-located daemon can connect — none of that is available to a process running
-  inside a container.
-- The daemon itself runs Ansible (which provisions the compose stack) — it
-  cannot be a container the daemon manages, and it needs host-level `systemctl`
-  control over every other unit.
-- Both Caddy units terminate TLS and bind privileged/host ports directly and are
-  simplest to keep as vendored host binaries under systemd, matching the
-  daemon's own vendored-runtime model.
-- Redis is reached over a unix socket (`redis.sock`) with permissions scoped to
-  the dev user / `tpcache` group — a socket-permission model that is simpler to
-  keep host-native than to thread through a container network.
-
-**Bootstrap ordering:** Self-hosted install creates the **TurboPanel**
-workspace (`kind='turbopanel'`) inside the install transaction — before any
-daemon enrolls. Self-host project/environment/services still wait on the
-colocated server (`ensureSelfHostSystemHierarchy`). Then `docker compose up`
-(with the labels below) runs via the `system-compose` Ansible role → the
-hierarchy allocates the `service` / `container` rows and assigns each service a
-UUID → a `system.reconcile` command carries that allocated `serviceId` (as the
-compose service's container name) to the daemon → the daemon inspects
-`docker compose ps` by the `com.turbopanel.system.component` label and reports
-identity/status back by container name. Inventory rows exist before the daemon
-ever inspects the stack; the daemon never invents ids.
-
-The first reconcile is **not** operator-driven. After hierarchy is created,
-`completeInstanceInstall` enqueues `system.reconcile` from the install request
-when the colocated daemon is already connected (typical co-located / Vagrant
-dev: daemon hello'd before the wizard). It must **not** enqueue while
-`server.is_connected` is false — a fail-fast offline command would trip the
-5-minute sweep throttle. Deno boot also runs `runSystemReconcileSweep`
-immediately (then every `DAEMON_CELL_MAINTAIN_MS`) so a daemon that hello's
-after install is observed on the next tick without waiting a full minute.
-Never enqueue from `onDaemonConnected` / Durable Object handlers. Until that
-inspect lands, client rows stay allocator `pending` with no Docker id — the UI
-shows **Not started yet** / **Unknown** even when `turbopanel-database` is
-already up.
-
-**Co-located delete / license revoke:** Server delete and license revoke are
-guarded by the durable self-host environment pin (the server that owns the
-`turbopanel` system environment), not only live registry / machine-id probes —
-so neither succeeds while the daemon is offline or the registry is unavailable.
-
-**Status / restart surface:** host-native components (Caddy, Redis, the
-instance, `turbopaneld`) have no `container` row and therefore never appear in a
-project/environment container table. Their health/restart affordances belong on
-the server **Control** tab / a system-component control API (e.g.
-`POST /servers/:id/system/:component/restart`, scoped to `hosting-ingress`
-today) — never bolted onto the tenant containers list.
+Moved to `src/client/system/AGENTS.md` — which platform components are
+Postgres/`container`-tracked inventory vs host-native, plus the container name
+suffix contract.
 
 ## OpenAPI & Scalar
 
-Hand-authored API docs are split by surface and served from the client and
-daemon routers (Workers and Deno):
-
-| Endpoint                          | Surface | Auth scheme                   |
-| --------------------------------- | ------- | ----------------------------- |
-| `GET /api/client/v1/openapi.json` | Client  | `cookieAuth` (session cookie) |
-| `GET /api/client/v1/reference`    | Client  | Scalar embed with cookie auth |
-| `GET /api/daemon/v1/openapi.json` | Daemon  | `bearerAuth` (daemon JWT)     |
-| `GET /api/daemon/v1/reference`    | Daemon  | Scalar embed with Bearer auth |
-
-`servers[0].url` in each spec is the request origin
-(`new URL(c.req.url).origin`). Client spec documents health,
-client/auth/install, and resource routes. Daemon spec documents readiness,
-platform CA, JWKS (`GET /api/daemon/v1/jwks.json`; `DaemonJwksResponse` in
-`src/daemon/openapi/auth.ts`), the co-located daemon checkout version endpoint
-(`GET /api/daemon/v1/version`), and the `/ws/daemon/v1` WebSocket upgrade —
-daemon JWT credentials are sent in the HTTP `Authorization` header before
-upgrade.
-
-The marketing site (`../website`) loads client + daemon specs on `/docs/api` as
-**separate Scalar documents** (cookie auth on Client, Bearer on Daemon — never
-both schemes in one shared auth config). The instance also exposes Scalar
-directly for local/dev use.
-
-```mermaid
-sequenceDiagram
-    participant Browser
-    participant Instance as instance (Workers/Deno)
-    participant Website as website (Next.js)
-
-    Browser->>Website: GET /docs/api
-    Website-->>Browser: ApiReferenceReact page
-    Browser->>Website: GET /api/config
-    Website-->>Browser: { openApiUrl: ".../api/client/v1/openapi.json" }
-    Browser->>Instance: GET /api/client/v1/openapi.json
-    Instance-->>Browser: OpenAPI 3.1 JSON (client surface)
-    Browser->>Instance: GET /api/client/v1/reference
-    Instance-->>Browser: Scalar embed (cookieAuth)
-    Browser->>Instance: GET /api/daemon/v1/openapi.json
-    Instance-->>Browser: OpenAPI 3.1 JSON (daemon surface)
-    Browser->>Instance: GET /api/daemon/v1/reference
-    Instance-->>Browser: Scalar embed (bearerAuth JWT)
-```
+Moved to `src/client/openapi/AGENTS.md`.
 
 ## Layout
 

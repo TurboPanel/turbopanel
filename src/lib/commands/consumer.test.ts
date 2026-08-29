@@ -35,6 +35,7 @@ import { createManagedPrincipal } from '../../client/principals/store.ts'
 import { ensureManagedIngressHierarchy } from '../../client/system/hierarchy.ts'
 import {
   COMMAND_DISPATCH_FAILURE_RETENTION_MS,
+  type CommandRecord,
   createCommandRecord,
   deleteCommandDispatch,
   getCommandDispatchPayload,
@@ -3753,6 +3754,251 @@ test('processCommandEnvelope does not enqueue standbys when primary apply fails'
     assertEquals(queue.envelopes.length, 0)
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
+  })
+})
+
+test('processCommandEnvelope enqueues the deferred primary destroy only after every replica succeeds', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    // Two gated replica destroys on one host. The primary destroy exists only
+    // as metadata until both replicas succeed — the delete route never waited
+    // for them.
+    const gateId = crypto.randomUUID()
+    const primaryPayload = {
+      managedId,
+      removeVolumes: true,
+      memberId: '00000000-0000-4000-8000-0000000000c0',
+      deleteAfterDestroy: true,
+    }
+    const gate = {
+      gateId,
+      memberIds: [
+        '00000000-0000-4000-8000-0000000000c1',
+        '00000000-0000-4000-8000-0000000000c2',
+      ],
+      followups: [
+        { serverId, memberId: primaryPayload.memberId, payload: primaryPayload },
+      ],
+    }
+
+    const replicaRecords = []
+    for (const memberId of gate.memberIds) {
+      replicaRecords.push(
+        await createCommandRecord(db, {
+          serverId,
+          ...TEST_COMMAND_ACTOR,
+          type: 'managed.destroy',
+          payload: { managedId, removeVolumes: true, memberId },
+          metadata: { managedDestroyGate: gate },
+        }),
+      )
+    }
+
+    const succeed = (record: CommandRecord) =>
+      createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { status: 'stopped', containers: [] },
+        },
+      })
+
+    const queue = createRecordingCommandQueue()
+
+    // First replica succeeds — the gate is not satisfied yet.
+    await processCommandEnvelope(
+      db,
+      succeed(replicaRecords[0]!),
+      buildEnvelope(replicaRecords[0]!, serverId),
+      { commandQueue: queue },
+    )
+    assertEquals(
+      queue.envelopes.filter((envelope) => envelope.type === 'managed.destroy')
+        .length,
+      0,
+    )
+    const [managedMidway] = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedMidway?.id, managedId)
+
+    // Second replica succeeds — now the primary destroy is enqueued, exactly once.
+    await processCommandEnvelope(
+      db,
+      succeed(replicaRecords[1]!),
+      buildEnvelope(replicaRecords[1]!, serverId),
+      { commandQueue: queue },
+    )
+    const primaryEnvelopes = queue.envelopes.filter(
+      (envelope) => envelope.type === 'managed.destroy',
+    )
+    assertEquals(primaryEnvelopes.length, 1)
+    assertEquals(primaryEnvelopes[0]?.serverId, serverId)
+
+    const followupPayload = await getCommandDispatchPayload(
+      db,
+      primaryEnvelopes[0]!.commandId,
+    ) as { memberId?: string; deleteAfterDestroy?: boolean } | null
+    assertEquals(followupPayload?.memberId, primaryPayload.memberId)
+    assertEquals(followupPayload?.deleteAfterDestroy, true)
+
+    // Re-delivering a replica must not enqueue a second primary destroy: the
+    // gate claim is taken once on a deterministic anchor row.
+    await processCommandEnvelope(
+      db,
+      succeed(replicaRecords[1]!),
+      buildEnvelope(replicaRecords[1]!, serverId),
+      { commandQueue: queue },
+    )
+    assertEquals(
+      queue.envelopes.filter((envelope) => envelope.type === 'managed.destroy')
+        .length,
+      1,
+    )
+  })
+})
+
+test('processCommandEnvelope leaves the primary intact when a gated replica destroy fails', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
+    const gateId = crypto.randomUUID()
+    const gate = {
+      gateId,
+      memberIds: [
+        '00000000-0000-4000-8000-0000000000d1',
+        '00000000-0000-4000-8000-0000000000d2',
+      ],
+      followups: [
+        {
+          serverId,
+          memberId: '00000000-0000-4000-8000-0000000000d0',
+          payload: {
+            managedId,
+            removeVolumes: true,
+            memberId: '00000000-0000-4000-8000-0000000000d0',
+            deleteAfterDestroy: true,
+          },
+        },
+      ],
+    }
+
+    const okRecord = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.destroy',
+      payload: { managedId, removeVolumes: true, memberId: gate.memberIds[0] },
+      metadata: { managedDestroyGate: gate },
+    })
+    const failingRecord = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.destroy',
+      payload: { managedId, removeVolumes: true, memberId: gate.memberIds[1] },
+      metadata: { managedDestroyGate: gate },
+    })
+
+    const queue = createRecordingCommandQueue()
+
+    await processCommandEnvelope(
+      db,
+      createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: okRecord.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: okRecord.createdAt,
+          expiresAt: okRecord.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { status: 'stopped', containers: [] },
+        },
+      }),
+      buildEnvelope(okRecord, serverId),
+      { commandQueue: queue },
+    )
+
+    await processCommandEnvelope(
+      db,
+      createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: failingRecord.id,
+          requestKind: 'command-dispatch',
+          status: 'failed',
+          createdAt: failingRecord.createdAt,
+          expiresAt: failingRecord.createdAt,
+          finishedAt: new Date().toISOString(),
+          error: 'destroy boom',
+        },
+      }),
+      buildEnvelope(failingRecord, serverId),
+      { commandQueue: queue },
+    )
+
+    // A failed replica never opens the gate: no primary command, and the
+    // managed row (with its principals) survives for a retry or force-delete.
+    assertEquals(
+      queue.envelopes.filter((envelope) => envelope.type === 'managed.destroy')
+        .length,
+      0,
+    )
+    const [managedAfter] = await db
+      .select({ id: managed.id })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+      .limit(1)
+    assertEquals(managedAfter?.id, managedId)
+    const [principalAfter] = await db
+      .select({ id: principal.id })
+      .from(principal)
+      .where(eq(principal.id, rootPrincipalId))
+      .limit(1)
+    assertEquals(principalAfter?.id, rootPrincipalId)
+  })
+})
+
+test('processCommandEnvelope ignores a malformed destroy gate instead of enqueuing a half-formed destroy', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.destroy',
+      payload: {
+        managedId,
+        removeVolumes: true,
+        memberId: '00000000-0000-4000-8000-0000000000e1',
+      },
+      // No memberIds — the consumer must not guess what the gate meant.
+      metadata: { managedDestroyGate: { gateId: 'g', followups: [] } },
+    })
+    const queue = createRecordingCommandQueue()
+
+    await processCommandEnvelope(
+      db,
+      createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { status: 'stopped', containers: [] },
+        },
+      }),
+      buildEnvelope(record, serverId),
+      { commandQueue: queue },
+    )
+
+    assertEquals(queue.envelopes.length, 0)
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'succeeded')
   })
 })
 

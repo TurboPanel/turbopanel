@@ -1,6 +1,8 @@
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
+import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { ensureServerMonitorCredential } from './monitor-credential.ts'
 import {
   decryptSecret,
   encryptSecret,
@@ -36,6 +38,7 @@ import {
   type PrivateEndpointError,
   privateEndpointErrorResponse,
   resolvePrivateEndpoint,
+  resolvePrivateEndpoints,
 } from '../../lib/net/private-endpoint.ts'
 import { ensureOrganizationManagedNetwork } from '../../lib/db/fabric-records.ts'
 import { managed, principal, server as serverTable, tls } from '../../lib/db/schema.ts'
@@ -50,7 +53,13 @@ import {
   isManagedAccessAddressError,
   resolveManagedBindAddress,
 } from './access-address.ts'
-import { ensureManagedReplicationPrincipal, listManagedPrincipals } from '../principals/store.ts'
+import {
+  ensureManagedReplicationPrincipal,
+  listManagedPrincipals,
+  REPLICATION_PASSWORD_LENGTH,
+  setPrincipalPassword,
+} from '../principals/store.ts'
+import { generatePassword } from '../../generate-secret.ts'
 import {
   loadOrganizationCaSet,
   nextOrganizationCaGeneration,
@@ -77,6 +86,18 @@ import {
   updateMemberReplicationTransport,
 } from './members.ts'
 import { parseManagedResidual } from './serialize.ts'
+import {
+  MANAGED_DESTROY_GATE_METADATA_KEY,
+  type ManagedDestroyGate,
+} from './destroy-gate.ts'
+
+export {
+  MANAGED_DESTROY_GATE_CLAIM_KEY,
+  MANAGED_DESTROY_GATE_METADATA_KEY,
+  type ManagedDestroyGate,
+  parseManagedDestroyGate,
+  type PendingManagedDestroy,
+} from './destroy-gate.ts'
 
 const APPLY_EXPIRES_MS = 600_000
 /** Polling cadence while awaiting primary apply before standby enqueue. */
@@ -88,7 +109,12 @@ async function sleepMs(ms: number): Promise<void> {
 
 /**
  * Wait until a command row is terminal or the timeout elapses.
- * Used so primary replication setup completes before standby basebackup.
+ *
+ * **Not for request paths.** Multi-step managed fan-outs sequence themselves
+ * through command metadata and the consumer's follow-up handling
+ * (`pendingStandbyApplies`, `managedDestroyGate`) so an HTTP handler returns as
+ * soon as the work is durably enqueued. This helper remains for out-of-band
+ * callers (scripts, tests) that genuinely want to block on one command.
  */
 export async function awaitCommandTerminal(
   db: Db,
@@ -237,6 +263,11 @@ export type BuildManagedApplyInput = {
    * Shrinks primary `desiredSlots` / peers before the row is deleted.
    */
   excludeMemberIds?: string[]
+  /**
+   * Standby members whose payloads carry `forceResync: true` — the daemon
+   * wipes and re-seeds their data directory (operator resync action).
+   */
+  forceResyncMemberIds?: string[]
 }
 
 export type PreparedManagedMemberApply = {
@@ -569,6 +600,11 @@ export async function buildManagedOrgTlsMaterial(
     sans,
     {
       commonName: leafName,
+      // ProxySQL presents this leaf as a *client* cert on proxy-to-server
+      // connections (ssl_p2s_cert), and Postgres verifies client certs
+      // whenever ssl_ca_file is set — without clientAuth EKU the handshake
+      // fails with "unsuitable certificate purpose".
+      includeClientAuth: true,
       ...(ipAddresses.length > 0 ? { ipAddresses: [...ipAddresses] } : {}),
     },
   )
@@ -818,6 +854,11 @@ async function resolveMemberReplicationInput(
         ...(primaryPeer.containerName ? {} : { hostaddr: primaryPeer.address }),
         port: primaryPeer.port,
       },
+      // Standbys need peers too: every member server hosts a ProxySQL ingress
+      // that dials this engine's private listener (monitor + client traffic),
+      // so pg_hba and the daemon firewall must admit them — not just the
+      // primary's replication peers.
+      peerAddresses: peers.map((p) => p.address),
     },
     ...(privateListener !== undefined ? { privateListener } : {}),
   }
@@ -900,13 +941,18 @@ function buildReplicationPayloadField(
   }
 }
 
-/** Attach the optional replication/resource/database/TLS payload fields. */
+/** Attach optional replication, resource, database, TLS, and member flags. */
 function attachOptionalPayloadFields(
   payload: ManagedApplyCommandPayload,
   input: BuildManagedApplyInput,
   memberInput: BuildRuntimeSpecInput['member'] | undefined,
   runtime: ReturnType<ManagedEngineSpec['buildRuntimeSpec']>,
   databases: NonNullable<ManagedApplyCommandPayload['databases']>,
+  extra: {
+    memberId: string
+    roleForSpec: 'primary' | 'standby'
+    monitorUsers?: NonNullable<ManagedApplyCommandPayload['monitorUsers']>
+  },
 ): void {
   if (memberInput?.privateListener) {
     payload.privateListener = memberInput.privateListener
@@ -923,6 +969,29 @@ function attachOptionalPayloadFields(
     payload.dropUsers = input.dropUsers
   }
   if (runtime.tlsMaterial) payload.tlsMaterial = runtime.tlsMaterial
+  attachMemberApplyFlags(payload, input, memberInput, extra)
+}
+
+function attachMemberApplyFlags(
+  payload: ManagedApplyCommandPayload,
+  input: BuildManagedApplyInput,
+  memberInput: BuildRuntimeSpecInput['member'] | undefined,
+  extra: {
+    memberId: string
+    roleForSpec: 'primary' | 'standby'
+    monitorUsers?: NonNullable<ManagedApplyCommandPayload['monitorUsers']>
+  },
+): void {
+  if (extra.monitorUsers !== undefined) payload.monitorUsers = extra.monitorUsers
+  if (
+    extra.roleForSpec === 'standby' &&
+    (input.forceResyncMemberIds?.includes(extra.memberId) ?? false)
+  ) {
+    payload.forceResync = true
+  }
+  if (memberInput?.clientSourceAddresses?.length) {
+    payload.ingressSourceAddresses = memberInput.clientSourceAddresses
+  }
 }
 
 /**
@@ -999,6 +1068,138 @@ async function attachManagedOrgTlsMaterial(
   return { pendingTlsLeaf: orgTlsMaterial.pendingTlsLeaf }
 }
 
+function buildApplyPeersField(
+  peers: readonly ManagedMemberPeer[],
+): ManagedApplyCommandPayload['peers'] {
+  return peers.map((p) => ({
+    memberId: p.memberId,
+    role: p.role,
+    readEligible: p.readEligible,
+    address: p.address,
+    transport: p.transport,
+    port: p.port,
+    ...(p.containerName !== undefined ? { containerName: p.containerName } : {}),
+  }))
+}
+
+/**
+ * Cross-host consumer servers (bound apps elsewhere) run ProxySQL ingress
+ * that dials this engine's private listener — pg_hba / engine account host
+ * scoping must admit them. Multi-member only: single-member engines have no
+ * private listener for a remote consumer to dial. Best effort per consumer:
+ * one without a private path cannot reach the listener anyway.
+ */
+async function attachConsumerSourceAddresses(
+  db: Db,
+  input: BuildManagedApplyInput,
+  members: readonly ManagedMemberRow[],
+  member: ManagedMemberRow,
+  memberInput: NonNullable<BuildRuntimeSpecInput['member']>,
+): Promise<void> {
+  const memberServerIds = new Set(members.map((m) => m.serverId))
+  const consumerIds = (await consumerServerIdsForManaged(db, input.managedRow.id))
+    .filter((id) => !memberServerIds.has(id) && id !== member.serverId)
+  if (consumerIds.length === 0) return
+
+  const endpoints = await resolvePrivateEndpoints(db, {
+    fromServerId: member.serverId,
+    toServerIds: consumerIds,
+    purpose: 'client-backend',
+  })
+  const addresses: string[] = []
+  for (const resolved of endpoints.values()) {
+    if ('kind' in resolved) continue
+    if (!addresses.includes(resolved.address)) addresses.push(resolved.address)
+  }
+  if (addresses.length > 0) {
+    memberInput.clientSourceAddresses = addresses.toSorted((a, b) =>
+      a.localeCompare(b)
+    )
+  }
+}
+
+/**
+ * Per-server ProxySQL monitor credentials for every server fronting this
+ * cluster (members + bound consumers). Primary payloads only: the engine
+ * creates one monitor role per server and standbys inherit them via WAL —
+ * see `monitor-credential.ts` for why per-host `monitor.cnf` cannot work.
+ */
+async function buildPrimaryMonitorUsers(
+  db: Db,
+  secretsConfig: SecretsConfig,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  input: BuildManagedApplyInput,
+  members: readonly ManagedMemberRow[],
+  member: ManagedMemberRow,
+): Promise<
+  | { monitorUsers: NonNullable<ManagedApplyCommandPayload['monitorUsers']> }
+  | ManagedApplyPrepareError
+> {
+  const frontingServerIds = new Set<string>(members.map((m) => m.serverId))
+  for (
+    const consumerId of await consumerServerIdsForManaged(
+      db,
+      input.managedRow.id,
+    )
+  ) {
+    frontingServerIds.add(consumerId)
+  }
+  const daemonState = await getServerDaemonStateByServerId(db, member.serverId)
+  if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
+    return { kind: 'daemon_key_unavailable', serverId: member.serverId }
+  }
+  const monitorUsers: NonNullable<ManagedApplyCommandPayload['monitorUsers']> =
+    []
+  for (
+    const frontingServerId of [...frontingServerIds].toSorted((a, b) =>
+      a.localeCompare(b)
+    )
+  ) {
+    const cred = await ensureServerMonitorCredential(
+      db,
+      dataEncryptionSecrets,
+      frontingServerId,
+    )
+    monitorUsers.push({
+      username: cred.username,
+      password: await resealSecretForDaemon(
+        secretsConfig,
+        dataEncryptionSecrets,
+        { serverId: member.serverId, keyId: daemonState.key.id },
+        cred.passwordSealed,
+      ),
+    })
+  }
+  return { monitorUsers }
+}
+
+/**
+ * Primary payloads ship monitor roles; standbys inherit them via WAL and
+ * omit `monitorUsers` so the daemon does not recreate the same logins.
+ */
+async function resolvePayloadMonitorUsers(
+  db: Db,
+  secretsConfig: SecretsConfig,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  input: BuildManagedApplyInput,
+  members: readonly ManagedMemberRow[],
+  member: ManagedMemberRow,
+  roleForSpec: 'primary' | 'standby',
+): Promise<
+  | { monitorUsers?: NonNullable<ManagedApplyCommandPayload['monitorUsers']> }
+  | ManagedApplyPrepareError
+> {
+  if (roleForSpec !== 'primary') return {}
+  return buildPrimaryMonitorUsers(
+    db,
+    secretsConfig,
+    dataEncryptionSecrets,
+    input,
+    members,
+    member,
+  )
+}
+
 async function buildPayloadForMember(
   c: Context<AppEnv>,
   db: Db,
@@ -1054,6 +1255,10 @@ async function buildPayloadForMember(
   )
   if (isPrepareError(resolvedMemberInput)) return resolvedMemberInput
   const memberInput = resolvedMemberInput
+
+  if (memberInput) {
+    await attachConsumerSourceAddresses(db, input, members, member, memberInput)
+  }
 
   const rootUsername = resolveRootUsername(input)
   const { composeYaml, runtime } = composeFromRuntimeSpec(
@@ -1122,6 +1327,17 @@ async function buildPayloadForMember(
     })),
   ]
 
+  const builtMonitorUsers = await resolvePayloadMonitorUsers(
+    db,
+    secretsConfig,
+    dataEncryptionSecrets,
+    input,
+    members,
+    member,
+    roleForSpec,
+  )
+  if (isPrepareError(builtMonitorUsers)) return builtMonitorUsers
+
   const payload: ManagedApplyCommandPayload = {
     managedId: input.managedRow.id,
     environmentId: input.environmentId,
@@ -1142,19 +1358,15 @@ async function buildPayloadForMember(
     memberRole: member.role === 'replica' ? 'replica' : 'primary',
     memberOrdinal: member.ordinal,
     readEligible: member.readEligible,
-    peers: peers.map((p) => ({
-      memberId: p.memberId,
-      role: p.role,
-      readEligible: p.readEligible,
-      address: p.address,
-      transport: p.transport,
-      port: p.port,
-      ...(p.containerName !== undefined ? { containerName: p.containerName } : {}),
-    })),
+    peers: buildApplyPeersField(peers),
     credentials,
   }
 
-  attachOptionalPayloadFields(payload, input, memberInput, runtime, databases)
+  attachOptionalPayloadFields(payload, input, memberInput, runtime, databases, {
+    memberId: member.id,
+    roleForSpec,
+    monitorUsers: builtMonitorUsers.monitorUsers,
+  })
 
   const tlsResult = await attachManagedOrgTlsMaterial(
     db,
@@ -1257,6 +1469,32 @@ async function ensureClusterReplicationUsername(
       identifier: input.spec.userOperations.identifier,
     },
   )
+
+  // MySQL caps `CHANGE REPLICATION SOURCE … SOURCE_PASSWORD` at 32 chars
+  // (error 3056). Pre-fix replication principals were minted at 48 —
+  // self-heal by rotating to a compliant password. mysql-family only:
+  // rotating a Postgres cluster's replication password would strand
+  // streaming standbys whose seeded primary_conninfo holds the old one.
+  if (
+    input.spec.engine === 'mysql' || input.spec.engine === 'mariadb'
+  ) {
+    const [pwRow] = await db
+      .select({ password: principal.password })
+      .from(principal)
+      .where(eq(principal.id, repl.principalId))
+      .limit(1)
+    if (
+      typeof pwRow?.password === 'string' &&
+      pwRow.password.startsWith(ENVELOPE_PREFIX_SECRET)
+    ) {
+      const plain = await decryptSecret(dataEncryptionSecrets, pwRow.password)
+      if (plain.length > REPLICATION_PASSWORD_LENGTH) {
+        await setPrincipalPassword(db, dataEncryptionSecrets, repl.principalId, {
+          password: generatePassword(REPLICATION_PASSWORD_LENGTH),
+        })
+      }
+    }
+  }
 
   const residual = parseManagedResidual(input.managedRow.metadata)
   await db
@@ -1638,6 +1876,35 @@ export async function enqueueManagedLifecycleFanout(
   return results
 }
 
+function buildManagedDestroyPayload(
+  params: {
+    managedId: string
+    removeVolumes: boolean
+    deleteAfterDestroy?: boolean
+    environmentId?: string
+  },
+  member: ManagedMemberRow,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    managedId: params.managedId,
+    removeVolumes: params.removeVolumes,
+    memberId: member.id,
+    ...(params.environmentId ? { environmentId: params.environmentId } : {}),
+  }
+  if (params.deleteAfterDestroy && member.role === 'primary') {
+    payload.deleteAfterDestroy = true
+  }
+  if (member.role === 'replica') {
+    // Delete the member row as part of each replica's destroy outcome so
+    // the follow-up ingress reconcile on that server sees an empty
+    // fronting set and tears ProxySQL down immediately — otherwise the
+    // lingering row keeps the shared frontend alive until the primary's
+    // outcome cascades it (or the orphan sweep catches up minutes later).
+    payload.deleteMemberAfterDestroy = true
+  }
+  return payload
+}
+
 export async function enqueueManagedDestroyFanout(
   c: Context<AppEnv>,
   db: Db,
@@ -1649,42 +1916,113 @@ export async function enqueueManagedDestroyFanout(
     members: ManagedMemberRow[]
     /** When true, only the primary command carries `deleteAfterDestroy`. */
     deleteAfterDestroy?: boolean
+    /** Stamped on every destroy so side effects survive the row deletion. */
+    environmentId?: string
+    /**
+     * Best-effort teardown: do not gate the primary on replica success —
+     * enqueue everything at once and let sweeps mop up leftovers.
+     */
+    force?: boolean
   },
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
-  const results = await Promise.all(
-    params.members.map(async (member): Promise<ManagedApplyEnqueueResult> => {
-      const payload: Record<string, unknown> = {
-        managedId: params.managedId,
-        removeVolumes: params.removeVolumes,
-        memberId: member.id,
-      }
-      if (params.deleteAfterDestroy && member.role === 'primary') {
-        payload.deleteAfterDestroy = true
-      }
-      const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
-        userId: params.userId,
-        serverId: member.serverId,
-        type: 'managed.destroy',
-        payload,
-        expiresAtMs: 600_000,
-      })
-      if (enqueued instanceof Response) {
-        return {
-          memberId: member.id,
-          serverId: member.serverId,
-          status: 'failed',
-          error: 'Command queue unavailable',
-        }
-      }
+  const enqueueOne = async (
+    member: ManagedMemberRow,
+    metadata?: Record<string, unknown>,
+  ): Promise<ManagedApplyEnqueueResult> => {
+    const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
+      userId: params.userId,
+      serverId: member.serverId,
+      type: 'managed.destroy',
+      payload: buildManagedDestroyPayload(params, member),
+      expiresAtMs: 600_000,
+      ...(metadata ? { metadata } : {}),
+    })
+    if (enqueued instanceof Response) {
       return {
         memberId: member.id,
         serverId: member.serverId,
-        commandId: enqueued.commandId,
-        status: 'queued',
+        status: 'failed',
+        error: 'Command queue unavailable',
       }
-    }),
+    }
+    return {
+      memberId: member.id,
+      serverId: member.serverId,
+      commandId: enqueued.commandId,
+      status: 'queued',
+    }
+  }
+
+  const replicas = params.members.filter((m) => m.role === 'replica')
+  const primaries = params.members.filter((m) => m.role !== 'replica')
+
+  // Nothing to sequence: no replica to tear down first, or a force-delete that
+  // deliberately skips the gate because a member host may be broken or offline.
+  if (params.force || replicas.length === 0 || primaries.length === 0) {
+    const replicaResults = await Promise.all(
+      replicas.map((member) => enqueueOne(member)),
+    )
+    const primaryResults = await Promise.all(
+      primaries.map((member) => enqueueOne(member)),
+    )
+    return [...replicaResults, ...primaryResults]
+  }
+
+  // Replicas tear down first: their side effects (container rows, ProxySQL
+  // ingress teardown, member deletion) must not race the primary's
+  // `deleteAfterDestroy` row removal.
+  //
+  // The wait is the **consumer's**, not this route's. Every replica command
+  // carries the gate; whichever replica side effect observes the last sibling
+  // succeed enqueues the primaries (`enqueuePendingManagedDestroys` in
+  // `src/lib/commands/consumer.ts`), mirroring `pendingStandbyApplies`. A
+  // replica that fails or expires simply never opens the gate, which leaves the
+  // primary — and the `managed` row — intact for a retry or a force-delete.
+  const memberIds = replicas.map((member) => member.id).toSorted((a, b) =>
+    a.localeCompare(b)
   )
-  return results
+  const gate: ManagedDestroyGate = {
+    gateId: crypto.randomUUID(),
+    memberIds,
+    followups: primaries.map((member) => ({
+      serverId: member.serverId,
+      memberId: member.id,
+      payload: buildManagedDestroyPayload(params, member),
+    })),
+  }
+
+  const replicaResults = await Promise.all(
+    replicas.map((member) =>
+      enqueueOne(member, { [MANAGED_DESTROY_GATE_METADATA_KEY]: gate })
+    ),
+  )
+
+  if (replicaResults.some((result) => result.status === 'failed')) {
+    // A replica that never reached the queue can never open the gate, so the
+    // primaries would hang forever. Report the failure and leave the primary
+    // (and the managed row) intact for a retry — or a force-delete, which skips
+    // this gate entirely.
+    return [
+      ...replicaResults,
+      ...primaries.map((member): ManagedApplyEnqueueResult => ({
+        memberId: member.id,
+        serverId: member.serverId,
+        status: 'failed',
+        error: 'Replica destroy failed before primary enqueue',
+      })),
+    ]
+  }
+
+  // Primaries are queued behind the gate: durably recorded on the replica
+  // commands, with no command row of their own until the gate opens.
+  return [
+    ...replicaResults,
+    ...primaries.map((member): ManagedApplyEnqueueResult => ({
+      memberId: member.id,
+      serverId: member.serverId,
+      status: 'queued',
+    })),
+  ]
 }
 
 /** Compatibility wrappers used by paths that still target a single primary. */
