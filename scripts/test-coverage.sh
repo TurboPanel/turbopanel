@@ -348,6 +348,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/developer/system-routes.test.ts \
   src/developer/tunnel-routes.hostfree.test.ts \
   src/developer/update-routes.hostfree.test.ts \
+  src/developer/dev-update-overlay.hostfree.test.ts \
   src/drizzle-kit-config.test.ts \
   src/drizzle-studio-probe.test.ts \
   src/lib/amqp-default-url.test.ts \
@@ -395,6 +396,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/environment-generation.hostfree.test.ts \
   src/lib/db/fabric-records.hostfree.test.ts \
   src/lib/db/fabric-records-lifecycle.hostfree.test.ts \
+  src/lib/db/fabric-records-managed.hostfree.test.ts \
   src/lib/db/fabric-records-reconcile.hostfree.test.ts \
   src/lib/db/label-records.hostfree.test.ts \
   src/lib/db/net-types.test.ts \

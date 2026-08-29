@@ -79,6 +79,12 @@ jobs:
       - name: Check vocabulary (no daemon-as-agent phrasing)
         run: pnpm run check:vocabulary
 
+      # Fails when a *.test.ts is claimed by no runner -- such a suite never
+      # executes and never reaches coverage/lcov.info, so it reads as tested
+      # in review while contributing nothing.
+      - name: Check test inventory (every suite runs somewhere)
+        run: pnpm run check:test-inventory
+
       - name: Check third-party notices
         run: pnpm run notices:check
 

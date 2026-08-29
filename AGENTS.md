@@ -166,7 +166,14 @@ change. Future agents read `AGENTS.md` first.
     must be added to `vitest.config.ts` `test.include` — that list is an
     explicit file enumeration, not a glob, because most `*.test.ts` files use
     Deno-only APIs and cannot run under the Workers pool; a file left off
-    `test.include` never runs at all, coverage or not. (3) LCOV smart merge must
+    `test.include` never runs at all, coverage or not. Traps (1) and (2) are
+    now enforced by **`pnpm check:test-inventory`**
+    (`scripts/check-test-inventory.mjs`, wired into `test:hook` and CI
+    `build.yml`): it fails when any `*.test.ts` is claimed by neither list, when
+    a list entry names a file that no longer exists, or when a file is claimed
+    by both. A suite that needs a service CI does not start (Redis, ClickHouse)
+    goes in that script's `SERVICE_DEPENDENT` map **with a reason** — that map
+    is the only sanctioned way to leave a suite out of both runners. (3) LCOV smart merge must
     stay in place — do not reintroduce full-record Vitest-wins (drops Deno hits
     for imported-but-untested modules) or naive Deno+Vitest line-union (dilutes
     Workers/DO with zero-hit transitive SF rows). Selective Workers/DO 0% with a

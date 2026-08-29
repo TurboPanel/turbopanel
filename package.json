@@ -19,10 +19,11 @@
     "check:do-hibernation:fixtures": "node scripts/check-durable-object-hibernation.mjs --fixtures",
     "check:workers-bundle": "node scripts/check-workers-bundle.mjs",
     "check:vocabulary": "node scripts/check-vocabulary.mjs",
+    "check:test-inventory": "node scripts/check-test-inventory.mjs",
     "notices:generate": "deno task notices:generate",
     "notices:check": "deno task notices:check",
     "check:ca-boundary": "node scripts/check-ca-boundary.mjs",
-    "test:hook": "deno task check:types && pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm run notices:check && pnpm run check:ca-boundary && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
+    "test:hook": "deno task check:types && pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm run check:test-inventory && pnpm run notices:check && pnpm run check:ca-boundary && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",
