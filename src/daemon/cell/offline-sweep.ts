@@ -57,6 +57,7 @@ import {
   runWithDbTimeout,
 } from "../../db.ts";
 import { resolveWorkersDb } from "../../workers-bindings.ts";
+import { runManagedIngressOrphanSweep } from "../../client/managed/ingress-desired.ts";
 import { runSystemReconcileSweep } from "../../client/system/reconcile.ts";
 import { runLeafRenewalSweepTick } from "../../client/tls/leaf-renewal-sweep.ts";
 import type {
@@ -952,6 +953,17 @@ async function runQueuedCronSweeps(
     await runSystemReconcileSweep(db, commandQueue);
     if (tlsRenewal) {
       await runLeafRenewalSweepTickSafely(db, commandQueue, tlsRenewal);
+      // Orphaned ProxySQL frontends: teardown needs a full
+      // `managed.ingress.reconcile`, so it can only run when the cron has the
+      // secrets bundle (same gate as leaf renewal). Isolated so a failure
+      // never aborts the other sweeps.
+      try {
+        await runManagedIngressOrphanSweep(db, commandQueue, tlsRenewal);
+      } catch (err) {
+        sweepTrace("managed-ingress-orphan-sweep-failed", {
+          error: sweepErrorMessage(err),
+        });
+      }
     }
   } catch (err) {
     sweepTrace("system-reconcile-sweep-failed", {

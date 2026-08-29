@@ -1,4 +1,4 @@
-import type { Hono } from "hono";
+import type { Env, Hono } from "hono";
 import { dirname, fromFileUrl, join } from "@std/path";
 import { DAEMON_API_PREFIX } from "../surfaces.ts";
 
@@ -80,7 +80,7 @@ export async function getInstanceCommit(): Promise<DaemonVersion> {
   return { commit, branch };
 }
 
-export function registerVersionRoute(app: Hono): Hono {
+export function registerVersionRoute<E extends Env>(app: Hono<E>): Hono<E> {
   app.get(
     `${DAEMON_API_PREFIX}/version`,
     async (c) => c.json(await getDaemonCommit()),

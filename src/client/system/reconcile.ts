@@ -145,9 +145,11 @@ export function resolveManagedHaDesired(params: Readonly<{
 
 /**
  * `EXISTS` projection for "this server hosts at least one managed cluster
- * member". Shared by the payload query and the sweep candidate query.
+ * member". Shared by the payload query, the sweep candidate query, and the
+ * orphaned-frontend sweep (`runManagedIngressOrphanSweep`), which needs the
+ * exact negation of this predicate.
  */
-function managedMembersExists(serverIdExpr: SQL): SQL {
+export function managedMembersExists(serverIdExpr: SQL): SQL {
   return sql`EXISTS (
         SELECT 1
         FROM replica mm
@@ -164,9 +166,10 @@ function managedMembersExists(serverIdExpr: SQL): SQL {
  * `managed-ingress` desired state from it) and {@link runSystemReconcileSweep}
  * (which decides whether the server is a sweep candidate at all). A
  * consumer-only server hosts no `replica` rows, so local member presence alone
- * would never let post-boot self-heal run there.
+ * would never let post-boot self-heal run there. Also negated by
+ * `runManagedIngressOrphanSweep` to find frontends whose demand is gone.
  */
-function boundManagedConsumersExists(
+export function boundManagedConsumersExists(
   serverIdExpr: SQL,
   organizationIdExpr: SQL,
 ): SQL {

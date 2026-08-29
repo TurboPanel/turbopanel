@@ -356,6 +356,39 @@ export function updateResetErrorStatus(message: string): 409 | 500 {
   return message === 'update in progress' ? 409 : 500
 }
 
+/**
+ * Deferred update release for the dev-only prepare step (rebuild the local
+ * daemon overlay before daemons install it). The projection was already marked
+ * queued when the trigger was accepted; on success the envelope is enqueued and
+ * the queued timestamp refreshed so the daemon gets the full request TTL after
+ * the build. A failed prepare or enqueue lands as a failed update result.
+ */
+export async function runPreparedServerUpdate(params: {
+  prepare: () => Promise<void>
+  enqueue: () => Promise<void>
+  markQueued: (queuedAt: string) => Promise<void>
+  markFailed: (error: string, finishedAt: string) => Promise<void>
+}): Promise<void> {
+  try {
+    await params.prepare()
+  } catch (err) {
+    await params.markFailed(
+      `Dev daemon rebuild failed: ${errorMessageFromUnknown(err)}`,
+      new Date().toISOString(),
+    )
+    return
+  }
+  try {
+    await params.enqueue()
+    await params.markQueued(new Date().toISOString())
+  } catch (err) {
+    await params.markFailed(
+      errorMessageFromUnknown(err),
+      new Date().toISOString(),
+    )
+  }
+}
+
 export function distinctNonEmptyIds(
   ids: Array<string | null | undefined>,
 ): string[] {

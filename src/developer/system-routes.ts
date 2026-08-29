@@ -1,4 +1,4 @@
-import type { Hono } from 'hono'
+import type { Env, Hono } from 'hono'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
 import { getDaemonRepoPath, getInstanceCommit } from '../daemon/version.ts'
@@ -153,10 +153,10 @@ async function syncRepoToTrunk(
   return { ok: true }
 }
 
-export function registerSystemRoutes(
-  app: Hono,
+export function registerSystemRoutes<E extends Env>(
+  app: Hono<E>,
   opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
-): Hono {
+): Hono<E> {
   if (opts.authRequired !== false) {
     app.use(`${DEVELOPER_API_PREFIX}/system/*`, createDeveloperAccessMiddleware(opts.secrets))
   }

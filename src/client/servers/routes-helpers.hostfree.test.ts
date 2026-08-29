@@ -21,6 +21,7 @@ import {
   emptyServersUpdatesPayload,
   resolveTrunkTargetFields,
   resolveBatchUpdateEligibility,
+  runPreparedServerUpdate,
   updateResetErrorStatus,
   distinctNonEmptyIds,
   errorMessageFromUnknown,
@@ -380,4 +381,55 @@ test('projected update repair helpers', () => {
 test('status cache constants stay stable for Cache-Control headers', () => {
   assertEquals(STATUS_CACHE_CONTROL, 'private, max-age=5')
   assertEquals(STATUS_CACHE_MAX_AGE_MS, 5_000)
+})
+
+test('runPreparedServerUpdate enqueues after prepare and refreshes queuedAt', async () => {
+  const events: string[] = []
+  await runPreparedServerUpdate({
+    prepare: async () => {
+      events.push('prepare')
+    },
+    enqueue: async () => {
+      events.push('enqueue')
+    },
+    markQueued: async (queuedAt) => {
+      events.push(`queued:${typeof queuedAt}`)
+    },
+    markFailed: async () => {
+      events.push('failed')
+    },
+  })
+  assertEquals(events, ['prepare', 'enqueue', 'queued:string'])
+})
+
+test('runPreparedServerUpdate surfaces prepare failures without enqueueing', async () => {
+  const events: string[] = []
+  await runPreparedServerUpdate({
+    prepare: () => Promise.reject(new Error('compile boom')),
+    enqueue: async () => {
+      events.push('enqueue')
+    },
+    markQueued: async () => {
+      events.push('queued')
+    },
+    markFailed: async (error) => {
+      events.push(`failed:${error}`)
+    },
+  })
+  assertEquals(events, ['failed:Dev daemon rebuild failed: compile boom'])
+})
+
+test('runPreparedServerUpdate surfaces enqueue failures', async () => {
+  const events: string[] = []
+  await runPreparedServerUpdate({
+    prepare: async () => {},
+    enqueue: () => Promise.reject(new Error('cell gone')),
+    markQueued: async () => {
+      events.push('queued')
+    },
+    markFailed: async (error) => {
+      events.push(`failed:${error}`)
+    },
+  })
+  assertEquals(events, ['failed:cell gone'])
 })

@@ -23,6 +23,7 @@ import {
   WEBHOOK_DELIVERY_SWEEP_LIMIT,
 } from "./lib/db/webhook-delivery-records.ts";
 import { registerWebhookRoutes } from "./webhook/routes.ts";
+import { runManagedIngressOrphanSweep } from "./client/managed/ingress-desired.ts";
 import { runSystemReconcileSweep } from "./client/system/reconcile.ts";
 import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
@@ -398,6 +399,18 @@ export async function startDenoServer(
     if (isNoopCommandQueue(commandQueue)) return;
     void runSystemReconcileSweep(db, commandQueue).catch((err) => {
       logWarn("daemon-cell", `system reconcile sweep error: ${String(err)}`);
+    });
+    // Orphaned-frontend teardown rides the same tick; separate call because
+    // it enqueues `managed.ingress.reconcile` (needs secrets for payload
+    // sealing), which `system.reconcile` cannot express.
+    void runManagedIngressOrphanSweep(db, commandQueue, {
+      secretsConfig,
+      dataEncryptionSecrets,
+    }).catch((err) => {
+      logWarn(
+        "daemon-cell",
+        `managed ingress orphan sweep error: ${String(err)}`,
+      );
     });
   };
   // Observe pending self-host inventory on boot, not only after the first

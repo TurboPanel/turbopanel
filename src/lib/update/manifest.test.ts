@@ -3,6 +3,7 @@ import {
   resetTrunkManifestCacheForTests,
   resolveTrunkManifest,
   seedTrunkManifestCacheForTests,
+  setTrunkManifestProvider,
 } from "./manifest.ts";
 
 /**
@@ -273,6 +274,29 @@ test("resolveTrunkManifest returns null when fetch throws", async () => {
   try {
     assertEquals(await resolveTrunkManifest(), null);
   } finally {
+    globalThis.fetch = originalFetch;
+    resetTrunkManifestCacheForTests();
+  }
+});
+
+test("resolveTrunkManifest defers to a registered provider", async () => {
+  resetTrunkManifestCacheForTests();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    throw new TypeError("provider must bypass the CDN fetch");
+  }) as typeof fetch;
+  const target = {
+    commit: "abc+1",
+    buildId: "dev-abc+1",
+    builtAt: "2026-01-01T00:00:00.000Z",
+    channel: "trunk",
+    manifestUrl: "/repo/dist/manifest.json",
+  };
+  try {
+    setTrunkManifestProvider(() => Promise.resolve(target));
+    assertEquals(await resolveTrunkManifest(), target);
+  } finally {
+    setTrunkManifestProvider(null);
     globalThis.fetch = originalFetch;
     resetTrunkManifestCacheForTests();
   }

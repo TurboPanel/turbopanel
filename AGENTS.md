@@ -1283,7 +1283,10 @@ sequenceDiagram
 - `src/app.ts` — shared Hono factory (`/api/health` + client/daemon routers)
 - `src/deno.ts` — production Deno entry (`deno-server.ts` + no developer modules)
 - `src/deno-dev.ts` — development Deno entry; registers install routes, developer
-  surface, `/api/daemon/v1/version`, daemon WS
+  surface, `/api/daemon/v1/version`, daemon WS, and the dev update overlay
+  (`src/developer/dev-update-overlay.ts` — client update UI resolves trunk from
+  the local daemon checkout's `dist/manifest.json` and rebuilds the overlay
+  before enqueueing updates, instead of comparing against `dl.trbp.nl`)
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers
   `developer/routes-core` once per isolate
 - `scripts/check-workers-bundle.mjs` — Wrangler dry-run of the deploy entrypoint

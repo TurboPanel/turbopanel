@@ -64,6 +64,23 @@ async function fetchTrunkManifestUncached(): Promise<TrunkManifestTarget | null>
   }
 }
 
+/**
+ * Alternate source for the trunk update target. The dev instance points this
+ * at the local daemon checkout's overlay catalog (see
+ * src/developer/dev-update-overlay.ts) so "update available" tracks local
+ * daemon changes instead of the public CDN. Never set in production; the
+ * provider does its own caching.
+ */
+export type TrunkManifestProvider = () => Promise<TrunkManifestTarget | null>
+
+let trunkManifestProvider: TrunkManifestProvider | null = null
+
+export function setTrunkManifestProvider(
+  provider: TrunkManifestProvider | null,
+): void {
+  trunkManifestProvider = provider
+}
+
 let cachedManifest: TrunkManifestTarget | null | undefined
 let cacheExpiresAt = 0
 let inflightManifest: Promise<TrunkManifestTarget | null> | null = null
@@ -85,6 +102,10 @@ export function seedTrunkManifestCacheForTests(
 }
 
 export async function resolveTrunkManifest(): Promise<TrunkManifestTarget | null> {
+  if (trunkManifestProvider) {
+    return await trunkManifestProvider()
+  }
+
   const now = Date.now()
   if (cachedManifest !== undefined && now < cacheExpiresAt) {
     return cachedManifest

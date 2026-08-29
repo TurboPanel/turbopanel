@@ -10,6 +10,8 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { eq, inArray } from "drizzle-orm";
 import { getDatabaseUrl } from "../../db-url.ts";
 import { createDenoDb } from "../../db.ts";
+import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
+import type { CommandQueue } from "../../lib/commands/queue.ts";
 import {
   deriveEncryptionSecretsConfig,
   parseSecretsEnv,
@@ -17,6 +19,7 @@ import {
 import { attachDaemonStateToServer } from "../../daemon/authn/server-identity-db.ts";
 import {
   binding,
+  command,
   container,
   datacenter,
   environment,
@@ -44,6 +47,7 @@ import {
   collectProxySqlListenerSans,
   hostgroupsForClusterIndex,
   loadBoundManagedIdsForServer,
+  runManagedIngressOrphanSweep,
   unionExposureScopes,
 } from "./ingress-desired.ts";
 import { ensureManagedIngressHierarchy } from "../system/hierarchy.ts";
@@ -483,6 +487,132 @@ test("empty managedIdSet with prior hierarchy returns teardown payload", async (
       assertEquals(built.clusters, []);
       assertEquals("bindAddresses" in built, false);
       assertEquals(built.orgTlsMaterial, undefined);
+    },
+  );
+});
+
+function createRecordingCommandQueue(): CommandQueue & {
+  envelopes: CommandEnvelope[];
+} {
+  const envelopes: CommandEnvelope[] = [];
+  return {
+    envelopes,
+    enqueue: (envelope) => {
+      envelopes.push(envelope);
+      return Promise.resolve();
+    },
+  };
+}
+
+test("orphan sweep tears down an observed frontend with no demand and throttles the repeat", async () => {
+  await withEmptyServerIngressFixture(
+    async ({
+      db,
+      serverId,
+      organizationId,
+      secretsConfig,
+      dataEncryptionSecrets,
+    }) => {
+      try {
+        const hierarchy = await ensureManagedIngressHierarchy(db, {
+          organizationId,
+          serverId,
+        });
+        await db
+          .update(container)
+          .set({ status: "running", containerId: "orphan-proxysql-cid" })
+          .where(eq(container.id, hierarchy.containerRowId));
+        // `attachDaemonStateToServer` resets connectivity; the sweep only
+        // targets connected servers, so stamp the daemon as online again.
+        await db
+          .update(server)
+          .set({ isConnected: true })
+          .where(eq(server.id, serverId));
+
+        const queue = createRecordingCommandQueue();
+        const first = await runManagedIngressOrphanSweep(db, queue, {
+          secretsConfig,
+          dataEncryptionSecrets,
+        });
+        assertEquals(first.enqueued, 1);
+        assertEquals(queue.envelopes.length, 1);
+        assertEquals(queue.envelopes[0]!.type, "managed.ingress.reconcile");
+        assertEquals(queue.envelopes[0]!.serverId, serverId);
+
+        // The command row created above sits inside the throttle window, so
+        // the next tick must not enqueue a duplicate.
+        const second = await runManagedIngressOrphanSweep(db, queue, {
+          secretsConfig,
+          dataEncryptionSecrets,
+        });
+        assertEquals(second.enqueued, 0);
+        assertEquals(queue.envelopes.length, 1);
+      } finally {
+        await db.delete(command).where(eq(command.serverId, serverId));
+      }
+    },
+  );
+});
+
+test("orphan sweep skips a frontend that was never observed on Docker", async () => {
+  await withEmptyServerIngressFixture(
+    async ({
+      db,
+      serverId,
+      organizationId,
+      secretsConfig,
+      dataEncryptionSecrets,
+    }) => {
+      // Hierarchy rows exist (allocation happened) but the container row was
+      // never stamped running / id'd — nothing to tear down yet, and a
+      // pre-first-deploy sweep must not race the bring-up.
+      await ensureManagedIngressHierarchy(db, { organizationId, serverId });
+      await db
+        .update(server)
+        .set({ isConnected: true })
+        .where(eq(server.id, serverId));
+
+      const queue = createRecordingCommandQueue();
+      const result = await runManagedIngressOrphanSweep(db, queue, {
+        secretsConfig,
+        dataEncryptionSecrets,
+      });
+      assertEquals(result.enqueued, 0);
+      assertEquals(queue.envelopes.length, 0);
+    },
+  );
+});
+
+test("orphan sweep skips servers that still host managed members", async () => {
+  await withSingleClusterIngressFixture(
+    { enabled: false },
+    async ({
+      db,
+      serverId,
+      organizationId,
+      secretsConfig,
+      dataEncryptionSecrets,
+    }) => {
+      const hierarchy = await ensureManagedIngressHierarchy(db, {
+        organizationId,
+        serverId,
+      });
+      await db
+        .update(container)
+        .set({ status: "running", containerId: "live-proxysql-cid" })
+        .where(eq(container.id, hierarchy.containerRowId));
+      await db
+        .update(server)
+        .set({ isConnected: true })
+        .where(eq(server.id, serverId));
+
+      const queue = createRecordingCommandQueue();
+      const result = await runManagedIngressOrphanSweep(db, queue, {
+        secretsConfig,
+        dataEncryptionSecrets,
+      });
+      assertEquals(result.enqueued, 0);
+      assertEquals(queue.envelopes.length, 0);
     },
   );
 });

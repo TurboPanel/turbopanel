@@ -86,8 +86,15 @@ import {
 import {
   ensureManagedIngressHierarchy,
   findManagedIngressHierarchy,
+  SYSTEM_MANAGED_INGRESS_COMPONENT,
   SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
 } from "../system/hierarchy.ts";
+import {
+  boundManagedConsumersExists,
+  managedMembersExists,
+  SYSTEM_RECONCILE_MIN_INTERVAL_MS,
+} from "../system/reconcile.ts";
+import { WORKSPACE_KIND_TURBOPANEL } from "../../lib/db/workspace-kind.ts";
 import {
   ensureMemberPrivatePorts,
   isManagedPrivatePortExhaustedError,
@@ -1079,4 +1086,86 @@ export async function fanOutManagedIngressReconcile(
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     });
   }
+}
+
+/** Bounded batch for one orphaned-frontend sweep tick. */
+const MANAGED_INGRESS_ORPHAN_SWEEP_CAP = 25;
+
+/**
+ * Tear down orphaned ProxySQL frontends that the deletion fan-outs missed.
+ *
+ * Bring-up is demand-driven, so tear-down has to be too: daemon-side
+ * `system.reconcile` treats `desired: 'absent'` as report-only (it re-stamps
+ * the observed container as `running`), and `runSystemReconcileSweep` only
+ * considers servers that still have managed members or bound consumers. When a
+ * cascade delete (project / environment / service / principal) removes the
+ * last demand rows without enqueuing `managed.ingress.reconcile`, the stack
+ * would stay resident forever.
+ *
+ * This sweep selects connected servers whose managed-ingress container row is
+ * still observed (`running` or id-stamped) while neither demand predicate
+ * holds, and enqueues the standard reconcile:
+ * `buildManagedIngressReconcileDesired` re-derives the empty set and emits the
+ * `{ clusters: [] }` teardown payload. A successful teardown resets the
+ * container row (`exited`, `container_id` NULL), which ends candidacy.
+ */
+export async function runManagedIngressOrphanSweep(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: Readonly<{
+    secretsConfig: SecretsConfig;
+    dataEncryptionSecrets: DerivedSecretsConfig;
+    budget?: number;
+  }>,
+): Promise<{ enqueued: number }> {
+  const budget = Math.min(
+    Math.max(1, params.budget ?? MANAGED_INGRESS_ORPHAN_SWEEP_CAP),
+    MANAGED_INGRESS_ORPHAN_SWEEP_CAP,
+  );
+  const throttleCutoff = new Date(
+    Date.now() - SYSTEM_RECONCILE_MIN_INTERVAL_MS,
+  ).toISOString();
+
+  const candidates = await db.execute<{ server_id: string }>(sql`
+    SELECT DISTINCT srv.id AS server_id
+    FROM server srv
+    JOIN environment e ON e.server_id = srv.id
+    JOIN project p ON p.id = e.project_id
+    JOIN workspace w ON w.id = p.workspace_id
+    JOIN service s ON s.environment_id = e.id
+    JOIN container c ON c.service_id = s.id AND c.ordinal = 1
+    WHERE w.kind = ${WORKSPACE_KIND_TURBOPANEL}
+      AND srv.is_connected = true
+      AND p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
+      AND s.name = ${SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME}
+      AND c.role = 'ingress'
+      AND (c.status = 'running' OR c.container_id IS NOT NULL)
+      AND NOT ${managedMembersExists(sql`srv.id`)}
+      AND NOT ${boundManagedConsumersExists(
+        sql`srv.id`,
+        sql`srv.organization_id`,
+      )}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM command cmd
+        WHERE cmd.server_id = srv.id
+          AND cmd.name = 'managed.ingress.reconcile'
+          AND cmd.created_at >= ${throttleCutoff}::timestamptz
+      )
+    ORDER BY srv.id
+    LIMIT ${budget}
+  `);
+
+  let enqueued = 0;
+  for (const row of candidates) {
+    const result = await enqueueManagedIngressReconcile(db, commandQueue, {
+      serverId: row.server_id,
+      actorType: "system",
+      actorId: row.server_id,
+      secretsConfig: params.secretsConfig,
+      dataEncryptionSecrets: params.dataEncryptionSecrets,
+    });
+    if (result.ok) enqueued += 1;
+  }
+  return { enqueued };
 }

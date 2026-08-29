@@ -50,6 +50,7 @@ import {
   service,
 } from '../../lib/db/schema.ts'
 import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
+import { getServerUpdatePreparer } from '../../lib/update/prepare.ts'
 import { revokeLicense } from '../authn/license.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 import {
@@ -99,6 +100,7 @@ import {
   emptyServersUpdatesPayload,
   resolveTrunkTargetFields,
   resolveBatchUpdateEligibility,
+  runPreparedServerUpdate,
   updateResetErrorStatus,
   distinctNonEmptyIds,
   errorMessageFromUnknown,
@@ -172,6 +174,34 @@ async function queueServerUpdate(
     requestId,
     at: new Date().toISOString(),
     channel: UPDATE_CHANNEL,
+  }
+
+  const preparer = getServerUpdatePreparer()
+  if (preparer) {
+    // Dev-only: rebuild the local daemon overlay before releasing the
+    // envelope. Mark the projection as updating now so the UI polls through
+    // the build; the envelope enqueues when the (single-flight) build lands.
+    await onDaemonUpdateQueued(db, serverId, requestId, UPDATE_CHANNEL, envelope.at)
+    void runPreparedServerUpdate({
+      prepare: preparer,
+      enqueue: async () => {
+        await registry.getCell(serverId).enqueue(envelope, {
+          ttlSeconds: UPDATE_REQUEST_TTL_SECONDS,
+        })
+      },
+      markQueued: (queuedAt) =>
+        onDaemonUpdateQueued(db, serverId, requestId, UPDATE_CHANNEL, queuedAt),
+      markFailed: (error, finishedAt) =>
+        onDaemonUpdateResult(db, serverId, requestId, false, finishedAt, error),
+    })
+    return {
+      ok: true,
+      queued: true,
+      status: 'updating',
+      serverId,
+      requestId,
+      channel: UPDATE_CHANNEL,
+    }
   }
 
   await registry.getCell(serverId).enqueue(envelope, {
