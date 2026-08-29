@@ -457,14 +457,17 @@ SQL / Docker / Traefik / shell). Do not relax these:
 The daemon never receives display labels on a path that interpolates them.
 
 **Project cascade delete** (`deleteProjectCascade` in `project-delete.ts`):
-after all containers under the project are non-active
+after all tenant `role='service'` containers under the project are non-active
 (`exited`/`dead`/`removing`), `DELETE /projects/:id` runs
 `applyStorageRetentionOnParentDelete` (clear `mount`s first — `service_id` is
 RESTRICT — then drop `retention='delete'` storage; `retain` rows stay org-owned
 via SET NULL), then deletes in order `container` → `hosting` → `service` →
 `environment` → `project` (variables/`managed` cascade via FK). Active
-containers return **409** `project_has_running_services` — stop stacks first via
-`environment.stop`. The cascade itself is Postgres-only; the route wraps it with
+**service** containers return **409** `project_has_running_services` — stop
+stacks first via `environment.stop`. Running `ingress` / `turbopanel` rows
+(ProxySQL, per-service Traefik, Orchestrator) do not gate delete; their
+lifecycle is server-scoped (destroy fan-out + orphan sweep). The cascade itself
+is Postgres-only; the route wraps it with
 `planEnvironmentsTeardown` / `reclaimDeletedEnvironmentHosts`
 (`client/environments/teardown.ts`) so the host's deployment dir, hosting Caddy
 site, per-service tcp/udp Traefik and `tpn_*` bridges are reclaimed even when

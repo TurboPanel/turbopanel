@@ -124,7 +124,7 @@ test('deleteProjectCascade rejects when containers are still active', async () =
   }
 })
 
-test('deleteProjectCascade rejects when an ingress container is still running', async () => {
+test('deleteProjectCascade ignores a running ingress container', async () => {
   if (!dbUrl) {
     console.warn('Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set')
     return
@@ -198,17 +198,8 @@ test('deleteProjectCascade rejects when an ingress container is still running', 
   ])
 
   try {
-    const blocked = await deleteProjectCascade(db, projectId)
-    assertEquals(blocked, {
-      ok: false,
-      error: PROJECT_HAS_RUNNING_SERVICES_ERROR,
-    })
-
-    await db
-      .update(container)
-      .set({ status: 'exited' })
-      .where(eq(container.serviceId, serviceId))
-
+    // ProxySQL / per-service Traefik rows are server-scoped infrastructure —
+    // their teardown is the destroy fan-out and orphan sweep, not this gate.
     const result = await deleteProjectCascade(db, projectId)
     assertEquals(result, { ok: true })
 
