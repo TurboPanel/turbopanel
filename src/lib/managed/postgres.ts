@@ -597,7 +597,7 @@ export const postgresEngineSpec: ManagedEngineSpec = {
   exposeProtocol: 'tcp',
   defaultSettings: {
     ...DEFAULT_MANAGED_SETTINGS,
-    exposure: { enabled: false },
+    exposure: { enabled: true },
   },
   parseSettings: parsePostgresSettings,
   buildRuntimeSpec,

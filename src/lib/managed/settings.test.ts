@@ -32,11 +32,11 @@ test('parseManagedSettingsBase returns defaults for undefined/null', () => {
   // reaching services that never overrode it.
   assertEquals(parseManagedSettingsBase(undefined), {
     ssl: {},
-    exposure: { enabled: false },
+    exposure: { enabled: true },
   })
   assertEquals(parseManagedSettingsBase(null), {
     ssl: {},
-    exposure: { enabled: false },
+    exposure: { enabled: true },
   })
   assertEquals(
     parseManagedSettingsBase(undefined)?.ssl,

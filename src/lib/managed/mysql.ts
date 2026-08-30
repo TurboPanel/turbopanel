@@ -410,7 +410,7 @@ export const mysqlEngineSpec: ManagedEngineSpec = {
   exposeProtocol: "tcp",
   defaultSettings: {
     ...DEFAULT_MANAGED_SETTINGS,
-    exposure: { enabled: false },
+    exposure: { enabled: true },
   },
   parseSettings: parseMysqlSettings,
   buildRuntimeSpec,

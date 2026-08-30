@@ -1614,9 +1614,13 @@ test('disaster-recovery promote returns 503 when the database is unset', async (
 })
 
 test('GET managed serializes a placed cluster with a loopback listener', async () => {
+  // Exposure is on by default now, so opt this cluster out to keep the
+  // loopback fallback covered.
+  const options = validOptions()
+  options.settings.exposure = { enabled: false }
   const { app, cookie } = await buildApp({
     db: fakeDb({
-      managedRows: [managedRow()],
+      managedRows: [managedRow({ options })],
       memberRows: [memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })],
     }),
   })

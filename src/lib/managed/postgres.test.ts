@@ -767,7 +767,7 @@ test('parseSettings rejects non-objects; null/undefined fall through to defaults
   const fromNull = postgresEngineSpec.parseSettings(null)
   if (!fromNull) throw new TypeError('expected defaults for null settings')
   assertEquals((fromNull as PostgresManagedSettings).initialDatabase, 'postgres')
-  assertEquals(fromNull.exposure.enabled, false)
+  assertEquals(fromNull.exposure.enabled, true)
   const fromUndefined = postgresEngineSpec.parseSettings(undefined)
   if (!fromUndefined) {
     throw new TypeError('expected defaults for undefined settings')

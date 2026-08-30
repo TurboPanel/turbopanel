@@ -96,7 +96,7 @@ test('managedSessionPaths lists every managed session route', () => {
 test('mergeCreateSettings returns defaults when body has no exposure', () => {
   const merged = mergeCreateSettings(postgresEngineSpec, {})
   if (!merged) throw new TypeError('expected merged settings')
-  assertEquals(merged.exposure.enabled, false)
+  assertEquals(merged.exposure.enabled, true)
   assertEquals(merged.exposure.scope, undefined)
 })
 
@@ -127,7 +127,7 @@ test('mergeCreateSettings ignores non-object exposure and invalid scope tokens',
     exposure: 'nope',
   })
   if (!fromString) throw new TypeError('expected settings')
-  assertEquals(fromString.exposure.enabled, false)
+  assertEquals(fromString.exposure.enabled, true)
 
   const badScope = mergeCreateSettings(postgresEngineSpec, {
     exposure: { scope: 'internet' },

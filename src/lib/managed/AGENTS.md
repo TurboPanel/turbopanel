@@ -195,8 +195,11 @@ KiB cap), `exposure` (`ManagedSqlAccessScope` from `access-scope.ts`: `local` |
 published on all interfaces (`decideIngressBindScopes` in
 `ingress-desired-pure.ts` unconditionally returns `0.0.0.0` — changing binds
 requires a ProxySQL restart, so exposure toggles must never flap the compose
-publish). Access control today is credential auth + org-CA TLS; the future
-host firewall will enforce `exposure.scope`. One-release read of retired
+publish). **Exposure defaults on** (`DEFAULT_MANAGED_SETTINGS` and every
+engine spec record `{ enabled: true }`); create has no exposure choice — the
+settings panel is the opt-out. Access control today is credential auth +
+org-CA TLS; the future host firewall will enforce `exposure.scope`. One-release
+read of retired
 `exposure.bind` (`public` | `datacenter` | `local`) migrates to the same-named
 `scope`; new writes must use `scope`.
 

@@ -251,7 +251,12 @@ export type ManagedSettings = {
 export const DEFAULT_MANAGED_SETTINGS: ManagedSettings = {
   /** No override — inherit the org default, then `require`. */
   ssl: {},
-  exposure: { enabled: false },
+  /**
+   * Exposed by default: the shared ProxySQL publishes its listener ports
+   * regardless, so recording exposure on matches reality. Narrowing access is
+   * a host-firewall / database-user-rule concern, not a create-time choice.
+   */
+  exposure: { enabled: true },
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
