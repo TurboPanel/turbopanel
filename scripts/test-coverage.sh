@@ -145,6 +145,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/bindings/routes.hostfree.test.ts \
   src/client/bindings/impact.test.ts \
   src/client/display-name-uniqueness.test.ts \
+  src/client/docker-run/routes-helpers.hostfree.test.ts \
   src/client/environments/deploy-prepare.test.ts \
   src/client/environments/deploy-layers.test.ts \
   src/client/environments/deploy-routes.test.ts \
@@ -421,7 +422,10 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/tls-leaf-indexes.test.ts \
   src/lib/db/slot-records.hostfree.test.ts \
   src/lib/db/workspace-kind.test.ts \
+  src/lib/db/principal-alias-records.test.ts \
   src/lib/docker-network-name.test.ts \
+  src/lib/docker-run/import.test.ts \
+  src/lib/docker-run/option-registry.test.ts \
   src/lib/email/mailgun/deno-mailgun-queue.test.ts \
   src/lib/email/mailgun/send.test.ts \
   src/lib/email/mailgun/workers-queue.test.ts \
