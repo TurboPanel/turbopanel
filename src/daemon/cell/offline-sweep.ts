@@ -80,7 +80,7 @@ import {
 import {
   type AnalyticsEngineDatasetLike,
   resolveServerMetricsStore,
-} from "../metrics/store-selection.ts";
+} from "../metrics/store-selection-workers.ts";
 import { setServerStatusEventSink } from "../metrics/status-events.ts";
 import {
   parseExecutionLogRetentionDays,
@@ -109,12 +109,12 @@ import type {
   DaemonCellLiveness,
   DaemonCellRegistry,
 } from "./contracts.ts";
-import { resolveAnalyticsEngineSqlConfig } from "../metrics/store-selection.ts";
+import { resolveCloudflareAnalyticsSqlConfig } from "../metrics/store-selection-workers.ts";
 import {
   AE_LIVENESS_QUERY_TIMEOUT_MS,
   AE_LIVENESS_WINDOW_SECONDS,
   queryRecentlyActiveServerIds,
-} from "../metrics/analytics-engine/sql-api.ts";
+} from "../metrics/backends/cloudflare/sql-api.ts";
 import {
   endOfflineSweep,
   tryBeginOfflineSweep,
@@ -350,7 +350,7 @@ export function canDirectHealFromAeEvidence(
 async function resolveRecentlyActiveServerIds(
   env: CloudflareBindings,
 ): Promise<Map<string, number> | null> {
-  const config = resolveAnalyticsEngineSqlConfig(env);
+  const config = resolveCloudflareAnalyticsSqlConfig(env);
   if (!config) {
     sweepTrace("ae-unavailable");
     return null;

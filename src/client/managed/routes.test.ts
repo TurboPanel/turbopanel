@@ -1091,7 +1091,7 @@ test('POST /environments/:id/managed/backups enqueues managed.backup create with
     assertEquals(payload.backupId, backupBody.backupId)
     assertEquals(payload.artifactExtension, 'dump')
     assertEquals(payload.scope, 'database')
-    assertEquals(payload.database, 'postgres')
+    assertEquals(payload.database, 'defaultdb')
     assertEquals(payload.retentionKeep, 7)
   })
 })
@@ -1808,7 +1808,7 @@ test('POST root-password includes redeployRequired when bindings exist; DELETE u
     const createUser = await app.request(`/environments/${environmentId}/managed/users`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ username: 'bound_user', databases: ['postgres'] }),
+      body: JSON.stringify({ username: 'bound_user', databases: ['defaultdb'] }),
     })
     assertEquals(createUser.status, 200)
     const userBody = await createUser.json() as { user: { id: string } }
@@ -1903,7 +1903,7 @@ test('managed user create/delete target managed.server_id when environment place
         {
           method: 'POST',
           headers,
-          body: JSON.stringify({ username: 'drift_user', databases: ['postgres'] }),
+          body: JSON.stringify({ username: 'drift_user', databases: ['defaultdb'] }),
         },
       )
       assertEquals(createUser.status, 200)
@@ -2043,13 +2043,14 @@ test('GET /environments/:id/managed returns null shape before provisioning', asy
       connection: unknown
       settings: unknown
       server: unknown
-      rootUsername: string
+      rootUsername: string | null
     }
     assertEquals(body.managed, null)
     assertEquals(body.connection, null)
     assertEquals(body.settings, null)
     assertEquals(body.server, null)
-    assertEquals(body.rootUsername, 'postgres')
+    // The administrative login is generated at create — unknowable before it.
+    assertEquals(body.rootUsername, null)
   })
 })
 
@@ -2290,14 +2291,14 @@ test('POST user rejects invalid username and DELETE database protects initial da
       {
         method: 'POST',
         headers,
-        body: JSON.stringify({ username: 'postgres', databases: ['postgres'] }),
+        body: JSON.stringify({ username: 'postgres', databases: ['defaultdb'] }),
       },
     )
     assertEquals(badUser.status, 400)
     assertEquals(await badUser.json(), { error: 'Invalid username' })
 
     const dropInitial = await app.request(
-      `/environments/${environmentId}/managed/databases/${encodeURIComponent('postgres')}`,
+      `/environments/${environmentId}/managed/databases/${encodeURIComponent('defaultdb')}`,
       { method: 'DELETE', headers },
     )
     assertEquals(dropInitial.status, 409)
@@ -2334,7 +2335,7 @@ test('GET databases lists provisioned database names', async () => {
     )
     assertEquals(list.status, 200)
     const body = await list.json() as { databases: string[] }
-    assertEquals(body.databases.includes('postgres'), true)
+    assertEquals(body.databases.includes('defaultdb'), true)
   })
 })
 

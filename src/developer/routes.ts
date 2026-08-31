@@ -6,10 +6,12 @@ import {
   mountDeveloperRouter,
 } from './routes-core.ts'
 import { registerDatabaseStudioRoutes } from './database-studio-routes.ts'
+import { registerMetricsDuckDbUiRoutes } from './metrics-duckdb-ui-routes.ts'
 
 /**
- * Full developer console for Deno (includes Drizzle Studio spawn routes).
- * Workers use {@link registerDeveloperRoutesCore} directly — see workers.ts.
+ * Full developer console for Deno (includes Drizzle Studio spawn routes and
+ * the embedded DuckDB UI action). Workers use
+ * {@link registerDeveloperRoutesCore} directly — see workers.ts.
  */
 export function registerDeveloperRoutes<E extends Env>(
   app: Hono<E>,
@@ -17,6 +19,7 @@ export function registerDeveloperRoutes<E extends Env>(
 ) {
   const developer = buildDeveloperRouter(opts)
   registerDatabaseStudioRoutes(developer)
+  registerMetricsDuckDbUiRoutes(developer)
   mountDeveloperRouter(app, developer)
   return app
 }

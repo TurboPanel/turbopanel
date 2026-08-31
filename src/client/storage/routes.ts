@@ -80,7 +80,8 @@ const STORAGE_SELECT = {
   retention: storage.retention,
   generation: storage.generation,
   principalId: storage.principalId,
-  principalUsername: principal.username,
+  // Applied login — storage paths live under /srv/users/<applied>/volumes.
+  principalUsername: principal.appliedUsername,
   metadata: storage.metadata,
   options: storage.options,
   createdAt: storage.createdAt,
@@ -658,7 +659,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     let principalUsername: string | null = null
     if (row.principalId) {
       const [principalRow] = await ctx.db
-        .select({ username: principal.username })
+        .select({ username: principal.appliedUsername })
         .from(principal)
         .where(eq(principal.id, row.principalId))
         .limit(1)

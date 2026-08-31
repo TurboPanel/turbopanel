@@ -721,17 +721,18 @@ test('redactServerOptions strips secret-bearing keys and nothing else', () => {
   // the server routes and cached in Redis, so a row that still carries it must
   // be scrubbed at every boundary.
   assertEquals(REDACTED_SERVER_OPTION_KEYS.includes('managedMonitor'), true)
-  assertEquals(
-    redactServerOptions({
-      timezone: 'UTC',
-      sshPort: 2222,
-      managedMonitor: {
-        username: 'tp_monitor_0123456789ab',
-        passwordSealed: 'tpsecret.v1.deadbeef',
-      },
-    }),
-    { timezone: 'UTC', sshPort: 2222 },
-  )
+  // Typed as the opaque jsonb it really is. `redactServerOptions` is declared
+  // `<T>(value: T) => T`, so passing the literal inline would pin `T` to a
+  // shape that still requires the very key this asserts was stripped.
+  const stored: Record<string, unknown> = {
+    timezone: 'UTC',
+    sshPort: 2222,
+    managedMonitor: {
+      username: 'tp_monitor_0123456789ab',
+      passwordSealed: 'tpsecret.v1.deadbeef',
+    },
+  }
+  assertEquals(redactServerOptions(stored), { timezone: 'UTC', sshPort: 2222 })
 })
 
 test('redactServerOptions passes through anything with nothing to strip', () => {

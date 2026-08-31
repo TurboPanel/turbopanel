@@ -1,146 +1,59 @@
-import { AnalyticsEngineServerMetricsStore } from "./analytics-engine/store.ts";
-import type { AnalyticsEngineDatasetLike } from "./analytics-engine/store.ts";
-import {
-  AE_DEFAULT_MAX_RANGE_SECONDS,
-  type AnalyticsEngineSqlConfig,
-} from "./analytics-engine/sql-api.ts";
-import { ClickHouseServerMetricsStore } from "./clickhouse/store.ts";
-import type { ClickHouseStoreConfig } from "./clickhouse/store.ts";
-import { DisabledServerMetricsStore } from "./disabled-store.ts";
+import { DuckDbParquetServerMetricsStore } from "./backends/duckdb/store.ts";
 import type { ServerMetricsStore } from "./types.ts";
+import {
+  type ResolveServerMetricsStoreInput,
+  UnavailableServerMetricsStore,
+  warnMetricsStoreSelectionOnce,
+} from "./store-selection-core.ts";
+import { resolveServerMetricsStore as resolveWorkersServerMetricsStore } from "./store-selection-workers.ts";
 
-export type { AnalyticsEngineDatasetLike, AnalyticsEngineSqlConfig };
-export { AE_DEFAULT_MAX_RANGE_SECONDS };
-
-const warnedKeys = new Set<string>();
-
-function warnOnce(key: string, message: string): void {
-  if (warnedKeys.has(key)) return;
-  warnedKeys.add(key);
-  console.warn(message);
-}
-
-/** Test seam: clear warn-once keys. */
-export function resetMetricsStoreSelectionWarningsForTests(): void {
-  warnedKeys.clear();
-}
-
-export type MetricsEnvValue = string | number | undefined | null;
-
-function parsePositiveIntegerEnvValue(
-  value: MetricsEnvValue,
-): number | undefined {
-  if (value === undefined || value === null) return undefined;
-  const normalized = String(value).trim();
-  if (!normalized) return undefined;
-  const parsed = Number(normalized);
-  if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
-  return parsed;
-}
-
-/**
- * Parse optional AE max-range override (positive integer seconds).
- * Invalid / empty values fall through to the retention-aligned default.
- */
-export const parseAnalyticsEngineMaxRangeSeconds = parsePositiveIntegerEnvValue;
-
-/**
- * Resolve AE SQL API credentials from Workers env.
- * Returns null when account id or token is missing (writes still work).
- * Always sets `maxRangeSeconds` (env override or documented AE retention default)
- * so hosted query APIs can enforce retention without re-patching the store.
- */
-export function resolveAnalyticsEngineSqlConfig(
-  env: {
-    CLOUDFLARE_ACCOUNT_ID?: string;
-    TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN?: string;
-    TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS?: string | number;
-  },
-): AnalyticsEngineSqlConfig | null {
-  const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim();
-  const apiToken = env.TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN?.trim();
-  if (!accountId || !apiToken) return null;
-  const maxRangeSeconds =
-    parseAnalyticsEngineMaxRangeSeconds(
-      env.TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS,
-    ) ?? AE_DEFAULT_MAX_RANGE_SECONDS;
-  return { accountId, apiToken, maxRangeSeconds };
-}
-
-function isFullClickHouseConfig(
-  config: {
-    url?: string | null;
-    database?: string | null;
-    user?: string | null;
-    password?: string | null;
-    retentionDays?: number | null;
-  } | undefined,
-): config is ClickHouseStoreConfig {
-  if (!config) return false;
-  return Boolean(
-    config.url?.trim() &&
-      config.database?.trim() &&
-      config.user?.trim() &&
-      config.password != null &&
-      String(config.password).length > 0,
-  );
-}
-
-/**
- * Parse optional metrics retention days (positive integer).
- * Invalid / empty values fall through to the schema default (90).
- */
-export const parseMetricsRetentionDays = parsePositiveIntegerEnvValue;
-
-export type ResolveServerMetricsStoreInput = {
-  runtime: "workers" | "deno";
-  analyticsEngine?: AnalyticsEngineDatasetLike;
-  /** AE SQL API credentials (Workers query path). */
-  analyticsEngineSql?: AnalyticsEngineSqlConfig | null;
-  clickhouse?: {
-    url?: string | null;
-    database?: string | null;
-    user?: string | null;
-    password?: string | null;
-    retentionDays?: number | null;
-  };
-};
+export type {
+  AnalyticsEngineDatasetLike,
+  CloudflareAnalyticsSqlConfig,
+  MetricsEnvValue,
+  ResolveServerMetricsStoreInput,
+} from "./store-selection-core.ts";
+export {
+  AE_DEFAULT_MAX_RANGE_SECONDS,
+  parseAnalyticsEngineMaxRangeSeconds,
+  parseMetricsRetentionDays,
+  parsePositiveIntEnv,
+  resetMetricsStoreSelectionWarningsForTests,
+  resolveCloudflareAnalyticsSqlConfig,
+  UnavailableServerMetricsStore,
+} from "./store-selection-core.ts";
 
 /**
  * Select the host metrics store for the current runtime.
  * Server metrics are always on — there is no enable/disable gate.
- * Workers → Analytics Engine; Deno → ClickHouse.
- * Incomplete backend config falls back to a no-op store until converge wires it.
+ * Workers → Analytics Engine; Deno → DuckDB.
+ * Only a genuinely unconfigured backend (Workers without the AE binding)
+ * falls back to the disabled no-op store; an attempted backend that fails
+ * to open resolves to a store whose reads reject, so metrics routes return
+ * 503 `metrics_backend_unavailable` instead of hiding the outage.
  */
 export function resolveServerMetricsStore(
   input: ResolveServerMetricsStoreInput,
 ): ServerMetricsStore {
   if (input.runtime === "workers") {
-    if (input.analyticsEngine) {
-      return new AnalyticsEngineServerMetricsStore(input.analyticsEngine, {
-        sql: input.analyticsEngineSql ?? undefined,
-      });
-    }
-    warnOnce(
-      "workers-missing-ae",
-      "server metrics on Workers but SERVER_METRICS binding missing; using unconfigured store",
-    );
-    return new DisabledServerMetricsStore();
+    return resolveWorkersServerMetricsStore(input);
   }
 
-  if (isFullClickHouseConfig(input.clickhouse)) {
-    const retentionDays = input.clickhouse.retentionDays ?? undefined;
-    return new ClickHouseServerMetricsStore({
-      url: input.clickhouse.url.trim(),
-      database: input.clickhouse.database.trim(),
-      user: input.clickhouse.user.trim(),
-      password: String(input.clickhouse.password),
-      ...(retentionDays != null ? { retentionDays } : {}),
-    });
+  // Deno → DuckDB, always: the metrics directory derives from
+  // `resolveMetricsDir()` with a filesystem default, so there is no
+  // "incomplete config" case — only a directory that cannot be created.
+  try {
+    return new DuckDbParquetServerMetricsStore(input.duckdb ?? {});
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // A DuckDB startup failure is a self-hosted backend outage, never an
+    // "unconfigured" state — reads must surface 503, not the disabled store.
+    warnMetricsStoreSelectionOnce(
+      "deno-missing-duckdb",
+      `server metrics on Deno but DuckDB store failed to open; metrics reads will return 503 (${message})`,
+    );
+    return new UnavailableServerMetricsStore(
+      `DuckDB metrics store failed to open: ${message}`,
+    );
   }
-  warnOnce(
-    "deno-missing-clickhouse",
-    "server metrics on Deno but ClickHouse config incomplete; using unconfigured store",
-  );
-  return new DisabledServerMetricsStore();
 }

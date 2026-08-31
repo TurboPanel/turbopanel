@@ -28,6 +28,7 @@ import {
   tryBeginReencryptSweep,
 } from "./reencrypt-secrets.ts";
 import { registerAdminRoutes } from "./routes.ts";
+import { SERVER_METRICS_LIVE_MAX_MINUTES_KEY } from "../lib/settings/server-metrics-settings.ts";
 
 const dbUrl = getDatabaseUrl();
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
@@ -1111,4 +1112,95 @@ test("POST /instance/public-urls/apply returns 503 when colocated snapshot is di
     await db.delete(server).where(eq(server.id, serverId));
     await db.delete(user).where(eq(user.id, userId));
   }
+});
+
+test("GET and PUT /api/admin/v1/settings/server-metrics-live round-trip the cap", async () => {
+  await withRoleUser("superadmin", async ({ app, cookie }) => {
+    const db = createDenoDb();
+    const previous = await db
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, SERVER_METRICS_LIVE_MAX_MINUTES_KEY))
+      .limit(1);
+
+    try {
+      await db
+        .delete(setting)
+        .where(eq(setting.key, SERVER_METRICS_LIVE_MAX_MINUTES_KEY));
+
+      const initial = await app.request(
+        `${ADMIN_API_PREFIX}/settings/server-metrics-live`,
+        { headers: { Cookie: cookie } },
+      );
+      assertEquals(initial.status, 200);
+      const initialBody = await jsonBody<{ maxMinutes: number }>(initial);
+      assertEquals(initialBody.maxMinutes, 60);
+
+      const put = (maxMinutes: unknown) =>
+        app.request(`${ADMIN_API_PREFIX}/settings/server-metrics-live`, {
+          method: "PUT",
+          headers: {
+            Cookie: cookie,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ maxMinutes }),
+        });
+
+      const thirty = await put(30);
+      assertEquals(thirty.status, 200);
+      assertEquals((await jsonBody<{ maxMinutes: number }>(thirty)).maxMinutes, 30);
+
+      const readBack = await app.request(
+        `${ADMIN_API_PREFIX}/settings/server-metrics-live`,
+        { headers: { Cookie: cookie } },
+      );
+      assertEquals(
+        (await jsonBody<{ maxMinutes: number }>(readBack)).maxMinutes,
+        30,
+      );
+
+      // 0 disables live sessions entirely.
+      const disabled = await put(0);
+      assertEquals(disabled.status, 200);
+      assertEquals(
+        (await jsonBody<{ maxMinutes: number }>(disabled)).maxMinutes,
+        0,
+      );
+
+      // Boundary values of the 5–240 window.
+      assertEquals((await put(5)).status, 200);
+      assertEquals((await put(240)).status, 200);
+
+      // Out-of-window and malformed values are rejected.
+      assertEquals((await put(4)).status, 400);
+      assertEquals((await put(241)).status, 400);
+      assertEquals((await put(1)).status, 400);
+      assertEquals((await put(-1)).status, 400);
+      assertEquals((await put(30.5)).status, 400);
+      assertEquals((await put("60")).status, 400);
+
+      const missing = await app.request(
+        `${ADMIN_API_PREFIX}/settings/server-metrics-live`,
+        {
+          method: "PUT",
+          headers: {
+            Cookie: cookie,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({}),
+        },
+      );
+      assertEquals(missing.status, 400);
+    } finally {
+      await db
+        .delete(setting)
+        .where(eq(setting.key, SERVER_METRICS_LIVE_MAX_MINUTES_KEY));
+      if (previous.length > 0) {
+        await db.insert(setting).values({
+          key: SERVER_METRICS_LIVE_MAX_MINUTES_KEY,
+          value: previous[0]!.value,
+        });
+      }
+    }
+  });
 });

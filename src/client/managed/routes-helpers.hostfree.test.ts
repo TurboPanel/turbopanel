@@ -474,7 +474,7 @@ test('pickPrimaryCommandResult and queued response builders', () => {
 })
 
 test('empty detail / delete / destroy / promote response shapes', () => {
-  assertEquals(buildEmptyManagedDetailResponse('postgres'), {
+  assertEquals(buildEmptyManagedDetailResponse(), {
     managed: null,
     connection: null,
     endpoints: [],
@@ -486,12 +486,12 @@ test('empty detail / delete / destroy / promote response shapes', () => {
     ssl: { configured: null, effective: 'require', organizationDefault: null },
     release: null,
     server: null,
-    rootUsername: 'postgres',
+    rootUsername: null,
     members: [],
     recovery: null,
   })
   assertEquals(
-    buildEmptyManagedDetailResponse('postgres', 'verify-full').ssl,
+    buildEmptyManagedDetailResponse('verify-full').ssl,
     {
       configured: null,
       effective: 'verify-full',

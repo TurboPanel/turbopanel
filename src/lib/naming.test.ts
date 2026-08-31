@@ -7,6 +7,9 @@ import {
   PRINCIPAL_UID_START,
   PRINCIPAL_UNIX_GROUP_SUFFIX,
   MAX_PRINCIPAL_USERNAME_LENGTH,
+  MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
+  PRINCIPAL_APPLIED_SUFFIX_LENGTH,
+  randomPrincipalUsernameSuffix,
   RESERVED_DEPLOY_VARIABLE_KEYS,
   RESERVED_PRINCIPAL_USERNAMES,
   assertSafeBindingKeyPrefix,
@@ -266,4 +269,25 @@ test('assertSafeBindingKeyPrefix rejects reserved TURBOPANEL', () => {
   assertThrows(() => assertSafeBindingKeyPrefix('TURBOPANEL'), TypeError)
   assertThrows(() => assertSafeBindingKeyPrefix('TURBOPANEL_X'), TypeError)
   assertThrows(() => assertSafeBindingKeyPrefix('9bad'), TypeError)
+})
+
+Deno.test('randomPrincipalUsernameSuffix is _ plus 11 lowercase alphanumerics', () => {
+  for (let i = 0; i < 20; i++) {
+    const suffix = randomPrincipalUsernameSuffix()
+    assertEquals(suffix.length, PRINCIPAL_APPLIED_SUFFIX_LENGTH)
+    if (!/^_[a-z0-9]{11}$/.test(suffix)) {
+      throw new Error(`unexpected suffix shape: ${suffix}`)
+    }
+  }
+})
+
+Deno.test('suffixed short-name cap leaves room for the applied suffix', () => {
+  assertEquals(
+    MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH + PRINCIPAL_APPLIED_SUFFIX_LENGTH,
+    MAX_PRINCIPAL_USERNAME_LENGTH,
+  )
+  // A max-length short name plus suffix still passes the applied-name guard.
+  const applied = 'a'.repeat(MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH) +
+    randomPrincipalUsernameSuffix()
+  assertEquals(assertSafePrincipalUsername(applied), applied)
 })

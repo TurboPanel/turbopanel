@@ -16,7 +16,7 @@ maintain, no schema migration, and no scan cost.
 
 This is the opposite of host metrics (`src/daemon/metrics/AGENTS.md`), which
 *are* queried across servers and time and therefore *do* live in Analytics
-Engine / ClickHouse. Do not "unify" the two.
+Engine / DuckDB. Do not "unify" the two.
 
 ## Layout
 
@@ -88,8 +88,8 @@ directories are `0600`/`0700`, and it lives under the **state** tree
 are durable product data, not rotatable process logs.
 
 The S3 driver hand-rolls SigV4 (`s3-sigv4.ts`, WebCrypto only) rather than
-adding an AWS SDK, matching the narrow-HTTP-client precedent in
-`src/daemon/metrics/clickhouse/client.ts`. It deletes one key per request
+adding an AWS SDK, matching the repo's narrow-HTTP-client precedent.
+It deletes one key per request
 because `DeleteObjects` requires a Content-MD5 neither runtime can produce.
 
 ## Lifecycle

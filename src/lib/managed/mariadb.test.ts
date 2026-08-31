@@ -19,7 +19,7 @@ function defaultSettings(
   overrides: Partial<MariadbManagedSettings> = {},
 ): MariadbManagedSettings {
   const parsed = mariadbEngineSpec.parseSettings({
-    initialDatabase: 'appdb',
+    initialDatabase: 'defaultdb',
     ...overrides,
   })
   if (!parsed) throw new TypeError('expected mariadb settings')
@@ -89,7 +89,7 @@ test('MARIADB_ROOT_PASSWORD placeholder and my.cnf MariaDB GTID vocabulary', () 
     rootUsername: 'root',
   })
   assertEquals(spec.env.MARIADB_ROOT_PASSWORD, ManagedSecretPlaceholder)
-  assertEquals(spec.env.MARIADB_DATABASE, 'appdb')
+  assertEquals(spec.env.MARIADB_DATABASE, 'defaultdb')
   const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ??
     ''
   assertEquals(conf.includes('gtid_strict_mode=ON'), true)
@@ -125,7 +125,7 @@ test('engine TLS material is unconditional and the DSN is masked', () => {
   const info = mariadbEngineSpec.buildConnectionInfo({
     host: 'db.example',
     port: 3306,
-    database: 'appdb',
+    database: 'defaultdb',
     username: 'root',
     sslMode: 'verify-full',
   })
@@ -168,11 +168,11 @@ test('parseSettings rejects reserved keys and MYSQL_/MARIADB_ extraEnv', () => {
   )
 })
 
-test('parseSettings defaults initialDatabase to appdb and rejects system schemas', () => {
+test('parseSettings defaults initialDatabase to defaultdb and rejects system schemas', () => {
   const defaults = mariadbEngineSpec.parseSettings(
     {},
   ) as MariadbManagedSettings
-  assertEquals(defaults.initialDatabase, 'appdb')
+  assertEquals(defaults.initialDatabase, 'defaultdb')
   assertEquals(
     mariadbEngineSpec.parseSettings({ initialDatabase: 'mysql' }),
     null,
@@ -186,7 +186,7 @@ test('binding DSN matches MySQL-family scheme and encodes the fixture password',
   const dsn = binding.buildBindingDsn({
     host: '203.0.113.42',
     port: 13306,
-    database: 'appdb',
+    database: 'defaultdb',
     username: 'app_user',
     password: TEST_ONLY_TURBOPANEL_SECRET,
     sslMode: 'prefer',
@@ -263,14 +263,14 @@ test('parseSettings rejects non-objects, includes, and reserved MariaDB GTID key
   )
   const fromNull = mariadbEngineSpec.parseSettings(null)
   if (!fromNull) throw new TypeError('expected defaults for null settings')
-  assertEquals((fromNull as MariadbManagedSettings).initialDatabase, 'appdb')
+  assertEquals((fromNull as MariadbManagedSettings).initialDatabase, 'defaultdb')
   const fromUndefined = mariadbEngineSpec.parseSettings(undefined)
   if (!fromUndefined) {
     throw new TypeError('expected defaults for undefined settings')
   }
   assertEquals(
     (fromUndefined as MariadbManagedSettings).initialDatabase,
-    'appdb',
+    'defaultdb',
   )
 })
 
@@ -285,7 +285,7 @@ test('buildRuntimeSpec falls back when settings omit image and initialDatabase',
     rootUsername: 'root',
   })
   assertEquals(spec.service.image, mariadbEngineSpec.defaultImage)
-  assertEquals(spec.env.MARIADB_DATABASE, 'appdb')
+  assertEquals(spec.env.MARIADB_DATABASE, 'defaultdb')
 })
 
 test('socket healthcheck and backup descriptor stay credential-free', () => {

@@ -61,6 +61,15 @@ export const PRINCIPAL_ACCESS_GROUPS: Readonly<
   shell: 'tpshell',
 }
 
+/**
+ * Additive credential group, not a level: membership turns
+ * `PasswordAuthentication` on in the daemon's `sshd` drop-in, and always rides
+ * alongside the level group above — a password with nothing it may sign in
+ * *as* grants nothing. Mirrors `accessGroups.password` in the daemon registry,
+ * with the same drift-can-only-mislabel property as the levels.
+ */
+export const PRINCIPAL_PASSWORD_GROUP = 'tppasswd'
+
 export function isPrincipalAccessLevel(
   value: unknown,
 ): value is PrincipalAccessLevel {
@@ -96,37 +105,51 @@ export function accessLevelForShell(
 }
 
 /**
- * What the account can actually do, given how many keys it holds.
+ * What the account can actually do, given the credentials it holds.
  *
  * Separate from {@link accessLevelForShell} because the two answer different
  * questions: that one is "what did the operator ask for", this one is "what
  * happens if they try to connect right now". The UI needs both — an account set
  * to `shell` with zero keys should read as *Shell (no keys yet)*, not as
  * *Shell*, and not as *No access*.
+ *
+ * A key **or** an enabled password counts: either is something to present, and
+ * an account with only a password must not be resolved to `none` or the daemon
+ * would strip the very group its `sshd` Match block hangs from.
  */
 export function effectivePrincipalAccess(
   shell: string | null | undefined,
   keyCount: number,
+  passwordEnabled = false,
 ): PrincipalAccessLevel {
   const intended = accessLevelForShell(shell)
-  return keyCount > 0 ? intended : 'none'
+  return keyCount > 0 || passwordEnabled ? intended : 'none'
 }
 
 /**
  * Access groups a principal should hold — the value the deploy payload carries.
  *
- * Empty for `none` **and** for an account with no keys. Both are real
- * revocations and the daemon removes the membership either way; the point of
- * resolving it here rather than daemon-side is the doctrine the entitlement
+ * Empty for `none` **and** for an account with no credential at all. Both are
+ * real revocations and the daemon removes the membership either way; the point
+ * of resolving it here rather than daemon-side is the doctrine the entitlement
  * work established — the control plane decides the effective set, the daemon
  * reconciles to it.
+ *
+ * {@link PRINCIPAL_PASSWORD_GROUP} is included only alongside a level group:
+ * password sign-in with no level would be a group that unlocks a door onto
+ * nothing, and stripping it when the level drops to `none` is what makes
+ * suspending an account suspend *both* credentials.
  */
 export function accessGroupsFor(
   shell: string | null | undefined,
   keyCount: number,
+  passwordEnabled = false,
 ): readonly string[] {
-  const level = effectivePrincipalAccess(shell, keyCount)
-  return level === 'none' ? [] : [PRINCIPAL_ACCESS_GROUPS[level]]
+  const level = effectivePrincipalAccess(shell, keyCount, passwordEnabled)
+  if (level === 'none') return []
+  return passwordEnabled
+    ? [PRINCIPAL_ACCESS_GROUPS[level], PRINCIPAL_PASSWORD_GROUP]
+    : [PRINCIPAL_ACCESS_GROUPS[level]]
 }
 
 /** Operator-facing label for a level. */

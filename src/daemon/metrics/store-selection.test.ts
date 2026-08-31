@@ -1,15 +1,21 @@
-import { assertEquals, assertInstanceOf } from "@std/assert";
-import { AnalyticsEngineServerMetricsStore } from "./analytics-engine/store.ts";
-import { AE_DEFAULT_MAX_RANGE_SECONDS } from "./analytics-engine/sql-api.ts";
-import { ClickHouseServerMetricsStore } from "./clickhouse/store.ts";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { CloudflareAnalyticsEngineServerMetricsStore } from "./backends/cloudflare/store.ts";
+import { AE_DEFAULT_MAX_RANGE_SECONDS } from "./backends/cloudflare/sql-api.ts";
+import { DuckDbParquetServerMetricsStore } from "./backends/duckdb/store.ts";
 import { DisabledServerMetricsStore } from "./disabled-store.ts";
 import { it } from "@std/testing/bdd";
 import {
   parseAnalyticsEngineMaxRangeSeconds,
   parseMetricsRetentionDays,
   resetMetricsStoreSelectionWarningsForTests,
-  resolveAnalyticsEngineSqlConfig,
+  resolveCloudflareAnalyticsSqlConfig,
   resolveServerMetricsStore,
+  UnavailableServerMetricsStore,
 } from "./store-selection.ts";
 
 it("resolveServerMetricsStore workers + AE → AnalyticsEngine store", () => {
@@ -18,7 +24,7 @@ it("resolveServerMetricsStore workers + AE → AnalyticsEngine store", () => {
     runtime: "workers",
     analyticsEngine: { writeDataPoint() {} },
   });
-  assertInstanceOf(store, AnalyticsEngineServerMetricsStore);
+  assertInstanceOf(store, CloudflareAnalyticsEngineServerMetricsStore);
 });
 
 it("resolveServerMetricsStore workers without AE → unconfigured store", () => {
@@ -39,22 +45,24 @@ it("resolveServerMetricsStore workers without AE → unconfigured store", () => 
   }
 });
 
-it("resolveServerMetricsStore deno + full ClickHouse → ClickHouse store", () => {
+it("resolveServerMetricsStore deno → DuckDB store", () => {
   resetMetricsStoreSelectionWarningsForTests();
-  const store = resolveServerMetricsStore({
-    runtime: "deno",
-    clickhouse: {
-      url: "http://127.0.0.1:8123",
-      database: "turbopanel",
-      user: "default",
-      password: "secret",
-    },
-  });
-  assertInstanceOf(store, ClickHouseServerMetricsStore);
+  const metricsDir = Deno.makeTempDirSync({ prefix: "tp-metrics-select-" });
+  try {
+    const store = resolveServerMetricsStore({
+      runtime: "deno",
+      duckdb: { metricsDir },
+    });
+    assertInstanceOf(store, DuckDbParquetServerMetricsStore);
+  } finally {
+    Deno.removeSync(metricsDir, { recursive: true });
+  }
 });
 
-it("resolveServerMetricsStore deno partial ClickHouse → unconfigured store", () => {
+it("resolveServerMetricsStore deno construction failure → reads reject as unavailable", async () => {
   resetMetricsStoreSelectionWarningsForTests();
+  // A regular file where the metrics directory should be makes mkdir fail.
+  const blocker = Deno.makeTempFileSync({ prefix: "tp-metrics-blocker-" });
   const warnings: string[] = [];
   const originalWarn = console.warn;
   console.warn = (msg?: unknown) => {
@@ -63,17 +71,54 @@ it("resolveServerMetricsStore deno partial ClickHouse → unconfigured store", (
   try {
     const store = resolveServerMetricsStore({
       runtime: "deno",
-      clickhouse: {
-        url: "http://127.0.0.1:8123",
-        database: "turbopanel",
-        user: "default",
-        // password missing
-      },
+      duckdb: { metricsDir: `${blocker}/metrics` },
     });
-    assertInstanceOf(store, DisabledServerMetricsStore);
+    // A real DuckDB outage must never degrade to the disabled store — reads
+    // reject so metrics routes return 503 metrics_backend_unavailable.
+    assertInstanceOf(store, UnavailableServerMetricsStore);
     assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0]!, "DuckDB store failed to open");
+
+    const range = {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-01-01T01:00:00.000Z",
+    };
+    await assertRejects(
+      () => store.queryHostSeries({ serverId: "srv-1", metrics: [], ...range }),
+      Error,
+      "DuckDB metrics store failed to open",
+    );
+    await assertRejects(
+      () => store.queryHostSummary({ serverId: "srv-1", ...range }),
+      Error,
+      "DuckDB metrics store failed to open",
+    );
+    await assertRejects(
+      () => store.queryStatusHistory({ serverId: "srv-1", ...range }),
+      Error,
+      "DuckDB metrics store failed to open",
+    );
+    await assertRejects(
+      () =>
+        store.queryFleetHostSnapshot({
+          serverIds: ["srv-1"],
+          metrics: [],
+          ...range,
+        }),
+      Error,
+      "DuckDB metrics store failed to open",
+    );
+
+    // Writes stay fire-and-forget no-ops — never a throw into callers.
+    store.writeStatusEvent({
+      serverId: "srv-1",
+      connected: true,
+      reason: "connect",
+      at: range.from,
+    });
   } finally {
     console.warn = originalWarn;
+    Deno.removeSync(blocker);
   }
 });
 
@@ -87,8 +132,8 @@ it("parseAnalyticsEngineMaxRangeSeconds accepts positive integers", () => {
   assertEquals(parseAnalyticsEngineMaxRangeSeconds(undefined), undefined);
 });
 
-it("resolveAnalyticsEngineSqlConfig defaults maxRangeSeconds to AE retention", () => {
-  const config = resolveAnalyticsEngineSqlConfig({
+it("resolveCloudflareAnalyticsSqlConfig defaults maxRangeSeconds to AE retention", () => {
+  const config = resolveCloudflareAnalyticsSqlConfig({
     CLOUDFLARE_ACCOUNT_ID: "acct123",
     TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN: "token-xyz",
   });
@@ -99,8 +144,8 @@ it("resolveAnalyticsEngineSqlConfig defaults maxRangeSeconds to AE retention", (
   });
 });
 
-it("resolveAnalyticsEngineSqlConfig honors TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS", () => {
-  const config = resolveAnalyticsEngineSqlConfig({
+it("resolveCloudflareAnalyticsSqlConfig honors TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS", () => {
+  const config = resolveCloudflareAnalyticsSqlConfig({
     CLOUDFLARE_ACCOUNT_ID: "acct123",
     TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN: "token-xyz",
     TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS: "3600",
@@ -108,15 +153,15 @@ it("resolveAnalyticsEngineSqlConfig honors TURBOPANEL_SERVER_METRICS_AE_MAX_RANG
   assertEquals(config?.maxRangeSeconds, 3600);
 });
 
-it("resolveAnalyticsEngineSqlConfig returns null when credentials missing", () => {
+it("resolveCloudflareAnalyticsSqlConfig returns null when credentials missing", () => {
   assertEquals(
-    resolveAnalyticsEngineSqlConfig({
+    resolveCloudflareAnalyticsSqlConfig({
       CLOUDFLARE_ACCOUNT_ID: "acct123",
     }),
     null,
   );
   assertEquals(
-    resolveAnalyticsEngineSqlConfig({
+    resolveCloudflareAnalyticsSqlConfig({
       TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN: "token-xyz",
     }),
     null,
@@ -130,19 +175,18 @@ it("parseMetricsRetentionDays accepts positive integers only", () => {
   assertEquals(parseMetricsRetentionDays("bad"), undefined);
 });
 
-it("resolveServerMetricsStore deno ClickHouse honors retentionDays override", () => {
+it("resolveServerMetricsStore deno DuckDB honors retentionDays override", () => {
   resetMetricsStoreSelectionWarningsForTests();
-  const store = resolveServerMetricsStore({
-    runtime: "deno",
-    clickhouse: {
-      url: "http://127.0.0.1:8123",
-      database: "turbopanel",
-      user: "default",
-      password: "secret",
-      retentionDays: 30,
-    },
-  });
-  assertInstanceOf(store, ClickHouseServerMetricsStore);
+  const metricsDir = Deno.makeTempDirSync({ prefix: "tp-metrics-retention-" });
+  try {
+    const store = resolveServerMetricsStore({
+      runtime: "deno",
+      duckdb: { metricsDir, retentionDays: 30 },
+    });
+    assertInstanceOf(store, DuckDbParquetServerMetricsStore);
+  } finally {
+    Deno.removeSync(metricsDir, { recursive: true });
+  }
 });
 
 it("resolveServerMetricsStore warns only once per missing-backend key", () => {

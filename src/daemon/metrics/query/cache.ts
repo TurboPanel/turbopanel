@@ -6,6 +6,12 @@ export const METRICS_CHART_CACHE_PREFIX = "tp:metrics:chart:";
 export const METRICS_LIVE_CACHE_TTL_SECONDS = 45;
 export const METRICS_HISTORICAL_CACHE_TTL_SECONDS = 300;
 
+/**
+ * TTL for 10 s-resolution reads (live sessions) — a 45 s TTL would collapse
+ * a fast-cadence chart into ~4 identical refreshes per cached response.
+ */
+export const METRICS_LIVE_10S_CACHE_TTL_SECONDS = 5;
+
 const DENO_CACHE_MAX_ENTRIES = 256;
 
 export interface MetricsChartCache {
@@ -46,6 +52,10 @@ export function resolveChartCacheTtlSeconds(input: {
   nowMs: number;
   resolutionSeconds: number;
 }): number {
+  // 10 s resolution only exists for short live windows — cache barely.
+  if (input.resolutionSeconds <= 10) {
+    return METRICS_LIVE_10S_CACHE_TTL_SECONDS;
+  }
   const liveThresholdMs = input.nowMs - input.resolutionSeconds * 1000;
   if (input.toMs >= liveThresholdMs) {
     return METRICS_LIVE_CACHE_TTL_SECONDS;

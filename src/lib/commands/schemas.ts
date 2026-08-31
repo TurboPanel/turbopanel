@@ -1011,6 +1011,13 @@ export type EnvironmentDeployPrincipalMaterial = {
    * leaves the file alone; `[]` means the account has none.
    */
   sshKeys?: string[];
+  /**
+   * sha512-crypt shadow hash when password sign-in is enabled — the plaintext
+   * never rides the wire. Absent means the daemon locks the account password,
+   * which is also the state every account is created in. See
+   * `lib/sha512-crypt.ts`.
+   */
+  passwordHash?: string;
 };
 
 export type EnvironmentDeployServiceHook = {
@@ -1117,6 +1124,12 @@ export type EnvironmentDeploySite = {
  */
 export type EnvironmentDeploySourceBuild = {
   kind: "native" | "static" | "railpack";
+  /**
+   * Package manager for a `kind: 'native'` node-app install. Omitted means
+   * the daemon auto-detects from the lockfile at build time. An explicit
+   * `installCommand` still wins over the derived install.
+   */
+  packageManager?: "npm" | "yarn" | "pnpm";
   installCommand?: string;
   buildCommand?: string;
   /**
@@ -1158,6 +1171,19 @@ export type EnvironmentDeployNativeAppService = {
   framework: EnvironmentDeployNativeFramework;
   /** Operator-pinned Node series, when the compose author declared one. */
   nodeVersion?: string;
+  /** `NODE_ENV` for the generated unit. Omitted means `production`. */
+  appMode?: "production" | "development";
+  /**
+   * Omitted means `true`. When `false` the daemon installs the unit but stops
+   * and disables it instead of starting it — the release stays promoted.
+   */
+  enabled?: boolean;
+  /**
+   * Script the vendored Node binary runs when `build.startCommand` is absent.
+   * Relative path, validated on both sides — it lands in an `ExecStart` line.
+   * Omitted means the framework default (`server.js`).
+   */
+  startupFile?: string;
   /**
    * Per-app ceiling for the generated unit (clamped service resources).
    * `cpus` becomes `CPUQuota`, `memoryBytes` becomes `MemoryMax`.
@@ -2059,11 +2085,27 @@ function parseDeployPrincipalMaterialEntry(
       isCanonicalSshPublicKey,
     );
   }
+  if (entry.passwordHash !== undefined) {
+    if (
+      !isString(entry.passwordHash) ||
+      !PASSWORD_HASH_RE.test(entry.passwordHash)
+    ) {
+      throw new Error("Invalid environment.deploy payload");
+    }
+    material.passwordHash = entry.passwordHash;
+  }
   return material;
 }
 
 /** Shape gate; the daemon registry decides which names actually exist. */
 const ACCESS_GROUP_RE = /^[a-z][a-z0-9-]{0,31}$/
+
+/**
+ * sha512-crypt only — must stay in sync with `SHA512_CRYPT_HASH_RE` in
+ * `../sha512-crypt.ts` and the daemon's own gates.
+ */
+const PASSWORD_HASH_RE =
+  /^\$6\$(?:rounds=\d{4,9}\$)?[./0-9A-Za-z]{8,16}\$[./0-9A-Za-z]{86}$/
 
 /** `8.4` or `24` — the exec boundary a group protects, never a patch pin. */
 const RUNTIME_SERIES_RE = /^\d{1,3}(\.\d{1,3})?$/;
@@ -2349,6 +2391,21 @@ function parseDeploySourceBuild(
   const build: EnvironmentDeploySourceBuild = {
     kind: value.kind as EnvironmentDeploySourceBuild["kind"],
   };
+  if (value.packageManager !== undefined) {
+    if (
+      !isString(value.packageManager) ||
+      !NODE_PACKAGE_MANAGERS.has(
+        value.packageManager as NonNullable<
+          EnvironmentDeploySourceBuild["packageManager"]
+        >,
+      )
+    ) {
+      throw new Error("Invalid sourceMaterial build packageManager");
+    }
+    build.packageManager = value.packageManager as NonNullable<
+      EnvironmentDeploySourceBuild["packageManager"]
+    >;
+  }
   const installCommand = parseDeploySourceCommand(
     value.installCommand,
     "installCommand",
@@ -2517,6 +2574,14 @@ const NATIVE_APP_FRAMEWORKS = new Set<EnvironmentDeployNativeFramework>([
 /** Same shape both sides of the wire; a range or tag is not a pin. */
 const NATIVE_APP_NODE_VERSION_RE = /^\d{1,3}(\.\d{1,3}){0,2}$/;
 
+const NODE_PACKAGE_MANAGERS = new Set<
+  NonNullable<EnvironmentDeploySourceBuild["packageManager"]>
+>(["npm", "yarn", "pnpm"]);
+
+const NATIVE_APP_MODES = new Set<
+  NonNullable<EnvironmentDeployNativeAppService["appMode"]>
+>(["production", "development"]);
+
 function parseNativeAppPositiveNumber(
   value: unknown,
   field: string,
@@ -2573,6 +2638,29 @@ function parseNativeAppAccountLimits(
   };
 }
 
+function parseNativeAppNodeVersion(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isString(value) || !NATIVE_APP_NODE_VERSION_RE.test(value)) {
+    throw new Error("Invalid nativeAppServices nodeVersion");
+  }
+  return value;
+}
+
+function parseNativeAppMode(
+  value: unknown,
+): EnvironmentDeployNativeAppService["appMode"] {
+  if (value === undefined) return undefined;
+  if (
+    !isString(value) ||
+    !NATIVE_APP_MODES.has(
+      value as NonNullable<EnvironmentDeployNativeAppService["appMode"]>,
+    )
+  ) {
+    throw new Error("Invalid nativeAppServices appMode");
+  }
+  return value as NonNullable<EnvironmentDeployNativeAppService["appMode"]>;
+}
+
 function parseDeployNativeAppServiceEntry(
   entry: unknown,
 ): EnvironmentDeployNativeAppService {
@@ -2599,14 +2687,23 @@ function parseDeployNativeAppServiceEntry(
     listenPort: entry.listenPort,
     framework: entry.framework as EnvironmentDeployNativeFramework,
   };
-  if (entry.nodeVersion !== undefined) {
-    if (
-      !isString(entry.nodeVersion) ||
-      !NATIVE_APP_NODE_VERSION_RE.test(entry.nodeVersion)
-    ) {
-      throw new Error("Invalid nativeAppServices nodeVersion");
+  const nodeVersion = parseNativeAppNodeVersion(entry.nodeVersion);
+  if (nodeVersion !== undefined) app.nodeVersion = nodeVersion;
+  const appMode = parseNativeAppMode(entry.appMode);
+  if (appMode !== undefined) app.appMode = appMode;
+  if (entry.enabled !== undefined) {
+    if (typeof entry.enabled !== "boolean") {
+      throw new TypeError("Invalid nativeAppServices enabled");
     }
-    app.nodeVersion = entry.nodeVersion;
+    app.enabled = entry.enabled;
+  }
+  if (entry.startupFile !== undefined) {
+    // It becomes part of an ExecStart line, so it gets the same relative-path
+    // rule as outputDirectory, never the looser command rule.
+    if (!isSafeSourceSubdirectory(entry.startupFile)) {
+      throw new Error("Invalid nativeAppServices startupFile");
+    }
+    app.startupFile = entry.startupFile;
   }
   const resources = parseNativeAppResources(entry.resources);
   if (resources) app.resources = resources;

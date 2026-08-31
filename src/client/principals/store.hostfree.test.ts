@@ -2,7 +2,7 @@
  * Host-free coverage for principal store helpers (no Postgres).
  */
 
-import { assertEquals, assertRejects } from '@std/assert'
+import { assertEquals, assertMatch, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -17,7 +17,7 @@ import {
   lockOrganizationsForUpdate,
   PRINCIPAL_PROVIDERS,
   replaceTenancies,
-  resolveAvailableManagedRootUsername,
+  resolveManagedAppliedUsername,
   resolveManagedOwningOrganizationIds,
   rotatePrincipalPassword,
   setPrincipalPassword,
@@ -319,7 +319,7 @@ test('isManagedUsernameTaken handles empty orgs and hits', async () => {
   )
 })
 
-test('resolveAvailableManagedRootUsername prefers free preferred name', async () => {
+test('resolveManagedAppliedUsername prefers free short name without suffix', async () => {
   const free = {
     select: () => ({
       from: () => ({
@@ -334,13 +334,12 @@ test('resolveAvailableManagedRootUsername prefers free preferred name', async ()
     }),
   } as unknown as Db
 
-  const managedId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
-  const preferred = await resolveAvailableManagedRootUsername(
+  const preferred = await resolveManagedAppliedUsername(
     free,
     ['org'],
     'root',
-    managedId,
     { pattern: /^[a-z0-9_]+$/i, maxLength: 63 },
+    { suffix: false },
   )
   assertEquals(preferred, 'root')
 
@@ -362,17 +361,42 @@ test('resolveAvailableManagedRootUsername prefers free preferred name', async ()
       }),
     }),
   } as unknown as Db
-  const derived = await resolveAvailableManagedRootUsername(
+  const derived = await resolveManagedAppliedUsername(
     takenThenFree,
     ['org'],
     'root',
-    managedId,
     { pattern: /^[a-z0-9_]+$/i, maxLength: 63 },
+    { suffix: false },
   )
-  assertEquals(derived, 'root_01936b3e')
+  assertMatch(derived, /^root_[a-z0-9]{11}$/)
 })
 
-test('resolveAvailableManagedRootUsername throws when pattern cannot fit', async () => {
+test('resolveManagedAppliedUsername suffix mode never returns the bare name', async () => {
+  const free = {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              limit: () => Promise.resolve([]),
+            }),
+          }),
+        }),
+      }),
+    }),
+  } as unknown as Db
+
+  const derived = await resolveManagedAppliedUsername(
+    free,
+    ['org'],
+    'postgres',
+    { pattern: /^[a-z0-9_]+$/i, maxLength: 63 },
+    { suffix: true },
+  )
+  assertMatch(derived, /^postgres_[a-z0-9]{11}$/)
+})
+
+test('resolveManagedAppliedUsername throws when pattern cannot fit', async () => {
   const free = {
     select: () => ({
       from: () => ({
@@ -388,15 +412,15 @@ test('resolveAvailableManagedRootUsername throws when pattern cannot fit', async
   } as unknown as Db
   await assertRejects(
     () =>
-      resolveAvailableManagedRootUsername(
+      resolveManagedAppliedUsername(
         free,
         ['org'],
         '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!',
-        'not-a-uuid-without-digits-enough',
         { pattern: /^[a-z]+$/, maxLength: 5 },
+        { suffix: true },
       ),
     TypeError,
-    'unable to derive available managed root username',
+    'invalid managed short username',
   )
 })
 
@@ -635,6 +659,7 @@ test('ensureManagedReplicationPrincipal reuses existing replication row', async 
                 kind: 'database',
                 provider: 'postgres',
                 username: 'tp_repl',
+                appliedUsername: 'tp_repl',
                 managedId: 'm1',
                 metadata: { managedReplication: true },
                 options: null,
@@ -654,11 +679,12 @@ test('ensureManagedReplicationPrincipal reuses existing replication row', async 
       managedId: 'm1',
       provider: 'postgres',
       identifier: { pattern: /^[a-z0-9_]+$/i, maxLength: 63 },
+      randomizeSuffix: true,
     },
   )
   assertEquals(existing, {
     principalId: 'repl-existing',
-    username: 'tp_repl',
+    appliedUsername: 'tp_repl',
     created: false,
   })
 })
@@ -672,14 +698,15 @@ test('ensureManagedReplicationPrincipal creates replication principal when absen
       managedId: '01936b3e-aaaa-bbbb-cccc-123456789abc',
       provider: 'postgres',
       identifier: { pattern: /^[a-z0-9_]+$/i, maxLength: 63 },
+      randomizeSuffix: true,
     },
   )
   assertEquals(result.created, true)
   assertEquals(result.principalId, 'repl-new')
-  assertEquals(result.username, 'tp_repl')
+  assertMatch(result.appliedUsername, /^tp_repl_[a-z0-9]{11}$/)
 })
 
-test('resolveAvailableManagedRootUsername falls back when candidate is taken', async () => {
+test('resolveManagedAppliedUsername returns a fresh suffix when candidate is taken', async () => {
   let takenCalls = 0
   const db = {
     select: () => ({
@@ -698,14 +725,13 @@ test('resolveAvailableManagedRootUsername falls back when candidate is taken', a
     }),
   } as unknown as Db
 
-  const managedId = '01936b3e-aaaa-bbbb-cccc-123456789abc'
-  const derived = await resolveAvailableManagedRootUsername(
+  const derived = await resolveManagedAppliedUsername(
     db,
     ['org'],
     'root',
-    managedId,
     { pattern: /^[a-z0-9_]+$/i, maxLength: 63 },
+    { suffix: false },
   )
-  assertEquals(derived, 'root_01936b3eaaaa')
+  assertMatch(derived, /^root_[a-z0-9]{11}$/)
   assertEquals(takenCalls, 2)
 })

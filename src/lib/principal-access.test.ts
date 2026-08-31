@@ -5,6 +5,7 @@ import {
   accessGroupsFor,
   accessLevelForShell,
   effectivePrincipalAccess,
+  PRINCIPAL_PASSWORD_GROUP,
   isPrincipalAccessLevel,
   principalAccessLabel,
   shellForAccessLevel,
@@ -91,4 +92,29 @@ test('principalAccessLabel maps levels to operator-facing copy', () => {
   assertEquals(principalAccessLabel('shell'), 'Shell')
   assertEquals(principalAccessLabel('sftp'), 'Files only')
   assertEquals(principalAccessLabel('none'), 'No access')
+})
+
+test('an enabled password counts as a credential', () => {
+  // Password-only accounts must resolve to their intended level, or the
+  // daemon would strip the very group the password Match block hangs from.
+  assertEquals(effectivePrincipalAccess('/bin/bash', 0, true), 'shell')
+  assertEquals(effectivePrincipalAccess('/usr/sbin/nologin', 0, true), 'sftp')
+  // Suspension still wins over any credential.
+  assertEquals(effectivePrincipalAccess('/bin/false', 0, true), 'none')
+})
+
+test('password sign-in adds the password group alongside the level group', () => {
+  assertEquals(accessGroupsFor('/bin/bash', 0, true), [
+    'tpshell',
+    PRINCIPAL_PASSWORD_GROUP,
+  ])
+  assertEquals(accessGroupsFor('/usr/sbin/nologin', 2, true), [
+    'tpsftp',
+    PRINCIPAL_PASSWORD_GROUP,
+  ])
+  // Never alone: a password with no level to sign in as grants nothing, and
+  // suspending strips both credentials at once.
+  assertEquals(accessGroupsFor('/bin/false', 0, true), [])
+  // And never when password sign-in is off.
+  assertEquals(accessGroupsFor('/bin/bash', 1, false), ['tpshell'])
 })

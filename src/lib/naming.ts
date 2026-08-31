@@ -151,12 +151,49 @@ export const PRINCIPAL_RESERVED_UID_MAX = 9999
 /**
  * Max Linux username length so `<username>-grp` still fits the host group-name
  * limit (32). Keep in sync with daemon `MAX_PRINCIPAL_USERNAME_LENGTH` and
- * command-schema validators.
+ * command-schema validators. Applies to the **applied** username — the name
+ * that actually lands on the host.
  */
 export const MAX_PRINCIPAL_USERNAME_LENGTH = 28
 
 /** Suffix appended by daemon `principalUnixGroupName` (`${username}-grp`). */
 export const PRINCIPAL_UNIX_GROUP_SUFFIX = '-grp'
+
+/**
+ * Random chars after the underscore in a randomized applied username
+ * (`<short>_<11 chars>` — a 12-char suffix total, Plesk-style).
+ */
+export const PRINCIPAL_APPLIED_SUFFIX_RANDOM_LENGTH = 11
+/** Total applied-suffix length including the underscore separator. */
+export const PRINCIPAL_APPLIED_SUFFIX_LENGTH =
+  PRINCIPAL_APPLIED_SUFFIX_RANDOM_LENGTH + 1
+/**
+ * Short-name cap for a server principal when the applied name is randomized:
+ * `<short>_<11>` must still fit {@link MAX_PRINCIPAL_USERNAME_LENGTH}.
+ */
+export const MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH =
+  MAX_PRINCIPAL_USERNAME_LENGTH - PRINCIPAL_APPLIED_SUFFIX_LENGTH
+
+const APPLIED_SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+/**
+ * Random `_<11 chars>` (lowercase alphanumeric, rejection-sampled) appended to
+ * a short username to form the applied login.
+ */
+export function randomPrincipalUsernameSuffix(): string {
+  const out: string[] = []
+  const limit = 256 - (256 % APPLIED_SUFFIX_ALPHABET.length)
+  while (out.length < PRINCIPAL_APPLIED_SUFFIX_RANDOM_LENGTH) {
+    const bytes = new Uint8Array(PRINCIPAL_APPLIED_SUFFIX_RANDOM_LENGTH)
+    crypto.getRandomValues(bytes)
+    for (const byte of bytes) {
+      if (byte >= limit) continue
+      out.push(APPLIED_SUFFIX_ALPHABET[byte % APPLIED_SUFFIX_ALPHABET.length])
+      if (out.length === PRINCIPAL_APPLIED_SUFFIX_RANDOM_LENGTH) break
+    }
+  }
+  return `_${out.join('')}`
+}
 
 /** POSIX-shaped username used for home paths — mirrors the daemon allowlist. */
 const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/

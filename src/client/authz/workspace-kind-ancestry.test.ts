@@ -104,6 +104,7 @@ test('resolveWorkspaceKindForEntity returns kind for managed-scoped principals',
         kind: 'database',
         provider: 'postgres',
         username: 'managed_user_kind',
+        appliedUsername: 'managed_user_kind',
         managedId: userManagedId,
       })
       .returning({ id: principal.id })
@@ -133,6 +134,7 @@ test('resolveWorkspaceKindForEntity returns kind for managed-scoped principals',
         kind: 'database',
         provider: 'postgres',
         username: 'managed_system_kind',
+        appliedUsername: 'managed_system_kind',
         managedId: systemManagedId,
       })
       .returning({ id: principal.id })

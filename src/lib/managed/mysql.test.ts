@@ -19,7 +19,7 @@ function defaultSettings(
   overrides: Partial<MysqlManagedSettings> = {},
 ): MysqlManagedSettings {
   const parsed = mysqlEngineSpec.parseSettings({
-    initialDatabase: "appdb",
+    initialDatabase: "defaultdb",
     ...overrides,
   });
   if (!parsed) throw new TypeError("expected mysql settings");
@@ -235,7 +235,7 @@ test("buildConnectionInfo masks the password and renders the given mode", () => 
   const info = mysqlEngineSpec.buildConnectionInfo({
     host: "db.example",
     port: 3306,
-    database: "appdb",
+    database: "defaultdb",
     username: "root",
     sslMode: "verify-full",
   });
@@ -318,7 +318,7 @@ test("parseSettings rejects invalid initialDatabase", () => {
   );
   assertEquals(mysqlEngineSpec.parseSettings({ initialDatabase: "sys" }), null);
   const defaults = mysqlEngineSpec.parseSettings({}) as MysqlManagedSettings;
-  assertEquals(defaults.initialDatabase, "appdb");
+  assertEquals(defaults.initialDatabase, "defaultdb");
 });
 
 test("userOperations use backtick quote and 32-char max", () => {
@@ -336,7 +336,7 @@ test("binding DSN embeds the plaintext password with MySQL ssl-mode spelling", (
   const dsn = binding.buildBindingDsn({
     host: "203.0.113.41",
     port: 13306,
-    database: "appdb",
+    database: "defaultdb",
     username: "app_user",
     password: TEST_ONLY_TURBOPANEL_SECRET,
     sslMode: "verify-ca",
@@ -409,14 +409,14 @@ test("parseSettings rejects non-objects and system schemas; null uses defaults",
   );
   const fromNull = mysqlEngineSpec.parseSettings(null);
   if (!fromNull) throw new TypeError("expected defaults for null settings");
-  assertEquals((fromNull as MysqlManagedSettings).initialDatabase, "appdb");
+  assertEquals((fromNull as MysqlManagedSettings).initialDatabase, "defaultdb");
   const fromUndefined = mysqlEngineSpec.parseSettings(undefined);
   if (!fromUndefined) {
     throw new TypeError("expected defaults for undefined settings");
   }
   assertEquals(
     (fromUndefined as MysqlManagedSettings).initialDatabase,
-    "appdb",
+    "defaultdb",
   );
 });
 
@@ -431,14 +431,14 @@ test("buildRuntimeSpec falls back when settings omit image and initialDatabase",
     rootUsername: "root",
   });
   assertEquals(spec.service.image, mysqlEngineSpec.defaultImage);
-  assertEquals(spec.env.MYSQL_DATABASE, "appdb");
+  assertEquals(spec.env.MYSQL_DATABASE, "defaultdb");
 });
 
 test("buildConnectionInfo renders disable as DISABLED", () => {
   const info = mysqlEngineSpec.buildConnectionInfo({
     host: "db.example",
     port: 3306,
-    database: "appdb",
+    database: "defaultdb",
     username: "root",
     sslMode: "disable",
   });

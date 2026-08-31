@@ -15,6 +15,7 @@ type PrincipalRow = Pick<
   | 'kind'
   | 'provider'
   | 'username'
+  | 'appliedUsername'
   | 'projectId'
   | 'managedId'
   | 'metadata'
@@ -28,6 +29,12 @@ export type SerializedProjectPrincipal = {
   kind: string
   provider: string
   username: string
+  /**
+   * Login actually created on the host — the short `username` plus a random
+   * `_<11>` suffix when the org randomized-usernames default was on at create.
+   * This is the name to SSH/SFTP in with; `username` is the panel identity.
+   */
+  appliedUsername: string
   projectId: string | null
   managedId: string | null
   metadata: unknown
@@ -55,6 +62,12 @@ export type SerializedProjectPrincipal = {
   access: PrincipalAccessLevel
   /** Keys on file. Zero means no login is possible at any access level. */
   sshKeyCount: number
+  /**
+   * Whether password sign-in is enabled — presence of a stored hash, never the
+   * hash itself. With neither this nor a key, no login is possible at any
+   * access level.
+   */
+  passwordAuth: boolean
   createdAt: string
   updatedAt: string
 }
@@ -68,12 +81,14 @@ export function serializeProjectPrincipal(
     grantedBy: string
   }[] = [],
   sshKeyCount = 0,
+  passwordAuth = false,
 ): SerializedProjectPrincipal {
   return {
     id: row.id,
     kind: row.kind,
     provider: row.provider,
     username: row.username,
+    appliedUsername: row.appliedUsername,
     projectId: row.projectId,
     managedId: row.managedId,
     metadata: row.metadata,
@@ -86,6 +101,7 @@ export function serializeProjectPrincipal(
       resolvePrincipalShell(parsePrincipalOptions(row.options)),
     ),
     sshKeyCount,
+    passwordAuth,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }

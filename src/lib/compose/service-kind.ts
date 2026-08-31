@@ -27,6 +27,19 @@ export type SiteEngine = "caddy" | "apache" | "nginx" | "openlitespeed"
 export type NativeRuntimeFramework = "auto" | "node" | "next"
 
 /**
+ * Package manager used to install dependencies for a `serviceKind: node`
+ * build. Omitted means auto-detect from the lockfile at build time
+ * (`pnpm-lock.yaml` > `yarn.lock` > `package-lock.json` > bare npm).
+ */
+export type NodePackageManager = "npm" | "yarn" | "pnpm"
+
+/**
+ * `NODE_ENV` for a `serviceKind: node` service — set in both the build
+ * environment and the generated unit. Omitted means `production`.
+ */
+export type NodeAppMode = "production" | "development"
+
+/**
  * Build backend for a `x-turbopanel.source` binding.
  *
  * `native` (the default when omitted) is the checkout → build → promote
@@ -48,6 +61,15 @@ export const SOURCE_COMMAND_MAX_LENGTH = 1000
 
 /** `24`, `24.17`, or `24.17.0` — a pinned major/minor/patch, never a range. */
 const NODE_VERSION_RE = /^\d{1,3}(\.\d{1,3}){0,2}$/
+
+/**
+ * Node series this control plane offers in pickers. Same contract as
+ * {@link SUPPORTED_PHP_SERIES}: a static mirror of
+ * `turbopaneld/orchestration/runtime-registry.json`, advisory only — the
+ * schema keeps accepting any {@link NODE_VERSION_RE} value.
+ */
+export const SUPPORTED_NODE_SERIES: readonly string[] = ["22", "24"]
+export const DEFAULT_NODE_SERIES = "24"
 
 /**
  * Per-service Git source binding (`x-turbopanel.source`).
@@ -99,6 +121,35 @@ export type ComposeServiceTurbopanelExtension = {
    * (`vendor/node-app/<version>/current`) and records the request.
    */
   nodeVersion?: string
+  /**
+   * Package manager for a `serviceKind: node` build. Omitted means
+   * auto-detect from the lockfile at build time.
+   */
+  packageManager?: NodePackageManager
+  /**
+   * `NODE_ENV` for a `serviceKind: node` service (build + unit). Omitted
+   * means `production`.
+   */
+  appMode?: NodeAppMode
+  /**
+   * Whether a `serviceKind: node` service's process should run. Omitted means
+   * `true`. When `false` the release still builds and promotes and the unit
+   * file still installs, but the daemon stops and disables the unit instead
+   * of starting it — re-enabling is a restart, not a rebuild.
+   */
+  enabled?: boolean
+  /**
+   * Document root for a `serviceKind: node` service (relative only).
+   * Informational this pass: recorded and shown, not yet served — node apps
+   * are still a pure reverse proxy.
+   */
+  documentRoot?: string
+  /**
+   * Script the vendored Node binary runs for a `serviceKind: node` service
+   * when `source.startCommand` is absent. Omitted means `server.js`. An
+   * explicit `startCommand` always wins.
+   */
+  startupFile?: string
   /**
    * Document-root segment under the daemon site directory (relative only).
    * Default `public` when omitted for site.
@@ -237,6 +288,15 @@ const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>([
   "native",
   "railpack",
 ])
+const NODE_PACKAGE_MANAGERS = new Set<NodePackageManager>([
+  "npm",
+  "yarn",
+  "pnpm",
+])
+const NODE_APP_MODES = new Set<NodeAppMode>([
+  "production",
+  "development",
+])
 
 /** Where a site's content comes from. Omitted means `release`. */
 export type SiteSourceKind = "release" | "managed-directory"
@@ -330,6 +390,22 @@ function readNodeVersion(value: unknown): string | undefined {
   return NODE_VERSION_RE.test(trimmed) ? trimmed : undefined
 }
 
+function readNodePackageManager(value: unknown): NodePackageManager | undefined {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  if (!NODE_PACKAGE_MANAGERS.has(trimmed as NodePackageManager)) {
+    return undefined
+  }
+  return trimmed as NodePackageManager
+}
+
+function readNodeAppMode(value: unknown): NodeAppMode | undefined {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  if (!NODE_APP_MODES.has(trimmed as NodeAppMode)) return undefined
+  return trimmed as NodeAppMode
+}
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -410,13 +486,11 @@ function readTrimmedString(
   return trimmed
 }
 
-export function parseServiceTurbopanelExtension(
-  value: unknown,
-): ComposeServiceTurbopanelExtension | null {
-  if (value === null || value === undefined) return {}
-  if (!isPlainMapping(value)) return null
-
-  const extension: ComposeServiceTurbopanelExtension = {}
+/** Runtime-selection fields — each reader yields a canonical value or nothing. */
+function applyRuntimeExtensionFields(
+  value: Record<string, unknown>,
+  extension: ComposeServiceTurbopanelExtension,
+): void {
   const serviceKind = readServiceKind(value.serviceKind)
   if (serviceKind) extension.serviceKind = serviceKind
   const engine = readSiteEngine(value.engine)
@@ -425,6 +499,23 @@ export function parseServiceTurbopanelExtension(
   if (framework) extension.framework = framework
   const nodeVersion = readNodeVersion(value.nodeVersion)
   if (nodeVersion) extension.nodeVersion = nodeVersion
+  const packageManager = readNodePackageManager(value.packageManager)
+  if (packageManager) extension.packageManager = packageManager
+  const appMode = readNodeAppMode(value.appMode)
+  if (appMode) extension.appMode = appMode
+  // `false` must survive the round-trip — never a truthiness guard here.
+  if (typeof value.enabled === "boolean") extension.enabled = value.enabled
+}
+
+/** Content, source, and nested-block fields. */
+function applyContentExtensionFields(
+  value: Record<string, unknown>,
+  extension: ComposeServiceTurbopanelExtension,
+): void {
+  const documentRoot = readTrimmedString(value.documentRoot)
+  if (documentRoot) extension.documentRoot = documentRoot
+  const startupFile = readTrimmedString(value.startupFile)
+  if (startupFile) extension.startupFile = startupFile
   const root = readTrimmedString(value.root)
   if (root) extension.root = root
   const sourceKind = readSiteSourceKind(value.sourceKind)
@@ -442,7 +533,17 @@ export function parseServiceTurbopanelExtension(
   }
   const php = parseServicePhpExtension(value.php)
   if (php) extension.php = php
+}
 
+export function parseServiceTurbopanelExtension(
+  value: unknown,
+): ComposeServiceTurbopanelExtension | null {
+  if (value === null || value === undefined) return {}
+  if (!isPlainMapping(value)) return null
+
+  const extension: ComposeServiceTurbopanelExtension = {}
+  applyRuntimeExtensionFields(value, extension)
+  applyContentExtensionFields(value, extension)
   return extension
 }
 
@@ -538,6 +639,49 @@ export type ServiceTurbopanelValidationIssue = {
   message: string
 }
 
+/** Per-field type rules — checked only when the field is authored at all. */
+const RAW_EXTENSION_FIELD_RULES: ReadonlyArray<{
+  field: string
+  isValid: (value: unknown) => boolean
+  message: string
+}> = [
+  {
+    field: "serviceKind",
+    isValid: (value) => Boolean(readServiceKind(value)),
+    message: 'serviceKind must be "container", "site", or "node"',
+  },
+  {
+    field: "framework",
+    isValid: (value) => Boolean(readNativeRuntimeFramework(value)),
+    message: 'framework must be "auto", "node", or "next"',
+  },
+  {
+    field: "nodeVersion",
+    isValid: (value) => Boolean(readNodeVersion(value)),
+    message: 'nodeVersion must be a pinned version like "24" or "24.17.0"',
+  },
+  {
+    field: "packageManager",
+    isValid: (value) => Boolean(readNodePackageManager(value)),
+    message: 'packageManager must be "npm", "yarn", or "pnpm"',
+  },
+  {
+    field: "appMode",
+    isValid: (value) => Boolean(readNodeAppMode(value)),
+    message: 'appMode must be "production" or "development"',
+  },
+  {
+    field: "enabled",
+    isValid: (value) => typeof value === "boolean",
+    message: "enabled must be true or false",
+  },
+  {
+    field: "engine",
+    isValid: (value) => Boolean(readSiteEngine(value)),
+    message: 'engine must be "caddy", "apache", "nginx", or "openlitespeed"',
+  },
+]
+
 function validateRawExtensionFieldTypes(
   basePath: string,
   rawExtension: unknown,
@@ -545,42 +689,13 @@ function validateRawExtensionFieldTypes(
   if (!isPlainMapping(rawExtension)) return []
   const issues: ServiceTurbopanelValidationIssue[] = []
 
-  if (
-    "serviceKind" in rawExtension && !readServiceKind(rawExtension.serviceKind)
-  ) {
-    issues.push({
-      path: `${basePath}.serviceKind`,
-      message: 'serviceKind must be "container", "site", or "node"',
-    })
-  }
-
-  if (
-    "framework" in rawExtension &&
-    !readNativeRuntimeFramework(rawExtension.framework)
-  ) {
-    issues.push({
-      path: `${basePath}.framework`,
-      message: 'framework must be "auto", "node", or "next"',
-    })
-  }
-
-  if (
-    "nodeVersion" in rawExtension && !readNodeVersion(rawExtension.nodeVersion)
-  ) {
-    issues.push({
-      path: `${basePath}.nodeVersion`,
-      message: 'nodeVersion must be a pinned version like "24" or "24.17.0"',
-    })
-  }
-
-  if (
-    "engine" in rawExtension && !readSiteEngine(rawExtension.engine)
-  ) {
-    issues.push({
-      path: `${basePath}.engine`,
-      message:
-        'engine must be "caddy", "apache", "nginx", or "openlitespeed"',
-    })
+  for (const rule of RAW_EXTENSION_FIELD_RULES) {
+    if (rule.field in rawExtension && !rule.isValid(rawExtension[rule.field])) {
+      issues.push({
+        path: `${basePath}.${rule.field}`,
+        message: rule.message,
+      })
+    }
   }
 
   if ("description" in rawExtension) {
@@ -914,6 +1029,37 @@ function validateNodeConsistency(
     issues.push({
       path: `${basePath}.nodeVersion`,
       message: "nodeVersion is only valid when serviceKind is node",
+    })
+  }
+
+  if (parsed.serviceKind !== "node") {
+    // Presence checks, not truthiness — `enabled: false` is still present.
+    const nodeOnlyFields = [
+      "packageManager",
+      "appMode",
+      "enabled",
+      "documentRoot",
+      "startupFile",
+    ] as const
+    for (const field of nodeOnlyFields) {
+      if (parsed[field] === undefined) continue
+      issues.push({
+        path: `${basePath}.${field}`,
+        message: `${field} is only valid when serviceKind is node`,
+      })
+    }
+    return issues
+  }
+
+  // Both land in daemon-side paths (and startupFile in an ExecStart line), so
+  // they share the same relative-path rule as `root`.
+  for (const field of ["documentRoot", "startupFile"] as const) {
+    const value = parsed[field]
+    if (value === undefined || isSafeRoot(value)) continue
+    issues.push({
+      path: `${basePath}.${field}`,
+      message:
+        `${field} must be a relative path without ".." (e.g. "server.js" or "public")`,
     })
   }
 

@@ -46,6 +46,31 @@ test('splitNativeAppServices defaults framework to auto', () => {
   assertEquals(apps[0]?.framework, 'auto')
 })
 
+test('splitNativeAppServices carries appMode, enabled, and startupFile', () => {
+  const { apps } = splitNativeAppServices({
+    web: nodeService({
+      appMode: 'development',
+      enabled: false,
+      startupFile: 'app.js',
+    }),
+  })
+
+  // A disabled app is still emitted — dropping it would make reconcile tear
+  // the unit down and strand the release.
+  assertEquals(apps.length, 1)
+  assertEquals(apps[0]?.appMode, 'development')
+  assertEquals(apps[0]?.enabled, false)
+  assertEquals(apps[0]?.startupFile, 'app.js')
+})
+
+test('undeclared node app settings stay absent on the split spec', () => {
+  const { apps } = splitNativeAppServices({ web: nodeService() })
+  assertEquals(apps.length, 1)
+  assertEquals('appMode' in (apps[0] ?? {}), false)
+  assertEquals('enabled' in (apps[0] ?? {}), false)
+  assertEquals('startupFile' in (apps[0] ?? {}), false)
+})
+
 test('a node service with no source is dropped rather than left for Docker', () => {
   // Validation rejects this document; if one slips through, an image-less
   // service handed to `compose up` would fail the whole deploy.

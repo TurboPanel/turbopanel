@@ -66,6 +66,7 @@ import {
   parseEmailSettingsUpdates,
   parsePayloadBody,
   parseReencryptRequestBody,
+  parseServerMetricsLiveSettingsBody,
   parseSignupEnabledBody,
   publicUrlsApplyWaitToResponse,
   resolvePerServerLimit,
@@ -74,6 +75,11 @@ import {
   waitForPublicUrlsApply,
 } from "./routes-helpers.ts";
 import { enqueuePlatformCaTrustReconcileBestEffort } from "./tls-trust-reconcile.ts";
+import {
+  getServerMetricsLiveMaxMinutes,
+  isValidServerMetricsLiveMaxMinutes,
+  setServerMetricsLiveMaxMinutes,
+} from "../lib/settings/server-metrics-settings.ts";
 
 const ADDRESSES_TIMEOUT_MS = 10_000;
 
@@ -379,6 +385,35 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
       isEnvForced: meta.isEnvForced,
       envOverride: meta.envOverride,
     });
+  });
+
+  admin.get("/settings/server-metrics-live", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const maxMinutes = await getServerMetricsLiveMaxMinutes(db);
+    return c.json({ maxMinutes });
+  });
+
+  admin.put("/settings/server-metrics-live", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const body = await c.req.json().catch(() => null);
+    const parsed = parseServerMetricsLiveSettingsBody(body);
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 400);
+    }
+    if (!isValidServerMetricsLiveMaxMinutes(parsed.maxMinutes)) {
+      return c.json(
+        { error: "maxMinutes must be 0 or an integer between 5 and 240" },
+        400,
+      );
+    }
+
+    await setServerMetricsLiveMaxMinutes(db, parsed.maxMinutes);
+    const maxMinutes = await getServerMetricsLiveMaxMinutes(db);
+    return c.json({ maxMinutes });
   });
 
   admin.post("/instance/public-urls/apply", async (c) => {

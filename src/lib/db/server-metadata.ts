@@ -165,6 +165,25 @@ export type ServerDockerMetadata = {
 }
 
 /**
+ * Operator-selected metrics overrides nested under
+ * `server.metadata.metricsOverrides`. The server row is the source of truth;
+ * the daemon-side override files are a cache refreshed by the
+ * `metrics-sensor-overrides-update` cell push.
+ */
+export type ServerMetricsOverrides = {
+  /** hwmon sensor path for CPU temperature. */
+  cpuTemperature?: string
+  /** hwmon sensor path for GPU temperature. */
+  gpuTemperature?: string
+  /** Sensor path for CPU power (RAPL energy counter). */
+  cpuPower?: string
+  /** hwmon sensor path for GPU power. */
+  gpuPower?: string
+  /** Absolute path of the filesystem probed as hosting storage. */
+  hostingPath?: string
+}
+
+/**
  * JSON stored in `server.metadata`. Nested fields are optional.
  * Hostname / machineKey / OS / observed timezone / NTP live on dedicated
  * `server` columns (not here).
@@ -202,6 +221,11 @@ export type ServerMetadata = {
    * possible moment.
    */
   runtimes?: ServerRuntimeMetadata
+  /**
+   * Operator-selected sensor / hosting-path overrides for host metrics.
+   * jsonb, so no migration.
+   */
+  metricsOverrides?: ServerMetricsOverrides
 }
 
 /**
@@ -1114,6 +1138,61 @@ export function parseServerDockerMetadata(
   const composeVersion = parseDockerVersionToken(value.composeVersion)
   if (composeVersion) docker.composeVersion = composeVersion
   return Object.keys(docker).length > 0 ? docker : undefined
+}
+
+/** Parse a best-effort metrics-overrides block from stored metadata. */
+export function parseServerMetricsOverrides(
+  value: unknown,
+): ServerMetricsOverrides | undefined {
+  if (!isRecord(value)) return undefined
+  const overrides: ServerMetricsOverrides = {}
+  const cpuTemperature = optionalTrimmedString(value.cpuTemperature)
+  if (cpuTemperature) overrides.cpuTemperature = cpuTemperature
+  const gpuTemperature = optionalTrimmedString(value.gpuTemperature)
+  if (gpuTemperature) overrides.gpuTemperature = gpuTemperature
+  const cpuPower = optionalTrimmedString(value.cpuPower)
+  if (cpuPower) overrides.cpuPower = cpuPower
+  const gpuPower = optionalTrimmedString(value.gpuPower)
+  if (gpuPower) overrides.gpuPower = gpuPower
+  const hostingPath = optionalTrimmedString(value.hostingPath)
+  if (hostingPath) overrides.hostingPath = hostingPath
+  return Object.keys(overrides).length > 0 ? overrides : undefined
+}
+
+/**
+ * Merge a partial overrides update onto the stored set: a string sets the
+ * field, `null` clears it, `undefined` leaves it untouched. Returns the new
+ * effective set, or `undefined` when every field ends up cleared.
+ */
+export function mergeServerMetricsOverrides(
+  existing: ServerMetricsOverrides | undefined,
+  update: {
+    [K in keyof ServerMetricsOverrides]?: string | null
+  },
+): ServerMetricsOverrides | undefined {
+  const keys = [
+    'cpuTemperature',
+    'gpuTemperature',
+    'cpuPower',
+    'gpuPower',
+    'hostingPath',
+  ] as const
+  const merged: ServerMetricsOverrides = { ...existing }
+  for (const key of keys) {
+    const value = update[key]
+    if (value === undefined) continue
+    if (value === null) {
+      delete merged[key]
+      continue
+    }
+    const trimmed = value.trim()
+    if (trimmed.length === 0) {
+      delete merged[key]
+      continue
+    }
+    merged[key] = trimmed
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined
 }
 
 export function serverDockerMetadataEquals(

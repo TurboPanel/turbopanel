@@ -4,8 +4,12 @@
 
 import { assertEquals } from '@std/assert'
 import {
+  generatePrincipalPassword,
+  MAX_PRINCIPAL_PASSWORD_LENGTH,
+  MIN_PRINCIPAL_PASSWORD_LENGTH,
   parseAccessField,
   parseEntitlementsField,
+  parsePrincipalPasswordField,
   patchTouchesPrincipal,
   mergeTopLevelPrincipalIdsIntoOptions,
   optionsRecordFromJsonb,
@@ -68,12 +72,18 @@ test('parseCreatePrincipalOptions accepts and rejects option shapes', () => {
 
 test('projectPrincipalCreateResponse includes uid/gid only when set', () => {
   assertEquals(
-    projectPrincipalCreateResponse({ id: 'p1' }, ['s1']),
-    { ok: true, id: 'p1', serviceIds: ['s1'] },
+    projectPrincipalCreateResponse(
+      { id: 'p1', appliedUsername: 'app_abc123def45' },
+      ['s1'],
+    ),
+    { ok: true, id: 'p1', appliedUsername: 'app_abc123def45', serviceIds: ['s1'] },
   )
   assertEquals(
-    projectPrincipalCreateResponse({ id: 'p1', uid: 10, gid: 20 }, []),
-    { ok: true, id: 'p1', uid: 10, gid: 20, serviceIds: [] },
+    projectPrincipalCreateResponse(
+      { id: 'p1', appliedUsername: 'app', uid: 10, gid: 20 },
+      [],
+    ),
+    { ok: true, id: 'p1', appliedUsername: 'app', uid: 10, gid: 20, serviceIds: [] },
   )
 })
 
@@ -175,4 +185,43 @@ test('parseAccessField takes a level, never a shell path', () => {
 test('patchTouchesPrincipal recognizes an access-only edit', () => {
   assertEquals(patchTouchesPrincipal({ access: 'sftp' }), true)
   assertEquals(patchTouchesPrincipal({}), false)
+})
+
+test('parsePrincipalPasswordField distinguishes generate, set, and invalid', () => {
+  // Absent means "generate one for me" — the show-once flow.
+  assertEquals(parsePrincipalPasswordField({}), {})
+  assertEquals(parsePrincipalPasswordField({ password: undefined }), {})
+  assertEquals(
+    parsePrincipalPasswordField({ password: 'correct horse' }),
+    { password: 'correct horse' },
+  )
+  // Bounds and shape are rejected, never silently coerced.
+  assertEquals(parsePrincipalPasswordField({ password: 42 }), null)
+  assertEquals(
+    parsePrincipalPasswordField({
+      password: 'a'.repeat(MIN_PRINCIPAL_PASSWORD_LENGTH - 1),
+    }),
+    null,
+  )
+  assertEquals(
+    parsePrincipalPasswordField({
+      password: 'a'.repeat(MAX_PRINCIPAL_PASSWORD_LENGTH + 1),
+    }),
+    null,
+  )
+  // Control characters cannot be typed back at an ssh prompt, so accepting
+  // one would store a password that can never authenticate.
+  assertEquals(parsePrincipalPasswordField({ password: 'has\ncontrol!' }), null)
+  assertEquals(parsePrincipalPasswordField({ password: 'has\u0000null!' }), null)
+})
+
+test('generatePrincipalPassword is 20 typable chars and never repeats', () => {
+  const seen = new Set<string>()
+  for (let i = 0; i < 16; i++) {
+    const password = generatePrincipalPassword()
+    assertEquals(password.length, 20)
+    assertEquals(/^[A-Za-z0-9]+$/.test(password), true)
+    seen.add(password)
+  }
+  assertEquals(seen.size, 16)
 })

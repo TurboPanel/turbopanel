@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:ed1badc0ff3ec9b5d972be96bc4ef22797a549780b209b9eef0eabab45c82ed2
-pnpm-lock.yaml sha256:696f46f9e819ab9c30736d4e07c92efc8a434f56c56b629c05d87a6f7ad2b94c
+deno.lock sha256:68ad2f553c972dad7d5cbe36ca21de4e2b1dde4eada0bfe7dea870c973fbdf47
+pnpm-lock.yaml sha256:a3c956e03e23a2339f6d2f95ddbc5d9ec115b8f6a431e520807c5e13dbe0f884
 -->
 
 ## Production dependencies
@@ -21,6 +21,21 @@ pnpm-lock.yaml sha256:696f46f9e819ab9c30736d4e07c92efc8a434f56c56b629c05d87a6f7a
 - License: MIT OR Apache-2.0
 - Copyright: Cloudflare Workers DevProd Team
 - Homepage: https://github.com/cloudflare/workerd#readme
+
+### @duckdb/node-api@1.5.5-r.4
+
+- License: MIT
+- Homepage: https://github.com/duckdb/duckdb-node-neo#readme
+
+### @duckdb/node-bindings@1.5.5-r.4
+
+- License: MIT
+- Homepage: https://github.com/duckdb/duckdb-node-neo#readme
+
+### @duckdb/node-bindings-linux-x64@1.5.5-r.4
+
+- License: MIT
+- Homepage: https://github.com/duckdb/duckdb-node-neo#readme
 
 ### @hono/hono@4.12.23
 
@@ -87,6 +102,12 @@ pnpm-lock.yaml sha256:696f46f9e819ab9c30736d4e07c92efc8a434f56c56b629c05d87a6f7a
 - License: Apache-2.0
 - Copyright: Invertase
 - Homepage: https://docs.page/invertase/denque
+
+### detect-libc@2.1.2
+
+- License: Apache-2.0
+- Copyright: Lovell Fuller
+- Homepage: https://github.com/lovell/detect-libc#readme
 
 ### drizzle-orm@0.43.1
 
@@ -589,12 +610,6 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Copyright: Roman Shtylman
 - Homepage: https://github.com/jshttp/cookie#readme
-
-### detect-libc@2.1.2
-
-- License: Apache-2.0
-- Copyright: Lovell Fuller
-- Homepage: https://github.com/lovell/detect-libc#readme
 
 ### drizzle-kit@0.31.10
 

@@ -65,10 +65,6 @@ const SERVICE_DEPENDENT = new Map([
     'src/daemon/ws-handlers.test.ts',
     'Needs a live Redis (cell registry fan-out). Run locally against a dev Redis.',
   ],
-  [
-    'src/daemon/metrics/clickhouse/store.integration.test.ts',
-    'Needs a live ClickHouse. Run locally against a dev ClickHouse.',
-  ],
 ])
 
 /** Recursively collect `*.test.ts` under `dir`, as repo-relative paths. */
@@ -130,7 +126,9 @@ const configSource = fs.readFileSync(path.join(ROOT, 'vitest.config.ts'), 'utf8'
 
 const deno = parseDenoList(shellSource)
 const vitest = parseVitestInclude(configSource)
-const discovered = TEST_ROOTS.flatMap((root) => collectTests(root)).sort()
+const discovered = TEST_ROOTS.flatMap((root) => collectTests(root)).sort(
+  (a, b) => a.localeCompare(b),
+)
 
 const problems = []
 

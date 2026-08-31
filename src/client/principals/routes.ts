@@ -11,7 +11,12 @@ import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { organization, principal, server } from '../../lib/db/schema.ts'
-import { principalHomeDir } from '../../lib/naming.ts'
+import {
+  MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
+  principalHomeDir,
+  randomPrincipalUsernameSuffix,
+} from '../../lib/naming.ts'
+import { loadRandomizedUsernamesDefault } from '../managed/org-defaults.ts'
 import type { PrincipalOptionsPersisted } from '../../lib/principal-options.ts'
 import {
   assertCanManageOr403,
@@ -38,18 +43,24 @@ import {
   SSH_KEY_LIMIT_ERROR,
 } from './ssh-keys.ts'
 import {
+  clearServerPrincipalPassword,
   loadEntitlementsByPrincipalIds,
   isServerPrincipalUsernameTaken,
+  passwordEnabledByPrincipalIds,
   replaceEntitlements,
   replaceTenancies,
   SERVER_PRINCIPAL_PROVIDER,
+  setServerPrincipalPasswordHash,
   USERNAME_IN_USE_ERROR,
 } from './store.ts'
+import { hashPrincipalPassword } from '../../lib/sha512-crypt.ts'
 import { serializeProjectPrincipal } from './serialize.ts'
 import {
+  generatePrincipalPassword,
   optionsRecordFromJsonb,
   parseAccessField,
   parseCreatePrincipalOptions,
+  parsePrincipalPasswordField,
   parsePrincipalUsernameValue,
   parseEntitlementsField,
   patchRequiresServiceIds,
@@ -63,6 +74,14 @@ class UsernameInUseError extends Error {
   constructor() {
     super(USERNAME_IN_USE_ERROR)
     this.name = 'UsernameInUseError'
+  }
+}
+
+/** Short name too long to take the randomized `_<11>` applied suffix. */
+class UsernameTooLongError extends Error {
+  constructor() {
+    super('username_too_long')
+    this.name = 'UsernameTooLongError'
   }
 }
 
@@ -145,8 +164,24 @@ async function insertProjectPrincipal(
       throw new UsernameInUseError()
     }
 
+    // Org randomized-usernames default: the host account becomes
+    // `<short>_<11 rand>` (still ≤ 28 so `<applied>-grp` fits Linux's 32).
+    const randomizeSuffix = await loadRandomizedUsernamesDefault(
+      tx,
+      organizationId,
+    )
+    if (
+      randomizeSuffix &&
+      input.username.length > MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH
+    ) {
+      throw new UsernameTooLongError()
+    }
+    const appliedUsername = randomizeSuffix
+      ? `${input.username}${randomPrincipalUsernameSuffix()}`
+      : input.username
+
     const metadata: Record<string, unknown> = {
-      home: principalHomeDir(input.username),
+      home: principalHomeDir(appliedUsername),
     }
     if (input.override) {
       metadata.uid = input.override.uid
@@ -157,6 +192,7 @@ async function insertProjectPrincipal(
       kind: 'system',
       provider: SERVER_PRINCIPAL_PROVIDER,
       username: input.username,
+      appliedUsername,
       projectId,
       metadata,
       options: input.options,
@@ -170,6 +206,7 @@ async function insertProjectPrincipal(
     }
     return {
       id: row.id,
+      appliedUsername,
       ...(input.override
         ? { uid: input.override.uid, gid: input.override.gid }
         : {}),
@@ -211,6 +248,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
         kind: principal.kind,
         provider: principal.provider,
         username: principal.username,
+        appliedUsername: principal.appliedUsername,
         projectId: principal.projectId,
         managedId: principal.managedId,
         metadata: principal.metadata,
@@ -231,6 +269,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       principalIds,
     )
     const keyCounts = await countSshKeysByPrincipalIds(db, principalIds)
+    const passwordEnabled = await passwordEnabledByPrincipalIds(db, principalIds)
 
     return c.json({
       principals: rows.map((row) =>
@@ -239,6 +278,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
           serviceIdsByPrincipal.get(row.id) ?? [],
           entitlementsByPrincipal.get(row.id) ?? [],
           keyCounts.get(row.id) ?? 0,
+          passwordEnabled.has(row.id),
         )
       ),
     })
@@ -283,6 +323,9 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     } catch (err) {
       if (err instanceof UsernameInUseError) {
         return c.json({ error: USERNAME_IN_USE_ERROR }, 409)
+      }
+      if (err instanceof UsernameTooLongError) {
+        return c.json({ error: 'username_too_long' }, 400)
       }
       throw err
     }
@@ -495,6 +538,70 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
       return c.json({ ok: true as const, reconciled })
     },
   )
+
+  // --- Password sign-in --------------------------------------------------
+  //
+  // Set-or-rotate and disable, nothing else: only the sha512-crypt hash is
+  // stored, so there is no "show me the password" route to have. A generated
+  // password is returned exactly once, in the response to the request that
+  // created it.
+  router.use(
+    '/projects/:projectId/principals/:id/password',
+    createSessionMiddleware(secrets),
+  )
+
+  router.post('/projects/:projectId/principals/:id/password', async (c) => {
+    const ctx = await resolvePrincipalRequest(c, { requireMutable: true })
+    if (ctx instanceof Response) return ctx
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const parsed = parsePrincipalPasswordField(body)
+    if (parsed === null) {
+      return c.json({ error: 'invalid_password' }, 400)
+    }
+
+    const generated = parsed.password === undefined
+      ? generatePrincipalPassword()
+      : undefined
+    await setServerPrincipalPasswordHash(
+      ctx.db,
+      ctx.principalId,
+      hashPrincipalPassword(parsed.password ?? generated ?? ''),
+    )
+
+    // Same doctrine as keys: a password that only exists in the database has
+    // not been set yet — the host's shadow entry is what authenticates.
+    const reconciled = await reconcilePrincipalAccess(
+      ctx.db,
+      getCommandQueue(c),
+      { actorType: 'user', actorId: ctx.userId },
+      ctx.principalId,
+    )
+    return c.json({
+      ok: true as const,
+      ...(generated === undefined ? {} : { generatedPassword: generated }),
+      reconciled,
+    })
+  })
+
+  router.delete('/projects/:projectId/principals/:id/password', async (c) => {
+    const ctx = await resolvePrincipalRequest(c, { requireMutable: true })
+    if (ctx instanceof Response) return ctx
+
+    await clearServerPrincipalPassword(ctx.db, ctx.principalId)
+
+    // The reconcile is what locks the account's shadow entry on the host;
+    // without it the panel shows password sign-in off while the password
+    // still opens the account.
+    const reconciled = await reconcilePrincipalAccess(
+      ctx.db,
+      getCommandQueue(c),
+      { actorType: 'user', actorId: ctx.userId },
+      ctx.principalId,
+    )
+    return c.json({ ok: true as const, reconciled })
+  })
 }
 
 /**

@@ -1019,7 +1019,7 @@ export function registerDaemonApiRoutes<E extends Env>(
   );
 
   // Must never call env.DAEMON_CELL.getByName or touch the Durable Object —
-  // metrics writes go straight to the Analytics Engine / ClickHouse store.
+  // metrics writes go straight to the Analytics Engine / DuckDB store.
   daemon.post(
     "/metrics",
     requireDaemonJwt,
@@ -1080,7 +1080,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       };
       try {
         // Await queueing so chart queries that flush pending rows can see
-        // this sample; still return 202 without waiting on ClickHouse I/O
+        // this sample; still return 202 without waiting on metrics-store I/O
         // beyond schema/batch thresholds inside writeHostSample.
         if (store) {
           await store.writeHostSample(result.sample);

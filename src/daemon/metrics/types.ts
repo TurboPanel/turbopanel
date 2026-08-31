@@ -1,24 +1,48 @@
 import type {
-  HostMetricsDimensions,
   HostMetricKey,
   HostMetrics,
+  HostMetricsDimensions,
+  MetricsCollectionMode,
 } from "./contract.ts";
 
-export type { HostMetricKey, HostMetrics, HostMetricsDimensions } from "./contract.ts";
+export type {
+  HostMetricKey,
+  HostMetrics,
+  HostMetricsDimensions,
+  MetricsCollectionMode,
+} from "./contract.ts";
 
+/** Live cadence granted to a lease holder, in seconds. */
+export const METRICS_LIVE_INTERVAL_SECONDS = 10;
+
+/** Success body of `POST /servers/:id/metrics/live` (start/renew a lease). */
+export type MetricsLiveLeaseStartResponse = {
+  ok: true;
+  leaseId: string;
+  intervalSeconds: typeof METRICS_LIVE_INTERVAL_SECONDS;
+  expiresAt: string;
+};
+
+// This file is backend-neutral by design: no physical storage tokens
+// (doubleN/blobN/indexN column names, AnalyticsEngineDataPoint, DuckDB DDL)
+// may appear here — those live in per-backend field-map/schema files.
 export type MetricsBackendKind =
   | "disabled"
   | "analytics-engine"
-  | "clickhouse";
+  | "duckdb";
 
 /** Authenticated host sample after validation — `serverId` always from auth context. */
 export type AuthenticatedHostMetricsSample = {
   serverId: string;
   at: string;
+  /** Daemon sample time (copy of wire `at`) — stored beside `receivedAt`. */
+  sampledAt: string;
   receivedAt: string;
   intervalSeconds: number;
   sequence: number;
-  schemaVersion: 1;
+  schemaVersion: 2;
+  /** Mirrored from `dimensions.collectionMode` for convenient store access. */
+  collectionMode: MetricsCollectionMode;
   dimensions: HostMetricsDimensions;
   metrics: HostMetrics;
 };
@@ -78,7 +102,7 @@ export type HostSummaryResult = {
 };
 
 /**
- * One AE/ClickHouse query for recent host usage across many servers.
+ * One AE/DuckDB query for recent host usage across many servers.
  * Used by the org servers overview — never N per-server chart calls.
  */
 export type FleetHostSnapshotQuery = {
@@ -109,7 +133,7 @@ export type ServerStatusTransitionReason =
   | "sweep_stale"
   | "self_heal";
 
-/** Validated connection-status transition written to AE / ClickHouse. */
+/** Validated connection-status transition written to AE / DuckDB. */
 export type ServerStatusEvent = {
   serverId: string;
   connected: boolean;

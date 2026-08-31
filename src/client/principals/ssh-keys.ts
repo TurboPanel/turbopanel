@@ -216,7 +216,8 @@ export async function principalsWithFingerprint(
   return await db
     .select({
       principalId: principal.id,
-      username: principal.username,
+      // Applied login — the account name the key actually opens on hosts.
+      username: principal.appliedUsername,
     })
     .from(sshKey)
     .innerJoin(principal, eq(principal.id, sshKey.principalId))

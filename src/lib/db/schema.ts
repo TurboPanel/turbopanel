@@ -2043,6 +2043,15 @@ export const principal = pgTable(
      */
     username: varchar({ length: 255 }).notNull(),
     /**
+     * Login actually applied on the target system (Linux account / engine
+     * role). Equal to `username`, or `username` plus a random `_<11 chars>`
+     * suffix when the owning organization's randomized-usernames default is
+     * on (or the principal is a managed root, which is always suffixed).
+     * Decided once at create — toggling the org default never renames
+     * existing principals. `username` stays the short internal identity.
+     */
+    appliedUsername: varchar('applied_username', { length: 255 }).notNull(),
+    /**
      * Write-only credential. Stored as a `tpsecret.v<version>.…` envelope (instance
      * at-rest seal). Never returned on GET; delivery re-seals to `tpdaemon`
      * for the target daemon.
@@ -2081,9 +2090,14 @@ export const principal = pgTable(
       'principal_username_format_check',
       sql`(char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
     ),
+    check(
+      'principal_applied_username_format_check',
+      sql`(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
+    ),
     // No global unique on `username`: the same account name (e.g. `postgres`,
     // `www-data`) legitimately recurs across different systems/services.
-    // Server-provider host accounts are uniqueness-checked per org in app code.
+    // Server-provider host accounts are uniqueness-checked per org in app code
+    // (both the short `username` and the `applied_username` namespaces).
   ]
 )
 /**

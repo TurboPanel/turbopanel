@@ -37,7 +37,7 @@ import {
 import {
   resolveServerMetricsStore,
   type AnalyticsEngineDatasetLike,
-} from "../metrics/store-selection.ts";
+} from "../metrics/store-selection-workers.ts";
 import { setServerStatusEventSink } from "../metrics/status-events.ts";
 import type {
   CellDiagnostics,

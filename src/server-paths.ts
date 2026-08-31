@@ -153,6 +153,63 @@ export function resolveExecutionLogDir(
   return `${resolveStateDir(env)}/execution-logs`
 }
 
+/**
+ * Default metrics state root (DuckDB database, Parquet exports, temp spill).
+ *
+ * Under the **state** tree: metric history is durable product data, the same
+ * class as execution logs.
+ */
+export const DEFAULT_METRICS_DIR = `${DEFAULT_STATE_DIR}/metrics`
+
+/**
+ * Resolve the metrics state root, honoring `TURBOPANEL_METRICS_DIR`.
+ *
+ * Falls back to `<stateDir>/metrics` so relocating `TURBOPANEL_STATE_DIR`
+ * moves metric history with the rest of the durable state.
+ */
+export function resolveMetricsDir(
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string {
+  const override = env.TURBOPANEL_METRICS_DIR?.trim()
+  if (override) return stripTrailingSlash(override)
+  return `${resolveStateDir(env)}/metrics`
+}
+
+/**
+ * Default vendored DuckDB shared-library directory (`libduckdb.so`).
+ *
+ * `deno compile` bundles `@duckdb/node-api`'s `duckdb.node` addon and
+ * self-extracts it at runtime, but it does **not** extract the companion
+ * `libduckdb.so` that the addon links via `RUNPATH $ORIGIN` — the dynamic
+ * linker cannot read the compiled binary's virtual filesystem. Managed
+ * installs therefore vendor `libduckdb.so` here and the instance unit puts
+ * this directory on `LD_LIBRARY_PATH`. Source mode (`deno run`) needs
+ * neither: the addon and its `.so` are real sibling files in Deno's npm
+ * cache, so `$ORIGIN` resolution works as-is.
+ */
+export const DEFAULT_DUCKDB_LIB_DIR = '/opt/turbopanel/vendor/duckdb/lib'
+
+/**
+ * Absolute path of the vendored `libduckdb.so` when present, else `null`
+ * (meaning the package's own `$ORIGIN` resolution applies — source mode).
+ *
+ * Honors `TURBOPANEL_DUCKDB_LIB_DIR` for relocated vendor trees.
+ */
+export function resolveDuckdbNativeLibraryPath(
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string | null {
+  const dir = stripTrailingSlash(
+    env.TURBOPANEL_DUCKDB_LIB_DIR?.trim() || DEFAULT_DUCKDB_LIB_DIR,
+  )
+  const candidate = `${dir}/libduckdb.so`
+  try {
+    Deno.statSync(candidate)
+    return candidate
+  } catch {
+    return null
+  }
+}
+
 /** Resolve the instance log directory, honoring `TURBOPANEL_LOG_DIR`. */
 export function resolveLogDir(
   env: Record<string, string | undefined> = Deno.env.toObject(),

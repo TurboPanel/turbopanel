@@ -30,11 +30,12 @@ import {
   isManagedUsernameTaken,
   listManagedPrincipals,
   lockOrganizationsForUpdate,
-  resolveAvailableManagedRootUsername,
+  resolveManagedAppliedUsername,
   resolveManagedOwningOrganizationIds,
   rotatePrincipalPassword,
   USERNAME_IN_USE_ERROR,
 } from '../principals/store.ts'
+import { loadRandomizedUsernamesDefault } from './org-defaults.ts'
 import {
   assertDispatchInfrastructure,
 } from '../servers/command-dispatch.ts'
@@ -569,12 +570,16 @@ async function insertManagedCreateTransaction(
   ])
   await lockOrganizationsForUpdate(tx, owningOrgIds)
 
-  const rootUsername = await resolveAvailableManagedRootUsername(
+  // Always suffixed regardless of the org randomized-usernames default: the
+  // exposed root login is `postgres_<11 rand>`/`root_<11 rand>`, never the
+  // engine's bare admin name — those stay platform-internal. The short
+  // `username` keeps the spec name for internal reference.
+  const rootUsername = await resolveManagedAppliedUsername(
     tx,
     owningOrgIds,
     ctx.spec.rootUsername,
-    managedId,
     ctx.spec.userOperations.identifier,
+    { suffix: true },
   )
 
   const { principalId, password } = await createManagedPrincipal(
@@ -583,7 +588,8 @@ async function insertManagedCreateTransaction(
     {
       managedId,
       provider: ctx.spec.principalProvider,
-      username: rootUsername,
+      username: ctx.spec.rootUsername,
+      appliedUsername: rootUsername,
       metadata: {
         managedRoot: true,
         engine: ctx.spec.engine,
@@ -963,8 +969,15 @@ async function hasManagedUsernameNamespaceConflict(
     ])
     await lockOrganizationsForUpdate(tx, owningOrgIds)
     for (const entry of clusterPrincipals) {
+      // The applied login is what lands on the shared ProxySQL frontend —
+      // that's the name that must be free in the new owner's namespace.
       if (
-        await isManagedUsernameTaken(tx, owningOrgIds, entry.username, entry.id)
+        await isManagedUsernameTaken(
+          tx,
+          owningOrgIds,
+          entry.appliedUsername,
+          entry.id,
+        )
       ) {
         return true
       }
@@ -1064,10 +1077,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) {
       return c.json(
-        buildEmptyManagedDetailResponse(
-          ctx.spec.rootUsername,
-          ctx.orgDefaults.sslMode,
-        ),
+        buildEmptyManagedDetailResponse(ctx.orgDefaults.sslMode),
       )
     }
 
@@ -1506,12 +1516,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const residual = parseManagedResidual(row.metadata)
+    const randomizeSuffix = await loadRandomizedUsernamesDefault(
+      db,
+      ctx.organizationId,
+    )
     const fields = parseManagedUserCreateFields(
       c,
       ctx,
       body,
       options,
       residual.rootUsername,
+      randomizeSuffix,
     )
     if (fields instanceof Response) return fields
     const { username, databases, privileges } = fields
@@ -1552,7 +1567,19 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         targetServerId,
       ])
       await lockOrganizationsForUpdate(tx, owningOrgIds)
-      if (await isManagedUsernameTaken(tx, owningOrgIds, username)) {
+      // With the org randomized-usernames default on, the applied login gets a
+      // random `_<11>` suffix (collision-free by construction); off, the
+      // operator-chosen name is the login and must be free org-wide.
+      let appliedUsername = username
+      if (randomizeSuffix) {
+        appliedUsername = await resolveManagedAppliedUsername(
+          tx,
+          owningOrgIds,
+          username,
+          ctx.spec.userOperations.identifier,
+          { suffix: true },
+        )
+      } else if (await isManagedUsernameTaken(tx, owningOrgIds, username)) {
         return { ok: false as const, error: USERNAME_IN_USE_ERROR }
       }
 
@@ -1560,13 +1587,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         managedId: row.id,
         provider: ctx.spec.principalProvider,
         username,
+        appliedUsername,
         metadata: {
           engine: ctx.spec.engine,
           databases,
           privileges,
         },
       })
-      return { ok: true as const, ...created }
+      return { ok: true as const, appliedUsername, ...created }
     })
     if (!userCreate.ok) {
       return c.json({ error: userCreate.error }, 409)
@@ -1610,6 +1638,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       user: {
         id: principalId,
         username,
+        appliedUsername: userCreate.appliedUsername,
         databases,
         privileges,
         createdAt: createdUser?.createdAt ?? new Date().toISOString(),
@@ -1752,6 +1781,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .select({
         id: principal.id,
         username: principal.username,
+        appliedUsername: principal.appliedUsername,
         metadata: principal.metadata,
         kind: principal.kind,
         provider: principal.provider,
@@ -1786,7 +1816,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (targetServerId instanceof Response) return targetServerId
 
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId, {
-      dropUsers: [target.username],
+      dropUsers: [target.appliedUsername],
       omitPrincipalIds: [principalId],
     })
     if (prepared instanceof Response) return prepared
@@ -1804,6 +1834,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         kind: target.kind,
         provider: target.provider,
         username: target.username,
+        appliedUsername: target.appliedUsername,
         managedId: target.managedId,
         metadata: target.metadata,
         options: target.options,

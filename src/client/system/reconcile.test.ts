@@ -671,6 +671,7 @@ async function withConsumerOnlyManagedFixtures(
       kind: 'database',
       provider: 'postgres',
       username: 'appuser',
+      appliedUsername: 'appuser',
       managedId: cluster!.id,
     })
     .returning({ id: principal.id })

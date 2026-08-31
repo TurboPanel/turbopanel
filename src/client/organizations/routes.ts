@@ -15,7 +15,10 @@ import {
 } from "../shared.ts";
 import { type Db, getDb } from "../../db.ts";
 import { organization } from "../../lib/db/schema.ts";
-import { parseOrganizationOptions } from "../../lib/organization-options.ts";
+import {
+  parseOrganizationOptions,
+  resolveRandomizedPrincipalUsernames,
+} from "../../lib/organization-options.ts";
 import { loadOrgServerCapacity } from "../../lib/server-capacity.ts";
 import { listTimezones } from "../../lib/timezones.ts";
 import {
@@ -82,6 +85,10 @@ export function registerOrganizationRoutes(
   );
   router.use(
     "/organizations/:id/managed-defaults",
+    createSessionMiddleware(secrets),
+  );
+  router.use(
+    "/organizations/:id/principal-defaults",
     createSessionMiddleware(secrets),
   );
   router.use("/timezones", createSessionMiddleware(secrets));
@@ -468,6 +475,72 @@ export function registerOrganizationRoutes(
     }).where(eq(organization.id, id));
 
     return c.json(managedDefaultsPutResponse(next));
+  });
+
+  router.get("/organizations/:id/principal-defaults", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    const options = parseOrganizationOptions(orgRow.options);
+    return c.json({
+      randomizedUsernames: options.randomizedPrincipalUsernames ?? null,
+      effectiveRandomizedUsernames: resolveRandomizedPrincipalUsernames(
+        options,
+      ),
+    });
+  });
+
+  router.put("/organizations/:id/principal-defaults", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
+
+    // `null` clears the override back to the platform default (on); only
+    // affects principals created after the change — nothing is renamed.
+    const value = (body as Record<string, unknown>).randomizedUsernames;
+    if (value !== null && typeof value !== "boolean") {
+      return c.json({ error: "Invalid request" }, 400);
+    }
+
+    const [orgRow] = await db
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    const patch = value === null
+      ? sql`COALESCE(${organization.options}, '{}'::jsonb) - 'randomizedPrincipalUsernames'`
+      : sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+        JSON.stringify({ randomizedPrincipalUsernames: value })
+      }::jsonb`;
+    await db.update(organization).set({
+      options: patch,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id));
+
+    return c.json({
+      ok: true as const,
+      randomizedUsernames: value,
+      effectiveRandomizedUsernames: value ?? true,
+    });
   });
 
   router.get("/timezones", (c) => {

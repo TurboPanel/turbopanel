@@ -28,10 +28,10 @@ import type { CommandQueue } from './lib/commands/queue.ts'
 import { isTransientError, processCommandEnvelope } from './lib/commands/consumer.ts'
 import { parseCommandEnvelope } from './lib/commands/envelope.ts'
 import {
-  resolveAnalyticsEngineSqlConfig,
+  resolveCloudflareAnalyticsSqlConfig,
   resolveServerMetricsStore,
   type AnalyticsEngineDatasetLike,
-} from './daemon/metrics/store-selection.ts'
+} from './daemon/metrics/store-selection-workers.ts'
 import { setServerStatusEventSink } from './daemon/metrics/status-events.ts'
 import type { ServerMetricsStore } from './daemon/metrics/types.ts'
 import {
@@ -123,7 +123,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     runtime: 'workers',
     analyticsEngine: (env as { SERVER_METRICS?: AnalyticsEngineDatasetLike })
       .SERVER_METRICS,
-    analyticsEngineSql: resolveAnalyticsEngineSqlConfig(env),
+    analyticsEngineSql: resolveCloudflareAnalyticsSqlConfig(env),
   })
   setServerStatusEventSink(cachedServerMetricsStore)
   cachedExecutionLogStore = resolveExecutionLogStore({

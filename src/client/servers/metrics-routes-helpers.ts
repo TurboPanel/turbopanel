@@ -3,8 +3,7 @@
  * response shaping without a Hono Context.
  */
 
-import { AnalyticsEngineServerMetricsStore } from '../../daemon/metrics/analytics-engine/store.ts'
-import { ClickHouseServerMetricsStore } from '../../daemon/metrics/clickhouse/store.ts'
+import { CloudflareAnalyticsEngineServerMetricsStore } from '../../daemon/metrics/backends/cloudflare/store.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
 import type {
   MetricsBackendKind,
@@ -17,17 +16,93 @@ export type IsoTimestampParseResult =
   | { ok: true; ms: number; iso: string }
   | { ok: false; message: string }
 
+/** Max characters accepted for one sensor / hosting-path override value. */
+export const MAX_METRICS_OVERRIDE_VALUE_CHARS = 512
+
+const METRICS_OVERRIDE_KEYS = [
+  'cpuTemperature',
+  'gpuTemperature',
+  'cpuPower',
+  'gpuPower',
+  'hostingPath',
+] as const
+
+export type MetricsOverrideKey = (typeof METRICS_OVERRIDE_KEYS)[number]
+
+export type SensorOverridesBodyParse =
+  | { ok: true; updates: { [K in MetricsOverrideKey]?: string | null } }
+  | { ok: false; message: string }
+
+type OverrideValueParse =
+  | { ok: true; value: string | null }
+  | { ok: false; message: string }
+
+/** One override field: `null` clears, a string sets (blank after trim clears). */
+function parseOverrideValue(
+  key: MetricsOverrideKey,
+  value: unknown,
+): OverrideValueParse {
+  if (value === null) return { ok: true, value: null }
+  if (typeof value !== 'string') {
+    return { ok: false, message: `${key} must be a string or null` }
+  }
+  if (value.length > MAX_METRICS_OVERRIDE_VALUE_CHARS) {
+    return { ok: false, message: `${key} exceeds max length` }
+  }
+  const trimmed = value.trim()
+  if (
+    key === 'hostingPath' && trimmed.length > 0 &&
+    (!trimmed.startsWith('/') || /[\s\p{Cc}]/u.test(trimmed))
+  ) {
+    return {
+      ok: false,
+      message: 'hostingPath must be an absolute path without whitespace',
+    }
+  }
+  return { ok: true, value: trimmed.length > 0 ? trimmed : null }
+}
+
+/**
+ * Parse `PUT /servers/:id/metrics/sensor-overrides` — each field is an
+ * optional string (set) or `null` (clear); unknown fields are rejected so a
+ * typo cannot silently no-op.
+ */
+export function parseSensorOverridesBody(
+  body: unknown,
+): SensorOverridesBodyParse {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, message: 'expected a JSON object of override fields' }
+  }
+  const record = body as Record<string, unknown>
+  const known = new Set<string>(METRICS_OVERRIDE_KEYS)
+  for (const key of Object.keys(record)) {
+    if (!known.has(key)) {
+      return { ok: false, message: `unknown override field: ${key}` }
+    }
+  }
+  const updates: { [K in MetricsOverrideKey]?: string | null } = {}
+  for (const key of METRICS_OVERRIDE_KEYS) {
+    const value = record[key]
+    if (value === undefined) continue
+    const parsed = parseOverrideValue(key, value)
+    if (!parsed.ok) return parsed
+    updates[key] = parsed.value
+  }
+  return { ok: true, updates }
+}
+
 export function resolveStoreBackendKind(
   store: ServerMetricsStore | undefined,
   runtime: AuthRouteOpts['runtime'],
 ): MetricsBackendKind {
   if (!store) return 'disabled'
   if (store instanceof DisabledServerMetricsStore) return 'disabled'
-  if (store instanceof AnalyticsEngineServerMetricsStore) {
+  if (store instanceof CloudflareAnalyticsEngineServerMetricsStore) {
     return 'analytics-engine'
   }
-  if (store instanceof ClickHouseServerMetricsStore) return 'clickhouse'
-  return runtime === 'workers' ? 'analytics-engine' : 'clickhouse'
+  // Deno → DuckDB (or unavailable DuckDB). Workers bundles must not import the
+  // native DuckDB store — runtime is the only discriminator left here.
+  return runtime === 'workers' ? 'analytics-engine' : 'duckdb'
 }
 
 export function parseIsoTimestampQuery(

@@ -88,6 +88,8 @@ export function parseCreatePrincipalOptions(
 
 export type InsertedProjectPrincipal = {
   id: string
+  /** Login actually created on the host (short name + optional random suffix). */
+  appliedUsername: string
   uid?: number
   gid?: number
 }
@@ -100,6 +102,7 @@ export function projectPrincipalCreateResponse(
     return {
       ok: true as const,
       id: inserted.id,
+      appliedUsername: inserted.appliedUsername,
       uid: inserted.uid,
       gid: inserted.gid,
       serviceIds,
@@ -108,6 +111,7 @@ export function projectPrincipalCreateResponse(
   return {
     ok: true as const,
     id: inserted.id,
+    appliedUsername: inserted.appliedUsername,
     serviceIds,
   }
 }
@@ -188,4 +192,55 @@ export function parseAccessField(
   const raw = body.access
   if (!isPrincipalAccessLevel(raw)) return null
   return shellForAccessLevel(raw)
+}
+
+export const MIN_PRINCIPAL_PASSWORD_LENGTH = 8
+export const MAX_PRINCIPAL_PASSWORD_LENGTH = 128
+
+/**
+ * Parse the optional `password` on a set-password request.
+ *
+ * Absent means "generate one for me" — the show-once flow, and the one most
+ * operators should take. A supplied value must be printable and within
+ * bounds; control characters are rejected because they cannot be typed back
+ * at an `ssh` prompt, so accepting one would store a password that can never
+ * authenticate.
+ */
+export function parsePrincipalPasswordField(
+  body: Record<string, unknown>,
+): { password?: string } | null {
+  if (!('password' in body) || body.password === undefined) return {}
+  const raw = body.password
+  if (typeof raw !== 'string') return null
+  if (
+    raw.length < MIN_PRINCIPAL_PASSWORD_LENGTH ||
+    raw.length > MAX_PRINCIPAL_PASSWORD_LENGTH
+  ) {
+    return null
+  }
+  if (/\p{Cc}/u.test(raw)) return null
+  return { password: raw }
+}
+
+const GENERATED_PASSWORD_LENGTH = 20
+const GENERATED_PASSWORD_ALPHABET =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+
+/**
+ * Random show-once password: 20 base62 chars (~119 bits), unbiased via
+ * rejection sampling, and typable anywhere — no shell-hostile symbols to
+ * mis-copy over a phone call.
+ */
+export function generatePrincipalPassword(): string {
+  const limit = 256 - (256 % GENERATED_PASSWORD_ALPHABET.length)
+  let out = ''
+  while (out.length < GENERATED_PASSWORD_LENGTH) {
+    const bytes = new Uint8Array(GENERATED_PASSWORD_LENGTH * 2)
+    crypto.getRandomValues(bytes)
+    for (const byte of bytes) {
+      if (byte >= limit || out.length >= GENERATED_PASSWORD_LENGTH) continue
+      out += GENERATED_PASSWORD_ALPHABET[byte % GENERATED_PASSWORD_ALPHABET.length]
+    }
+  }
+  return out
 }

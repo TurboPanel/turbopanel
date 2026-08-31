@@ -41,6 +41,7 @@ import {
   loadStorageMaterial,
   localManagedNetworkServiceNames,
   mergeProjectEnvironmentCompose,
+  nativeAppServicesForDeploy,
   readHostingProxyFromOptions,
   resolveHostingBindAddress,
   resolveProjectEnvironmentComposeLayers,
@@ -560,6 +561,36 @@ describe("loadPrincipalMaterial home and shell", () => {
     ]);
     assertEquals(material.length, 1);
     assertEquals(material[0]?.principalId, principalId);
+  });
+
+  it("carries a stored crypt hash and adds the password access group", async () => {
+    const passwordHash = `$6$saltstring$${"a".repeat(86)}`;
+    const db = createSelectWhereDb([{
+      id: principalId,
+      username,
+      options: { shell: "/bin/bash" },
+      password: passwordHash,
+    }]);
+    const material = await loadPrincipalMaterial(db, [principalId]);
+    assertEquals(material[0]?.passwordHash, passwordHash);
+    // A password is a credential: the level group resolves even with zero
+    // keys, and the password group rides alongside it.
+    assertEquals(material[0]?.accessGroups, ["tpshell", "tppasswd"]);
+  });
+
+  it("never forwards a password value that is not a crypt hash", async () => {
+    // Defence in depth for the column's other tenant: a managed principal's
+    // sealed envelope must not reach `chpasswd -e` on a host.
+    const db = createSelectWhereDb([{
+      id: principalId,
+      username,
+      options: { shell: "/bin/bash" },
+      password: "sealed:v1:AAAA",
+    }]);
+    const material = await loadPrincipalMaterial(db, [principalId]);
+    assertEquals(material[0]?.passwordHash, undefined);
+    assertEquals("passwordHash" in (material[0] ?? {}), false);
+    assertEquals(material[0]?.accessGroups, []);
   });
 });
 
@@ -1294,6 +1325,54 @@ describe("evaluateHealthCheckGates and resourceLimitPrepareError", () => {
       }, {}),
       null,
     );
+  });
+});
+
+describe("nativeAppServicesForDeploy", () => {
+  it("passes appMode, enabled, and startupFile through for a disabled app", () => {
+    const prepared = nativeAppServicesForDeploy(
+      [{
+        composeServiceName: "web",
+        framework: "auto" as const,
+        listenPort: 18100,
+        nodeVersion: "24",
+        appMode: "development" as const,
+        enabled: false,
+        startupFile: "app.js",
+      }],
+      buildServiceOptionsMap([]),
+      {},
+      {},
+    );
+    // The disabled app is still emitted — the daemon stops and disables the
+    // unit instead of starting it; dropping the row would strand the release.
+    assertEquals(prepared, [{
+      composeServiceName: "web",
+      listenPort: 18100,
+      framework: "auto",
+      nodeVersion: "24",
+      appMode: "development",
+      enabled: false,
+      startupFile: "app.js",
+    }]);
+  });
+
+  it("leaves undeclared node app settings absent", () => {
+    const prepared = nativeAppServicesForDeploy(
+      [{
+        composeServiceName: "web",
+        framework: "auto" as const,
+        listenPort: 18100,
+      }],
+      buildServiceOptionsMap([]),
+      {},
+      {},
+    );
+    assertEquals(prepared, [{
+      composeServiceName: "web",
+      listenPort: 18100,
+      framework: "auto",
+    }]);
   });
 });
 

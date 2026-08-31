@@ -922,3 +922,38 @@ test('lintComposeYaml leaves a project with no bound services alone', () => {
     false,
   )
 })
+
+test('lintComposeYaml warns when nodeVersion pins an unoffered series', () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    x-turbopanel:
+      serviceKind: node
+      nodeVersion: "18"
+      source:
+        sourceId: ${SOURCE_ID}
+`)
+  const advisory = issues.find((issue) =>
+    issue.path === 'services.web.x-turbopanel.nodeVersion'
+  )
+  assertEquals(advisory?.level, 'warning')
+  assertEquals(advisory?.blocking, false)
+  assertEquals(advisory?.message.includes('not an offered series'), true)
+})
+
+test('lintComposeYaml stays quiet for an offered node series and its minor pins', () => {
+  for (const version of ['24', '24.17']) {
+    const issues = lintComposeYaml(`services:
+  web:
+    x-turbopanel:
+      serviceKind: node
+      nodeVersion: "${version}"
+      source:
+        sourceId: ${SOURCE_ID}
+`)
+    assertEquals(
+      issues.some((issue) => issue.message.includes('not an offered series')),
+      false,
+      version,
+    )
+  }
+})

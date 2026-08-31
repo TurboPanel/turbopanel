@@ -73,7 +73,7 @@ co-located daemon can connect.
 
 **Production:** dedicated service users — `tp` (daemon + Ansible), `tpctrl`
 (instance, UI, website, mailer, dbstudio), `tpcache` (Redis), `tpdata`
-(Postgres), `tpqueue` (RabbitMQ), `tpmetrics` (ClickHouse), `tpcaddy`
+(Postgres), `tpqueue` (RabbitMQ), `tpcaddy`
 (control-plane Caddy). See `../turbopaneld/AGENTS.md` (Filesystem layout), the
 allocation table below, and the systemd table for ownership, ACLs, and
 `/run/turbopanel` **`2770 tp:tp`** (setgid).
@@ -87,7 +87,6 @@ allocation table below, and the systemd table for ownership, ACLs, and
 | `tpcache`    | 9997    | Redis (+ `redis.sock` access group)                            |
 | `tpdata`     | 9996    | Postgres                                                       |
 | `tpqueue`    | 9995    | RabbitMQ                                                       |
-| `tpmetrics`  | 9994    | ClickHouse                                                     |
 | `tpcaddy`    | 9993    | control-plane Caddy                                            |
 | `tpnginx`    | 9992    | nginx (optional, `web-service-user`)                           |
 | `tpapache`   | 9991    | Apache (optional)                                              |
@@ -103,8 +102,7 @@ deliberately never added to `tp`, and `/opt/turbopanel` + `vendor/` stay
 those two directories (`node-app-runtime` role), never through world bits.
 
 **Application logins are unchanged** — `postgres_user`/`postgres_db` =
-`turbopanel`, RabbitMQ user = `turbopanel`, `clickhouse_app_user` =
-`turbopanel_app`, `clickhouse_database` = `turbopanel_metrics`, Docker
+`turbopanel`, RabbitMQ user = `turbopanel`, Docker
 network/volumes = `turbopanel*`.
 
 ## Documentation discipline
@@ -657,7 +655,7 @@ the linked doc.
 | 1 | **Command state** — `command` rows, status, timings, `context` | Relational, transactional, filtered/joined; source of truth | Postgres via Hyperdrive | Postgres (co-located) | `src/lib/commands/AGENTS.md` |
 | 2 | **Command execution material** — the one-shot daemon payload | Written once, read once, then deleted (~24 h on failure) | Postgres `dispatch` side table | Postgres `dispatch` side table | `src/lib/db/AGENTS.md` |
 | 3 | **Deploy/build transcript** — a command's stdout/stderr | `GET` by known `commandId`, whole or resumed from an offset — **never scanned across commands** | R2 keyed objects (`EXECUTION_LOGS`) | Filesystem under the state tree (or S3) | `src/lib/execution-logs/AGENTS.md` |
-| 4 | **Analytics** — host metrics + connection-status events | Aggregate over time buckets; sampled, disposable | Analytics Engine | ClickHouse `turbopanel_server_metrics` | `src/daemon/metrics/AGENTS.md` |
+| 4 | **Analytics** — host metrics + connection-status events | Aggregate over time buckets; sampled, disposable | Analytics Engine | DuckDB + Parquet under the metrics state root (`resolveMetricsDir()`) | `src/daemon/metrics/AGENTS.md` |
 
 Container output is tailed live (on-demand `docker container logs` via a
 correlated cell round trip) and is **never stored**. It is not a storage
@@ -673,6 +671,37 @@ when unconfigured (`resolveExecutionLogStore` /
 docs: `../website/docs/architecture/storage-architecture.mdx` (plus
 `deployment-logs.mdx` and `container-logs.mdx`).
 
+## DuckDB packaging (`deno compile` + native addon)
+
+The self-hosted metrics store is embedded DuckDB
+(`@duckdb/node-api`, pinned exactly in `deno.json` imports **and**
+`package.json` — this repo is BYONM, so pnpm owns the actual package install).
+Spike-verified packaging facts, encoded in `src/deno-compile-permissions.test.ts`
+and gated by `deno task duckdb:smoke`:
+
+- `deno compile` bundles the `duckdb.node` addon from `node_modules`
+  automatically and **self-extracts it at runtime**; loading it needs
+  `--allow-ffi` (unscoped — the extraction path is a per-binary temp dir).
+- It does **not** extract the companion `libduckdb.so` the addon links via
+  `RUNPATH $ORIGIN`, and `--include` cannot help (the compiled binary's VFS is
+  invisible to the dynamic linker). The daemon's `instance-build` role stages
+  `libduckdb.so` under `/opt/turbopanel/vendor/duckdb/lib` on every compiled
+  converge (locating it via `scripts/duckdb-native-lib.ts`; converge fails when
+  it cannot be staged) and the instance unit puts that directory on
+  `LD_LIBRARY_PATH` (see `resolveDuckdbNativeLibraryPath` in
+  `src/server-paths.ts`). Source mode (`deno run --allow-ffi`) needs neither —
+  addon and `.so` are real sibling files under `node_modules`.
+- Metrics state lives at `resolveMetricsDir()` (`<stateDir>/metrics`,
+  `TURBOPANEL_METRICS_DIR` override); the compile tasks and the daemon's
+  instance-launch unit grant read+write on it. DuckDB is fully in-process —
+  the metrics store needs no network grant on either surface.
+- `deno task duckdb:smoke` builds the **real** production artifact
+  (`deno task compile` → `dist/turbopanel-instance`) and drives its
+  `duckdb-smoke` subcommand (`src/duckdb-smoke.ts`, routed by `src/deno.ts`) to
+  prove DB create → restart durability → Parquet round trip against the exact
+  binary that ships. **Run it inside the Vagrant guest on both linux-x64 and
+  linux-arm64** (`../dev/AGENTS.md` → Testing), never on the host.
+
 ## Subsystem docs (nested `AGENTS.md`)
 
 Large subsystems live in focused `AGENTS.md` files next to their code — Cursor
@@ -683,7 +712,7 @@ orientation; the detail moved to:
 | Subsystem                         | Read before editing                                 | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | --------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Daemon Cell** (`/ws/daemon/v1`) | `src/daemon/cell/AGENTS.md`                         | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.is_connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column)                                                                                                                                                                          |
-| **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / ClickHouse (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                                                                                                                                                                                                |
+| **Server metrics**                | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / DuckDB + Parquet (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                                                                                                                                                                                                |
 | **Command Pipeline**              | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                                                                                                                                                                                              |
 | **Webhook ingress** (`/webhook/*`) | `src/webhook/AGENTS.md`                            | The six-step gate every inbound webhook runs, why its ordering is load-bearing, how a delivery is resolved to the secret that verifies it, the delivery-claim replay ledger, and what adding a new webhook kind costs                                                                                                                                                                                                                                                                                                                                                              |
 | **Execution logs**                | `src/lib/execution-logs/AGENTS.md`                  | Command transcripts (daemon stdout/stderr): the `ExecutionLogStore` contract, R2 (Workers) / filesystem + S3 (Deno) drivers, seq/seal/truncation semantics, retention on the shared maintenance tick. **Keyed-object GET, not an analytics table** — nothing queries across transcripts. Postgres holds no execution-log column; `hasLog` is resolved store-side. This is the **only** log class TurboPanel stores. Container stdout is a live on-demand tail, never this store. |

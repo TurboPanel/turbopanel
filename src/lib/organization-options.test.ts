@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
+  resolveRandomizedPrincipalUsernames,
   isUnlimitedMaxServers,
   parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
@@ -131,4 +132,26 @@ test("isUnlimitedMaxServers for omitted and null", () => {
   assertEquals(isUnlimitedMaxServers(null), true);
   assertEquals(isUnlimitedMaxServers(0), false);
   assertEquals(isUnlimitedMaxServers(2), false);
+});
+
+Deno.test("randomizedPrincipalUsernames parses and defaults to on", () => {
+  assertEquals(
+    parseOrganizationOptions({ randomizedPrincipalUsernames: false })
+      .randomizedPrincipalUsernames,
+    false,
+  );
+  assertEquals(
+    parseOrganizationOptions({ randomizedPrincipalUsernames: "no" })
+      .randomizedPrincipalUsernames,
+    undefined,
+  );
+  assertEquals(resolveRandomizedPrincipalUsernames({}), true);
+  assertEquals(
+    resolveRandomizedPrincipalUsernames({ randomizedPrincipalUsernames: false }),
+    false,
+  );
+  assertEquals(
+    resolveRandomizedPrincipalUsernames({ randomizedPrincipalUsernames: true }),
+    true,
+  );
 });

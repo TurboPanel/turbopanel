@@ -271,7 +271,8 @@ async function loadClusterUsersForManagedIds(
     .select({
       managedId: principal.managedId,
       id: principal.id,
-      username: principal.username,
+      // Applied login — ProxySQL frontend usernames are what clients type.
+      username: principal.appliedUsername,
       metadata: principal.metadata,
       password: principal.password,
     })

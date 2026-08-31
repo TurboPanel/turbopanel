@@ -335,6 +335,40 @@ test("preview prefers the compose branch and binding subdirectory", async () => 
   assertEquals(result[0]?.build.kind, "native");
 });
 
+test("the owning service's packageManager rides onto build.packageManager", async () => {
+  const result = await resolveDeploySourceMaterial(
+    mockContext(),
+    fakeDb([[sourceRow()], []]),
+    baseParams({
+      services: {
+        web: {
+          "x-turbopanel": {
+            serviceKind: "node",
+            packageManager: "pnpm",
+            source: { sourceId: SOURCE_ID },
+          },
+        },
+      },
+    }),
+  );
+  if (!Array.isArray(result)) {
+    throw new TypeError("expected preview source material");
+  }
+  assertEquals(result[0]?.build, { kind: "native", packageManager: "pnpm" });
+});
+
+test("an undeclared packageManager stays off the build", async () => {
+  const result = await resolveDeploySourceMaterial(
+    mockContext(),
+    fakeDb([[sourceRow()], []]),
+    baseParams(),
+  );
+  if (!Array.isArray(result)) {
+    throw new TypeError("expected preview source material");
+  }
+  assertEquals(result[0]?.build, { kind: "native" });
+});
+
 test("preview sorts bindings and pins a webhook SHA to one source only", async () => {
   const result = await resolveDeploySourceMaterial(
     mockContext(),

@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertMatch } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -228,12 +228,15 @@ test('POST /projects/:projectId/principals persists default shell when options o
     const body = await res.json() as {
       ok: boolean
       id: string
+      appliedUsername: string
       uid?: number
       gid?: number
     }
     assertEquals(body.ok, true)
     assertEquals(body.uid, undefined)
     assertEquals(body.gid, undefined)
+    // Default org toggle on: the host account gets a random `_<11>` suffix.
+    assertMatch(body.appliedUsername, /^appuser_[a-z0-9]{11}$/)
 
     const [row] = await db
       .select({
@@ -241,13 +244,17 @@ test('POST /projects/:projectId/principals persists default shell when options o
         provider: principal.provider,
         metadata: principal.metadata,
         username: principal.username,
+        appliedUsername: principal.appliedUsername,
       })
       .from(principal)
       .where(eq(principal.id, body.id))
       .limit(1)
     assertEquals(row?.options, { shell: DEFAULT_PRINCIPAL_SHELL })
     assertEquals(row?.provider, 'server')
-    assertEquals(row?.metadata, { home: principalHomeDir('appuser') })
+    assertEquals(row?.username, 'appuser')
+    assertEquals(row?.appliedUsername, body.appliedUsername)
+    // Home follows the applied login — that's the account on the host.
+    assertEquals(row?.metadata, { home: principalHomeDir(body.appliedUsername) })
   })
 })
 
@@ -375,16 +382,42 @@ test('POST /projects/:projectId/principals accepts max-length username and rejec
       [ORG_ID_HEADER]: organizationId,
       'Content-Type': 'application/json',
     }
-    // 28 chars — longest that still fits `<username>-grp` in 32.
-    const longest = `u${'a'.repeat(27)}`
-    assertEquals(longest.length, 28)
+    // Default toggle on: 16 chars is the longest short name that still fits
+    // the random `_<11>` applied suffix inside the 28-char host limit.
+    const longestSuffixed = `u${'a'.repeat(15)}`
+    assertEquals(longestSuffixed.length, 16)
 
     const ok = await app.request(`/projects/${projectId}/principals`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ username: longest }),
+      body: JSON.stringify({ username: longestSuffixed }),
     })
     assertEquals(ok.status, 200)
+
+    const tooLongForSuffix = `u${'a'.repeat(16)}`
+    assertEquals(tooLongForSuffix.length, 17)
+    const suffixBad = await app.request(`/projects/${projectId}/principals`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username: tooLongForSuffix }),
+    })
+    assertEquals(suffixBad.status, 400)
+    assertEquals(await suffixBad.json(), { error: 'username_too_long' })
+
+    // Toggle off: the full 28-char host limit applies to the bare name.
+    await db.update(organization).set({
+      options: { randomizedPrincipalUsernames: false },
+    }).where(eq(organization.id, organizationId))
+
+    // 28 chars — longest that still fits `<username>-grp` in 32.
+    const longest = `u${'a'.repeat(27)}`
+    assertEquals(longest.length, 28)
+    const okBare = await app.request(`/projects/${projectId}/principals`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username: longest }),
+    })
+    assertEquals(okBare.status, 200)
 
     const overlong = `u${'a'.repeat(28)}`
     assertEquals(overlong.length, 29)
@@ -512,6 +545,147 @@ test('POST /projects/:projectId/principals accepts uid and gid override', async 
     const body = await res.json() as { ok: boolean; uid: number; gid: number }
     assertEquals(body.uid, 10001)
     assertEquals(body.gid, 10001)
+  })
+})
+
+test('POST and DELETE /projects/:projectId/principals/:id/password round-trip', async () => {
+  await withPrincipalFixtures(async ({
+    app,
+    db,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+
+    const create = await app.request(`/projects/${projectId}/principals`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username: 'pwuser' }),
+    })
+    assertEquals(create.status, 200)
+    const created = await create.json() as { id: string }
+    const passwordUrl =
+      `/projects/${projectId}/principals/${created.id}/password`
+
+    // No body password → generated, returned exactly once.
+    const generated = await app.request(passwordUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({}),
+    })
+    assertEquals(generated.status, 200)
+    const generatedBody = await generated.json() as {
+      ok: boolean
+      generatedPassword?: string
+    }
+    assertEquals(generatedBody.ok, true)
+    assertEquals(generatedBody.generatedPassword?.length, 20)
+
+    // The row stores the crypt hash, never the plaintext.
+    const [afterSet] = await db
+      .select({ password: principal.password })
+      .from(principal)
+      .where(eq(principal.id, created.id))
+    assertEquals(afterSet!.password?.startsWith('$6$'), true)
+    assertEquals(
+      afterSet!.password?.includes(generatedBody.generatedPassword!),
+      false,
+    )
+
+    const listAfterSet = await app.request(`/projects/${projectId}/principals`, {
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    const listedSet = await listAfterSet.json() as {
+      principals: Array<{ id: string; passwordAuth: boolean }>
+    }
+    assertEquals(listedSet.principals[0]?.passwordAuth, true)
+
+    // A supplied password is accepted and nothing comes back to display.
+    const explicit = await app.request(passwordUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ password: 'correct horse battery' }),
+    })
+    assertEquals(explicit.status, 200)
+    const explicitBody = await explicit.json() as {
+      ok: boolean
+      generatedPassword?: string
+    }
+    assertEquals(explicitBody.generatedPassword, undefined)
+
+    // Disable drops the hash; the list flips back.
+    const disable = await app.request(passwordUrl, {
+      method: 'DELETE',
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    assertEquals(disable.status, 200)
+    const [afterClear] = await db
+      .select({ password: principal.password })
+      .from(principal)
+      .where(eq(principal.id, created.id))
+    assertEquals(afterClear!.password, null)
+
+    const listAfterClear = await app.request(
+      `/projects/${projectId}/principals`,
+      { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
+    )
+    const listedClear = await listAfterClear.json() as {
+      principals: Array<{ id: string; passwordAuth: boolean }>
+    }
+    assertEquals(listedClear.principals[0]?.passwordAuth, false)
+  })
+})
+
+test('POST /projects/:projectId/principals/:id/password rejects a weak or malformed value', async () => {
+  await withPrincipalFixtures(async ({
+    app,
+    db,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+    const create = await app.request(`/projects/${projectId}/principals`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username: 'pwreject' }),
+    })
+    const created = await create.json() as { id: string }
+    const passwordUrl =
+      `/projects/${projectId}/principals/${created.id}/password`
+
+    for (
+      const password of ['short', 'a'.repeat(129), 'has\ncontrol', 42]
+    ) {
+      const res = await app.request(passwordUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ password }),
+      })
+      assertEquals(res.status, 400, JSON.stringify(password))
+      const body = await res.json() as { error: string }
+      assertEquals(body.error, 'invalid_password')
+    }
+
+    // Nothing was stored by any rejected request.
+    const [row] = await db
+      .select({ password: principal.password })
+      .from(principal)
+      .where(eq(principal.id, created.id))
+    assertEquals(row!.password, null)
   })
 })
 

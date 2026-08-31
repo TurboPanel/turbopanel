@@ -13,20 +13,30 @@ import {
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
+const MINUTE_MS = 60 * 1000;
+
 it("selectResolutionSeconds: ladder mapping", () => {
   const base = Date.parse("2026-01-01T00:00:00.000Z");
 
+  assertEquals(
+    selectResolutionSeconds({ fromMs: base, toMs: base + 5 * MINUTE_MS }),
+    10,
+  );
+  assertEquals(
+    selectResolutionSeconds({ fromMs: base, toMs: base + 10 * MINUTE_MS }),
+    10,
+  );
   assertEquals(
     selectResolutionSeconds({ fromMs: base, toMs: base + HOUR_MS }),
     60,
   );
   assertEquals(
     selectResolutionSeconds({ fromMs: base, toMs: base + 6 * HOUR_MS }),
-    60,
+    300,
   );
   assertEquals(
     selectResolutionSeconds({ fromMs: base, toMs: base + 24 * HOUR_MS }),
-    300,
+    900,
   );
   assertEquals(
     selectResolutionSeconds({ fromMs: base, toMs: base + 7 * DAY_MS }),
@@ -34,11 +44,54 @@ it("selectResolutionSeconds: ladder mapping", () => {
   );
   assertEquals(
     selectResolutionSeconds({ fromMs: base, toMs: base + 30 * DAY_MS }),
-    3600,
+    21600,
   );
   assertEquals(
     selectResolutionSeconds({ fromMs: base, toMs: base + 90 * DAY_MS }),
-    86400,
+    43200,
+  );
+});
+
+it("selectResolutionSeconds: exact tier boundaries and the instant above each", () => {
+  const base = Date.parse("2026-01-01T00:00:00.000Z");
+
+  // Exactly 10 minutes stays on the 10 s tier; one second more moves to 60 s.
+  assertEquals(
+    selectResolutionSeconds({ fromMs: base, toMs: base + 10 * MINUTE_MS }),
+    10,
+  );
+  assertEquals(
+    selectResolutionSeconds({
+      fromMs: base,
+      toMs: base + 10 * MINUTE_MS + 1000,
+    }),
+    60,
+  );
+
+  // Exactly 1 hour stays on the 60 s tier; one second more moves to 300 s.
+  assertEquals(
+    selectResolutionSeconds({ fromMs: base, toMs: base + HOUR_MS }),
+    60,
+  );
+  assertEquals(
+    selectResolutionSeconds({ fromMs: base, toMs: base + HOUR_MS + 1000 }),
+    300,
+  );
+
+  // Exactly 90 days lands on the coarsest 43200 s tier, and the resulting
+  // point count (180) stays well under MAX_METRICS_POINTS (1500).
+  assertEquals(
+    selectResolutionSeconds({ fromMs: base, toMs: base + 90 * DAY_MS }),
+    43200,
+  );
+  assertEquals((90 * DAY_MS) / 1000 / 43200, 180);
+  assertEquals((90 * DAY_MS) / 1000 / 43200 <= MAX_METRICS_POINTS, true);
+  assertEquals(
+    selectResolutionSeconds({
+      fromMs: base,
+      toMs: base + 90 * DAY_MS + 1000,
+    }),
+    43200,
   );
 });
 
@@ -64,13 +117,15 @@ it("selectResolutionSeconds: clamps up for max points", () => {
       requested: 60,
       maxPoints: 100,
     }),
-    86400,
+    43200,
   );
 });
 
 it("selectResolutionSeconds: oversized maxPoints cannot bypass server cap", () => {
   const base = Date.parse("2026-01-01T00:00:00.000Z");
   const toMs = base + 90 * DAY_MS;
+  // maxPoints is clamped to MAX_METRICS_POINTS (1500), so the 90-day range
+  // climbs the ladder until 21600 s (360 points) satisfies the server cap.
   assertEquals(
     selectResolutionSeconds({
       fromMs: base,
@@ -78,7 +133,7 @@ it("selectResolutionSeconds: oversized maxPoints cannot bypass server cap", () =
       requested: 60,
       maxPoints: 200_000,
     }),
-    86400,
+    21600,
   );
 });
 
@@ -115,9 +170,10 @@ it("selectResolutionSeconds: ignores disallowed requested values and inverted ra
     }),
     60,
   );
+  // Inverted range collapses to zero width — the finest (10 s) tier.
   assertEquals(
     selectResolutionSeconds({ fromMs: base + HOUR_MS, toMs: base }),
-    60,
+    10,
   );
 });
 

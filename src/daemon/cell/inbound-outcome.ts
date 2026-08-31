@@ -47,6 +47,11 @@ export function deriveInboundOutcome(
     case "managed-logs-result":
     case "container-logs-result":
       return inboundOutcomeFromError({ logs: inbound.logs }, inbound.error);
+    case "metrics-capabilities-result":
+      return inboundOutcomeFromError(
+        { capabilities: inbound.capabilities },
+        inbound.error,
+      );
     case "fabric-paths-result":
       return inboundOutcomeFromError({ paths: inbound.paths }, inbound.error);
     case "command-outcome":
@@ -59,6 +64,9 @@ export function deriveInboundOutcome(
     case "dev-sync-result":
     case "tunnel-token-result":
     case "update-result":
+    case "metrics-live-start-result":
+    case "metrics-live-stop-result":
+    case "metrics-sensor-overrides-update-result":
       return inboundOutcomeFromOk(
         inbound.ok,
         inbound.error,

@@ -42,7 +42,7 @@ import {
 const DEFAULT_IMAGE = requireDefaultManagedImage('mariadb')
 const DEFAULT_PORT = 3306
 const ROOT_USERNAME = 'root'
-const DEFAULT_DATABASE = 'appdb'
+const DEFAULT_DATABASE = 'defaultdb'
 const COMPOSE_SERVICE_NAME = 'mariadb'
 const PLATFORM_SOCKET_ADMIN = 'root'
 const CONTAINER_USER = 'mysql'

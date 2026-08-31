@@ -41,7 +41,7 @@ The co-located dev server has live data — treat every database change as
 production-adjacent.
 
 **Server metrics is never stored in Postgres.** Host metrics live in Analytics
-Engine (Workers) or ClickHouse (Deno) only — see instance `AGENTS.md` (Server
+Engine (Workers) or DuckDB (Deno) only — see instance `AGENTS.md` (Server
 metrics). Do not add metrics tables or columns here; there are no per-minute
 Postgres projection writes for metrics.
 
@@ -761,7 +761,7 @@ stored as a column or CHECK constraint. The `/servers/status` and
 `/servers/:id/status` endpoints serve this read model; reads are Postgres-only
 and do not call the DO/Redis cell by default; both runtimes share the same
 response shape. A separate, independent **status event history** in Analytics
-Engine/ClickHouse (`src/daemon/metrics/AGENTS.md`) exists for historical
+Engine/DuckDB (`src/daemon/metrics/AGENTS.md`) exists for historical
 uptime/downtime charts — it is history-only and never authoritative for current
 liveness. See `src/daemon/cell/AGENTS.md` for cost/parity rules.
 

@@ -11,6 +11,7 @@ import type { Db } from "../../db.ts";
 import { parseServerDaemonState } from "../authn/daemon-state.ts";
 import type {
   ServerDockerMetadata,
+  ServerMetricsOverrides,
   ServerRuntimeMetadata,
   ServerMetadata,
   ServerOsMetadata,
@@ -21,6 +22,7 @@ import {
   resolveServerOsForRead,
   parseServerHostResources,
   parseServerDockerMetadata,
+  parseServerMetricsOverrides,
   parseServerRuntimeMetadata,
   timeSyncFromColumns,
 } from "../../lib/db/server-metadata.ts";
@@ -76,6 +78,11 @@ export type ServerFleetPresence = {
    * Prepare treats that as "unknown", never as "absent".
    */
   runtimes: ServerRuntimeMetadata | null;
+  /**
+   * From `server.metadata.metricsOverrides` — operator-selected sensor /
+   * hosting-path overrides. `null` when none are set.
+   */
+  metricsOverrides: ServerMetricsOverrides | null;
 };
 
 function normalizeRemoteAddress(
@@ -226,6 +233,8 @@ export async function resolveFleetPresence(
       ips,
       docker: parseServerDockerMetadata(metadata.docker) ?? null,
       runtimes: parseServerRuntimeMetadata(metadata.runtimes) ?? null,
+      metricsOverrides: parseServerMetricsOverrides(metadata.metricsOverrides) ??
+        null,
     });
   }
 

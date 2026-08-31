@@ -489,12 +489,21 @@ still walk, on PostgreSQL, MySQL, and MariaDB:
 
 ## Login namespace
 
-Managed usernames (including root) are unique across every cluster landing on
-servers owned by the same organization (`server.organization_id` — not the
-creating org). Root is resolved at create via
-`resolveAvailableManagedRootUsername` and persisted on
-`managed.metadata.rootUsername` (spec `rootUsername` is only the default
-preference). User create uses the same org-wide probe under `FOR UPDATE` locks
+Every managed principal has a short internal `username` and an
+`applied_username` — the actual engine login. With the org
+randomized-usernames default on (`organization.options.randomizedPrincipalUsernames`,
+platform default **on**), the applied login is `<short>_<11 random chars>`
+(`resolveManagedAppliedUsername`); off, it is the short name. Root is
+**always** suffixed regardless (`postgres_<11 rand>` / `root_<11 rand>`,
+persisted on `managed.metadata.rootUsername` — spec `rootUsername` is only the
+short name/prefix), so the bare engine admin name is never a login. Applied
+usernames are unique across every cluster landing on servers owned by the same
+organization (`server.organization_id` — not the creating org); the uniqueness
+probe covers both the short and applied columns. The bare `postgres` / `root`
+/ `mysql` accounts stay platform-internal (socket/bootstrap admins), and those
+names plus `superadmin` are rejected for client logins
+(`RESERVED_MANAGED_USERNAMES`). User create uses the same org-wide probe under
+`FOR UPDATE` locks
 **inside the same transaction as principal insert** (`username_in_use` vs
 same-cluster `managed_user_exists`). Adding a replica rechecks every existing
 managed principal against the prospective server owner's namespace before

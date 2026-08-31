@@ -43,9 +43,12 @@ import { registerDaemonApiRoutes } from "./daemon/api-routes.ts";
 import { registerDaemonWebSocket } from "./daemon/deno-ws.ts";
 import {
   parseMetricsRetentionDays,
+  parsePositiveIntEnv,
   resolveServerMetricsStore,
 } from "./daemon/metrics/store-selection.ts";
+import type { ServerMetricsStore } from "./daemon/metrics/types.ts";
 import { setServerStatusEventSink } from "./daemon/metrics/status-events.ts";
+import { setActiveServerMetricsStore } from "./daemon/metrics/active-store.ts";
 import {
   parseExecutionLogDriver,
   parseExecutionLogRetentionDays,
@@ -180,6 +183,35 @@ async function startOptionalCommandConsumer(opts: {
   }
 }
 
+/**
+ * Arm the DuckDB store's daily Parquet-archive timer. No-ops for stores
+ * without one (e.g. the disabled fallback store) so boot stays backend-neutral.
+ */
+function startMetricsDailyArchiveIfSupported(store: ServerMetricsStore): void {
+  const candidate = store as ServerMetricsStore & {
+    startDailyArchiveTimer?: () => void;
+  };
+  candidate.startDailyArchiveTimer?.();
+}
+
+/**
+ * Flush and close the metrics store on shutdown so batched-but-unflushed
+ * accepted samples are persisted before the process exits. No-ops for stores
+ * without a close() (e.g. the disabled fallback store).
+ */
+async function closeMetricsStoreIfSupported(
+  store: ServerMetricsStore,
+): Promise<void> {
+  const candidate = store as ServerMetricsStore & {
+    close?: () => Promise<void>;
+  };
+  try {
+    await candidate.close?.();
+  } catch (err) {
+    logWarn("metrics", `metrics store close on shutdown failed: ${String(err)}`);
+  }
+}
+
 function resolveCommandAmqpUrl(): string | null {
   const envUrl = Deno.env.get("TURBOPANEL_AMQP_URL");
   if (envUrl?.trim() === "") {
@@ -241,19 +273,25 @@ export async function startDenoServer(
     client: daemonCellRegistry.client,
     db,
   });
+  // Metrics directory itself stays unconfigured here — `resolveMetricsDir()`
+  // already reads TURBOPANEL_METRICS_DIR inside the DuckDB store.
   const serverMetricsStore = resolveServerMetricsStore({
     runtime: "deno",
-    clickhouse: {
-      url: Deno.env.get("TURBOPANEL_CLICKHOUSE_URL"),
-      database: Deno.env.get("TURBOPANEL_CLICKHOUSE_DATABASE"),
-      user: Deno.env.get("TURBOPANEL_CLICKHOUSE_USER"),
-      password: Deno.env.get("TURBOPANEL_CLICKHOUSE_PASSWORD"),
+    duckdb: {
       retentionDays: parseMetricsRetentionDays(
         Deno.env.get("TURBOPANEL_SERVER_METRICS_RETENTION_DAYS"),
+      ),
+      threads: parsePositiveIntEnv(
+        Deno.env.get("TURBOPANEL_SERVER_METRICS_DUCKDB_THREADS"),
+      ),
+      memoryLimitMb: parsePositiveIntEnv(
+        Deno.env.get("TURBOPANEL_SERVER_METRICS_DUCKDB_MEMORY_LIMIT"),
       ),
     },
   });
   setServerStatusEventSink(serverMetricsStore);
+  setActiveServerMetricsStore(serverMetricsStore);
+  startMetricsDailyArchiveIfSupported(serverMetricsStore);
   const executionLogRetentionDays = parseExecutionLogRetentionDays(
     Deno.env.get("TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS"),
   );
@@ -527,6 +565,9 @@ export async function startDenoServer(
       await commandQueue.close?.();
       await commandConsumer?.close();
       await daemonCellRegistry.close();
+      // Persist any pending batched metrics rows before tearing the process
+      // down — accepted (202) samples must survive a normal SIGINT/SIGTERM.
+      await closeMetricsStoreIfSupported(serverMetricsStore);
       abort.abort();
     });
   }

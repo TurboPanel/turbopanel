@@ -64,6 +64,7 @@ import {
   resolveDockerVolumeName,
 } from "../../lib/naming.ts";
 import { accessGroupsFor } from "../../lib/principal-access.ts";
+import { SHA512_CRYPT_HASH_RE } from "../../lib/sha512-crypt.ts";
 import {
   cronToOnCalendar,
   MAX_CRON_JOBS_PER_SERVICE,
@@ -888,7 +889,8 @@ export async function loadStorageMaterial(
       name: storage.name,
       accessMode: storage.accessMode,
       principalId: storage.principalId,
-      principalUsername: principal.username,
+      // Applied login — volume paths live under /srv/users/<applied>/volumes.
+      principalUsername: principal.appliedUsername,
       contentEnvelope: storage.contentEnvelope,
       locationServerId: storageCopy.serverId,
       provider: storageCopy.provider,
@@ -1100,8 +1102,11 @@ export async function loadPrincipalMaterial(
   const rows = await db
     .select({
       id: principal.id,
-      username: principal.username,
+      // Applied login — the Linux account name (`useradd`, home, keys, slice)
+      // is the applied username; the short `username` is panel-internal.
+      username: principal.appliedUsername,
       options: principal.options,
+      password: principal.password,
     })
     .from(principal)
     .where(inArray(principal.id, uniqueIds));
@@ -1124,6 +1129,14 @@ export async function loadPrincipalMaterial(
     }));
     const shell = resolvePrincipalShell(options);
     const keys = sshKeys.get(row.id) ?? [];
+    // Password sign-in is on exactly when the row holds a crypt hash. The
+    // format gate matters: for a server principal the column only ever holds
+    // a sha512-crypt hash, but anything else (or a value from before this
+    // gate) must not be forwarded to `chpasswd -e` on a host.
+    const passwordHash =
+      typeof row.password === "string" && SHA512_CRYPT_HASH_RE.test(row.password)
+        ? row.password
+        : undefined;
     // naming.ts is the single source of truth for home; metadata.home is a
     // mirror for display only.
     material.push({
@@ -1131,11 +1144,14 @@ export async function loadPrincipalMaterial(
       username: row.username,
       home: principalHomeDir(row.username),
       shell,
-      // The effective set, decided here: an account with no keys gets no access
-      // group whatever its shell says, because there would be nothing for it to
-      // authenticate with. See `lib/principal-access.ts`.
-      accessGroups: [...accessGroupsFor(shell, keys.length)],
+      // The effective set, decided here: an account with no credential at all
+      // gets no access group whatever its shell says, because there would be
+      // nothing for it to authenticate with. See `lib/principal-access.ts`.
+      accessGroups: [
+        ...accessGroupsFor(shell, keys.length, passwordHash !== undefined),
+      ],
       sshKeys: keys,
+      ...(passwordHash === undefined ? {} : { passwordHash }),
       ...(override ? { uid: override.uid, gid: override.gid } : {}),
       ...(runtimes.length > 0 ? { runtimes } : {}),
     });
@@ -1700,6 +1716,11 @@ function nativeAppServicesForDeploy(
       ...(app.nodeVersion === undefined
         ? {}
         : { nodeVersion: app.nodeVersion }),
+      ...(app.appMode === undefined ? {} : { appMode: app.appMode }),
+      ...(app.enabled === undefined ? {} : { enabled: app.enabled }),
+      ...(app.startupFile === undefined
+        ? {}
+        : { startupFile: app.startupFile }),
       ...(perApp === undefined ? {} : { resources: perApp }),
       ...(accountLimits === undefined ? {} : { accountLimits }),
     };

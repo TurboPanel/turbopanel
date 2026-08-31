@@ -337,8 +337,8 @@ test('buildManagedReleaseView derives catalog identity from the image', () => {
   )
 })
 
-test('readInitialDatabase defaults to postgres and honors engine initialDatabase', () => {
-  assertEquals(readInitialDatabase(postgresEngineSpec), 'postgres')
+test('readInitialDatabase defaults to defaultdb and honors engine initialDatabase', () => {
+  assertEquals(readInitialDatabase(postgresEngineSpec), 'defaultdb')
 
   const customSpec = {
     ...postgresEngineSpec,
@@ -350,11 +350,11 @@ test('readInitialDatabase defaults to postgres and honors engine initialDatabase
   assertEquals(readInitialDatabase(customSpec), 'appdb')
 })
 
-test('readInitialDatabase for MySQL/MariaDB defaults to appdb, not system schemas', async () => {
+test('readInitialDatabase for MySQL/MariaDB defaults to defaultdb, not system schemas', async () => {
   const { mysqlEngineSpec } = await import('../../lib/managed/mysql.ts')
   const { mariadbEngineSpec } = await import('../../lib/managed/mariadb.ts')
-  assertEquals(readInitialDatabase(mysqlEngineSpec), 'appdb')
-  assertEquals(readInitialDatabase(mariadbEngineSpec), 'appdb')
+  assertEquals(readInitialDatabase(mysqlEngineSpec), 'defaultdb')
+  assertEquals(readInitialDatabase(mariadbEngineSpec), 'defaultdb')
 })
 
 test('resolveManagedServerId prefers managed.server_id over environment placement', () => {
@@ -385,6 +385,7 @@ test('serializeManagedUser filters databases and privileges to strings', () => {
   const serialized = serializeManagedUser({
     id: 'prin-1',
     username: 'app_user',
+    appliedUsername: 'app_user_ab12cd34ef5',
     metadata: {
       databases: ['postgres', 42, 'app'],
       privileges: ['read-only', null],
@@ -394,6 +395,7 @@ test('serializeManagedUser filters databases and privileges to strings', () => {
   assertEquals(serialized, {
     id: 'prin-1',
     username: 'app_user',
+    appliedUsername: 'app_user_ab12cd34ef5',
     databases: ['postgres', 'app'],
     privileges: ['read-only'],
     // Absent metadata role → the writer hostgroup, never an implicit reader.
@@ -463,6 +465,65 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
   )
   if (!(badName instanceof Response)) throw new TypeError('expected Response')
   assertEquals(badName.status, 400)
+
+  // Reserved platform-internal names stay rejected even when the exposed
+  // root login is a suffixed name that no longer equals them.
+  for (const reserved of ['postgres', 'root', 'mysql', 'superadmin', 'Root']) {
+    const res = parseManagedUserCreateFields(
+      c,
+      mockManagedContext(),
+      { username: reserved, databases: ['postgres'] },
+      options,
+      'postgres_a1b2c3d4',
+    )
+    if (!(res instanceof Response)) throw new TypeError('expected Response')
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), { error: 'Invalid username' })
+  }
+})
+
+test('parseManagedUserCreateFields reserves suffix room when randomized usernames are on', async () => {
+  const c = mockContext()
+  const options = defaultRowOptions()
+  const ctx = mockManagedContext()
+  const maxLength = ctx.spec.userOperations.identifier.maxLength
+  // Longest short name that still fits `_<11>` inside the engine limit.
+  const longest = `u${'a'.repeat(maxLength - 13)}`
+
+  const ok = parseManagedUserCreateFields(
+    c,
+    ctx,
+    { username: longest, databases: ['postgres'] },
+    options,
+    undefined,
+    true,
+  )
+  if (ok instanceof Response) throw new TypeError('expected fields')
+  assertEquals(ok.username, longest)
+
+  const tooLong = `u${'a'.repeat(maxLength - 12)}`
+  const rejected = parseManagedUserCreateFields(
+    c,
+    ctx,
+    { username: tooLong, databases: ['postgres'] },
+    options,
+    undefined,
+    true,
+  )
+  if (!(rejected instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(rejected.status, 400)
+
+  // Without the suffix the full engine limit applies.
+  const bare = parseManagedUserCreateFields(
+    c,
+    ctx,
+    { username: tooLong, databases: ['postgres'] },
+    options,
+    undefined,
+    false,
+  )
+  if (bare instanceof Response) throw new TypeError('expected fields')
+  assertEquals(bare.username, tooLong)
 })
 
 test('parseManagedUserCreateFields rejects unknown databases and privileges', async () => {

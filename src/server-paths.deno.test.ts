@@ -4,6 +4,7 @@ import {
   DEFAULT_CONFIG_DIR,
   DEFAULT_EXECUTION_LOG_DIR,
   DEFAULT_LOG_DIR,
+  DEFAULT_METRICS_DIR,
   DEFAULT_RUN_DIR,
   DEFAULT_SOCKET_DIR,
   DEFAULT_STATE_DIR,
@@ -25,6 +26,7 @@ import {
   resolveInstanceTlsCertPath,
   resolveExecutionLogDir,
   resolveLogDir,
+  resolveMetricsDir,
   resolveRunDir,
   resolveStateDir,
   resolveUiRoot,
@@ -80,11 +82,33 @@ test('execution log dir follows the state dir and its own override', () => {
   )
 })
 
+test('metrics dir follows the state dir and its own override', () => {
+  // Metric history lives under the **state** tree, like execution logs.
+  assertEquals(resolveMetricsDir({}), '/var/lib/turbopanel/metrics')
+  assertEquals(
+    resolveMetricsDir({ TURBOPANEL_STATE_DIR: '/srv/tp-state' }),
+    '/srv/tp-state/metrics',
+  )
+  assertEquals(
+    resolveMetricsDir({ TURBOPANEL_METRICS_DIR: '/mnt/metrics//' }),
+    '/mnt/metrics',
+  )
+  // The dedicated override wins over the state-dir-derived default.
+  assertEquals(
+    resolveMetricsDir({
+      TURBOPANEL_STATE_DIR: '/srv/tp-state',
+      TURBOPANEL_METRICS_DIR: '/mnt/metrics',
+    }),
+    '/mnt/metrics',
+  )
+})
+
 test('exported default constants match the canonical FHS paths', () => {
   assertEquals(DEFAULT_CONFIG_DIR, '/etc/turbopanel')
   assertEquals(DEFAULT_STATE_DIR, '/var/lib/turbopanel')
   assertEquals(DEFAULT_LOG_DIR, '/var/log/turbopanel')
   assertEquals(DEFAULT_EXECUTION_LOG_DIR, '/var/lib/turbopanel/execution-logs')
+  assertEquals(DEFAULT_METRICS_DIR, '/var/lib/turbopanel/metrics')
   assertEquals(DEFAULT_RUN_DIR, '/run/turbopanel')
   assertEquals(DEFAULT_SOCKET_DIR, '/run/turbopanel')
   assertEquals(DEFAULT_UI_ROOT, '/opt/turbopanel/share/ui')

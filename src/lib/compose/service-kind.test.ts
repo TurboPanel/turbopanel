@@ -436,6 +436,125 @@ test('the linter does not require image or build on a node service', () => {
   )
 })
 
+test('the node app settings parse and enabled: false survives the round-trip', () => {
+  assertEquals(
+    parseServiceTurbopanelExtension({
+      serviceKind: 'node',
+      packageManager: 'pnpm',
+      appMode: 'development',
+      enabled: false,
+      documentRoot: 'public',
+      startupFile: 'server.js',
+      source: { sourceId: NODE_SOURCE_ID },
+    }),
+    {
+      serviceKind: 'node',
+      packageManager: 'pnpm',
+      appMode: 'development',
+      enabled: false,
+      documentRoot: 'public',
+      startupFile: 'server.js',
+      source: { sourceId: NODE_SOURCE_ID },
+    },
+  )
+})
+
+test('the node-only settings are rejected on non-node kinds', () => {
+  // `enabled: false` on a site proves the check is presence, not truthiness.
+  const issues = collectServiceTurbopanelValidationIssues({
+    site: {
+      'x-turbopanel': {
+        serviceKind: 'site',
+        packageManager: 'npm',
+        appMode: 'production',
+        enabled: false,
+        documentRoot: 'public',
+        startupFile: 'server.js',
+      },
+    },
+  })
+  for (
+    const field of [
+      'packageManager',
+      'appMode',
+      'enabled',
+      'documentRoot',
+      'startupFile',
+    ]
+  ) {
+    assertEquals(
+      issues.some((issue) =>
+        issue.path === `services.site.x-turbopanel.${field}` &&
+        issue.message === `${field} is only valid when serviceKind is node`
+      ),
+      true,
+      field,
+    )
+  }
+})
+
+test('unsafe documentRoot and startupFile are rejected on a node service', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    web: {
+      'x-turbopanel': {
+        serviceKind: 'node',
+        documentRoot: '../x',
+        startupFile: '/abs',
+        source: { sourceId: NODE_SOURCE_ID },
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.web.x-turbopanel.documentRoot' &&
+      issue.message.includes('relative path')
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.web.x-turbopanel.startupFile' &&
+      issue.message.includes('relative path')
+    ),
+    true,
+  )
+})
+
+test('bad node setting types are reported as raw type issues', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    web: {
+      'x-turbopanel': {
+        serviceKind: 'node',
+        packageManager: 'bun',
+        appMode: 'staging',
+        enabled: 'yes',
+        source: { sourceId: NODE_SOURCE_ID },
+      },
+    },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.web.x-turbopanel.packageManager' &&
+      issue.message.includes('"npm", "yarn", or "pnpm"')
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.web.x-turbopanel.appMode' &&
+      issue.message.includes('"production" or "development"')
+    ),
+    true,
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.web.x-turbopanel.enabled' &&
+      issue.message.includes('true or false')
+    ),
+    true,
+  )
+})
+
 const RAILPACK_SOURCE_ID = "11111111-2222-3333-4444-555555555555"
 
 test("parseServiceSourceExtension keeps a railpack buildKind", () => {

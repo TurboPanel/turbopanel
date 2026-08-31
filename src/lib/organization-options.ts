@@ -57,6 +57,14 @@ export type OrganizationOptions = {
    * override. See `managed/org-defaults.ts`.
    */
   managedDatabase?: ManagedOrganizationDefaults;
+  /**
+   * When on (the default — preferred for security), every newly created
+   * principal's applied login (Linux account / database role) is the short
+   * `username` plus a random `_<11 chars>` suffix. Off = applied login equals
+   * the short name. Decided per principal at create; toggling never renames
+   * existing principals. Managed root logins are always suffixed regardless.
+   */
+  randomizedPrincipalUsernames?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -168,5 +176,15 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
     options.defaultFabricEnabled = value.defaultFabricEnabled;
   }
   assignManagedDatabase(options, value);
+  if (typeof value.randomizedPrincipalUsernames === "boolean") {
+    options.randomizedPrincipalUsernames = value.randomizedPrincipalUsernames;
+  }
   return options;
+}
+
+/** Effective randomized-usernames default: on unless the org opted out. */
+export function resolveRandomizedPrincipalUsernames(
+  options: OrganizationOptions,
+): boolean {
+  return options.randomizedPrincipalUsernames ?? true;
 }

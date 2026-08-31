@@ -184,6 +184,27 @@ export function parseSignupEnabledBody(body: unknown): SignupEnabledParse {
   return { ok: true, enabled }
 }
 
+export type ServerMetricsLiveSettingsParse =
+  | { ok: true; maxMinutes: number }
+  | { ok: false; error: string }
+
+/**
+ * Shape-only parse of `PUT /settings/server-metrics-live` — the 0-or-5–240
+ * range is enforced by the settings helper at write time.
+ */
+export function parseServerMetricsLiveSettingsBody(
+  body: unknown,
+): ServerMetricsLiveSettingsParse {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'expected { maxMinutes: number }' }
+  }
+  const maxMinutes = (body as { maxMinutes?: unknown }).maxMinutes
+  if (typeof maxMinutes !== 'number' || !Number.isInteger(maxMinutes)) {
+    return { ok: false, error: 'expected { maxMinutes: number }' }
+  }
+  return { ok: true, maxMinutes }
+}
+
 export function parseEmailSettingsUpdates(
   body: unknown,
 ): Record<string, string | null> | null {

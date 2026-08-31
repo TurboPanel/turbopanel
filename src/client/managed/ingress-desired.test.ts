@@ -804,6 +804,7 @@ async function insertBoundConsumer(
       kind: "database",
       provider: "postgres",
       username: params.username,
+      appliedUsername: params.username,
       managedId: managedRow!.id,
     })
     .returning({ id: principal.id });

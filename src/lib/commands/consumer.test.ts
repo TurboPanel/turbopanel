@@ -806,6 +806,7 @@ async function withManagedDestroyFixtures(
         kind: 'database',
         provider: 'postgres',
         username: 'postgres',
+        appliedUsername: 'postgres',
         managedId,
         metadata: { managedRoot: true },
       })

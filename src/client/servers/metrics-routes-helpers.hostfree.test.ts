@@ -3,8 +3,8 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { AnalyticsEngineServerMetricsStore } from '../../daemon/metrics/analytics-engine/store.ts'
-import { ClickHouseServerMetricsStore } from '../../daemon/metrics/clickhouse/store.ts'
+import { CloudflareAnalyticsEngineServerMetricsStore } from '../../daemon/metrics/backends/cloudflare/store.ts'
+import { DuckDbParquetServerMetricsStore } from '../../daemon/metrics/backends/duckdb/store.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
 import type { StatusHistoryResult } from '../../daemon/metrics/types.ts'
 import {
@@ -37,17 +37,25 @@ test('resolveStoreBackendKind covers store types and runtime fallbacks', () => {
   )
   assertEquals(
     resolveStoreBackendKind(
-      Object.create(AnalyticsEngineServerMetricsStore.prototype),
+      Object.create(CloudflareAnalyticsEngineServerMetricsStore.prototype),
       'deno',
     ),
     'analytics-engine',
   )
   assertEquals(
     resolveStoreBackendKind(
-      Object.create(ClickHouseServerMetricsStore.prototype),
+      Object.create(DuckDbParquetServerMetricsStore.prototype),
+      'deno',
+    ),
+    'duckdb',
+  )
+  // Workers bundles cannot import DuckDB — non-AE stores fall back by runtime.
+  assertEquals(
+    resolveStoreBackendKind(
+      Object.create(DuckDbParquetServerMetricsStore.prototype),
       'workers',
     ),
-    'clickhouse',
+    'analytics-engine',
   )
 
   const unknownStore = {
@@ -98,7 +106,7 @@ test('resolveStoreBackendKind covers store types and runtime fallbacks', () => {
     },
   }
   assertEquals(resolveStoreBackendKind(unknownStore, 'workers'), 'analytics-engine')
-  assertEquals(resolveStoreBackendKind(unknownStore, 'deno'), 'clickhouse')
+  assertEquals(resolveStoreBackendKind(unknownStore, 'deno'), 'duckdb')
 })
 
 test('parseIsoTimestampQuery requires valid ISO timestamps', () => {
@@ -129,16 +137,16 @@ test('parseOptionalResolution ignores blanks and non-finite values', () => {
 })
 
 test('metricsBackendUnavailableResponse is stable', () => {
-  assertEquals(metricsBackendUnavailableResponse('clickhouse'), {
+  assertEquals(metricsBackendUnavailableResponse('duckdb'), {
     ok: false,
     error: 'metrics_backend_unavailable',
-    backend: 'clickhouse',
+    backend: 'duckdb',
   })
 })
 
 test('connection history payload and cacheability', () => {
   const empty: StatusHistoryResult = {
-    kind: 'clickhouse',
+    kind: 'duckdb',
     available: true,
     serverId: 'srv-1',
     initialConnected: null,
@@ -172,7 +180,7 @@ test('connection history payload and cacheability', () => {
       serverId: 'srv-1',
       from: FROM,
       to: TO,
-      backend: 'clickhouse',
+      backend: 'duckdb',
       available: true,
       initialConnected: null,
       uptimeSeconds: 10,

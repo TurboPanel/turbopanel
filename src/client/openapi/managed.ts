@@ -402,10 +402,15 @@ export const managedSchemas = {
   },
   ManagedUserRecord: {
     type: 'object',
-    required: ['id', 'username', 'databases', 'privileges', 'createdAt'],
+    required: ['id', 'username', 'appliedUsername', 'databases', 'privileges', 'createdAt'],
     properties: {
       id: { type: 'string' },
       username: { type: 'string' },
+      appliedUsername: {
+        type: 'string',
+        description:
+          'Engine login actually created: the short username plus a random _<11 chars> suffix when the org randomized-usernames default was on at create. Connect with this name.',
+      },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: { type: 'array', items: { type: 'string' } },
       createdAt: { type: 'string', format: 'date-time' },

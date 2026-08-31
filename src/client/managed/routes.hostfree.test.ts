@@ -116,7 +116,7 @@ function validOptions() {
   if (!settings) throw new TypeError('failed to parse default postgres settings')
   return {
     settings,
-    databases: ['postgres', 'appdb'],
+    databases: ['defaultdb', 'appdb'],
     backups: [{
       id: BACKUP_ID,
       createdAt: NOW,
@@ -668,7 +668,7 @@ test('GET managed returns the empty detail when no row exists', async () => {
   const body = await jsonOf(res)
   assertEquals(body.managed, null)
   assertEquals(body.connection, null)
-  assertEquals(body.rootUsername, 'postgres')
+  assertEquals(body.rootUsername, null)
 })
 
 test('GET users / databases / members / backups are empty without a row', async () => {
@@ -773,7 +773,7 @@ test('GET databases / backups / members return stored values', async () => {
   })
   const headers = authHeaders(cookie)
   const databases = await jsonOf(await app.request(envPath('/databases'), { headers }))
-  assertEquals(databases.databases, ['postgres', 'appdb'])
+  assertEquals(databases.databases, ['defaultdb', 'appdb'])
 
   const backups = await jsonOf(await app.request(envPath('/backups'), { headers }))
   const list = backups.backups as Array<{ id: string }>
@@ -1312,7 +1312,7 @@ test('DELETE database refuses the initial database and unknown names', async () 
     db: fakeDb({ managedRows: [managedRow()] }),
   })
   await expectJson(
-    await app.request(envPath('/databases/postgres'), {
+    await app.request(envPath('/databases/defaultdb'), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -1841,7 +1841,7 @@ test('POST root-password / users return 422 when the daemon key is missing', asy
     await app.request(envPath('/users'), {
       method: 'POST',
       headers,
-      body: JSON.stringify({ username: 'appuser', databases: ['postgres'] }),
+      body: JSON.stringify({ username: 'appuser', databases: ['defaultdb'] }),
     }),
     422,
     { error: 'daemon_key_unavailable' },
@@ -2289,7 +2289,7 @@ test('POST users past apply-ready hits namespace and insert short-circuits', asy
     await app.request(envPath('/users'), {
       method: 'POST',
       headers,
-      body: JSON.stringify({ username: 'appuser', databases: ['postgres'] }),
+      body: JSON.stringify({ username: 'appuser', databases: ['defaultdb'] }),
     }),
     409,
     { error: 'managed_user_exists' },
@@ -2297,7 +2297,7 @@ test('POST users past apply-ready hits namespace and insert short-circuits', asy
   const created = await app.request(envPath('/users'), {
     method: 'POST',
     headers,
-    body: JSON.stringify({ username: 'reporter', databases: ['postgres'] }),
+    body: JSON.stringify({ username: 'reporter', databases: ['defaultdb'] }),
   })
   assertEquals([200, 409, 422, 500].includes(created.status), true)
   if (created.status !== 200) {

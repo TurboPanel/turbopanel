@@ -40,10 +40,21 @@ export type ParseRequestedMetricsResult =
 
 const METRIC_KEY_SET = new Set<string>(HOST_METRIC_KEYS);
 
+/**
+ * Expected samples per bucket. Buckets with data pass their observed average
+ * collection interval so live (fast-cadence) sessions do not read as
+ * over-full against a 60 s assumption; buckets with no points have no
+ * observed interval and keep the baseline 60 s default.
+ */
 export function defaultExpectedSamplesPerBucket(
   resolutionSeconds: number,
+  avgIntervalSeconds = 60,
 ): number {
-  return Math.max(1, Math.round(resolutionSeconds / 60));
+  const interval =
+    Number.isFinite(avgIntervalSeconds) && avgIntervalSeconds > 0
+      ? avgIntervalSeconds
+      : 60;
+  return Math.max(1, Math.round(resolutionSeconds / interval));
 }
 
 /**

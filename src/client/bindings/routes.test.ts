@@ -271,6 +271,7 @@ async function withBindingFixtures(
       kind: 'database',
       provider: 'postgres',
       username: `bind_user_${crypto.randomUUID().slice(0, 8)}`,
+      appliedUsername: `bind_user_${crypto.randomUUID().slice(0, 8)}`,
       password: sealedPassword,
       managedId,
     })
@@ -579,6 +580,7 @@ test('POST /bindings rejects non-bindable principals and encryption gaps', async
         kind: 'database',
         provider: 'postgres',
         username: `root_${crypto.randomUUID().slice(0, 8)}`,
+        appliedUsername: `root_${crypto.randomUUID().slice(0, 8)}`,
         managedId,
         metadata: { managedRoot: true },
       })
@@ -603,6 +605,7 @@ test('POST /bindings rejects non-bindable principals and encryption gaps', async
         kind: 'database',
         provider: 'postgres',
         username: `nopw_${crypto.randomUUID().slice(0, 8)}`,
+        appliedUsername: `nopw_${crypto.randomUUID().slice(0, 8)}`,
         managedId,
       })
       .returning({ id: principal.id })

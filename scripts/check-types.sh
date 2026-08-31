@@ -20,9 +20,15 @@ cd "$(dirname "$0")/.."
 
 deno check src/deno.ts src/app.ts
 
+# Enumerate from the worktree, not from the index alone: `--others` picks up
+# test files that are new and not yet staged, and the `-f` guard drops paths
+# still recorded in the index whose file has been deleted or moved. Either skew
+# used to be silent — a missing file aborted the whole check, a new one was
+# never checked at all.
 tests=$(
-  git ls-files 'src/*.test.ts' 'src/**/*.test.ts' |
+  git ls-files --cached --others --exclude-standard 'src/*.test.ts' 'src/**/*.test.ts' |
     while IFS= read -r file; do
+      [ -f "$file" ] || continue
       grep -qE "from ['\"](vitest|cloudflare:test)['\"]|@needs-workers-globals" "$file" ||
         printf '%s\n' "$file"
     done

@@ -2123,6 +2123,44 @@ test("parseCommandPayload accepts principalMaterial with and without uid/gid", (
   );
 });
 
+test("parseCommandPayload round-trips a principal password hash and rejects junk", () => {
+  const passwordHash = `$6$rounds=100000$saltstring$${"a".repeat(86)}`;
+  const base = {
+    environmentId: "env-1",
+    projectId: "proj-1",
+    organizationId: "org-1",
+    projectName: "tp-demo",
+    composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+    hostings: [],
+  };
+  const parsed = parseCommandPayload("environment.deploy" as CommandType, {
+    ...base,
+    principalMaterial: [{
+      principalId: "00000000-0000-4000-8000-000000000001",
+      username: "appuser",
+      passwordHash,
+    }],
+  }) as { principalMaterial: { passwordHash?: string }[] };
+  assertEquals(parsed.principalMaterial[0]?.passwordHash, passwordHash);
+
+  // Reject-don't-drop, same rule as sshKeys: only a well-formed sha512-crypt
+  // hash may head toward a host's /etc/shadow.
+  for (
+    const bad of ["hunter2", `$6$saltstring$${"a".repeat(86)}:x`, 42]
+  ) {
+    assertThrows(() =>
+      parseCommandPayload("environment.deploy" as CommandType, {
+        ...base,
+        principalMaterial: [{
+          principalId: "00000000-0000-4000-8000-000000000001",
+          username: "appuser",
+          passwordHash: bad,
+        }],
+      })
+    );
+  }
+});
+
 test("parseCommandPayload rejects negative or non-integer principal ids", () => {
   assertThrows(
     () =>
@@ -3837,6 +3875,111 @@ test("sourceMaterial rejects a credentialUsername that could break the askpass s
         }),
       Error,
       "Invalid sourceMaterial credentialUsername",
+    );
+  }
+});
+
+test("sourceMaterial build round-trips packageManager and rejects unknown ones", () => {
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{
+      ...GITLAB_SOURCE_ENTRY,
+      build: { kind: "native", packageManager: "pnpm" },
+    }],
+  });
+  assertEquals(parsed.sourceMaterial?.[0]?.build, {
+    kind: "native",
+    packageManager: "pnpm",
+  });
+
+  // Absent stays absent — lockfile auto-detection remains the host's call.
+  const withoutManager = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY }],
+  });
+  assertEquals(
+    withoutManager.sourceMaterial?.[0]?.build.packageManager,
+    undefined,
+  );
+
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        sourceMaterial: [{
+          ...GITLAB_SOURCE_ENTRY,
+          build: { kind: "native", packageManager: "bun" },
+        }],
+      }),
+    Error,
+    "Invalid sourceMaterial build packageManager",
+  );
+});
+
+test("parseEnvironmentDeployPayload round-trips the node app settings", () => {
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [
+      {
+        composeServiceName: "web",
+        serviceId: "svc-web",
+        listenPort: 18100,
+        framework: "auto",
+        appMode: "development",
+        // `false` must survive the round-trip, never collapse to absent.
+        enabled: false,
+        startupFile: "apps/web/server.js",
+      },
+    ],
+  });
+  assertEquals(parsed.nativeAppServices, [
+    {
+      composeServiceName: "web",
+      serviceId: "svc-web",
+      listenPort: 18100,
+      framework: "auto",
+      appMode: "development",
+      enabled: false,
+      startupFile: "apps/web/server.js",
+    },
+  ]);
+});
+
+test("parseEnvironmentDeployPayload rejects bad node app settings", () => {
+  const entry = {
+    composeServiceName: "web",
+    serviceId: "svc-web",
+    listenPort: 18100,
+    framework: "auto",
+  };
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        nativeAppServices: [{ ...entry, appMode: "staging" }],
+      }),
+    Error,
+    "Invalid nativeAppServices appMode",
+  );
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        nativeAppServices: [{ ...entry, enabled: "yes" }],
+      }),
+    Error,
+    "Invalid nativeAppServices enabled",
+  );
+  // It becomes part of an ExecStart line, so it keeps the relative-path rule.
+  for (const bad of ["../x", "/abs"]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          nativeAppServices: [{ ...entry, startupFile: bad }],
+        }),
+      Error,
+      "Invalid nativeAppServices startupFile",
     );
   }
 });

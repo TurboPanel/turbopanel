@@ -59,6 +59,7 @@ import {
   REPLICATION_PASSWORD_LENGTH,
   setPrincipalPassword,
 } from '../principals/store.ts'
+import { loadRandomizedUsernamesDefault } from './org-defaults.ts'
 import { generatePassword } from '../../generate-secret.ts'
 import {
   loadOrganizationCaSet,
@@ -485,7 +486,8 @@ async function buildCredentials(
     const role = isManagedRootPrincipal(row.metadata) ? 'root' : 'user'
     const credential: ManagedApplyCommandPayload['credentials'][number] = {
       principalId: row.id,
-      username: row.username,
+      // Applied login — the engine role name, not the internal short name.
+      username: row.appliedUsername,
       role,
       databases: principalDatabases(row.metadata),
       password: resealed,
@@ -910,7 +912,7 @@ async function attachReplicationCredential(
   )
   credentials.push({
     principalId: repl.id,
-    username: repl.username,
+    username: repl.appliedUsername,
     role: 'replication',
     databases: [],
     password: resealed,
@@ -1467,6 +1469,10 @@ async function ensureClusterReplicationUsername(
       preferredUsername: 'tp_repl',
       provider: input.spec.principalProvider,
       identifier: input.spec.userOperations.identifier,
+      randomizeSuffix: await loadRandomizedUsernamesDefault(
+        db,
+        input.organizationId,
+      ),
     },
   )
 
@@ -1502,13 +1508,13 @@ async function ensureClusterReplicationUsername(
     .set({
       metadata: {
         ...residual,
-        replicationUsername: repl.username,
+        replicationUsername: repl.appliedUsername,
       },
       updatedAt: new Date().toISOString(),
     })
     .where(eq(managed.id, input.managedRow.id))
 
-  return repl.username
+  return repl.appliedUsername
 }
 
 /** Build one member's apply payload and self-heal its replication transport. */

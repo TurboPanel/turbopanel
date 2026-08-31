@@ -18,6 +18,7 @@ import {
   MAX_DAEMON_WS_HOST_FIELD_CHARS,
   MAX_DAEMON_WS_ID_CHARS,
   MAX_DAEMON_WS_LOGS_CHARS,
+  MAX_DAEMON_WS_CAPABILITIES_JSON_BYTES,
   MAX_DAEMON_WS_RESULT_JSON_BYTES,
   outboundEnvelopeToWireMessage,
   parseDaemonBuildInfo,
@@ -1203,4 +1204,225 @@ it("repo-read-result rejects too many directory entries", () => {
     }),
   );
   assertEquals(result.ok, false);
+});
+
+it("metrics live/capabilities/sensor result kinds are on the inbound allowlist", () => {
+  const allowed = DAEMON_INBOUND_ALLOWED as ReadonlySet<string>;
+  assertEquals(allowed.has("metrics-capabilities-result"), true);
+  assertEquals(allowed.has("metrics-live-start-result"), true);
+  assertEquals(allowed.has("metrics-live-stop-result"), true);
+  assertEquals(allowed.has("metrics-sensor-overrides-update-result"), true);
+  // Requests remain outbound-only.
+  assertEquals(allowed.has("metrics-capabilities-request"), false);
+  assertEquals(allowed.has("metrics-live-start"), false);
+  assertEquals(allowed.has("metrics-live-stop"), false);
+  assertEquals(allowed.has("metrics-sensor-overrides-update"), false);
+});
+
+it("validateDaemonInboundFrame accepts a metrics-capabilities-result", () => {
+  const result = validateDaemonInboundFrame(JSON.stringify({
+    type: "metrics-capabilities-result",
+    id: "caps-1",
+    capabilities: { sensors: {}, networkInterfaces: [] },
+    at: VALID_AT,
+  }));
+  assertEquals(result.ok, true);
+});
+
+it("validateDaemonInboundFrame rejects oversized capabilities", () => {
+  const result = validateDaemonInboundFrame(JSON.stringify({
+    type: "metrics-capabilities-result",
+    id: "caps-1",
+    capabilities: {
+      blob: "x".repeat(MAX_DAEMON_WS_CAPABILITIES_JSON_BYTES + 1),
+    },
+    at: VALID_AT,
+  }));
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.reason, "capabilities exceeds max size");
+  }
+});
+
+it("validateDaemonInboundFrame validates metrics live/sensor ok-results", () => {
+  for (
+    const type of [
+      "metrics-live-start-result",
+      "metrics-live-stop-result",
+      "metrics-sensor-overrides-update-result",
+    ]
+  ) {
+    const ok = validateDaemonInboundFrame(JSON.stringify({
+      type,
+      id: "req-1",
+      ok: true,
+      at: VALID_AT,
+    }));
+    assertEquals(ok.ok, true, `${type} valid frame`);
+
+    const missingOk = validateDaemonInboundFrame(JSON.stringify({
+      type,
+      id: "req-1",
+      at: VALID_AT,
+    }));
+    assertEquals(missingOk.ok, false, `${type} missing ok`);
+
+    const oversizedError = validateDaemonInboundFrame(JSON.stringify({
+      type,
+      id: "req-1",
+      ok: false,
+      error: "e".repeat(MAX_DAEMON_WS_ERROR_CHARS + 1),
+      at: VALID_AT,
+    }));
+    assertEquals(oversizedError.ok, false, `${type} oversized error`);
+  }
+});
+
+it("wire mappings round-trip metrics live/capabilities/sensor kinds", () => {
+  const base = {
+    deliveryId: crypto.randomUUID(),
+    requestId: "req-m",
+    at: VALID_AT,
+  };
+
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "metrics-capabilities-request",
+    }),
+    { type: "metrics-capabilities-request", id: "req-m", at: VALID_AT },
+  );
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "metrics-live-start",
+      leaseId: "lease-1",
+      intervalSeconds: 10,
+      expiresAt: "2020-01-01T01:00:00.000Z",
+    }),
+    {
+      type: "metrics-live-start",
+      id: "req-m",
+      leaseId: "lease-1",
+      intervalSeconds: 10,
+      expiresAt: "2020-01-01T01:00:00.000Z",
+      at: VALID_AT,
+    },
+  );
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "metrics-live-stop",
+      leaseId: "lease-1",
+    }),
+    {
+      type: "metrics-live-stop",
+      id: "req-m",
+      leaseId: "lease-1",
+      at: VALID_AT,
+    },
+  );
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "metrics-sensor-overrides-update",
+      overrides: { cpuTemperature: "coretemp", hostingPath: "/mnt/data" },
+    }),
+    {
+      type: "metrics-sensor-overrides-update",
+      id: "req-m",
+      overrides: { cpuTemperature: "coretemp", hostingPath: "/mnt/data" },
+      at: VALID_AT,
+    },
+  );
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "metrics-capabilities-result",
+      id: "req-m",
+      capabilities: { sensors: {} },
+      at: VALID_AT,
+    }),
+    {
+      kind: "metrics-capabilities-result",
+      requestId: "req-m",
+      at: VALID_AT,
+      capabilities: { sensors: {} },
+      error: undefined,
+    },
+  );
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "metrics-live-start-result",
+      id: "req-m",
+      ok: true,
+      at: VALID_AT,
+    }),
+    {
+      kind: "metrics-live-start-result",
+      requestId: "req-m",
+      at: VALID_AT,
+      ok: true,
+      error: undefined,
+    },
+  );
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "metrics-live-stop-result",
+      id: "req-m",
+      ok: false,
+      error: "no lease",
+      at: VALID_AT,
+    }),
+    {
+      kind: "metrics-live-stop-result",
+      requestId: "req-m",
+      at: VALID_AT,
+      ok: false,
+      error: "no lease",
+    },
+  );
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "metrics-sensor-overrides-update-result",
+      id: "req-m",
+      ok: true,
+      at: VALID_AT,
+    }),
+    {
+      kind: "metrics-sensor-overrides-update-result",
+      requestId: "req-m",
+      at: VALID_AT,
+      ok: true,
+      error: undefined,
+    },
+  );
+});
+
+it("validateDaemonInboundEnvelope caps metrics capabilities payloads", () => {
+  const oversized = validateDaemonInboundEnvelope({
+    kind: "metrics-capabilities-result",
+    requestId: "req-m",
+    at: VALID_AT,
+    capabilities: {
+      blob: "x".repeat(MAX_DAEMON_WS_CAPABILITIES_JSON_BYTES + 1),
+    },
+  });
+  assertEquals(oversized.ok, false);
+
+  const fine = validateDaemonInboundEnvelope({
+    kind: "metrics-capabilities-result",
+    requestId: "req-m",
+    at: VALID_AT,
+    capabilities: { sensors: {} },
+  });
+  assertEquals(fine.ok, true);
+
+  const okResult = validateDaemonInboundEnvelope({
+    kind: "metrics-live-start-result",
+    requestId: "req-m",
+    at: VALID_AT,
+    ok: true,
+  });
+  assertEquals(okResult.ok, true);
 });

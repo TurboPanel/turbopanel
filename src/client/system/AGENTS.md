@@ -13,18 +13,17 @@ represented as `container` rows.
 | ----------------------------------------------------------------- | ------------------------------------ | --------------------------------------------------------------- | ---------------------------------------- |
 | PostgreSQL                                                        | `docker run turbopanel-database`     | Compose service `database`                                      | service + container row                  |
 | RabbitMQ                                                          | `docker run turbopanel-queue`        | Compose service `queue`                                         | service + container row                  |
-| ClickHouse                                                        | `docker run turbopanel-analytics`    | Compose service `analytics`                                     | service + container row                  |
 | ProxySQL (managed DB ingress)                                     | daemon compose, project = its own `serviceId` | Compose service `proxysql` / system component `managed-ingress` | service + container row when provisioned (`role: 'ingress'`, `<serviceId>-in`) |
 | Control plane (`turbopanel-instance.service`)                     | systemd + Deno                       | stays host-native                                               | none                                     |
 | Control-plane Caddy                                               | vendored binary                      | stays host-native                                               | none                                     |
 | Hosting Caddy                                                     | vendored binary + systemd            | stays host-native                                               | none                                     |
 | `turbopaneld.service`                                             | native / Deno JS                     | stays host-native                                               | none                                     |
 | Redis                                                             | vendored `.deb`, unix socket         | stays host-native                                               | none                                     |
-| Mailer, dbstudio, Expo UI, website, mailpit, tabix, redis-insight | systemd / dev-only                   | excluded                                                        | none                                     |
+| Mailer, dbstudio, Expo UI, website, mailpit, redis-insight        | systemd / dev-only                   | excluded                                                        | none                                     |
 
 `project.metadata.component` maps to project display names (`src/client/system/hierarchy.ts` — single source of truth): `hosting-ingress` → HTTP/HTTPS Ingress, `managed-ingress` → Database Ingress, `managed-ha` → Database High-Availability, `turbopanel` → Self Hosted TurboPanel Instance.
 
-The three databases/brokers above are provisioned into the `turbopanel-system`
+The databases/brokers above are provisioned into the `turbopanel-system`
 Compose project (see daemon `src/deploy/AGENTS.md` → **Shared HTTP ingress
 identity**) so their container identity/status is inspectable through the same
 `container` table and client `GET /api/client/v1/containers` surface as tenant

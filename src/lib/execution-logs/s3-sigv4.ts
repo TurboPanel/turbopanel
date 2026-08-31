@@ -3,9 +3,9 @@
  *
  * Hand-rolled rather than pulling in an AWS SDK: this driver issues four verbs
  * (GET / PUT / DELETE / list-objects-v2) against one bucket, and the repo's
- * existing narrow-HTTP-client precedent (`src/daemon/metrics/clickhouse/client.ts`)
- * is to speak the protocol directly instead of adding a dependency that would
- * also have to survive the Workers bundle check.
+ * existing narrow-HTTP-client precedent is to speak the protocol directly
+ * instead of adding a dependency that would also have to survive the Workers
+ * bundle check.
  *
  * Uses WebCrypto only, so the same code runs under Deno and workerd.
  */

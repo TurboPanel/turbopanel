@@ -7,7 +7,7 @@
  * 7-argument `onDaemonConnected` chain.
  *
  * Module scope is safe here: the sink holds only an AE binding wrapper or the
- * Deno ClickHouse singleton — no request-scoped socket — matching the
+ * Deno DuckDB store — no request-scoped socket — matching the
  * existing `cachedServerMetricsStore` precedent in `workers.ts`.
  */
 

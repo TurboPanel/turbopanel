@@ -66,7 +66,8 @@ import { newCorrelationId } from "../../lib/commands/ids.ts";
 import { definedFields } from "../../lib/optional-fields.ts";
 import {
   type ComposeServiceSourceExtension,
-  readServiceSourceExtension,
+  type NodePackageManager,
+  readServiceTurbopanelExtension,
 } from "../../lib/compose/index.ts";
 import type {
   EnvironmentDeployPrincipalMaterial,
@@ -239,17 +240,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Compose services carrying `x-turbopanel.source`, in stable key order. */
 function collectSourceBindings(
   services: Record<string, unknown>,
-): Array<
-  { composeServiceName: string; repository: ComposeServiceSourceExtension }
-> {
-  const out: Array<
-    { composeServiceName: string; repository: ComposeServiceSourceExtension }
-  > = [];
+): SourceBinding[] {
+  const out: SourceBinding[] = [];
   for (const [name, raw] of Object.entries(services)) {
     if (!isPlainObject(raw)) continue;
-    const binding = readServiceSourceExtension(raw);
+    const extension = readServiceTurbopanelExtension(raw);
+    const binding = extension?.source;
     if (!binding) continue;
-    out.push({ composeServiceName: name, repository: binding });
+    out.push({
+      composeServiceName: name,
+      repository: binding,
+      ...(extension.packageManager === undefined
+        ? {}
+        : { packageManager: extension.packageManager }),
+    });
   }
   return out.sort((a, b) =>
     a.composeServiceName.localeCompare(b.composeServiceName)
@@ -306,10 +310,14 @@ function toDeploySourcePrincipal(
  */
 function resolveSourceBuild(
   binding: ComposeServiceSourceExtension,
+  packageManager?: NodePackageManager,
 ): EnvironmentDeploySourceBuild {
   const build: EnvironmentDeploySourceBuild = {
     kind: binding.buildKind === "railpack" ? "railpack" : "native",
   };
+  // The owning service's package-manager choice rides the build object so the
+  // daemon can derive the right install command after checkout.
+  if (packageManager) build.packageManager = packageManager;
   if (binding.buildCommand) build.buildCommand = binding.buildCommand;
   if (binding.startCommand) build.startCommand = binding.startCommand;
   if (binding.outputDirectory) build.outputDirectory = binding.outputDirectory;
@@ -351,6 +359,8 @@ export function requestedCommitShaForSource(
 type SourceBinding = {
   composeServiceName: string;
   repository: ComposeServiceSourceExtension;
+  /** The owning service's `x-turbopanel.packageManager`, when declared. */
+  packageManager?: NodePackageManager;
 };
 
 /** Lookups every binding in one deploy resolves against, loaded once up front. */
@@ -523,7 +533,7 @@ async function resolveBindingMaterial(
       params.releaseIds?.allocate(composeServiceName) ??
       newCorrelationId(),
     rollbackToReleaseId: rollbackReleaseId,
-    build: resolveSourceBuild(binding.repository),
+    build: resolveSourceBuild(binding.repository, binding.packageManager),
     subdirectory: binding.repository.subdirectory ?? row.subdirectory ?? undefined,
     credential: resolved.credential,
     credentialKind: resolved.credentialKind,

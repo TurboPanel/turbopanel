@@ -88,6 +88,10 @@ export function isManagedEngineCatalogEntry(
  */
 export type ManagedEngineOptions = {
   engine: ManagedEngineCode
+  /**
+   * Root login *prefix* only — the exposed administrative login is generated
+   * at create as `<rootUsername>_<11 rand>`; the bare name stays internal.
+   */
   rootUsername: string
   provider: string
   port: number

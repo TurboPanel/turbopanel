@@ -1194,6 +1194,114 @@ export const organizationPaths: Record<string, unknown> = {
       },
     },
   },
+  "/api/client/v1/organizations/{id}/principal-defaults": {
+    get: {
+      tags: ["Organizations"],
+      summary: "Get organization principal defaults",
+      description:
+        "Manage-gated. Returns the randomized-usernames default: whether new principals (Linux users and managed database users) get a random _<11 chars> applied-login suffix. Platform default is on (preferred for security); null means inheriting that default.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Principal defaults",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["randomizedUsernames", "effectiveRandomizedUsernames"],
+                properties: {
+                  randomizedUsernames: { type: "boolean", nullable: true },
+                  effectiveRandomizedUsernames: { type: "boolean" },
+                },
+              },
+            },
+          },
+        },
+        "403": {
+          description: "Forbidden",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Organization not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ["Organizations"],
+      summary: "Update organization principal defaults",
+      description:
+        "Manage-gated. Sets organization.options.randomizedPrincipalUsernames. Pass null to clear the override back to the platform default (on). Only affects principals created afterwards - existing applied logins are never renamed.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["randomizedUsernames"],
+              properties: {
+                randomizedUsernames: { type: "boolean", nullable: true },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Updated principal defaults",
+        },
+        "400": {
+          description: "Invalid request",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Forbidden",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Organization not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/api/client/v1/timezones": {
     get: {
       tags: ["Organizations"],

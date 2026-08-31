@@ -25,6 +25,7 @@
 
 import { and, eq, sql } from 'drizzle-orm'
 import { inspectRepository } from './inspect.ts'
+import { isSafeRoot } from '../../lib/compose/index.ts'
 import { getDaemonCellRegistry } from '../../db.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
@@ -1204,7 +1205,11 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
    *
    * The probe set is fixed (`INSPECT_PROBE_PATHS`), not caller-supplied: this
    * is reachable by any org member, so a fixed list bounds what a compromised
-   * session can learn to "do these filenames exist".
+   * session can learn to "do these filenames exist". The optional `listPath`
+   * query names which directory the `entries` listing reads (default: the
+   * repository root) — a directory listing was always returned, so this widens
+   * *which* directory, not *what kind* of data; the value is held to the same
+   * relative-path rule as `x-turbopanel.root`.
    */
   router.get('/repositories/:id/inspect', async (c) => {
     const ctx = await resolveSourceSession(c)
@@ -1233,6 +1238,15 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       }, 400)
     }
 
+    const listPath = (c.req.query('listPath') ?? '').trim()
+    if (listPath.length > 0 && !isSafeRoot(listPath)) {
+      return c.json({
+        error: 'invalid_list_path',
+        message:
+          'listPath must be a relative path without ".." (e.g. "apps/web").',
+      }, 400)
+    }
+
     const outcome = await inspectRepository({
       db,
       registry: getDaemonCellRegistry(c) ?? null,
@@ -1248,7 +1262,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         secretId: row.secretId,
       },
       ref,
-      listPath: '',
+      listPath,
       serverIds: (await db
         .select({ id: server.id })
         .from(server)

@@ -89,10 +89,10 @@ PY
 echo "==> Deno coverage profile"
 # Deno V8 coverage for Sonar LCOV (Vitest/workerd covers Workers/DO-only code).
 # Two tiers:
-#   - Host-free unit suites (always run; no Postgres/Redis/ClickHouse).
+#   - Host-free unit suites (always run; no Postgres/Redis).
 #   - Postgres integration suites (need TURBOPANEL_DATABASE_URL; skip gracefully
 #     when unset locally — CI build.yml starts Postgres and sets the URL).
-# Omit: redis-cell / ws-handlers (Redis), store.integration (ClickHouse metrics),
+# Omit: redis-cell / ws-handlers (Redis),
 # Vitest-only Workers suites (workers-ws, durable-object, routes-core, …).
 # CI uses -A so every suite shares one profile dir (mirrors the daemon repo's
 # test:coverage grant).
@@ -300,12 +300,13 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/cell/socket-health.test.ts \
   src/daemon/cell/server-diagnostics.test.ts \
   src/daemon/cell/stateless-challenge.test.ts \
-  src/daemon/metrics/analytics-engine/field-map.test.ts \
-  src/daemon/metrics/analytics-engine/sql-api.test.ts \
-  src/daemon/metrics/analytics-engine/store.test.ts \
-  src/daemon/metrics/clickhouse/client.test.ts \
-  src/daemon/metrics/clickhouse/schema.test.ts \
-  src/daemon/metrics/clickhouse/store.test.ts \
+  src/daemon/metrics/backends/cloudflare/field-map.test.ts \
+  src/daemon/metrics/backends/cloudflare/sql-api.test.ts \
+  src/daemon/metrics/backends/cloudflare/store.test.ts \
+  src/daemon/metrics/backends/cloudflare/write-path-parity.test.ts \
+  src/daemon/metrics/backends/duckdb/parquet.test.ts \
+  src/daemon/metrics/backends/duckdb/schema.test.ts \
+  src/daemon/metrics/backends/duckdb/store.test.ts \
   src/daemon/metrics/contract.test.ts \
   src/daemon/metrics/disabled-store.test.ts \
   src/daemon/metrics/metric-descriptors.test.ts \
@@ -316,9 +317,9 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/metrics/query/uptime.test.ts \
   src/daemon/metrics/store-selection.test.ts \
   src/daemon/metrics/validation.deno.test.ts \
-  src/daemon/metrics/write-path-parity.test.ts \
   src/daemon/openapi/ca.test.ts \
   src/daemon/openapi/index.test.ts \
+  src/daemon/openapi/metrics.test.ts \
   src/daemon/openapi/readiness.test.ts \
   src/daemon/openapi/version.test.ts \
   src/daemon/version.hostfree.test.ts \
@@ -460,6 +461,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/php-settings.test.ts \
   src/lib/principal-access.test.ts \
   src/lib/principal-options.test.ts \
+  src/lib/sha512-crypt.test.ts \
   src/lib/project-compose-source.test.ts \
   src/lib/project-options.test.ts \
   src/lib/resolve-public-base-url.test.ts \

@@ -101,13 +101,16 @@
   // Host metrics (Workers Analytics Engine). Dataset name is reused across
   // envs — AE datasets are account-scoped and auto-created on first write;
   // docs do not require globally unique names. Rows are keyed by index1=serverId.
+  // Each host sample is TWO data points (blob1="metrics", blob2="core"/"extended"
+  // — 19 v2 metrics per part, double20=intervalSeconds on both); status
+  // transitions are one blob1="status" row. Layout: backends/cloudflare/field-map.ts.
   // SQL API reads need secrets: TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN
   // (Account Analytics Read) plus CLOUDFLARE_ACCOUNT_ID (vars below / .dev.vars).
   // Optional: TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS (default = 90-day AE retention).
   "analytics_engine_datasets": [
     {
       "binding": "SERVER_METRICS",
-      "dataset": "turbopanel_server_metrics"
+      "dataset": "turbopanel_server_telemetry"
     }
   ],
   // Command execution logs (transcripts). Buckets are NOT auto-created — create
@@ -194,7 +197,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics"
+          "dataset": "turbopanel_server_telemetry"
         }
       ],
       "r2_buckets": [
@@ -299,7 +302,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics"
+          "dataset": "turbopanel_server_telemetry"
         }
       ],
       "r2_buckets": [

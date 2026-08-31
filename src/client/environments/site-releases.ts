@@ -158,7 +158,7 @@ export async function resolveSourcedEnvironmentSiteReleases(
   if (wanted.size === 0) return [];
 
   const principalRows = await db
-    .select({ id: principal.id, username: principal.username })
+    .select({ id: principal.id, username: principal.appliedUsername })
     .from(principal)
     .where(inArray(principal.id, [...new Set(wanted.values())]));
   const usernameById = new Map(

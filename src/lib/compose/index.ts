@@ -83,11 +83,14 @@ export {
   type ComposeServiceSourceExtension,
   type ComposeServiceTurbopanelExtension,
   type ComposeSourceBuildKind,
+  DEFAULT_NODE_SERIES,
   isHostNativeServiceKind,
   isNodeComposeService,
   isSafeRoot,
   isSiteComposeService,
   type NativeRuntimeFramework,
+  type NodeAppMode,
+  type NodePackageManager,
   parseServiceSourceExtension,
   parseServiceTurbopanelExtension,
   readServiceSourceExtension,
@@ -96,6 +99,7 @@ export {
   SOURCE_COMMAND_MAX_LENGTH,
   type SourceIdResolver,
   type SiteEngine,
+  SUPPORTED_NODE_SERIES,
   TURBOPANEL_SERVICE_EXTENSION_KEY,
 } from './service-kind.ts'
 export {

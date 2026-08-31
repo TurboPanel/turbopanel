@@ -120,7 +120,7 @@ async function resealReplicationPassword(
   const principals = await db
     .select({
       id: principal.id,
-      username: principal.username,
+      username: principal.appliedUsername,
       password: principal.password,
       metadata: principal.metadata,
     })

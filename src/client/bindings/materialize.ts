@@ -237,7 +237,8 @@ export async function materializeBinding(
       keyPrefix: binding.keyPrefix,
       emitEngineDefaults: binding.isEmitEngineDefaults,
       principalKind: principal.kind,
-      principalUsername: principal.username,
+      // Applied login — bindings hand services the real engine credential.
+      principalUsername: principal.appliedUsername,
       principalPassword: principal.password,
       principalManagedId: principal.managedId,
       managedId: managed.id,

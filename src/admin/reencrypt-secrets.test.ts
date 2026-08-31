@@ -138,6 +138,7 @@ async function installIsolatedFixtureSchema(
       kind text NOT NULL,
       provider text NOT NULL,
       username varchar(255) NOT NULL,
+      applied_username varchar(255) NOT NULL,
       password text,
       project_id uuid,
       managed_id uuid,
@@ -352,6 +353,9 @@ test("reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintex
         username: `reencrypt_${
           crypto.randomUUID().replaceAll("-", "").slice(0, 12)
         }`,
+        appliedUsername: `reencrypt_${
+          crypto.randomUUID().replaceAll("-", "").slice(0, 12)
+        }`,
         password: v1PrincipalEnvelope,
       })
       .returning({ id: principal.id });
@@ -362,6 +366,9 @@ test("reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintex
         kind: "database",
         provider: "postgres",
         username: `reencrypt_p_${
+          crypto.randomUUID().replaceAll("-", "").slice(0, 10)
+        }`,
+        appliedUsername: `reencrypt_p_${
           crypto.randomUUID().replaceAll("-", "").slice(0, 10)
         }`,
         password: plaintextPrincipal,

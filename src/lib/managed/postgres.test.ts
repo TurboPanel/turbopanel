@@ -396,7 +396,7 @@ test('parseSettings defaults initialDatabase and rejects blank conf lines that a
     | PostgresManagedSettings
     | null
   if (!defaults) throw new TypeError('expected defaults')
-  assertEquals(defaults.initialDatabase, 'postgres')
+  assertEquals(defaults.initialDatabase, 'defaultdb')
 
   assertEquals(
     postgresEngineSpec.parseSettings({
@@ -766,7 +766,7 @@ test('parseSettings rejects non-objects; null/undefined fall through to defaults
   assertEquals(postgresEngineSpec.parseSettings([]), null)
   const fromNull = postgresEngineSpec.parseSettings(null)
   if (!fromNull) throw new TypeError('expected defaults for null settings')
-  assertEquals((fromNull as PostgresManagedSettings).initialDatabase, 'postgres')
+  assertEquals((fromNull as PostgresManagedSettings).initialDatabase, 'defaultdb')
   assertEquals(fromNull.exposure.enabled, true)
   const fromUndefined = postgresEngineSpec.parseSettings(undefined)
   if (!fromUndefined) {
@@ -774,7 +774,7 @@ test('parseSettings rejects non-objects; null/undefined fall through to defaults
   }
   assertEquals(
     (fromUndefined as PostgresManagedSettings).initialDatabase,
-    'postgres',
+    'defaultdb',
   )
 })
 
@@ -789,5 +789,5 @@ test('buildRuntimeSpec falls back when settings omit image and initialDatabase',
     rootUsername: 'postgres',
   })
   assertEquals(spec.service.image, postgresEngineSpec.defaultImage)
-  assertEquals(spec.env.POSTGRES_DB, 'postgres')
+  assertEquals(spec.env.POSTGRES_DB, 'defaultdb')
 })

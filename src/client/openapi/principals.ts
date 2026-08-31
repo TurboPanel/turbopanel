@@ -1,12 +1,17 @@
 export const principalSchemas = {
   ProjectPrincipalRow: {
     type: 'object',
-    required: ['id', 'kind', 'provider', 'username', 'serviceIds', 'createdAt', 'updatedAt'],
+    required: ['id', 'kind', 'provider', 'username', 'appliedUsername', 'serviceIds', 'createdAt', 'updatedAt'],
     properties: {
       id: { type: 'string' },
       kind: { type: 'string' },
       provider: { type: 'string' },
       username: { type: 'string' },
+      appliedUsername: {
+        type: 'string',
+        description:
+          'Login actually created on the host: the short username plus a random _<11 chars> suffix when the org randomized-usernames default was on at create. SSH/SFTP with this name.',
+      },
       projectId: { type: ['string', 'null'] },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
@@ -110,7 +115,7 @@ export const principalPaths = {
                 username: {
                   type: 'string',
                   description:
-                    'Linux username (≤ 28 chars, POSIX allowlist). Host home is /srv/users/<username>. Cap leaves room for `<username>-grp`.',
+                    'Short principal name (POSIX allowlist; ≤ 28 chars, or ≤ 16 when the org randomized-usernames default is on so the random _<11 chars> applied suffix still fits). The host account is the applied username; home is /srv/users/<appliedUsername>.',
                 },
                 serviceIds: {
                   type: 'array',
@@ -142,7 +147,8 @@ export const principalPaths = {
             'Created Linux (server) user. uid/gid are echoed only when an explicit override was supplied.',
         },
         400: {
-          description: 'invalid_service_ids | username_reserved | Invalid request',
+          description:
+            'invalid_service_ids | username_reserved | username_too_long | Invalid request',
         },
         409: { description: 'username_in_use' },
       },

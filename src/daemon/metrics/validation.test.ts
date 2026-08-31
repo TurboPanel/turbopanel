@@ -1,18 +1,14 @@
 import { describe, expect, it } from "vitest";
-import {
-  HOST_METRIC_KEYS,
-  METRICS_SCHEMA_VERSION,
-} from "./contract.ts";
-import {
-  HOST_METRICS_METRIC_DESCRIPTORS,
-} from "./metric-descriptors.ts";
+import { HOST_METRIC_KEYS, METRICS_SCHEMA_VERSION } from "./contract.ts";
+import { HOST_METRICS_METRIC_DESCRIPTORS } from "./metric-descriptors.ts";
 import {
   MAX_DIMENSION_LEN,
+  MAX_INTERFACE_LIST_LEN,
   MAX_INTERVAL_SECONDS,
   MAX_METRICS_PAYLOAD_BYTES,
   MAX_METRICS_SKEW_MS,
-  MIN_INTERVAL_SECONDS,
   metricsPayloadByteLength,
+  MIN_INTERVAL_SECONDS,
   validateHostMetricsSample,
 } from "./validation.ts";
 
@@ -22,6 +18,7 @@ const BASE_DIMENSIONS = {
   operatingSystem: "linux",
   architecture: "arm64",
   kernelRelease: "6.12.0",
+  collectionMode: "baseline",
 };
 
 function baseMetrics(
@@ -41,7 +38,7 @@ function validRaw(overrides: Record<string, unknown> = {}) {
     at: new Date().toISOString(),
     intervalSeconds: 60,
     sequence: 1,
-    metrics: baseMetrics({ cpuUsagePercent: 12.5, memoryUsedBytes: 1024 }),
+    metrics: baseMetrics({ cpuUserPercent: 12.5, memoryTotalBytes: 1024 }),
     dimensions: BASE_DIMENSIONS,
     ...overrides,
   };
@@ -50,7 +47,7 @@ function validRaw(overrides: Record<string, unknown> = {}) {
 describe("validateHostMetricsSample", () => {
   it("rejects wrong schema version", () => {
     const result = validateHostMetricsSample(
-      validRaw({ version: 2 }),
+      validRaw({ version: 1 }),
       { serverId: "srv-1", receivedAt: new Date().toISOString() },
     );
     expect(result.ok).toBe(false);
@@ -64,6 +61,114 @@ describe("validateHostMetricsSample", () => {
       { serverId: "srv-1", receivedAt: new Date().toISOString() },
     );
     expect(result.ok).toBe(false);
+  });
+
+  it("rejects missing collectionMode", () => {
+    const dimensions: Record<string, unknown> = { ...BASE_DIMENSIONS };
+    delete dimensions.collectionMode;
+    const result = validateHostMetricsSample(
+      validRaw({ dimensions }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(
+      'metrics dimensions.collectionMode must be "baseline" or "live"',
+    );
+  });
+
+  it("rejects invalid collectionMode", () => {
+    const result = validateHostMetricsSample(
+      validRaw({
+        dimensions: { ...BASE_DIMENSIONS, collectionMode: "turbo" },
+      }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it("stamps sampledAt and collectionMode onto the sample", () => {
+    const result = validateHostMetricsSample(
+      validRaw({
+        dimensions: { ...BASE_DIMENSIONS, collectionMode: "live" },
+      }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sample.sampledAt).toBe(result.sample.at);
+    expect(result.sample.collectionMode).toBe("live");
+    expect(result.sample.schemaVersion).toBe(METRICS_SCHEMA_VERSION);
+  });
+
+  it("accepts optional sensor-identity and interface-list dimensions", () => {
+    const result = validateHostMetricsSample(
+      validRaw({
+        dimensions: {
+          ...BASE_DIMENSIONS,
+          cpuTemperatureSensor: "coretemp",
+          gpuTemperatureSensor: "amdgpu",
+          cpuPowerSensor: "rapl",
+          gpuPowerSensor: "amdgpu",
+          uplinkInterfaces: ["eth0"],
+          fabricInterfaces: ["wg0", "wg1"],
+        },
+      }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sample.dimensions.cpuTemperatureSensor).toBe("coretemp");
+    expect(result.sample.dimensions.uplinkInterfaces).toEqual(["eth0"]);
+    expect(result.sample.dimensions.fabricInterfaces).toEqual(["wg0", "wg1"]);
+  });
+
+  it("rejects oversized sensor-identity strings", () => {
+    const result = validateHostMetricsSample(
+      validRaw({
+        dimensions: {
+          ...BASE_DIMENSIONS,
+          cpuTemperatureSensor: "x".repeat(MAX_DIMENSION_LEN + 1),
+        },
+      }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects oversized interface lists and elements", () => {
+    const tooMany = validateHostMetricsSample(
+      validRaw({
+        dimensions: {
+          ...BASE_DIMENSIONS,
+          uplinkInterfaces: Array.from(
+            { length: MAX_INTERFACE_LIST_LEN + 1 },
+            (_, i) => `eth${i}`,
+          ),
+        },
+      }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(tooMany.ok).toBe(false);
+
+    const oversizedEntry = validateHostMetricsSample(
+      validRaw({
+        dimensions: {
+          ...BASE_DIMENSIONS,
+          fabricInterfaces: ["x".repeat(MAX_DIMENSION_LEN + 1)],
+        },
+      }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(oversizedEntry.ok).toBe(false);
+
+    const nonArray = validateHostMetricsSample(
+      validRaw({
+        dimensions: { ...BASE_DIMENSIONS, uplinkInterfaces: "eth0" },
+      }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(nonArray.ok).toBe(false);
   });
 
   it("rejects timestamp outside skew window", () => {
@@ -88,7 +193,13 @@ describe("validateHostMetricsSample", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("rejects interval outside bounds", () => {
+  it("rejects interval outside bounds, including zero", () => {
+    const zero = validateHostMetricsSample(
+      validRaw({ intervalSeconds: 0 }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(zero.ok).toBe(false);
+
     const tooLow = validateHostMetricsSample(
       validRaw({ intervalSeconds: MIN_INTERVAL_SECONDS - 1 }),
       { serverId: "srv-1", receivedAt: new Date().toISOString() },
@@ -106,41 +217,59 @@ describe("validateHostMetricsSample", () => {
     const result = validateHostMetricsSample(
       validRaw({
         metrics: baseMetrics({
-          cpuUsagePercent: Number.NaN,
+          cpuUserPercent: Number.NaN,
           load1: Number.POSITIVE_INFINITY,
-          memoryUsedBytes: Number.NEGATIVE_INFINITY,
+          memoryTotalBytes: Number.NEGATIVE_INFINITY,
         }),
       }),
       { serverId: "srv-1", receivedAt: new Date().toISOString() },
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.sample.metrics.cpuUsagePercent).toBeNull();
+    expect(result.sample.metrics.cpuUserPercent).toBeNull();
     expect(result.sample.metrics.load1).toBeNull();
-    expect(result.sample.metrics.memoryUsedBytes).toBeNull();
+    expect(result.sample.metrics.memoryTotalBytes).toBeNull();
   });
 
   it("clamps percentages to 0–100", () => {
     const result = validateHostMetricsSample(
       validRaw({
         metrics: baseMetrics({
-          cpuUsagePercent: 150,
-          memoryUsedPercent: -5,
+          cpuUserPercent: 150,
+          cpuIdlePercent: -5,
         }),
       }),
       { serverId: "srv-1", receivedAt: new Date().toISOString() },
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.sample.metrics.cpuUsagePercent).toBe(100);
-    expect(result.sample.metrics.memoryUsedPercent).toBe(0);
+    expect(result.sample.metrics.cpuUserPercent).toBe(100);
+    expect(result.sample.metrics.cpuIdlePercent).toBe(0);
+  });
+
+  it("preserves negative temperatures but nulls negative power", () => {
+    const result = validateHostMetricsSample(
+      validRaw({
+        metrics: baseMetrics({
+          cpuTemperatureCelsius: -15,
+          gpuTemperatureCelsius: -150,
+          cpuPowerWatts: -5,
+        }),
+      }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sample.metrics.cpuTemperatureCelsius).toBe(-15);
+    expect(result.sample.metrics.gpuTemperatureCelsius).toBeNull();
+    expect(result.sample.metrics.cpuPowerWatts).toBeNull();
   });
 
   it("coerces negative byte/count/uptime to null", () => {
     const result = validateHostMetricsSample(
       validRaw({
         metrics: baseMetrics({
-          memoryUsedBytes: -1,
+          memoryTotalBytes: -1,
           processCount: -2,
           uptimeSeconds: -10,
           diskReadOpsPerSecond: -3,
@@ -150,7 +279,7 @@ describe("validateHostMetricsSample", () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.sample.metrics.memoryUsedBytes).toBeNull();
+    expect(result.sample.metrics.memoryTotalBytes).toBeNull();
     expect(result.sample.metrics.processCount).toBeNull();
     expect(result.sample.metrics.uptimeSeconds).toBeNull();
     expect(result.sample.metrics.diskReadOpsPerSecond).toBeNull();
@@ -179,7 +308,7 @@ describe("validateHostMetricsSample", () => {
       validRaw({
         metrics: baseMetrics({
           load1: 1_000_001,
-          memoryUsedBytes: Number.MAX_SAFE_INTEGER + 1,
+          memoryTotalBytes: Number.MAX_SAFE_INTEGER + 1,
           diskReadBytesPerSecond: Number.MAX_SAFE_INTEGER + 100,
         }),
       }),
@@ -188,7 +317,7 @@ describe("validateHostMetricsSample", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.sample.metrics.load1).toBeNull();
-    expect(result.sample.metrics.memoryUsedBytes).toBeNull();
+    expect(result.sample.metrics.memoryTotalBytes).toBeNull();
     expect(result.sample.metrics.diskReadBytesPerSecond).toBeNull();
   });
 
@@ -206,20 +335,38 @@ describe("validateHostMetricsSample", () => {
     expect(fractional.ok).toBe(false);
   });
 
-  it("drops unknown metric keys", () => {
+  it("rejects unknown metric keys", () => {
     const result = validateHostMetricsSample(
       validRaw({
         metrics: {
-          ...baseMetrics({ cpuUsagePercent: 10 }),
+          ...baseMetrics({ cpuUserPercent: 10 }),
           unknownMetric: 999,
         },
       }),
       { serverId: "srv-1", receivedAt: new Date().toISOString() },
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.sample.metrics.cpuUsagePercent).toBe(10);
-    expect("unknownMetric" in result.sample.metrics).toBe(false);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(
+      "metrics metrics.unknownMetric is not in the v2 metric allowlist",
+    );
+  });
+
+  it("rejects retired v1 metric keys", () => {
+    const result = validateHostMetricsSample(
+      validRaw({
+        metrics: {
+          ...baseMetrics({ cpuUserPercent: 10 }),
+          cpuUsagePercent: 42,
+        },
+      }),
+      { serverId: "srv-1", receivedAt: new Date().toISOString() },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe(
+      "metrics metrics.cpuUsagePercent is not in the v2 metric allowlist",
+    );
   });
 
   it("rejects missing metrics", () => {
@@ -253,7 +400,7 @@ describe("validateHostMetricsSample", () => {
   });
 
   it("rejects missing allowlisted metric keys", () => {
-    const metrics = baseMetrics({ cpuUsagePercent: 10 });
+    const metrics = baseMetrics({ cpuUserPercent: 10 });
     delete metrics.load1;
     const result = validateHostMetricsSample(
       validRaw({ metrics }),
@@ -266,7 +413,7 @@ describe("validateHostMetricsSample", () => {
 
   it("rejects non-number non-null metric values", () => {
     const metrics = baseMetrics();
-    (metrics as Record<string, unknown>).cpuUsagePercent = "12";
+    (metrics as Record<string, unknown>).cpuUserPercent = "12";
     const result = validateHostMetricsSample(
       validRaw({ metrics }),
       { serverId: "srv-1", receivedAt: new Date().toISOString() },
@@ -274,7 +421,7 @@ describe("validateHostMetricsSample", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe(
-      "metrics metrics.cpuUsagePercent must be a number or null",
+      "metrics metrics.cpuUserPercent must be a number or null",
     );
   });
 

@@ -14,7 +14,10 @@ import {
   resolveManagedIngressPorts,
 } from '../../lib/managed/ingress-ports.ts'
 import type { ManagedOrganizationDefaults } from '../../lib/managed/org-defaults.ts'
-import { parseOrganizationOptions } from '../../lib/organization-options.ts'
+import {
+  parseOrganizationOptions,
+  resolveRandomizedPrincipalUsernames,
+} from '../../lib/organization-options.ts'
 
 /** Read `organization.options.managedDatabase` (missing org → no defaults). */
 export async function loadManagedOrgDefaults(
@@ -27,6 +30,25 @@ export async function loadManagedOrgDefaults(
     .where(eq(organization.id, organizationId))
     .limit(1)
   return parseOrganizationOptions(row?.options).managedDatabase ?? {}
+}
+
+/**
+ * Effective randomized-usernames default for the organization (on unless the
+ * org opted out). Governs whether new principals get a random `_<11>` applied
+ * suffix; a missing org row resolves to the platform default (on).
+ */
+export async function loadRandomizedUsernamesDefault(
+  db: Db,
+  organizationId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ options: organization.options })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1)
+  return resolveRandomizedPrincipalUsernames(
+    parseOrganizationOptions(row?.options),
+  )
 }
 
 /**

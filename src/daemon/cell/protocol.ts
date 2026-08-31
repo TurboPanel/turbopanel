@@ -55,6 +55,19 @@ export type FabricPathWireObservation = {
   latencyMs?: number;
 };
 
+/**
+ * Sensor / hosting-path override selections pushed to the daemon. Full
+ * replacement semantics: an absent field clears that override on the daemon,
+ * so the persisted `server.metadata` copy stays the source of truth.
+ */
+export type MetricsSensorOverridesUpdatePayload = {
+  cpuTemperature?: string;
+  gpuTemperature?: string;
+  cpuPower?: string;
+  gpuPower?: string;
+  hostingPath?: string;
+};
+
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =
   | {
@@ -158,6 +171,50 @@ export type DaemonMessage =
       reason?: string;
     }[];
     entries?: { path: string; kind: string; bytes?: number }[];
+    error?: string;
+    at: string;
+  }
+  | { type: "metrics-capabilities-request"; id: string; at: string }
+  | {
+    type: "metrics-capabilities-result";
+    id: string;
+    capabilities?: unknown;
+    error?: string;
+    at: string;
+  }
+  | {
+    type: "metrics-live-start";
+    id: string;
+    leaseId: string;
+    intervalSeconds: number;
+    expiresAt: string;
+    at: string;
+  }
+  | {
+    type: "metrics-live-start-result";
+    id: string;
+    ok: boolean;
+    error?: string;
+    at: string;
+  }
+  | { type: "metrics-live-stop"; id: string; leaseId: string; at: string }
+  | {
+    type: "metrics-live-stop-result";
+    id: string;
+    ok: boolean;
+    error?: string;
+    at: string;
+  }
+  | {
+    type: "metrics-sensor-overrides-update";
+    id: string;
+    overrides: MetricsSensorOverridesUpdatePayload;
+    at: string;
+  }
+  | {
+    type: "metrics-sensor-overrides-update-result";
+    id: string;
+    ok: boolean;
     error?: string;
     at: string;
   }
@@ -275,6 +332,10 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "addresses-result",
     "managed-logs-result",
     "container-logs-result",
+    "metrics-capabilities-result",
+    "metrics-live-start-result",
+    "metrics-live-stop-result",
+    "metrics-sensor-overrides-update-result",
     "repo-read-result",
     "managed-ha-event",
     "fabric-paths-result",
@@ -325,6 +386,9 @@ const FABRIC_PEER_HEALTH = new Set(["healthy", "stale", "never"]);
 /** Max UTF-8 bytes for JSON-serialized `command-outcome.result`. */
 export const MAX_DAEMON_WS_RESULT_JSON_BYTES = 64 * 1024;
 
+/** Max UTF-8 bytes for JSON-serialized `metrics-capabilities-result.capabilities`. */
+export const MAX_DAEMON_WS_CAPABILITIES_JSON_BYTES = 64 * 1024;
+
 /** Max characters for optional hostname / machineKey fields on hello. */
 export const MAX_DAEMON_WS_HOST_FIELD_CHARS = 255;
 
@@ -360,18 +424,34 @@ function validateOptionalError(value: unknown): string | null {
   return null;
 }
 
-function validateCommandResult(value: unknown): string | null {
+function validateBoundedJson(
+  value: unknown,
+  maxBytes: number,
+  label: string,
+): string | null {
   if (value === undefined) return null;
   try {
     const encoded = JSON.stringify(value);
-    if (encoded === undefined) return "result is not JSON-serializable";
-    if (utf8ByteLength(encoded) > MAX_DAEMON_WS_RESULT_JSON_BYTES) {
-      return "result exceeds max size";
+    if (encoded === undefined) return `${label} is not JSON-serializable`;
+    if (utf8ByteLength(encoded) > maxBytes) {
+      return `${label} exceeds max size`;
     }
   } catch {
-    return "result is not JSON-serializable";
+    return `${label} is not JSON-serializable`;
   }
   return null;
+}
+
+function validateCommandResult(value: unknown): string | null {
+  return validateBoundedJson(value, MAX_DAEMON_WS_RESULT_JSON_BYTES, "result");
+}
+
+function validateMetricsCapabilitiesPayload(value: unknown): string | null {
+  return validateBoundedJson(
+    value,
+    MAX_DAEMON_WS_CAPABILITIES_JSON_BYTES,
+    "capabilities",
+  );
 }
 
 function validatePresenceFields(
@@ -444,6 +524,14 @@ function validateManagedLogsResultFields(
     return "logs exceed max length";
   }
   return null;
+}
+
+function validateMetricsCapabilitiesResultFields(
+  record: Record<string, unknown>,
+): string | null {
+  const base = validateResultEnvelopeFields(record);
+  if (base) return base;
+  return validateMetricsCapabilitiesPayload(record.capabilities);
 }
 
 /**
@@ -650,6 +738,8 @@ function validateInboundMessageFields(
     case "managed-logs-result":
     case "container-logs-result":
       return validateManagedLogsResultFields(record);
+    case "metrics-capabilities-result":
+      return validateMetricsCapabilitiesResultFields(record);
     case "repo-read-result":
       return validateRepoReadResultFields(record);
     case "managed-ha-event":
@@ -660,6 +750,9 @@ function validateInboundMessageFields(
     case "tunnel-token-result":
     case "public-urls-update-result":
     case "update-result":
+    case "metrics-live-start-result":
+    case "metrics-live-stop-result":
+    case "metrics-sensor-overrides-update-result":
       return validateOkResultFields(record);
     case "command-ack":
       return validateCommandAckFields(record);
@@ -740,10 +833,16 @@ function validateInboundEnvelopeKind(
     case "command-outcome":
       return validateOptionalError(inbound.error) ??
         validateCommandResult(inbound.result);
+    case "metrics-capabilities-result":
+      return validateMetricsCapabilitiesPayload(inbound.capabilities) ??
+        validateOptionalError(inbound.error);
     case "dev-sync-result":
     case "tunnel-token-result":
     case "public-urls-update-result":
     case "update-result":
+    case "metrics-live-start-result":
+    case "metrics-live-stop-result":
+    case "metrics-sensor-overrides-update-result":
       return validateOptionalError(inbound.error);
     case "command-ack":
       return validateCommandAckEnvelope(inbound);
@@ -837,6 +936,18 @@ export type DaemonOutboundEnvelope =
   | (OutboundEnvelopeBase & { kind: "dev-sync"; phase: "end" })
   | (OutboundEnvelopeBase & { kind: "tunnel-token"; token: string })
   | (OutboundEnvelopeBase & { kind: "public-urls-update"; urls: string[] })
+  | (OutboundEnvelopeBase & { kind: "metrics-capabilities-request" })
+  | (OutboundEnvelopeBase & {
+    kind: "metrics-live-start";
+    leaseId: string;
+    intervalSeconds: number;
+    expiresAt: string;
+  })
+  | (OutboundEnvelopeBase & { kind: "metrics-live-stop"; leaseId: string })
+  | (OutboundEnvelopeBase & {
+    kind: "metrics-sensor-overrides-update";
+    overrides: MetricsSensorOverridesUpdatePayload;
+  })
   | (OutboundEnvelopeBase & {
     kind: "update";
     channel?: string;
@@ -912,6 +1023,34 @@ export type DaemonInboundEnvelope =
   }
   | {
     kind: "public-urls-update-result";
+    requestId: string;
+    at: string;
+    ok: boolean;
+    error?: string;
+  }
+  | {
+    kind: "metrics-capabilities-result";
+    requestId: string;
+    at: string;
+    capabilities?: unknown;
+    error?: string;
+  }
+  | {
+    kind: "metrics-live-start-result";
+    requestId: string;
+    at: string;
+    ok: boolean;
+    error?: string;
+  }
+  | {
+    kind: "metrics-live-stop-result";
+    requestId: string;
+    at: string;
+    ok: boolean;
+    error?: string;
+  }
+  | {
+    kind: "metrics-sensor-overrides-update-result";
     requestId: string;
     at: string;
     ok: boolean;
@@ -1019,6 +1158,38 @@ export function wireMessageToInboundEnvelope(
     case "public-urls-update-result":
       return {
         kind: "public-urls-update-result",
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        error: msg.error,
+      };
+    case "metrics-capabilities-result":
+      return {
+        kind: "metrics-capabilities-result",
+        requestId: msg.id,
+        at: msg.at,
+        capabilities: msg.capabilities,
+        error: msg.error,
+      };
+    case "metrics-live-start-result":
+      return {
+        kind: "metrics-live-start-result",
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        error: msg.error,
+      };
+    case "metrics-live-stop-result":
+      return {
+        kind: "metrics-live-stop-result",
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        error: msg.error,
+      };
+    case "metrics-sensor-overrides-update-result":
+      return {
+        kind: "metrics-sensor-overrides-update-result",
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
@@ -1180,6 +1351,35 @@ export function outboundEnvelopeToWireMessage(
         type: "public-urls-update",
         id: env.requestId,
         urls: env.urls,
+        at: env.at,
+      };
+    case "metrics-capabilities-request":
+      return {
+        type: "metrics-capabilities-request",
+        id: env.requestId,
+        at: env.at,
+      };
+    case "metrics-live-start":
+      return {
+        type: "metrics-live-start",
+        id: env.requestId,
+        leaseId: env.leaseId,
+        intervalSeconds: env.intervalSeconds,
+        expiresAt: env.expiresAt,
+        at: env.at,
+      };
+    case "metrics-live-stop":
+      return {
+        type: "metrics-live-stop",
+        id: env.requestId,
+        leaseId: env.leaseId,
+        at: env.at,
+      };
+    case "metrics-sensor-overrides-update":
+      return {
+        type: "metrics-sensor-overrides-update",
+        id: env.requestId,
+        overrides: env.overrides,
         at: env.at,
       };
     case "update":

@@ -25,6 +25,7 @@ import { organization, server } from '../../lib/db/schema.ts'
 import { parseOrganizationOptions } from '../../lib/organization-options.ts'
 import { BadRequestError, parseName, requireStringField } from '../shared.ts'
 import { USERNAME_RE } from '../principals/store.ts'
+import { PRINCIPAL_APPLIED_SUFFIX_LENGTH } from '../../lib/naming.ts'
 import { LOOPBACK_BIND, resolveManagedDialHost } from './access-address.ts'
 import { resolveManagedEffectiveExposure } from './host-exposure.ts'
 import type { ManagedContext } from './context.ts'
@@ -402,7 +403,7 @@ export function readInitialDatabase(spec: {
       return initial
     }
   }
-  return 'postgres'
+  return 'defaultdb'
 }
 
 /**
@@ -439,6 +440,7 @@ export function serializeManagedUser(
   row: {
     id: string
     username: string
+    appliedUsername: string
     metadata: unknown
     createdAt: string
   },
@@ -453,6 +455,7 @@ export function serializeManagedUser(
   return {
     id: row.id,
     username: row.username,
+    appliedUsername: row.appliedUsername,
     databases,
     privileges,
     connectionRole: meta.connectionRole === 'read-only'
@@ -492,6 +495,20 @@ export function serializeContainerRow(row: {
   }
 }
 
+/**
+ * Login names reserved for platform-internal engine accounts: the engines'
+ * real bootstrap/socket admins (`postgres`, `root`, `mysql`) and the
+ * `superadmin` name held back for turbopanel internals. The exposed
+ * administrative login is always the suffixed `postgres_<11 rand>`/`root_<11 rand>`
+ * principal, so these bare names must never become client logins.
+ */
+const RESERVED_MANAGED_USERNAMES = new Set([
+  'postgres',
+  'root',
+  'mysql',
+  'superadmin',
+])
+
 export function parseManagedUserCreateFields(
   c: Context<AppEnv>,
   ctx: ManagedContext,
@@ -499,6 +516,12 @@ export function parseManagedUserCreateFields(
   options: ManagedRowOptions,
   /** Persisted cluster root username when known; falls back to spec preference. */
   rootUsername?: string,
+  /**
+   * Org randomized-usernames default: when on, the applied login gets a
+   * `_<11>` suffix, so the short name must leave room for it within the
+   * engine's identifier maxLength.
+   */
+  randomizeSuffix?: boolean,
 ):
   | {
     username: string
@@ -512,11 +535,15 @@ export function parseManagedUserCreateFields(
 
   const effectiveRoot = rootUsername ?? ctx.spec.rootUsername
   const { pattern, maxLength } = ctx.spec.userOperations.identifier
+  const maxShortLength = randomizeSuffix
+    ? maxLength - PRINCIPAL_APPLIED_SUFFIX_LENGTH
+    : maxLength
   if (
     !USERNAME_RE.test(username) ||
     !pattern.test(username) ||
-    username.length > maxLength ||
-    username === effectiveRoot
+    username.length > maxShortLength ||
+    username === effectiveRoot ||
+    RESERVED_MANAGED_USERNAMES.has(username.toLowerCase())
   ) {
     return c.json({ error: 'Invalid username' }, 400)
   }
@@ -986,9 +1013,10 @@ export function buildQueuedFanoutResponse<T extends QueuedCommandFanoutRow>(
  * Detail shape for an environment whose managed row does not exist yet. `ssl`
  * is still resolved so the create surface can state the TLS policy a new
  * cluster will inherit instead of leaving it blank until after provisioning.
+ * `rootUsername` is `null`: the administrative login (`postgres_<11 rand>` /
+ * `root_<11 rand>`) is generated at create and unknowable before it.
  */
 export function buildEmptyManagedDetailResponse(
-  rootUsername: string,
   organizationSslMode?: ManagedSslMode | undefined,
 ) {
   return {
@@ -1000,7 +1028,7 @@ export function buildEmptyManagedDetailResponse(
     ssl: buildManagedSslView(undefined, organizationSslMode),
     release: null,
     server: null,
-    rootUsername,
+    rootUsername: null,
     members: [] as const,
     recovery: null,
   }

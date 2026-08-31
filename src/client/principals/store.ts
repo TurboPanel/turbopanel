@@ -1,4 +1,5 @@
 import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
+import { randomPrincipalUsernameSuffix } from '../../lib/naming.ts'
 import {
   encryptSecret,
   generateSealedSecret,
@@ -36,8 +37,9 @@ export function isUuid(value: string): boolean {
 
 /**
  * True when another server-provider principal in the organization already uses
- * this username (trimmed, case-insensitive). Managed-engine rows
- * (`managed_id` set, `project_id` null) are excluded by the project join.
+ * this username (trimmed, case-insensitive) — as either its short `username`
+ * or its `applied_username` (the name that lands on the host). Managed-engine
+ * rows (`managed_id` set, `project_id` null) are excluded by the project join.
  */
 export async function isServerPrincipalUsernameTaken(
   db: Db,
@@ -51,7 +53,7 @@ export async function isServerPrincipalUsernameTaken(
   const conditions = [
     eq(workspace.organizationId, organizationId),
     eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
-    sql`lower(btrim(${principal.username})) = ${key}`,
+    sql`(lower(btrim(${principal.username})) = ${key} OR lower(btrim(${principal.appliedUsername})) = ${key})`,
   ]
   if (excludePrincipalId) {
     conditions.push(ne(principal.id, excludePrincipalId))
@@ -195,6 +197,8 @@ export type CreatePrincipalFields = {
   kind: string
   provider: string
   username: string
+  /** Applied login (short name + optional random suffix); defaults to `username`. */
+  appliedUsername?: string
   metadata?: Record<string, unknown> | null
   options?: Record<string, unknown> | null
 }
@@ -215,6 +219,7 @@ export async function createPrincipal(
         kind: fields.kind,
         provider: fields.provider,
         username: fields.username,
+        appliedUsername: fields.appliedUsername ?? fields.username,
         ...(fields.metadata != null ? { metadata: fields.metadata } : {}),
         ...(fields.options != null ? { options: fields.options } : {}),
       })
@@ -285,10 +290,76 @@ export async function setPrincipalPassword(
   return {}
 }
 
+/**
+ * Enable password sign-in for a **server** principal by storing its
+ * sha512-crypt hash in the `password` column.
+ *
+ * The same column managed-engine principals use for their sealed envelope, but
+ * a different format on purpose: a server principal's password is verified by
+ * the host's libcrypt, so what the panel needs is the hash the daemon will
+ * write to `/etc/shadow` — the plaintext is shown once at set time and never
+ * stored. The two formats cannot collide (`$6$…` vs. a sealed envelope) and
+ * the two principal kinds never share a code path that reads the column.
+ */
+export async function setServerPrincipalPasswordHash(
+  db: Db,
+  principalId: string,
+  passwordHash: string,
+): Promise<void> {
+  await persistPrincipalPassword(db, principalId, passwordHash)
+}
+
+/**
+ * Disable password sign-in: drop the hash. The daemon locks the account's
+ * shadow entry on the next reconcile because the material then carries no
+ * `passwordHash` — there is deliberately no "kept but disabled" state, unlike
+ * SSH keys, because a password is re-typed while a key would have to be
+ * re-collected from every device.
+ */
+export async function clearServerPrincipalPassword(
+  db: Db,
+  principalId: string,
+): Promise<void> {
+  const updated = await db
+    .update(principal)
+    .set({ password: null, updatedAt: new Date().toISOString() })
+    .where(eq(principal.id, principalId))
+    .returning({ id: principal.id })
+  if (updated.length !== 1) {
+    throw new Error('Principal not found')
+  }
+}
+
+/**
+ * Which of these principals have password sign-in enabled — presence only,
+ * mirroring `countSshKeysByPrincipalIds`. The hash itself never reaches a
+ * serializer.
+ */
+export async function passwordEnabledByPrincipalIds(
+  db: Db,
+  principalIds: readonly string[],
+): Promise<Set<string>> {
+  const enabled = new Set<string>()
+  if (principalIds.length === 0) return enabled
+  const rows = await db
+    .select({ id: principal.id })
+    .from(principal)
+    .where(
+      and(
+        inArray(principal.id, [...principalIds]),
+        isNotNull(principal.password),
+      ),
+    )
+  for (const row of rows) enabled.add(row.id)
+  return enabled
+}
+
 export type CreateManagedPrincipalInput = {
   managedId: string
   provider: string
   username: string
+  /** Applied engine login (short name + optional random suffix); defaults to `username`. */
+  appliedUsername?: string
   kind?: string
   metadata?: Record<string, unknown> | null
   /**
@@ -315,6 +386,10 @@ export async function createManagedPrincipal(
   if (!USERNAME_RE.test(input.username)) {
     throw new TypeError('invalid username')
   }
+  const appliedUsername = input.appliedUsername ?? input.username
+  if (!USERNAME_RE.test(appliedUsername)) {
+    throw new TypeError('invalid applied username')
+  }
   if (!PRINCIPAL_PROVIDERS.has(input.provider)) {
     throw new TypeError('invalid provider')
   }
@@ -329,6 +404,7 @@ export async function createManagedPrincipal(
       kind: input.kind ?? 'database',
       provider: input.provider,
       username: input.username,
+      appliedUsername,
       managedId: input.managedId,
       password: sealed,
       ...(input.metadata != null ? { metadata: input.metadata } : {}),
@@ -365,6 +441,7 @@ export type ManagedPrincipalListRow = {
   kind: string
   provider: string
   username: string
+  appliedUsername: string
   managedId: string | null
   metadata: unknown
   options: unknown
@@ -382,6 +459,7 @@ export async function listManagedPrincipals(
       kind: principal.kind,
       provider: principal.provider,
       username: principal.username,
+      appliedUsername: principal.appliedUsername,
       managedId: principal.managedId,
       metadata: principal.metadata,
       options: principal.options,
@@ -435,10 +513,10 @@ export async function resolveManagedOwningOrganizationIds(
 
 /**
  * True when a managed-engine principal (`managed_id IS NOT NULL`) already uses
- * this username on any cluster whose member servers belong to one of the
- * given owning-organization ids (trimmed, case-insensitive).
- * Mirrors {@link isServerPrincipalUsernameTaken} for the managed login
- * namespace.
+ * this username — short or applied — on any cluster whose member servers
+ * belong to one of the given owning-organization ids (trimmed,
+ * case-insensitive). Mirrors {@link isServerPrincipalUsernameTaken} for the
+ * managed login namespace.
  */
 export async function isManagedUsernameTaken(
   db: Db,
@@ -452,7 +530,7 @@ export async function isManagedUsernameTaken(
   const conditions = [
     isNotNull(principal.managedId),
     inArray(server.organizationId, [...owningOrganizationIds]),
-    sql`lower(btrim(${principal.username})) = ${key}`,
+    sql`(lower(btrim(${principal.username})) = ${key} OR lower(btrim(${principal.appliedUsername})) = ${key})`,
   ]
   if (excludePrincipalId) {
     conditions.push(ne(principal.id, excludePrincipalId))
@@ -470,60 +548,71 @@ export async function isManagedUsernameTaken(
 }
 
 /**
- * Prefer `preferred` when free across the owning-org managed login namespace;
- * otherwise return a deterministic short suffix from `managedId`
- * (`preferred_<8 hex>`), validated against {@link USERNAME_RE} and the engine
- * identifier pattern/maxLength. Cluster create must never 409 on a
- * system-generated root name.
+ * Resolve the **applied** engine login for a managed principal whose short
+ * name is `shortUsername`. With `suffix: true` (the org randomized-usernames
+ * default, and always the root path) the result is
+ * `<short>_<11 random chars>` — the bare short name is never returned, so
+ * reserved engine admin names (`postgres` / `root`) never become logins.
+ * With `suffix: false` the bare short name wins when free across the
+ * owning-org managed login namespace; on collision it falls back to a random
+ * suffix so cluster create never 409s on a system-generated name.
+ *
+ * Validated against {@link USERNAME_RE} and the engine identifier
+ * pattern/maxLength (a suffixed name must fit maxLength whole). A random
+ * candidate that somehow collides (36^11 odds) is replaced by a fresh one
+ * returned unprobed — this path must never throw on a live namespace.
  */
-export async function resolveAvailableManagedRootUsername(
+export async function resolveManagedAppliedUsername(
   db: Db,
   owningOrganizationIds: readonly string[],
-  preferred: string,
-  managedId: string,
+  shortUsername: string,
   identifier: { pattern: RegExp; maxLength: number },
+  opts: { suffix: boolean },
 ): Promise<string> {
   if (
-    USERNAME_RE.test(preferred) &&
-    identifier.pattern.test(preferred) &&
-    preferred.length <= identifier.maxLength &&
-    !(await isManagedUsernameTaken(db, owningOrganizationIds, preferred))
-  ) {
-    return preferred
-  }
-
-  const hex = managedId.replaceAll('-', '').slice(0, 8).toLowerCase()
-  const candidate = `${preferred}_${hex}`
-  if (
-    !USERNAME_RE.test(candidate) ||
-    !identifier.pattern.test(candidate) ||
-    candidate.length > identifier.maxLength
+    !USERNAME_RE.test(shortUsername) ||
+    !identifier.pattern.test(shortUsername) ||
+    shortUsername.length > identifier.maxLength
   ) {
     throw new TypeError(
-      `unable to derive available managed root username from preferred=${preferred}`,
+      `invalid managed short username: ${shortUsername}`,
     )
   }
-  if (await isManagedUsernameTaken(db, owningOrganizationIds, candidate)) {
-    // Extremely unlikely collision on uuid-derived suffix — append short tail.
-    const tail = managedId.replaceAll('-', '').slice(8, 12).toLowerCase()
-    const fallback = `${preferred}_${hex}${tail}`
-    if (
-      !USERNAME_RE.test(fallback) ||
-      !identifier.pattern.test(fallback) ||
-      fallback.length > identifier.maxLength
-    ) {
-      throw new TypeError('unable to derive unique managed root username')
-    }
-    return fallback
+
+  if (
+    !opts.suffix &&
+    !(await isManagedUsernameTaken(db, owningOrganizationIds, shortUsername))
+  ) {
+    return shortUsername
   }
-  return candidate
+
+  const suffixed = (): string => {
+    const candidate = `${shortUsername}${randomPrincipalUsernameSuffix()}`
+    if (
+      !USERNAME_RE.test(candidate) ||
+      !identifier.pattern.test(candidate) ||
+      candidate.length > identifier.maxLength
+    ) {
+      throw new TypeError(
+        `suffixed managed username does not fit engine identifier limits: ${shortUsername}`,
+      )
+    }
+    return candidate
+  }
+
+  const candidate = suffixed()
+  if (!(await isManagedUsernameTaken(db, owningOrganizationIds, candidate))) {
+    return candidate
+  }
+  return suffixed()
 }
 
 /**
  * Ensure a cluster replication principal exists (`metadata.managedReplication`).
  * Not a client login — excluded from ProxySQL frontend users and managed-users
- * list routes. Username resolves under the same org-wide FOR UPDATE probe as
- * root, persisted on `managed.metadata.replicationUsername`.
+ * list routes. The applied login resolves under the same org-wide FOR UPDATE
+ * probe as root (random `_<11>` suffix per `randomizeSuffix`), persisted on
+ * `managed.metadata.replicationUsername`.
  */
 export async function ensureManagedReplicationPrincipal(
   db: Db,
@@ -533,8 +622,10 @@ export async function ensureManagedReplicationPrincipal(
     preferredUsername?: string
     provider: string
     identifier: { pattern: RegExp; maxLength: number }
+    /** Org randomized-usernames default (`resolveRandomizedPrincipalUsernames`). */
+    randomizeSuffix: boolean
   },
-): Promise<{ principalId: string; username: string; created: boolean }> {
+): Promise<{ principalId: string; appliedUsername: string; created: boolean }> {
   const rows = await listManagedPrincipals(db, params.managedId)
   for (const row of rows) {
     if (
@@ -543,7 +634,7 @@ export async function ensureManagedReplicationPrincipal(
     ) {
       return {
         principalId: row.id,
-        username: row.username,
+        appliedUsername: row.appliedUsername,
         created: false,
       }
     }
@@ -555,23 +646,24 @@ export async function ensureManagedReplicationPrincipal(
     params.managedId,
   )
   await lockOrganizationsForUpdate(db, owningOrgIds)
-  const username = await resolveAvailableManagedRootUsername(
+  const appliedUsername = await resolveManagedAppliedUsername(
     db,
     owningOrgIds,
     preferred,
-    params.managedId,
     params.identifier,
+    { suffix: params.randomizeSuffix },
   )
   const created = await createManagedPrincipal(db, dataEncryptionSecrets, {
     managedId: params.managedId,
     provider: params.provider,
-    username,
+    username: preferred,
+    appliedUsername,
     passwordLength: REPLICATION_PASSWORD_LENGTH,
     metadata: { managedReplication: true },
   })
   return {
     principalId: created.principalId,
-    username,
+    appliedUsername,
     created: true,
   }
 }

@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from '@std/assert'
+import { assertEquals, assertMatch, assertRejects } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
@@ -24,7 +24,7 @@ import {
   isServerPrincipalUsernameTaken,
   PRINCIPAL_PROVIDERS,
   replaceTenancies,
-  resolveAvailableManagedRootUsername,
+  resolveManagedAppliedUsername,
   SERVER_PRINCIPAL_PROVIDER,
   setPrincipalPassword,
 } from './store.ts'
@@ -120,6 +120,7 @@ async function withPrincipalFixtures(
       kind: 'database',
       provider: 'postgres',
       username: 'app_user',
+      appliedUsername: 'app_user',
     })
     .returning({ id: principal.id })
   const principalId = insertedPrincipal!.id
@@ -259,6 +260,7 @@ test('isServerPrincipalUsernameTaken is org-scoped and case-insensitive', async 
         kind: 'system',
         provider: SERVER_PRINCIPAL_PROVIDER,
         username: 'AppUser',
+        appliedUsername: 'AppUser',
         projectId,
         metadata: { home: '/srv/users/AppUser' },
       })
@@ -357,6 +359,7 @@ test('isManagedUsernameTaken scopes by server-owning org not create chain', asyn
       kind: 'database',
       provider: 'postgres',
       username: 'SharedUser',
+      appliedUsername: 'SharedUser',
       managedId: m!.id,
     })
     .returning({ id: principal.id })
@@ -387,7 +390,7 @@ test('isManagedUsernameTaken scopes by server-owning org not create chain', asyn
   }
 })
 
-test('resolveAvailableManagedRootUsername suffixes when preferred taken', async () => {
+test('resolveManagedAppliedUsername suffixes when short name taken', async () => {
   if (!dbUrl) {
     console.warn('Skipping managed username tests: TURBOPANEL_DATABASE_URL not set')
     return
@@ -445,30 +448,39 @@ test('resolveAvailableManagedRootUsername suffixes when preferred taken', async 
       kind: 'database',
       provider: 'postgres',
       username: 'postgres',
+      appliedUsername: 'postgres',
       managedId,
     })
     .returning({ id: principal.id })
 
   try {
     const identifier = { pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/, maxLength: 63 }
-    const free = await resolveAvailableManagedRootUsername(
+    const free = await resolveManagedAppliedUsername(
       db,
       [organizationId],
       'app_root',
-      managedId,
       identifier,
+      { suffix: false },
     )
     assertEquals(free, 'app_root')
 
-    const taken = await resolveAvailableManagedRootUsername(
+    const taken = await resolveManagedAppliedUsername(
       db,
       [organizationId],
       'postgres',
-      managedId,
       identifier,
+      { suffix: false },
     )
-    const hex = managedId.replaceAll('-', '').slice(0, 8).toLowerCase()
-    assertEquals(taken, `postgres_${hex}`)
+    assertMatch(taken, /^postgres_[a-z0-9]{11}$/)
+
+    const suffixed = await resolveManagedAppliedUsername(
+      db,
+      [organizationId],
+      'app_root',
+      identifier,
+      { suffix: true },
+    )
+    assertMatch(suffixed, /^app_root_[a-z0-9]{11}$/)
   } finally {
     await db.delete(principal).where(eq(principal.id, prin!.id))
     await db.delete(replica).where(eq(replica.managedId, managedId))

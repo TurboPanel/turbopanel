@@ -1568,6 +1568,49 @@ test('inspect with a default branch and repositories reach the provider boundary
   assertEquals(res.status >= 400, true)
 })
 
+test('inspect rejects an unsafe listPath before touching the provider', async () => {
+  const db = sourceHttpDb({
+    selectRows: [sourceRow()],
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [sourceRow()],
+    ],
+  })
+  const { app, cookie } = await buildSourceApp(db)
+  await expectJson(
+    await app.request(
+      `/repositories/${SOURCE_ID}/inspect?listPath=${encodeURIComponent('../x')}`,
+      { headers: authHeaders(cookie) },
+    ),
+    400,
+    {
+      error: 'invalid_list_path',
+      message: 'listPath must be a relative path without ".." (e.g. "apps/web").',
+    },
+  )
+})
+
+test('inspect passes a safe listPath through to the provider boundary', async () => {
+  const db = sourceHttpDb({
+    selectRows: [sourceRow()],
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [sourceRow()],
+      [],
+    ],
+  })
+  const { app, cookie } = await buildSourceApp(db)
+  const res = await app.request(
+    `/repositories/${SOURCE_ID}/inspect?listPath=apps/web`,
+    { headers: authHeaders(cookie) },
+  )
+  // Same shape as the no-listPath case above: the value clears validation and
+  // the request fails only at the unreachable provider.
+  assertEquals(res.status >= 400, true)
+  const body = await res.json() as { error?: unknown }
+  assertEquals(body.error === 'invalid_list_path', false)
+})
+
 test('patch names a foreign installation as not found; attach insert miss is 500', async () => {
   const patched = sourceHttpDb({
     selectRows: [sourceRow()],

@@ -1,4 +1,4 @@
-import { AE_DEFAULT_MAX_RANGE_SECONDS } from "../analytics-engine/sql-api.ts";
+import { AE_DEFAULT_MAX_RANGE_SECONDS } from "../backends/cloudflare/sql-api.ts";
 import { bucketFloor } from "./buckets.ts";
 
 export { bucketFloor } from "./buckets.ts";
@@ -8,7 +8,15 @@ export const MAX_METRICS_POINTS = 1500;
 /** Conservative cap aligned with documented AE retention (90 days). */
 export const MAX_METRICS_RANGE_SECONDS = AE_DEFAULT_MAX_RANGE_SECONDS;
 
-export const METRICS_RESOLUTION_SECONDS = [60, 300, 3600, 86400] as const;
+export const METRICS_RESOLUTION_SECONDS = [
+  10,
+  60,
+  300,
+  900,
+  3600,
+  21600,
+  43200,
+] as const;
 
 export type MetricsResolutionSeconds =
   (typeof METRICS_RESOLUTION_SECONDS)[number];
@@ -17,8 +25,11 @@ export type MetricsRangeError =
   | { ok: false; code: "invalid_range"; message: string }
   | { ok: false; code: "range_too_large"; message: string };
 
+const TEN_MINUTES_SECONDS = 10 * 60;
+const ONE_HOUR_SECONDS = 60 * 60;
 const SIX_HOURS_SECONDS = 6 * 60 * 60;
 const TWENTY_FOUR_HOURS_SECONDS = 24 * 60 * 60;
+const SEVEN_DAYS_SECONDS = 7 * 24 * 60 * 60;
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
 
 function isAllowedResolution(
@@ -28,16 +39,25 @@ function isAllowedResolution(
 }
 
 function ladderResolutionSeconds(rangeSeconds: number): MetricsResolutionSeconds {
-  if (rangeSeconds <= SIX_HOURS_SECONDS) {
+  if (rangeSeconds <= TEN_MINUTES_SECONDS) {
+    return 10;
+  }
+  if (rangeSeconds <= ONE_HOUR_SECONDS) {
     return 60;
   }
-  if (rangeSeconds <= TWENTY_FOUR_HOURS_SECONDS) {
+  if (rangeSeconds <= SIX_HOURS_SECONDS) {
     return 300;
   }
-  if (rangeSeconds <= THIRTY_DAYS_SECONDS) {
+  if (rangeSeconds <= TWENTY_FOUR_HOURS_SECONDS) {
+    return 900;
+  }
+  if (rangeSeconds <= SEVEN_DAYS_SECONDS) {
     return 3600;
   }
-  return 86400;
+  if (rangeSeconds <= THIRTY_DAYS_SECONDS) {
+    return 21600;
+  }
+  return 43200;
 }
 
 function clampResolutionForMaxPoints(

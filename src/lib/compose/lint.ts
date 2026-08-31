@@ -9,7 +9,10 @@ import {
   type YAMLSeq,
 } from 'yaml'
 import { COMPOSE_YAML_OPTIONS } from './tags.ts'
-import { TURBOPANEL_SERVICE_EXTENSION_KEY } from './service-kind.ts'
+import {
+  SUPPORTED_NODE_SERIES,
+  TURBOPANEL_SERVICE_EXTENSION_KEY,
+} from './service-kind.ts'
 import { parseExactVariableRef } from './variable-refs.ts'
 
 export type ComposeLintLevel = 'error' | 'warning'
@@ -372,6 +375,35 @@ function lintServiceSource(
   })
 }
 
+/**
+ * Advisory when `x-turbopanel.nodeVersion` pins a series this control plane
+ * does not offer. Non-blocking on purpose: the authoritative answer is the
+ * host's reported inventory, and the schema accepts any pinned version.
+ */
+function lintServiceNodeVersion(
+  name: string,
+  valueNode: YAMLMap,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return
+  const versionNode = mapEntryValue(extension, 'nodeVersion')
+  const version = scalarString(versionNode)
+  if (version === null) return
+  const series = version.trim().split('.')[0]
+  if (series.length === 0 || SUPPORTED_NODE_SERIES.includes(series)) return
+  issues.push({
+    level: 'warning',
+    message: `Node ${version} is not an offered series (${
+      SUPPORTED_NODE_SERIES.join(', ')
+    }); the deploy uses whatever the host has vendored`,
+    path: `services.${name}.x-turbopanel.nodeVersion`,
+    line: nodeLine(versionNode ?? undefined, lineCounter),
+    blocking: false,
+  })
+}
+
 function pushBaseTagAdvisory(
   node: Node | null | undefined,
   path: string,
@@ -615,6 +647,7 @@ function lintService(
   }
 
   lintServiceSource(name, valueNode, knownSourceIds, lineCounter, issues)
+  lintServiceNodeVersion(name, valueNode, lineCounter, issues)
 
   const hostNative = serviceIsHostNative(valueNode)
   const railpackBuilt = serviceIsRailpackBuilt(valueNode)

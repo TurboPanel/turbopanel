@@ -32,7 +32,7 @@ import {
 const DEFAULT_IMAGE = requireDefaultManagedImage('postgres')
 const DEFAULT_PORT = 5432
 const ROOT_USERNAME = 'postgres'
-const DEFAULT_DATABASE = 'postgres'
+const DEFAULT_DATABASE = 'defaultdb'
 const IDENTIFIER_RE = /^[A-Za-z_]\w*$/
 const MAX_IDENTIFIER_LENGTH = 63
 
@@ -441,14 +441,14 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   // all connect as the engine spec's static `rootUsername` ("postgres"), so
   // changing the container's actual superuser role out from under them would
   // leave every admin command targeting a role that no longer exists. The
-  // user-facing "root" principal (`input.rootUsername`, suffixed when it
-  // collides with another cluster in the same owning-org ProxySQL namespace —
-  // see `resolveAvailableManagedRootUsername`) is instead created as a
-  // *separate* SUPERUSER role via SQL in `applyOneCredential` (daemon
+  // user-facing "root" principal (`input.rootUsername`, always suffixed as
+  // `postgres_<11 rand>` — see `resolveManagedAppliedUsername`, which also
+  // keeps it unique in the owning-org ProxySQL namespace) is instead created
+  // as a *separate* SUPERUSER role via SQL in `applyOneCredential` (daemon
   // `engines/postgres.ts`, `credential.role === 'root'`), connecting as this
   // stable admin — the same platform-admin-vs-frontend-login split MySQL/
   // MariaDB already use (`root@localhost` auth_socket vs. a granted client
-  // account). See `AGENTS.md` → "Managed root username" for the full contract.
+  // account). See `AGENTS.md` → "Login namespace" for the full contract.
   const env: Record<string, string> = {
     POSTGRES_USER: ROOT_USERNAME,
     POSTGRES_DB: initialDatabase,

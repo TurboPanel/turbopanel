@@ -1,7 +1,7 @@
 /**
  * Backend-neutral uptime math for connection status history.
  *
- * AE and ClickHouse share this pure calculator so both backends produce
+ * AE and DuckDB share this pure calculator so both backends produce
  * identical uptime / downtime / unknown totals (parity seam, like
  * `finalizeHostSeriesResult` / `computeSeriesGapCount`).
  */

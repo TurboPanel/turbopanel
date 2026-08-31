@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { HOST_METRIC_KEYS } from "../contract.ts";
+import { HOST_METRIC_KEYS, METRICS_SCHEMA_VERSION } from "../contract.ts";
 import { it } from "@std/testing/bdd";
 import {
   createMetricsChartCache,
@@ -8,6 +8,7 @@ import {
   resolveChartCacheTtlSeconds,
   metricsChartCacheKey,
   METRICS_HISTORICAL_CACHE_TTL_SECONDS,
+  METRICS_LIVE_10S_CACHE_TTL_SECONDS,
   METRICS_LIVE_CACHE_TTL_SECONDS,
 } from "./cache.ts";
 
@@ -16,20 +17,20 @@ it("metricsChartCacheKey: stable metric ordering and schema version", () => {
     serverId: "11111111-1111-4111-8111-111111111111",
     fromBucketMs: 1_000,
     toBucketMs: 2_000,
-    metrics: ["memoryUsedBytes", "cpuUsagePercent"],
+    metrics: ["memoryFreeBytes", "cpuUserPercent"],
     resolutionSeconds: 300,
-    backend: "clickhouse",
+    backend: "duckdb",
   });
   const keyB = metricsChartCacheKey({
     serverId: "11111111-1111-4111-8111-111111111111",
     fromBucketMs: 1_000,
     toBucketMs: 2_000,
-    metrics: ["cpuUsagePercent", "memoryUsedBytes"],
+    metrics: ["cpuUserPercent", "memoryFreeBytes"],
     resolutionSeconds: 300,
-    backend: "clickhouse",
+    backend: "duckdb",
   });
   assertEquals(keyA, keyB);
-  assertEquals(keyA.includes("v1"), true);
+  assertEquals(keyA.includes(`v${METRICS_SCHEMA_VERSION}`), true);
 });
 
 it("resolveChartCacheTtlSeconds: live vs historical", () => {
@@ -49,6 +50,24 @@ it("resolveChartCacheTtlSeconds: live vs historical", () => {
       resolutionSeconds: 60,
     }),
     METRICS_HISTORICAL_CACHE_TTL_SECONDS,
+  );
+});
+
+it("resolveChartCacheTtlSeconds: 10 s resolution uses the short live TTL", () => {
+  const nowMs = Date.parse("2026-01-01T01:00:00.000Z");
+  assertEquals(
+    resolveChartCacheTtlSeconds({
+      toMs: Date.parse("2026-01-01T00:59:55.000Z"),
+      nowMs,
+      resolutionSeconds: 10,
+    }),
+    METRICS_LIVE_10S_CACHE_TTL_SECONDS,
+  );
+  // Much shorter than the standard live TTL — a live 10 s chart refreshes
+  // faster than 45 s.
+  assertEquals(
+    METRICS_LIVE_10S_CACHE_TTL_SECONDS < METRICS_LIVE_CACHE_TTL_SECONDS,
+    true,
   );
 });
 

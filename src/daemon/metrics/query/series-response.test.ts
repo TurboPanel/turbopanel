@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
+import { HOST_METRIC_KEYS } from "../contract.ts";
 import {
   computeSeriesGapCount,
   defaultExpectedSamplesPerBucket,
@@ -13,6 +14,18 @@ it("defaultExpectedSamplesPerBucket: one sample per minute of bucket", () => {
   assertEquals(defaultExpectedSamplesPerBucket(60), 1);
   assertEquals(defaultExpectedSamplesPerBucket(300), 5);
   assertEquals(defaultExpectedSamplesPerBucket(3600), 60);
+});
+
+it("defaultExpectedSamplesPerBucket: observed interval overrides the 60 s default", () => {
+  // Live 10 s cadence — a 60 s bucket expects 6 samples, not 1.
+  assertEquals(defaultExpectedSamplesPerBucket(60, 10), 6);
+  assertEquals(defaultExpectedSamplesPerBucket(300, 10), 30);
+  assertEquals(defaultExpectedSamplesPerBucket(3600, 10), 360);
+  // Never below one expected sample.
+  assertEquals(defaultExpectedSamplesPerBucket(10, 60), 1);
+  // Unusable observed intervals fall back to the 60 s assumption.
+  assertEquals(defaultExpectedSamplesPerBucket(300, 0), 5);
+  assertEquals(defaultExpectedSamplesPerBucket(300, Number.NaN), 5);
 });
 
 it("computeSeriesGapCount: counts fully missing buckets on half-open range", () => {
@@ -121,7 +134,8 @@ it("parseRequestedMetrics: empty or omitted returns all metrics", () => {
   const all = parseRequestedMetrics(undefined);
   assertEquals(all.ok, true);
   if (all.ok) {
-    assertEquals(all.metrics.length, 20);
+    assertEquals(all.metrics.length, HOST_METRIC_KEYS.length);
+    assertEquals(all.metrics.length, 38);
   }
   const blank = parseRequestedMetrics("   ");
   assertEquals(blank.ok, true);
@@ -131,20 +145,20 @@ it("parseRequestedMetrics: comma-only input falls back to every metric", () => {
   const parsed = parseRequestedMetrics(" , , ");
   assertEquals(parsed.ok, true);
   if (parsed.ok) {
-    assertEquals(parsed.metrics.length, 20);
+    assertEquals(parsed.metrics.length, HOST_METRIC_KEYS.length);
   }
 });
 
 it("parseRequestedMetrics: accepts a comma-separated subset", () => {
-  const parsed = parseRequestedMetrics("cpuUsagePercent, load1 ");
+  const parsed = parseRequestedMetrics("cpuUserPercent, load1 ");
   assertEquals(parsed.ok, true);
   if (parsed.ok) {
-    assertEquals(parsed.metrics, ["cpuUsagePercent", "load1"]);
+    assertEquals(parsed.metrics, ["cpuUserPercent", "load1"]);
   }
 });
 
 it("parseRequestedMetrics: rejects unknown metric names", () => {
-  const parsed = parseRequestedMetrics("cpuUsagePercent,notReal");
+  const parsed = parseRequestedMetrics("cpuUserPercent,notReal");
   assertEquals(parsed.ok, false);
   if (!parsed.ok) {
     assertEquals(parsed.error, "unknown metrics metric: notReal");
@@ -156,7 +170,7 @@ it("finalizeHostSeriesResult: passthrough when unavailable or unbucketed", () =>
     kind: "disabled",
     available: false,
     serverId: "11111111-1111-4111-8111-111111111111",
-    metrics: ["cpuUsagePercent"],
+    metrics: ["cpuUserPercent"],
     points: [],
     resolutionSeconds: null,
     gapCount: 0,
@@ -183,7 +197,7 @@ it("finalizeHostSeriesResult: passthrough when range timestamps are invalid", ()
     kind: "analytics-engine",
     available: true,
     serverId: "11111111-1111-4111-8111-111111111111",
-    metrics: ["cpuUsagePercent"],
+    metrics: ["cpuUserPercent"],
     points: [],
     resolutionSeconds: 300,
     gapCount: 0,
@@ -195,13 +209,13 @@ it("finalizeHostSeriesResult: passthrough when range timestamps are invalid", ()
 
 it("toHostSeriesChartResponse: maps series result into chart payload", () => {
   const result: HostSeriesResult = {
-    kind: "clickhouse",
+    kind: "duckdb",
     available: true,
     serverId: "11111111-1111-4111-8111-111111111111",
-    metrics: ["cpuUsagePercent"],
+    metrics: ["cpuUserPercent"],
     points: [{
       at: "2026-01-01T00:00:00.000Z",
-      values: { cpuUsagePercent: 12.5 },
+      values: { cpuUserPercent: 12.5 },
       sampleCount: 5,
       expectedSampleCount: 5,
     }],
@@ -216,9 +230,9 @@ it("toHostSeriesChartResponse: maps series result into chart payload", () => {
     result,
   });
   assertEquals(chart.ok, true);
-  assertEquals(chart.backend, "clickhouse");
+  assertEquals(chart.backend, "duckdb");
   assertEquals(chart.points.length, 1);
-  assertEquals(chart.points[0]?.values.cpuUsagePercent, 12.5);
+  assertEquals(chart.points[0]?.values.cpuUserPercent, 12.5);
   assertEquals(chart.points[0]?.expectedSampleCount, 5);
   assertEquals(chart.gapCount, 0);
 });
@@ -228,7 +242,7 @@ it("finalizeHostSeriesResult: replaces store gapCount with grid count", () => {
     kind: "analytics-engine",
     available: true,
     serverId: "11111111-1111-4111-8111-111111111111",
-    metrics: ["cpuUsagePercent"],
+    metrics: ["cpuUserPercent"],
     points: [],
     resolutionSeconds: 300,
     gapCount: 0,

@@ -13,6 +13,7 @@
 import {
   isNodeComposeService,
   type NativeRuntimeFramework,
+  type NodeAppMode,
   readServiceTurbopanelExtension,
 } from './service-kind.ts'
 import { allocateSiteListenPort } from './site.ts'
@@ -25,6 +26,16 @@ export type NativeAppServiceSpec = {
   listenPort: number
   /** Operator-pinned Node series, when the author declared one. */
   nodeVersion?: string
+  /** `NODE_ENV` for build and unit. Omitted means `production`. */
+  appMode?: NodeAppMode
+  /**
+   * Omitted means `true`. A disabled app is still emitted — dropping it would
+   * make the daemon reconcile tear the unit down and strand the release; the
+   * daemon stops and disables the unit instead of starting it.
+   */
+  enabled?: boolean
+  /** Script run when `source.startCommand` is absent. Default `server.js`. */
+  startupFile?: string
 }
 
 /** Framework when `x-turbopanel.framework` is omitted. */
@@ -81,6 +92,11 @@ export function splitNativeAppServices(
       ...(extension.nodeVersion === undefined
         ? {}
         : { nodeVersion: extension.nodeVersion }),
+      ...(extension.appMode === undefined ? {} : { appMode: extension.appMode }),
+      ...(extension.enabled === undefined ? {} : { enabled: extension.enabled }),
+      ...(extension.startupFile === undefined
+        ? {}
+        : { startupFile: extension.startupFile }),
     })
   }
 

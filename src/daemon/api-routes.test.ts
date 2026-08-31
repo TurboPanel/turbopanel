@@ -1895,6 +1895,7 @@ function buildValidMetricsFrame(
       operatingSystem: "linux",
       architecture: "arm64",
       kernelRelease: "6.12.0",
+      collectionMode: "baseline",
     },
     ...overrides,
   };

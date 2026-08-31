@@ -724,6 +724,7 @@ test('binding-owned variables reject PATCH/DELETE and conflict on POST', async (
         kind: 'database',
         provider: 'postgres',
         username: `bind_test_${crypto.randomUUID().slice(0, 8)}`,
+        appliedUsername: `bind_test_${crypto.randomUUID().slice(0, 8)}`,
       })
       .returning({ id: principal.id })
     const principalId = insertedPrincipal!.id

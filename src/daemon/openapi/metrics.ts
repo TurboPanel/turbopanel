@@ -1,4 +1,7 @@
-import { HOST_METRIC_KEYS } from "../metrics/contract.ts";
+import {
+  HOST_METRIC_KEYS,
+  METRICS_SCHEMA_VERSION,
+} from "../metrics/contract.ts";
 
 const hostMetricProperties = Object.fromEntries(
   HOST_METRIC_KEYS.map((key) => [
@@ -21,7 +24,7 @@ export const metricsSchemas = {
     ],
     properties: {
       type: { type: "string", const: "metrics" },
-      version: { type: "integer", const: 1 },
+      version: { type: "integer", const: METRICS_SCHEMA_VERSION },
       at: { type: "string", format: "date-time" },
       intervalSeconds: { type: "number" },
       sequence: { type: "integer" },
@@ -39,13 +42,22 @@ export const metricsSchemas = {
           "operatingSystem",
           "architecture",
           "kernelRelease",
+          "collectionMode",
         ],
         properties: {
-          schemaVersion: { type: "integer", const: 1 },
+          schemaVersion: { type: "integer", const: METRICS_SCHEMA_VERSION },
           daemonVersion: { type: "string" },
           operatingSystem: { type: "string" },
           architecture: { type: "string" },
           kernelRelease: { type: "string" },
+          collectionMode: { type: "string", enum: ["baseline", "live"] },
+          runtimeMode: { type: "string" },
+          cpuTemperatureSensor: { type: "string" },
+          gpuTemperatureSensor: { type: "string" },
+          cpuPowerSensor: { type: "string" },
+          gpuPowerSensor: { type: "string" },
+          uplinkInterfaces: { type: "array", items: { type: "string" } },
+          fabricInterfaces: { type: "array", items: { type: "string" } },
         },
       },
     },
@@ -64,9 +76,9 @@ export const metricsPaths: Record<string, unknown> = {
     post: {
       tags: ["Daemon"],
       summary: "Ingest host metrics sample",
-      description: "Authenticated daemon posts a v1 host-metrics frame. " +
+      description: "Authenticated daemon posts a v2 host-metrics frame. " +
         "serverId is taken from the JWT `sub` — never from the body. " +
-        "Writes are fire-and-forget to Analytics Engine / ClickHouse; " +
+        "Writes are fire-and-forget to Analytics Engine / DuckDB; " +
         "never wakes the Durable Object.",
       security: [{ bearerAuth: [] }],
       requestBody: {
