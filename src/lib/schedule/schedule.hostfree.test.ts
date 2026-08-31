@@ -1,4 +1,5 @@
 import { assertEquals } from '@std/assert'
+import type { ComposeDocument } from '../compose/types.ts'
 import {
   interpretServiceSchedule,
   resolveReplicaPolicy,
@@ -85,8 +86,14 @@ function webService(replicas: number): PlannedService {
       spreadKeys: [],
       publishedHostPorts: [],
       colocateWith: [],
+      maxReplicasPerNode: null,
     },
   }
+}
+
+/** Merged document standing in for one the deploy path would have parsed. */
+function composeDoc(data: Record<string, unknown>): ComposeDocument {
+  return { version: 1, data, presentation: { keyOrder: [], comments: {} } }
 }
 
 test('planEnvironmentSchedule keeps a one-server plan without TurboFabric', () => {
@@ -106,30 +113,78 @@ test('planEnvironmentSchedule keeps a one-server plan without TurboFabric', () =
   assertEquals(plan.slots.every((task) => task.serverId === 'server-a'), true)
 })
 
-test('planEnvironmentSchedule requires TurboFabric to span hosts', () => {
+function spreadWebService(): PlannedService {
+  return {
+    serviceId: 'svc-web',
+    spec: {
+      composeServiceName: 'web',
+      mode: 'replicated',
+      replicas: 2,
+      constraints: [],
+      spreadKeys: ['datacenter'],
+      publishedHostPorts: [8080],
+      colocateWith: [],
+      maxReplicasPerNode: null,
+    },
+  }
+}
+
+test('planEnvironmentSchedule requires TurboFabric to span an overlay network', () => {
   const plan = planEnvironmentSchedule({
     pinServerId: null,
     defaultServerId: null,
     fabricEnabled: false,
     servers: [alpha, bravo],
-    services: [{
-      serviceId: 'svc-web',
-      spec: {
-        composeServiceName: 'web',
-        mode: 'replicated',
-        replicas: 2,
-        constraints: [],
-        spreadKeys: ['datacenter'],
-        publishedHostPorts: [8080],
-        colocateWith: [],
-      },
-    }],
+    services: [spreadWebService()],
     existingTasks: [],
     storagePins: new Map(),
+    document: composeDoc({
+      services: { web: { networks: ['app'] } },
+      networks: { app: { driver: 'overlay' } },
+    }),
   })
   assertEquals(plan.ok, false)
   if (plan.ok) return
   assertEquals(plan.error, 'turbofabric_required')
+})
+
+test('planEnvironmentSchedule spans hosts without TurboFabric for bridge/default networks', () => {
+  // Identical placement; the document simply never asked for a network that
+  // reaches beyond one engine, so each host gets its own local bridge.
+  const plan = planEnvironmentSchedule({
+    pinServerId: null,
+    defaultServerId: null,
+    fabricEnabled: false,
+    servers: [alpha, bravo],
+    services: [spreadWebService()],
+    existingTasks: [],
+    storagePins: new Map(),
+    document: composeDoc({
+      services: { web: { networks: ['app'] } },
+      networks: { app: { driver: 'bridge' } },
+    }),
+  })
+  assertEquals(plan.ok, true)
+  if (!plan.ok) return
+  assertEquals(plan.serverIds, ['server-a', 'server-b'])
+})
+
+test('planEnvironmentSchedule spans hosts without TurboFabric when no networks are declared', () => {
+  // No `networks:` block at all — the implicit `default` is not overlay, so the
+  // plan is two ordinary single-host bridges rather than a fabric request.
+  const plan = planEnvironmentSchedule({
+    pinServerId: null,
+    defaultServerId: null,
+    fabricEnabled: false,
+    servers: [alpha, bravo],
+    services: [spreadWebService()],
+    existingTasks: [],
+    storagePins: new Map(),
+    document: composeDoc({ services: { web: {} } }),
+  })
+  assertEquals(plan.ok, true)
+  if (!plan.ok) return
+  assertEquals(plan.serverIds, ['server-a', 'server-b'])
 })
 
 test('planEnvironmentSchedule pin path never requires TurboFabric', () => {
@@ -178,6 +233,7 @@ test('planEnvironmentSchedule rejects host-port over-packing', () => {
         spreadKeys: [],
         publishedHostPorts: [80],
         colocateWith: [],
+        maxReplicasPerNode: null,
       },
     }],
     existingTasks: [],
@@ -230,4 +286,55 @@ test('planEnvironmentSchedule empty services still targets the pin', () => {
   if (!plan.ok) return
   assertEquals(plan.serverIds, ['server-a'])
   assertEquals(plan.slots, [])
+})
+
+/**
+ * The compose key all the way through: `deploy.placement.max_replicas_per_node`
+ * parsed by `interpretServiceSchedule` and enforced by the planner, rather than
+ * parsed and then ignored — which is what it was before.
+ */
+test('max_replicas_per_node spreads a service the planner would otherwise pack', () => {
+  const spec = interpretServiceSchedule(
+    'web',
+    { deploy: { replicas: 2, placement: { max_replicas_per_node: 1 } } },
+    1,
+  )
+  assertEquals(spec.maxReplicasPerNode, 1)
+
+  const plan = planEnvironmentSchedule({
+    pinServerId: null,
+    defaultServerId: 'server-a',
+    fabricEnabled: true,
+    servers: [alpha, bravo],
+    services: [{ serviceId: 'svc-web', spec }],
+    existingTasks: [],
+    storagePins: new Map(),
+  })
+  assertEquals(plan.ok, true)
+  if (!plan.ok) return
+  assertEquals(plan.serverIds, ['server-a', 'server-b'])
+})
+
+test('max_replicas_per_node the fleet cannot satisfy is its own refusal', () => {
+  const plan = planEnvironmentSchedule({
+    pinServerId: 'server-a',
+    defaultServerId: null,
+    fabricEnabled: false,
+    servers: [alpha, bravo],
+    services: [{
+      serviceId: 'svc-web',
+      spec: interpretServiceSchedule(
+        'web',
+        { deploy: { replicas: 2, placement: { max_replicas_per_node: 1 } } },
+        1,
+      ),
+    }],
+    existingTasks: [],
+    storagePins: new Map(),
+  })
+  assertEquals(plan.ok, false)
+  if (plan.ok) return
+  // The pin leaves exactly one eligible host, so two replicas at one per node
+  // is arithmetic, not a constraint or a port.
+  assertEquals(plan.error, 'max_replicas_per_node_exceeded')
 })

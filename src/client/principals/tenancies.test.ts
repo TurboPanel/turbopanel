@@ -7,6 +7,7 @@ import {
   loadServiceIdsByPrincipalIds,
   parseServiceIdsField,
   pickSolePrincipalId,
+  reconcilePrincipalsFromCompose,
   servicesBelongToProject,
 } from './tenancies.ts'
 
@@ -214,5 +215,120 @@ describe('loadPrincipalIdsByServiceIdForEnvironment', () => {
       'env-1',
     )
     assertEquals([...map.entries()], [])
+  })
+})
+
+describe('reconcilePrincipalsFromCompose', () => {
+  function documentWith(
+    services: Record<string, unknown>,
+    principals?: Record<string, unknown>,
+  ) {
+    return {
+      version: 1 as const,
+      data: {
+        services,
+        ...(principals ? { 'x-turbopanel': { principals } } : {}),
+      },
+      presentation: { keyOrder: ['services'], comments: {} },
+    }
+  }
+
+  const site = (alias?: string) => ({
+    'x-turbopanel': {
+      serviceKind: 'site',
+      ...(alias === undefined ? {} : { principal: alias }),
+    },
+  })
+
+  /** Records tenancy inserts; principal lookups always find an existing row. */
+  function createReconcileDb(existingPrincipalId: string) {
+    const inserted: unknown[] = []
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{ id: existingPrincipalId }]),
+          }),
+        }),
+      }),
+      insert: () => ({
+        values: (rows: unknown) => ({
+          onConflictDoNothing: () => {
+            inserted.push(rows)
+            return Promise.resolve()
+          },
+        }),
+      }),
+    } as unknown as Db
+    return { db, inserted }
+  }
+
+  it('is a no-op when no service declares an alias', async () => {
+    const { db, inserted } = createReconcileDb(PID_A)
+    const result = await reconcilePrincipalsFromCompose(db, {
+      organizationId: 'org-1',
+      projectId: 'proj-1',
+      merged: documentWith({ blog: site() }),
+      serviceRows: [{ id: SID_A, composeServiceName: 'blog' }],
+    })
+    assertEquals(result.ok, true)
+    if (!result.ok) return
+    assertEquals(result.resolution.aliasByComposeServiceName.size, 0)
+    assertEquals(inserted.length, 0)
+  })
+
+  it('refuses an alias the root does not declare', async () => {
+    const { db } = createReconcileDb(PID_A)
+    const result = await reconcilePrincipalsFromCompose(db, {
+      organizationId: 'org-1',
+      projectId: 'proj-1',
+      merged: documentWith({ blog: site('ghost') }, { app: {} }),
+      serviceRows: [{ id: SID_A, composeServiceName: 'blog' }],
+    })
+    assertEquals(result, {
+      ok: false,
+      composeServiceName: 'blog',
+      alias: 'ghost',
+    })
+  })
+
+  it('links every service naming one alias to the same principal', async () => {
+    const { db, inserted } = createReconcileDb(PID_A)
+    const result = await reconcilePrincipalsFromCompose(db, {
+      organizationId: 'org-1',
+      projectId: 'proj-1',
+      merged: documentWith(
+        { blog: site('app'), worker: site('app') },
+        { app: {} },
+      ),
+      serviceRows: [
+        { id: SID_A, composeServiceName: 'blog' },
+        { id: SID_B, composeServiceName: 'worker' },
+      ],
+    })
+    assertEquals(result.ok, true)
+    if (!result.ok) return
+    assertEquals([...result.resolution.principalIdByAlias], [['app', PID_A]])
+    assertEquals(
+      [...result.resolution.aliasByComposeServiceName].sort(),
+      [['blog', 'app'], ['worker', 'app']],
+    )
+    // Additive and idempotent: one upsert carrying both edges, never a delete.
+    assertEquals(inserted, [[
+      { principalId: PID_A, serviceId: SID_A },
+      { principalId: PID_A, serviceId: SID_B },
+    ]])
+  })
+
+  it('skips a declared service that has no row yet', async () => {
+    const { db, inserted } = createReconcileDb(PID_A)
+    const result = await reconcilePrincipalsFromCompose(db, {
+      organizationId: 'org-1',
+      projectId: 'proj-1',
+      merged: documentWith({ blog: site('app') }, { app: {} }),
+      serviceRows: [],
+    })
+    assertEquals(result.ok, true)
+    assertEquals(inserted.length, 0)
   })
 })

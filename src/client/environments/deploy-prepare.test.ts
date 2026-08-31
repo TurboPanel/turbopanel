@@ -17,6 +17,10 @@ import {
 } from "../../lib/naming.ts";
 import { DEFAULT_PRINCIPAL_SHELL } from "../../lib/principal-options.ts";
 import { sumServiceResourceUsage } from "../../lib/resource-limits.ts";
+import type {
+  ResolvedResources,
+  ResolvedService,
+} from "../../lib/compose/ir.ts";
 import type { Db } from "../../db.ts";
 import {
   absorbSoftPrepareError,
@@ -55,6 +59,28 @@ import {
   verifyServerInOrg,
   warningFromPrepareError,
 } from "./deploy-prepare.ts";
+
+/**
+ * The parts of {@link ResolvedService} the ceiling readers actually use.
+ *
+ * They ask the resolved stage one question — what is this service's effective
+ * ceiling — so the fixture fills the identity fields and leaves placement,
+ * containers and hostings empty rather than pretending to a whole deploy.
+ */
+function resolvedServicesFixture(
+  entries: readonly { name: string; resources?: ResolvedResources }[],
+): ResolvedService[] {
+  return entries.map((entry, index) => ({
+    serviceId: `svc-${index}`,
+    composeServiceName: entry.name,
+    kind: "container" as const,
+    clones: [entry.name],
+    slots: [],
+    containers: [],
+    ...(entry.resources === undefined ? {} : { resources: entry.resources }),
+    hostings: [],
+  }));
+}
 
 describe("deploy-prepare helpers", () => {
   it("counts compose services for resource usage even without DB options rows", () => {
@@ -1070,6 +1096,12 @@ describe("resolveHostingBindAddress edge cases", () => {
   });
 });
 
+/** No `x-turbopanel.principal` anywhere — the sole-steward fallback path. */
+const NO_COMPOSE_PRINCIPALS = {
+  principalIdByAlias: new Map<string, string>(),
+  aliasByComposeServiceName: new Map<string, string>(),
+};
+
 describe("attachPrincipalsToSites", () => {
   const principalId = "01936b3e-aaaa-bbbb-cccc-123456789abc";
   const serviceId = "01936b3e-4444-5555-6666-123456789abc";
@@ -1088,6 +1120,7 @@ describe("attachPrincipalsToSites", () => {
       [],
       [],
       [],
+      NO_COMPOSE_PRINCIPALS,
     );
     assertEquals(result, []);
   });
@@ -1109,6 +1142,7 @@ describe("attachPrincipalsToSites", () => {
         gid: 10001,
       }],
       [site],
+      NO_COMPOSE_PRINCIPALS,
     );
     if ("kind" in result) {
       throw new TypeError("expected pinned sites");
@@ -1122,7 +1156,10 @@ describe("attachPrincipalsToSites", () => {
     });
   });
 
-  it("omits principal when none are assigned", async () => {
+  it("refuses a site with no alias and no steward", async () => {
+    // A site's tree belongs to an account. With neither a declared
+    // `x-turbopanel.principal` nor a sole steward there is nobody to own it, so
+    // the deploy is refused rather than serving a directory no tenant can reach.
     const db = createSelectWhereDb([]);
     const result = await attachPrincipalsToSites(
       db,
@@ -1130,11 +1167,43 @@ describe("attachPrincipalsToSites", () => {
       [{ id: serviceId, composeServiceName: "site" }],
       [],
       [site],
+      NO_COMPOSE_PRINCIPALS,
     );
-    if ("kind" in result) {
-      throw new TypeError("expected sites without principal");
-    }
-    assertEquals(result[0]?.principal, undefined);
+    assertEquals(result, {
+      kind: "principal_required_for_service_kind",
+      composeServiceName: "site",
+      serviceKind: "site",
+    });
+  });
+
+  it("pins the principal a declared alias resolves to, skipping stewards", () => {
+    // Two stewards would be ambiguous on the fallback path; a declared alias is
+    // the answer, so ambiguity never arises.
+    const db = createSelectWhereDb([
+      { principalId, serviceId },
+      { principalId: "01936b3e-bbbb-cccc-dddd-123456789abc", serviceId },
+    ]);
+    return attachPrincipalsToSites(
+      db,
+      "env-1",
+      [{ id: serviceId, composeServiceName: "site" }],
+      [{
+        principalId,
+        username: "appuser",
+        home: principalHomeDir("appuser"),
+        shell: "/bin/bash",
+      }],
+      [site],
+      {
+        principalIdByAlias: new Map([["app", principalId]]),
+        aliasByComposeServiceName: new Map([["site", "app"]]),
+      },
+    ).then((result) => {
+      if ("kind" in result) {
+        throw new TypeError("expected pinned sites");
+      }
+      assertEquals(result[0]?.principal?.principalId, principalId);
+    });
   });
 
   it("returns ambiguous when more than one principal is assigned", async () => {
@@ -1148,6 +1217,7 @@ describe("attachPrincipalsToSites", () => {
       [{ id: serviceId, composeServiceName: "site" }],
       [],
       [site],
+      NO_COMPOSE_PRINCIPALS,
     );
     assertEquals(result, {
       kind: "site_principal_ambiguous",
@@ -1233,6 +1303,22 @@ describe("warningFromPrepareError and soft-error absorb", () => {
       }).code,
       "source_principal_ambiguous",
     );
+    assertEquals(
+      warningFromPrepareError({
+        kind: "principal_alias_unknown",
+        composeServiceName: "blog",
+        alias: "ghost",
+      }).details,
+      { composeServiceName: "blog", alias: "ghost" },
+    );
+    assertEquals(
+      warningFromPrepareError({
+        kind: "principal_required_for_service_kind",
+        composeServiceName: "blog",
+        serviceKind: "site",
+      }).code,
+      "principal_required_for_service_kind",
+    );
   });
 
   it("absorbs soft errors only in preview mode", () => {
@@ -1299,12 +1385,12 @@ describe("evaluateHealthCheckGates and resourceLimitPrepareError", () => {
   });
 
   it("returns resource_limit when org max services is exceeded", () => {
-    const options = buildServiceOptionsMap([
-      { composeServiceName: "web", options: {} },
-      { composeServiceName: "api", options: {} },
+    const resolved = resolvedServicesFixture([
+      { name: "web" },
+      { name: "api" },
     ]);
     const err = resourceLimitPrepareError(
-      options,
+      resolved,
       2,
       { resourceLimits: { maxServicesPerEnvironment: 1 } },
       {},
@@ -1316,11 +1402,8 @@ describe("evaluateHealthCheckGates and resourceLimitPrepareError", () => {
   });
 
   it("returns null when limits are satisfied", () => {
-    const options = buildServiceOptionsMap([
-      { composeServiceName: "web", options: {} },
-    ]);
     assertEquals(
-      resourceLimitPrepareError(options, 1, {
+      resourceLimitPrepareError(resolvedServicesFixture([{ name: "web" }]), 1, {
         resourceLimits: { maxServicesPerEnvironment: 5 },
       }, {}),
       null,
@@ -1340,7 +1423,7 @@ describe("nativeAppServicesForDeploy", () => {
         enabled: false,
         startupFile: "app.js",
       }],
-      buildServiceOptionsMap([]),
+      [],
       {},
       {},
     );
@@ -1364,7 +1447,7 @@ describe("nativeAppServicesForDeploy", () => {
         framework: "auto" as const,
         listenPort: 18100,
       }],
-      buildServiceOptionsMap([]),
+      [],
       {},
       {},
     );
@@ -1372,6 +1455,68 @@ describe("nativeAppServicesForDeploy", () => {
       composeServiceName: "web",
       listenPort: 18100,
       framework: "auto",
+    }]);
+  });
+
+  it("carries the authored restart policy and service labels onto the payload", () => {
+    // Both are plain Compose keys the native split read off the service body
+    // before it left the compose document. A `node` service is removed from
+    // runtime compose entirely, so if they stopped here the generated systemd
+    // unit — the only thing left that could act on them — would never see them.
+    const prepared = nativeAppServicesForDeploy(
+      [{
+        composeServiceName: "web",
+        framework: "auto" as const,
+        listenPort: 18100,
+        restartPolicy: {
+          condition: "any" as const,
+          delay: "5s",
+          maxAttempts: 3,
+          window: "1m30s",
+        },
+        serviceLabels: { "com.example.team": "platform" },
+      }],
+      [],
+      {},
+      {},
+    );
+    assertEquals(prepared, [{
+      composeServiceName: "web",
+      listenPort: 18100,
+      framework: "auto",
+      restartPolicy: {
+        condition: "any",
+        delay: "5s",
+        maxAttempts: 3,
+        window: "1m30s",
+      },
+      serviceLabels: { "com.example.team": "platform" },
+    }]);
+  });
+
+  it("takes the per-app ceiling from the resolved stage", () => {
+    // The resolved service, not the loose options map: a native app and a
+    // container service have to be limited from one source of truth, and that
+    // source is the stage that recorded the clamp.
+    const prepared = nativeAppServicesForDeploy(
+      [{
+        composeServiceName: "web",
+        framework: "auto" as const,
+        listenPort: 18100,
+      }],
+      resolvedServicesFixture([
+        { name: "web", resources: { cpus: 1.5, memoryBytes: 512_000_000 } },
+        { name: "api", resources: { cpus: 4 } },
+      ]),
+      {},
+      { resourceLimits: { maxCpus: 8 } },
+    );
+    assertEquals(prepared, [{
+      composeServiceName: "web",
+      listenPort: 18100,
+      framework: "auto",
+      resources: { cpus: 1.5, memoryBytes: 512_000_000 },
+      accountLimits: { cpus: 8 },
     }]);
   });
 });
@@ -1387,9 +1532,11 @@ describe("compose list/split/expansion helpers", () => {
             "x-turbopanel": {
               serviceKind: "site",
               engine: "nginx",
+              principal: "app",
             },
           },
         },
+        "x-turbopanel": { principals: { app: {} } },
       },
       presentation: { keyOrder: ["services"], comments: {} },
     });
@@ -1414,12 +1561,14 @@ describe("compose list/split/expansion helpers", () => {
               serviceKind: "site",
               engine: "apache",
               root: "html",
+              principal: "app",
             },
           },
         },
         networks: {
           internal: {},
         },
+        "x-turbopanel": { principals: { app: {} } },
       },
       presentation: { keyOrder: ["services", "networks"], comments: {} },
     });
@@ -1443,6 +1592,7 @@ describe("compose list/split/expansion helpers", () => {
             "x-turbopanel": {
               serviceKind: "site",
               engine: "nginx",
+              principal: "app",
             },
             networks: ["tw-only"],
           },
@@ -1451,6 +1601,7 @@ describe("compose list/split/expansion helpers", () => {
           shared: {},
           "tw-only": {},
         },
+        "x-turbopanel": { principals: { app: {} } },
       },
       presentation: { keyOrder: ["services", "networks"], comments: {} },
     });
@@ -1751,21 +1902,20 @@ describe("resolveSitesForMode and toPreparedDeployResult", () => {
 
 describe("resourceLimitPrepareError server scope", () => {
   it("returns null when server limits are unset", () => {
-    const options = buildServiceOptionsMap([
-      { composeServiceName: "web", options: { resources: { cpus: 0.5 } } },
-    ]);
     assertEquals(
-      resourceLimitPrepareError(options, 1, {}, {}),
+      resourceLimitPrepareError(
+        resolvedServicesFixture([{ name: "web", resources: { cpus: 0.5 } }]),
+        1,
+        {},
+        {},
+      ),
       null,
     );
   });
 
   it("violates server maxCpus when usage exceeds server cap", () => {
-    const options = buildServiceOptionsMap([
-      { composeServiceName: "web", options: { resources: { cpus: 4 } } },
-    ]);
     const err = resourceLimitPrepareError(
-      options,
+      resolvedServicesFixture([{ name: "web", resources: { cpus: 4 } }]),
       1,
       {},
       { resourceLimits: { maxCpus: 2 } },
@@ -1823,6 +1973,7 @@ describe("attachPrincipalsToSites edge cases", () => {
       [{ id: serviceId, composeServiceName: "site" }],
       [],
       [site],
+      NO_COMPOSE_PRINCIPALS,
     );
     if ("kind" in result) {
       throw new TypeError("expected sites without principal pin");
@@ -1830,7 +1981,7 @@ describe("attachPrincipalsToSites edge cases", () => {
     assertEquals(result[0]?.principal, undefined);
   });
 
-  it("handles site with no matching service row", async () => {
+  it("refuses a site with no matching service row and no alias", async () => {
     const db = createSelectWhereDb([]);
     const result = await attachPrincipalsToSites(
       db,
@@ -1838,12 +1989,13 @@ describe("attachPrincipalsToSites edge cases", () => {
       [],
       [],
       [site],
+      NO_COMPOSE_PRINCIPALS,
     );
-    if ("kind" in result) {
-      throw new TypeError("expected sites");
-    }
-    assertEquals(result[0]?.composeServiceName, "site");
-    assertEquals(result[0]?.principal, undefined);
+    assertEquals(result, {
+      kind: "principal_required_for_service_kind",
+      composeServiceName: "site",
+      serviceKind: "site",
+    });
   });
 });
 

@@ -50,6 +50,7 @@
     "test:authn": "deno test --no-check --allow-env --allow-net --allow-read src/client/authn/workers-onboarding.test.ts src/client/authn/install-state.test.ts",
     "test:paths": "deno test --allow-read --allow-write src/server-paths.deno.test.ts",
     "test:compose": "deno test --allow-read --allow-env src/lib/compose/",
+    "test:docker-run": "deno test --allow-read --allow-env src/lib/docker-run/ src/client/docker-run/",
     "test:managed": "deno test --allow-read --allow-env src/lib/managed/",
     "test:managed-hostfree": "deno test --no-check --allow-read --allow-env=TURBOPANEL_DAEMON_DEBUG,TURBOPANEL_LOG_LEVEL src/client/managed/*.hostfree.test.ts src/client/managed/*-pure.test.ts src/client/managed/apply-prepare-preflight.test.ts",
     "test:admin": "deno test --no-check --allow-env --allow-net --allow-read --allow-write=/run/turbopanel,/var/run/turbopanel src/admin/reencrypt-secrets.test.ts src/admin/routes.test.ts"

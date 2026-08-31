@@ -1,5 +1,20 @@
 /**
- * Detect Compose networks whose member services land on more than one server.
+ * Detect the Compose networks TurboFabric spans across hosts.
+ *
+ * **`driver: overlay` is the authored signal.** Compose already has a standard
+ * expression for "this network reaches beyond one engine", so TurboPanel reads
+ * that rather than inventing an `x-` key for it. A network key is eligible only
+ * when the merged document's top-level `networks:` declares it with
+ * `driver: overlay`; the per-server count then decides whether it *actually*
+ * spans this deploy.
+ *
+ * Server count alone no longer promotes a network. Before, any key whose member
+ * services happened to land on two hosts became a `tpn_*` routed bridge — the
+ * implicit `default` network included — so a scheduling decision the author
+ * never made silently changed what their document meant, and `driver: bridge`
+ * behaved identically to declaring nothing at all. An author who wants two
+ * hosts to share a network now says so, and one who does not gets two ordinary
+ * local bridges.
  */
 
 import type { ComposeDocument } from '../compose/types.ts'
@@ -24,6 +39,29 @@ export type PlatformAttachment = {
   networkKeys: readonly string[]
 }
 
+/**
+ * Top-level network keys declared `driver: overlay`.
+ *
+ * The one authored signal for spanning intent. Tolerant of the shapes the rest
+ * of this codebase already handles for a `networks:` entry — a non-mapping
+ * value, a bare `external:`/`name:` entry, an absent `networks:` block — all of
+ * which simply mean "not declared overlay".
+ */
+export function readOverlayDeclaredNetworkKeys(
+  document: ComposeDocument,
+): Set<string> {
+  const keys = new Set<string>()
+  const networks = document.data.networks
+  if (!isPlainObject(networks)) return keys
+  for (const [key, entry] of Object.entries(networks)) {
+    if (!isPlainObject(entry)) continue
+    if (typeof entry.driver !== 'string') continue
+    if (entry.driver.trim() !== 'overlay') continue
+    keys.add(key)
+  }
+  return keys
+}
+
 /** Network keys a compose service joins. Undeclared → implicit `default`. */
 export function composeServiceNetworkKeys(body: unknown): string[] {
   if (!isPlainObject(body) || body.networks === undefined) return ['default']
@@ -35,8 +73,15 @@ export function composeServiceNetworkKeys(body: unknown): string[] {
 }
 
 /**
- * Compose network keys used by slots ∪ platform attachments on two or more
- * servers. Empty when every participant lands on a single host.
+ * Compose network keys **declared `driver: overlay`** that are used by slots ∪
+ * platform attachments on two or more servers.
+ *
+ * Both halves are required. Empty when every participant lands on a single
+ * host, and empty for a network the document never declared overlay however
+ * its members are spread. The implicit `default` is included in that: a
+ * document that writes no `networks:` block at all never spans, while one that
+ * declares `networks.default.driver: overlay` opts the default network in the
+ * same way as any other key.
  */
 export function collectSpanningComposeNetworkKeys(
   document: ComposeDocument,
@@ -57,8 +102,9 @@ export function collectSpanningComposeNetworkKeys(
   )
   addPlatformAttachmentServers(serversByNetwork, platformAttachments)
 
+  const declared = readOverlayDeclaredNetworkKeys(document)
   return [...serversByNetwork.entries()]
-    .filter(([, servers]) => servers.size > 1)
+    .filter(([key, servers]) => servers.size > 1 && declared.has(key))
     .map(([key]) => key)
     .sort((a, b) => a.localeCompare(b))
 }

@@ -2,24 +2,32 @@
  * Compile a runtime Compose document for one server.
  *
  * Users author project + environment documents. Deploy sends one compiled
- * `compose.yaml` per participating daemon. Scheduler-only Swarm `deploy:`
- * keys are stripped so standalone Docker does not reinterpret replica counts.
+ * `compose.yaml` per participating daemon. `deploy:` keys the control plane has
+ * already acted on are dropped here so standalone Docker does not reinterpret a
+ * replica count or a placement decision that has been made.
+ *
+ * **Invariant: nothing reaches this function that has not already passed the
+ * full deploy-time pipeline.** `validateComposeForDeploy`
+ * (`./validate-for-deploy.ts`) runs the upstream Compose schema, the
+ * `x-turbopanel` extension schema, the semantic linter and strict field policy
+ * over the merged document before compile is ever called — in
+ * `lib/schedule/plan-deploy.ts` for a scheduled deploy, and in
+ * `deploy-prepare.ts` for anything that reaches prepare on its own. So by this
+ * point the document is a valid Compose file and every remaining `deploy:` key
+ * is one the registry says TurboPanel handles. This function used
+ * to be where an unsupported key went to die — deleted by a private set that
+ * emitted no diagnostic — and it is deliberately no longer the place that
+ * decides. The removal below is a projection of `./field-policy.ts`, not a
+ * second opinion: an `unsupported` key is in the strip set only as
+ * defense-in-depth, so that a document which somehow got past validation still
+ * cannot leak a field Docker would act on into runtime YAML.
  */
 
 import { serviceDnsName } from "../naming.ts";
 import { pruneUnreferencedComposeNetworks } from "./docker-external-networks.ts";
+import { DEPLOY_KEYS_STRIPPED_FROM_RUNTIME } from "./field-policy.ts";
 import { applyComposePlacement } from "./placement.ts";
 import { type ComposeDocument, emptyComposeDocument } from "./types.ts";
-
-/** Scheduler-only keys never copied into compiled runtime YAML. */
-const SCHEDULER_ONLY_DEPLOY_KEYS = new Set([
-  "mode",
-  "replicas",
-  "placement",
-  "update_config",
-  "rollback_config",
-  "endpoint_mode",
-]);
 
 export type CompileRuntimeOptions = {
   /**
@@ -83,12 +91,19 @@ function servicesMapping(document: ComposeDocument): Record<string, unknown> {
   return isPlainObject(services) ? { ...services } : {};
 }
 
+/**
+ * Drop the `deploy:` keys `./field-policy.ts` marks `runtime: "strip"`.
+ *
+ * Sourced from the registry rather than from a set kept next to the compiler:
+ * the same table that tells an author `update_config` is unsupported is the one
+ * that decides it never reaches the daemon, so the two answers cannot drift.
+ */
 function stripSchedulerDeploy(
   body: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!isPlainObject(body.deploy)) return body;
   const deploy = { ...body.deploy };
-  for (const key of SCHEDULER_ONLY_DEPLOY_KEYS) {
+  for (const key of DEPLOY_KEYS_STRIPPED_FROM_RUNTIME) {
     delete deploy[key];
   }
   const next = { ...body };
@@ -171,6 +186,17 @@ function spanningReplicaCloneName(serviceName: string, slot: number): string {
   return `${serviceName}-${String(slot + 1)}`;
 }
 
+/**
+ * Replace each spanning key's authored entry with the host's `tpn_*` bridge.
+ *
+ * The authored entry is *replaced*, not merged into: the routed bridge is
+ * created by the daemon (`ensureFabricDockerNetworks`) with the subnet and MTU
+ * the fabric allocated, and compose only has to attach to it. Nothing under the
+ * original entry survives, which is why every overlay attribute TurboPanel
+ * cannot reproduce on that bridge — `ipam`, `driver_opts`, `attachable`,
+ * `enable_ipv6`, and `internal` — is refused by `./field-policy.ts` before a
+ * deploy gets here, rather than accepted and dropped on this line.
+ */
 function rewriteSpanningNetworks(
   networks: Record<string, unknown>,
   spanning: ReadonlyMap<string, string>,

@@ -1162,6 +1162,29 @@ export type EnvironmentDeployNativeFramework = "auto" | "node" | "next";
  * never carries a detected result, because detection happens after this payload
  * is minted.
  */
+/**
+ * The `deploy.restart_policy` subset a generated systemd unit can express,
+ * carried on the wire in the **Compose** vocabulary rather than systemd's.
+ *
+ * Translating here would put the unit's supervision semantics in the control
+ * plane, where nothing can see the unit; the daemon's `deploy/native/unit.ts`
+ * owns the mapping (`condition` → `Restart=`, `delay` → `RestartSec=`,
+ * `max_attempts` → `StartLimitBurst=`, `window` → `StartLimitIntervalSec=`).
+ * Values outside this subset never reach the wire: `lib/compose/lint.ts`
+ * refuses them and `lib/compose/validate-for-deploy.ts` turns that into a
+ * `compose_field_unsupported` prepare error, so an author is told what the lane
+ * cannot carry instead of having it silently dropped.
+ */
+export type EnvironmentDeployNativeAppRestartPolicy = {
+  condition?: "none" | "on-failure" | "any";
+  /** Compose duration (`5s`, `1m30s`). */
+  delay?: string;
+  /** Positive retry budget; at least 1. */
+  maxAttempts?: number;
+  /** Compose duration. */
+  window?: string;
+};
+
 export type EnvironmentDeployNativeAppService = {
   composeServiceName: string;
   /** Release-tree directory segment — same id the release engine published under. */
@@ -1196,6 +1219,27 @@ export type EnvironmentDeployNativeAppService = {
    * so a generous per-app limit still cannot exceed the account total.
    */
   accountLimits?: { cpus?: number; memoryBytes?: number; tasksMax?: number };
+  /**
+   * Authored `services.<name>.deploy.restart_policy`, when the document set
+   * one — see {@link EnvironmentDeployNativeAppRestartPolicy}.
+   *
+   * A Docker service keeps this key in the compiled runtime document and
+   * `docker compose up` acts on it. A `serviceKind: node` service is removed
+   * from that document altogether, so without this field an author who wrote a
+   * restart policy would get a unit running on the daemon's defaults with
+   * nothing said anywhere.
+   */
+  restartPolicy?: EnvironmentDeployNativeAppRestartPolicy;
+  /**
+   * Authored `services.<name>.deploy.labels`, when the document set any.
+   *
+   * *Service* metadata, never container `labels:` — the two namespaces are
+   * kept apart on both lanes. It carries no behaviour: the daemon records it
+   * on the generated unit as `X-TurboPanel-Labels`, so `systemctl show` answers
+   * the same question on the native lane that `docker inspect` answers on the
+   * container one.
+   */
+  serviceLabels?: Record<string, string>;
 };
 
 /**
@@ -1356,6 +1400,16 @@ const DEPLOY_COMPOSE_FILE_SOURCES = new Set<EnvironmentDeployComposeFileSource>(
   ],
 );
 
+/**
+ * One `tpn_*` routed bridge this host must own for a spanning network.
+ *
+ * Deliberately only the four fields the daemon can act on. A spanning network
+ * is created as a plain routed bridge with the fabric's own subnet and MTU, so
+ * the authored overlay attributes TurboPanel cannot reproduce on it — `ipam`,
+ * `driver_opts`, `attachable`, `enable_ipv6`, `internal` — never ride this
+ * payload: they are refused at deploy validation
+ * (`lib/compose/field-policy.ts`) rather than carried here and ignored.
+ */
 export type EnvironmentDeployFabricNetwork = {
   name: string;
   subnet: string;

@@ -63,6 +63,34 @@ networks:
   ])
 })
 
+test('collectComposeExternalDockerNetworkNames never returns a spanning network', () => {
+  // A `driver: overlay` network is TurboFabric's, not the operator's: the
+  // compiler allocates its `tpn_<networkId>` host name, so it must never reach
+  // the external-network registration gate. It never sets `external:`, which is
+  // the structural reason the bypass holds.
+  const yaml = `
+services:
+  api:
+    image: node:22
+    networks:
+      - spans
+      - shared
+networks:
+  spans:
+    driver: overlay
+  shared:
+    external: true
+    name: turbopanel-shared
+`
+  assertEquals(collectComposeExternalDockerNetworkNames(yaml), [
+    'turbopanel-shared',
+  ])
+  assertEquals(
+    readComposeExternalDockerNetworkName('spans', { driver: 'overlay' }),
+    null,
+  )
+})
+
 test('readComposeExternalDockerNetworkName rejects non-external entries', () => {
   assertEquals(
     readComposeExternalDockerNetworkName('backend', { driver: 'bridge' }),

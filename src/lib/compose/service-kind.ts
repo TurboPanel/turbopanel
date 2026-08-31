@@ -9,6 +9,11 @@ import {
   validatePhpPoolSetting,
   validatePhpSetting,
 } from "../php-settings.ts"
+import {
+  collectHostingExtensionValidationIssues,
+  type ComposeHostingExtensionEntry,
+  parseHostingExtensionEntries,
+} from "./hosting-extension.ts"
 
 export const TURBOPANEL_SERVICE_EXTENSION_KEY = "x-turbopanel"
 
@@ -53,6 +58,26 @@ export type ComposeSourceBuildKind = "native" | "railpack"
 
 /** Max length for operator-facing service description metadata. */
 export const SERVICE_DESCRIPTION_MAX_LENGTH = 500
+
+/**
+ * Document-local principal alias charset.
+ *
+ * Canonical home for the rule even though the root block is what *declares* an
+ * alias: `x-turbopanel.principal` on a service **references** one, and
+ * `root-extension.ts` already depends on this module, so putting the regex
+ * there and importing it back would be the one import that closes the cycle.
+ *
+ * Not the Unix username: the daemon derives that (with its own reserved-name
+ * and length rules in `lib/naming.ts`), and an alias that had to be the account
+ * name would leak host-global uniqueness into a per-document identifier. This
+ * is only "a name this compose file can refer to", so the rule is the ordinary
+ * identifier shape.
+ */
+export const PRINCIPAL_ALIAS_RE = /^[a-z][a-z0-9_-]{0,63}$/i
+
+export function isPrincipalAlias(value: unknown): value is string {
+  return typeof value === "string" && PRINCIPAL_ALIAS_RE.test(value.trim())
+}
 
 /** Max length for a Git ref name pinned on a service source. */
 export const SOURCE_BRANCH_MAX_LENGTH = 255
@@ -106,7 +131,19 @@ export type ComposeServiceSourceExtension = {
  */
 export type SourceIdResolver = (sourceId: string) => boolean
 
-export type ComposeServiceTurbopanelExtension = {
+/**
+ * Every `x-turbopanel` service field, all optional — the flat, pre-narrowing
+ * view the parser fills in and the validators read.
+ *
+ * The **exported** type is the discriminated union below. This one exists
+ * because the *wire* shape has always been one flat mapping per service and
+ * always will be: narrowing by `serviceKind` is a compile-time story about
+ * which keys are legal, not a change to what is written or parsed. Keeping the
+ * two apart is what lets {@link parseServiceTurbopanelExtension} keep filling a
+ * single object field by field while callers still get a type that knows
+ * `engine` is a site's business and `startupFile` is a node's.
+ */
+type ComposeServiceExtensionFields = {
   serviceKind?: ComposeServiceKind
   engine?: SiteEngine
   /**
@@ -205,7 +242,130 @@ export type ComposeServiceTurbopanelExtension = {
    * grants anything.
    */
   cron?: ComposeServiceCronJob[]
+  /**
+   * The account this host-native service runs as, named by **alias**.
+   *
+   * The value is a key in the sibling root `x-turbopanel.principals` map — a
+   * document-local name — never a Linux username. The Unix account it
+   * materializes into (its `username` / `appliedUsername`, uid, gid, home,
+   * shell) is decided control-plane side on the `principal` row, which is why
+   * an alias can be written by anyone with compose edit rights while none of
+   * those can (see `ROOT_KEY_REDIRECTS` in `./root-extension.ts`).
+   *
+   * Legal on `site` and `node`, refused on `container`: a container has no
+   * account to run as. **Optional**, not required, on both host-native kinds —
+   * every document written before this field existed names no alias and is
+   * owned by whatever principal an operator assigned in the panel, so
+   * requiring it here would reject them at save. Naming one is still the
+   * better answer: it wins outright over the sole-steward lookup, which is the
+   * guess the unowned-site / unowned-release class of bug came from. The
+   * refusal for a host-native service that has *no* owner at all belongs where
+   * the stewards are known — `principal_required_for_service_kind` in
+   * `../../client/environments/deploy-sources.ts`.
+   */
+  principal?: string
+  /**
+   * Ingress routes this service answers on (`x-turbopanel.hosting`).
+   *
+   * Legal on every kind, because every kind can front one: a container behind
+   * the edge, a site served by a host engine, a supervised `node` process. The
+   * block is **never** a `ports:` replacement — it opens no host port, it
+   * declares a hostname the edge routes by name. See `./hosting-extension.ts`,
+   * which owns the shape, the messages, and the redirects that say so.
+   *
+   * Deploy-prepare materializes each entry into a `hosting` row
+   * (`../../client/environments/reconcile-hostings.ts`); everything downstream
+   * — `buildHostingsForService`, the daemon's ingress and TLS lanes — keeps
+   * reading those rows and never sees this block.
+   */
+  hosting?: ComposeHostingExtensionEntry[]
 }
+
+/**
+ * Fields any kind may carry: what the service is, where its code comes from,
+ * and which hostnames reach it.
+ */
+type CommonServiceExtensionFields = Pick<
+  ComposeServiceExtensionFields,
+  "serviceKind" | "description" | "source" | "hosting"
+>
+
+/** Site-only fields: how the content is served, and what serves it. */
+type SiteOnlyExtensionField = "engine" | "root" | "sourceKind" | "php"
+
+/** Node-only fields: how the process is built, pinned, and supervised. */
+type NodeOnlyExtensionField =
+  | "framework"
+  | "nodeVersion"
+  | "packageManager"
+  | "appMode"
+  | "enabled"
+  | "documentRoot"
+  | "startupFile"
+
+/**
+ * Fields both host-native kinds carry. A container has no principal to run as
+ * and no tree to run in; `site` and `node` have exactly one of each.
+ */
+type HostNativeExtensionField = "cron" | "principal"
+
+/**
+ * Spell a field that belongs to a *different* kind, so authoring it is a type
+ * error rather than a silently ignored key. Optional-`never` rather than an
+ * omission on purpose: it keeps the key present on every union member, which is
+ * what lets a caller holding the union still read `extension.engine` and get
+ * `SiteEngine | undefined` instead of a property-does-not-exist error.
+ */
+type NotForThisKind<Field extends keyof ComposeServiceExtensionFields> = {
+  [Key in Field]?: never
+}
+
+/** The default kind. Runs from an image; everything host-native is off-limits. */
+export type ComposeContainerServiceExtension =
+  & CommonServiceExtensionFields
+  & { serviceKind?: "container" }
+  & NotForThisKind<
+    SiteOnlyExtensionField | NodeOnlyExtensionField | HostNativeExtensionField
+  >
+
+/** Served by a host engine out of a document root. */
+export type ComposeSiteServiceExtension =
+  & CommonServiceExtensionFields
+  & { serviceKind: "site" }
+  & Pick<
+    ComposeServiceExtensionFields,
+    SiteOnlyExtensionField | HostNativeExtensionField
+  >
+  & NotForThisKind<NodeOnlyExtensionField>
+
+/**
+ * A supervised host process built from Git. `source` is **required**, not
+ * optional: without one there is nothing to check out, build, or supervise, so
+ * a node service without a source is not a node service with a missing hint.
+ */
+export type ComposeNodeServiceExtension =
+  & Omit<CommonServiceExtensionFields, "serviceKind" | "source">
+  & { serviceKind: "node"; source: ComposeServiceSourceExtension }
+  & Pick<
+    ComposeServiceExtensionFields,
+    NodeOnlyExtensionField | HostNativeExtensionField
+  >
+  & NotForThisKind<SiteOnlyExtensionField>
+
+/**
+ * The per-service `x-turbopanel` block, narrowed by `serviceKind`.
+ *
+ * The JSON on the wire is unchanged — still one flat mapping per service. What
+ * the union adds is that the type now *says* which fields belong to which kind,
+ * instead of being an all-optional bag whose real rules lived only in a
+ * separate list of validators. Those validators still run (a document is
+ * untyped text until it is parsed), but they now read their answers from
+ * {@link SERVICE_KIND_FIELD_TABLE} rather than restating them.
+ */
+export type ComposeServiceTurbopanelExtension =
+  | ComposeContainerServiceExtension
+  | ComposeSiteServiceExtension
+  | ComposeNodeServiceExtension
 
 /**
  * One scheduled job.
@@ -489,7 +649,7 @@ function readTrimmedString(
 /** Runtime-selection fields — each reader yields a canonical value or nothing. */
 function applyRuntimeExtensionFields(
   value: Record<string, unknown>,
-  extension: ComposeServiceTurbopanelExtension,
+  extension: ComposeServiceExtensionFields,
 ): void {
   const serviceKind = readServiceKind(value.serviceKind)
   if (serviceKind) extension.serviceKind = serviceKind
@@ -510,7 +670,7 @@ function applyRuntimeExtensionFields(
 /** Content, source, and nested-block fields. */
 function applyContentExtensionFields(
   value: Record<string, unknown>,
-  extension: ComposeServiceTurbopanelExtension,
+  extension: ComposeServiceExtensionFields,
 ): void {
   const documentRoot = readTrimmedString(value.documentRoot)
   if (documentRoot) extension.documentRoot = documentRoot
@@ -522,6 +682,11 @@ function applyContentExtensionFields(
   if (sourceKind) extension.sourceKind = sourceKind
   const cron = parseServiceCronJobs(value.cron)
   if (cron) extension.cron = cron
+  // Shape-only, like every other reader here: whether the alias *resolves* is a
+  // question about the document as a whole, so the linter answers it
+  // (`knownPrincipalAliases`) rather than this per-service parse.
+  const principalAlias = readTrimmedString(value.principal)
+  if (isPrincipalAlias(principalAlias)) extension.principal = principalAlias.trim()
   const description = readTrimmedString(
     value.description,
     SERVICE_DESCRIPTION_MAX_LENGTH,
@@ -533,6 +698,8 @@ function applyContentExtensionFields(
   }
   const php = parseServicePhpExtension(value.php)
   if (php) extension.php = php
+  const hosting = parseHostingExtensionEntries(value.hosting)
+  if (hosting) extension.hosting = hosting
 }
 
 export function parseServiceTurbopanelExtension(
@@ -541,10 +708,14 @@ export function parseServiceTurbopanelExtension(
   if (value === null || value === undefined) return {}
   if (!isPlainMapping(value)) return null
 
-  const extension: ComposeServiceTurbopanelExtension = {}
+  const extension: ComposeServiceExtensionFields = {}
   applyRuntimeExtensionFields(value, extension)
   applyContentExtensionFields(value, extension)
-  return extension
+  // Narrowed by assertion, not by re-checking. The union records which keys
+  // each kind may carry; whether *this* document respected that is the
+  // validator's question, and it answers with a message rather than a silent
+  // drop — see `collectServiceTurbopanelValidationIssues`.
+  return extension as ComposeServiceTurbopanelExtension
 }
 
 /**
@@ -639,48 +810,261 @@ export type ServiceTurbopanelValidationIssue = {
   message: string
 }
 
-/** Per-field type rules — checked only when the field is authored at all. */
-const RAW_EXTENSION_FIELD_RULES: ReadonlyArray<{
-  field: string
-  isValid: (value: unknown) => boolean
-  message: string
-}> = [
-  {
-    field: "serviceKind",
-    isValid: (value) => Boolean(readServiceKind(value)),
-    message: 'serviceKind must be "container", "site", or "node"',
-  },
-  {
-    field: "framework",
-    isValid: (value) => Boolean(readNativeRuntimeFramework(value)),
-    message: 'framework must be "auto", "node", or "next"',
-  },
-  {
-    field: "nodeVersion",
-    isValid: (value) => Boolean(readNodeVersion(value)),
-    message: 'nodeVersion must be a pinned version like "24" or "24.17.0"',
-  },
-  {
-    field: "packageManager",
-    isValid: (value) => Boolean(readNodePackageManager(value)),
-    message: 'packageManager must be "npm", "yarn", or "pnpm"',
-  },
-  {
-    field: "appMode",
-    isValid: (value) => Boolean(readNodeAppMode(value)),
-    message: 'appMode must be "production" or "development"',
-  },
-  {
-    field: "enabled",
-    isValid: (value) => typeof value === "boolean",
-    message: "enabled must be true or false",
-  },
-  {
-    field: "engine",
-    isValid: (value) => Boolean(readSiteEngine(value)),
-    message: 'engine must be "caddy", "apache", "nginx", or "openlitespeed"',
-  },
+/**
+ * The one table of "which fields may a service of this kind carry, and what
+ * shape may each value take".
+ *
+ * Both the discriminated union above and every kind-membership check below are
+ * statements of this table. They used to live apart — a hand-written
+ * all-optional type that said nothing about legality, plus a set of
+ * `validate*Consistency` functions that repeated the answer field by field in
+ * prose — which is precisely the arrangement that drifts, and the reason a
+ * doc could claim `engine` was required while the validator treated it as
+ * optional.
+ *
+ * Only presence and value *shape* live here. The rules that check what a value
+ * means — relative-path safety, php.ini directive tables, cron schedule and
+ * command parsing — stay in their own validators below, because those answer a
+ * different question and their messages come from the module that owns the
+ * rule.
+ */
+type ServiceExtensionFieldRule = {
+  /** Kinds the field may be authored on. */
+  readonly kinds: readonly ComposeServiceKind[]
+  /** Value-shape check, for fields with a closed set of accepted values. */
+  readonly isValid?: (value: unknown) => boolean
+  /** Message for a value that fails {@link ServiceExtensionFieldRule.isValid}. */
+  readonly typeMessage?: string
+}
+
+const ALL_SERVICE_KINDS: readonly ComposeServiceKind[] = [
+  "container",
+  "site",
+  "node",
 ]
+const SITE_KIND_ONLY: readonly ComposeServiceKind[] = ["site"]
+const NODE_KIND_ONLY: readonly ComposeServiceKind[] = ["node"]
+/** Both host-native kinds — the set {@link isHostNativeServiceKind} names. */
+const HOST_NATIVE_KINDS: readonly ComposeServiceKind[] = ["site", "node"]
+
+const SERVICE_EXTENSION_FIELDS: Readonly<
+  Record<string, ServiceExtensionFieldRule>
+> = {
+  serviceKind: {
+    kinds: ALL_SERVICE_KINDS,
+    isValid: (value) => Boolean(readServiceKind(value)),
+    typeMessage: 'serviceKind must be "container", "site", or "node"',
+  },
+  description: { kinds: ALL_SERVICE_KINDS },
+  // No kind restriction on *having* a source: a source builds a release for any
+  // kind. `buildKind: railpack` is the one combination that contradicts a
+  // host-native kind, and `validateSourceConsistency` owns that rule.
+  source: { kinds: ALL_SERVICE_KINDS },
+  // Legal on every kind: a container behind the edge, a site served by a host
+  // engine, and a supervised `node` process can each answer on a hostname. The
+  // per-kind rules that *do* exist (`targetPort` is a container question) live
+  // in `./hosting-extension.ts`, next to the rest of the block's shape.
+  hosting: { kinds: ALL_SERVICE_KINDS },
+  engine: {
+    kinds: SITE_KIND_ONLY,
+    isValid: (value) => Boolean(readSiteEngine(value)),
+    typeMessage: 'engine must be "caddy", "apache", "nginx", or "openlitespeed"',
+  },
+  root: { kinds: SITE_KIND_ONLY },
+  sourceKind: { kinds: SITE_KIND_ONLY },
+  php: { kinds: SITE_KIND_ONLY },
+  cron: { kinds: HOST_NATIVE_KINDS },
+  principal: {
+    kinds: HOST_NATIVE_KINDS,
+    isValid: (value) => isPrincipalAlias(value),
+    typeMessage:
+      'principal must name an alias declared in x-turbopanel.principals (a letter, then letters, digits, "-", and "_"; at most 64 characters)',
+  },
+  framework: {
+    kinds: NODE_KIND_ONLY,
+    isValid: (value) => Boolean(readNativeRuntimeFramework(value)),
+    typeMessage: 'framework must be "auto", "node", or "next"',
+  },
+  nodeVersion: {
+    kinds: NODE_KIND_ONLY,
+    isValid: (value) => Boolean(readNodeVersion(value)),
+    typeMessage: 'nodeVersion must be a pinned version like "24" or "24.17.0"',
+  },
+  packageManager: {
+    kinds: NODE_KIND_ONLY,
+    isValid: (value) => Boolean(readNodePackageManager(value)),
+    typeMessage: 'packageManager must be "npm", "yarn", or "pnpm"',
+  },
+  appMode: {
+    kinds: NODE_KIND_ONLY,
+    isValid: (value) => Boolean(readNodeAppMode(value)),
+    typeMessage: 'appMode must be "production" or "development"',
+  },
+  enabled: {
+    kinds: NODE_KIND_ONLY,
+    isValid: (value) => typeof value === "boolean",
+    typeMessage: "enabled must be true or false",
+  },
+  documentRoot: { kinds: NODE_KIND_ONLY },
+  startupFile: { kinds: NODE_KIND_ONLY },
+}
+
+/**
+ * Fields a kind must carry to be that kind at all.
+ *
+ * Only `node` has one, and it is `source` for the reason its union member
+ * states: a node service without a repository has nothing to build or run.
+ *
+ * `principal` is deliberately **not** here for either host-native kind. The
+ * document-local alias is only one of the two ways a `site` / `node` service
+ * names its account, and it is the newer one: every host-native service
+ * authored before `x-turbopanel.principals` existed names no alias at all and
+ * is owned by whatever principal an operator assigned in the UI. Requiring the
+ * alias in the schema rejects those documents outright at save and at lint,
+ * which puts the sole-steward fallback the deploy path still implements
+ * permanently out of reach.
+ *
+ * "This service has nobody to run as" is a real refusal — it is just not a
+ * question the document can answer, because the stewards live in the
+ * environment rather than in the YAML. It is asked where they are known:
+ * `resolveBindingPrincipal` in
+ * `../../client/environments/deploy-sources.ts`, which raises
+ * `principal_required_for_service_kind` only once the steward lookup has come
+ * up empty, and the panel's own `principal-required.ts` /
+ * `managed-directory-sites.ts`.
+ *
+ * What stays here is the half that *is* a document question: `principal` is
+ * refused on `container` ({@link SERVICE_EXTENSION_FIELDS}), an authored alias
+ * must have alias shape, and the linter resolves it against the document's own
+ * `x-turbopanel.principals` map.
+ */
+const SERVICE_KIND_REQUIRED_FIELDS: Readonly<
+  Record<ComposeServiceKind, readonly string[]>
+> = {
+  container: [],
+  site: [],
+  node: ["source"],
+}
+
+export type ServiceKindFieldRules = {
+  readonly allowedFields: ReadonlySet<string>
+  readonly requiredFields: ReadonlySet<string>
+}
+
+function buildServiceKindFieldTable(): Readonly<
+  Record<ComposeServiceKind, ServiceKindFieldRules>
+> {
+  const table = {} as Record<ComposeServiceKind, ServiceKindFieldRules>
+  for (const kind of ALL_SERVICE_KINDS) {
+    const allowedFields = new Set<string>()
+    for (const [field, rule] of Object.entries(SERVICE_EXTENSION_FIELDS)) {
+      if (rule.kinds.includes(kind)) allowedFields.add(field)
+    }
+    table[kind] = {
+      allowedFields,
+      requiredFields: new Set(SERVICE_KIND_REQUIRED_FIELDS[kind]),
+    }
+  }
+  return table
+}
+
+/**
+ * Per-kind view of {@link SERVICE_EXTENSION_FIELDS}, derived rather than
+ * written twice. Exported so the UI mirror and its tests can assert against the
+ * same answer this module validates with.
+ */
+export const SERVICE_KIND_FIELD_TABLE: Readonly<
+  Record<ComposeServiceKind, ServiceKindFieldRules>
+> = buildServiceKindFieldTable()
+
+/**
+ * Order the value-shape rules are reported in. Separate from the table's own
+ * key order because the two passes read the same facts for different reasons
+ * and each has its own natural sequence.
+ */
+const RAW_FIELD_TYPE_ORDER: readonly string[] = [
+  "serviceKind",
+  "framework",
+  "nodeVersion",
+  "packageManager",
+  "appMode",
+  "enabled",
+  "engine",
+  "principal",
+]
+
+/** `site` / `site or node` / `container, site, or node`, as a message reads. */
+function describeKinds(kinds: readonly ComposeServiceKind[]): string {
+  if (kinds.length === 1) return kinds[0]
+  if (kinds.length === 2) return `${kinds[0]} or ${kinds[1]}`
+  return `${kinds.slice(0, -1).join(", ")}, or ${kinds.at(-1)}`
+}
+
+/**
+ * The membership issue for `field` on `kind`, or `null` when it belongs.
+ * The sentence is derived from the table, so it cannot disagree with it.
+ */
+function kindFieldIssue(
+  basePath: string,
+  field: string,
+  kind: ComposeServiceKind | undefined,
+): ServiceTurbopanelValidationIssue | null {
+  const rule = SERVICE_EXTENSION_FIELDS[field]
+  // An omitted `serviceKind` means `container`, the same default the parser and
+  // the daemon read it as.
+  if (rule.kinds.includes(kind ?? "container")) return null
+  return {
+    path: `${basePath}.${field}`,
+    message:
+      `${field} is only valid when serviceKind is ${describeKinds(rule.kinds)}`,
+  }
+}
+
+/** Presence checks, not truthiness — `enabled: false` is still authored. */
+function kindMembershipIssues(
+  basePath: string,
+  fields: ComposeServiceExtensionFields,
+  checked: readonly string[],
+): ServiceTurbopanelValidationIssue[] {
+  const issues: ServiceTurbopanelValidationIssue[] = []
+  const present = fields as Record<string, unknown>
+  for (const field of checked) {
+    if (present[field] === undefined) continue
+    const issue = kindFieldIssue(basePath, field, fields.serviceKind)
+    if (issue) issues.push(issue)
+  }
+  return issues
+}
+
+/** Node-only fields, in the order an operator sees them reported. */
+const NODE_ONLY_FIELD_ORDER: readonly string[] = [
+  "framework",
+  "nodeVersion",
+  "packageManager",
+  "appMode",
+  "enabled",
+  "documentRoot",
+  "startupFile",
+]
+
+function requiredFieldIssues(
+  basePath: string,
+  fields: ComposeServiceExtensionFields,
+): ServiceTurbopanelValidationIssue[] {
+  const kind = fields.serviceKind
+  if (kind === undefined) return []
+
+  const issues: ServiceTurbopanelValidationIssue[] = []
+  const present = fields as Record<string, unknown>
+  for (const field of SERVICE_KIND_FIELD_TABLE[kind].requiredFields) {
+    if (present[field] !== undefined) continue
+    issues.push({
+      path: `${basePath}.${field}`,
+      message: `${kind} services require ${field}`,
+    })
+  }
+  return issues
+}
 
 function validateRawExtensionFieldTypes(
   basePath: string,
@@ -689,13 +1073,14 @@ function validateRawExtensionFieldTypes(
   if (!isPlainMapping(rawExtension)) return []
   const issues: ServiceTurbopanelValidationIssue[] = []
 
-  for (const rule of RAW_EXTENSION_FIELD_RULES) {
-    if (rule.field in rawExtension && !rule.isValid(rawExtension[rule.field])) {
-      issues.push({
-        path: `${basePath}.${rule.field}`,
-        message: rule.message,
-      })
-    }
+  for (const field of RAW_FIELD_TYPE_ORDER) {
+    const rule = SERVICE_EXTENSION_FIELDS[field]
+    if (!rule.isValid || !(field in rawExtension)) continue
+    if (rule.isValid(rawExtension[field])) continue
+    issues.push({
+      path: `${basePath}.${field}`,
+      message: rule.typeMessage ?? `${field} is not a valid value`,
+    })
   }
 
   if ("description" in rawExtension) {
@@ -856,17 +1241,16 @@ function validatePhpDirectiveBlock(
 function validatePhpConsistency(
   basePath: string,
   raw: Record<string, unknown>,
-  parsed: ComposeServiceTurbopanelExtension,
+  fields: ComposeServiceExtensionFields,
 ): ServiceTurbopanelValidationIssue[] {
   const rawPhp = raw.php
   if (rawPhp === undefined) return []
 
-  if (parsed.serviceKind !== 'site') {
-    return [{
-      path: `${basePath}.php`,
-      message: 'php is only valid when serviceKind is site',
-    }]
-  }
+  // Asked of the raw key, not the parsed block: `php: {}` on a container parses
+  // to nothing but is still an authored php block, and saying so beats silence.
+  const membership = kindFieldIssue(basePath, 'php', fields.serviceKind)
+  if (membership) return [membership]
+
   if (!isPlainMapping(rawPhp)) {
     return [{ path: `${basePath}.php`, message: 'php must be a mapping' }]
   }
@@ -905,21 +1289,17 @@ function validatePhpConsistency(
  */
 function validateCronConsistency(
   basePath: string,
-  parsed: ComposeServiceTurbopanelExtension,
+  fields: ComposeServiceExtensionFields,
 ): ServiceTurbopanelValidationIssue[] {
-  const jobs = parsed.cron
+  const jobs = fields.cron
   if (!jobs || jobs.length === 0) return []
 
-  const issues: ServiceTurbopanelValidationIssue[] = []
   // A container has no principal to run as and no tree to run in; both
-  // host-native kinds have exactly one of each.
-  if (!isHostNativeServiceKind(parsed.serviceKind)) {
-    issues.push({
-      path: `${basePath}.cron`,
-      message: "cron is only valid when serviceKind is site or node",
-    })
-    return issues
-  }
+  // host-native kinds have exactly one of each — which is what the table says.
+  const membership = kindFieldIssue(basePath, "cron", fields.serviceKind)
+  if (membership) return [membership]
+
+  const issues: ServiceTurbopanelValidationIssue[] = []
   if (jobs.length > MAX_CRON_JOBS_PER_SERVICE) {
     issues.push({
       path: `${basePath}.cron`,
@@ -960,35 +1340,45 @@ function validateCronConsistency(
   return issues
 }
 
+/**
+ * `x-turbopanel.principal` membership, reported per field.
+ *
+ * Asked of the *raw* key rather than the parsed value for the same reason
+ * `php` is: `principal: 7` on a container parses to nothing but is still an
+ * authored ownership claim, and a container has no account to run as. The
+ * blanket table check would only say "unknown field"; this says which field and
+ * which kinds may carry it.
+ *
+ * Whether the alias resolves to an entry in the document's
+ * `x-turbopanel.principals` is deliberately **not** answered here — that is a
+ * whole-document question, and the linter owns it (`knownPrincipalAliases`).
+ */
+function validatePrincipalConsistency(
+  basePath: string,
+  raw: Record<string, unknown>,
+  fields: ComposeServiceExtensionFields,
+): ServiceTurbopanelValidationIssue[] {
+  if (raw.principal === undefined) return []
+  const membership = kindFieldIssue(basePath, "principal", fields.serviceKind)
+  return membership ? [membership] : []
+}
+
 function validateEngineConsistency(
   basePath: string,
-  parsed: ComposeServiceTurbopanelExtension,
+  fields: ComposeServiceExtensionFields,
 ): ServiceTurbopanelValidationIssue[] {
-  const issues: ServiceTurbopanelValidationIssue[] = []
-
   // `engine` is optional on a site and defaults to `caddy` (resolved at the
   // control-plane split, so the daemon never sees it absent). That makes the
-  // minimum static site four lines of compose, which is the whole point.
-  if (parsed.engine && parsed.serviceKind !== "site") {
-    issues.push({
-      path: `${basePath}.engine`,
-      message: "engine is only valid when serviceKind is site",
-    })
-  }
-
-  if (parsed.sourceKind && parsed.serviceKind !== "site") {
-    issues.push({
-      path: `${basePath}.sourceKind`,
-      message: "sourceKind is only valid when serviceKind is site",
-    })
-  }
+  // minimum static site four lines of compose, which is the whole point — the
+  // table says site-only, not site-required.
+  const issues = kindMembershipIssues(basePath, fields, ["engine", "sourceKind"])
 
   // A repository-backed site serves the tree the release engine published, so
   // the daemon takes the release branch and the flag would be a lie. Rejected
   // at save rather than silently ignored at deploy: an operator who sets both
   // has a belief about where their content comes from, and one of the two is
   // wrong.
-  if (parsed.sourceKind === "managed-directory" && parsed.source) {
+  if (fields.sourceKind === "managed-directory" && fields.source) {
     issues.push({
       path: `${basePath}.sourceKind`,
       message:
@@ -1007,54 +1397,19 @@ function validateEngineConsistency(
  */
 function validateNodeConsistency(
   basePath: string,
-  parsed: ComposeServiceTurbopanelExtension,
+  fields: ComposeServiceExtensionFields,
 ): ServiceTurbopanelValidationIssue[] {
-  const issues: ServiceTurbopanelValidationIssue[] = []
+  const issues = [
+    ...requiredFieldIssues(basePath, fields),
+    ...kindMembershipIssues(basePath, fields, NODE_ONLY_FIELD_ORDER),
+  ]
 
-  if (parsed.serviceKind === "node" && !parsed.source) {
-    issues.push({
-      path: `${basePath}.source`,
-      message: "node services require source",
-    })
-  }
-
-  if (parsed.framework && parsed.serviceKind !== "node") {
-    issues.push({
-      path: `${basePath}.framework`,
-      message: "framework is only valid when serviceKind is node",
-    })
-  }
-
-  if (parsed.nodeVersion && parsed.serviceKind !== "node") {
-    issues.push({
-      path: `${basePath}.nodeVersion`,
-      message: "nodeVersion is only valid when serviceKind is node",
-    })
-  }
-
-  if (parsed.serviceKind !== "node") {
-    // Presence checks, not truthiness — `enabled: false` is still present.
-    const nodeOnlyFields = [
-      "packageManager",
-      "appMode",
-      "enabled",
-      "documentRoot",
-      "startupFile",
-    ] as const
-    for (const field of nodeOnlyFields) {
-      if (parsed[field] === undefined) continue
-      issues.push({
-        path: `${basePath}.${field}`,
-        message: `${field} is only valid when serviceKind is node`,
-      })
-    }
-    return issues
-  }
+  if (fields.serviceKind !== "node") return issues
 
   // Both land in daemon-side paths (and startupFile in an ExecStart line), so
   // they share the same relative-path rule as `root`.
   for (const field of ["documentRoot", "startupFile"] as const) {
-    const value = parsed[field]
+    const value = fields[field]
     if (value === undefined || isSafeRoot(value)) continue
     issues.push({
       path: `${basePath}.${field}`,
@@ -1073,10 +1428,10 @@ function validateNodeConsistency(
  */
 function validateNodeComposeFields(
   basePath: string,
-  parsed: ComposeServiceTurbopanelExtension,
+  fields: ComposeServiceExtensionFields,
   rawService: Record<string, unknown>,
 ): ServiceTurbopanelValidationIssue[] {
-  if (parsed.serviceKind !== "node") return []
+  if (fields.serviceKind !== "node") return []
 
   const issues: ServiceTurbopanelValidationIssue[] = []
   for (const field of ["image", "build"] as const) {
@@ -1091,20 +1446,14 @@ function validateNodeComposeFields(
 
 function validateRootConsistency(
   basePath: string,
-  parsed: ComposeServiceTurbopanelExtension,
+  fields: ComposeServiceExtensionFields,
 ): ServiceTurbopanelValidationIssue[] {
-  if (parsed.root === undefined) return []
+  if (fields.root === undefined) return []
 
-  if (parsed.serviceKind !== "site") {
-    return [
-      {
-        path: `${basePath}.root`,
-        message: "root is only valid when serviceKind is site",
-      },
-    ]
-  }
+  const membership = kindFieldIssue(basePath, "root", fields.serviceKind)
+  if (membership) return [membership]
 
-  if (isSafeRoot(parsed.root)) return []
+  if (isSafeRoot(fields.root)) return []
   return [
     {
       path: `${basePath}.root`,
@@ -1129,9 +1478,9 @@ function validateRootConsistency(
  */
 function validateSourceConsistency(
   basePath: string,
-  parsed: ComposeServiceTurbopanelExtension,
+  fields: ComposeServiceExtensionFields,
 ): ServiceTurbopanelValidationIssue[] {
-  const source = parsed.source
+  const source = fields.source
   if (!source) return []
 
   const issues: ServiceTurbopanelValidationIssue[] = []
@@ -1149,7 +1498,7 @@ function validateSourceConsistency(
 
   if (
     source.buildKind === "railpack" &&
-    isHostNativeServiceKind(parsed.serviceKind)
+    isHostNativeServiceKind(fields.serviceKind)
   ) {
     issues.push({
       path: `${basePath}.source.buildKind`,
@@ -1159,6 +1508,31 @@ function validateSourceConsistency(
   }
 
   return issues
+}
+
+/**
+ * `x-turbopanel.hosting` rules, delegated whole to the module that owns the
+ * block. Kept as a one-line fold entry rather than inlined for the same reason
+ * `validatePhpConsistency` is: the messages come from the module that owns the
+ * rule, so they cannot drift from the parser that reads it.
+ *
+ * Asked of the **raw** mapping, not the parsed extension: a malformed entry is
+ * dropped on parse, and silence is exactly the wrong answer for a route an
+ * operator believes they declared.
+ */
+function validateHostingConsistency(
+  basePath: string,
+  raw: Record<string, unknown>,
+  fields: ComposeServiceExtensionFields,
+): ServiceTurbopanelValidationIssue[] {
+  if (!("hosting" in raw)) return []
+  const membership = kindFieldIssue(basePath, "hosting", fields.serviceKind)
+  if (membership) return [membership]
+  return collectHostingExtensionValidationIssues(
+    basePath,
+    raw.hosting,
+    fields.serviceKind,
+  )
 }
 
 function collectServiceExtensionValidationIssues(
@@ -1173,17 +1547,26 @@ function collectServiceExtensionValidationIssues(
     return [{ path: basePath, message: "x-turbopanel must be a mapping" }]
   }
 
+  // Validators reason over the flat view: their job is deciding whether this
+  // document earns one of the union's narrow shapes, so they cannot presume it
+  // already has one. Every member widens to it, so this is an assignment.
+  const fields: ComposeServiceExtensionFields = parsed
+
   return [
     ...validateRawExtensionFieldTypes(basePath, rawExtension),
-    ...validateEngineConsistency(basePath, parsed),
+    ...validateEngineConsistency(basePath, fields),
     ...(isPlainMapping(rawExtension)
-      ? validatePhpConsistency(basePath, rawExtension, parsed)
+      ? [
+        ...validatePhpConsistency(basePath, rawExtension, fields),
+        ...validatePrincipalConsistency(basePath, rawExtension, fields),
+        ...validateHostingConsistency(basePath, rawExtension, fields),
+      ]
       : []),
-    ...validateNodeConsistency(basePath, parsed),
-    ...validateNodeComposeFields(basePath, parsed, rawService),
-    ...validateRootConsistency(basePath, parsed),
-    ...validateSourceConsistency(basePath, parsed),
-    ...validateCronConsistency(basePath, parsed),
+    ...validateNodeConsistency(basePath, fields),
+    ...validateNodeComposeFields(basePath, fields, rawService),
+    ...validateRootConsistency(basePath, fields),
+    ...validateSourceConsistency(basePath, fields),
+    ...validateCronConsistency(basePath, fields),
   ]
 }
 

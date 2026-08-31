@@ -1,5 +1,16 @@
 import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
-import { randomPrincipalUsernameSuffix } from '../../lib/naming.ts'
+import {
+  isReservedPrincipalUsername,
+  MAX_PRINCIPAL_USERNAME_LENGTH,
+  MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
+  principalHomeDir,
+  randomPrincipalUsernameSuffix,
+} from '../../lib/naming.ts'
+import {
+  shellForAccessLevel,
+  type PrincipalAccessLevel,
+} from '../../lib/principal-access.ts'
+import { loadRandomizedUsernamesDefault } from '../managed/org-defaults.ts'
 import {
   encryptSecret,
   generateSealedSecret,
@@ -236,6 +247,175 @@ export async function createPrincipal(
 
     return inserted.id
   })
+}
+
+/**
+ * `principal.metadata` key that records which compose alias a row was
+ * materialized for.
+ *
+ * The idempotency key for compose reconciliation is `(project_id, alias)`, and
+ * it lives in metadata rather than a column because the alias is a *document*
+ * fact, not an account fact: renaming a compose alias should mint a new
+ * account, not rename an existing tenant's Unix login out from under their
+ * SFTP client. A row whose alias key is absent was created by hand in the UI
+ * and is never adopted by a reconcile.
+ */
+export const COMPOSE_ALIAS_METADATA_KEY = 'composeAlias'
+
+/** How a compose `access:` level maps onto the stored shell encoding. */
+const ACCESS_LEVEL_FOR_COMPOSE: Readonly<
+  Record<'none' | 'sftp' | 'ssh', PrincipalAccessLevel>
+> = { none: 'none', sftp: 'sftp', ssh: 'shell' }
+
+/**
+ * The short username an alias becomes.
+ *
+ * An alias is a document-local identifier with a laxer charset than a Linux
+ * login (it may be 64 characters and mixed case), so it is folded rather than
+ * assumed usable: lowercased, non-POSIX characters dropped, and truncated to
+ * whatever still leaves room for the randomized `_<11>` applied suffix. A
+ * reserved name (`root`, anything `tp`-prefixed) is prefixed rather than
+ * refused — the operator named a principal in *their* document and the host's
+ * namespace is not theirs to know about.
+ */
+export function composeAliasShortUsername(alias: string): string {
+  const folded = alias.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  const seeded = /^[a-z_]/.test(folded) ? folded : `u${folded}`
+  const capped = seeded.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
+  const safe = capped.length > 0 ? capped : 'user'
+  return isReservedPrincipalUsername(safe)
+    ? `u${safe}`.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
+    : safe
+}
+
+export type EnsureComposePrincipalInput = {
+  organizationId: string
+  projectId: string
+  /** Alias as declared in the document's root `x-turbopanel.principals`. */
+  alias: string
+  /** Requested access level from the alias entry. Seeds the shell on create. */
+  access?: 'none' | 'sftp' | 'ssh'
+}
+
+/**
+ * The `principal` row a compose alias names, creating it when it does not
+ * exist yet.
+ *
+ * **Idempotent by `(project_id, alias)`**, which is what lets deploy-prepare
+ * run this on every deploy: the second call finds the row the first minted
+ * instead of piling up an account per deploy.
+ *
+ * **Create-only for `options`.** The requested `access` seeds the shell when
+ * the row is minted and is never re-applied: `principal.options` is the single
+ * source of truth for what the host does, an operator may legitimately raise or
+ * suspend access from the UI afterwards, and a reconcile that re-asserted the
+ * document would silently undo that. Compose declares that an account *exists*;
+ * the panel decides what it can do.
+ */
+export async function ensureComposePrincipal(
+  db: Db,
+  input: EnsureComposePrincipalInput,
+): Promise<{ principalId: string; created: boolean }> {
+  const existing = await findComposePrincipal(db, input.projectId, input.alias)
+  if (existing) return { principalId: existing, created: false }
+
+  return await db.transaction(async (tx) => {
+    // Same org-wide serialization the interactive create path takes: two
+    // deploys racing on one alias would otherwise both miss the probe below.
+    await tx
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.id, input.organizationId))
+      .for('update')
+      .limit(1)
+
+    const raced = await findComposePrincipal(tx, input.projectId, input.alias)
+    if (raced) return { principalId: raced, created: false }
+
+    const username = composeAliasShortUsername(input.alias)
+    const appliedUsername = await resolveComposeAppliedUsername(
+      tx,
+      input.organizationId,
+      username,
+    )
+
+    const [row] = await tx
+      .insert(principal)
+      .values({
+        kind: 'system',
+        provider: SERVER_PRINCIPAL_PROVIDER,
+        username,
+        appliedUsername,
+        projectId: input.projectId,
+        metadata: {
+          home: principalHomeDir(appliedUsername),
+          [COMPOSE_ALIAS_METADATA_KEY]: input.alias,
+        },
+        options: {
+          shell: shellForAccessLevel(
+            ACCESS_LEVEL_FOR_COMPOSE[input.access ?? 'none'],
+          ),
+        },
+      })
+      .returning({ id: principal.id })
+
+    return { principalId: row.id, created: true }
+  })
+}
+
+/** The row this project already materialized for `alias`, if any. */
+async function findComposePrincipal(
+  db: Db,
+  projectId: string,
+  alias: string,
+): Promise<string | undefined> {
+  const [row] = await db
+    .select({ id: principal.id })
+    .from(principal)
+    .where(
+      and(
+        eq(principal.projectId, projectId),
+        eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
+        sql`${principal.metadata} ->> ${COMPOSE_ALIAS_METADATA_KEY} = ${alias}`,
+      ),
+    )
+    .limit(1)
+  return row?.id
+}
+
+/**
+ * A host login for `username` that no other principal in the org holds.
+ *
+ * Unlike the interactive create path this never fails on a collision: the
+ * operator is not standing there to pick another name, and refusing the deploy
+ * over a name they never typed would be the worst of both. The randomized
+ * `_<11>` suffix is applied whenever the short name is taken (and always when
+ * the org asks for randomized usernames), which is the same shape
+ * `resolveManagedAppliedUsername` uses for engine logins.
+ */
+async function resolveComposeAppliedUsername(
+  tx: Db,
+  organizationId: string,
+  username: string,
+): Promise<string> {
+  const randomize = await loadRandomizedUsernamesDefault(tx, organizationId)
+  if (
+    !randomize &&
+    !(await isServerPrincipalUsernameTaken(tx, organizationId, username))
+  ) {
+    return username
+  }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const candidate = `${username}${randomPrincipalUsernameSuffix()}`
+      .slice(0, MAX_PRINCIPAL_USERNAME_LENGTH)
+    if (!(await isServerPrincipalUsernameTaken(tx, organizationId, candidate))) {
+      return candidate
+    }
+  }
+  // 36^11 odds three times over. Returning the last candidate unprobed beats
+  // throwing on a live namespace mid-deploy.
+  return `${username}${randomPrincipalUsernameSuffix()}`
+    .slice(0, MAX_PRINCIPAL_USERNAME_LENGTH)
 }
 
 export type SetPrincipalPasswordInput =

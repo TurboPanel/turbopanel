@@ -4,6 +4,7 @@ import {
   compileRuntimeComposeDocument,
 } from "./compile-runtime.ts";
 import { composeDocumentToRuntimeYaml } from "./convert.ts";
+import { collectComposeExternalDockerNetworkNames } from "./docker-external-networks.ts";
 import { TURBOPANEL_EXTENSION_KEY } from "./placement.ts";
 import { type ComposeDocument, emptyComposeDocument } from "./types.ts";
 
@@ -117,7 +118,7 @@ test("compileRuntimeComposeDocument rewrites spanning networks as external tpn_*
         web: { image: "nginx", networks: ["frontend"] },
       },
       networks: {
-        frontend: { driver: "bridge" },
+        frontend: { driver: "overlay" },
         unused: { driver: "bridge" },
       },
     }),
@@ -127,6 +128,38 @@ test("compileRuntimeComposeDocument rewrites spanning networks as external tpn_*
   );
   assertEquals(compiled.data.networks, {
     frontend: { external: true, name: "tpn_net1" },
+  });
+});
+
+test("a compiled tpn_* network bypasses the external registration gate", () => {
+  // End-to-end pin on the split the gate depends on: the authored document is
+  // what `collectComposeExternalDockerNetworkNames` reads, and a spanning
+  // network is authored `driver: overlay` — never `external:` — so it is not in
+  // the set deploy-prepare demands a `network(kind='docker')` row for. The
+  // compiler then writes `external: true` + `tpn_<networkId>` for the daemon,
+  // which creates it from `fabricNetworks[]` instead.
+  const authored = doc({
+    services: {
+      web: { image: "nginx", networks: ["spans", "shared"] },
+    },
+    networks: {
+      spans: { driver: "overlay" },
+      shared: { external: true, name: "turbopanel-shared" },
+    },
+  });
+  assertEquals(
+    collectComposeExternalDockerNetworkNames(
+      composeDocumentToRuntimeYaml(authored),
+    ),
+    ["turbopanel-shared"],
+  );
+
+  const compiled = compileRuntimeComposeDocument(authored, {
+    spanningNetworks: new Map([["spans", "tpn_net1"]]),
+  });
+  assertEquals(compiled.data.networks, {
+    spans: { external: true, name: "tpn_net1" },
+    shared: { external: true, name: "turbopanel-shared" },
   });
 });
 
@@ -1330,4 +1363,75 @@ test("compileRuntimeComposeDocument keeps non-mapping service entries and skips 
   assertEquals(services.broken, "not-a-mapping");
   assertEquals(compiled.data.volumes, { data: {} });
   assertEquals(compiled.data.secrets, { dbpass: { file: "/run/secrets/db" } });
+});
+
+/**
+ * `deploy.labels` and `labels:` are two namespaces, and Compose keeps them
+ * apart: the first is metadata about the *service*, the second is metadata on
+ * every container it runs.
+ *
+ * Nothing in the compiler reads `deploy.labels` today, and this test is what
+ * keeps it that way — `mergeServiceLabels` is a general enough helper that a
+ * future change could plausibly start feeding it the deploy block, and the
+ * failure would be silent: an operator's container labels quietly gaining keys
+ * they never put there, or losing a value to one that shares a key.
+ */
+test("compileRuntimeComposeDocument never merges deploy.labels into container labels", () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          // Same key on both sides, different values: if either namespace ever
+          // leaks into the other, one of these two assertions changes.
+          labels: { "com.example.owner": "containers" },
+          deploy: {
+            labels: {
+              "com.example.owner": "service",
+              "com.example.team": "platform",
+            },
+          },
+        },
+      },
+    }),
+  );
+  const web = (compiled.data.services as Record<
+    string,
+    Record<string, unknown>
+  >).web;
+  assertEquals(web?.labels, { "com.example.owner": "containers" });
+  // And the authored block still reaches the daemon untouched — `deploy.labels`
+  // is `interpreted` + `keep` in `field-policy.ts`, not stripped.
+  assertEquals(web?.deploy, {
+    labels: {
+      "com.example.owner": "service",
+      "com.example.team": "platform",
+    },
+  });
+});
+
+test("deploy.labels stays out of container labels even when identity labels merge", () => {
+  // `applyLocalScale` is the one place that writes `labels:` during compile.
+  // It merges TurboPanel's own identity labels and nothing else.
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        web: {
+          image: "nginx",
+          labels: { "com.example.owner": "containers" },
+          deploy: { labels: { "com.example.team": "platform" } },
+        },
+      },
+    }),
+    { localReplicaCounts: new Map([["web", 2]]) },
+  );
+  const web = (compiled.data.services as Record<
+    string,
+    Record<string, unknown>
+  >).web;
+  assertEquals(web?.labels, {
+    "com.example.owner": "containers",
+    "com.turbopanel.service": "web",
+  });
+  assertEquals(web?.scale, 2);
 });

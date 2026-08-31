@@ -1,0 +1,637 @@
+{
+  "options": [
+    {
+      "names": [
+        "--add-host"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--annotation"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-a",
+        "--attach"
+      ],
+      "behavior": "operational"
+    },
+    {
+      "names": [
+        "--blkio-weight"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--blkio-weight-device"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cap-add"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cap-drop"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cgroup-parent"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cgroupns"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cidfile"
+      ],
+      "behavior": "operational"
+    },
+    {
+      "names": [
+        "--cpu-count"
+      ],
+      "behavior": "unsupported"
+    },
+    {
+      "names": [
+        "--cpu-percent"
+      ],
+      "behavior": "unsupported"
+    },
+    {
+      "names": [
+        "--cpu-period"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cpu-quota"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cpu-rt-period"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cpu-rt-runtime"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-c",
+        "--cpu-shares"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cpus"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cpuset-cpus"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--cpuset-mems"
+      ],
+      "behavior": "unsupported"
+    },
+    {
+      "names": [
+        "-d",
+        "--detach"
+      ],
+      "behavior": "operational"
+    },
+    {
+      "names": [
+        "--detach-keys"
+      ],
+      "behavior": "operational"
+    },
+    {
+      "names": [
+        "--device"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--device-cgroup-rule"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--device-read-bps"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--device-read-iops"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--device-write-bps"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--device-write-iops"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--disable-content-trust"
+      ],
+      "behavior": "operational"
+    },
+    {
+      "names": [
+        "--dns"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--dns-option"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--dns-search"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--domainname"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--entrypoint"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-e",
+        "--env"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--env-file"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--expose"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--gpus"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--group-add"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--health-cmd"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--health-interval"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--health-retries"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--health-start-interval"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--health-start-period"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--health-timeout"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--help"
+      ],
+      "behavior": "operational"
+    },
+    {
+      "names": [
+        "-h",
+        "--hostname"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--init"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-i",
+        "--interactive"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--io-maxbandwidth"
+      ],
+      "behavior": "unsupported"
+    },
+    {
+      "names": [
+        "--io-maxiops"
+      ],
+      "behavior": "unsupported"
+    },
+    {
+      "names": [
+        "--ip"
+      ],
+      "behavior": "transform"
+    },
+    {
+      "names": [
+        "--ip6"
+      ],
+      "behavior": "transform"
+    },
+    {
+      "names": [
+        "--ipc"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--isolation"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-l",
+        "--label"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--label-file"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--link"
+      ],
+      "behavior": "transform"
+    },
+    {
+      "names": [
+        "--link-local-ip"
+      ],
+      "behavior": "transform"
+    },
+    {
+      "names": [
+        "--log-driver"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--log-opt"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--mac-address"
+      ],
+      "behavior": "transform"
+    },
+    {
+      "names": [
+        "-m",
+        "--memory"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--memory-reservation"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--memory-swap"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--memory-swappiness"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--mount"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--name"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--network"
+      ],
+      "behavior": "transform"
+    },
+    {
+      "names": [
+        "--network-alias"
+      ],
+      "behavior": "transform"
+    },
+    {
+      "names": [
+        "--no-healthcheck"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--oom-kill-disable"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--oom-score-adj"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--pid"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--pids-limit"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--platform"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--privileged"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-p",
+        "--publish"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-P",
+        "--publish-all"
+      ],
+      "behavior": "unsupported"
+    },
+    {
+      "names": [
+        "--pull"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-q",
+        "--quiet"
+      ],
+      "behavior": "operational"
+    },
+    {
+      "names": [
+        "--read-only"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--restart"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--rm"
+      ],
+      "behavior": "unsupported"
+    },
+    {
+      "names": [
+        "--runtime"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--security-opt"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--shm-size"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--sig-proxy"
+      ],
+      "behavior": "operational"
+    },
+    {
+      "names": [
+        "--stop-signal"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--stop-timeout"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--storage-opt"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--sysctl"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--tmpfs"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-t",
+        "--tty"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--ulimit"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--use-api-socket"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-u",
+        "--user"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--userns"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--uts"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-v",
+        "--volume"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "--volume-driver"
+      ],
+      "behavior": "transform"
+    },
+    {
+      "names": [
+        "--volumes-from"
+      ],
+      "behavior": "compose"
+    },
+    {
+      "names": [
+        "-w",
+        "--workdir"
+      ],
+      "behavior": "compose"
+    }
+  ]
+}

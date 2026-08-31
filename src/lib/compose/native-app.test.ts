@@ -1,8 +1,11 @@
 import { assertEquals } from '@std/assert'
 import {
   assignNativeAppListenPorts,
+  readNativeAppRestartPolicy,
+  readNativeAppServiceLabels,
   splitNativeAppServices,
 } from './native-app.ts'
+import { lintComposeYaml } from './lint.ts'
 import {
   assignSiteListenPorts,
   splitSiteServices,
@@ -124,4 +127,181 @@ test('re-assignment keeps the two lanes disjoint when a hosting pins a port', ()
 
   assertEquals(sites[0]?.listenPort, 18100)
   assertEquals(apps[0]?.listenPort === 18100, false)
+})
+
+/**
+ * `deploy.restart_policy` on a `node` service.
+ *
+ * The service is about to be removed from `containerServices`, so a plain
+ * Compose key it carries has to be read here or it is gone. On the Docker lane
+ * the same key survives into the runtime document and the engine acts on it;
+ * on this lane the generated systemd unit is the only thing that can.
+ */
+test('splitNativeAppServices carries deploy.restart_policy onto the app', () => {
+  const { apps } = splitNativeAppServices({
+    web: {
+      ...nodeService(),
+      deploy: {
+        restart_policy: {
+          condition: 'any',
+          delay: '5s',
+          max_attempts: 3,
+          window: '1m30s',
+        },
+      },
+    },
+  })
+  assertEquals(apps[0]?.restartPolicy, {
+    condition: 'any',
+    delay: '5s',
+    maxAttempts: 3,
+    window: '1m30s',
+  })
+})
+
+test('splitNativeAppServices keeps only the restart_policy fields authored', () => {
+  const { apps } = splitNativeAppServices({
+    web: {
+      ...nodeService(),
+      deploy: { restart_policy: { delay: '10s' } },
+    },
+  })
+  // No synthesized defaults: "absent" has to stay distinguishable from "set to
+  // whatever the current default happens to be".
+  assertEquals(apps[0]?.restartPolicy, { delay: '10s' })
+})
+
+test('readNativeAppRestartPolicy names values it cannot honour', () => {
+  // The old behavior was to keep the translatable subset and let the rest fall
+  // on the floor, so an author got a unit running on defaults and no
+  // diagnostic. Every unhonourable key now comes back named.
+  const read = readNativeAppRestartPolicy({
+    deploy: {
+      restart_policy: {
+        condition: 'sometimes',
+        delay: 'soon',
+        // Would render as `StartLimitBurst=0`, which systemd reads as *no*
+        // rate limit — the opposite of "do not retry".
+        max_attempts: 0,
+      },
+    },
+  })
+  assertEquals(read.policy, undefined)
+  assertEquals(read.unsupported, ['condition', 'delay', 'max_attempts'])
+})
+
+test('readNativeAppRestartPolicy reports the bad key beside the good ones', () => {
+  const read = readNativeAppRestartPolicy({
+    deploy: {
+      restart_policy: { condition: 'on-failure', window: 'a while' },
+    },
+  })
+  assertEquals(read.policy, { condition: 'on-failure' })
+  assertEquals(read.unsupported, ['window'])
+})
+
+test('readNativeAppRestartPolicy reports nothing when nothing is authored', () => {
+  assertEquals(readNativeAppRestartPolicy({}), { unsupported: [] })
+  assertEquals(readNativeAppRestartPolicy({ deploy: {} }), { unsupported: [] })
+})
+
+/**
+ * The refusal the reader's verdict is wired to.
+ *
+ * `splitNativeAppServices` runs after validation, so the values it would have
+ * dropped never reach it: the deploy stops at the linter, which speaks for the
+ * same grammar the reader enforces.
+ */
+test('an unhonourable native restart_policy is refused before deploy', () => {
+  const issues = lintComposeYaml(
+    `services:
+  web:
+    x-turbopanel:
+      serviceKind: node
+      source:
+        sourceId: ${SOURCE_ID}
+    deploy:
+      restart_policy:
+        condition: sometimes
+        max_attempts: 0
+`,
+    { strict: true },
+  )
+  const paths = issues
+    .filter((issue) => issue.code === 'field_unsupported')
+    .map((issue) => issue.path)
+    .sort()
+  assertEquals(paths, [
+    'services.web.deploy.restart_policy.condition',
+    'services.web.deploy.restart_policy.max_attempts',
+  ])
+  assertEquals(
+    issues.every((issue) =>
+      issue.code !== 'field_unsupported' || issue.level === 'error'
+    ),
+    true,
+  )
+})
+
+test('a container service keeps the whole Compose restart vocabulary', () => {
+  // Docker reads it itself; narrowing it there would refuse documents that work.
+  const issues = lintComposeYaml(
+    `services:
+  web:
+    image: nginx:alpine
+    deploy:
+      restart_policy:
+        condition: unless-stopped
+        max_attempts: 0
+`,
+    { strict: true },
+  )
+  assertEquals(issues.filter((issue) => issue.code === 'field_unsupported'), [])
+})
+
+/**
+ * `deploy.labels` on a `node` service.
+ *
+ * Service metadata, not container metadata — Compose keeps the two namespaces
+ * apart and so does TurboPanel. On the Docker lane the block simply stays in
+ * the runtime document; here the service leaves that document entirely, so the
+ * labels have to be carried or they are gone.
+ */
+test('splitNativeAppServices carries deploy.labels as service metadata', () => {
+  const { apps } = splitNativeAppServices({
+    web: {
+      ...nodeService(),
+      deploy: { labels: { 'com.example.team': 'platform' } },
+    },
+  })
+  assertEquals(apps[0]?.serviceLabels, { 'com.example.team': 'platform' })
+})
+
+test('readNativeAppServiceLabels accepts both Compose spellings', () => {
+  assertEquals(
+    readNativeAppServiceLabels({
+      deploy: { labels: { 'com.example.team': 'platform', tier: 1 } },
+    }),
+    { 'com.example.team': 'platform', tier: '1' },
+  )
+  // The sequence form is equally valid Compose; a bare key is an empty value.
+  assertEquals(
+    readNativeAppServiceLabels({
+      deploy: { labels: ['com.example.team=platform', 'audited'] },
+    }),
+    { 'com.example.team': 'platform', audited: '' },
+  )
+  assertEquals(readNativeAppServiceLabels({ deploy: { labels: {} } }), undefined)
+  assertEquals(readNativeAppServiceLabels({ deploy: {} }), undefined)
+  assertEquals(readNativeAppServiceLabels({}), undefined)
+})
+
+test('splitNativeAppServices leaves serviceLabels absent when none are authored', () => {
+  const { apps } = splitNativeAppServices({ web: nodeService() })
+  assertEquals('serviceLabels' in (apps[0] ?? {}), false)
+})
+
+test('splitNativeAppServices leaves restartPolicy absent when none is authored', () => {
+  const { apps } = splitNativeAppServices({ web: nodeService() })
+  assertEquals('restartPolicy' in (apps[0] ?? {}), false)
 })

@@ -50,6 +50,9 @@ import {
   loadProjectRepositoryId,
 } from '../../lib/db/repository-records.ts'
 import {
+  composePrincipalAliases,
+} from '../../lib/db/principal-alias-records.ts'
+import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
   mapCreateProjectError,
@@ -286,8 +289,13 @@ async function parseCreateProjectInput(
   const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
   // A project being created has no binding yet, so the rule is "at most one
   // distinct repository"; the id that survives it is adopted onto the row below.
+  //
+  // Aliases come from this very document's own root — a project base has no
+  // layer above it to inherit from, so the union an overlay needs collapses to
+  // one term. Pure and DB-free, unlike the repository set next to it.
   const optionsResult = parseCreateProjectOptions(body, {
     knownSourceIds,
+    knownPrincipalAliases: composePrincipalAliases(body.options),
     projectRepositoryId: null,
   })
   if (!optionsResult.ok) {
@@ -381,6 +389,7 @@ function parseProjectPatchOptions(
   body: Record<string, unknown>,
   knownSourceIds: ReadonlySet<string>,
   projectRepositoryId: string | null,
+  knownPrincipalAliases: ReadonlySet<string>,
 ): Record<string, unknown> | null | Response {
   const optionsResult = parseJsonbField(body, 'options')
   if (optionsResult === 'invalid') {
@@ -390,6 +399,7 @@ function parseProjectPatchOptions(
 
   const normalized = normalizeProjectPatchOptions(optionsResult, {
     knownSourceIds,
+    knownPrincipalAliases,
     projectRepositoryId,
   })
   if (!normalized.ok) {
@@ -416,6 +426,7 @@ function buildProjectPatchFields(
   moveTarget: string | undefined,
   knownSourceIds: ReadonlySet<string>,
   projectRepositoryId: string | null,
+  knownPrincipalAliases: ReadonlySet<string>,
 ): ProjectPatchFields | Response {
   let patchFields: ProjectPatchFields
   try {
@@ -429,6 +440,7 @@ function buildProjectPatchFields(
     body,
     knownSourceIds,
     projectRepositoryId,
+    knownPrincipalAliases,
   )
   if (optionsResult instanceof Response) return optionsResult
   if (optionsResult !== null) {
@@ -838,6 +850,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       moveTarget,
       knownSourceIds,
       projectRepositoryId,
+      composePrincipalAliases(body.options),
     )
     if (patchFields instanceof Response) return patchFields
     if (rebind !== undefined) patchFields.repositoryId = rebind

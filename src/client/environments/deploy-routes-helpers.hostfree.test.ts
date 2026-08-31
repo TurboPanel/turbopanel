@@ -142,6 +142,22 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
       ref: 'missing-branch',
       message: 'ref not found',
     },
+    { kind: 'principal_alias_unknown', composeServiceName: 'blog', alias: 'ghost' },
+    {
+      kind: 'principal_required_for_service_kind',
+      composeServiceName: 'blog',
+      serviceKind: 'site',
+    },
+    {
+      kind: 'compose_field_unsupported',
+      issues: [{
+        path: 'services.web.deploy.update_config',
+        message:
+          'deploy.update_config is not supported by TurboPanel — TurboPanel has no rolling-update controller',
+        level: 'error',
+        line: 5,
+      }],
+    },
   ]
 
   assertEquals(mapPrepareErrorResponse(cases[0]).status, 409)
@@ -162,6 +178,20 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
     mapPrepareErrorResponse(cases[10]).body.message,
     'Storage "data" (single_writer) has no usable location on this server; primary copy is on srv-primary',
   )
+
+  const aliasUnknown = mapPrepareErrorResponse(cases[15])
+  assertEquals(aliasUnknown.status, 422)
+  assertEquals(aliasUnknown.body.error, 'principal_alias_unknown')
+  assertEquals(aliasUnknown.body.alias, 'ghost')
+  assertEquals(
+    String(aliasUnknown.body.message).includes('x-turbopanel.principals'),
+    true,
+  )
+
+  const principalRequired = mapPrepareErrorResponse(cases[16])
+  assertEquals(principalRequired.status, 422)
+  assertEquals(principalRequired.body.error, 'principal_required_for_service_kind')
+  assertEquals(principalRequired.body.serviceKind, 'site')
 
   const variableWithContext = mapPrepareErrorResponse({
     kind: 'variable_unresolved',
@@ -195,6 +225,41 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(unresolved.body.error, 'source_ref_unresolved')
   assertEquals(unresolved.body.sourceId, 'src-1')
   assertEquals(unresolved.body.ref, 'missing-branch')
+
+  // Distinct from `compose_invalid`: the document parses, TurboPanel just does
+  // not implement what it names — and the message has to name the field, since
+  // the whole point of the code is that it is no longer dropped in silence.
+  const unsupportedField = mapPrepareErrorResponse(cases[17])
+  assertEquals(unsupportedField.status, 422)
+  assertEquals(unsupportedField.body.error, 'compose_field_unsupported')
+  assertEquals(
+    String(unsupportedField.body.message).includes(
+      'services.web.deploy.update_config',
+    ),
+    true,
+  )
+
+  // Its own code, and its own sentence: no stored layer is wrong, so an
+  // operator sent looking for the mistake inside one would not find it.
+  const mergedInvalid = mapPrepareErrorResponse({
+    kind: 'compose_merged_invalid',
+    issues: [{
+      path: 'services.web',
+      message: 'Service "web" must define image or build',
+      level: 'error',
+      line: 2,
+    }],
+  })
+  assertEquals(mergedInvalid.status, 422)
+  assertEquals(mergedInvalid.body.error, 'compose_merged_invalid')
+  assertEquals(
+    String(mergedInvalid.body.message).includes('services.web'),
+    true,
+  )
+  assertEquals(
+    String(mergedInvalid.body.message).includes('overlay changes the base'),
+    true,
+  )
 })
 
 test('parseDeployRequestFlags defaults flags to false', () => {
@@ -438,6 +503,22 @@ test('scheduleErrorResponse maps placement and other schedule failures', () => {
       body: { error: 'turbofabric_required', message: 'need mesh' },
     },
   )
+  // The cap is the document's arithmetic, not a missing host, so it keeps its
+  // own code and the scheduler's own sentence rather than collapsing into
+  // `server_placement_required`.
+  assertEquals(
+    scheduleErrorResponse(
+      'max_replicas_per_node_exceeded',
+      'web requires more replicas than max_replicas_per_node allows',
+    ),
+    {
+      status: 422,
+      body: {
+        error: 'max_replicas_per_node_exceeded',
+        message: 'web requires more replicas than max_replicas_per_node allows',
+      },
+    },
+  )
 })
 
 test('queuedCommandsResponseBody shapes empty and multi-command payloads', () => {
@@ -600,6 +681,52 @@ test('native app rows resolve the release serviceId from hostings', () => {
     [],
   )
   assertEquals(apps[0]?.serviceId, 'svc-web')
+})
+
+test('a hosting targetPort never moves a native app listen port', () => {
+  const apps = buildNativeAppServicesForDeploy(
+    [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
+    [{
+      hostingId: 'h1',
+      serviceId: 'svc-web',
+      composeServiceName: 'web',
+      hostnames: ['app.example.com'],
+      targetPort: 3000,
+    }],
+    [],
+  )
+  // The port is TurboPanel's allocation; the daemon reads it off
+  // nativeAppServices[] and never off the hosting.
+  assertEquals(apps[0]?.listenPort === 3000, false)
+})
+
+test('a native app port comes out of the shared ledger, not the route', () => {
+  const used = new Set<number>()
+  const first = buildNativeAppServicesForDeploy(
+    [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
+    [{
+      hostingId: 'h1',
+      serviceId: 'svc-web',
+      composeServiceName: 'web',
+      hostnames: ['app.example.com'],
+      targetPort: 3000,
+    }],
+    [],
+    used,
+  )
+  const second = buildNativeAppServicesForDeploy(
+    [{ composeServiceName: 'api', framework: 'next', listenPort: 0 }],
+    [{
+      hostingId: 'h2',
+      serviceId: 'svc-api',
+      composeServiceName: 'api',
+      hostnames: ['api.example.com'],
+      targetPort: 3000,
+    }],
+    [],
+    used,
+  )
+  assertEquals(first[0]?.listenPort === second[0]?.listenPort, false)
 })
 
 test('a native app with no hosting or ingress falls back to the compose key', () => {

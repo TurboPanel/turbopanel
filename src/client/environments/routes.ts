@@ -30,6 +30,11 @@ import {
   reclaimDeletedEnvironmentHosts,
 } from './teardown.ts'
 import {
+  composePrincipalAliases,
+  loadProjectPrincipalAliases,
+  unionAliasSets,
+} from '../../lib/db/principal-alias-records.ts'
+import {
   adoptProjectRepository,
   loadEnvironmentProjectRepository,
   loadOrganizationRepositoryIds,
@@ -103,9 +108,11 @@ function applyEnvironmentOptionsPatch(
   patchFields: EnvironmentPatchFields,
   knownSourceIds: ReadonlySet<string>,
   projectRepositoryId: string | null,
+  knownPrincipalAliases: ReadonlySet<string>,
 ): Response | undefined {
   const optionsResult = parseEnvironmentPatchOptions(body, {
       knownSourceIds,
+      knownPrincipalAliases,
       projectRepositoryId,
       // An environment's compose IS the overlay. Linting it as `base` produced
       // a spurious advisory telling the operator that `!reset` / `!override`
@@ -186,6 +193,12 @@ async function parseCreateEnvironmentInput(
   const projectRepositoryId = (await loadProjectRepositoryId(db, projectId)) ?? null
   const jsonb = parseCreateEnvironmentJsonb(body, {
       knownSourceIds,
+      // Same union as the PATCH lane: the project's persisted root plus this
+      // document's own.
+      knownPrincipalAliases: unionAliasSets(
+        await loadProjectPrincipalAliases(db, projectId),
+        composePrincipalAliases(body.options),
+      ),
       layer: 'overlay',
       projectRepositoryId,
     })
@@ -369,12 +382,19 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
     const parent = await loadEnvironmentProjectRepository(db, id)
+    // An overlay answers to the project's root as well as its own: a service
+    // here may name an alias the base declared, and one the base did not is a
+    // dangling reference either way.
     const optionsError = applyEnvironmentOptionsPatch(
       c,
       body,
       patchFields,
       knownSourceIds,
       parent?.repositoryId ?? null,
+      unionAliasSets(
+        parent ? await loadProjectPrincipalAliases(db, parent.projectId) : new Set(),
+        composePrincipalAliases(body.options),
+      ),
     )
     if (optionsError) return optionsError
 

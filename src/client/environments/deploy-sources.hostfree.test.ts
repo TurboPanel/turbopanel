@@ -110,6 +110,12 @@ function baseParams(
     services: sourcedService(),
     serviceRows: [{ id: SERVICE_ID, composeServiceName: "web" }],
     principalMaterial: [] as EnvironmentDeployPrincipalMaterial[],
+    // No compose aliases declared — the sole-steward fallback these cases
+    // exercise is exactly the un-aliased path.
+    principalResolution: {
+      principalIdByAlias: new Map<string, string>(),
+      aliasByComposeServiceName: new Map<string, string>(),
+    },
     ...overrides,
   };
 }
@@ -345,9 +351,16 @@ test("the owning service's packageManager rides onto build.packageManager", asyn
           "x-turbopanel": {
             serviceKind: "node",
             packageManager: "pnpm",
+            // A node app must name an account; the alias resolves, so ownership
+            // is settled and this case is only about the build hint.
+            principal: "app",
             source: { sourceId: SOURCE_ID },
           },
         },
+      },
+      principalResolution: {
+        principalIdByAlias: new Map([["app", PRINCIPAL_ID]]),
+        aliasByComposeServiceName: new Map([["web", "app"]]),
       },
     }),
   );
@@ -695,4 +708,126 @@ test("a missing credential row still produces a public clone entry", async () =>
   }
   assertEquals(result[0]?.credential, undefined);
   assertEquals(result[0]?.commitSha, "main");
+});
+
+test("a declared alias wins over an ambiguous set of stewards", async () => {
+  // Two tenancy edges would be ambiguous on the fallback path. With an alias
+  // the operator has already answered the question, so `pickSolePrincipalId`
+  // never runs and the extra edges say who else may reach the tree.
+  const material: EnvironmentDeployPrincipalMaterial = {
+    principalId: PRINCIPAL_ID,
+    username: "appuser",
+    home: "/home/appuser",
+    shell: "/bin/bash",
+  };
+  const result = await resolveDeploySourceMaterial(
+    mockContext(),
+    fakeDb([
+      [sourceRow()],
+      [
+        { principalId: PRINCIPAL_ID, serviceId: SERVICE_ID },
+        { principalId: `${PRINCIPAL_ID}2`, serviceId: SERVICE_ID },
+      ],
+    ]),
+    baseParams({
+      services: {
+        web: {
+          "x-turbopanel": {
+            serviceKind: "node",
+            principal: "app",
+            source: { sourceId: SOURCE_ID },
+          },
+        },
+      },
+      principalMaterial: [material],
+      principalResolution: {
+        principalIdByAlias: new Map([["app", PRINCIPAL_ID]]),
+        aliasByComposeServiceName: new Map([["web", "app"]]),
+      },
+    }),
+  );
+  if (!Array.isArray(result)) {
+    throw new TypeError("expected preview source material");
+  }
+  assertEquals(result[0]?.principal?.principalId, PRINCIPAL_ID);
+});
+
+test("a host-native service with no alias and no steward is refused", async () => {
+  const result = await resolveDeploySourceMaterial(
+    mockContext(),
+    fakeDb([[sourceRow()], []]),
+    baseParams({
+      services: {
+        web: {
+          "x-turbopanel": {
+            serviceKind: "node",
+            source: { sourceId: SOURCE_ID },
+          },
+        },
+      },
+    }),
+  );
+  assertEquals(result, {
+    kind: "principal_required_for_service_kind",
+    composeServiceName: "web",
+    serviceKind: "node",
+  });
+});
+
+test("a legacy host-native service with no alias deploys as its sole steward", async () => {
+  // The regression this pins: a `site` / `node` document that declares no
+  // `x-turbopanel.principals` and names no alias — the shape of every
+  // host-native service authored before the alias existed. Compose validation
+  // lets it through (`lib/compose/service-kind.ts` requires no `principal`),
+  // and ownership is answered here, by the steward an operator assigned in the
+  // panel. Requiring the alias in the schema would make this path unreachable.
+  const material: EnvironmentDeployPrincipalMaterial = {
+    principalId: PRINCIPAL_ID,
+    username: "legacy",
+    uid: 10002,
+    gid: 10002,
+  };
+  for (const serviceKind of ["site", "node"] as const) {
+    const result = await resolveDeploySourceMaterial(
+      mockContext(),
+      fakeDb([
+        [sourceRow()],
+        [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }],
+      ]),
+      baseParams({
+        services: {
+          web: {
+            "x-turbopanel": {
+              serviceKind,
+              source: { sourceId: SOURCE_ID },
+            },
+          },
+        },
+        principalMaterial: [material],
+      }),
+    );
+    if (!Array.isArray(result)) {
+      throw new TypeError(`expected ${serviceKind} source material`);
+    }
+    assertEquals(result[0]?.principal, {
+      principalId: PRINCIPAL_ID,
+      username: "legacy",
+      uid: 10002,
+      gid: 10002,
+    });
+  }
+});
+
+test("a container source with no owner still resolves unowned", async () => {
+  // Only host-native kinds require an account. A container's release is an
+  // image, not a tree under someone's home.
+  const result = await resolveDeploySourceMaterial(
+    mockContext(),
+    fakeDb([[sourceRow()], []]),
+    baseParams(),
+  );
+  if (!Array.isArray(result)) {
+    throw new TypeError("expected preview source material");
+  }
+  assertEquals(result[0]?.principal, undefined);
 });

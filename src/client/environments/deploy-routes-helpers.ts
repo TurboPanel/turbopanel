@@ -117,6 +117,20 @@ export function fabricGateErrorResponse(
   }
 }
 
+/**
+ * Map a `SchedulePlan` refusal onto an HTTP answer.
+ *
+ * `no_eligible_server` is the one that is not the document's fault — no host
+ * the request could have used is available — so it answers `409` with the
+ * route's own `server_placement_required`, telling the caller to pick a server.
+ * Every other code (`turbofabric_required`, `host_port_conflict`,
+ * `constraint_unsatisfiable`, `colocation_conflict`,
+ * `max_replicas_per_node_exceeded`) means the plan the *document* asks for
+ * cannot be built from the fleet as it stands, which is a `422` carrying the
+ * scheduler's own code and message verbatim — the message is the diagnosis, and
+ * paraphrasing it here would put a second, vaguer sentence between the operator
+ * and the reason.
+ */
 export function scheduleErrorResponse(
   error: ScheduleErrorCode,
   message: string,
@@ -234,6 +248,44 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
       }
     case 'empty_compose':
       return { status: 400, body: { error: 'compose_empty' } }
+    // Deliberately not `compose_invalid`: the document is a valid Compose file.
+    // What it names is something this platform does not implement, so the fix
+    // is to drop the field (or deploy it somewhere that honours it), not to
+    // hunt for a typo. Before the field registry these were deleted during
+    // compile with nothing said about it.
+    // The merge of layers that each saved cleanly is not itself runnable. Its
+    // own code, because the fix is not in any one stored layer — it is in what
+    // the overlay does to the base, most often a `!reset` that removed
+    // something the base still depends on.
+    case 'compose_merged_invalid':
+      return {
+        status: 422,
+        body: {
+          error: 'compose_merged_invalid',
+          issues: prepared.issues,
+          message: `The project and environment compose layers merge into a document TurboPanel cannot run: ${
+            prepared.issues.map((issue) => `${issue.path}: ${issue.message}`)
+              .join('; ')
+          }. Each layer is valid on its own, so the fix is in how the overlay changes the base.`,
+        },
+      }
+    case 'compose_field_unsupported':
+      return {
+        status: 422,
+        body: {
+          error: 'compose_field_unsupported',
+          issues: prepared.issues,
+          message: `This compose document sets ${
+            prepared.issues.length === 1 ? 'a field' : 'fields'
+          } TurboPanel does not support: ${
+            prepared.issues.map((issue) => issue.path).join(', ')
+          }. Remove ${
+            prepared.issues.length === 1 ? 'it' : 'them'
+          } and deploy again — leaving ${
+            prepared.issues.length === 1 ? 'it' : 'them'
+          } in place would deploy something different from what the document says.`,
+        },
+      }
     case 'datacenter_ip_required':
       return {
         status: 422,
@@ -282,6 +334,13 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
             `Site "${prepared.composeServiceName}" serves an uploaded directory but has no project principal to own it. Assign a principal to the service — the directory is the account's, and without one there is nobody to upload as.`,
         },
       }
+    // `source_principal_ambiguous` above and `site_principal_ambiguous`,
+    // `site_managed_directory_unowned`, `site_cron_unowned` before it are all
+    // unreachable for a service that declares `x-turbopanel.principal`: a
+    // declared alias is the answer, so there is nothing left to be ambiguous
+    // or unowned about. They stay because the un-aliased fallback path — every
+    // document saved before the field existed — still resolves by sole steward,
+    // and that path can still have zero or several.
     case 'source_principal_ambiguous':
       return {
         status: 422,
@@ -290,6 +349,28 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
           composeServiceName: prepared.composeServiceName,
           message:
             `Git-backed service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for release ownership.`,
+        },
+      }
+    case 'principal_alias_unknown':
+      return {
+        status: 422,
+        body: {
+          error: 'principal_alias_unknown',
+          composeServiceName: prepared.composeServiceName,
+          alias: prepared.alias,
+          message:
+            `Service "${prepared.composeServiceName}" names principal "${prepared.alias}", which this document does not declare. Add "${prepared.alias}" under the top-level x-turbopanel.principals, or point x-turbopanel.principal at an alias that is already there.`,
+        },
+      }
+    case 'principal_required_for_service_kind':
+      return {
+        status: 422,
+        body: {
+          error: 'principal_required_for_service_kind',
+          composeServiceName: prepared.composeServiceName,
+          serviceKind: prepared.serviceKind,
+          message:
+            `${prepared.serviceKind === 'site' ? 'Site' : 'Node app'} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
         },
       }
     case 'source_ref_unresolved':
@@ -302,6 +383,62 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
           ref: prepared.ref,
           message:
             `Could not resolve a commit for "${prepared.composeServiceName}" (ref "${prepared.ref}"): ${prepared.message}`,
+        },
+      }
+    case 'hosting_tls_ref_unresolved':
+      return {
+        status: 422,
+        body: {
+          error: 'hosting_tls_ref_unresolved',
+          composeServiceName: prepared.composeServiceName,
+          hostname: prepared.hostname,
+          ref: prepared.ref,
+          reason: prepared.reason,
+          message: prepared.reason === 'ambiguous'
+            ? `More than one certificate in this organization is named "${prepared.ref}", which "${prepared.composeServiceName}" pins for ${prepared.hostname}. Name it by id instead, or give the certificates distinct names.`
+            : `Certificate "${prepared.ref}" pinned by "${prepared.composeServiceName}" for ${prepared.hostname} was not found in this organization. Add it to the TLS library, or point tls.certificateRef at one that is already there.`,
+        },
+      }
+    case 'hosting_ip_ref_unresolved':
+      return {
+        status: 422,
+        body: {
+          error: 'hosting_ip_ref_unresolved',
+          composeServiceName: prepared.composeServiceName,
+          hostname: prepared.hostname,
+          ref: prepared.ref,
+          reason: prepared.reason,
+          message: prepared.reason === 'ambiguous'
+            ? `More than one managed address in this organization matches "${prepared.ref}", which "${prepared.composeServiceName}" pins for ${prepared.hostname}. Name it by id instead.`
+            : `Managed address "${prepared.ref}" pinned by "${prepared.composeServiceName}" for ${prepared.hostname} was not found in this organization. Register it under Datacenters → IPs, or point bind.ipRef at one that is already there.`,
+        },
+      }
+    case 'hosting_tls_mode_unsupported':
+      return {
+        status: 422,
+        body: {
+          error: 'hosting_tls_mode_unsupported',
+          composeServiceName: prepared.composeServiceName,
+          hostname: prepared.hostname,
+          mode: prepared.mode,
+          message:
+            `"${prepared.composeServiceName}" asks for tls.mode "${prepared.mode}" on ${prepared.hostname}, which this platform cannot issue yet. Use "internal" for a self-signed certificate, or "certificate" with tls.certificateRef to pin one from the TLS library.`,
+        },
+      }
+    case 'hosting_route_conflict':
+      return {
+        status: 409,
+        body: {
+          error: 'hosting_route_conflict',
+          composeServiceName: prepared.composeServiceName,
+          hostname: prepared.hostname,
+          pathPrefix: prepared.pathPrefix,
+          hostingId: prepared.hostingId,
+          otherHostnames: prepared.otherHostnames,
+          message:
+            `"${prepared.composeServiceName}" declares ${prepared.hostname}${prepared.pathPrefix}, which an existing hosting already serves alongside ${
+              prepared.otherHostnames.join(', ')
+            }. Compose can only take over a hosting that serves this one hostname — split the other hostnames onto their own hosting, or drop the declaration and keep editing the route in the panel.`,
         },
       }
     case 'binding_endpoint_unavailable':
@@ -431,6 +568,14 @@ export function expandHostingsForComposeInstances(
   return out
 }
 
+/**
+ * `targetPort` per compose service, for the lanes allowed to be steered by one.
+ *
+ * The **site** lane only: a site's engine vhost is stood up on a loopback port,
+ * and a panel-authored `targetPort` on its hosting is the operator saying which
+ * one. Native apps deliberately do not read this — see
+ * {@link buildNativeAppServicesForDeploy}.
+ */
 export function preferredListenPortsFromHostings(
   hostings: readonly EnvironmentDeployHosting[],
 ): Map<string, number> {
@@ -490,12 +635,21 @@ export function resolveDeployReleaseServiceId(
 }
 
 /**
- * Finalize native app rows for the wire: re-assign loopback ports now that
- * hosting `targetPort` values are known, and resolve each release-tree
- * `serviceId`.
+ * Finalize native app rows for the wire: allocate loopback ports out of the
+ * shared ledger, and resolve each release-tree `serviceId`.
  *
  * `used` is the **same** ledger `buildSitesForDeploy` was handed,
  * so the two loopback lanes cannot be given the same port.
+ *
+ * **No preferred ports.** A native app's listen port is TurboPanel's to
+ * allocate: the daemon reads it straight off `nativeAppServices[]` to build the
+ * `127.0.0.1:<port>` upstream (`buildCaddyHostnameRoutes`) and to render the
+ * systemd unit's `PORT`, and it never looks at the hosting's `targetPort`.
+ * Feeding hosting `targetPort` values in here would let a route declaration
+ * move the port the process is told to bind — a second source of truth for an
+ * allocation that has exactly one owner. `x-turbopanel.hosting[].targetPort` is
+ * refused on `serviceKind: node` for the same reason
+ * (`hostingTargetPortAuthorable`).
  */
 export function buildNativeAppServicesForDeploy(
   nativeAppServices: readonly PreparedNativeAppService[],
@@ -506,7 +660,7 @@ export function buildNativeAppServicesForDeploy(
   if (nativeAppServices.length === 0) return []
   return assignNativeAppListenPorts(
     nativeAppServices,
-    preferredListenPortsFromHostings(hostings),
+    new Map<string, number>(),
     used,
   ).map((app) => ({
     ...app,

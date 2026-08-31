@@ -8,6 +8,7 @@ import {
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
 } from './placement.ts'
+import { collectRootExtensionValidationIssues } from './root-extension.ts'
 import { collectServiceTurbopanelValidationIssues } from './service-kind.ts'
 import {
   COMPOSE_TAG_KEY,
@@ -51,6 +52,29 @@ export type ComposeValidateOptions = {
    * has no binding yet and the rule weakens to "at most one distinct id".
    */
   projectRepositoryId?: string | null
+  /**
+   * Principal aliases in scope for this document, forwarded to the linter so
+   * `x-turbopanel.principal` can be checked against what is actually declared.
+   *
+   * The caller assembles it because scope is not a property of one document: a
+   * project base answers to its own root, an environment overlay to the
+   * project's root as well. Omitted skips the rule rather than failing it —
+   * same contract as {@link ComposeValidateOptions.knownSourceIds}.
+   */
+  knownPrincipalAliases?: ReadonlySet<string>
+  /**
+   * Organization TLS rows in scope, forwarded to the linter so
+   * `x-turbopanel.hosting[i].tls.certificateRef` can be checked. Ids and names
+   * share the set — a ref may spell either. Omitted skips the rule rather than
+   * failing it, same contract as {@link ComposeValidateOptions.knownSourceIds}.
+   */
+  knownTlsIds?: ReadonlySet<string>
+  /**
+   * Organization managed addresses in scope, forwarded to the linter for
+   * `x-turbopanel.hosting[i].bind.ipRef`. Ids and addresses share the set;
+   * omitted skips the rule.
+   */
+  knownIpIds?: ReadonlySet<string>
 }
 
 /**
@@ -74,6 +98,9 @@ export function validateComposeDocument(
   const layer = options?.layer ?? 'base'
   const knownSourceIds = options?.knownSourceIds
   const projectRepositoryId = options?.projectRepositoryId
+  const knownPrincipalAliases = options?.knownPrincipalAliases
+  const knownTlsIds = options?.knownTlsIds
+  const knownIpIds = options?.knownIpIds
 
   if (value == null) {
     return { ok: true, document: emptyComposeDocument() }
@@ -127,6 +154,9 @@ export function validateComposeDocument(
     lintComposeYaml(composeDocumentToYaml(document), {
       layer,
       knownSourceIds,
+      ...(knownPrincipalAliases === undefined ? {} : { knownPrincipalAliases }),
+      ...(knownTlsIds === undefined ? {} : { knownTlsIds }),
+      ...(knownIpIds === undefined ? {} : { knownIpIds }),
       // Spread rather than passed straight through: `undefined` has to stay
       // *absent* for the linter to skip the rule instead of reading it as
       // "unbound project".
@@ -214,13 +244,17 @@ function validateTurbopanelExtension(
     return
   }
 
-  // Placement is not a stored compose shape — pin lives on environment.server_id.
-  // Reject any embedded placement; create/PATCH validation is the write boundary.
-  if ('placement' in extension) {
-    issues.push({
-      path: 'x-turbopanel.placement',
-      message: 'placement is not stored in compose; use environment.server_id',
-    })
+  // The authored root accepts `principals` and nothing else. Placement is
+  // rejected here as one case of that rule rather than as a special one — it is
+  // not a stored compose shape (the pin lives on `environment.server_id`), and
+  // create/PATCH validation is the write boundary that says so.
+  //
+  // There is no `schemaVersion` to bump when this list grows; a key that is not
+  // recognized is reported instead of ignored, which is the same guarantee a
+  // version stamp is usually reached for and one an author cannot forget to
+  // set. See `./root-extension.ts`.
+  for (const issue of collectRootExtensionValidationIssues('x-turbopanel', extension)) {
+    issues.push(issue)
   }
 }
 

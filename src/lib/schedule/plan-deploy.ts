@@ -12,8 +12,10 @@ import { environment, fabric, storageCopy, mount, project, server, service, stor
 import { listServerLabelsForServers } from '../db/label-records.ts'
 import { listEnvironmentSlots } from '../db/slot-records.ts'
 import {
-  mergeComposeLayers,
+  type ComposeDeployValidationError,
   type ComposeDocument,
+  mergeComposeLayers,
+  validateComposeForDeploy,
 } from '../compose/index.ts'
 import { parseProjectOptions } from '../project-options.ts'
 import { parseServiceOptions, resolveServiceInstances } from '../service-options.ts'
@@ -35,6 +37,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 export type PlannedDeploy = {
   plan: SchedulePlan
+  /**
+   * The merged document passed deploy-time compose validation
+   * (`lib/compose/validate-for-deploy.ts`) **before** this plan reconciled a
+   * single row.
+   *
+   * Carried rather than implied so the per-server prepare can see that the
+   * document it is about to compile has already been through stages 1–4 for
+   * this request, and skip re-running them over the identical merge. The gate
+   * itself is not optional — see {@link planEnvironmentDeploy}.
+   */
+  composeValidated: true
   pinServerId: string | null
   defaultServerId: string | null
   fabricEnabled: boolean
@@ -48,6 +61,15 @@ export type PlannedDeploy = {
 export type PlanDeployError =
   | { kind: 'not_found' }
   | { kind: 'invalid_compose' }
+  /**
+   * The merged document is a document TurboPanel will refuse to deploy.
+   *
+   * Carries the refusal itself rather than collapsing to `invalid_compose`, so
+   * the route answers with the same body the per-server prepare would have —
+   * the operator should not get a different diagnosis depending on which stage
+   * of the deploy happened to notice.
+   */
+  | { kind: 'compose_rejected'; error: ComposeDeployValidationError }
 
 /**
  * Optional doubles for host-free tests. Production callers omit this; defaults
@@ -176,7 +198,19 @@ async function loadStoragePins(
 
 /**
  * Plan slots for an environment deploy. Callers map `SchedulePlan` errors to
- * HTTP (`turbofabric_required` → 422, no eligible server → 409).
+ * HTTP (`turbofabric_required` → 422, no eligible server → 409). The merged
+ * document rides into the planner because `turbofabric_required` is a verdict
+ * about the document's `driver: overlay` networks, not about how many servers
+ * the plan happened to use.
+ *
+ * **Validation comes before scheduling.** The merged document is run through
+ * `validateComposeForDeploy` (schema → extension → semantic → policy) as the
+ * first thing after the merge, and a refusal returns `compose_rejected` without
+ * touching a row. Everything after that point writes: `reconcileServicesFromCompose`
+ * creates and retires `service` rows, `registerComposeVolumes` /
+ * `registerComposeMounts` create `storage` and `mount` rows. A deploy that is
+ * going to be refused must not reshape the control plane first, and the refusal
+ * used to arrive only later, in the per-server prepare.
  *
  * Optional {@link PlanEnvironmentDeployDeps} lets host-free tests stub
  * reconcile / register / list helpers without Postgres.
@@ -224,6 +258,15 @@ export async function planEnvironmentDeploy(
   })
   const merged = resolveMergedCompose(projectRow.options, envRow.options, filename)
   if ('kind' in merged) return merged
+
+  // Before anything is written. `reconcile` below creates and retires `service`
+  // rows, and `registerVolumes` / `registerMounts` further down create `storage`
+  // and `mount` rows — all from a document that, if it is going to be refused,
+  // must not have shaped the control plane on its way to being refused. Planning
+  // used to run first and the refusal came later, per server, which left rows
+  // behind for a deploy that never happened.
+  const rejected = validateComposeForDeploy(merged)
+  if (rejected) return { kind: 'compose_rejected', error: rejected }
 
   await reconcile(db, params.environmentId, merged)
 
@@ -280,6 +323,9 @@ export async function planEnvironmentDeploy(
     fabricEnabled: Boolean(fabricRow),
     servers: fleet,
     services: planned,
+    // `turbofabric_required` is decided from authored `driver: overlay` intent,
+    // not from the server count, so the planner needs the merged document.
+    document: merged,
     existingTasks: existingTasks.map((task) => ({
       serviceId: task.serviceId,
       slot: task.slot,
@@ -290,6 +336,7 @@ export async function planEnvironmentDeploy(
 
   return {
     plan,
+    composeValidated: true,
     pinServerId,
     defaultServerId,
     fabricEnabled: Boolean(fabricRow),

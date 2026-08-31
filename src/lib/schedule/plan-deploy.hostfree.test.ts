@@ -4,6 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
+import { COMPOSE_TAG_KEY } from '../compose/tags.ts'
 import { emptyComposeDocument } from '../compose/types.ts'
 import {
   environment,
@@ -498,4 +499,83 @@ test('planEnvironmentDeploy uses project defaultServerId for register when env h
   assertEquals(registerServerIds, [SERVER_B])
   assertEquals(result.pinServerId, null)
   assertEquals(result.defaultServerId, SERVER_B)
+})
+
+test('planEnvironmentDeploy refuses a rejected merge before it writes a row', async () => {
+  // The base declares an image; the environment overlay resets it. Each layer
+  // saves cleanly, their merge is a service with nothing to run, and the deploy
+  // is refused — the point of the assertion is *where*: no `service` row
+  // reconciled, no `storage` or `mount` row registered on the way out.
+  const base = emptyComposeDocument()
+  base.data.services = { web: { image: 'nginx:alpine' } }
+  const overlay = emptyComposeDocument()
+  overlay.data.services = {
+    web: { image: { [COMPOSE_TAG_KEY]: 'reset', value: null } },
+  }
+
+  let reconcileCalls = 0
+  let registerVolumesCalls = 0
+  let registerMountsCalls = 0
+
+  const result = await planEnvironmentDeploy(
+    createPlanDeployDb({
+      env: {
+        id: ENV_ID,
+        projectId: PROJECT_ID,
+        serverId: SERVER_A,
+        options: { compose: overlay },
+        name: 'production',
+      },
+      project: { id: PROJECT_ID, options: { compose: base } },
+      services: [],
+      servers: [],
+    }),
+    { environmentId: ENV_ID, organizationId: ORG_ID },
+    noopDeps({
+      reconcileServicesFromCompose: async () => {
+        reconcileCalls += 1
+        return { created: [], orphans: [] }
+      },
+      registerComposeVolumes: async () => {
+        registerVolumesCalls += 1
+        return []
+      },
+      registerComposeMounts: async () => {
+        registerMountsCalls += 1
+      },
+    }),
+  )
+
+  assertEquals('kind' in result, true)
+  if (!('kind' in result)) return
+  assertEquals(result.kind, 'compose_rejected')
+  if (result.kind !== 'compose_rejected') return
+  assertEquals(result.error.kind, 'compose_merged_invalid')
+  assertEquals(reconcileCalls, 0)
+  assertEquals(registerVolumesCalls, 0)
+  assertEquals(registerMountsCalls, 0)
+})
+
+test('planEnvironmentDeploy stamps the plan with the validation it already ran', async () => {
+  // The per-server prepare reads this to skip re-deriving the same verdict once
+  // per host; it is only ever set on a plan that passed the gate above.
+  const planned = await planEnvironmentDeploy(
+    createPlanDeployDb({
+      env: {
+        id: ENV_ID,
+        projectId: PROJECT_ID,
+        serverId: null,
+        options: {},
+        name: 'production',
+      },
+      project: { id: PROJECT_ID, options: { compose: composeWithWeb() } },
+      services: [],
+      servers: [],
+    }),
+    { environmentId: ENV_ID, organizationId: ORG_ID },
+    noopDeps(),
+  )
+  assertEquals('kind' in planned, false)
+  if ('kind' in planned) return
+  assertEquals(planned.composeValidated, true)
 })

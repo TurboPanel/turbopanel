@@ -485,6 +485,23 @@ via `environment → project → workspace`. **`principal`** is in `RESOURCE_KIN
 and `ENTITY_TYPES` but **not** `GRANT_ENTITY_TYPES` — org is derived via
 `tenancy → service → environment → project → workspace` (returns null when
 unassigned); `tenancy` itself is not a grantable authz entity.
+
+**Where `principal` / `tenancy` rows come from at deploy time.** A compose
+document names an account by **alias** — a document-local key under the root
+`x-turbopanel.principals` — never by Linux username, because everything that
+decides what the account *is* on a host (uid, gid, home, shell, keys, password)
+is a privilege decision gated by `organization:manage` on the `principal` row.
+`reconcilePrincipalsFromCompose`
+(`../../client/principals/tenancies.ts`) runs inside deploy-prepare and turns
+each declared alias into a `principal` row plus the `tenancy` edge that says
+which `service` runs as it. The alias → `principal.id` map it returns is
+carried through the compiler as
+**`ResolvedApplication.principals[]`** (`{ logicalAlias, principalId }`) — see
+the four-model IR in `../compose/AGENTS.md` and `../compose/ir.ts`. That mapping
+is the *only* bridge between the document's aliases and these rows: nothing
+downstream re-derives an account from a compose key, and a service whose alias
+never became a row is refused (`principal_alias_unknown`) rather than run as
+nobody.
 **`GET /access/check`** accepts any resolvable entity UUID (including `variable`
 and `managed`). **`GET /access/resource-id`** accepts only `organization` and
 `team` kinds (grant-management UI). Access grants still target org/team entities

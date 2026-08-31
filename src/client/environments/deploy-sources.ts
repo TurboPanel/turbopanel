@@ -65,7 +65,9 @@ import { isSshCloneUrl } from "../../lib/git/clone-url.ts";
 import { newCorrelationId } from "../../lib/commands/ids.ts";
 import { definedFields } from "../../lib/optional-fields.ts";
 import {
+  type ComposeServiceKind,
   type ComposeServiceSourceExtension,
+  isHostNativeServiceKind,
   type NodePackageManager,
   readServiceTurbopanelExtension,
 } from "../../lib/compose/index.ts";
@@ -78,6 +80,7 @@ import type {
 } from "../../lib/commands/schemas.ts";
 import { secret, repository } from "../../lib/db/schema.ts";
 import {
+  type ComposePrincipalResolution,
   loadPrincipalIdsByServiceIdForEnvironment,
   pickSolePrincipalId,
 } from "../principals/tenancies.ts";
@@ -85,6 +88,11 @@ import {
 /** Prepare failures this stage can raise. Mirrors `DeployPrepareError` kinds. */
 export type DeploySourcePrepareError =
   | { kind: "source_principal_ambiguous"; composeServiceName: string }
+  | {
+    kind: "principal_required_for_service_kind";
+    composeServiceName: string;
+    serviceKind: "site" | "node";
+  }
   | {
     kind: "source_ref_unresolved";
     composeServiceName: string;
@@ -194,6 +202,13 @@ export type DeploySourceResolveParams = {
   serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>;
   principalMaterial: readonly EnvironmentDeployPrincipalMaterial[];
   /**
+   * Aliases this document declared, already materialized into `principal` rows
+   * by `reconcilePrincipalsFromCompose`. A declared alias is what ownership
+   * resolves against; the sole-steward lookup is only the fallback for a
+   * document that names none.
+   */
+  principalResolution: ComposePrincipalResolution;
+  /**
    * Webhook-supplied commit, when the trigger already knows the head SHA.
    *
    * `sourceId` names the single `repository` row the trigger fired for. The pinned
@@ -253,6 +268,12 @@ function collectSourceBindings(
       ...(extension.packageManager === undefined
         ? {}
         : { packageManager: extension.packageManager }),
+      ...(extension.principal === undefined
+        ? {}
+        : { principalAlias: extension.principal }),
+      ...(extension.serviceKind === undefined
+        ? {}
+        : { serviceKind: extension.serviceKind }),
     });
   }
   return out.sort((a, b) =>
@@ -361,6 +382,10 @@ type SourceBinding = {
   repository: ComposeServiceSourceExtension;
   /** The owning service's `x-turbopanel.packageManager`, when declared. */
   packageManager?: NodePackageManager;
+  /** The owning service's `x-turbopanel.principal` alias, when declared. */
+  principalAlias?: string;
+  /** The owning service's kind — decides whether ownership is *required*. */
+  serviceKind?: ComposeServiceKind;
 };
 
 /** Lookups every binding in one deploy resolves against, loaded once up front. */
@@ -371,6 +396,8 @@ type SourceResolutionContext = {
     ReturnType<typeof loadPrincipalIdsByServiceIdForEnvironment>
   >;
   serviceIdByComposeName: Map<string, string>;
+  /** Alias → materialized `principal.id`, from the deploy-prepare reconcile. */
+  principalIdByAlias: ReadonlyMap<string, string>;
   sealForDaemon: boolean;
   recipient?: DaemonRecipient;
 };
@@ -393,13 +420,33 @@ function noSourceBindingsResult(
 }
 
 /**
- * Ownership: identical lookup + sole-principal rule the site pin
- * uses; more than one tenancy is ambiguous ownership, not a guess.
+ * Ownership for one Git-backed service, by the same precedence the site pin
+ * uses.
+ *
+ * **A declared alias wins outright.** `x-turbopanel.principal` names the
+ * account the operator wrote down, so it is not weighed against anything: the
+ * sole-steward lookup is skipped entirely, and `source_principal_ambiguous`
+ * becomes unreachable for that service. Several tenancy edges are then a fact
+ * about who else may reach the tree, not a competing answer to who owns it.
+ *
+ * With no alias the old rule stands unchanged — one steward is the owner, more
+ * than one is ambiguous ownership rather than a guess — with one addition: a
+ * host-native service (`site` / `node`) that has *no* steward either has
+ * nothing to publish its release as, so it is refused instead of silently
+ * skipped daemon-side.
  */
 function resolveBindingPrincipal(
-  composeServiceName: string,
+  binding: SourceBinding,
   context: SourceResolutionContext,
 ): { material?: EnvironmentDeployPrincipalMaterial } | DeploySourcePrepareError {
+  const composeServiceName = binding.composeServiceName;
+  if (binding.principalAlias !== undefined) {
+    const principalId = context.principalIdByAlias.get(binding.principalAlias);
+    return principalId
+      ? { material: context.principalById.get(principalId) }
+      : {};
+  }
+
   const serviceId = context.serviceIdByComposeName.get(composeServiceName);
   const assignedIds = serviceId
     ? (context.principalIdsByServiceId.get(serviceId) ?? [])
@@ -408,7 +455,14 @@ function resolveBindingPrincipal(
   if (sole.status === "ambiguous") {
     return { kind: "source_principal_ambiguous", composeServiceName };
   }
-  if (sole.status !== "one") return {};
+  if (sole.status === "none") {
+    if (!isHostNativeServiceKind(binding.serviceKind)) return {};
+    return {
+      kind: "principal_required_for_service_kind",
+      composeServiceName,
+      serviceKind: binding.serviceKind as "site" | "node",
+    };
+  }
   return { material: context.principalById.get(sole.principalId) };
 }
 
@@ -482,7 +536,7 @@ async function resolveBindingMaterial(
     };
   }
 
-  const owner = resolveBindingPrincipal(composeServiceName, context);
+  const owner = resolveBindingPrincipal(binding, context);
   if ("kind" in owner) return owner;
 
   // Rollback: the release tree already exists on the host, so there is no
@@ -590,6 +644,7 @@ async function loadSourceResolutionContext(
     principalById: new Map(
       params.principalMaterial.map((entry) => [entry.principalId, entry]),
     ),
+    principalIdByAlias: params.principalResolution.principalIdByAlias,
     principalIdsByServiceId: await loadPrincipalIdsByServiceIdForEnvironment(
       db,
       params.environmentId,

@@ -1,4 +1,5 @@
 import { assertEquals } from '@std/assert'
+import type { ComposeDocument } from '../compose/types.ts'
 import type { ServiceScheduleSpec } from './interpret.ts'
 import {
   localReplicaCounts,
@@ -49,6 +50,7 @@ function spec(
     spreadKeys: [],
     publishedHostPorts: [],
     colocateWith: [],
+    maxReplicasPerNode: null,
     ...overrides,
   }
 }
@@ -59,6 +61,16 @@ function planned(
   overrides: Partial<ServiceScheduleSpec> = {},
 ): PlannedService {
   return { serviceId, spec: spec(composeServiceName, overrides) }
+}
+
+/**
+ * A merged document whose `networks:` block is exactly `entries`.
+ *
+ * The planner reads nothing else from the document: `driver: overlay` on a
+ * top-level entry is the whole of the authored spanning signal.
+ */
+function composeDoc(data: Record<string, unknown>): ComposeDocument {
+  return { version: 1, data, presentation: { keyOrder: [], comments: {} } }
 }
 
 function input(overrides: Partial<PlanEnvironmentInput> = {}): PlanEnvironmentInput {
@@ -124,14 +136,20 @@ test('planEnvironmentSchedule keeps sticky placements across re-plans', () => {
   assertEquals(plan.ok && plan.slots[0]?.serverId, SERVER_B)
 })
 
-test('planEnvironmentSchedule requires TurboFabric for multi-server plans without a pin', () => {
+test('planEnvironmentSchedule requires TurboFabric for a multi-server overlay network', () => {
   // Preferred-server sticky placement keeps same-service replicas on one host;
-  // distinct label constraints force two hosts and trip the fabric gate.
+  // distinct label constraints force two hosts. The document declares the
+  // network both services join `driver: overlay`, so the spread is the author's
+  // spanning request and the fabric gate answers it.
   const plan = planEnvironmentSchedule(
     input({
       fabricEnabled: false,
       pinServerId: null,
       defaultServerId: null,
+      document: composeDoc({
+        services: { web: { networks: ['app'] }, db: { networks: ['app'] } },
+        networks: { app: { driver: 'overlay' } },
+      }),
       services: [
         planned(SERVICE_WEB, 'web', {
           constraints: [{ key: 'role', op: 'eq', value: 'front' }],
@@ -149,6 +167,103 @@ test('planEnvironmentSchedule requires TurboFabric for multi-server plans withou
   assertEquals(plan.ok, false)
   if (!plan.ok) {
     assertEquals(plan.error, 'turbofabric_required')
+  }
+})
+
+test('planEnvironmentSchedule spans servers without TurboFabric for a bridge/default document', () => {
+  // Same two-host spread, but nothing in the document asked for a network that
+  // reaches beyond one engine: `bridge` and the implicit `default` both compile
+  // to an ordinary local bridge per host, so the fabric has nothing to do.
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: false,
+      pinServerId: null,
+      defaultServerId: null,
+      document: composeDoc({
+        services: { web: { networks: ['app'] }, db: {} },
+        networks: { app: { driver: 'bridge' } },
+      }),
+      services: [
+        planned(SERVICE_WEB, 'web', {
+          constraints: [{ key: 'role', op: 'eq', value: 'front' }],
+        }),
+        planned(SERVICE_DB, 'db', {
+          constraints: [{ key: 'role', op: 'eq', value: 'data' }],
+        }),
+      ],
+      servers: [
+        server(SERVER_A, { labels: { role: 'front' } }),
+        server(SERVER_B, { labels: { role: 'data' } }),
+      ],
+    }),
+  )
+  assertEquals(plan.ok, true)
+  if (plan.ok) {
+    assertEquals(plan.serverIds, [SERVER_A, SERVER_B])
+  }
+})
+
+test('planEnvironmentSchedule requires TurboFabric for an overlay-declared default network', () => {
+  // `networks.default.driver: overlay` opts the implicit network in, so services
+  // that declare no `networks:` at all still span.
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: false,
+      pinServerId: null,
+      defaultServerId: null,
+      document: composeDoc({
+        services: { web: {}, db: {} },
+        networks: { default: { driver: 'overlay' } },
+      }),
+      services: [
+        planned(SERVICE_WEB, 'web', {
+          constraints: [{ key: 'role', op: 'eq', value: 'front' }],
+        }),
+        planned(SERVICE_DB, 'db', {
+          constraints: [{ key: 'role', op: 'eq', value: 'data' }],
+        }),
+      ],
+      servers: [
+        server(SERVER_A, { labels: { role: 'front' } }),
+        server(SERVER_B, { labels: { role: 'data' } }),
+      ],
+    }),
+  )
+  assertEquals(plan.ok, false)
+  if (!plan.ok) {
+    assertEquals(plan.error, 'turbofabric_required')
+  }
+})
+
+test('planEnvironmentSchedule ignores an overlay network whose members share a host', () => {
+  // The network is declared overlay but every service joining it landed on one
+  // server, so nothing spans and the fabric is not required to deploy.
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: false,
+      pinServerId: null,
+      defaultServerId: null,
+      document: composeDoc({
+        services: { web: { networks: ['app'] }, db: { networks: ['other'] } },
+        networks: { app: { driver: 'overlay' }, other: { driver: 'overlay' } },
+      }),
+      services: [
+        planned(SERVICE_WEB, 'web', {
+          constraints: [{ key: 'role', op: 'eq', value: 'front' }],
+        }),
+        planned(SERVICE_DB, 'db', {
+          constraints: [{ key: 'role', op: 'eq', value: 'data' }],
+        }),
+      ],
+      servers: [
+        server(SERVER_A, { labels: { role: 'front' } }),
+        server(SERVER_B, { labels: { role: 'data' } }),
+      ],
+    }),
+  )
+  assertEquals(plan.ok, true)
+  if (plan.ok) {
+    assertEquals(plan.serverIds, [SERVER_A, SERVER_B])
   }
 })
 
@@ -394,4 +509,160 @@ test('planEnvironmentSchedule includes a shared offline pin and default once', (
     assertEquals(plan.slots[0]?.serverId, SERVER_A)
     assertEquals(plan.serverIds, [SERVER_A])
   }
+})
+
+/**
+ * `deploy.placement.max_replicas_per_node`.
+ *
+ * Without the cap, `pickServer` prefers the default server and packs every
+ * replica onto it — which is exactly what an author writes the cap to prevent.
+ * The three cases below are the whole contract: it spreads when it can, it
+ * refuses with its own code when the arithmetic cannot work, and an absent cap
+ * changes nothing.
+ */
+test('planEnvironmentSchedule spreads replicas to honour max_replicas_per_node', () => {
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: true,
+      services: [
+        planned(SERVICE_WEB, 'web', { replicas: 4, maxReplicasPerNode: 2 }),
+      ],
+      servers: [server(SERVER_A), server(SERVER_B)],
+    }),
+  )
+  assertEquals(plan.ok, true)
+  if (!plan.ok) return
+  const perServer = new Map<string, number>()
+  for (const slot of plan.slots) {
+    perServer.set(slot.serverId, (perServer.get(slot.serverId) ?? 0) + 1)
+  }
+  assertEquals(plan.slots.length, 4)
+  assertEquals([...perServer.values()].every((count) => count <= 2), true)
+  assertEquals(perServer.size, 2)
+})
+
+test('planEnvironmentSchedule refuses a cap the fleet cannot satisfy', () => {
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: true,
+      services: [
+        planned(SERVICE_WEB, 'web', { replicas: 5, maxReplicasPerNode: 2 }),
+      ],
+      servers: [server(SERVER_A), server(SERVER_B)],
+    }),
+  )
+  assertEquals(plan.ok, false)
+  if (plan.ok) return
+  // Its own code: every host is available and every port is free — it is the
+  // arithmetic that fails, and `no_eligible_server` would send the operator
+  // looking at labels and connectivity instead.
+  assertEquals(plan.error, 'max_replicas_per_node_exceeded')
+  assertEquals(plan.message.includes('max_replicas_per_node'), true)
+})
+
+test('planEnvironmentSchedule keeps packing when no cap is authored', () => {
+  const plan = planEnvironmentSchedule(
+    input({
+      services: [planned(SERVICE_WEB, 'web', { replicas: 3 })],
+      servers: [server(SERVER_A), server(SERVER_B)],
+    }),
+  )
+  assertEquals(plan.ok, true)
+  if (!plan.ok) return
+  assertEquals(plan.slots.every((slot) => slot.serverId === SERVER_A), true)
+})
+
+test('a cap overrides stickiness rather than being quietly violated', () => {
+  // Both slots were on SERVER_A last deploy; the document now caps one per
+  // node. A cap that sticky placements could ignore is not a cap.
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: true,
+      existingTasks: [
+        { serviceId: SERVICE_WEB, slot: 0, serverId: SERVER_A },
+        { serviceId: SERVICE_WEB, slot: 1, serverId: SERVER_A },
+      ],
+      services: [
+        planned(SERVICE_WEB, 'web', { replicas: 2, maxReplicasPerNode: 1 }),
+      ],
+      servers: [server(SERVER_A), server(SERVER_B)],
+    }),
+  )
+  assertEquals(plan.ok, true)
+  if (!plan.ok) return
+  assertEquals(
+    [...new Set(plan.slots.map((slot) => slot.serverId))].sort(),
+    [SERVER_A, SERVER_B].sort(),
+  )
+})
+
+test('a cap and a published host port are both enforced at once', () => {
+  // The port allows one replica per host and the cap allows two; the port is
+  // the tighter of the two, and three replicas on two hosts still cannot fit.
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: true,
+      services: [
+        planned(SERVICE_WEB, 'web', {
+          replicas: 3,
+          maxReplicasPerNode: 2,
+          publishedHostPorts: [8080],
+        }),
+      ],
+      servers: [server(SERVER_A), server(SERVER_B)],
+    }),
+  )
+  assertEquals(plan.ok, false)
+  if (plan.ok) return
+  assertEquals(plan.error, 'host_port_conflict')
+})
+
+/**
+ * `placement.preferences` versus the project default server.
+ *
+ * `defaultServerId` is a preference, not a restriction — it breaks a tie once
+ * the spread score has been computed. The regression this pins is the earlier
+ * shape, where `pickServer` returned the default server before it ever looked
+ * at `spreadKeys`, so authored spread preferences were inert in every project
+ * that had one (which is most of them).
+ */
+test('spread preferences beat the default server rather than being skipped', () => {
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: true,
+      // Deliberately kept set — clearing it is what the old code needed for
+      // spread to work at all.
+      defaultServerId: SERVER_A,
+      services: [
+        planned(SERVICE_WEB, 'web', { replicas: 2, spreadKeys: ['zone'] }),
+      ],
+      servers: [
+        server(SERVER_A, { labels: { zone: 'east' } }),
+        server(SERVER_B, { labels: { zone: 'west' } }),
+      ],
+    }),
+  )
+  assertEquals(plan.ok, true)
+  if (!plan.ok) return
+  assertEquals(plan.slots.length, 2)
+  assertEquals(
+    [...new Set(plan.slots.map((slot) => slot.serverId))].sort(),
+    [SERVER_A, SERVER_B].sort(),
+  )
+})
+
+test('the default server still wins a tie when nothing asks to spread', () => {
+  // The tie-break is the whole of what `defaultServerId` does now, and it has
+  // to keep doing it: an unconstrained service belongs on the project default.
+  const plan = planEnvironmentSchedule(
+    input({
+      fabricEnabled: true,
+      defaultServerId: SERVER_B,
+      services: [planned(SERVICE_WEB, 'web', { replicas: 3 })],
+      servers: [server(SERVER_A), server(SERVER_B)],
+    }),
+  )
+  assertEquals(plan.ok, true)
+  if (!plan.ok) return
+  assertEquals(plan.slots.every((slot) => slot.serverId === SERVER_B), true)
 })

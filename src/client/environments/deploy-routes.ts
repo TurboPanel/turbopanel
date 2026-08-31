@@ -1,17 +1,9 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import type { AppEnv } from "../../app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
-import {
-  ENVELOPE_MAGIC,
-  resealSecretForDaemon,
-} from "../authn/data-encryption.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import {
-  getServerDaemonStateByServerId,
-  isDaemonKeyActive,
-} from "../../daemon/authn/server-identity-db.ts";
 import {
   createReleaseIdAllocator,
   type DeployPrepareError,
@@ -22,10 +14,7 @@ import {
   type PreparedDeployCompose,
   prepareDeployCompose,
   type ReleaseIdAllocator,
-  readHostingProxyFromOptions,
-  resolveHostingBindAddress,
 } from "./deploy-prepare.ts";
-import { resolveHostingDeployWeb } from "../../lib/hosting-web-env.ts";
 import {
   definedFields,
   presentFields,
@@ -53,22 +42,13 @@ import {
   buildNativeAppServicesForDeploy,
   buildSitesForDeploy,
   composeProjectName,
-  deployMaterialsErrorResponse,
-  expandHostingsForComposeInstances,
   fabricGateErrorResponse,
-  hostingsNeedSharedHttpIngress,
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
   parseLifecycleAction,
   type QueuedCommandRef,
   queuedCommandsResponseBody,
-  readHostingPorts,
-  readHostingProtocol,
-  readHostnames,
-  readPathPrefix,
-  readTargetPort,
   scheduleErrorResponse,
-  tlsPinErrorCode,
 } from "./deploy-routes-helpers.ts";
 import { resolveTcpUdpIngressServices } from "./tcp-udp-ingress.ts";
 import {
@@ -131,31 +111,13 @@ import {
   type ManagedIngressConsumer,
   reservedIngressHostsForServer,
 } from "../managed/ingress-attachments.ts";
-import { loadManagedIngressPorts } from "../managed/org-defaults.ts";
 import type { ManagedIngressPorts } from "../../lib/managed/ingress-ports.ts";
-import {
-  ensureManagedIngressHierarchy,
-  ensureSystemHierarchy,
-  SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-} from "../system/hierarchy.ts";
+import { ensureManagedIngressHierarchy } from "../system/hierarchy.ts";
 import {
   composeServiceNetworkKeys,
   type PlatformAttachment,
 } from "../../lib/fabric/spanning.ts";
-import {
-  environment,
-  hosting,
-  project,
-  server,
-  service,
-  tls,
-} from "../../lib/db/schema.ts";
-import {
-  assembleTlsMetadata,
-  parseTlsOptions,
-  resolveTlsForHosting,
-  type TlsCandidate,
-} from "../../lib/tls/index.ts";
+import { environment, project, server } from "../../lib/db/schema.ts";
 import { type Db, getDaemonCellRegistry, getDb } from "../../db.ts";
 import {
   assertCanManageOr403,
@@ -416,355 +378,6 @@ function responseForFabricGate(
   return c.json(mapped.body, { status: mapped.status as 409 | 422 });
 }
 
-type BuildHostingResult =
-  | {
-    hostings: DeployHostingPayload[];
-    resolvedTlsIds: string[];
-  }
-  | { error: Response }
-  | { prepareError: DeployPrepareError };
-
-type OrgTlsCandidate = TlsCandidate & {
-  certificatePem: string | null;
-  privateKeyPem: string | null;
-};
-
-type ServiceRow = {
-  id: string;
-  composeServiceName: string;
-};
-
-type HostingRow = {
-  id: string;
-  options: unknown;
-  tlsId: string | null;
-  ipId: string | null;
-};
-
-async function resolveHttpHostingEntry(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  h: HostingRow,
-  svc: Readonly<{ id: string; composeServiceName: string }>,
-  candidates: OrgTlsCandidate[],
-  serverId: string,
-): Promise<
-  | { entry: DeployHostingPayload }
-  | { skip: true }
-  | { error: Response }
-  | { prepareError: DeployPrepareError }
-> {
-  const hostnames = readHostnames(h.options);
-  if (hostnames.length === 0) return { skip: true };
-
-  const resolved = resolveTlsForHosting({
-    pinId: h.tlsId,
-    hostnames,
-    candidates,
-  });
-  if (!resolved.ok) {
-    return {
-      error: Response.json(
-        { error: tlsPinErrorCode(resolved.error), hostingId: h.id },
-        { status: 400 },
-      ),
-    };
-  }
-
-  const bindResolved = await resolveHostingBindAddress(db, {
-    serverId,
-    options: h.options,
-    ipId: h.ipId,
-  });
-  if (
-    typeof bindResolved === "object" && bindResolved !== null &&
-    "kind" in bindResolved
-  ) {
-    return { prepareError: bindResolved };
-  }
-
-  const web = await resolveHostingDeployWeb(
-    db,
-    dataEncryptionSecrets,
-    h.id,
-    h.options,
-  );
-
-  return {
-    entry: {
-      hostingId: h.id,
-      serviceId: svc.id,
-      composeServiceName: svc.composeServiceName,
-      hostnames,
-      pathPrefix: readPathPrefix(h.options),
-      targetPort: readTargetPort(h.options),
-      tlsId: resolved.tlsId,
-      proxy: readHostingProxyFromOptions(h.options),
-      ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
-      ...(web === undefined ? {} : { web }),
-    },
-  };
-}
-
-/**
- * `tcp` / `udp` hosting publishes raw port(s) straight through Traefik — no
- * hostname/TLS routing, used for non-HTTP docker services (e.g. Postgres).
- */
-async function resolveTcpUdpHostingEntry(
-  db: Db,
-  h: HostingRow,
-  svc: Readonly<{ id: string; composeServiceName: string }>,
-  protocol: "tcp" | "udp",
-  serverId: string,
-): Promise<
-  | { entry: DeployHostingPayload }
-  | { skip: true }
-  | { prepareError: DeployPrepareError }
-> {
-  const ports = readHostingPorts(h.options);
-  if (ports.length === 0) return { skip: true };
-
-  const bindResolved = await resolveHostingBindAddress(db, {
-    serverId,
-    options: h.options,
-    ipId: h.ipId,
-  });
-  if (
-    typeof bindResolved === "object" && bindResolved !== null &&
-    "kind" in bindResolved
-  ) {
-    return { prepareError: bindResolved };
-  }
-
-  return {
-    entry: {
-      hostingId: h.id,
-      serviceId: svc.id,
-      composeServiceName: svc.composeServiceName,
-      hostnames: [],
-      protocol,
-      ports,
-      ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
-    },
-  };
-}
-
-function resolveHostingEntry(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  h: HostingRow,
-  svc: Readonly<{ id: string; composeServiceName: string }>,
-  candidates: OrgTlsCandidate[],
-  serverId: string,
-): Promise<
-  | { entry: DeployHostingPayload }
-  | { skip: true }
-  | { error: Response }
-  | { prepareError: DeployPrepareError }
-> {
-  const protocol = readHostingProtocol(h.options);
-  if (protocol === "http") {
-    return resolveHttpHostingEntry(
-      db,
-      dataEncryptionSecrets,
-      h,
-      svc,
-      candidates,
-      serverId,
-    );
-  }
-  return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId);
-}
-
-async function loadOrgTlsCandidates(
-  db: Db,
-  organizationId: string,
-): Promise<OrgTlsCandidate[]> {
-  const rows = await db
-    .select({
-      id: tls.id,
-      status: tls.status,
-      notAfter: tls.notAfter,
-      fingerprintSha256: tls.fingerprintSha256,
-      metadata: tls.metadata,
-      options: tls.options,
-      certificatePem: tls.certificatePem,
-      privateKeyPem: tls.privateKeyPem,
-    })
-    .from(tls)
-    .where(eq(tls.organizationId, organizationId));
-
-  const out: OrgTlsCandidate[] = [];
-  for (const row of rows) {
-    const metadata = assembleTlsMetadata(
-      {
-        status: row.status,
-        notAfter: row.notAfter,
-        fingerprintSha256: row.fingerprintSha256,
-      },
-      row.metadata,
-    );
-    if (!metadata) continue;
-    out.push({
-      id: row.id,
-      metadata,
-      options: parseTlsOptions(row.options),
-      certificatePem: row.certificatePem,
-      privateKeyPem: row.privateKeyPem,
-    });
-  }
-  return out;
-}
-
-async function buildHostingsForService(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  svc: ServiceRow,
-  candidates: OrgTlsCandidate[],
-  serverId: string,
-): Promise<
-  | { hostings: DeployHostingPayload[]; tlsIds: string[] }
-  | { error: Response }
-  | { prepareError: DeployPrepareError }
-> {
-  const composeServiceName = svc.composeServiceName;
-  const hostingRows = await db
-    .select({
-      id: hosting.id,
-      options: hosting.options,
-      tlsId: hosting.tlsId,
-      ipId: hosting.ipId,
-    })
-    .from(hosting)
-    .where(eq(hosting.serviceId, svc.id));
-
-  const hostings: DeployHostingPayload[] = [];
-  const tlsIds: string[] = [];
-  for (const h of hostingRows) {
-    const result = await resolveHostingEntry(
-      db,
-      dataEncryptionSecrets,
-      h,
-      { id: svc.id, composeServiceName },
-      candidates,
-      serverId,
-    );
-    if ("skip" in result) continue;
-    if ("error" in result) return result;
-    if ("prepareError" in result) return result;
-    hostings.push(result.entry);
-    if (result.entry.tlsId) tlsIds.push(result.entry.tlsId);
-  }
-  return { hostings, tlsIds };
-}
-
-async function buildHostingPayload(
-  db: Db,
-  environmentId: string,
-  organizationId: string,
-  serverId: string,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-): Promise<BuildHostingResult> {
-  const serviceRows = await db
-    .select({
-      id: service.id,
-      composeServiceName: service.composeServiceName,
-    })
-    .from(service)
-    .where(eq(service.environmentId, environmentId));
-
-  const candidates = await loadOrgTlsCandidates(db, organizationId);
-  const hostingPayload: DeployHostingPayload[] = [];
-  const resolvedTlsIds = new Set<string>();
-
-  for (const svc of serviceRows) {
-    const built = await buildHostingsForService(
-      db,
-      dataEncryptionSecrets,
-      svc,
-      candidates,
-      serverId,
-    );
-    if ("error" in built) return built;
-    if ("prepareError" in built) return built;
-    hostingPayload.push(...built.hostings);
-    for (const tlsId of built.tlsIds) resolvedTlsIds.add(tlsId);
-  }
-
-  return { hostings: hostingPayload, resolvedTlsIds: [...resolvedTlsIds] };
-}
-
-async function sealTlsMaterialForDaemon(
-  c: Context<AppEnv>,
-  db: Db,
-  serverId: string,
-  organizationId: string,
-  tlsIds: string[],
-): Promise<EnvironmentDeployTlsMaterial[] | Response> {
-  if (tlsIds.length === 0) return [];
-
-  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
-  const secretsConfig = c.get("secretsConfig");
-  if (!dataEncryptionSecrets || !secretsConfig) {
-    return c.json({
-      error: "Encryption unavailable — no encryption key configured",
-    }, 503);
-  }
-
-  const daemonState = await getServerDaemonStateByServerId(db, serverId);
-  if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
-    return c.json({
-      error: "No encryption-capable daemon key on target server",
-    }, 422);
-  }
-  const keyId = daemonState.key.id;
-
-  const rows = await db
-    .select({
-      id: tls.id,
-      certificatePem: tls.certificatePem,
-      privateKeyPem: tls.privateKeyPem,
-      organizationId: tls.organizationId,
-    })
-    .from(tls)
-    .where(and(eq(tls.organizationId, organizationId)));
-
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const material: EnvironmentDeployTlsMaterial[] = [];
-
-  for (const tlsId of tlsIds) {
-    const row = byId.get(tlsId);
-    if (!row?.certificatePem || !row.privateKeyPem) {
-      return c.json({ error: "tls_material_missing", tlsId }, 400);
-    }
-    // Refuse plaintext / non-tpsecret rows — keys must be sealed at rest.
-    if (
-      !row.privateKeyPem.startsWith(`${ENVELOPE_MAGIC}.`) ||
-      row.privateKeyPem.includes("BEGIN")
-    ) {
-      return c.json({ error: "tls_key_not_sealed", tlsId }, 500);
-    }
-    let privateKeyEnvelope: string;
-    try {
-      privateKeyEnvelope = await resealSecretForDaemon(
-        secretsConfig,
-        dataEncryptionSecrets,
-        { serverId, keyId },
-        row.privateKeyPem,
-      );
-    } catch {
-      return c.json({ error: "tls_decrypt_failed", tlsId }, 500);
-    }
-    material.push({
-      tlsId,
-      certificatePem: row.certificatePem,
-      privateKeyEnvelope,
-    });
-  }
-
-  return material;
-}
-
 /**
  * Shared manage-gate for deploy-preview / stop / lifecycle (no deploy body flags).
  * Exported for host-free unit coverage of thin authz branches.
@@ -914,15 +527,17 @@ type DeployCommandCreateParams = DeployActor & {
 
 type CreatedDeployCommand = QueuedCommandRef & { queuedAt: string };
 
+/**
+ * One compiled server deployment, tagged with the host it is for.
+ *
+ * Nothing but the pair: `prepared` is the compiler's `ServerDeployment` (plus
+ * control-plane bookkeeping) and already carries every daemon-facing field,
+ * hostings and TLS material included. This layer enqueues it; it does not
+ * finish building it.
+ */
 type PreparedServerDeploy = {
   serverId: string;
   prepared: PreparedDeployCompose;
-  hostings: DeployHostingPayload[];
-  tlsMaterial: EnvironmentDeployTlsMaterial[];
-  listenerPorts: ManagedIngressPorts;
-  hostingIngress?: EnvironmentDeployIngressService;
-  /** Set whenever this server's slice carries hostings (see prepare). */
-  hostingIngressNetwork?: string;
 };
 
 /**
@@ -1118,25 +733,27 @@ function createParamsForPreparedServer(
     organizationId: params.organizationId,
     projectName: params.projectName,
     composeFiles: row.prepared.composeFiles,
-    hostings: row.hostings,
+    hostings: row.prepared.hostings,
     sites: buildSitesForDeploy(
       row.prepared.sites,
-      row.hostings,
+      row.prepared.hostings,
       usedListenPorts,
     ),
     nativeAppServices: buildNativeAppServicesForDeploy(
       row.prepared.nativeAppServices,
-      row.hostings,
+      row.prepared.hostings,
       row.prepared.ingressServices,
       usedListenPorts,
     ),
     sourceMaterial: row.prepared.sourceMaterial,
     ingressServices: row.prepared.ingressServices,
-    ...(row.hostingIngress ? { hostingIngress: row.hostingIngress } : {}),
-    ...(row.hostingIngressNetwork
-      ? { hostingIngressNetwork: row.hostingIngressNetwork }
+    ...(row.prepared.hostingIngress
+      ? { hostingIngress: row.prepared.hostingIngress }
       : {}),
-    tlsMaterial: row.tlsMaterial,
+    ...(row.prepared.hostingIngressNetwork
+      ? { hostingIngressNetwork: row.prepared.hostingIngressNetwork }
+      : {}),
+    tlsMaterial: row.prepared.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: row.prepared.storageMaterial,
     principalMaterial: row.prepared.principalMaterial,
@@ -1151,7 +768,7 @@ function createParamsForPreparedServer(
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
-    listenerPorts: row.listenerPorts,
+    listenerPorts: row.prepared.listenerPorts,
   };
 }
 
@@ -1364,6 +981,7 @@ async function preparePreviewByServer(
       serverId,
       organizationId: args.organizationId,
       mode: "preview",
+      composeValidated: planned.composeValidated,
       releaseIds,
       schedule: scheduleSliceForServer(
         planned,
@@ -1594,6 +1212,12 @@ async function resolveSuccessfulPlan(
     if (planned.kind === "not_found") {
       return c.json({ error: "Not found" }, 404);
     }
+    // The merged document was refused before planning wrote anything. Answer
+    // with the prepare-error body, so the diagnosis does not depend on which
+    // stage of the deploy noticed first.
+    if (planned.kind === "compose_rejected") {
+      return responseForPrepareError(c, planned.error);
+    }
     return c.json({ error: "Invalid compose document" }, 400);
   }
   const { plan } = planned;
@@ -1720,44 +1344,14 @@ function scheduleSliceForPreparedServer(
   );
 }
 
-type ResolvedHostingIngress = {
-  /** HTTP proxy identity — set only when an HTTP hosting actually routes. */
-  hostingIngress?: EnvironmentDeployIngressService;
-  /**
-   * Shared ingress Docker network / compose project name: the same
-   * `hosting-ingress` component `serviceId`. Set whenever this deploy carries
-   * hostings at all — a tcp/udp-only deploy has no HTTP proxy identity but its
-   * per-service Traefik still joins this network.
-   */
-  hostingIngressNetwork?: string;
-};
-
-async function resolveSharedHttpHostingIngress(
-  db: Db,
-  organizationId: string,
-  serverId: string,
-  hostings: readonly DeployHostingPayload[],
-): Promise<ResolvedHostingIngress> {
-  if (hostings.length === 0) return {};
-  const hierarchy = await ensureSystemHierarchy(db, {
-    organizationId,
-    serverId,
-  });
-  // The network name is the component's own serviceId — never a literal.
-  const resolved: ResolvedHostingIngress = {
-    hostingIngressNetwork: hierarchy.serviceId,
-  };
-  if (!hostingsNeedSharedHttpIngress(hostings)) return resolved;
-  return {
-    ...resolved,
-    hostingIngress: {
-      serviceId: hierarchy.serviceId,
-      composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-      containerName: hierarchy.containerName,
-    },
-  };
-}
-
+/**
+ * Compile one server's deployment.
+ *
+ * Everything a daemon is sent comes back on `prepared` — compose, material,
+ * host-native lanes, hostings, TLS, ingress, listener ports. This layer decides
+ * *which* server and *which* schedule slice, then enqueues; it assembles no part
+ * of the payload itself. See `ServerDeployment` in `lib/compose/ir.ts`.
+ */
 async function prepareOneServerDeploy(
   c: Context<AppEnv>,
   db: Db,
@@ -1765,7 +1359,6 @@ async function prepareOneServerDeploy(
     planned: SuccessfulPlannedDeploy;
     environmentId: string;
     auth: DeployRequestAuth;
-    dataEncryptionSecrets: DerivedSecretsConfig;
     spanning: Map<string, string>;
     attachments: PlatformAttachment[];
     consumers: ManagedIngressConsumer[];
@@ -1789,6 +1382,7 @@ async function prepareOneServerDeploy(
     serverId: params.serverId,
     organizationId: params.auth.organizationId,
     acknowledgeHealthCheckWarnings: params.auth.acknowledgeHealthCheckWarnings,
+    composeValidated: params.planned.composeValidated,
     schedule: scheduleSliceForPreparedServer(params),
     sourceSelection: params.selection,
     releaseIds: params.releaseIds,
@@ -1799,64 +1393,7 @@ async function prepareOneServerDeploy(
   if (prepared instanceof Response) return prepared;
   if ("kind" in prepared) return responseForPrepareError(c, prepared);
 
-  const hostingBuilt = await buildHostingPayload(
-    db,
-    params.environmentId,
-    params.auth.organizationId,
-    params.serverId,
-    params.dataEncryptionSecrets,
-  );
-  if ("prepareError" in hostingBuilt) {
-    return responseForPrepareError(c, hostingBuilt.prepareError);
-  }
-  if ("error" in hostingBuilt) return hostingBuilt.error;
-
-  const hostings = expandHostingsForComposeInstances(
-    hostingBuilt.hostings,
-    prepared.composeServiceExpansion,
-  );
-  const tlsMaterial = await sealTlsMaterialForDaemon(
-    c,
-    db,
-    params.serverId,
-    params.auth.organizationId,
-    hostingBuilt.resolvedTlsIds,
-  );
-  if (tlsMaterial instanceof Response) return tlsMaterial;
-
-  const materialsError = deployMaterialsErrorResponse(
-    hostings,
-    prepared.storageMaterial,
-  );
-  if (materialsError) return materialsError;
-
-  const [serverRow] = await db
-    .select({ organizationId: server.organizationId })
-    .from(server)
-    .where(eq(server.id, params.serverId))
-    .limit(1);
-  const listenerPorts = await loadManagedIngressPorts(
-    db,
-    serverRow?.organizationId ?? params.auth.organizationId,
-  );
-
-  const { hostingIngress, hostingIngressNetwork } =
-    await resolveSharedHttpHostingIngress(
-      db,
-      params.auth.organizationId,
-      params.serverId,
-      hostings,
-    );
-
-  return {
-    serverId: params.serverId,
-    prepared,
-    hostings,
-    tlsMaterial,
-    listenerPorts,
-    ...(hostingIngress ? { hostingIngress } : {}),
-    ...(hostingIngressNetwork ? { hostingIngressNetwork } : {}),
-  };
+  return { serverId: params.serverId, prepared };
 }
 
 async function prepareAllServerDeploys(

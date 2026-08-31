@@ -4,6 +4,7 @@ import { accessPaths, accessSchemas } from './access.ts'
 import { authPaths, buildAuthSchemas } from './auth.ts'
 import { environmentPaths, environmentSchemas } from './environments.ts'
 import { containerPaths, containerSchemas } from './containers.ts'
+import { dockerRunPaths, dockerRunSchemas } from './docker-run.ts'
 import { hostingPaths, hostingSchemas } from './hostings.ts'
 import { tlsPaths, tlsSchemas } from './tls.ts'
 import { installOpenApiPaths, installOpenApiSchemas } from './install.ts'
@@ -85,6 +86,11 @@ export function getClientOpenApiSpec(
       { name: 'Services', description: 'Service CRUD' },
       { name: 'Hostings', description: 'Hosting CRUD' },
       { name: 'Containers', description: 'Container CRUD' },
+      {
+        name: 'Docker run import',
+        description:
+          'Translate a `docker run` command into a compose fragment (compute only — nothing is persisted)',
+      },
       { name: 'TLS', description: 'Organization TLS certificate library' },
       { name: 'Servers', description: 'Server fleet and update management' },
       { name: 'Commands', description: 'Command lifecycle status polling' },
@@ -99,7 +105,7 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Tags', 'Tasks', 'Bindings', 'Storage', 'Repositories', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS'] },
+      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Tags', 'Tasks', 'Bindings', 'Storage', 'Repositories', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS', 'Docker run import'] },
       { name: 'Infrastructure', tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'] },
       { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
@@ -138,6 +144,7 @@ export function getClientOpenApiSpec(
         ...serviceSchemas,
         ...hostingSchemas,
         ...containerSchemas,
+        ...dockerRunSchemas,
         ...tlsSchemas,
         ...(includeInstall ? installOpenApiSchemas : {}),
       },
@@ -168,6 +175,7 @@ export function getClientOpenApiSpec(
       ...servicePaths,
       ...hostingPaths,
       ...containerPaths,
+      ...dockerRunPaths,
       ...tlsPaths,
       ...(includeInstall ? installOpenApiPaths : {}),
     },

@@ -450,7 +450,7 @@ export const deployPaths = {
         },
         422: {
           description:
-            'Scheduler rejected the plan (`turbofabric_required`, `relay_endpoint_unavailable`, `fabric_segment_pool_exhausted`, `relay_missing`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`, `fabric_reconcile_failed`)',
+            'Scheduler rejected the plan (`turbofabric_required`, `relay_endpoint_unavailable`, `fabric_segment_pool_exhausted`, `relay_missing`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`, `max_replicas_per_node_exceeded`, `fabric_reconcile_failed`)',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -557,7 +557,7 @@ export const deployPaths = {
         },
         422: {
           description:
-            'Scheduler rejected the plan (`turbofabric_required`, `relay_endpoint_unavailable`, `fabric_segment_pool_exhausted`, `relay_missing`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`)',
+            'Scheduler rejected the plan (`turbofabric_required`, `relay_endpoint_unavailable`, `fabric_segment_pool_exhausted`, `relay_missing`, `host_port_conflict`, `constraint_unsatisfiable`, `colocation_conflict`, `max_replicas_per_node_exceeded`)',
         },
       },
     },

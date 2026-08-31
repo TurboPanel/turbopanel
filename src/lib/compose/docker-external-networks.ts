@@ -26,6 +26,15 @@ function readValidNetworkName(raw: unknown): string | null {
 /**
  * Resolve the host Docker network name for one top-level `networks:` entry.
  * Returns null when the entry is not external (project-internal networks).
+ *
+ * **Only an authored `external:` counts, and that is what keeps `tpn_*` out of
+ * the registration gate.** A TurboFabric spanning network is authored as
+ * `driver: overlay` and never sets `external:`; the compiler is what rewrites
+ * it to `external: true` + `name: tpn_<networkId>`
+ * (`rewriteSpanningNetworks` in `./compile-runtime.ts`), and the gate reads the
+ * *authored* document, not the compiled one. Requiring an operator-registered
+ * `network(kind='docker')` row for a name the compiler allocated would make
+ * every spanning deploy fail with `docker_external_network_unregistered`.
  */
 export function readComposeExternalDockerNetworkName(
   key: string,

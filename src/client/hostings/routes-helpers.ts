@@ -1,7 +1,8 @@
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db.ts'
-import { ip } from '../../lib/db/schema.ts'
+import { hosting, ip } from '../../lib/db/schema.ts'
+import { readHostingComposeOwner } from '../../lib/hosting-compose-owner.ts'
 import { parseHostingOptions, resolveHostingBind } from '../../lib/hosting-options.ts'
 import { buildPatchUpdateFields, parseJsonbObject } from '../shared.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
@@ -76,6 +77,44 @@ export async function assertHostingPublicBindScope(
     return c.json({ error: 'hosting_bind_scope_mismatch' }, 400)
   }
   return null
+}
+
+/**
+ * Refuse a mutation of a hosting that a compose document owns.
+ *
+ * Not a permission problem — the caller may well have `organization:manage` —
+ * so **409, not 403**: the row is materialized from
+ * `services.<name>.x-turbopanel.hosting`, and the next deploy would re-assert
+ * whatever compose says over anything written here. Accepting the write and
+ * losing it later is the worse answer; saying which compose service to edit is
+ * the useful one.
+ *
+ * Rows with no marker — everything created in the panel, and everything that
+ * predates compose-authored ingress — return `null` and keep working exactly as
+ * before. That is what makes this backward compatible rather than a migration.
+ */
+export async function assertHostingNotComposeOwnedOr409(
+  c: Context,
+  db: Db,
+  id: string,
+): Promise<Response | null> {
+  const [row] = await db
+    .select({ serviceId: hosting.serviceId, metadata: hosting.metadata })
+    .from(hosting)
+    .where(eq(hosting.id, id))
+    .limit(1)
+  if (!row) return null
+
+  const owner = readHostingComposeOwner(row.metadata)
+  if (!owner) return null
+
+  return c.json({
+    error: 'hosting_owned_by_compose',
+    serviceId: row.serviceId,
+    composeServiceName: owner.composeServiceName,
+    message:
+      `This hosting is declared by compose service "${owner.composeServiceName}" (x-turbopanel.hosting). Edit the compose document instead — a change made here would be overwritten on the next deploy.`,
+  }, 409)
 }
 
 export type OptionalHostingOptionsResult =

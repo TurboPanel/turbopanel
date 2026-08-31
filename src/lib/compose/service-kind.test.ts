@@ -4,6 +4,7 @@ import {
   collectServiceTurbopanelValidationIssues,
   isHostNativeServiceKind,
   isNodeComposeService,
+  isPrincipalAlias,
   isSafeRoot,
   isSiteComposeService,
   parseServiceSourceExtension,
@@ -12,7 +13,7 @@ import {
   readServiceTurbopanelExtension,
 } from './service-kind.ts'
 import { validateComposeDocument } from './validate.ts'
-import { lintComposeYaml } from './lint.ts'
+import { blockingComposeLintIssues, lintComposeYaml } from './lint.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -64,7 +65,9 @@ test('collectServiceTurbopanelValidationIssues allows a site with no engine', ()
   // split. A minimum static site is therefore four lines of compose.
   const issues = collectServiceTurbopanelValidationIssues({
     site: {
-      'x-turbopanel': { serviceKind: 'site' },
+      // `principal` is the one thing a site cannot omit — it is the account the
+      // document root and every scheduled job belong to.
+      'x-turbopanel': { serviceKind: 'site', principal: 'app' },
     },
   })
   assertEquals(issues, [])
@@ -73,7 +76,7 @@ test('collectServiceTurbopanelValidationIssues allows a site with no engine', ()
 test('collectServiceTurbopanelValidationIssues accepts caddy as an engine', () => {
   const issues = collectServiceTurbopanelValidationIssues({
     site: {
-      'x-turbopanel': { serviceKind: 'site', engine: 'caddy' },
+      'x-turbopanel': { serviceKind: 'site', engine: 'caddy', principal: 'app' },
     },
   })
   assertEquals(issues, [])
@@ -98,6 +101,7 @@ test('validateComposeDocument accepts site without image or build', () => {
           'x-turbopanel': {
             serviceKind: 'site',
             engine: 'openlitespeed',
+            principal: 'app',
           },
         },
       },
@@ -218,6 +222,7 @@ test('collectServiceTurbopanelValidationIssues accepts safe site roots', () => {
         serviceKind: 'site',
         engine: 'nginx',
         root: 'public/www',
+        principal: 'app',
       },
     },
   })
@@ -590,6 +595,7 @@ test("railpack is rejected on a host-native service kind", () => {
     site: {
       "x-turbopanel": {
         serviceKind: "node",
+        principal: "app",
         source: { sourceId: RAILPACK_SOURCE_ID, buildKind: "railpack" },
       },
     },
@@ -675,6 +681,7 @@ test('an uploaded-directory site with no repository validates clean', () => {
           engine: 'caddy',
           root: 'public',
           sourceKind: 'managed-directory',
+          principal: 'app',
         },
       },
     }),
@@ -708,6 +715,7 @@ test('a cron job on a site validates clean', () => {
         'x-turbopanel': {
           serviceKind: 'site',
           root: 'public',
+          principal: 'app',
           cron: [
             { name: 'wp-cron', schedule: '*/5 * * * *', command: 'php wp-cron.php' },
           ],
@@ -982,6 +990,7 @@ test('php is parsed and accepted on a site service', () => {
         'x-turbopanel': {
           serviceKind: 'site',
           engine: 'nginx',
+          principal: 'app',
           php: {
             version: '8.4',
             extensions: ['redis', 'gd'],
@@ -1155,4 +1164,102 @@ test('empty php and cron arrays do not attach to the parsed extension', () => {
     }),
     { serviceKind: 'site' },
   )
+})
+
+test('principal is refused on a container service', () => {
+  // A container has no account to run as; the message names the field rather
+  // than letting the blanket table check say only "unknown key".
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'nginx',
+      'x-turbopanel': { serviceKind: 'container', principal: 'app' },
+    },
+  })
+  assertEquals(
+    issues.map((issue) => issue.path),
+    ['services.api.x-turbopanel.principal'],
+  )
+  assertEquals(
+    issues[0]?.message,
+    'principal is only valid when serviceKind is site or node',
+  )
+})
+
+test('a legacy site or node service without a principal alias still validates', () => {
+  // The alias is the newer of the two ways a host-native service names its
+  // account. Every document authored before `x-turbopanel.principals` existed
+  // names none, and is owned by whatever principal an operator assigned in the
+  // panel — so requiring the field here would reject those outright and put
+  // the sole-steward fallback in `client/environments/deploy-sources.ts` out of
+  // reach. Ownership is refused there, where the stewards are actually known.
+  assertEquals(
+    collectServiceTurbopanelValidationIssues({
+      blog: { 'x-turbopanel': { serviceKind: 'site' } },
+    }),
+    [],
+  )
+
+  assertEquals(
+    collectServiceTurbopanelValidationIssues({
+      api: {
+        'x-turbopanel': {
+          serviceKind: 'node',
+          source: { sourceId: RAILPACK_SOURCE_ID },
+        },
+      },
+    }),
+    [],
+  )
+})
+
+test('a whole legacy document with no principals block lints clean', () => {
+  // The document-level pass is the one an operator actually meets on save, and
+  // it resolves aliases against the root `principals` map. A document that
+  // declares neither has nothing to resolve, which is not an error.
+  const issues = lintComposeYaml(`services:
+  blog:
+    x-turbopanel:
+      serviceKind: site
+      engine: caddy
+      root: public
+  api:
+    x-turbopanel:
+      serviceKind: node
+      source:
+        sourceId: ${RAILPACK_SOURCE_ID}
+`)
+  assertEquals(blockingComposeLintIssues(issues).map((issue) => issue.path), [])
+})
+
+test('a malformed principal alias reports its own shape message', () => {
+  // Dropped by the parser *and* reported: without the raw-type pass the only
+  // message would be "site services require principal", which sends the
+  // operator looking for a missing line rather than a bad one.
+  const issues = collectServiceTurbopanelValidationIssues({
+    blog: { 'x-turbopanel': { serviceKind: 'site', principal: '9lives!' } },
+  })
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.principal' &&
+      issue.message.includes('x-turbopanel.principals')
+    ),
+    true,
+  )
+})
+
+test('a declared principal alias parses and round-trips trimmed', () => {
+  const parsed = parseServiceTurbopanelExtension({
+    serviceKind: 'site',
+    principal: '  app_1  ',
+  })
+  assertEquals(parsed?.principal, 'app_1')
+})
+
+test('isPrincipalAlias is the one alias-shape rule both blocks share', () => {
+  assertEquals(isPrincipalAlias('app'), true)
+  assertEquals(isPrincipalAlias('App-1_2'), true)
+  assertEquals(isPrincipalAlias('1app'), false)
+  assertEquals(isPrincipalAlias('has space'), false)
+  assertEquals(isPrincipalAlias(7), false)
+  assertEquals(isPrincipalAlias(`a${'b'.repeat(64)}`), false)
 })

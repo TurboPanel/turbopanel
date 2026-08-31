@@ -23,6 +23,7 @@ import {
 } from '../hierarchy-delete.ts'
 import {
   assertCreateHostingBindScope,
+  assertHostingNotComposeOwnedOr409,
   assertMergedHostingBindScope,
   buildHostingPatchFields,
   parseCreateServiceId,
@@ -231,6 +232,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
     if (immutable) return immutable
 
+    const composeOwned = await assertHostingNotComposeOwnedOr409(c, db, id)
+    if (composeOwned) return composeOwned
+
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
@@ -282,6 +286,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
     if (immutable) return immutable
+
+    const composeOwned = await assertHostingNotComposeOwnedOr409(c, db, id)
+    if (composeOwned) return composeOwned
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(hosting).where(eq(hosting.id, id))

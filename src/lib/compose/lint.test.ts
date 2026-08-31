@@ -318,12 +318,15 @@ test('lintComposeYaml lints build.args variable refs', () => {
 })
 
 test('lintComposeYaml lints list-form environment values after separator', () => {
+  // Both entries are `KEY=VALUE` strings, which is the only shape the Compose
+  // Specification allows in the list form of `environment:` — a mapping entry
+  // here is a stage-1 schema error and would drown out the rule under test.
   const issues = lintComposeYaml(`services:
   web:
     image: nginx
     environment:
       - BAD=prefix-{$PORT}
-      - GOOD: "{$project.PORT}"
+      - GOOD={$project.PORT}
 `)
   assertEquals(
     issues.some((issue) => issue.path === 'services.web.environment[0]'),
@@ -955,5 +958,173 @@ test('lintComposeYaml stays quiet for an offered node series and its minor pins'
       false,
       version,
     )
+  }
+})
+
+test('lintComposeYaml skips the principal rule when no alias set is supplied', () => {
+  // Same contract as `knownSourceIds`: a caller with no scope must not be made
+  // to false-flag a document whose sibling layer it cannot see.
+  const issues = lintComposeYaml(`services:
+  blog:
+    x-turbopanel:
+      serviceKind: site
+      principal: app
+`)
+  assertEquals(
+    issues.some((issue) => issue.message.includes('x-turbopanel.principals')),
+    false,
+  )
+})
+
+test('lintComposeYaml blocks a principal alias the document does not declare', () => {
+  const issues = lintComposeYaml(
+    `services:
+  blog:
+    x-turbopanel:
+      serviceKind: site
+      principal: ghost
+`,
+    { knownPrincipalAliases: new Set(['app']) },
+  )
+  const issue = issues.find((entry) =>
+    entry.path === 'services.blog.x-turbopanel.principal'
+  )
+  assertEquals(issue?.level, 'error')
+  assertEquals(issue?.line, 5)
+  assertEquals(issue?.message.includes("principal 'ghost'"), true)
+})
+
+test('lintComposeYaml accepts a principal alias the set contains', () => {
+  const issues = lintComposeYaml(
+    `services:
+  blog:
+    x-turbopanel:
+      serviceKind: site
+      principal: app
+`,
+    { knownPrincipalAliases: new Set(['app']) },
+  )
+  assertEquals(
+    issues.some((issue) =>
+      issue.path === 'services.blog.x-turbopanel.principal'
+    ),
+    false,
+  )
+})
+
+test('lintComposeYaml refuses targetPort on a node service hosting entry', () => {
+  const source = `services:
+  app:
+    image: node:24
+    x-turbopanel:
+      serviceKind: node
+      hosting:
+        - hostname: app.example.com
+          targetPort: 3000
+`
+  const issue = lintComposeYaml(source).find((row) =>
+    row.path === 'services.app.x-turbopanel.hosting[0].targetPort'
+  )
+  assertEquals(issue?.level, 'error')
+  assertEquals(
+    issue?.message,
+    'targetPort is not valid on a node service; the daemon allocates the app listen port',
+  )
+  assertEquals(issue?.line, 8)
+})
+
+test('lintComposeYaml refuses tls.mode automatic with the line that names it', () => {
+  const source = `services:
+  web:
+    image: nginx:alpine
+    x-turbopanel:
+      hosting:
+        - hostname: app.example.com
+          tls:
+            mode: automatic
+`
+  const issue = lintComposeYaml(source).find((row) =>
+    row.path === 'services.web.x-turbopanel.hosting[0].tls.mode'
+  )
+  assertEquals(issue?.level, 'error')
+  assertEquals(issue?.line, 8)
+})
+
+test('lintComposeYaml accepts tls.mode internal on a container hosting entry', () => {
+  const source = `services:
+  web:
+    image: nginx:alpine
+    x-turbopanel:
+      hosting:
+        - hostname: app.example.com
+          targetPort: 8080
+          tls:
+            mode: internal
+`
+  assertEquals(
+    lintComposeYaml(source).filter((row) => row.path.includes('.hosting')),
+    [],
+  )
+})
+
+/**
+ * `deploy.mode` job values, at both postures.
+ *
+ * The two Swarm job modes are schema-valid Compose (the vendored spec types
+ * `mode` as a bare string), and `parseDeployMode` in `lib/schedule/interpret.ts`
+ * would fold either into `replicated` — deploying a long-running service where
+ * the document asked for finite work. Save-time keeps the draft editable;
+ * deploy-time refuses it.
+ */
+for (const mode of ['replicated-job', 'global-job']) {
+  test(`lintComposeYaml warns on deploy.mode: ${mode} while editing`, () => {
+    const source = `services:
+  worker:
+    image: nginx:alpine
+    deploy:
+      mode: ${mode}
+`
+    const issues = lintComposeYaml(source)
+    const found = issues.find((row) => row.path === 'services.worker.deploy.mode')
+    assertEquals(found?.level, 'warning')
+    assertEquals(found?.code, 'field_unsupported')
+    assertEquals(found?.blocking, false)
+    assertEquals(found?.line, 5)
+    assertEquals(found?.message.includes(mode), true)
+    // Advice, not a refusal: the draft still saves.
+    assertEquals(
+      blockingComposeLintIssues(issues).some(
+        (row) => row.path === 'services.worker.deploy.mode',
+      ),
+      false,
+    )
+  })
+
+  test(`lintComposeYaml refuses deploy.mode: ${mode} at deploy time`, () => {
+    const source = `services:
+  worker:
+    image: nginx:alpine
+    deploy:
+      mode: ${mode}
+`
+    const found = lintComposeYaml(source, { strict: true }).find(
+      (row) => row.path === 'services.worker.deploy.mode',
+    )
+    assertEquals(found?.level, 'error')
+    assertEquals(found?.code, 'field_unsupported')
+    assertEquals(found?.blocking, undefined)
+  })
+}
+
+test('lintComposeYaml leaves the two modes TurboPanel schedules alone', () => {
+  for (const mode of ['replicated', 'global']) {
+    const source = `services:
+  worker:
+    image: nginx:alpine
+    deploy:
+      mode: ${mode}
+`
+    assertEquals(lintComposeYaml(source), [])
+    assertEquals(lintComposeYaml(source, { strict: true }), [])
   }
 })

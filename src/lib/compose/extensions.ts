@@ -96,6 +96,13 @@ function stripServiceExtension(raw: unknown): {
  * Remove top-level `x-turbopanel` and every `services.<name>.x-turbopanel`,
  * keeping `presentation.keyOrder` consistent. Looks through `!override` /
  * `!reset` on `services` and per-service bodies and rewraps them.
+ *
+ * The top-level key goes **whole**, whatever it holds. `principals` is
+ * control-plane authoring metadata exactly like the rest of `x-turbopanel`: the
+ * accounts it names are materialized from the deploy payload, so a principal
+ * alias has no meaning to Docker and never reaches compiled runtime compose. No
+ * per-key allowlist here on purpose — a strip that had to know the authored
+ * keys would leak a new one into runtime compose the day it was added.
  */
 export function stripComposeTurbopanelExtensions(
   document: ComposeDocument,

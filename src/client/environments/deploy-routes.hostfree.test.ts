@@ -152,6 +152,9 @@ function stubPrepared(managedNetworkServices: string[] = []): PreparedDeployComp
     managedNetworkServices,
     containers: [],
     ingressServices: [],
+    hostings: [],
+    tlsMaterial: [],
+    listenerPorts: DEFAULT_MANAGED_INGRESS_PORTS,
     composeServiceExpansion: {},
     volumes: [],
     warnings: [],
@@ -244,16 +247,10 @@ test('ingressServerIdsForDeploy unions attachments, leftovers, and managed hosts
       {
         serverId: 'srv-a',
         prepared: stubPrepared(['web']),
-        hostings: [],
-        tlsMaterial: [],
-        listenerPorts: DEFAULT_MANAGED_INGRESS_PORTS,
       },
       {
         serverId: 'srv-b',
         prepared: stubPrepared([]),
-        hostings: [],
-        tlsMaterial: [],
-        listenerPorts: DEFAULT_MANAGED_INGRESS_PORTS,
       },
     ],
     attachments: [{ serverId: 'srv-attach', networkKeys: ['default'] }],
@@ -275,9 +272,6 @@ test('ingressServerIdsForDeploy adds a plan host that only needs reserved ingres
     preparedByServer: [{
       serverId: 'srv-plan',
       prepared: stubPrepared([]),
-      hostings: [],
-      tlsMaterial: [],
-      listenerPorts: DEFAULT_MANAGED_INGRESS_PORTS,
     }],
     attachments: [{ serverId: 'srv-listener', networkKeys: ['default'] }],
     consumers: [{

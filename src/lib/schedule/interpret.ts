@@ -4,6 +4,21 @@
  * Standalone Docker ignores most of this block; the control plane uses it to
  * size and place `task` rows. Scheduler-only keys are stripped from compiled
  * runtime YAML by `compileRuntimeComposeDocument`.
+ *
+ * ## Why `resources.reservations` is absent from this module
+ *
+ * A reservation is an admission requirement — "do not place this anywhere that
+ * cannot promise me this much" — and admitting against one needs a per-host
+ * capacity inventory (how much CPU and memory each server has, how much every
+ * already-placed slot has claimed) that `lib/db/schema.ts` does not have. So
+ * the field is **refused at deploy time** by `../compose/field-policy.ts`
+ * rather than parsed here and quietly ignored by `./planner.ts`: a deploy that
+ * succeeded would have told the operator the placement honoured it.
+ *
+ * `deploy.resources` itself stays `passthrough` + `keep` in the registry —
+ * standalone Docker Compose applies `limits` and the native lane renders the
+ * same numbers as systemd directives, so the ceiling half of the block is
+ * genuinely acted on by both engines.
  */
 
 export type ReplicaMode = 'replicated' | 'global'
@@ -28,6 +43,11 @@ export type ServiceScheduleSpec = {
   publishedHostPorts: number[]
   /** Compose service names this service must share a host with. */
   colocateWith: string[]
+  /**
+   * `placement.max_replicas_per_node` — the cap on how many of this service's
+   * replicas may land on any one server. `null` when unset (no cap).
+   */
+  maxReplicasPerNode: number | null
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -74,6 +94,20 @@ function parseConstraints(deploy: Record<string, unknown>): PlacementConstraint[
     if (parsed) out.push(parsed)
   }
   return out
+}
+
+/**
+ * `placement.max_replicas_per_node`, or `null` when unset or unusable.
+ *
+ * Same shape as {@link parsePositiveInt} everywhere else in this module: a
+ * whole number of at least one, string form accepted because Compose allows it.
+ * A zero or negative cap would mean "place nowhere", which is not a cap an
+ * author can have meant, so it reads as absent rather than as a refusal — the
+ * value-level refusals live in `../compose/lint.ts`.
+ */
+function parseMaxReplicasPerNode(deploy: Record<string, unknown>): number | null {
+  if (!isPlainObject(deploy.placement)) return null
+  return parsePositiveInt(deploy.placement.max_replicas_per_node)
 }
 
 function parseSpreadKeys(deploy: Record<string, unknown>): string[] {
@@ -178,6 +212,7 @@ export function interpretServiceSchedule(
     spreadKeys: deploy ? parseSpreadKeys(deploy) : [],
     publishedHostPorts: parsePublishedHostPorts(body),
     colocateWith: parseColocateWith(body),
+    maxReplicasPerNode: deploy ? parseMaxReplicasPerNode(deploy) : null,
   }
 }
 

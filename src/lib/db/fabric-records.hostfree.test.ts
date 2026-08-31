@@ -461,6 +461,7 @@ test("materializeSpanningNetworks returns empty map when nothing spans hosts", a
         web: { image: "nginx", networks: ["frontend"] },
         api: { image: "api", networks: ["frontend"] },
       },
+      networks: { frontend: { driver: "overlay" } },
     }),
     slots: [
       { serviceId: "svc-web", serverId: "srv-a" },
@@ -522,6 +523,7 @@ test("materializeSpanningNetworks creates compose networks and per-server segmen
         web: { image: "nginx", networks: ["frontend"] },
         api: { image: "api", networks: ["frontend"] },
       },
+      networks: { frontend: { driver: "overlay" } },
     }),
     slots: [
       { serviceId: "svc-web", serverId: "srv-a" },
@@ -543,6 +545,72 @@ test("materializeSpanningNetworks creates compose networks and per-server segmen
   );
   assertEquals(db.segments[0]?.cidr.startsWith("10.192."), true);
   assertEquals(db.segments[1]?.cidr.startsWith("10.193."), true);
+});
+
+test("materializeSpanningNetworks ignores a shared network not declared overlay", async () => {
+  // Same two-host topology as above, with the one difference that decides it:
+  // the author wrote `driver: bridge`. Landing on two servers is a scheduling
+  // outcome, not a request for a routed bridge, so nothing is materialized and
+  // each host gets its own local `frontend`.
+  const db = createFabricDb({
+    servers: [
+      { id: "srv-a", organizationId: "org-1" },
+      { id: "srv-b", organizationId: "org-1" },
+    ],
+    relays: [
+      {
+        id: "relay-a",
+        fabricId: "fab-1",
+        serverId: "srv-a",
+        address: "10.250.0.1",
+        role: "member",
+        keepalive: null,
+        endpointAddress: null,
+        publicKey: null,
+        prefix: "10.192.0.0/16",
+        advertisedCidrs: [],
+        metadata: {},
+      },
+      {
+        id: "relay-b",
+        fabricId: "fab-1",
+        serverId: "srv-b",
+        address: "10.250.0.2",
+        role: "member",
+        keepalive: null,
+        endpointAddress: null,
+        publicKey: null,
+        prefix: "10.193.0.0/16",
+        advertisedCidrs: [],
+        metadata: {},
+      },
+    ],
+  });
+
+  const spanning = await materializeSpanningNetworks(db, {
+    organizationId: "org-1",
+    environmentId: "env-1",
+    fabric: FABRIC,
+    document: composeDoc({
+      services: {
+        web: { image: "nginx", networks: ["frontend"] },
+        api: { image: "api", networks: ["frontend"] },
+      },
+      networks: { frontend: { driver: "bridge" } },
+    }),
+    slots: [
+      { serviceId: "svc-web", serverId: "srv-a" },
+      { serviceId: "svc-api", serverId: "srv-b" },
+    ],
+    serviceRows: [
+      { id: "svc-web", composeServiceName: "web" },
+      { id: "svc-api", composeServiceName: "api" },
+    ],
+  });
+
+  assertEquals(spanning.size, 0);
+  assertEquals(db.networks.length, 0);
+  assertEquals(db.segments.length, 0);
 });
 
 test("materializeSpanningNetworks throws relay_missing for participating servers without relays", async () => {
@@ -574,6 +642,7 @@ test("materializeSpanningNetworks throws relay_missing for participating servers
             web: { image: "nginx", networks: ["frontend"] },
             api: { image: "api", networks: ["frontend"] },
           },
+          networks: { frontend: { driver: "overlay" } },
         }),
         slots: [
           { serviceId: "svc-web", serverId: "srv-a" },
@@ -643,6 +712,7 @@ test("materializeSpanningNetworks throws fabric_segment_pool_exhausted when rela
             web: { image: "nginx", networks: ["frontend"] },
             api: { image: "api", networks: ["frontend"] },
           },
+          networks: { frontend: { driver: "overlay" } },
         }),
         slots: [
           { serviceId: "svc-web", serverId: "srv-a" },

@@ -26,6 +26,7 @@ import { registerTagRoutes } from './tags/routes.ts'
 import { registerTaskRoutes } from './tasks/routes.ts'
 import { registerBindingRoutes } from './bindings/routes.ts'
 import { registerContainerRoutes } from './containers/routes.ts'
+import { registerDockerRunRoutes } from './docker-run/routes.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
@@ -107,6 +108,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   registerServiceRoutes(client, opts)
   registerHostingRoutes(client, opts)
   registerContainerRoutes(client, opts)
+  registerDockerRunRoutes(client, opts)
   registerStorageRoutes(client, opts)
   registerRepositoryRoutes(client, opts)
   registerForgeRoutes(client, opts)

@@ -217,3 +217,26 @@ behavior changes.
   `private_family_mismatch` (alongside existing `datacenter_has_members` /
   `datacenter_has_networks`).
 
+- **Compose hosting projection (client surface):** `x-turbopanel.hosting[]` is
+  the *declaration*; `hosting` rows are the *record*. `reconcile-hostings.ts`
+  runs inside deploy-prepare, before anything reads a route, and materializes
+  one row per declared entry (`ComposeHostingError` on an unresolvable
+  certificate / managed address, an unsupported `tls.mode`, or a route a
+  panel-authored row already claims — a hard refusal, never a silent
+  downgrade). Everything downstream — `buildHostingsForService`, the daemon's
+  ingress and TLS lanes — reads **rows**, never the compose block, so the
+  projection is one-way and the row is the only thing a route is served from.
+  Declaration shape and messages: `../lib/compose/hosting-extension.ts`; the
+  compiler stage that carries the declarations is
+  `Application.services[].hosting` in `../lib/compose/ir.ts`.
+- **`docker run` importer (client surface):** `POST /docker-run/import` —
+  session-gated, create-gated when a `projectId` is supplied. **Pure compute:
+  it writes nothing.** It parses a pasted `docker container run` command into a
+  one-service `ComposeDocument`, lints it, and returns the fragment plus
+  `riskFlags` describing how the imported container's blast radius widens.
+  Merging that fragment into a project or environment draft goes through the
+  ordinary compose PATCH routes, where the write-boundary validation already
+  lives — a second way into `options.compose` would mean two sets of rules.
+  Nothing is emitted under `x-turbopanel`: the importer speaks plain Compose,
+  per rule 1 of the frozen contract in `../lib/compose/AGENTS.md`. Parser and
+  option registry: `../lib/docker-run/AGENTS.md`.

@@ -11,9 +11,22 @@ import {
 
 export const TURBOPANEL_EXTENSION_KEY = 'x-turbopanel'
 
-export type ComposeTurbopanelExtension = {
-  placement?: {
-    server_id?: string
+/**
+ * The **runtime** top-level `x-turbopanel` block — compile-time audit metadata
+ * stamped onto a compiled snapshot by {@link applyComposePlacement}, never
+ * authored and never stored.
+ *
+ * Structurally separate from the authored `TurbopanelRootExtension` in
+ * `./root-extension.ts` on purpose: the two are not variants of one shape with
+ * everything optional. An authored root has no `placement` key at all, so a
+ * `placement`-bearing object cannot pass where an authored root is expected —
+ * a property TypeScript can only enforce while the two types never share a
+ * base. Both keys are required here because a runtime root carrying no server
+ * id is not a weaker runtime root, it is the absence of one.
+ */
+export type TurbopanelRuntimeRootExtension = {
+  placement: {
+    server_id: string
   }
 }
 
