@@ -8,6 +8,7 @@
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import { isSafeRoot } from '../../lib/compose/service-kind.ts'
+import { canonicalizeRepositoryUrl } from '../../lib/git/clone-url.ts'
 
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -44,8 +45,6 @@ export type SourceCreateFields = {
   autoDeploy: SourceAutoDeploy
   connectionId: string | null
   secretId: string | null
-  serviceId: string | null
-  environmentId: string | null
   metadata: Record<string, unknown> | null
   options: Record<string, unknown> | null
 }
@@ -61,11 +60,6 @@ export type SourcePatchFields = {
   metadata?: Record<string, unknown> | null
   options?: Record<string, unknown> | null
   updatedAt: string
-}
-
-export type SourceListFilter = {
-  serviceId?: string
-  environmentId?: string
 }
 
 function isProvider(value: unknown): value is SourceProvider {
@@ -101,6 +95,11 @@ const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
  *
  * Callers must settle the auth shape **before** calling this, so the
  * `secretId` passed in is always one the provider is allowed to use.
+ *
+ * The accepted URL is returned **canonicalized**
+ * ({@link canonicalizeRepositoryUrl}): the stored column is the value the
+ * per-organization unique index deduplicates on, so the one gate every write
+ * passes through is where the spelling gets settled.
  */
 export function validateRepositoryUrl(
   provider: SourceProvider,
@@ -121,7 +120,7 @@ export function validateRepositoryUrl(
     } catch {
       return { ok: false, error: 'source_repository_url_invalid' }
     }
-    return { ok: true, url }
+    return { ok: true, url: canonicalizeRepositoryUrl(url) }
   }
 
   // Only the credential-bearing lanes may use SSH: `git` always, and `gitlab`
@@ -137,7 +136,7 @@ export function validateRepositoryUrl(
   if (!secretId) {
     return { ok: false, error: 'source_ssh_requires_credential' }
   }
-  return { ok: true, url }
+  return { ok: true, url: canonicalizeRepositoryUrl(url) }
 }
 
 function parseOptionalUuid(
@@ -247,19 +246,14 @@ export function parseSourceCreateBody(
 
   const connectionId = parseOptionalUuid(body.connectionId)
   const secretId = parseOptionalUuid(body.secretId)
-  const serviceId = parseOptionalUuid(body.serviceId)
-  const environmentId = parseOptionalUuid(body.environmentId)
-  if (
-    !connectionId.ok ||
-    !secretId.ok ||
-    !serviceId.ok ||
-    !environmentId.ok
-  ) {
+  if (!connectionId.ok || !secretId.ok) {
     return c.json({ error: 'Invalid request' }, 400)
   }
 
-  if (serviceId.value && environmentId.value) {
-    return c.json({ error: 'source_single_parent_required' }, 400)
+  // A repository is an org-level entity; the parent-scope columns are gone.
+  // Reject rather than ignore, so a stale caller learns at the write boundary.
+  if (body.serviceId !== undefined || body.environmentId !== undefined) {
+    return c.json({ error: 'source_scope_not_supported' }, 400)
   }
 
   // Settled before the URL check so the credential handed to
@@ -313,8 +307,6 @@ export function parseSourceCreateBody(
     autoDeploy,
     connectionId: connectionId.value,
     secretId: secretId.value,
-    serviceId: serviceId.value,
-    environmentId: environmentId.value,
     metadata: metadata.value,
     options: options.value,
   }
@@ -389,9 +381,9 @@ function applyRepositoryUrlPatch(
 }
 
 /**
- * PATCH accepts only the mutable fields. Scope (`serviceId` / `environmentId`)
- * and `provider` are immutable — rebind by creating a new source, mirroring how
- * `network` rejects scope patches.
+ * PATCH accepts only the mutable fields. `provider` is immutable — rebind by
+ * creating a new source — and the retired parent-scope keys are rejected the
+ * same way so a stale caller cannot silently no-op.
  */
 export function parseSourcePatchBody(
   c: Context<AppEnv>,
@@ -448,27 +440,6 @@ export function parseSourcePatchBody(
   return patch
 }
 
-/** At most one scope filter; anything else is a bad request. */
-export function parseSourceListFilter(
-  c: Context<AppEnv>,
-): SourceListFilter | Response {
-  const serviceId = c.req.query('serviceId')
-  const environmentId = c.req.query('environmentId')
-
-  if (serviceId && environmentId) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  if (serviceId !== undefined) {
-    if (!UUID_RE.test(serviceId)) return c.json({ error: 'Invalid request' }, 400)
-    return { serviceId }
-  }
-  if (environmentId !== undefined) {
-    if (!UUID_RE.test(environmentId)) return c.json({ error: 'Invalid request' }, 400)
-    return { environmentId }
-  }
-  return {}
-}
-
 /**
  * Compose stores `services.<name>.x-turbopanel.source.sourceId` in jsonb, but a
  * `!override` / `!reset` tag can wrap **any** node on that path as a
@@ -490,12 +461,21 @@ export const COMPOSE_SOURCE_JSONPATH =
   '$."compose"."data"."services".**."x-turbopanel".**."source".**."sourceId".**' +
   ' ? (@ == $sid)'
 
+/**
+ * `repository.metadata` as a mutable record — provider-observed facts the
+ * instance refreshes (`detectedDefaultBranch`, `defaultBranchCheckedAt`,
+ * `lastInspectedAt`, `lastInspectedCommitSha`). Anything non-object resets to
+ * `{}` rather than throwing: metadata is bookkeeping, never load-bearing.
+ */
+export function readSourceMetadata(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  return { ...(value as Record<string, unknown>) }
+}
+
 export type SourceRowLike = {
   id: string
   organizationId: string
   connectionId: string | null
-  serviceId: string | null
-  environmentId: string | null
   secretId: string | null
   provider: string
   repositoryUrl: string
@@ -530,8 +510,6 @@ export function serializeSourceRow(row: SourceRowLike, webhook?: SourceWebhookIn
     id: row.id,
     organizationId: row.organizationId,
     connectionId: row.connectionId,
-    serviceId: row.serviceId,
-    environmentId: row.environmentId,
     secretId: row.secretId,
     provider: row.provider,
     repositoryUrl: row.repositoryUrl,
@@ -578,10 +556,11 @@ export function parseSourceAttachBody(body: unknown): SourceAttachFields | null 
     : ''
   if (repositoryExternalId.length === 0) return null
 
-  const repositoryUrl = typeof raw.repositoryUrl === 'string'
-    ? raw.repositoryUrl.trim()
-    : ''
-  if (repositoryUrl.length === 0) return null
+  const rawUrl = typeof raw.repositoryUrl === 'string' ? raw.repositoryUrl.trim() : ''
+  if (rawUrl.length === 0) return null
+  // Same canonical spelling `validateRepositoryUrl` gives the create path, so
+  // the URL-keyed unique dedupes across the attach and create lanes alike.
+  const repositoryUrl = canonicalizeRepositoryUrl(rawUrl)
 
   let defaultBranch: string | null = null
   if (raw.defaultBranch !== undefined && raw.defaultBranch !== null) {

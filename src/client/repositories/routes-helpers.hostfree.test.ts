@@ -4,9 +4,9 @@ import type { AppEnv } from '../../app.ts'
 import {
   assertProviderAuthShape,
   parseSourceCreateBody,
-  parseSourceListFilter,
   parseSourcePatchBody,
   parseSourceAttachBody,
+  readSourceMetadata,
   serializeConnectionRow,
   serializeSourceRow,
   SOURCE_REFERENCED_BY_COMPOSE_ERROR,
@@ -122,6 +122,31 @@ test('validateRepositoryUrl accepts https and SSH only on credential lanes', () 
   )
 })
 
+test('validateRepositoryUrl returns the canonical .git spelling', () => {
+  // The accepted URL is what the per-organization unique index dedupes on, so
+  // every spelling of one repository must leave here identical.
+  assertEquals(
+    validateRepositoryUrl('github', 'https://GitHub.com/org/repo', null),
+    { ok: true, url: 'https://github.com/org/repo.git' },
+  )
+  assertEquals(
+    validateRepositoryUrl('github', 'https://github.com/org/repo/', null),
+    { ok: true, url: 'https://github.com/org/repo.git' },
+  )
+  assertEquals(
+    validateRepositoryUrl('git', 'git@Git.Example:org/repo', CREDENTIAL_ID),
+    { ok: true, url: 'git@git.example:org/repo.git' },
+  )
+  assertEquals(
+    validateRepositoryUrl(
+      'gitlab',
+      'ssh://git@gitlab.example/org/repo',
+      CREDENTIAL_ID,
+    ),
+    { ok: true, url: 'ssh://git@gitlab.example/org/repo.git' },
+  )
+})
+
 test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', async () => {
   const c = mockContext()
   const created = parseSourceCreateBody(c, {
@@ -144,16 +169,27 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
     400,
     'Invalid request',
   )
+  // The parent-scope columns are gone; a caller still naming them learns at
+  // the write boundary instead of being silently ignored.
   await expectErrorResponse(
     parseSourceCreateBody(c, {
       provider: 'github',
       connectionId: CONNECTION_ID,
       serviceId: SERVICE_ID,
+      repositoryUrl: 'https://github.com/org/repo.git',
+    }),
+    400,
+    'source_scope_not_supported',
+  )
+  await expectErrorResponse(
+    parseSourceCreateBody(c, {
+      provider: 'github',
+      connectionId: CONNECTION_ID,
       environmentId: ENV_ID,
       repositoryUrl: 'https://github.com/org/repo.git',
     }),
     400,
-    'source_single_parent_required',
+    'source_scope_not_supported',
   )
   await expectErrorResponse(
     parseSourceCreateBody(c, {
@@ -212,10 +248,9 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
     'Invalid request',
   )
 
-  const withParent = parseSourceCreateBody(c, {
+  const withKey = parseSourceCreateBody(c, {
     provider: 'git',
     secretId: CREDENTIAL_ID,
-    serviceId: SERVICE_ID,
     repositoryUrl: 'git@git.example:org/repo.git',
     defaultBranch: 'trunk',
     subdirectory: 'apps/web',
@@ -223,15 +258,14 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
     metadata: { note: 'ops' },
     options: { pendingChecks: null },
   })
-  if (withParent instanceof Response) {
+  if (withKey instanceof Response) {
     throw new TypeError('expected git create fields')
   }
-  assertEquals(withParent.provider, 'git')
-  assertEquals(withParent.secretId, CREDENTIAL_ID)
-  assertEquals(withParent.serviceId, SERVICE_ID)
-  assertEquals(withParent.defaultBranch, 'trunk')
-  assertEquals(withParent.subdirectory, 'apps/web')
-  assertEquals(withParent.autoDeploy, 'immediate')
+  assertEquals(withKey.provider, 'git')
+  assertEquals(withKey.secretId, CREDENTIAL_ID)
+  assertEquals(withKey.defaultBranch, 'trunk')
+  assertEquals(withKey.subdirectory, 'apps/web')
+  assertEquals(withKey.autoDeploy, 'immediate')
 })
 
 test('parseSourcePatchBody rejects immutable scope and rechecks auth + URL', async () => {
@@ -318,42 +352,18 @@ test('parseSourcePatchBody rejects immutable scope and rechecks auth + URL', asy
   assertEquals(urlPatched.repositoryUrl, 'https://git.example/org/repo.git')
 })
 
-test('parseSourceListFilter accepts at most one UUID scope', async () => {
-  const empty = parseSourceListFilter(mockContext())
-  if (empty instanceof Response) {
-    throw new TypeError('expected empty filter')
-  }
-  assertEquals(empty, {})
+test('readSourceMetadata copies objects and resets everything else', () => {
+  const stored = { detectedDefaultBranch: 'trunk' }
+  const copy = readSourceMetadata(stored)
+  assertEquals(copy, stored)
+  copy.defaultBranchCheckedAt = 'now'
+  // A copy, not the stored reference — mutating it must not touch the row.
+  assertEquals('defaultBranchCheckedAt' in stored, false)
 
-  const byService = parseSourceListFilter(mockContext({ serviceId: SERVICE_ID }))
-  if (byService instanceof Response) {
-    throw new TypeError('expected service filter')
-  }
-  assertEquals(byService, { serviceId: SERVICE_ID })
-
-  const byEnv = parseSourceListFilter(mockContext({ environmentId: ENV_ID }))
-  if (byEnv instanceof Response) {
-    throw new TypeError('expected environment filter')
-  }
-  assertEquals(byEnv, { environmentId: ENV_ID })
-
-  await expectErrorResponse(
-    parseSourceListFilter(
-      mockContext({ serviceId: SERVICE_ID, environmentId: ENV_ID }),
-    ),
-    400,
-    'Invalid request',
-  )
-  await expectErrorResponse(
-    parseSourceListFilter(mockContext({ serviceId: 'not-a-uuid' })),
-    400,
-    'Invalid request',
-  )
-  await expectErrorResponse(
-    parseSourceListFilter(mockContext({ environmentId: 'not-a-uuid' })),
-    400,
-    'Invalid request',
-  )
+  assertEquals(readSourceMetadata(null), {})
+  assertEquals(readSourceMetadata(undefined), {})
+  assertEquals(readSourceMetadata('not-an-object'), {})
+  assertEquals(readSourceMetadata(['not', 'a', 'record']), {})
 })
 
 test('serializeSourceRow and serializeConnectionRow fold optional facts', () => {
@@ -361,8 +371,6 @@ test('serializeSourceRow and serializeConnectionRow fold optional facts', () => 
     id: SERVICE_ID,
     organizationId: CONNECTION_ID,
     connectionId: CONNECTION_ID,
-    serviceId: null,
-    environmentId: ENV_ID,
     secretId: null,
     provider: 'github',
     repositoryUrl: 'https://github.com/org/repo.git',
@@ -436,6 +444,17 @@ test('attach accepts only what a repository pick can name', () => {
     repositoryUrl: 'https://github.com/acme/app.git',
     defaultBranch: 'trunk',
   })
+
+  // The attach lane canonicalizes like the create lane, so both dedupe on the
+  // same stored spelling.
+  assertEquals(
+    parseSourceAttachBody({
+      connectionId: CONNECTION_ID,
+      repositoryExternalId: '99',
+      repositoryUrl: 'https://GitHub.com/acme/app/',
+    })?.repositoryUrl,
+    'https://github.com/acme/app.git',
+  )
 
   // An omitted or blank branch means "the repository's own default", which is
   // null on the row rather than an empty string.

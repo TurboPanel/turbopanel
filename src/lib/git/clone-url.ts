@@ -28,6 +28,67 @@ export function isSshCloneUrl(cloneUrl: string): boolean {
 }
 
 /**
+ * One repository, one string: the canonical clone URL.
+ *
+ * `repository` rows are deduplicated per organization by
+ * `UNIQUE (organization_id, repository_url)`, and a unique index can only do
+ * that job when equal repositories serialize equally. Without this,
+ * `https://github.com/acme/app` and `https://github.com/acme/app.git` (or a
+ * host typed with a capital letter, or a stray trailing slash) each mint their
+ * own row — and `auto_deploy` / `default_branch` silently diverge between them
+ * while one push fans out to both.
+ *
+ * The canonical form is the **`.git` clone URL** — the address git itself
+ * resolves — with the case-insensitive parts lower-cased:
+ *
+ * - scheme and host lower-cased (path case is preserved: hosts other than
+ *   GitHub/GitLab may treat it as significant)
+ * - trailing slashes dropped, query/fragment dropped (git ignores both)
+ * - exactly one `.git` suffix on a non-empty path
+ * - scp-syntax (`git@host:owner/repo`) keeps its shape — it is a different
+ *   transport, not a spelling of the https URL — but gets the same host
+ *   lower-casing and `.git` suffix.
+ *
+ * Applied at the write boundary (`validateRepositoryUrl`), never at read time,
+ * so the stored column *is* the canonical value the unique index compares.
+ * Anything unparseable is returned trimmed — validation rejects it separately.
+ */
+export function canonicalizeRepositoryUrl(raw: string): string {
+  const url = raw.trim()
+
+  let parsed: URL | null = null
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+    try {
+      parsed = new URL(url)
+    } catch {
+      return url
+    }
+  }
+
+  if (parsed) {
+    // URL already lower-cases protocol and hostname on parse.
+    const path = ensureGitSuffix(parsed.pathname.replace(/\/+$/, ''))
+    if (path.length === 0) return url
+    const port = parsed.port ? `:${parsed.port}` : ''
+    const user = parsed.username ? `${parsed.username}@` : ''
+    return `${parsed.protocol}//${user}${parsed.hostname}${port}${path}`
+  }
+
+  // scp-syntax: `user@host:path`.
+  const scp = /^([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+):(\S+)$/.exec(url)
+  if (!scp) return url
+  const [, user, host, rawPath] = scp
+  const path = ensureGitSuffix(rawPath.replace(/\/+$/, ''))
+  if (path.length === 0) return url
+  return `${user}@${host.toLowerCase()}:${path}`
+}
+
+function ensureGitSuffix(path: string): string {
+  if (path.length === 0) return path
+  return path.endsWith('.git') ? path : `${path}.git`
+}
+
+/**
  * `https://host/owner/repo(.git)` → `{ owner, repo }`.
  * `null` when the URL is not a two-segment repository path.
  *

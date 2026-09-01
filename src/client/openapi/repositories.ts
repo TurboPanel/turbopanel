@@ -90,11 +90,13 @@ export const repositorySchemas = {
       id: { type: 'string' },
       organizationId: { type: 'string' },
       connectionId: { type: ['string', 'null'] },
-      serviceId: { type: ['string', 'null'] },
-      environmentId: { type: ['string', 'null'] },
       secretId: { type: ['string', 'null'] },
       provider: { type: 'string', enum: ['github', 'gitlab', 'git'] },
-      repositoryUrl: { type: 'string' },
+      repositoryUrl: {
+        type: 'string',
+        description:
+          'Canonical clone URL (lower-cased host, .git suffix). One row per repository per organization.',
+      },
       repositoryExternalId: { type: ['string', 'null'] },
       defaultBranch: { type: ['string', 'null'] },
       subdirectory: { type: ['string', 'null'] },
@@ -162,14 +164,6 @@ export const repositorySchemas = {
         description:
           'Deploy key from POST /repositories/gitlab/deploy-keys. Not supported for provider=github.',
       },
-      serviceId: {
-        type: ['string', 'null'],
-        description: 'Owning service — mutually exclusive with environmentId',
-      },
-      environmentId: {
-        type: ['string', 'null'],
-        description: 'Owning environment — mutually exclusive with serviceId',
-      },
       repositoryExternalId: { type: ['string', 'null'] },
       defaultBranch: { type: ['string', 'null'] },
       subdirectory: {
@@ -186,8 +180,7 @@ export const repositorySchemas = {
   },
   PatchRepositoryBody: {
     type: 'object',
-    description:
-      'Scope (serviceId / environmentId) and provider are immutable — recreate the source to rebind.',
+    description: 'provider is immutable — recreate the repository to change it.',
     properties: {
       connectionId: { type: ['string', 'null'] },
       secretId: { type: ['string', 'null'] },
@@ -619,27 +612,59 @@ export const repositoryPaths = {
   },
   [repositoriesBasePath]: {
     ...(basePaths[repositoriesBasePath] as Record<string, unknown>),
-    get: {
-      ...((basePaths[repositoriesBasePath] as Record<string, unknown>).get as Record<
+    post: {
+      ...((basePaths[repositoriesBasePath] as Record<string, unknown>).post as Record<
         string,
         unknown
       >),
+      description:
+        'Find-or-create keyed by the canonical clone URL: posting a URL the ' +
+        'organization already holds answers 200 with the existing row id and ' +
+        'reused=true instead of minting a duplicate; a new row answers 201 ' +
+        'with reused=false. The existing row is never silently mutated by a ' +
+        'reuse.',
+    },
+  },
+  [`${repositoryIdPath}/refresh`]: {
+    post: {
+      tags: ['Repositories'],
+      summary: "Re-read provider facts (default branch) for one repository",
+      description:
+        "Reads the provider's current listing through the repository's " +
+        'connection and records detectedDefaultBranch / defaultBranchCheckedAt ' +
+        'in metadata. The defaultBranch column follows only while it still ' +
+        'tracks the provider (null, or equal to the previously detected ' +
+        'value); an operator-set branch is never overwritten. 400 ' +
+        'source_refresh_not_supported for deploy-key / generic git rows.',
+      security,
       parameters: [
-        {
-          name: 'serviceId',
-          in: 'query',
-          required: false,
-          schema: { type: 'string' },
-          description: 'List sources owned by this service (at most one filter)',
-        },
-        {
-          name: 'environmentId',
-          in: 'query',
-          required: false,
-          schema: { type: 'string' },
-          description: 'List sources owned by this environment (at most one filter)',
-        },
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
       ],
+      responses: {
+        '200': {
+          description: 'The refreshed repository',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  ok: { type: 'boolean' },
+                  repository: { $ref: '#/components/schemas/RepositoryRecord' },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'source_refresh_not_supported',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '502': {
+          description: 'git_provider_request_failed',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({ notFound: true }),
+      },
     },
   },
   [repositoryIdPath]: {

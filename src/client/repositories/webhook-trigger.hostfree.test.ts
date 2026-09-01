@@ -97,8 +97,6 @@ function sourceRow(overrides: Partial<TriggerRepositoryRow> = {}): TriggerReposi
   return {
     id: SOURCE_ID,
     organizationId: ORG_ID,
-    serviceId: null,
-    environmentId: ENV_ID,
     defaultBranch: 'trunk',
     autoDeploy: 'immediate',
     options: null,
@@ -458,39 +456,23 @@ test('GitHub aliases bind the github provider discriminant', async () => {
   assertEquals(seen, ['github', 'github'])
 })
 
-test('resolveRepositoryEnvironmentIds unions column pins service env and compose refs', async () => {
+test('resolveRepositoryEnvironmentIds resolves compose refs and dedupes them', async () => {
   const db = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ environmentId: 'svc-env' }]),
-        }),
-      }),
-    }),
-    execute: async () => [{ environment_id: 'compose-env' }],
+    execute: async () => [
+      { environment_id: 'compose-env' },
+      { environment_id: 'compose-env' },
+      { environment_id: ENV_ID },
+    ],
   } as unknown as Db
-  const ids = await resolveRepositoryEnvironmentIds(
-    db,
-    sourceRow({ environmentId: ENV_ID, serviceId: 'svc-1' }),
-  )
+  const ids = await resolveRepositoryEnvironmentIds(db, sourceRow())
   assertEquals([...ids].toSorted((a, b) => a.localeCompare(b)), [
     ENV_ID,
     'compose-env',
-    'svc-env',
   ])
 
   const empty = await resolveRepositoryEnvironmentIds(
-    {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([{}]),
-          }),
-        }),
-      }),
-      execute: async () => [],
-    } as unknown as Db,
-    sourceRow({ environmentId: null, serviceId: 'svc-missing' }),
+    { execute: async () => [] } as unknown as Db,
+    sourceRow(),
   )
   assertEquals(empty, [])
 })

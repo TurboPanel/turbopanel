@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
   branchFromGitRef,
+  canonicalizeRepositoryUrl,
   commitSubject,
   COMMIT_AUTHOR_MAX_CHARS,
   COMMIT_MESSAGE_MAX_CHARS,
@@ -26,6 +27,55 @@ test('isSshCloneUrl recognizes ssh:// and scp-like git@host:path forms', () => {
   assertEquals(isSshCloneUrl('git@gitlab.example.com:group/sub/repo.git'), true)
   assertEquals(isSshCloneUrl('https://github.com/org/repo.git'), false)
   assertEquals(isSshCloneUrl('git@invalid'), false)
+})
+
+test('canonicalizeRepositoryUrl settles every spelling on the .git clone URL', () => {
+  // The stored column is what UNIQUE (organization_id, repository_url)
+  // compares, so `.../repo` and `.../repo.git` must not mint two rows.
+  assertEquals(
+    canonicalizeRepositoryUrl('https://github.com/acme/app'),
+    'https://github.com/acme/app.git',
+  )
+  assertEquals(
+    canonicalizeRepositoryUrl('https://github.com/acme/app.git'),
+    'https://github.com/acme/app.git',
+  )
+  assertEquals(
+    canonicalizeRepositoryUrl('https://github.com/acme/app/'),
+    'https://github.com/acme/app.git',
+  )
+  assertEquals(
+    canonicalizeRepositoryUrl('  https://GitHub.com/acme/app  '),
+    'https://github.com/acme/app.git',
+  )
+  // Path case is preserved — only scheme and host are case-insensitive.
+  assertEquals(
+    canonicalizeRepositoryUrl('HTTPS://GITHUB.COM/Acme/App'),
+    'https://github.com/Acme/App.git',
+  )
+  // git ignores query and fragment on a clone URL; a port is load-bearing.
+  assertEquals(
+    canonicalizeRepositoryUrl('https://git.example:8443/org/repo?ref=x#frag'),
+    'https://git.example:8443/org/repo.git',
+  )
+  assertEquals(
+    canonicalizeRepositoryUrl('ssh://git@gitlab.example/group/sub/repo'),
+    'ssh://git@gitlab.example/group/sub/repo.git',
+  )
+  // scp-syntax keeps its shape — it is a different transport, not a spelling
+  // of the https URL — but the host half is still case-insensitive.
+  assertEquals(
+    canonicalizeRepositoryUrl('git@GitHub.com:acme/app'),
+    'git@github.com:acme/app.git',
+  )
+  assertEquals(
+    canonicalizeRepositoryUrl('git@github.com:acme/app.git'),
+    'git@github.com:acme/app.git',
+  )
+  // Unparseable or pathless input is returned trimmed; validation owns
+  // rejecting it.
+  assertEquals(canonicalizeRepositoryUrl(' not-a-url '), 'not-a-url')
+  assertEquals(canonicalizeRepositoryUrl('https://github.com/'), 'https://github.com/')
 })
 
 test('parseRepositoryOwnerRepo extracts owner and repo from HTTPS URLs', () => {

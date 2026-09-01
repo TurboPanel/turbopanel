@@ -44,7 +44,6 @@ import {
   environment,
   gitConnection,
   project,
-  service,
   repository,
   workspace,
 } from '../../lib/db/schema.ts'
@@ -152,8 +151,6 @@ export function triggerSummaryNeedsRetry(summary: TriggerSummary): boolean {
 const SOURCE_TRIGGER_SELECT = {
   id: repository.id,
   organizationId: repository.organizationId,
-  serviceId: repository.serviceId,
-  environmentId: repository.environmentId,
   defaultBranch: repository.defaultBranch,
   autoDeploy: repository.autoDeploy,
   options: repository.options,
@@ -162,8 +159,6 @@ const SOURCE_TRIGGER_SELECT = {
 export type TriggerRepositoryRow = {
   id: string
   organizationId: string
-  serviceId: string | null
-  environmentId: string | null
   defaultBranch: string | null
   autoDeploy: string
   options: unknown
@@ -305,13 +300,11 @@ async function setPendingChecks(
 }
 
 /**
- * Environments a repository can deploy, from **both** attachment models.
+ * Environments a repository can deploy.
  *
- * A repository is "attached" either by the `repository.service_id` / `repository.environment_id`
- * columns, or by a compose document naming it at
- * `services.<name>.x-turbopanel.source.sourceId`. Those are independent — the
- * Services form writes the compose reference and nothing else — so a resolver
- * that only read the columns would silently ignore most real bindings.
+ * A repository is "attached" by a compose document naming it at
+ * `services.<name>.x-turbopanel.source.sourceId` — the one attachment model
+ * left now the legacy `service_id` / `environment_id` parent columns are gone.
  *
  * A project-level compose reference fans out to every environment of that
  * project, because the project document is the base every environment overlays.
@@ -321,17 +314,6 @@ export async function resolveRepositoryEnvironmentIds(
   row: TriggerRepositoryRow,
 ): Promise<string[]> {
   const ids = new Set<string>()
-
-  if (row.environmentId) ids.add(row.environmentId)
-
-  if (row.serviceId) {
-    const [svc] = await db
-      .select({ environmentId: service.environmentId })
-      .from(service)
-      .where(eq(service.id, row.serviceId))
-      .limit(1)
-    if (svc?.environmentId) ids.add(svc.environmentId)
-  }
 
   const referenced = await db.execute<{ environment_id: string }>(sql`
     SELECT e.id AS environment_id

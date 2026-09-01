@@ -3082,9 +3082,25 @@ export const gitConnection = pgTable(
   ],
 )
 /**
- * A Git repository bound to an organization, optionally scoped to a single
- * owning `service` **or** `environment` (zero = organization-wide library
- * entry). Mirrors `storage`'s at-most-one-parent rule.
+ * A Git repository connected to an organization — exactly one row per
+ * repository per organization.
+ *
+ * The row is a pure org-level registry entry: what attaches it to workloads is
+ * `project.repository_id` and the compose `x-turbopanel.source.sourceId`
+ * references, never a column here. (It once carried `service_id` /
+ * `environment_id` parent columns mirroring `storage`; nothing modern wrote
+ * them, and they made a repository look scoped to a workload it merely
+ * predated. Dropped rather than deprecated — pre-MVP.)
+ *
+ * `repository_url` is stored **canonicalized** (`canonicalizeRepositoryUrl` in
+ * `src/lib/git/clone-url.ts`: lower-cased host, `.git` suffix, no trailing
+ * slash) so the per-organization unique below actually deduplicates spellings
+ * of the same repository.
+ *
+ * `metadata` holds provider-observed facts the instance refreshes over time —
+ * `{ detectedDefaultBranch, defaultBranchCheckedAt, lastInspectedAt,
+ * lastInspectedCommitSha }` — as opposed to `options`, which holds operator
+ * policy and trigger state.
  */
 export const repository = pgTable(
   'repository',
@@ -3104,8 +3120,6 @@ export const repository = pgTable(
     organizationId: uuid('organization_id').notNull(),
     /** Provider connection that authorizes clones; null for deploy-key sources. */
     connectionId: uuid('connection_id'),
-    serviceId: uuid('service_id'),
-    environmentId: uuid('environment_id'),
     /** Deploy key for generic-SSH and deploy-key-authorized GitLab sources. */
     secretId: uuid('secret_id'),
     provider: text().notNull(),
@@ -3126,14 +3140,6 @@ export const repository = pgTable(
       'btree',
       table.connectionId.asc().nullsLast().op('uuid_ops'),
     ),
-    index('idx_repository_service_id').using(
-      'btree',
-      table.serviceId.asc().nullsLast().op('uuid_ops'),
-    ),
-    index('idx_repository_environment_id').using(
-      'btree',
-      table.environmentId.asc().nullsLast().op('uuid_ops'),
-    ),
     index('idx_repository_secret_id').using(
       'btree',
       table.secretId.asc().nullsLast().op('uuid_ops'),
@@ -3149,16 +3155,6 @@ export const repository = pgTable(
       name: 'repository_connection_id_connection_id_fk',
     }).onDelete('set null'),
     foreignKey({
-      columns: [table.serviceId],
-      foreignColumns: [service.id],
-      name: 'repository_service_id_service_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.environmentId],
-      foreignColumns: [environment.id],
-      name: 'repository_environment_id_environment_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
       columns: [table.secretId],
       foreignColumns: [secret.id],
       name: 'repository_secret_id_secret_id_fk',
@@ -3166,17 +3162,20 @@ export const repository = pgTable(
     /**
      * One repository binds once per organization.
      *
-     * A repository is created implicitly now, when a repository is attached to a
-     * project, so the same repo can be attached from two projects. Without this
-     * that produces two rows for one repository — and since `auto_deploy` and
-     * `default_branch` live on the row, their policies would silently diverge
-     * while a single push fanned out to both. The unique key is also what makes
-     * the find-or-create in `POST /sources/attach` atomic rather than a
-     * check-then-insert race.
-     *
-     * Deploy-key and generic-git sources carry a null `connection_id` and are
-     * therefore not constrained here: Postgres treats nulls as distinct, which
-     * is right — those are keyed by secret, not by connection.
+     * `repository_url` is canonicalized before every write, so this holds for
+     * every lane — provider-attached and deploy-key/generic-git alike. (The
+     * connection-keyed unique below cannot cover the key lanes: their
+     * `connection_id` is null and Postgres treats nulls as distinct.) It is
+     * also what makes the find-or-create in `POST /repositories` and
+     * `POST /repositories/attach` atomic rather than a check-then-insert race.
+     */
+    unique('uniq_repository_organization_url').on(
+      table.organizationId,
+      table.repositoryUrl,
+    ),
+    /**
+     * Same guarantee keyed the way webhooks match: the provider-side repo id
+     * survives renames and transfers, which change `repository_url`.
      */
     unique('uniq_repository_organization_connection_repository').on(
       table.organizationId,
@@ -3187,11 +3186,6 @@ export const repository = pgTable(
     check(
       'repository_auto_deploy_check',
       sql`auto_deploy IN ('immediate', 'checks_passed', 'disabled')`,
-    ),
-    check(
-      'repository_at_most_one_parent_check',
-      sql`((service_id IS NOT NULL)::int +
-        (environment_id IS NOT NULL)::int) <= 1`,
     ),
   ],
 )

@@ -101,6 +101,30 @@ function thenableRows(rows: unknown[]) {
 }
 
 /**
+ * Flatten a Drizzle SQL object so the execute double can recognize the
+ * compose-reference resolver query. Same walk as the routes host-free suite,
+ * plus `StringChunk.value` arrays, which is where `sql` templates keep their
+ * literal text.
+ */
+function flattenSql(query: unknown): string {
+  const parts: string[] = []
+  const seen = new Set<unknown>()
+  const visit = (node: unknown): void => {
+    if (typeof node === 'string') {
+      parts.push(node)
+      return
+    }
+    if (!node || typeof node !== 'object' || seen.has(node)) return
+    seen.add(node)
+    const obj = node as Record<string, unknown>
+    if (Array.isArray(obj.queryChunks)) for (const chunk of obj.queryChunks) visit(chunk)
+    if (Array.isArray(obj.value)) for (const chunk of obj.value) visit(chunk)
+  }
+  visit(query)
+  return parts.join('')
+}
+
+/**
  * Table-aware repository graph + empty-compose deploy stub.
  *
  * Placement JOIN reports a pin so the trigger proceeds; the plan's
@@ -121,8 +145,6 @@ function createEnqueueGraphDb(
   const sourceRow = {
     id: SOURCE_ID,
     organizationId: ORG_ID,
-    serviceId: null,
-    environmentId: ENV_ID,
     defaultBranch: null,
     autoDeploy: opts.repository?.autoDeploy ?? 'immediate',
     options: opts.repository?.options ?? null,
@@ -227,7 +249,14 @@ function createEnqueueGraphDb(
     delete: () => ({
       where: () => Promise.resolve(undefined),
     }),
-    execute: () => Promise.resolve([]),
+    // The compose-reference resolver is the one attachment model left, so the
+    // raw-SQL lane answers it with the environment this repository deploys.
+    execute: (query: unknown) => {
+      if (flattenSql(query).includes('jsonb_path_exists')) {
+        return Promise.resolve([{ environment_id: ENV_ID }])
+      }
+      return Promise.resolve([])
+    },
     transaction: async () => {
       if (opts.enqueue === 'fail') {
         return [{

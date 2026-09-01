@@ -32,7 +32,6 @@ import type { AppEnv } from '../../app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db.ts'
 import { logWarn } from '../../logger.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../authn/secrets.ts'
@@ -65,6 +64,7 @@ import {
   signGithubAppJwt,
 } from '../../lib/git/github-app-token.ts'
 import { resolveGitProvider } from '../../lib/git/git-provider.ts'
+import { canonicalizeRepositoryUrl } from '../../lib/git/clone-url.ts'
 import {
   exchangeGitlabAuthorizationCode,
   gitlabAuthorizeUrl,
@@ -99,8 +99,8 @@ import {
   parseSourceAttachBody,
   GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
   parseSourceCreateBody,
-  parseSourceListFilter,
   parseSourcePatchBody,
+  readSourceMetadata,
   serializeConnectionRow,
   serializeSourceRow,
   type SourceWebhookInfo,
@@ -114,8 +114,6 @@ const SOURCE_SELECT = {
   id: repository.id,
   organizationId: repository.organizationId,
   connectionId: repository.connectionId,
-  serviceId: repository.serviceId,
-  environmentId: repository.environmentId,
   secretId: repository.secretId,
   provider: repository.provider,
   repositoryUrl: repository.repositoryUrl,
@@ -257,21 +255,6 @@ export async function composeReferencesRepository(
     ) AS referenced
   `)
   return rows[0]?.referenced === true
-}
-
-export async function assertScopeInOrganization(
-  c: Context<AppEnv>,
-  db: Db,
-  organizationId: string,
-  kind: 'service' | 'environment',
-  entityId: string | null,
-): Promise<Response | null> {
-  if (!entityId) return null
-  const entityOrgId = await resolveEntityOrganizationId(db, kind, entityId)
-  if (!entityOrgId || entityOrgId !== organizationId) {
-    return c.json({ error: 'Not found' }, 404)
-  }
-  return null
 }
 
 /**
@@ -445,6 +428,29 @@ export async function findAttachedSource(
         eq(repository.organizationId, organizationId),
         eq(repository.connectionId, fields.connectionId),
         eq(repository.repositoryExternalId, fields.repositoryExternalId),
+      ),
+    )
+    .limit(1)
+  return row?.id ?? null
+}
+
+/**
+ * The organization's row for one repository, keyed by canonical URL — the
+ * other unique index, and the one that holds across lanes (attach, manual
+ * create, deploy-key) because every lane canonicalizes before writing.
+ */
+export async function findSourceByUrl(
+  db: Db,
+  organizationId: string,
+  repositoryUrl: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ id: repository.id })
+    .from(repository)
+    .where(
+      and(
+        eq(repository.organizationId, organizationId),
+        eq(repository.repositoryUrl, repositoryUrl),
       ),
     )
     .limit(1)
@@ -664,6 +670,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   // `/repositories/:id` does not match a child segment. Inspect would otherwise
   // skip this gate and resolveSourceSession would 401 even with a valid cookie.
   router.use('/repositories/:id/inspect', createSessionMiddleware(secrets))
+  router.use('/repositories/:id/refresh', createSessionMiddleware(secrets))
   router.use('/repositories/connections', createSessionMiddleware(secrets))
   router.use('/repositories/connections/:id/repositories', createSessionMiddleware(secrets))
   router.use('/repositories/github/install', createSessionMiddleware(secrets))
@@ -1119,30 +1126,6 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const denied = await assertCanReadOr403(c, 'organization', organizationId)
     if (denied) return denied
 
-    const filter = parseSourceListFilter(c)
-    if (filter instanceof Response) return filter
-
-    if (filter.serviceId) {
-      const scopeDenied = await assertScopeInOrganization(
-        c,
-        db,
-        organizationId,
-        'service',
-        filter.serviceId,
-      )
-      if (scopeDenied) return scopeDenied
-    }
-    if (filter.environmentId) {
-      const scopeDenied = await assertScopeInOrganization(
-        c,
-        db,
-        organizationId,
-        'environment',
-        filter.environmentId,
-      )
-      if (scopeDenied) return scopeDenied
-    }
-
     const visibleIds = await listVisible(db, {
       kind: 'repository',
       userId,
@@ -1151,16 +1134,10 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     if (visibleIds.length === 0) return c.json({ repositories: [] })
 
     const visible = new Set(visibleIds)
-    const conditions = [eq(repository.organizationId, organizationId)]
-    if (filter.serviceId) conditions.push(eq(repository.serviceId, filter.serviceId))
-    if (filter.environmentId) {
-      conditions.push(eq(repository.environmentId, filter.environmentId))
-    }
-
     const rows = await db
       .select(SOURCE_SELECT)
       .from(repository)
-      .where(and(...conditions))
+      .where(eq(repository.organizationId, organizationId))
       .orderBy(repository.createdAt)
 
     return c.json({
@@ -1276,6 +1253,22 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         outcome.status as 400,
       )
     }
+
+    // Bookkeeping, not the answer: remember what this successful read saw so
+    // the repositories screen can say when the repo was last reachable and at
+    // which commit. A failed write must not fail a read that succeeded.
+    try {
+      const metadata = readSourceMetadata(row.metadata)
+      metadata.lastInspectedAt = new Date().toISOString()
+      metadata.lastInspectedCommitSha = outcome.commitSha
+      await db
+        .update(repository)
+        .set({ metadata, updatedAt: new Date().toISOString() })
+        .where(eq(repository.id, row.id))
+    } catch (error) {
+      logWarn('repository inspect metadata update failed', { error })
+    }
+
     return c.json({
       commitSha: outcome.commitSha,
       via: outcome.via,
@@ -1287,19 +1280,19 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   /**
    * Bind a repository to this organization, reusing the binding if it exists.
    *
-   * A `repository` row is no longer something an operator creates and manages. It is
-   * created here, implicitly, at the moment a repository is attached to a
-   * project, and it never appears in the console as a thing of its own — the
-   * operator picks **app -> account -> repository** and this is what that
-   * resolves to underneath.
+   * A `repository` row is created here implicitly when the operator picks
+   * **app -> account -> repository** in a project flow; the org-level
+   * repositories screen lists and manages the rows afterwards.
    *
-   * **Idempotent by construction.** Two projects on the same repository share
-   * one row rather than racing to make two, which matters because `auto_deploy`
-   * and `default_branch` live on the row: duplicates would let one repository
-   * hold two different policies while a single push fanned out to both. The
-   * `uniq_source_organization_installation_repository` index is what makes the
-   * insert-then-fall-back safe under concurrency instead of a check-then-insert
-   * race.
+   * **Idempotent by construction.** One row per repository per organization,
+   * whichever lane created it first: the connection-keyed unique dedupes
+   * repeat attaches, and the URL-keyed unique plus the adopt-by-URL step below
+   * fold a manually created row for the same repository into this binding
+   * instead of duplicating it. That matters because `auto_deploy` and
+   * `default_branch` live on the row: duplicates would let one repository hold
+   * two different policies while a single push fanned out to both. The unique
+   * indexes are what make the insert-then-fall-back safe under concurrency
+   * instead of a check-then-insert race.
    *
    * It commits **before** the project save that references it, because
    * `loadOrganizationRepositoryIds` feeds `knownSourceIds` into the compose lint and
@@ -1341,6 +1334,28 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const existing = await findAttachedSource(db, organizationId, fields)
     if (existing) return c.json({ ok: true as const, id: existing, reused: true })
 
+    // Same repository, different lane: a row created from the clone URL (a
+    // manual or deploy-key source) is the same repository this attach names, so
+    // it is adopted — the connection becomes its clone authority — rather than
+    // duplicated. The connection lane supersedes a stored deploy key because
+    // `assertProviderAuthShape` forbids holding both; the `secret` row itself
+    // is untouched and can be re-bound later.
+    const sameUrl = await findSourceByUrl(db, organizationId, fields.repositoryUrl)
+    if (sameUrl) {
+      await db
+        .update(repository)
+        .set({
+          connectionId: fields.connectionId,
+          provider: installation.provider,
+          repositoryExternalId: fields.repositoryExternalId,
+          secretId: null,
+          defaultBranch: sql`COALESCE(${repository.defaultBranch}, ${fields.defaultBranch})`,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(repository.id, sameUrl))
+      return c.json({ ok: true as const, id: sameUrl, reused: true })
+    }
+
     try {
       const [inserted] = await db
         .insert(repository)
@@ -1357,11 +1372,12 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       if (!id) return c.json({ error: 'Failed to attach repository' }, 500)
       return c.json({ ok: true as const, id, reused: false }, 201)
     } catch (error) {
-      // Lost the race against a concurrent attach of the same repository. The
+      // Lost the race against a concurrent attach of the same repository. A
       // unique index did its job; read back the winner rather than failing an
       // operation that has already achieved what the caller asked for.
       if (!isUniqueViolation(error)) throw error
-      const winner = await findAttachedSource(db, organizationId, fields)
+      const winner = (await findAttachedSource(db, organizationId, fields)) ??
+        (await findSourceByUrl(db, organizationId, fields.repositoryUrl))
       if (!winner) throw error
       return c.json({ ok: true as const, id: winner, reused: true })
     }
@@ -1399,33 +1415,32 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     )
     if (secretDenied) return secretDenied
 
-    const serviceDenied = await assertScopeInOrganization(
-      c,
-      db,
-      organizationId,
-      'service',
-      fields.serviceId,
-    )
-    if (serviceDenied) return serviceDenied
+    // Find-or-create, keyed by canonical URL: pasting the same clone URL twice
+    // — same wizard run or a different one — answers with the existing row
+    // instead of minting a duplicate, exactly like `/repositories/attach` does
+    // for provider-picked repositories. The existing row's policy fields are
+    // deliberately left alone: a reuse must not silently rewrite the
+    // credential or auto-deploy of a repository other projects already ride.
+    const existing = await findSourceByUrl(db, organizationId, fields.repositoryUrl)
+    if (existing) return c.json({ ok: true as const, id: existing, reused: true })
 
-    const environmentDenied = await assertScopeInOrganization(
-      c,
-      db,
-      organizationId,
-      'environment',
-      fields.environmentId,
-    )
-    if (environmentDenied) return environmentDenied
+    try {
+      const [inserted] = await db
+        .insert(repository)
+        .values({ organizationId, ...fields })
+        .returning({ id: repository.id })
 
-    const [inserted] = await db
-      .insert(repository)
-      .values({ organizationId, ...fields })
-      .returning({ id: repository.id })
+      const id = inserted?.id
+      if (!id) return c.json({ error: 'Failed to create repository' }, 500)
 
-    const id = inserted?.id
-    if (!id) return c.json({ error: 'Failed to create repository' }, 500)
-
-    return c.json({ ok: true as const, id })
+      return c.json({ ok: true as const, id, reused: false }, 201)
+    } catch (error) {
+      // Lost the create race; the unique index held. Answer with the winner.
+      if (!isUniqueViolation(error)) throw error
+      const winner = await findSourceByUrl(db, organizationId, fields.repositoryUrl)
+      if (!winner) throw error
+      return c.json({ ok: true as const, id: winner, reused: true })
+    }
   })
 
   router.patch('/repositories/:id', async (c) => {
@@ -1490,9 +1505,129 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       if (secretDenied) return secretDenied
     }
 
-    await db.update(repository).set(patch).where(eq(repository.id, id))
+    try {
+      await db.update(repository).set(patch).where(eq(repository.id, id))
+    } catch (error) {
+      // A patched URL canonicalizes onto a row this organization already has.
+      // The caller meant *that* repository — point them at it instead of
+      // holding two rows for one repo.
+      if (!isUniqueViolation(error)) throw error
+      return c.json({ error: 'source_url_conflict' }, 409)
+    }
 
     return c.json({ ok: true as const })
+  })
+
+  /**
+   * Re-read provider facts for one repository — the default branch above all.
+   *
+   * `default_branch` is written once at attach time and the upstream value can
+   * change afterwards; a deploy that omits a branch and a webhook filter that
+   * names one would then quietly track the wrong ref. The refresh reads the
+   * provider's current listing and records what it saw in `metadata`
+   * (`detectedDefaultBranch`, `defaultBranchCheckedAt`).
+   *
+   * The `default_branch` **column** is updated only while it still tracks the
+   * provider: when it is null, or equals the previously detected value. An
+   * operator who set an explicit branch keeps it — the column doubles as the
+   * webhook branch filter, and a refresh must not widen or retarget a policy a
+   * human wrote down.
+   *
+   * Deploy-key and generic-git rows have no provider listing to consult and
+   * answer 400: their branch is operator-owned by construction.
+   */
+  router.post('/repositories/:id/refresh', async (c) => {
+    const ctx = await resolveSourceSession(c)
+    if (ctx instanceof Response) return ctx
+    const { db, organizationId } = ctx
+
+    const id = c.req.param('id')
+    if (!UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+
+    const denied = await assertCanManageOr403(c, 'organization', organizationId)
+    if (denied) return denied
+
+    const [row] = await db
+      .select(SOURCE_SELECT)
+      .from(repository)
+      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
+      .limit(1)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    if (!row.connectionId) {
+      return c.json({
+        error: 'source_refresh_not_supported',
+        message:
+          'Only provider-connected repositories can be refreshed; deploy-key and generic git sources have no provider to ask.',
+      }, 400)
+    }
+
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    if (!dataEncryptionSecrets) {
+      return c.json({ error: 'Data encryption unavailable' }, 503)
+    }
+
+    let listing
+    try {
+      listing = await resolveGitProvider(row.provider).listRepositories(
+        { db, dataEncryptionSecrets },
+        row.connectionId,
+      )
+    } catch (error) {
+      return providerErrorResponse(c, error)
+    }
+
+    const match = row.repositoryExternalId
+      ? listing.find((entry) => entry.id === row.repositoryExternalId)
+      : undefined
+    if (!match) {
+      return c.json({
+        error: 'source_not_visible_to_connection',
+        message:
+          'The connection can no longer see this repository — it may have been removed from the installation.',
+      }, 404)
+    }
+
+    const metadata = readSourceMetadata(row.metadata)
+    const previouslyDetected = typeof metadata.detectedDefaultBranch === 'string'
+      ? metadata.detectedDefaultBranch
+      : null
+    metadata.detectedDefaultBranch = match.defaultBranch
+    metadata.defaultBranchCheckedAt = new Date().toISOString()
+
+    const tracksProvider = row.defaultBranch === null ||
+      row.defaultBranch === previouslyDetected
+    const patch: Record<string, unknown> = {
+      metadata,
+      updatedAt: new Date().toISOString(),
+    }
+    if (tracksProvider && match.defaultBranch) {
+      patch.defaultBranch = match.defaultBranch
+    }
+    // A rename upstream shows up as a changed clone URL; adopt it so the
+    // canonical-URL dedupe keeps matching what operators paste today.
+    if (match.cloneUrl) {
+      const canonical = canonicalizeRepositoryUrl(match.cloneUrl)
+      if (canonical !== row.repositoryUrl) patch.repositoryUrl = canonical
+    }
+
+    try {
+      await db.update(repository).set(patch).where(eq(repository.id, id))
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error
+      // The renamed URL collides with another row this organization holds;
+      // keep the stored URL and still record the refreshed branch facts.
+      delete patch.repositoryUrl
+      await db.update(repository).set(patch).where(eq(repository.id, id))
+    }
+
+    const [updated] = await db
+      .select(SOURCE_SELECT)
+      .from(repository)
+      .where(eq(repository.id, id))
+      .limit(1)
+    if (!updated) return c.json({ error: 'Not found' }, 404)
+    return c.json({ ok: true as const, repository: serializeSourceRow(updated) })
   })
 
   router.delete('/repositories/:id', async (c) => {

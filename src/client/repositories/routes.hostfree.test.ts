@@ -35,10 +35,10 @@ import {
   assertSecretInOrganization,
   assertConnectionInOrganization,
   assertConnectionUnclaimed,
-  assertScopeInOrganization,
   composeReferencesRepository,
   fetchInstallationAccount,
   findAttachedSource,
+  findSourceByUrl,
   isUniqueViolation,
   providerErrorResponse,
   redirectToForgeUi,
@@ -273,41 +273,17 @@ test('composeReferencesRepository reads the EXISTS flag', async () => {
   )
 })
 
-test('assertScopeInOrganization hides a foreign or missing parent as 404', async () => {
-  const c = mockContext()
+test('findSourceByUrl answers the row id or null', async () => {
   assertEquals(
-    await assertScopeInOrganization(c, selectLimitDb([]), ORG_ID, 'service', null),
-    null,
-  )
-
-  const missing = await assertScopeInOrganization(
-    c,
-    { execute: () => Promise.resolve([]) } as unknown as Db,
-    ORG_ID,
-    'service',
-    SERVICE_ID,
-  )
-  if (!(missing instanceof Response)) throw new TypeError('expected 404')
-  await expectJson(missing, 404, { error: 'Not found' })
-
-  const foreign = await assertScopeInOrganization(
-    c,
-    { execute: () => Promise.resolve([{ organization_id: OTHER_ORG }]) } as unknown as Db,
-    ORG_ID,
-    'environment',
-    SERVICE_ID,
-  )
-  if (!(foreign instanceof Response)) throw new TypeError('expected foreign 404')
-  await expectJson(foreign, 404, { error: 'Not found' })
-
-  assertEquals(
-    await assertScopeInOrganization(
-      c,
-      { execute: () => Promise.resolve([{ organization_id: ORG_ID }]) } as unknown as Db,
+    await findSourceByUrl(
+      selectLimitDb([{ id: SOURCE_ID }]),
       ORG_ID,
-      'service',
-      SERVICE_ID,
+      'https://github.com/acme/app.git',
     ),
+    SOURCE_ID,
+  )
+  assertEquals(
+    await findSourceByUrl(selectLimitDb([]), ORG_ID, 'https://github.com/acme/app.git'),
     null,
   )
 })
@@ -948,8 +924,6 @@ test('inspect requires a ref when the source has no default branch', async () =>
       id: SOURCE_ID,
       organizationId: ORG_ID,
       connectionId: CONNECTION_ID,
-      serviceId: null,
-      environmentId: null,
       secretId: null,
       provider: 'github',
       repositoryUrl: 'https://github.com/acme/app.git',
@@ -1035,11 +1009,14 @@ test('attach reuses an existing binding and maps a unique-violation race', async
     { ok: true, id: SOURCE_ID, reused: true },
   )
 
+  // Race pops: role, ownership, provider, external-id miss, URL miss, then the
+  // post-conflict external-id re-read that finds the winner.
   const raced = sourceHttpDb({
     limitQueue: [
       [{ role: 'superadmin' }],
       [installRow],
       [{ provider: 'github' }],
+      [],
       [],
       [{ id: SOURCE_ID }],
     ],
@@ -1093,8 +1070,6 @@ function sourceRow(overrides: Record<string, unknown> = {}) {
     id: SOURCE_ID,
     organizationId: ORG_ID,
     connectionId: CONNECTION_ID,
-    serviceId: null,
-    environmentId: null,
     secretId: null,
     provider: 'github',
     repositoryUrl: 'https://github.com/acme/app.git',
@@ -1110,23 +1085,10 @@ function sourceRow(overrides: Record<string, unknown> = {}) {
   }
 }
 
-test('list filters and create/patch bodies reject invalid combinations', async () => {
+test('create/patch bodies reject invalid combinations', async () => {
   const { app, cookie } = await buildSourceApp(sourceHttpDb({ selectRows: [] }))
   const headers = authHeaders(cookie)
 
-  await expectJson(
-    await app.request(
-      `/repositories?serviceId=${SERVICE_ID}&environmentId=${SOURCE_ID}`,
-      { headers },
-    ),
-    400,
-    { error: 'Invalid request' },
-  )
-  await expectJson(
-    await app.request('/repositories?serviceId=not-a-uuid', { headers }),
-    400,
-    { error: 'Invalid request' },
-  )
   await expectJson(
     await app.request('/repositories', {
       method: 'POST',
@@ -1152,7 +1114,7 @@ test('list filters and create/patch bodies reject invalid combinations', async (
       }),
     }),
     400,
-    { error: 'source_single_parent_required' },
+    { error: 'source_scope_not_supported' },
   )
   await expectJson(
     await app.request(`/repositories/${SOURCE_ID}/inspect`, { headers }),
@@ -1298,10 +1260,12 @@ test('nested source routes answer 503 when encryption secrets are missing', asyn
 
 test('create and attach insert a new binding when none exists', async () => {
   const installRow = { organizationId: ORG_ID, provider: 'github' }
+  // Create pops: role, connection ownership, then the URL find-or-create miss.
   const created = sourceHttpDb({
     limitQueue: [
       [{ role: 'superadmin' }],
       [installRow],
+      [],
     ],
     insertId: SOURCE_ID,
   })
@@ -1315,15 +1279,18 @@ test('create and attach insert a new binding when none exists', async () => {
         connectionId: CONNECTION_ID,
       }),
     }),
-    200,
-    { ok: true, id: SOURCE_ID },
+    201,
+    { ok: true, id: SOURCE_ID, reused: false },
   )
 
+  // Attach pops: role, connection ownership, provider, the external-id miss,
+  // then the URL adoption miss.
   const attached = sourceHttpDb({
     limitQueue: [
       [{ role: 'superadmin' }],
       [installRow],
       [installRow],
+      [],
       [],
     ],
     insertId: SOURCE_ID,
@@ -1347,6 +1314,7 @@ test('create and attach insert a new binding when none exists', async () => {
     limitQueue: [
       [{ role: 'superadmin' }],
       [installRow],
+      [],
     ],
     insertId: null,
   })
@@ -1365,6 +1333,122 @@ test('create and attach insert a new binding when none exists', async () => {
   )
 })
 
+test('create reuses the organization row holding the same canonical URL', async () => {
+  const installRow = { organizationId: ORG_ID, provider: 'github' }
+  // The pasted spelling differs from the stored one; canonicalization is what
+  // makes the find-or-create hit.
+  const reused = sourceHttpDb({
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [installRow],
+      [{ id: SOURCE_ID }],
+    ],
+  })
+  const { app, cookie } = await buildSourceApp(reused)
+  await expectJson(
+    await app.request('/repositories', {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        repositoryUrl: 'https://GitHub.com/acme/app',
+        connectionId: CONNECTION_ID,
+      }),
+    }),
+    200,
+    { ok: true, id: SOURCE_ID, reused: true },
+  )
+})
+
+test('attach adopts an existing same-URL row instead of duplicating it', async () => {
+  const installRow = { organizationId: ORG_ID, provider: 'github' }
+  // External-id lookup misses (the row was created from a pasted clone URL),
+  // the URL lookup hits, and the row is re-keyed to the connection in place.
+  const adopted = sourceHttpDb({
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [installRow],
+      [installRow],
+      [],
+      [{ id: SOURCE_ID }],
+    ],
+  })
+  const { app, cookie } = await buildSourceApp(adopted)
+  await expectJson(
+    await app.request('/repositories/attach', {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        repositoryExternalId: '99',
+        repositoryUrl: 'https://github.com/acme/app.git',
+      }),
+    }),
+    200,
+    { ok: true, id: SOURCE_ID, reused: true },
+  )
+})
+
+test('refresh rejects unknown rows and sources without a connection', async () => {
+  const missing = await buildSourceApp(sourceHttpDb({
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [],
+    ],
+  }))
+  await expectJson(
+    await missing.app.request(`/repositories/${SOURCE_ID}/refresh`, {
+      method: 'POST',
+      headers: { ...authHeaders(missing.cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+    404,
+    { error: 'Not found' },
+  )
+
+  // A deploy-key row has no provider listing to consult.
+  const keyed = await buildSourceApp(sourceHttpDb({
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [sourceRow({ connectionId: null, provider: 'git' })],
+    ],
+  }))
+  const refreshed = await keyed.app.request(`/repositories/${SOURCE_ID}/refresh`, {
+    method: 'POST',
+    headers: { ...authHeaders(keyed.cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assertEquals(refreshed.status, 400)
+  const body = await refreshed.json() as { error?: unknown }
+  assertEquals(body.error, 'source_refresh_not_supported')
+})
+
+test('patch answers 409 when the new URL collides with another row', async () => {
+  const db = sourceHttpDb({
+    selectRows: [sourceRow()],
+    insertError: { code: '23505' },
+  })
+  // `sourceHttpDb` raises insertError from insert only; reuse the shape for
+  // update by overriding it here.
+  const conflicted = {
+    ...(db as unknown as Record<string, unknown>),
+    update: () => ({
+      set: () => ({
+        where: () => Promise.reject({ code: '23505' }),
+      }),
+    }),
+  } as unknown as Db
+  const { app, cookie } = await buildSourceApp(conflicted)
+  await expectJson(
+    await app.request(`/repositories/${SOURCE_ID}`, {
+      method: 'PATCH',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({ repositoryUrl: 'https://github.com/acme/other.git' }),
+    }),
+    409,
+    { error: 'source_url_conflict' },
+  )
+})
+
 test('attach succeeds for a non-platform user with an organization:manage grant', async () => {
   const installRow = { organizationId: ORG_ID, provider: 'github' }
   const attached = sourceHttpDb({
@@ -1373,6 +1457,7 @@ test('attach succeeds for a non-platform user with an organization:manage grant'
       [{ role: 'user' }],
       [installRow],
       [installRow],
+      [],
       [],
     ],
     insertId: SOURCE_ID,
@@ -1409,33 +1494,17 @@ test('list and installations return visible rows; connect callbacks fail closed 
     selectRows: [{ role: 'superadmin' }],
     executeQueue: [
       [{ allowed: true }],
-      [{ organization_id: ORG_ID }],
       [{ item_id: SOURCE_ID }],
     ],
-    orderByRows: [sourceRow({ serviceId: SERVICE_ID })],
+    orderByRows: [sourceRow()],
   })
   const { app, cookie } = await buildSourceApp(listed)
   const headers = authHeaders(cookie)
-  const list = await app.request(`/repositories?serviceId=${SERVICE_ID}`, { headers })
+  const list = await app.request('/repositories', { headers })
   assertEquals(list.status, 200)
   const listedBody = await list.json() as { repositories?: Array<{ id?: unknown }> }
   assertEquals(listedBody.repositories?.length, 1)
   assertEquals(listedBody.repositories?.[0]?.id, SOURCE_ID)
-
-  const envList = await buildSourceApp(sourceHttpDb({
-    selectRows: [{ role: 'superadmin' }],
-    executeQueue: [
-      [{ allowed: true }],
-      [{ organization_id: OTHER_ORG }],
-    ],
-  }))
-  await expectJson(
-    await envList.app.request(`/repositories?environmentId=${SOURCE_ID}`, {
-      headers: authHeaders(envList.cookie),
-    }),
-    404,
-    { error: 'Not found' },
-  )
 
   const installs = await buildSourceApp(sourceHttpDb({
     selectRows: [{ role: 'superadmin' }],

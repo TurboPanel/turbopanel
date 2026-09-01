@@ -552,49 +552,16 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         FROM ip i WHERE i.id = ${entityId}::uuid
       `
     case 'repository':
+      // Org-level registry entry, exactly like `network` / `datacenter`: the
+      // legacy service/environment parent columns are gone, and workload
+      // attachment (project.repository_id, compose sourceId references) grants
+      // nothing on the repository itself.
       return sql`
         SELECT 'repository'::text AS entity_type, src.id AS entity_id, 0 AS depth
         FROM repository src WHERE src.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, src.organization_id, 1
         FROM repository src WHERE src.id = ${entityId}::uuid
-        UNION ALL
-        SELECT 'service'::text, src.service_id, 1
-        FROM repository src
-        WHERE src.id = ${entityId}::uuid AND src.service_id IS NOT NULL
-        UNION ALL
-        SELECT 'environment'::text, s.environment_id, 2
-        FROM repository src
-        JOIN service s ON s.id = src.service_id
-        WHERE src.id = ${entityId}::uuid AND src.service_id IS NOT NULL
-        UNION ALL
-        SELECT 'project'::text, e.project_id, 3
-        FROM repository src
-        JOIN service s ON s.id = src.service_id
-        JOIN environment e ON e.id = s.environment_id
-        WHERE src.id = ${entityId}::uuid AND src.service_id IS NOT NULL
-        UNION ALL
-        SELECT 'workspace'::text, p.workspace_id, 4
-        FROM repository src
-        JOIN service s ON s.id = src.service_id
-        JOIN environment e ON e.id = s.environment_id
-        JOIN project p ON p.id = e.project_id
-        WHERE src.id = ${entityId}::uuid AND src.service_id IS NOT NULL
-        UNION ALL
-        SELECT 'environment'::text, src.environment_id, 1
-        FROM repository src
-        WHERE src.id = ${entityId}::uuid AND src.environment_id IS NOT NULL
-        UNION ALL
-        SELECT 'project'::text, e.project_id, 2
-        FROM repository src
-        JOIN environment e ON e.id = src.environment_id
-        WHERE src.id = ${entityId}::uuid AND src.environment_id IS NOT NULL
-        UNION ALL
-        SELECT 'workspace'::text, p.workspace_id, 3
-        FROM repository src
-        JOIN environment e ON e.id = src.environment_id
-        JOIN project p ON p.id = e.project_id
-        WHERE src.id = ${entityId}::uuid AND src.environment_id IS NOT NULL
       `
     default:
       throw new Error(`Unknown entity type for ancestry: ${entityType}`)
