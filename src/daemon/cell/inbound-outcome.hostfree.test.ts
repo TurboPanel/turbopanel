@@ -85,6 +85,52 @@ test("deriveInboundOutcome maps fabric-paths-result done and failed", () => {
   );
 });
 
+test("deriveInboundOutcome maps repo-read-result done and failed", () => {
+  const files = [{ path: "package.json", found: true, content: "{}", bytes: 2 }];
+  const entries = [{ path: ".", kind: "dir" }];
+  assertEquals(
+    deriveInboundOutcome({
+      kind: "repo-read-result",
+      requestId: REQUEST_ID,
+      at: AT,
+      ok: true,
+      commitSha: "deadbeef",
+      files,
+      entries,
+    }),
+    {
+      status: "done",
+      result: {
+        ok: true,
+        commitSha: "deadbeef",
+        files,
+        entries,
+        error: undefined,
+      },
+    },
+  );
+  assertEquals(
+    deriveInboundOutcome({
+      kind: "repo-read-result",
+      requestId: REQUEST_ID,
+      at: AT,
+      ok: false,
+      error: "git fetch failed",
+    }),
+    {
+      status: "failed",
+      result: {
+        ok: false,
+        commitSha: undefined,
+        files: undefined,
+        entries: undefined,
+        error: "git fetch failed",
+      },
+      error: "git fetch failed",
+    },
+  );
+});
+
 test("deriveInboundOutcome maps command-outcome with and without result", () => {
   assertEquals(
     deriveInboundOutcome({

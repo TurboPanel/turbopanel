@@ -533,8 +533,6 @@ CREATE TABLE "repository" (
 	"options" jsonb,
 	"organization_id" uuid NOT NULL,
 	"connection_id" uuid,
-	"service_id" uuid,
-	"environment_id" uuid,
 	"secret_id" uuid,
 	"provider" text NOT NULL,
 	"repository_url" text NOT NULL,
@@ -542,11 +540,10 @@ CREATE TABLE "repository" (
 	"default_branch" varchar(255),
 	"subdirectory" text,
 	"auto_deploy" text DEFAULT 'disabled' NOT NULL,
+	CONSTRAINT "uniq_repository_organization_url" UNIQUE("organization_id","repository_url"),
 	CONSTRAINT "uniq_repository_organization_connection_repository" UNIQUE("organization_id","connection_id","repository_external_id"),
 	CONSTRAINT "repository_provider_check" CHECK (provider IN ('github', 'gitlab', 'git')),
-	CONSTRAINT "repository_auto_deploy_check" CHECK (auto_deploy IN ('immediate', 'checks_passed', 'disabled')),
-	CONSTRAINT "repository_at_most_one_parent_check" CHECK (((service_id IS NOT NULL)::int +
-        (environment_id IS NOT NULL)::int) <= 1)
+	CONSTRAINT "repository_auto_deploy_check" CHECK (auto_deploy IN ('immediate', 'checks_passed', 'disabled'))
 );
 --> statement-breakpoint
 CREATE TABLE "secret" (
@@ -950,8 +947,6 @@ ALTER TABLE "replica" ADD CONSTRAINT "replica_managed_id_managed_id_fk" FOREIGN 
 ALTER TABLE "replica" ADD CONSTRAINT "replica_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "repository" ADD CONSTRAINT "repository_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "repository" ADD CONSTRAINT "repository_connection_id_connection_id_fk" FOREIGN KEY ("connection_id") REFERENCES "public"."connection"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "repository" ADD CONSTRAINT "repository_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "repository" ADD CONSTRAINT "repository_environment_id_environment_id_fk" FOREIGN KEY ("environment_id") REFERENCES "public"."environment"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "repository" ADD CONSTRAINT "repository_secret_id_secret_id_fk" FOREIGN KEY ("secret_id") REFERENCES "public"."secret"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "secret" ADD CONSTRAINT "secret_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "secret" ADD CONSTRAINT "secret_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -1085,8 +1080,6 @@ CREATE UNIQUE INDEX "uniq_replica_primary" ON "replica" USING btree ("managed_id
 CREATE UNIQUE INDEX "uniq_replica_server_private_port" ON "replica" USING btree ("server_id","private_port") WHERE "replica"."private_port" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_repository_organization_id" ON "repository" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_repository_connection_id" ON "repository" USING btree ("connection_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_repository_service_id" ON "repository" USING btree ("service_id" uuid_ops);--> statement-breakpoint
-CREATE INDEX "idx_repository_environment_id" ON "repository" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_repository_secret_id" ON "repository" USING btree ("secret_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_secret_organization_id" ON "secret" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_secret_principal_id" ON "secret" USING btree ("principal_id" uuid_ops);--> statement-breakpoint

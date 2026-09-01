@@ -21,15 +21,17 @@ journal entry; commit all three and leave `0000_init.sql` untouched.
 
 The baseline has been regenerated while pre-MVP (no installed instances, no
 production data) — first for the `gitapp` table and `installation.app_id`,
-then the schema-cutover squash, then again to fold the `monitor` table into
-`0000_init.sql` (replacing `0001_add_monitor_credential_table`). Each of
-those is a deliberate pre-MVP exception, **not** a precedent: the policy
-above is what holds going forward. Additive forward migrations,
-`0000_init.sql` is the squashed baseline and nothing else, and applying a
-regenerated baseline requires wiping the database because `public.migration`
-replay follows the migration journal timestamps/order
-(`migrations/meta/_journal.json`). Once a real instance exists, regenerating
-stops being an option at all.
+then the schema-cutover squash, then to fold the `monitor` table into
+`0000_init.sql` (replacing `0001_add_monitor_credential_table`), then again
+to fold org-level repository uniqueness into `0000_init.sql` (replacing
+`0001_repository_org_level_dedupe`, which also dropped the leftover
+`repository.service_id` / `environment_id` parent columns). Each of those is
+a deliberate pre-MVP exception, **not** a precedent: the policy above is
+what holds going forward. Additive forward migrations, `0000_init.sql` is
+the squashed baseline and nothing else, and applying a regenerated baseline
+requires wiping the database because `public.migration` replay follows the
+migration journal timestamps/order (`migrations/meta/_journal.json`). Once a
+real instance exists, regenerating stops being an option at all.
 
 Physical boolean columns use an `is_` prefix (`is_connected`,
 `is_read_eligible`, `is_for_build`, `is_for_runtime`,
@@ -332,7 +334,7 @@ letter-first alphanumeric token, **no underscores**. Guarded by
 | `mount` | `mount` | Service attachment of a storage identity. Unchanged. |
 | `forge` | `forge` | Registered GitHub App / GitLab OAuth application (`organization_id` NULL = instance-wide). Was `gitapp`. **`envelopes`** was `credentials`. |
 | `connection` | `gitConnection` | Git provider App installation granted to one org. Was `installation` (export `gitConnection`). **`forge_id`** FK → `forge`. **`provider`** kept as a denormalized filter column. **`external_installation_id`** is the provider-side id. No token columns — installation access tokens are minted on demand in `src/lib/git/github-app-token.ts`. |
-| `repository` | `repository` | Git repository connected to an organization — **one row per repo per org**, deduped by `UNIQUE (organization_id, repository_url)` over the canonicalized clone URL (`canonicalizeRepositoryUrl`: lower-cased host, `.git` suffix). Was `source`; the legacy `service_id` / `environment_id` parent columns were dropped in `0001` — attachment is `project.repository_id` plus compose `services.<name>.x-turbopanel.source.sourceId` references. **`connection_id`** SET NULL; optional `secret_id` SET NULL. `metadata` holds provider-observed facts (`detectedDefaultBranch`, `defaultBranchCheckedAt`, `lastInspected*`), refreshed by `POST /repositories/:id/refresh`. CRUD: `src/client/repositories/routes.ts`. |
+| `repository` | `repository` | Git repository connected to an organization — **one row per repo per org**, deduped by `UNIQUE (organization_id, repository_url)` over the canonicalized clone URL (`canonicalizeRepositoryUrl`: lower-cased host, `.git` suffix). Was `source`. No `service_id` / `environment_id` parent columns — attachment is `project.repository_id` plus compose `services.<name>.x-turbopanel.source.sourceId` references. **`connection_id`** SET NULL; optional `secret_id` SET NULL. `metadata` holds provider-observed facts (`detectedDefaultBranch`, `defaultBranchCheckedAt`, `lastInspected*`), refreshed by `POST /repositories/:id/refresh`. CRUD: `src/client/repositories/routes.ts`. |
 | `delivery` | `webhookDelivery` | Inbound provider-webhook delivery ledger — replay protection only. Org-agnostic on purpose: the delivery id arrives before the payload is matched to a connection. `provider` CHECK `github`; unique `(provider, external_delivery_id)`; `created_at` is the received time and the sweep cursor. Holds no payload and no secret. Claimed by `claimWebhookDelivery`, pruned after `WEBHOOK_DELIVERY_RETENTION_MS` (`src/lib/db/webhook-delivery-records.ts`). |
 | `grant` | `grant` | Authz grant row. Unchanged. |
 | `session` | `session` | Opaque DB-backed user session. Unchanged. |

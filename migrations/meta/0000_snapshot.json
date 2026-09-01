@@ -1,5 +1,5 @@
 {
-  "id": "6a760a5a-7b5d-4c81-a405-d4461d5d2025",
+  "id": "730bdf89-7682-4dce-ae02-a6b9df1a8721",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -5432,18 +5432,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "service_id": {
-          "name": "service_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "environment_id": {
-          "name": "environment_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "secret_id": {
           "name": "secret_id",
           "type": "uuid",
@@ -5521,38 +5509,6 @@
           "method": "btree",
           "with": {}
         },
-        "idx_repository_service_id": {
-          "name": "idx_repository_service_id",
-          "columns": [
-            {
-              "expression": "service_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_repository_environment_id": {
-          "name": "idx_repository_environment_id",
-          "columns": [
-            {
-              "expression": "environment_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "idx_repository_secret_id": {
           "name": "idx_repository_secret_id",
           "columns": [
@@ -5597,32 +5553,6 @@
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "repository_service_id_service_id_fk": {
-          "name": "repository_service_id_service_id_fk",
-          "tableFrom": "repository",
-          "tableTo": "service",
-          "columnsFrom": [
-            "service_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "repository_environment_id_environment_id_fk": {
-          "name": "repository_environment_id_environment_id_fk",
-          "tableFrom": "repository",
-          "tableTo": "environment",
-          "columnsFrom": [
-            "environment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
         "repository_secret_id_secret_id_fk": {
           "name": "repository_secret_id_secret_id_fk",
           "tableFrom": "repository",
@@ -5639,6 +5569,14 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
+        "uniq_repository_organization_url": {
+          "name": "uniq_repository_organization_url",
+          "nullsNotDistinct": false,
+          "columns": [
+            "organization_id",
+            "repository_url"
+          ]
+        },
         "uniq_repository_organization_connection_repository": {
           "name": "uniq_repository_organization_connection_repository",
           "nullsNotDistinct": false,
@@ -5658,10 +5596,6 @@
         "repository_auto_deploy_check": {
           "name": "repository_auto_deploy_check",
           "value": "auto_deploy IN ('immediate', 'checks_passed', 'disabled')"
-        },
-        "repository_at_most_one_parent_check": {
-          "name": "repository_at_most_one_parent_check",
-          "value": "((service_id IS NOT NULL)::int +\n        (environment_id IS NOT NULL)::int) <= 1"
         }
       },
       "isRLSEnabled": false

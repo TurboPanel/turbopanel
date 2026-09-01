@@ -34,6 +34,18 @@ function commandOutcomePayload(
   return inbound.result;
 }
 
+function repoReadResultPayload(
+  inbound: Extract<DaemonInboundEnvelope, { kind: "repo-read-result" }>,
+): unknown {
+  return {
+    ok: inbound.ok,
+    commitSha: inbound.commitSha,
+    files: inbound.files,
+    entries: inbound.entries,
+    error: inbound.error,
+  };
+}
+
 /**
  * Map a daemon inbound envelope to a pending-request completion.
  * Returns `null` for non-terminal kinds (`command-ack` and similar).
@@ -54,6 +66,12 @@ export function deriveInboundOutcome(
       );
     case "fabric-paths-result":
       return inboundOutcomeFromError({ paths: inbound.paths }, inbound.error);
+    case "repo-read-result":
+      return inboundOutcomeFromOk(
+        inbound.ok,
+        inbound.error,
+        repoReadResultPayload(inbound),
+      );
     case "command-outcome":
       return inboundOutcomeFromOk(
         inbound.ok,
