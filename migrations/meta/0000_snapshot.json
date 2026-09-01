@@ -1,5 +1,5 @@
 {
-  "id": "c7d8c513-e0c8-4dfc-b586-a4427a86a84c",
+  "id": "6a760a5a-7b5d-4c81-a405-d4461d5d2025",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -4526,6 +4526,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "applied_username": {
+          "name": "applied_username",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
         "password": {
           "name": "password",
           "type": "text",
@@ -4622,6 +4628,10 @@
         "principal_username_format_check": {
           "name": "principal_username_format_check",
           "value": "(char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)"
+        },
+        "principal_applied_username_format_check": {
+          "name": "principal_applied_username_format_check",
+          "value": "(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)"
         }
       },
       "isRLSEnabled": false

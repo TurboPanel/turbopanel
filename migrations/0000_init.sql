@@ -437,12 +437,14 @@ CREATE TABLE "principal" (
 	"kind" text NOT NULL,
 	"provider" text NOT NULL,
 	"username" varchar(255) NOT NULL,
+	"applied_username" varchar(255) NOT NULL,
 	"password" text,
 	"project_id" uuid,
 	"managed_id" uuid,
 	CONSTRAINT "principal_kind_check" CHECK (kind IN ('system', 'database')),
 	CONSTRAINT "principal_provider_check" CHECK (provider IN ('server', 'postgres', 'mysql', 'redis', 'clickhouse')),
-	CONSTRAINT "principal_username_format_check" CHECK ((char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text))
+	CONSTRAINT "principal_username_format_check" CHECK ((char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)),
+	CONSTRAINT "principal_applied_username_format_check" CHECK ((char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text))
 );
 --> statement-breakpoint
 CREATE TABLE "project" (
