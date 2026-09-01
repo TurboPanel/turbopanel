@@ -429,8 +429,9 @@ function composeWithReplicatedWebService(): ComposeDocument {
           deploy: { replicas: 2 },
         },
       },
+      networks: { default: { driver: "overlay" } },
     },
-    presentation: { keyOrder: ["services"], comments: {} },
+    presentation: { keyOrder: ["services", "networks"], comments: {} },
   };
 }
 
@@ -2075,6 +2076,20 @@ test("POST /environments/:id/deploy records per-server failures when queue deliv
         .sort((a, b) => a.localeCompare(b));
       assertEquals(deployCommands.length, 2);
       assertEquals(commandStatuses, ["failed", "queued"]);
+
+      // Spanning compose networks only materialize when the plan places
+      // replicas on more than one server (see `collectSpanningComposeNetworkKeys`);
+      // pin that precondition down explicitly so a placement regression fails
+      // here with a clear signal instead of surfacing as an empty `leftover`
+      // below with no indication of why.
+      const placement = await db
+        .select({ serverId: slot.serverId })
+        .from(slot)
+        .where(eq(slot.environmentId, environmentId));
+      assertEquals(
+        [...new Set(placement.map((row) => row.serverId))].sort().length,
+        2,
+      );
 
       const leftover = await listEnvironmentComposeNetworks(db, environmentId);
       assertEquals(leftover.length > 0, true);
