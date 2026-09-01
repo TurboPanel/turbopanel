@@ -7,9 +7,11 @@ import {
   environment,
   hosting,
   organization,
+  principal,
   project,
   server,
   service,
+  tenancy,
   workspace,
 } from './schema.ts'
 import {
@@ -370,6 +372,85 @@ test('deleteProjectCascade removes children when containers are stopped', async 
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+test('deleteProjectCascade removes tenancy edges before services', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+
+  const [org] = await db
+    .insert(organization)
+    .values({ name: 'Tenancy Cascade Org' })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: 'Tenancy Cascade Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = ws!.id
+
+  const [proj] = await db
+    .insert(project)
+    .values({ name: 'Tenancy Cascade Project', workspaceId })
+    .returning({ id: project.id })
+  const projectId = proj!.id
+
+  const [env] = await db
+    .insert(environment)
+    .values({ name: 'Production', projectId })
+    .returning({ id: environment.id })
+  const environmentId = env!.id
+
+  const [svc] = await db
+    .insert(service)
+    .values({ name: 'web', environmentId, composeServiceName: 'web' })
+    .returning({ id: service.id })
+  const serviceId = svc!.id
+
+  const [acct] = await db
+    .insert(principal)
+    .values({
+      kind: 'system',
+      provider: 'server',
+      username: 'app',
+      appliedUsername: 'app',
+      projectId,
+    })
+    .returning({ id: principal.id })
+  const principalId = acct!.id
+
+  await db.insert(tenancy).values({ principalId, serviceId })
+
+  try {
+    const result = await deleteProjectCascade(db, projectId)
+    assertEquals(result, { ok: true })
+
+    const [goneProject] = await db
+      .select({ id: project.id })
+      .from(project)
+      .where(eq(project.id, projectId))
+      .limit(1)
+    assertEquals(goneProject, undefined)
+
+    const remainingTenancy = await db
+      .select({ id: tenancy.id })
+      .from(tenancy)
+      .where(eq(tenancy.serviceId, serviceId))
+    assertEquals(remainingTenancy.length, 0)
+  } finally {
+    await db.delete(tenancy).where(eq(tenancy.serviceId, serviceId))
+    await db.delete(principal).where(eq(principal.id, principalId))
+    await db.delete(service).where(eq(service.id, serviceId))
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }

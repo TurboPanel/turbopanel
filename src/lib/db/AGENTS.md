@@ -463,8 +463,11 @@ after all tenant `role='service'` containers under the project are non-active
 (`exited`/`dead`/`removing`), `DELETE /projects/:id` runs
 `applyStorageRetentionOnParentDelete` (clear `mount`s first — `service_id` is
 RESTRICT — then drop `retention='delete'` storage; `retain` rows stay org-owned
-via SET NULL), then deletes in order `container` → `hosting` → `service` →
-`environment` → `project` (variables/`managed` cascade via FK). Active
+via SET NULL), then deletes in order `container` → `hosting` → `tenancy` →
+`binding` → `service` → `environment` → `project` (variables/`managed` /
+`principal` cascade via FK). `tenancy.service_id` and `binding.service_id` are
+RESTRICT (a direct service delete must not leave a dangling run-as or inject
+edge), so the project cascade drops those rows first. Active
 **service** containers return **409** `project_has_running_services` — stop
 stacks first via `environment.stop`. Running `ingress` / `turbopanel` rows
 (ProxySQL, per-service Traefik, Orchestrator) do not gate delete; their

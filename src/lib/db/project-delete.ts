@@ -1,12 +1,14 @@
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
 import {
+  binding,
   container,
   environment,
   hosting,
   managed,
   project,
   service,
+  tenancy,
 } from './schema.ts'
 import { applyStorageRetentionOnParentDelete } from './storage-records.ts'
 import { purgeEnvironmentsComposeNetworks } from './fabric-records.ts'
@@ -53,10 +55,12 @@ function hasActiveServiceContainer(
 /**
  * Cascade-delete a project and all child resources after verifying no active
  * containers remain and no managed-engine rows still exist. Order: container →
- * hosting → service → environment → project. Variables cascade via FK.
- * Managed host runtime must be torn down with `managed.destroy` first —
- * `managed.environment_id` is ON DELETE CASCADE, so a live row here would
- * otherwise drop the cluster without stopping Docker.
+ * hosting → tenancy → binding → service → environment → project. Variables
+ * cascade via FK. `tenancy.service_id` and `binding.service_id` are RESTRICT
+ * (safety net on a direct service delete), so the cascade must drop those
+ * edges before services. Managed host runtime must be torn down with
+ * `managed.destroy` first — `managed.environment_id` is ON DELETE CASCADE, so
+ * a live row here would otherwise drop the cluster without stopping Docker.
  */
 export async function deleteProjectCascade(
   db: Db,
@@ -121,6 +125,8 @@ export async function deleteProjectCascade(
         if (hostingIds.length > 0) {
           await tx.delete(hosting).where(inArray(hosting.id, hostingIds))
         }
+        await tx.delete(tenancy).where(inArray(tenancy.serviceId, serviceIds))
+        await tx.delete(binding).where(inArray(binding.serviceId, serviceIds))
         await tx.delete(service).where(inArray(service.id, serviceIds))
         await tx
           .delete(environment)
