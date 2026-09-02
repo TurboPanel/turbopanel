@@ -175,3 +175,92 @@ function normalizeEntries(raw: unknown): RepositoryEntry[] {
   }
   return entries
 }
+
+export type ResolveDefaultBranchOutcome =
+  | { ok: true; defaultBranch: string | null }
+  | { ok: false; code: 'no_daemon_available' | 'timeout' | 'failed'; message: string }
+
+/**
+ * The remote's default branch, through a **daemon** — `git ls-remote
+ * --symref`, no clone.
+ *
+ * Anonymous only, unlike {@link readRepositoryViaDaemon}: this exists for a
+ * public clone URL the operator gave no default branch, so it never carries a
+ * credential. A private repository still needs the branch named by hand.
+ */
+export async function resolveDefaultBranchViaDaemon(
+  db: Db,
+  registry: DaemonCellRegistry,
+  params: {
+    organizationId: string
+    cloneUrl: string
+    /** Candidate servers, most-preferred first. */
+    serverIds: readonly string[]
+  },
+): Promise<ResolveDefaultBranchOutcome> {
+  const records = await loadServerStatusRecords(db, registry, [
+    ...params.serverIds,
+  ])
+  const online = records.find((record) => record?.connected)
+  if (!online) {
+    return {
+      ok: false,
+      code: 'no_daemon_available',
+      message: 'No connected server can resolve the default branch.',
+    }
+  }
+
+  const requestId = generateRequestId()
+  const envelope: DaemonOutboundEnvelope = {
+    kind: 'repo-default-branch-request',
+    deliveryId: generateDeliveryId(),
+    requestId,
+    cloneUrl: params.cloneUrl,
+    at: new Date().toISOString(),
+  }
+
+  cellTrace('request-start', {
+    requestId,
+    serverId: online.serverId,
+    kind: 'repo-default-branch-request',
+  })
+
+  const record = await registry.getCell(online.serverId).createRequestAndWait(
+    envelope,
+    REPO_READ_TIMEOUT_MS,
+  )
+
+  if (record.status === 'expired') {
+    return { ok: false, code: 'timeout', message: 'timeout resolving default branch' }
+  }
+  if (record.status === 'failed') {
+    return {
+      ok: false,
+      code: 'failed',
+      message: record.error ?? 'failed to resolve default branch',
+    }
+  }
+
+  const result = record.result
+  if (typeof result !== 'object' || result === null) {
+    return { ok: false, code: 'failed', message: 'malformed default-branch result' }
+  }
+  const payload = result as {
+    ok?: unknown
+    defaultBranch?: unknown
+    error?: unknown
+  }
+  if (payload.ok !== true) {
+    return {
+      ok: false,
+      code: 'failed',
+      message: typeof payload.error === 'string'
+        ? payload.error
+        : 'failed to resolve default branch',
+    }
+  }
+  return {
+    ok: true,
+    defaultBranch: typeof payload.defaultBranch === 'string' ? payload.defaultBranch : null,
+  }
+}

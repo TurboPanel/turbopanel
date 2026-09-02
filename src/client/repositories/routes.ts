@@ -25,6 +25,7 @@
 
 import { and, eq, sql } from 'drizzle-orm'
 import { inspectRepository } from './inspect.ts'
+import { resolveDefaultBranchViaDaemon } from './read-repository.ts'
 import { isSafeRoot } from '../../lib/compose/index.ts'
 import { getDaemonCellRegistry } from '../../db.ts'
 import type { Context, Hono } from 'hono'
@@ -63,7 +64,10 @@ import {
   GithubAppTokenError,
   signGithubAppJwt,
 } from '../../lib/git/github-app-token.ts'
-import { resolveGitProvider } from '../../lib/git/git-provider.ts'
+import {
+  resolveGitProvider,
+  type RepositorySummary,
+} from '../../lib/git/git-provider.ts'
 import { canonicalizeRepositoryUrl } from '../../lib/git/clone-url.ts'
 import {
   exchangeGitlabAuthorizationCode,
@@ -107,6 +111,7 @@ import {
   SOURCE_DEPLOY_KEY_PROVIDERS,
   SOURCE_REFERENCED_BY_COMPOSE_ERROR,
   UUID_RE,
+  type SourceCreateFields,
   type SourceProvider,
 } from './routes-helpers.ts'
 
@@ -412,6 +417,70 @@ export function isUniqueViolation(error: unknown): boolean {
     error !== null &&
     (error as { code?: unknown }).code === '23505'
   )
+}
+
+function listingMatchForSource(
+  listing: RepositorySummary[],
+  repositoryExternalId: string | null,
+): RepositorySummary | undefined {
+  if (!repositoryExternalId) return undefined
+  return listing.find((entry) => entry.id === repositoryExternalId)
+}
+
+function detectedBranchFromMetadata(
+  metadata: Record<string, unknown>,
+): string | null {
+  return typeof metadata.detectedDefaultBranch === 'string'
+    ? metadata.detectedDefaultBranch
+    : null
+}
+
+/** Provider facts to persist on refresh — branch tracking + renamed clone URL. */
+function buildRefreshPatch(
+  row: {
+    defaultBranch: string | null
+    repositoryUrl: string
+    metadata: unknown
+  },
+  match: RepositorySummary,
+): Record<string, unknown> {
+  const metadata = readSourceMetadata(row.metadata)
+  const previouslyDetected = detectedBranchFromMetadata(metadata)
+  metadata.detectedDefaultBranch = match.defaultBranch
+  metadata.defaultBranchCheckedAt = new Date().toISOString()
+
+  const tracksProvider = row.defaultBranch === null ||
+    row.defaultBranch === previouslyDetected
+  const patch: Record<string, unknown> = {
+    metadata,
+    updatedAt: new Date().toISOString(),
+  }
+  if (tracksProvider && match.defaultBranch) {
+    patch.defaultBranch = match.defaultBranch
+  }
+  // A rename upstream shows up as a changed clone URL; adopt it so the
+  // canonical-URL dedupe keeps matching what operators paste today.
+  if (match.cloneUrl) {
+    const canonical = canonicalizeRepositoryUrl(match.cloneUrl)
+    if (canonical !== row.repositoryUrl) patch.repositoryUrl = canonical
+  }
+  return patch
+}
+
+async function persistRefreshPatch(
+  db: Db,
+  id: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await db.update(repository).set(patch).where(eq(repository.id, id))
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error
+    // The renamed URL collides with another row this organization holds;
+    // keep the stored URL and still record the refreshed branch facts.
+    delete patch.repositoryUrl
+    await db.update(repository).set(patch).where(eq(repository.id, id))
+  }
 }
 
 /** The existing binding for one repository, keyed exactly like the unique index. */
@@ -1383,6 +1452,52 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     }
   })
 
+  /**
+   * Best-effort default-branch detection for a public clone URL the operator
+   * left blank — `git ls-remote --symref`, through whatever connected server
+   * answers first.
+   *
+   * Anonymous only: a `secretId` means the operator is on the private
+   * deploy-key lane, which still needs the branch named by hand (resolving it
+   * would mean cloning with the key before they have confirmed it is even
+   * added). A `connectionId` means this row is provider-connected — its
+   * default branch is a provider fact `/repositories/attach` already carries
+   * in from the picker, so this generic route should not go around it with a
+   * clone-based guess. Never fatal either way — no connected server, a
+   * timeout, or an empty answer all fall through to creating the row with no
+   * default branch, exactly as it always has.
+   */
+  async function detectPublicDefaultBranch(
+    c: Context<AppEnv>,
+    db: Db,
+    organizationId: string,
+    fields: SourceCreateFields,
+  ): Promise<{ defaultBranch: string; detectedAt: string } | null> {
+    if (
+      fields.defaultBranch !== null ||
+      fields.secretId !== null ||
+      fields.connectionId !== null
+    ) {
+      return null
+    }
+    const registry = getDaemonCellRegistry(c)
+    if (!registry) return null
+    const serverIds = (await db
+      .select({ id: server.id })
+      .from(server)
+      .where(eq(server.organizationId, organizationId)))
+      .map((entry) => entry.id)
+    if (serverIds.length === 0) return null
+
+    const resolved = await resolveDefaultBranchViaDaemon(db, registry, {
+      organizationId,
+      cloneUrl: fields.repositoryUrl,
+      serverIds,
+    })
+    if (!resolved.ok || !resolved.defaultBranch) return null
+    return { defaultBranch: resolved.defaultBranch, detectedAt: new Date().toISOString() }
+  }
+
   router.post('/repositories', async (c) => {
     const ctx = await resolveSourceSession(c)
     if (ctx instanceof Response) return ctx
@@ -1424,10 +1539,25 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const existing = await findSourceByUrl(db, organizationId, fields.repositoryUrl)
     if (existing) return c.json({ ok: true as const, id: existing, reused: true })
 
+    const detected = await detectPublicDefaultBranch(c, db, organizationId, fields)
+
     try {
       const [inserted] = await db
         .insert(repository)
-        .values({ organizationId, ...fields })
+        .values({
+          organizationId,
+          ...fields,
+          ...(detected
+            ? {
+              defaultBranch: detected.defaultBranch,
+              metadata: {
+                ...fields.metadata,
+                detectedDefaultBranch: detected.defaultBranch,
+                defaultBranchCheckedAt: detected.detectedAt,
+              },
+            }
+            : {}),
+        })
         .returning({ id: repository.id })
 
       const id = inserted?.id
@@ -1577,9 +1707,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       return providerErrorResponse(c, error)
     }
 
-    const match = row.repositoryExternalId
-      ? listing.find((entry) => entry.id === row.repositoryExternalId)
-      : undefined
+    const match = listingMatchForSource(listing, row.repositoryExternalId)
     if (!match) {
       return c.json({
         error: 'source_not_visible_to_connection',
@@ -1588,38 +1716,8 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       }, 404)
     }
 
-    const metadata = readSourceMetadata(row.metadata)
-    const previouslyDetected = typeof metadata.detectedDefaultBranch === 'string'
-      ? metadata.detectedDefaultBranch
-      : null
-    metadata.detectedDefaultBranch = match.defaultBranch
-    metadata.defaultBranchCheckedAt = new Date().toISOString()
-
-    const tracksProvider = row.defaultBranch === null ||
-      row.defaultBranch === previouslyDetected
-    const patch: Record<string, unknown> = {
-      metadata,
-      updatedAt: new Date().toISOString(),
-    }
-    if (tracksProvider && match.defaultBranch) {
-      patch.defaultBranch = match.defaultBranch
-    }
-    // A rename upstream shows up as a changed clone URL; adopt it so the
-    // canonical-URL dedupe keeps matching what operators paste today.
-    if (match.cloneUrl) {
-      const canonical = canonicalizeRepositoryUrl(match.cloneUrl)
-      if (canonical !== row.repositoryUrl) patch.repositoryUrl = canonical
-    }
-
-    try {
-      await db.update(repository).set(patch).where(eq(repository.id, id))
-    } catch (error) {
-      if (!isUniqueViolation(error)) throw error
-      // The renamed URL collides with another row this organization holds;
-      // keep the stored URL and still record the refreshed branch facts.
-      delete patch.repositoryUrl
-      await db.update(repository).set(patch).where(eq(repository.id, id))
-    }
+    const patch = buildRefreshPatch(row, match)
+    await persistRefreshPatch(db, id, patch)
 
     const [updated] = await db
       .select(SOURCE_SELECT)

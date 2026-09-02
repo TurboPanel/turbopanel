@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import {
+  MAX_DAEMON_WS_DEFAULT_BRANCH_CHARS,
   MAX_DAEMON_WS_REPO_READ_BYTES,
   MAX_DAEMON_WS_REPO_READ_ENTRIES,
   MAX_DAEMON_WS_REPO_READ_PATHS,
@@ -975,6 +976,55 @@ it("repo-read-result accepts a normal read", () => {
   assertEquals(result.ok, true);
 });
 
+it("repo-default-branch-result is on the inbound allowlist", () => {
+  assertEquals(DAEMON_INBOUND_ALLOWED.has("repo-default-branch-result"), true);
+  // The request direction is outbound only — a daemon must never send one.
+  assertEquals(
+    (DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has(
+      "repo-default-branch-request",
+    ),
+    false,
+  );
+});
+
+it("repo-default-branch-result accepts a normal answer, including a null branch", () => {
+  const named = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "repo-default-branch-result",
+      id: "req-1",
+      ok: true,
+      defaultBranch: "main",
+      at: "2020-01-01T00:00:00.000Z",
+    }),
+  );
+  assertEquals(named.ok, true);
+
+  // `null` is a real answer — the remote resolved but named no branch.
+  const empty = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "repo-default-branch-result",
+      id: "req-1",
+      ok: true,
+      defaultBranch: null,
+      at: "2020-01-01T00:00:00.000Z",
+    }),
+  );
+  assertEquals(empty.ok, true);
+});
+
+it("repo-default-branch-result rejects a branch name over the length cap", () => {
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "repo-default-branch-result",
+      id: "req-1",
+      ok: true,
+      defaultBranch: "a".repeat(MAX_DAEMON_WS_DEFAULT_BRANCH_CHARS + 1),
+      at: "2020-01-01T00:00:00.000Z",
+    }),
+  );
+  assertEquals(result.ok, false);
+});
+
 it("validateDaemonInboundFrame rejects hello with a non-string machineKey", () => {
   assertEquals(
     validateDaemonInboundFrame(
@@ -1111,6 +1161,44 @@ it("outboundEnvelopeToWireMessage maps repo-read-request with and without creden
   assertEquals(privateRepo.credentialKind, "token");
   assertEquals(privateRepo.credentialUsername, "git");
   assertEquals(privateRepo.listPath, ".");
+});
+
+it("outboundEnvelopeToWireMessage maps repo-default-branch-request", () => {
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      kind: "repo-default-branch-request",
+      deliveryId: "del-1",
+      requestId: "req-1",
+      cloneUrl: "https://example.com/repo.git",
+      at: VALID_AT,
+    }),
+    {
+      type: "repo-default-branch-request",
+      id: "req-1",
+      cloneUrl: "https://example.com/repo.git",
+      at: VALID_AT,
+    },
+  );
+});
+
+it("wireMessageToInboundEnvelope maps repo-default-branch-result", () => {
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "repo-default-branch-result",
+      id: "req-1",
+      at: VALID_AT,
+      ok: true,
+      defaultBranch: "main",
+    }),
+    {
+      kind: "repo-default-branch-result",
+      requestId: "req-1",
+      at: VALID_AT,
+      ok: true,
+      defaultBranch: "main",
+      error: undefined,
+    },
+  );
 });
 
 it("wireMessageToInboundEnvelope maps repo-read-result", () => {

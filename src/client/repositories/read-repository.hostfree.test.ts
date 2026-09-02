@@ -9,6 +9,7 @@ import { createServerPresenceDb } from '../managed/server-status-test-db.ts'
 import {
   readRepositoryViaDaemon,
   REPO_READ_TIMEOUT_MS,
+  resolveDefaultBranchViaDaemon,
 } from './read-repository.ts'
 
 /**
@@ -237,6 +238,141 @@ test('readRepositoryViaDaemon returns no_daemon_available when the id list is em
     {} as Db,
     registryReturning({ status: 'done' }),
     { ...BASE_PARAMS, serverIds: [] },
+  )
+  if (outcome.ok) throw new TypeError('expected failure')
+  assertEquals(outcome.code, 'no_daemon_available')
+})
+
+const BRANCH_PARAMS = {
+  organizationId: 'org-1',
+  cloneUrl: 'https://example.test/repo.git',
+  serverIds: [SERVER] as const,
+}
+
+test('resolveDefaultBranchViaDaemon fails closed when no server is connected', async () => {
+  const outcome = await resolveDefaultBranchViaDaemon(
+    createServerPresenceDb(SERVER, false),
+    registryReturning({ status: 'done', result: { ok: true } }),
+    BRANCH_PARAMS,
+  )
+  if (outcome.ok) throw new TypeError('expected failure')
+  assertEquals(outcome.code, 'no_daemon_available')
+})
+
+test('resolveDefaultBranchViaDaemon maps an expired cell wait to timeout', async () => {
+  const outcome = await resolveDefaultBranchViaDaemon(
+    createServerPresenceDb(SERVER, true),
+    registryReturning({ status: 'expired' }),
+    BRANCH_PARAMS,
+  )
+  assertEquals(outcome, {
+    ok: false,
+    code: 'timeout',
+    message: 'timeout resolving default branch',
+  })
+})
+
+test('resolveDefaultBranchViaDaemon maps a failed wait, preferring the cell error', async () => {
+  const withError = await resolveDefaultBranchViaDaemon(
+    createServerPresenceDb(SERVER, true),
+    registryReturning({ status: 'failed', error: 'ls-remote refused' }),
+    BRANCH_PARAMS,
+  )
+  assertEquals(withError, {
+    ok: false,
+    code: 'failed',
+    message: 'ls-remote refused',
+  })
+
+  const withoutError = await resolveDefaultBranchViaDaemon(
+    createServerPresenceDb(SERVER, true),
+    registryReturning({ status: 'failed' }),
+    BRANCH_PARAMS,
+  )
+  assertEquals(withoutError, {
+    ok: false,
+    code: 'failed',
+    message: 'failed to resolve default branch',
+  })
+})
+
+test('resolveDefaultBranchViaDaemon rejects a non-object result payload', async () => {
+  for (const result of [null, 'oops', 12]) {
+    const outcome = await resolveDefaultBranchViaDaemon(
+      createServerPresenceDb(SERVER, true),
+      registryReturning({ status: 'done', result }),
+      BRANCH_PARAMS,
+    )
+    assertEquals(outcome, {
+      ok: false,
+      code: 'failed',
+      message: 'malformed default-branch result',
+    })
+  }
+})
+
+test('resolveDefaultBranchViaDaemon surfaces a provider-shaped failure on the daemon lane', async () => {
+  const withMessage = await resolveDefaultBranchViaDaemon(
+    createServerPresenceDb(SERVER, true),
+    registryReturning({
+      status: 'done',
+      result: { ok: false, error: 'remote unreachable' },
+    }),
+    BRANCH_PARAMS,
+  )
+  assertEquals(withMessage, {
+    ok: false,
+    code: 'failed',
+    message: 'remote unreachable',
+  })
+
+  const withoutMessage = await resolveDefaultBranchViaDaemon(
+    createServerPresenceDb(SERVER, true),
+    registryReturning({ status: 'done', result: { ok: false } }),
+    BRANCH_PARAMS,
+  )
+  assertEquals(withoutMessage, {
+    ok: false,
+    code: 'failed',
+    message: 'failed to resolve default branch',
+  })
+})
+
+test('resolveDefaultBranchViaDaemon reports the branch name and sends no credential', async () => {
+  const captured: { envelope: unknown; timeoutMs: number }[] = []
+  const outcome = await resolveDefaultBranchViaDaemon(
+    createServerPresenceDb(SERVER, true),
+    registryReturning({
+      status: 'done',
+      result: { ok: true, defaultBranch: 'trunk' },
+    }, captured),
+    BRANCH_PARAMS,
+  )
+  if (!outcome.ok) throw new TypeError('expected a successful resolve')
+  assertEquals(outcome.defaultBranch, 'trunk')
+
+  const envelope = captured[0]?.envelope as Record<string, unknown>
+  assertEquals(captured[0]?.timeoutMs, REPO_READ_TIMEOUT_MS)
+  assertEquals(envelope.kind, 'repo-default-branch-request')
+  assertEquals(envelope.cloneUrl, BRANCH_PARAMS.cloneUrl)
+  assertEquals('credential' in envelope, false)
+})
+
+test('resolveDefaultBranchViaDaemon treats a non-string defaultBranch as null', async () => {
+  const outcome = await resolveDefaultBranchViaDaemon(
+    createServerPresenceDb(SERVER, true),
+    registryReturning({ status: 'done', result: { ok: true, defaultBranch: null } }),
+    BRANCH_PARAMS,
+  )
+  if (!outcome.ok) throw new TypeError('expected a successful resolve')
+  assertEquals(outcome.defaultBranch, null)
+})
+
+test('resolveDefaultBranchViaDaemon returns no_daemon_available when the id list is empty', async () => {
+  const outcome = await resolveDefaultBranchViaDaemon(
+    {} as Db,
+    registryReturning({ status: 'done' }),
+    { ...BRANCH_PARAMS, serverIds: [] },
   )
   if (outcome.ok) throw new TypeError('expected failure')
   assertEquals(outcome.code, 'no_daemon_available')

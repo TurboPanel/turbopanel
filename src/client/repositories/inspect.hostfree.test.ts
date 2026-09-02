@@ -36,6 +36,30 @@ test('INSPECT_PROBE_PATHS is a closed compose/app filename set', () => {
   assertEquals(INSPECT_PROBE_PATHS.includes('.env'), false)
 })
 
+test('INSPECT_PROBE_PATHS covers every compose filename the wizard ranks', () => {
+  // The UI's lane ranking checks all four compose spellings; a spelling the
+  // probe set misses is a repository the wizard silently mis-detects.
+  for (
+    const path of [
+      'docker-compose.yml',
+      'docker-compose.yaml',
+      'compose.yaml',
+      'compose.yml',
+    ]
+  ) {
+    assertEquals(INSPECT_PROBE_PATHS.includes(path), true)
+  }
+})
+
+test('INSPECT_PROBE_PATHS probes the lockfiles that name a package manager', () => {
+  // Existence is the signal — which lockfile is present tells the wizard the
+  // package manager before the app exists, mirroring the daemon's build-time
+  // detection order (pnpm > yarn > npm).
+  for (const path of ['pnpm-lock.yaml', 'yarn.lock', 'package-lock.json']) {
+    assertEquals(INSPECT_PROBE_PATHS.includes(path), true)
+  }
+})
+
 test('a provider failure WITH a status is the answer, not a fallback', () => {
   // The daemon would be told the same thing, so retrying through it would just
   // spend a round-trip to reproduce a 403.

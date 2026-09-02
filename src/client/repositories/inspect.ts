@@ -15,16 +15,25 @@ import { readRepositoryViaDaemon } from './read-repository.ts'
 /**
  * Filenames the wizard probes. Fixed rather than caller-supplied: this route is
  * reachable by any org member, and a fixed set bounds what a compromised
- * session can learn to "do these 13 names exist".
+ * session can learn to "do these names exist".
+ *
+ * The lockfiles are probed for existence only — which one is present is what
+ * tells the wizard the package manager before the app is created. Their content
+ * rides along like any probed file but nothing reads it.
  */
 export const INSPECT_PROBE_PATHS: readonly string[] = [
   'docker-compose.yml',
+  'docker-compose.yaml',
   'compose.yaml',
+  'compose.yml',
   'composer.json',
   'package.json',
   'index.php',
   'index.html',
   'Dockerfile',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
 ]
 
 export type InspectOutcome =

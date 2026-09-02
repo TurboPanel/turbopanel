@@ -174,6 +174,22 @@ export type DaemonMessage =
     error?: string;
     at: string;
   }
+  | {
+    type: "repo-default-branch-request";
+    id: string;
+    /** Anonymous only — the control plane never sends a credential here. */
+    cloneUrl: string;
+    at: string;
+  }
+  | {
+    type: "repo-default-branch-result";
+    id: string;
+    ok: boolean;
+    /** `null` when the remote answered but named no branch (an empty repo). */
+    defaultBranch?: string | null;
+    error?: string;
+    at: string;
+  }
   | { type: "metrics-capabilities-request"; id: string; at: string }
   | {
     type: "metrics-capabilities-result";
@@ -337,6 +353,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "metrics-live-stop-result",
     "metrics-sensor-overrides-update-result",
     "repo-read-result",
+    "repo-default-branch-result",
     "managed-ha-event",
     "fabric-paths-result",
     "dev-sync-result",
@@ -371,6 +388,9 @@ export const MAX_DAEMON_WS_REPO_READ_BYTES = 128 * 1024;
 
 /** Max directory entries in one `repo-read-result`. */
 export const MAX_DAEMON_WS_REPO_READ_ENTRIES = 256;
+
+/** Max characters for `repo-default-branch-result.defaultBranch`. */
+export const MAX_DAEMON_WS_DEFAULT_BRANCH_CHARS = 255;
 
 /** Max paths one `repo-read-request` may ask for. */
 export const MAX_DAEMON_WS_REPO_READ_PATHS = 16;
@@ -587,6 +607,22 @@ function validateRepoReadResultFields(
   return null;
 }
 
+function validateRepoDefaultBranchResultFields(
+  record: Record<string, unknown>,
+): string | null {
+  const base = validateResultEnvelopeFields(record);
+  if (base) return base;
+  if (typeof record.ok !== "boolean") return "invalid ok";
+  if (record.defaultBranch === undefined || record.defaultBranch === null) {
+    return null;
+  }
+  if (typeof record.defaultBranch !== "string") return "invalid defaultBranch";
+  if (record.defaultBranch.length > MAX_DAEMON_WS_DEFAULT_BRANCH_CHARS) {
+    return "defaultBranch exceeds max length";
+  }
+  return null;
+}
+
 const MANAGED_HA_EVENT_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -742,6 +778,8 @@ function validateInboundMessageFields(
       return validateMetricsCapabilitiesResultFields(record);
     case "repo-read-result":
       return validateRepoReadResultFields(record);
+    case "repo-default-branch-result":
+      return validateRepoDefaultBranchResultFields(record);
     case "managed-ha-event":
       return validateManagedHaEventFields(record);
     case "fabric-paths-result":
@@ -828,6 +866,8 @@ function validateInboundEnvelopeKind(
       return validateManagedLogsEnvelope(inbound);
     case "repo-read-result":
       return validateRepoReadEnvelope(inbound);
+    case "repo-default-branch-result":
+      return validateOptionalError(inbound.error);
     case "fabric-paths-result":
       return validateFabricPathsEnvelope(inbound);
     case "command-outcome":
@@ -916,6 +956,11 @@ export type DaemonOutboundEnvelope =
     credentialUsername?: string;
   })
   | (OutboundEnvelopeBase & {
+    kind: "repo-default-branch-request";
+    /** Anonymous only — no credential field, unlike `repo-read-request`. */
+    cloneUrl: string;
+  })
+  | (OutboundEnvelopeBase & {
     kind: "fabric-paths-request";
     fabricId: string;
     probeMs: number;
@@ -998,6 +1043,14 @@ export type DaemonInboundEnvelope =
       reason?: string;
     }[];
     entries?: { path: string; kind: string; bytes?: number }[];
+    error?: string;
+  }
+  | {
+    kind: "repo-default-branch-result";
+    requestId: string;
+    at: string;
+    ok: boolean;
+    defaultBranch?: string | null;
     error?: string;
   }
   | {
@@ -1129,6 +1182,15 @@ export function wireMessageToInboundEnvelope(
         commitSha: msg.commitSha,
         files: msg.files,
         entries: msg.entries,
+        error: msg.error,
+      };
+    case "repo-default-branch-result":
+      return {
+        kind: "repo-default-branch-result",
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        defaultBranch: msg.defaultBranch,
         error: msg.error,
       };
     case "fabric-paths-result":
@@ -1320,6 +1382,13 @@ export function outboundEnvelopeToWireMessage(
       };
     case "repo-read-request":
       return repoReadRequestMessage(env);
+    case "repo-default-branch-request":
+      return {
+        type: "repo-default-branch-request",
+        id: env.requestId,
+        cloneUrl: env.cloneUrl,
+        at: env.at,
+      };
     case "fabric-paths-request":
       return {
         type: "fabric-paths-request",

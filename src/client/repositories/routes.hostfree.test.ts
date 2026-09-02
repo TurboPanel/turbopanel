@@ -15,6 +15,7 @@ import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
 } from '../authn/secrets.ts'
+import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import type { Db } from '../../db.ts'
 import { GithubAppTokenError } from '../../lib/git/github-app-token.ts'
 import { GitlabApiError } from '../../lib/git/gitlab-api.ts'
@@ -638,7 +639,10 @@ const SOURCE_PATHS = [
   ['POST', '/repositories/gitlab/deploy-keys'],
 ] as const
 
-async function buildSourceApp(db?: Db): Promise<{
+async function buildSourceApp(
+  db?: Db,
+  opts?: { registry?: DaemonCellRegistry },
+): Promise<{
   app: Hono<AppEnv>
   cookie: string
 }> {
@@ -654,6 +658,7 @@ async function buildSourceApp(db?: Db): Promise<{
     c.set('runtime', 'deno')
     c.set('secretsConfig', secretsConfig)
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    if (opts?.registry) c.set('daemonCellRegistry', opts.registry)
     return next()
   })
   registerRepositoryRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
@@ -699,6 +704,8 @@ function sourceHttpDb(options: {
   limitQueue?: unknown[][]
   orderByRows?: unknown[]
   executeRows?: unknown[]
+  /** Every `insert().values(...)` call, in order — for asserting what was written. */
+  insertValues?: unknown[]
   executeQueue?: unknown[][]
   execute?: (query: unknown) => Promise<unknown[]>
   insertId?: string | null
@@ -744,7 +751,8 @@ function sourceHttpDb(options: {
       return Promise.resolve(takeNext(options.executeQueue, defaultExecute))
     },
     insert: () => ({
-      values: () => {
+      values: (values: unknown) => {
+        options.insertValues?.push(values)
         if (options.insertError) throw options.insertError
         return {
           returning: () =>
@@ -1357,6 +1365,116 @@ test('create reuses the organization row holding the same canonical URL', async 
     200,
     { ok: true, id: SOURCE_ID, reused: true },
   )
+})
+
+function registryReturning(record: {
+  status: string
+  result?: unknown
+  error?: string
+}): DaemonCellRegistry {
+  return {
+    getCell: () => ({
+      createRequestAndWait: () => Promise.resolve(record),
+    }),
+  } as unknown as DaemonCellRegistry
+}
+
+test('create resolves an anonymous clone URL default branch through a connected server', async () => {
+  const insertValues: unknown[] = []
+  const presenceRow = {
+    id: 'server-1',
+    daemon: null,
+    metadata: null,
+    hostname: 'host-1',
+    machineKey: null,
+    osId: null,
+    osFamily: null,
+    osVersion: null,
+    osCodename: null,
+    osPrettyName: null,
+    osArchitecture: null,
+    timezone: null,
+    isTimeSyncEnabled: null,
+    ntpServers: null,
+    ntpLastSyncedAt: null,
+    connected: true,
+    statusChangedAt: '2024-01-01T00:00:00.000Z',
+  }
+  const db = sourceHttpDb({
+    // Pops: role, the URL find-or-create miss, then this route's own
+    // server-id read. `loadServerStatusRecords`'s own presence/colocated/
+    // status reads land past the queue and share `presenceRow` as their
+    // fallback — it carries every column any of those three selects touch.
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [],
+      [{ id: 'server-1' }],
+    ],
+    selectRows: [presenceRow],
+    insertId: SOURCE_ID,
+    insertValues,
+  })
+  const { app, cookie } = await buildSourceApp(db, {
+    registry: registryReturning({
+      status: 'done',
+      result: { ok: true, defaultBranch: 'trunk' },
+    }),
+  })
+
+  await expectJson(
+    await app.request('/repositories', {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'git',
+        repositoryUrl: 'https://example.com/acme/app.git',
+      }),
+    }),
+    201,
+    { ok: true, id: SOURCE_ID, reused: false },
+  )
+
+  const written = insertValues[0] as {
+    defaultBranch?: unknown
+    metadata?: { detectedDefaultBranch?: unknown; defaultBranchCheckedAt?: unknown }
+  }
+  assertEquals(written.defaultBranch, 'trunk')
+  assertEquals(written.metadata?.detectedDefaultBranch, 'trunk')
+  assertEquals(typeof written.metadata?.defaultBranchCheckedAt, 'string')
+})
+
+test('create never attempts branch detection for a provider-connected or keyed row', async () => {
+  const connectedInsert: unknown[] = []
+  const connected = sourceHttpDb({
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [{ organizationId: ORG_ID, provider: 'github' }],
+      [],
+    ],
+    insertId: SOURCE_ID,
+    insertValues: connectedInsert,
+  })
+  const connectedApp = await buildSourceApp(connected, {
+    registry: registryReturning({ status: 'done', result: { ok: true, defaultBranch: 'x' } }),
+  })
+  await expectJson(
+    await connectedApp.app.request('/repositories', {
+      method: 'POST',
+      headers: {
+        ...authHeaders(connectedApp.cookie),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        repositoryUrl: 'https://github.com/acme/app.git',
+        connectionId: CONNECTION_ID,
+      }),
+    }),
+    201,
+    { ok: true, id: SOURCE_ID, reused: false },
+  )
+  // Pops stop at role, connection ownership, and the URL miss — no extra pop
+  // for a server-id read, so the stored row keeps the plain unset branch.
+  assertEquals((connectedInsert[0] as { defaultBranch?: unknown }).defaultBranch, null)
 })
 
 test('attach adopts an existing same-URL row instead of duplicating it', async () => {
