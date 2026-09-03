@@ -291,12 +291,14 @@ it("queryHostSeries with sql config delegates and maps rows", async () => {
     to: "2026-01-01T01:00:00.000Z",
     resolutionSeconds: 300,
   });
-  assertEquals(fetchCalls.length, 1);
-  assertEquals(
-    fetchCalls[0]!.url,
-    "https://api.cloudflare.com/client/v4/accounts/acct123/analytics_engine/sql",
-  );
-  assertEquals(fetchCalls[0]!.auth, "Bearer token-xyz");
+  assertEquals(fetchCalls.length, 2);
+  for (const call of fetchCalls) {
+    assertEquals(
+      call.url,
+      "https://api.cloudflare.com/client/v4/accounts/acct123/analytics_engine/sql",
+    );
+    assertEquals(call.auth, "Bearer token-xyz");
+  }
   assertEquals(result.available, true);
   assertEquals(result.points.length, 1);
   assertEquals(result.points[0]!.values.cpuUserPercent, 10.5);

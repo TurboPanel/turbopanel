@@ -136,7 +136,7 @@ it("parseRequestedMetrics: empty or omitted returns all metrics", () => {
   assertEquals(all.ok, true);
   if (all.ok) {
     assertEquals(all.metrics.length, HOST_METRIC_KEYS.length);
-    assertEquals(all.metrics.length, 38);
+    assertEquals(all.metrics.length, 68);
   }
   const blank = parseRequestedMetrics("   ");
   assertEquals(blank.ok, true);

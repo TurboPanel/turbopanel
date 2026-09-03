@@ -45,6 +45,7 @@ import type {
 } from "./cell/contracts.ts";
 import {
   HOST_METRIC_KEYS,
+  METRIC_PARTS,
   METRICS_SCHEMA_VERSION,
 } from "./metrics/contract.ts";
 import type {
@@ -1888,14 +1889,13 @@ function buildValidMetricsFrame(
     at: new Date().toISOString(),
     intervalSeconds: 60,
     sequence: 1,
+    parts: METRIC_PARTS,
     metrics,
     dimensions: {
       schemaVersion: METRICS_SCHEMA_VERSION,
-      daemonVersion: "1.0.0",
-      operatingSystem: "linux",
-      architecture: "arm64",
-      kernelRelease: "6.12.0",
       collectionMode: "baseline",
+      hardwareProfileGeneration: 1,
+      trafficSources: { caddy: false, proxysql: false },
     },
     ...overrides,
   };
