@@ -28,6 +28,12 @@ export function metricsChartCacheKey(input: {
   backend: MetricsBackendKind;
   schemaVersion?: number;
   kind?: "series" | "summary" | "connection" | "fleet-latest";
+  /**
+   * Scopes the cache entry to one hardware-profile generation (a future
+   * "current generation only" UI affordance) — appended only when provided
+   * so it never collides with a full-range entry, which omits it.
+   */
+  hardwareProfileGeneration?: number;
 }): string {
   const sortedMetrics = [...input.metrics]
     .sort((a, b) => a.localeCompare(b))
@@ -44,6 +50,9 @@ export function metricsChartCacheKey(input: {
     String(input.resolutionSeconds),
     input.backend,
     `v${schemaVersion}`,
+    ...(input.hardwareProfileGeneration !== undefined
+      ? [`g${input.hardwareProfileGeneration}`]
+      : []),
   ].join(":");
 }
 

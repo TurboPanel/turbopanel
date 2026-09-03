@@ -9,14 +9,14 @@ import {
   STATUS_EVENTS_TABLE,
 } from "./schema.ts";
 
-it("metricColumnName maps v2 keys to snake_case identifiers", () => {
+it("metricColumnName maps host metric keys to snake_case identifiers", () => {
   assertEquals(metricColumnName("cpuUserPercent"), "cpu_user_percent");
   assertEquals(metricColumnName("memoryTotalBytes"), "memory_total_bytes");
   assertEquals(metricColumnName("load1"), "load1");
   assertEquals(metricColumnName("load15"), "load15");
   assertEquals(
-    metricColumnName("uplinkReceiveBytesPerSecond"),
-    "uplink_receive_bytes_per_second",
+    metricColumnName("nic1ReceiveBytesPerSecond"),
+    "nic1_receive_bytes_per_second",
   );
   assertThrows(
     () => metricColumnName("nope" as HostMetricKey),
@@ -25,7 +25,7 @@ it("metricColumnName maps v2 keys to snake_case identifiers", () => {
   );
 });
 
-it("metric column names are unique valid identifiers for all 38 keys", () => {
+it("metric column names are unique valid identifiers for every HOST_METRIC_KEYS entry", () => {
   const columns = HOST_METRIC_KEYS.map((key) => metricColumnName(key));
   assertEquals(new Set(columns).size, HOST_METRIC_KEYS.length);
   for (const column of columns) {
@@ -35,13 +35,15 @@ it("metric column names are unique valid identifiers for all 38 keys", () => {
 
 it("hostMetricsInsertColumns lists base columns then all metric columns", () => {
   const columns = hostMetricsInsertColumns();
-  assertEquals(columns.length, 5 + HOST_METRIC_KEYS.length);
-  assertEquals(columns.slice(0, 5), [
+  assertEquals(columns.length, 7 + HOST_METRIC_KEYS.length);
+  assertEquals(columns.slice(0, 7), [
     "server_id",
     "sampled_at",
     "received_at",
     "interval_seconds",
     "collection_mode",
+    "hardware_profile_generation",
+    "parts",
   ]);
   assertEquals(columns.includes("cpu_user_percent"), true);
 });
@@ -68,4 +70,8 @@ it("buildSchemaStatements emits idempotent DDL for both typed tables", () => {
   assertEquals(/\bdouble\d+\b/.test(joined), false);
   assertEquals(/\bblob\d+\b/.test(joined), false);
   assertEquals(joined.includes("index1"), false);
+  // Declares-vs-null markers: which parts a row declared, and the sensor/NIC
+  // hardware-profile generation it was collected under.
+  assertEquals(joined.includes("hardware_profile_generation SMALLINT"), true);
+  assertEquals(joined.includes("parts VARCHAR NOT NULL"), true);
 });

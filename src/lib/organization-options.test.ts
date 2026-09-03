@@ -5,7 +5,9 @@ import {
   parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
   parseOrganizationOptions,
+  parseTemperatureUnitInput,
   resolveDefaultEnvironmentName,
+  resolveTemperatureUnit,
 } from "./organization-options.ts";
 
 /**
@@ -132,6 +134,43 @@ test("isUnlimitedMaxServers for omitted and null", () => {
   assertEquals(isUnlimitedMaxServers(null), true);
   assertEquals(isUnlimitedMaxServers(0), false);
   assertEquals(isUnlimitedMaxServers(2), false);
+});
+
+test("parseOrganizationOptions reads temperatureUnit and ignores invalid values", () => {
+  assertEquals(
+    parseOrganizationOptions({ temperatureUnit: "fahrenheit" }).temperatureUnit,
+    "fahrenheit",
+  );
+  assertEquals(
+    parseOrganizationOptions({ temperatureUnit: "kelvin" }).temperatureUnit,
+    undefined,
+  );
+  assertEquals(
+    parseOrganizationOptions({ temperatureUnit: 42 }).temperatureUnit,
+    undefined,
+  );
+});
+
+test("parseTemperatureUnitInput accepts celsius/fahrenheit and rejects everything else", () => {
+  assertEquals(parseTemperatureUnitInput("celsius"), {
+    ok: true,
+    value: "celsius",
+  });
+  assertEquals(parseTemperatureUnitInput("fahrenheit"), {
+    ok: true,
+    value: "fahrenheit",
+  });
+  assertEquals(parseTemperatureUnitInput("kelvin").ok, false);
+  assertEquals(parseTemperatureUnitInput(null).ok, false);
+  assertEquals(parseTemperatureUnitInput(undefined).ok, false);
+});
+
+test("resolveTemperatureUnit defaults to celsius", () => {
+  assertEquals(resolveTemperatureUnit({}), "celsius");
+  assertEquals(
+    resolveTemperatureUnit({ temperatureUnit: "fahrenheit" }),
+    "fahrenheit",
+  );
 });
 
 Deno.test("randomizedPrincipalUsernames parses and defaults to on", () => {

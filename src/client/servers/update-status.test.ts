@@ -395,7 +395,7 @@ it("buildServerStatusRecord uses presence connectedAt while online", () => {
     ips: null,
     docker: null,
     runtimes: null,
-    metricsOverrides: null,
+    hardwareProfile: null,
   };
   const record = buildServerStatusRecord(presence, true, {
     connected: true,
@@ -432,7 +432,7 @@ it("buildServerStatusRecord clears connectedAt when offline and defaults status"
     ips: null,
     docker: null,
     runtimes: null,
-    metricsOverrides: null,
+    hardwareProfile: null,
   };
   const record = buildServerStatusRecord(presence, false);
 

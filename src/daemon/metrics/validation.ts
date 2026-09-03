@@ -2,19 +2,23 @@ import {
   buildHostMetricsSample,
   HOST_METRIC_KEYS,
   type HostMetricKey,
-  type HostMetrics,
   type HostMetricsDimensions,
+  METRIC_PARTS,
   METRICS_SCHEMA_VERSION,
+  type MetricPart,
+  type PartialHostMetrics,
+  type TrafficSourceContribution,
 } from "./contract.ts";
-import { sanitizeMetricValue } from "./metric-descriptors.ts";
+import {
+  HOST_METRICS_METRIC_DESCRIPTORS,
+  sanitizeMetricValue,
+} from "./metric-descriptors.ts";
 import type { AuthenticatedHostMetricsSample } from "./types.ts";
 
 export const MAX_METRICS_SKEW_MS = 300_000;
 export const MIN_INTERVAL_SECONDS = 1;
 export const MAX_INTERVAL_SECONDS = 3600;
 export const MAX_DIMENSION_LEN = 256;
-/** Cap on interface-list dimension arrays (`uplinkInterfaces` / `fabricInterfaces`). */
-export const MAX_INTERFACE_LIST_LEN = 8;
 /** Hard cap on raw metrics frame size (UTF-8 bytes). */
 export const MAX_METRICS_PAYLOAD_BYTES = 16_384;
 export const METRICS_LOG_COOLDOWN_MS = 5 * 60_000;
@@ -76,100 +80,77 @@ function readBoundedString(
   return { ok: true, value };
 }
 
+function readRequiredNonNegativeInteger(
+  raw: Record<string, unknown>,
+  field: string,
+): ValidateResult<number> {
+  const value = raw[field];
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0
+  ) {
+    return {
+      ok: false,
+      reason: `metrics dimensions.${field} must be a safe non-negative integer`,
+    };
+  }
+  return { ok: true, value };
+}
+
+/**
+ * Sanitize only the keys actually present on the sample — an absent key
+ * means "not collected this tick" and must stay absent, never backfilled to
+ * `null` (that would erase the part-scoping this validator enforces).
+ */
 function sanitizeMetricsWithDescriptors(
-  metrics: HostMetrics,
-): HostMetrics {
-  const out = { ...metrics };
-  for (const key of HOST_METRIC_KEYS) {
-    out[key] = sanitizeMetricValue(key, out[key]);
+  metrics: PartialHostMetrics,
+): PartialHostMetrics {
+  const out: PartialHostMetrics = {};
+  for (const key of Object.keys(metrics) as HostMetricKey[]) {
+    out[key] = sanitizeMetricValue(key, metrics[key] ?? null);
   }
   return out;
 }
 
-function readBoundedStringArray(
-  value: unknown,
-  field: string,
-): ValidateResult<string[]> {
-  if (!Array.isArray(value)) {
-    return { ok: false, reason: `metrics ${field} must be an array` };
-  }
-  if (value.length > MAX_INTERFACE_LIST_LEN) {
+/**
+ * The only dimension fields the v3 wire contract recognizes. Any other field
+ * — including every retired v2 field (`daemonVersion`, `operatingSystem`,
+ * `architecture`, `kernelRelease`, sensor identity fields, interface list
+ * fields) — is rejected outright so a stale v2 sender surfaces as a
+ * validation failure instead of silently passing with its dropped fields.
+ */
+const ALLOWED_DIMENSION_FIELDS: ReadonlySet<string> = new Set([
+  "schemaVersion",
+  "collectionMode",
+  "runtimeMode",
+  "hardwareProfileGeneration",
+  "trafficSources",
+]);
+
+function parseTrafficSources(
+  raw: Record<string, unknown>,
+): ValidateResult<TrafficSourceContribution> {
+  const value = raw.trafficSources;
+  if (!isRecord(value)) {
     return {
       ok: false,
-      reason: `metrics ${field} exceeds max length ${MAX_INTERFACE_LIST_LEN}`,
+      reason: "metrics dimensions.trafficSources must be an object",
     };
   }
-  const out: string[] = [];
-  for (let i = 0; i < value.length; i++) {
-    const entry = readBoundedString(value[i], `${field}[${i}]`);
-    if (!entry.ok) return entry;
-    out.push(entry.value);
+  if (
+    typeof value.caddy !== "boolean" || typeof value.proxysql !== "boolean"
+  ) {
+    return {
+      ok: false,
+      reason:
+        "metrics dimensions.trafficSources.caddy and .proxysql must be boolean",
+    };
   }
-  return { ok: true, value: out };
-}
-
-const OPTIONAL_SENSOR_DIMENSIONS = [
-  "cpuTemperatureSensor",
-  "gpuTemperatureSensor",
-  "cpuPowerSensor",
-  "gpuPowerSensor",
-] as const;
-
-const OPTIONAL_INTERFACE_DIMENSIONS = [
-  "uplinkInterfaces",
-  "fabricInterfaces",
-] as const;
-
-const REQUIRED_STRING_DIMENSIONS = [
-  "daemonVersion",
-  "operatingSystem",
-  "architecture",
-  "kernelRelease",
-] as const;
-
-type RequiredStringDimension = (typeof REQUIRED_STRING_DIMENSIONS)[number];
-
-function readRequiredDimensionStrings(
-  raw: Record<string, unknown>,
-): ValidateResult<Record<RequiredStringDimension, string>> {
-  const out: Partial<Record<RequiredStringDimension, string>> = {};
-  for (const field of REQUIRED_STRING_DIMENSIONS) {
-    const parsed = readBoundedString(raw[field], `dimensions.${field}`);
-    if (!parsed.ok) return parsed;
-    out[field] = parsed.value;
-  }
-  return { ok: true, value: out as Record<RequiredStringDimension, string> };
-}
-
-/** Optional dimensions are copied only when present; a malformed one fails. */
-function applyOptionalDimensions(
-  raw: Record<string, unknown>,
-  dimensions: HostMetricsDimensions,
-): ValidateFail | null {
-  if (raw.runtimeMode !== undefined) {
-    const runtimeMode = readBoundedString(
-      raw.runtimeMode,
-      "dimensions.runtimeMode",
-    );
-    if (!runtimeMode.ok) return runtimeMode;
-    dimensions.runtimeMode = runtimeMode.value;
-  }
-  for (const field of OPTIONAL_SENSOR_DIMENSIONS) {
-    if (raw[field] === undefined) continue;
-    const sensor = readBoundedString(raw[field], `dimensions.${field}`);
-    if (!sensor.ok) return sensor;
-    dimensions[field] = sensor.value;
-  }
-  for (const field of OPTIONAL_INTERFACE_DIMENSIONS) {
-    if (raw[field] === undefined) continue;
-    const interfaces = readBoundedStringArray(
-      raw[field],
-      `dimensions.${field}`,
-    );
-    if (!interfaces.ok) return interfaces;
-    dimensions[field] = interfaces.value;
-  }
-  return null;
+  return {
+    ok: true,
+    value: { caddy: value.caddy, proxysql: value.proxysql },
+  };
 }
 
 function parseDimensions(
@@ -177,6 +158,15 @@ function parseDimensions(
 ): ValidateResult<HostMetricsDimensions> {
   if (!isRecord(raw)) {
     return { ok: false, reason: "metrics dimensions must be an object" };
+  }
+  for (const field of Object.keys(raw)) {
+    if (!ALLOWED_DIMENSION_FIELDS.has(field)) {
+      return {
+        ok: false,
+        reason:
+          `metrics dimensions.${field} is not a recognized v${METRICS_SCHEMA_VERSION} dimension field`,
+      };
+    }
   }
   if (raw.schemaVersion !== METRICS_SCHEMA_VERSION) {
     return {
@@ -191,17 +181,40 @@ function parseDimensions(
       reason: 'metrics dimensions.collectionMode must be "baseline" or "live"',
     };
   }
-  const required = readRequiredDimensionStrings(raw);
-  if (!required.ok) return required;
+  const hardwareProfileGeneration = readRequiredNonNegativeInteger(
+    raw,
+    "hardwareProfileGeneration",
+  );
+  if (!hardwareProfileGeneration.ok) return hardwareProfileGeneration;
+
+  const trafficSources = parseTrafficSources(raw);
+  if (!trafficSources.ok) return trafficSources;
 
   const dimensions: HostMetricsDimensions = {
     schemaVersion: METRICS_SCHEMA_VERSION,
-    ...required.value,
     collectionMode: raw.collectionMode,
+    hardwareProfileGeneration: hardwareProfileGeneration.value,
+    trafficSources: trafficSources.value,
   };
-  const optionalFailure = applyOptionalDimensions(raw, dimensions);
-  if (optionalFailure) return optionalFailure;
+  if (raw.runtimeMode !== undefined) {
+    const runtimeMode = readBoundedString(
+      raw.runtimeMode,
+      "dimensions.runtimeMode",
+    );
+    if (!runtimeMode.ok) return runtimeMode;
+    dimensions.runtimeMode = runtimeMode.value;
+  }
   return { ok: true, value: dimensions };
+}
+
+/** Derive the Cloudflare-facing `blob8` marker: contributing source names, in fixed order. */
+function trafficSourceNames(
+  trafficSources: TrafficSourceContribution,
+): string[] {
+  const names: string[] = [];
+  if (trafficSources.caddy) names.push("caddy");
+  if (trafficSources.proxysql) names.push("proxysql");
+  return names;
 }
 
 function rejectOversizedPayload(
@@ -282,27 +295,72 @@ function parseSequence(value: unknown): ValidateResult<number> {
 }
 
 const HOST_METRIC_KEY_SET: ReadonlySet<string> = new Set(HOST_METRIC_KEYS);
+const METRIC_PART_SET: ReadonlySet<string> = new Set(METRIC_PARTS);
+
+function parseParts(raw: unknown): ValidateResult<MetricPart[]> {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return { ok: false, reason: "metrics parts must be a non-empty array" };
+  }
+  const parts: MetricPart[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== "string" || !METRIC_PART_SET.has(entry)) {
+      return {
+        ok: false,
+        reason: `metrics parts contains an invalid part: ${String(entry)}`,
+      };
+    }
+    if (seen.has(entry)) {
+      return {
+        ok: false,
+        reason: `metrics parts contains a duplicate part: ${entry}`,
+      };
+    }
+    seen.add(entry);
+    parts.push(entry as MetricPart);
+  }
+  if (!seen.has("core")) {
+    return { ok: false, reason: 'metrics parts must include "core"' };
+  }
+  if (!seen.has("extended")) {
+    return { ok: false, reason: 'metrics parts must include "extended"' };
+  }
+  return { ok: true, value: parts };
+}
 
 function parseMetrics(
   raw: unknown,
+  parts: readonly MetricPart[],
 ): ValidateResult<Partial<Record<HostMetricKey, number | null>>> {
   if (!isRecord(raw)) {
     return { ok: false, reason: "metrics metrics must be an object" };
   }
-  // Exact v2 contract: reject out-of-allowlist keys instead of dropping them,
-  // so daemon/control-plane drift surfaces immediately.
+  const declaredParts = new Set<MetricPart>(parts);
+
   for (const key of Object.keys(raw)) {
     if (!HOST_METRIC_KEY_SET.has(key)) {
       return {
         ok: false,
-        reason: `metrics metrics.${key} is not in the v2 metric allowlist`,
+        reason:
+          `metrics metrics.${key} is not in the v${METRICS_SCHEMA_VERSION} metric allowlist`,
+      };
+    }
+    const descriptorPart = HOST_METRICS_METRIC_DESCRIPTORS[key as HostMetricKey].part;
+    if (!declaredParts.has(descriptorPart)) {
+      return {
+        ok: false,
+        reason:
+          `metrics metrics.${key} belongs to part "${descriptorPart}" which is not declared in parts`,
       };
     }
   }
+
   const partialMetrics: Partial<
     Record<HostMetricKey, number | null>
   > = {};
   for (const key of HOST_METRIC_KEYS) {
+    const descriptorPart = HOST_METRICS_METRIC_DESCRIPTORS[key].part;
+    if (!declaredParts.has(descriptorPart)) continue;
     if (!Object.hasOwn(raw, key)) {
       return {
         ok: false,
@@ -355,7 +413,10 @@ export function validateHostMetricsSample(
   const dimensions = parseDimensions(envelope.value.dimensions);
   if (!dimensions.ok) return dimensions;
 
-  const metrics = parseMetrics(envelope.value.metrics);
+  const parts = parseParts(envelope.value.parts);
+  if (!parts.ok) return parts;
+
+  const metrics = parseMetrics(envelope.value.metrics, parts.value);
   if (!metrics.ok) return metrics;
 
   let built;
@@ -364,6 +425,7 @@ export function validateHostMetricsSample(
       at: at.value,
       intervalSeconds: intervalSeconds.value,
       sequence: sequence.value,
+      parts: parts.value,
       metrics: metrics.value,
       dimensions: dimensions.value,
     });
@@ -385,8 +447,10 @@ export function validateHostMetricsSample(
       sequence: built.sequence,
       schemaVersion: METRICS_SCHEMA_VERSION,
       collectionMode: built.dimensions.collectionMode,
+      parts: built.parts,
       dimensions: built.dimensions,
       metrics: sanitizeMetricsWithDescriptors(built.metrics),
+      trafficSources: trafficSourceNames(built.dimensions.trafficSources),
     },
   };
 }

@@ -20,6 +20,14 @@ import {
 /** Platform fallback when `defaultEnvironmentName` is unset. */
 export const DEFAULT_ENVIRONMENT_NAME = "Production";
 
+/** Display unit for temperature metrics (chart axes, tooltips, thresholds). */
+export type TemperatureUnit = "celsius" | "fahrenheit";
+
+const TEMPERATURE_UNITS = new Set<TemperatureUnit>(["celsius", "fahrenheit"]);
+
+/** Platform fallback when `temperatureUnit` is unset. */
+export const DEFAULT_TEMPERATURE_UNIT: TemperatureUnit = "celsius";
+
 export type OrganizationOptions = {
   /** Org-wide default timezone applied when a server has no override. */
   defaultServerTimezone?: string;
@@ -65,6 +73,11 @@ export type OrganizationOptions = {
    * existing principals. Managed root logins are always suffixed regardless.
    */
   randomizedPrincipalUsernames?: boolean;
+  /**
+   * Display unit for temperature metrics (chart axes, tooltips, thresholds).
+   * Platform fallback is {@link DEFAULT_TEMPERATURE_UNIT} (`celsius`).
+   */
+  temperatureUnit?: TemperatureUnit;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -179,6 +192,12 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.randomizedPrincipalUsernames === "boolean") {
     options.randomizedPrincipalUsernames = value.randomizedPrincipalUsernames;
   }
+  if (
+    typeof value.temperatureUnit === "string" &&
+    TEMPERATURE_UNITS.has(value.temperatureUnit as TemperatureUnit)
+  ) {
+    options.temperatureUnit = value.temperatureUnit as TemperatureUnit;
+  }
   return options;
 }
 
@@ -187,4 +206,29 @@ export function resolveRandomizedPrincipalUsernames(
   options: OrganizationOptions,
 ): boolean {
   return options.randomizedPrincipalUsernames ?? true;
+}
+
+/** Resolved display unit: option when set, else platform fallback (celsius). */
+export function resolveTemperatureUnit(
+  options: OrganizationOptions,
+): TemperatureUnit {
+  return options.temperatureUnit ?? DEFAULT_TEMPERATURE_UNIT;
+}
+
+/**
+ * Parse a temperatureUnit PUT body value.
+ * Anything other than `"celsius"` or `"fahrenheit"` → `{ ok: false }` (there
+ * is no reset-to-default sentinel — the platform fallback already applies
+ * whenever the option is unset).
+ */
+export function parseTemperatureUnitInput(
+  value: unknown,
+): { ok: true; value: TemperatureUnit } | { ok: false } {
+  if (
+    typeof value === "string" &&
+    TEMPERATURE_UNITS.has(value as TemperatureUnit)
+  ) {
+    return { ok: true, value: value as TemperatureUnit };
+  }
+  return { ok: false };
 }

@@ -4,7 +4,6 @@ import { HOST_METRIC_KEYS, METRICS_SCHEMA_VERSION } from "./contract.ts";
 import { HOST_METRICS_METRIC_DESCRIPTORS } from "./metric-descriptors.ts";
 import {
   MAX_DIMENSION_LEN,
-  MAX_INTERFACE_LIST_LEN,
   MAX_INTERVAL_SECONDS,
   MAX_METRICS_PAYLOAD_BYTES,
   MAX_METRICS_SKEW_MS,
@@ -23,19 +22,21 @@ import {
 
 const BASE_DIMENSIONS = {
   schemaVersion: METRICS_SCHEMA_VERSION,
-  daemonVersion: "1.0.0",
-  operatingSystem: "linux",
-  architecture: "arm64",
-  kernelRelease: "6.12.0",
   collectionMode: "baseline",
+  hardwareProfileGeneration: 1,
+  trafficSources: { caddy: false, proxysql: false },
 };
 
-function baseMetrics(
+function metricsForParts(
+  parts: readonly string[],
   overrides: Record<string, number | null> = {},
 ): Record<string, number | null> {
+  const declared = new Set(parts);
   const metrics: Record<string, number | null> = {};
   for (const key of HOST_METRIC_KEYS) {
-    metrics[key] = null;
+    if (declared.has(HOST_METRICS_METRIC_DESCRIPTORS[key].part)) {
+      metrics[key] = null;
+    }
   }
   return { ...metrics, ...overrides };
 }
@@ -47,7 +48,11 @@ function validRaw(overrides: Record<string, unknown> = {}) {
     at: new Date().toISOString(),
     intervalSeconds: 60,
     sequence: 1,
-    metrics: baseMetrics({ cpuUserPercent: 12.5, memoryTotalBytes: 1024 }),
+    parts: ["core", "extended"],
+    metrics: metricsForParts(["core", "extended"], {
+      cpuUserPercent: 12.5,
+      memoryTotalBytes: 1024,
+    }),
     dimensions: BASE_DIMENSIONS,
     ...overrides,
   };
@@ -96,7 +101,78 @@ it("validateHostMetricsSample rejects invalid collectionMode", () => {
   assertEquals(result.ok, false);
 });
 
-it("validateHostMetricsSample stamps sampledAt and collectionMode", () => {
+it("validateHostMetricsSample requires hardwareProfileGeneration", () => {
+  const missing: Record<string, unknown> = { ...BASE_DIMENSIONS };
+  delete missing.hardwareProfileGeneration;
+  const missingResult = validateHostMetricsSample(
+    validRaw({ dimensions: missing }),
+    { serverId: "srv-1", receivedAt: new Date().toISOString() },
+  );
+  assertEquals(missingResult.ok, false);
+
+  const fractional = validateHostMetricsSample(
+    validRaw({
+      dimensions: { ...BASE_DIMENSIONS, hardwareProfileGeneration: 1.5 },
+    }),
+    { serverId: "srv-1", receivedAt: new Date().toISOString() },
+  );
+  assertEquals(fractional.ok, false);
+});
+
+it("validateHostMetricsSample accepts a real daemon sample carrying dimensions.trafficSources and derives the blob8 marker", () => {
+  const parts = ["core", "extended", "traffic"];
+  const result = validateHostMetricsSample(
+    validRaw({
+      parts,
+      metrics: metricsForParts(parts),
+      dimensions: {
+        ...BASE_DIMENSIONS,
+        trafficSources: { caddy: true, proxysql: true },
+      },
+    }),
+    { serverId: "srv-1", receivedAt: new Date().toISOString() },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.sample.dimensions.trafficSources, {
+    caddy: true,
+    proxysql: true,
+  });
+  assertEquals(result.sample.trafficSources, ["caddy", "proxysql"]);
+});
+
+it("validateHostMetricsSample rejects a missing or malformed dimensions.trafficSources", () => {
+  const missing: Record<string, unknown> = { ...BASE_DIMENSIONS };
+  delete missing.trafficSources;
+  const missingResult = validateHostMetricsSample(
+    validRaw({ dimensions: missing }),
+    { serverId: "srv-1", receivedAt: new Date().toISOString() },
+  );
+  assertEquals(missingResult.ok, false);
+  if (missingResult.ok) return;
+  assertEquals(
+    missingResult.reason,
+    "metrics dimensions.trafficSources must be an object",
+  );
+
+  const malformed = validateHostMetricsSample(
+    validRaw({
+      dimensions: {
+        ...BASE_DIMENSIONS,
+        trafficSources: { caddy: "yes", proxysql: false },
+      },
+    }),
+    { serverId: "srv-1", receivedAt: new Date().toISOString() },
+  );
+  assertEquals(malformed.ok, false);
+  if (malformed.ok) return;
+  assertEquals(
+    malformed.reason,
+    "metrics dimensions.trafficSources.caddy and .proxysql must be boolean",
+  );
+});
+
+it("validateHostMetricsSample stamps sampledAt, collectionMode, and parts", () => {
   const result = validateHostMetricsSample(
     validRaw({
       dimensions: { ...BASE_DIMENSIONS, collectionMode: "live" },
@@ -108,65 +184,123 @@ it("validateHostMetricsSample stamps sampledAt and collectionMode", () => {
   assertEquals(result.sample.sampledAt, result.sample.at);
   assertEquals(result.sample.collectionMode, "live");
   assertEquals(result.sample.schemaVersion, METRICS_SCHEMA_VERSION);
+  assertEquals(result.sample.parts, ["core", "extended"]);
 });
 
-it("validateHostMetricsSample accepts sensor and interface dimensions", () => {
+it("validateHostMetricsSample accepts a valid all-four-parts sample", () => {
+  const parts = ["core", "extended", "sensors", "traffic"];
   const result = validateHostMetricsSample(
-    validRaw({
-      dimensions: {
-        ...BASE_DIMENSIONS,
-        cpuTemperatureSensor: "coretemp",
-        gpuPowerSensor: "amdgpu",
-        uplinkInterfaces: ["eth0"],
-        fabricInterfaces: ["wg0", "wg1"],
-      },
-    }),
+    validRaw({ parts, metrics: metricsForParts(parts) }),
     { serverId: "srv-1", receivedAt: new Date().toISOString() },
   );
   assertEquals(result.ok, true);
   if (!result.ok) return;
-  assertEquals(result.sample.dimensions.cpuTemperatureSensor, "coretemp");
-  assertEquals(result.sample.dimensions.gpuPowerSensor, "amdgpu");
-  assertEquals(result.sample.dimensions.uplinkInterfaces, ["eth0"]);
-  assertEquals(result.sample.dimensions.fabricInterfaces, ["wg0", "wg1"]);
+  for (const key of HOST_METRIC_KEYS) {
+    assertEquals(key in result.sample.metrics, true);
+  }
 });
 
-it("validateHostMetricsSample rejects oversized sensor strings and interface lists", () => {
-  const oversizedSensor = validateHostMetricsSample(
-    validRaw({
-      dimensions: {
-        ...BASE_DIMENSIONS,
-        cpuTemperatureSensor: "x".repeat(MAX_DIMENSION_LEN + 1),
-      },
-    }),
+it("validateHostMetricsSample accepts a collector-shaped sensorless VM sample (parts: core + extended only, no sensor keys on the wire)", () => {
+  // Mirrors LinuxMetricsCollector on a VM / when readSensors() fails: only
+  // core+extended keys are ever put on the wire, and no sensors-part key
+  // (cpuTemperatureCelsius, cpuPowerWatts, ...) is present at all. This
+  // fixture is a literal key list independent of HOST_METRICS_METRIC_DESCRIPTORS
+  // so it actually catches descriptor/contract part drift instead of
+  // trivially passing whatever the descriptors currently say.
+  const collectorMetrics: Record<string, number | null> = {
+    cpuUserPercent: 12.5,
+    cpuSystemPercent: 3.1,
+    cpuNicePercent: 0,
+    cpuIdlePercent: 84.4,
+    cpuIowaitPercent: 0,
+    cpuIrqPercent: 0,
+    cpuSoftirqPercent: 0,
+    cpuStealPercent: 0,
+    load1: 0.5,
+    load5: 0.4,
+    load15: 0.3,
+    memoryTotalBytes: 1024,
+    memoryAvailableBytes: 512,
+    swapTotalBytes: 0,
+    swapFreeBytes: 0,
+    processCount: 120,
+    uptimeSeconds: 3600,
+    systemStorageTotalBytes: 1_000_000,
+    systemStorageAvailableBytes: 500_000,
+    hostingStorageTotalBytes: null,
+    hostingStorageAvailableBytes: null,
+    dockerStorageTotalBytes: null,
+    dockerStorageAvailableBytes: null,
+    diskReadBytesPerSecond: 0,
+    diskWriteBytesPerSecond: 0,
+    diskReadOpsPerSecond: 0,
+    diskWriteOpsPerSecond: 0,
+    diskReadLatencyMs: 0,
+    diskWriteLatencyMs: 0,
+    interfaceReceiveBytesPerSecond: 0,
+    interfaceTransmitBytesPerSecond: 0,
+    fabricReceiveBytesPerSecond: null,
+    fabricTransmitBytesPerSecond: null,
+    gpuTemperatureCelsius: null,
+    gpuPowerWatts: null,
+    // Deliberately absent: cpuTemperatureCelsius, cpuPowerWatts, and every
+    // other sensors/traffic-part key — this is the exact shape
+    // LinuxMetricsCollector emits when readSensors() finds nothing.
+  };
+  const result = validateHostMetricsSample(
+    validRaw({ parts: ["core", "extended"], metrics: collectorMetrics }),
     { serverId: "srv-1", receivedAt: new Date().toISOString() },
   );
-  assertEquals(oversizedSensor.ok, false);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals("cpuTemperatureCelsius" in result.sample.metrics, false);
+  assertEquals("cpuPowerWatts" in result.sample.metrics, false);
+});
 
-  const tooManyInterfaces = validateHostMetricsSample(
-    validRaw({
-      dimensions: {
-        ...BASE_DIMENSIONS,
-        uplinkInterfaces: Array.from(
-          { length: MAX_INTERFACE_LIST_LEN + 1 },
-          (_, i) => `eth${i}`,
-        ),
-      },
-    }),
+it("validateHostMetricsSample rejects parts missing core", () => {
+  const result = validateHostMetricsSample(
+    validRaw({ parts: ["extended"], metrics: metricsForParts(["extended"]) }),
     { serverId: "srv-1", receivedAt: new Date().toISOString() },
   );
-  assertEquals(tooManyInterfaces.ok, false);
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertEquals(result.reason, 'metrics parts must include "core"');
+});
 
-  const oversizedInterface = validateHostMetricsSample(
+it("validateHostMetricsSample rejects parts missing extended", () => {
+  const result = validateHostMetricsSample(
+    validRaw({ parts: ["core"], metrics: metricsForParts(["core"]) }),
+    { serverId: "srv-1", receivedAt: new Date().toISOString() },
+  );
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertEquals(result.reason, 'metrics parts must include "extended"');
+});
+
+it("validateHostMetricsSample rejects a key from an undeclared part", () => {
+  const result = validateHostMetricsSample(
+    validRaw({
+      parts: ["core", "extended"],
+      metrics: metricsForParts(["core", "extended"], {
+        gpuUtilizationPercent: 50,
+      }),
+    }),
+    { serverId: "srv-1", receivedAt: new Date().toISOString() },
+  );
+  assertEquals(result.ok, false);
+});
+
+it("validateHostMetricsSample rejects oversized runtimeMode strings", () => {
+  const result = validateHostMetricsSample(
     validRaw({
       dimensions: {
         ...BASE_DIMENSIONS,
-        fabricInterfaces: ["x".repeat(MAX_DIMENSION_LEN + 1)],
+        runtimeMode: "x".repeat(MAX_DIMENSION_LEN + 1),
       },
     }),
     { serverId: "srv-1", receivedAt: new Date().toISOString() },
   );
-  assertEquals(oversizedInterface.ok, false);
+  assertEquals(result.ok, false);
 });
 
 it("validateHostMetricsSample rejects timestamp outside skew window", () => {
@@ -214,7 +348,7 @@ it("validateHostMetricsSample rejects interval outside bounds, including zero", 
 it("validateHostMetricsSample maps NaN and Infinity metrics to null", () => {
   const result = validateHostMetricsSample(
     validRaw({
-      metrics: baseMetrics({
+      metrics: metricsForParts(["core", "extended"], {
         cpuUserPercent: Number.NaN,
         load1: Number.POSITIVE_INFINITY,
         memoryTotalBytes: Number.NEGATIVE_INFINITY,
@@ -232,7 +366,7 @@ it("validateHostMetricsSample maps NaN and Infinity metrics to null", () => {
 it("validateHostMetricsSample clamps percentages to 0–100", () => {
   const result = validateHostMetricsSample(
     validRaw({
-      metrics: baseMetrics({
+      metrics: metricsForParts(["core", "extended"], {
         cpuUserPercent: 150,
         cpuIdlePercent: -5,
       }),
@@ -246,9 +380,13 @@ it("validateHostMetricsSample clamps percentages to 0–100", () => {
 });
 
 it("validateHostMetricsSample keeps negative temperatures, nulls negative power", () => {
+  // cpuTemperatureCelsius/cpuPowerWatts are sensors-part keys — "sensors"
+  // must be declared for them to be accepted at all.
+  const parts = ["core", "extended", "sensors"];
   const result = validateHostMetricsSample(
     validRaw({
-      metrics: baseMetrics({
+      parts,
+      metrics: metricsForParts(parts, {
         cpuTemperatureCelsius: -15,
         cpuPowerWatts: -5,
       }),
@@ -265,7 +403,7 @@ it("validateHostMetricsSample rejects unknown metric keys", () => {
   const unknown = validateHostMetricsSample(
     validRaw({
       metrics: {
-        ...baseMetrics({ cpuUserPercent: 10 }),
+        ...metricsForParts(["core"], { cpuUserPercent: 10 }),
         unknownMetric: 999,
       },
     }),
@@ -275,13 +413,13 @@ it("validateHostMetricsSample rejects unknown metric keys", () => {
   if (unknown.ok) return;
   assertEquals(
     unknown.reason,
-    "metrics metrics.unknownMetric is not in the v2 metric allowlist",
+    `metrics metrics.unknownMetric is not in the v${METRICS_SCHEMA_VERSION} metric allowlist`,
   );
 
   const retiredV1 = validateHostMetricsSample(
     validRaw({
       metrics: {
-        ...baseMetrics({ cpuUserPercent: 10 }),
+        ...metricsForParts(["core"], { cpuUserPercent: 10 }),
         cpuUsagePercent: 42,
       },
     }),
@@ -291,8 +429,21 @@ it("validateHostMetricsSample rejects unknown metric keys", () => {
   if (retiredV1.ok) return;
   assertEquals(
     retiredV1.reason,
-    "metrics metrics.cpuUsagePercent is not in the v2 metric allowlist",
+    `metrics metrics.cpuUsagePercent is not in the v${METRICS_SCHEMA_VERSION} metric allowlist`,
   );
+});
+
+it("validateHostMetricsSample rejects the removed v2 memoryFreeBytes key", () => {
+  const result = validateHostMetricsSample(
+    validRaw({
+      metrics: {
+        ...metricsForParts(["core"], { cpuUserPercent: 10 }),
+        memoryFreeBytes: 1024,
+      },
+    }),
+    { serverId: "srv-1", receivedAt: new Date().toISOString() },
+  );
+  assertEquals(result.ok, false);
 });
 
 it("validateHostMetricsSample rejects unsafe sequences", () => {
@@ -328,7 +479,7 @@ it("validateHostMetricsSample rejects missing and invalid metric payloads", () =
     false,
   );
 
-  const metrics = baseMetrics({ cpuUserPercent: 10 });
+  const metrics = metricsForParts(["core"], { cpuUserPercent: 10 });
   delete metrics.load1;
   assertEquals(
     validateHostMetricsSample(validRaw({ metrics }), {
@@ -387,7 +538,7 @@ it("validateHostMetricsSample rejects wrong envelope type", () => {
   assertEquals(result.reason, 'metrics type must be "metrics"');
 });
 
-it("validateHostMetricsSample rejects oversized dimension strings", () => {
+it("validateHostMetricsSample rejects the retired v2 daemonVersion dimension", () => {
   const result = validateHostMetricsSample(
     validRaw({
       dimensions: {
@@ -397,6 +548,9 @@ it("validateHostMetricsSample rejects oversized dimension strings", () => {
     }),
     { serverId: "srv-1", receivedAt: new Date().toISOString() },
   );
+  // Retired v2 dimension fields are rejected outright — only declared fields
+  // (schemaVersion, collectionMode, hardwareProfileGeneration, runtimeMode,
+  // trafficSources) are recognized.
   assertEquals(result.ok, false);
 });
 

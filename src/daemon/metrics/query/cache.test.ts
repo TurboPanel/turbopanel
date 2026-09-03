@@ -17,7 +17,7 @@ it("metricsChartCacheKey: stable metric ordering and schema version", () => {
     serverId: "11111111-1111-4111-8111-111111111111",
     fromBucketMs: 1_000,
     toBucketMs: 2_000,
-    metrics: ["memoryFreeBytes", "cpuUserPercent"],
+    metrics: ["memoryAvailableBytes", "cpuUserPercent"],
     resolutionSeconds: 300,
     backend: "duckdb",
   });
@@ -25,12 +25,35 @@ it("metricsChartCacheKey: stable metric ordering and schema version", () => {
     serverId: "11111111-1111-4111-8111-111111111111",
     fromBucketMs: 1_000,
     toBucketMs: 2_000,
-    metrics: ["cpuUserPercent", "memoryFreeBytes"],
+    metrics: ["cpuUserPercent", "memoryAvailableBytes"],
     resolutionSeconds: 300,
     backend: "duckdb",
   });
   assertEquals(keyA, keyB);
   assertEquals(keyA.includes(`v${METRICS_SCHEMA_VERSION}`), true);
+});
+
+it("metricsChartCacheKey: hardwareProfileGeneration is appended only when provided", () => {
+  const withoutGeneration = metricsChartCacheKey({
+    serverId: "11111111-1111-4111-8111-111111111111",
+    fromBucketMs: 1_000,
+    toBucketMs: 2_000,
+    metrics: ["cpuUserPercent"],
+    resolutionSeconds: 300,
+    backend: "duckdb",
+  });
+  const withGeneration = metricsChartCacheKey({
+    serverId: "11111111-1111-4111-8111-111111111111",
+    fromBucketMs: 1_000,
+    toBucketMs: 2_000,
+    metrics: ["cpuUserPercent"],
+    resolutionSeconds: 300,
+    backend: "duckdb",
+    hardwareProfileGeneration: 2,
+  });
+  assertEquals(withoutGeneration.includes(":g"), false);
+  assertEquals(withGeneration.endsWith(":g2"), true);
+  assertEquals(withGeneration === withoutGeneration, false);
 });
 
 it("resolveChartCacheTtlSeconds: live vs historical", () => {

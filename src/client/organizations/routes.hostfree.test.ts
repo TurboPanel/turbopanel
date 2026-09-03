@@ -39,6 +39,8 @@ const ORG_PATHS = [
   ['PATCH', `/organizations/${orgId}`],
   ['GET', `/organizations/${orgId}/default-timezone`],
   ['PUT', `/organizations/${orgId}/default-timezone`],
+  ['GET', `/organizations/${orgId}/temperature-unit`],
+  ['PUT', `/organizations/${orgId}/temperature-unit`],
   ['GET', `/organizations/${orgId}/host-defaults`],
   ['PUT', `/organizations/${orgId}/host-defaults`],
   ['GET', `/organizations/${orgId}/default-environment`],
@@ -292,6 +294,35 @@ test('PUT /default-timezone returns 400 for an invalid timezone', async () => {
   })
   assertEquals(res.status, 400)
   assertEquals(await res.json(), { error: 'Invalid defaultServerTimezone' })
+})
+
+test('PUT /temperature-unit returns 400 for an invalid unit', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    executeQueue: [[{ allowed: true }]],
+  })
+  const res = await app.request(`/organizations/${orgId}/temperature-unit`, {
+    method: 'PUT',
+    headers: {
+      Cookie: cookie,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ temperatureUnit: 'kelvin' }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'Invalid temperatureUnit' })
+})
+
+test('GET /temperature-unit defaults to celsius when unset', async () => {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    executeQueue: [[{ allowed: true }]],
+  })
+  const res = await app.request(`/organizations/${orgId}/temperature-unit`, {
+    headers: { Cookie: cookie },
+  })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { temperatureUnit: 'celsius' })
 })
 
 test('PUT /default-environment returns 400 when the field is missing', async () => {

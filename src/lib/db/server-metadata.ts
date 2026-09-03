@@ -11,6 +11,10 @@ import {
   type NtpDefaults,
 } from '../host-defaults.ts'
 import type { OrganizationOptions } from '../organization-options.ts'
+import {
+  isExactCpuCatalogMatch,
+  resolveCpuCatalogEntry,
+} from '../hardware/cpu-catalog.ts'
 
 /** OS families we may report from the daemon; extend the union as support is added. */
 export type ServerOsFamily = 'linux' | 'windows' | 'freebsd' | 'darwin'
@@ -165,22 +169,90 @@ export type ServerDockerMetadata = {
 }
 
 /**
- * Operator-selected metrics overrides nested under
- * `server.metadata.metricsOverrides`. The server row is the source of truth;
- * the daemon-side override files are a cache refreshed by the
- * `metrics-sensor-overrides-update` cell push.
+ * Stable sensor identity for one hardware-profile slot — `chip` + `label`
+ * from the daemon's `sensorId()` pair (see `turbopaneld` sensor discovery),
+ * never a raw sysfs path. Paths (`hwmonN`) reindex across reboots; this
+ * identity is what survives them.
  */
-export type ServerMetricsOverrides = {
-  /** hwmon sensor path for CPU temperature. */
-  cpuTemperature?: string
-  /** hwmon sensor path for GPU temperature. */
-  gpuTemperature?: string
-  /** Sensor path for CPU power (RAPL energy counter). */
-  cpuPower?: string
-  /** hwmon sensor path for GPU power. */
-  gpuPower?: string
+export type ServerSensorSlotAssignment = {
+  chip: string
+  label: string
+}
+
+/**
+ * One hardware-profile slot: `undefined` (key absent) = never configured,
+ * daemon auto-detects; `null` = explicitly unassigned (operator confirmed no
+ * sensor here, suppress auto-detection); an assignment = pinned identity.
+ */
+export type ServerSensorSlot = ServerSensorSlotAssignment | null
+
+/**
+ * Operator-assigned hardware profile nested under
+ * `server.metadata.hardwareProfile`. The server row is the source of truth;
+ * the daemon-side state files are a cache refreshed by the
+ * `metrics-sensor-overrides-update` cell push. `generation` bumps only when
+ * a sensor-slot or NIC identity actually changes — it stamps samples
+ * (`hardwareProfileGeneration`) so later chart segmentation can tell layout
+ * changes apart from a plain value shift.
+ */
+export type ServerHardwareProfile = {
+  /** CPU temperature sensor (RAPL / hwmon coretemp / thermal zone). */
+  cpuTemperature?: ServerSensorSlot
+  /** CPU power sensor (RAPL energy counter). */
+  cpuPower?: ServerSensorSlot
+  /** Which GPU device (of possibly several) feeds gpu temp/power/util/fan. */
+  gpuDevice?: ServerSensorSlot
+  /**
+   * Overrides the fan candidate `gpuDevice`'s fan-out otherwise selects —
+   * only needed when a GPU's fan tachometer isn't discoverable from the same
+   * device identity as its temperature/power.
+   */
+  gpuFan?: ServerSensorSlot
+  disk1Temperature?: ServerSensorSlot
+  disk2Temperature?: ServerSensorSlot
+  ambient1Temperature?: ServerSensorSlot
+  ambient2Temperature?: ServerSensorSlot
+  boardTemperature?: ServerSensorSlot
+  cpuFan?: ServerSensorSlot
+  systemFan1?: ServerSensorSlot
+  systemFan2?: ServerSensorSlot
+  /** Network interface name bound to the `nic1*` metric slot, or `null` when unassigned. */
+  nic1?: string | null
+  /** Network interface name bound to the `nic2*` metric slot, or `null` when unassigned. */
+  nic2?: string | null
   /** Absolute path of the filesystem probed as hosting storage. */
   hostingPath?: string
+  /**
+   * Whether the daemon may probe per-drive temperatures (`drivetemp`
+   * hwmon). Off by default — spinning up drives to read a sensor is
+   * intrusive enough that it needs an explicit operator opt-in.
+   */
+  drivetempEnabled?: boolean
+  /** Monotonically increasing; bumps only when a sensor/NIC identity changes. */
+  generation?: number
+  /** ISO timestamp of the last `generation` bump. */
+  generationAppliedAt?: string
+  /**
+   * Detected CPU model string (e.g. `"Intel Xeon Gold 6338"`), reported by
+   * the daemon's host-facts projection — never operator-editable through the
+   * hardware-profile PUT. Feeds {@link resolveEffectiveCpuThermalLimits} via
+   * `resolveCpuCatalogEntry` (`../hardware/cpu-catalog.ts`) when no override
+   * is set. Identity-bearing in name only — it never participates in
+   * `generation`, which tracks sensor/NIC layout, not CPU identity.
+   */
+  cpuModel?: string
+  /**
+   * Operator override for CPU thermal design power (watts), independent of
+   * `cpuTdpWattsOverride`'s sibling field below — either may be set alone.
+   * `undefined` = no override (fall through to the catalog); never bumps
+   * `generation`.
+   */
+  cpuTdpWattsOverride?: number | null
+  /**
+   * Operator override for CPU junction temperature limit (°C). See
+   * {@link ServerHardwareProfile.cpuTdpWattsOverride}.
+   */
+  cpuTjMaxCelsiusOverride?: number | null
 }
 
 /**
@@ -222,10 +294,10 @@ export type ServerMetadata = {
    */
   runtimes?: ServerRuntimeMetadata
   /**
-   * Operator-selected sensor / hosting-path overrides for host metrics.
-   * jsonb, so no migration.
+   * Operator-assigned hardware profile for host metrics (sensor/NIC slots,
+   * hosting path, drivetemp opt-in, generation). jsonb, so no migration.
    */
-  metricsOverrides?: ServerMetricsOverrides
+  hardwareProfile?: ServerHardwareProfile
 }
 
 /**
@@ -322,6 +394,29 @@ function optionalPositiveInt(value: unknown): number | undefined {
   const n = optionalNonNegativeInt(value)
   if (n === undefined || n <= 0) return undefined
   return n
+}
+
+/** Matches `MAX_HARDWARE_PROFILE_FIELD_CHARS` in `metrics-routes-helpers.ts`. */
+const MAX_CPU_MODEL_CHARS = 512
+
+/** Generous ceiling — well above any real single-socket CPU's TDP. */
+const CPU_TDP_WATTS_MAX = 1000
+/** Plausible silicon junction-temperature range. */
+const CPU_TJ_MAX_CELSIUS_MIN = 40
+const CPU_TJ_MAX_CELSIUS_MAX = 130
+
+function optionalCpuTdpWatts(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  if (value <= 0 || value > CPU_TDP_WATTS_MAX) return undefined
+  return value
+}
+
+function optionalCpuTjMaxCelsius(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  if (value < CPU_TJ_MAX_CELSIUS_MIN || value > CPU_TJ_MAX_CELSIUS_MAX) {
+    return undefined
+  }
+  return value
 }
 
 function parseCpuCoreSplit(value: unknown): ServerCpuCoreSplit | undefined {
@@ -1140,59 +1235,326 @@ export function parseServerDockerMetadata(
   return Object.keys(docker).length > 0 ? docker : undefined
 }
 
-/** Parse a best-effort metrics-overrides block from stored metadata. */
-export function parseServerMetricsOverrides(
-  value: unknown,
-): ServerMetricsOverrides | undefined {
+/** Sensor-slot keys — identity-bearing; a change here bumps `generation`. */
+export const HARDWARE_PROFILE_SENSOR_SLOT_KEYS = [
+  'cpuTemperature',
+  'cpuPower',
+  'gpuDevice',
+  'gpuFan',
+  'disk1Temperature',
+  'disk2Temperature',
+  'ambient1Temperature',
+  'ambient2Temperature',
+  'boardTemperature',
+  'cpuFan',
+  'systemFan1',
+  'systemFan2',
+] as const satisfies readonly (keyof ServerHardwareProfile)[]
+
+/** NIC binding keys — identity-bearing; a change here also bumps `generation`. */
+export const HARDWARE_PROFILE_NIC_KEYS = [
+  'nic1',
+  'nic2',
+] as const satisfies readonly (keyof ServerHardwareProfile)[]
+
+/** Update payload for {@link mergeServerHardwareProfile}. */
+export type ServerHardwareProfileUpdate = {
+  [K in (typeof HARDWARE_PROFILE_SENSOR_SLOT_KEYS)[number]]?:
+    | ServerSensorSlotAssignment
+    | null
+} & {
+  [K in (typeof HARDWARE_PROFILE_NIC_KEYS)[number]]?: string | null
+} & {
+  hostingPath?: string | null
+  drivetempEnabled?: boolean | null
+  /**
+   * Operator TDP/Tjmax overrides. Not identity-bearing — follow the same
+   * undefined-leaves / null-clears convention as `hostingPath` /
+   * `drivetempEnabled` and never bump `generation`. `cpuModel` is
+   * intentionally absent here — it is a detected fact written only by the
+   * host-facts projection path, never by this operator update.
+   */
+  cpuTdpWattsOverride?: number | null
+  cpuTjMaxCelsiusOverride?: number | null
+}
+
+function parseSensorSlot(value: unknown): ServerSensorSlot | undefined {
+  if (value === null) return null
   if (!isRecord(value)) return undefined
-  const overrides: ServerMetricsOverrides = {}
-  const cpuTemperature = optionalTrimmedString(value.cpuTemperature)
-  if (cpuTemperature) overrides.cpuTemperature = cpuTemperature
-  const gpuTemperature = optionalTrimmedString(value.gpuTemperature)
-  if (gpuTemperature) overrides.gpuTemperature = gpuTemperature
-  const cpuPower = optionalTrimmedString(value.cpuPower)
-  if (cpuPower) overrides.cpuPower = cpuPower
-  const gpuPower = optionalTrimmedString(value.gpuPower)
-  if (gpuPower) overrides.gpuPower = gpuPower
+  const chip = optionalTrimmedString(value.chip)
+  const label = optionalTrimmedString(value.label)
+  if (!chip || !label) return undefined
+  return { chip, label }
+}
+
+function parseNicBinding(value: unknown): string | null | undefined {
+  if (value === null) return null
+  return optionalTrimmedString(value)
+}
+
+function applyHardwareProfileSensorSlots(
+  value: Record<string, unknown>,
+  profile: ServerHardwareProfile,
+): void {
+  for (const key of HARDWARE_PROFILE_SENSOR_SLOT_KEYS) {
+    if (!(key in value)) continue
+    const slot = parseSensorSlot(value[key])
+    if (slot !== undefined) profile[key] = slot
+  }
+}
+
+function applyHardwareProfileNicBindings(
+  value: Record<string, unknown>,
+  profile: ServerHardwareProfile,
+): void {
+  for (const key of HARDWARE_PROFILE_NIC_KEYS) {
+    if (!(key in value)) continue
+    const nic = parseNicBinding(value[key])
+    if (nic !== undefined) profile[key] = nic
+  }
+}
+
+/** Shared by both nullable-override fields: `null` clears, a parse failure leaves it unset. */
+function applyParsedNullableOverride<V>(
+  present: boolean,
+  raw: unknown,
+  parse: (value: unknown) => V | undefined,
+  apply: (value: V | null) => void,
+): void {
+  if (!present) return
+  if (raw === null) {
+    apply(null)
+    return
+  }
+  const parsed = parse(raw)
+  if (parsed !== undefined) apply(parsed)
+}
+
+/** Parse a best-effort hardware-profile block from stored metadata. */
+export function parseServerHardwareProfile(
+  value: unknown,
+): ServerHardwareProfile | undefined {
+  if (!isRecord(value)) return undefined
+  const profile: ServerHardwareProfile = {}
+  applyHardwareProfileSensorSlots(value, profile)
+  applyHardwareProfileNicBindings(value, profile)
+
   const hostingPath = optionalTrimmedString(value.hostingPath)
-  if (hostingPath) overrides.hostingPath = hostingPath
-  return Object.keys(overrides).length > 0 ? overrides : undefined
+  if (hostingPath) profile.hostingPath = hostingPath
+  if (typeof value.drivetempEnabled === 'boolean') {
+    profile.drivetempEnabled = value.drivetempEnabled
+  }
+  if (
+    typeof value.generation === 'number' &&
+    Number.isInteger(value.generation) &&
+    value.generation >= 0
+  ) {
+    profile.generation = value.generation
+  }
+  const generationAppliedAt = optionalIsoTimestamp(value.generationAppliedAt)
+  if (generationAppliedAt) profile.generationAppliedAt = generationAppliedAt
+  const cpuModel = optionalTrimmedString(value.cpuModel)
+  if (cpuModel && cpuModel.length <= MAX_CPU_MODEL_CHARS) profile.cpuModel = cpuModel
+
+  applyParsedNullableOverride(
+    'cpuTdpWattsOverride' in value,
+    value.cpuTdpWattsOverride,
+    optionalCpuTdpWatts,
+    (tdpWatts) => { profile.cpuTdpWattsOverride = tdpWatts },
+  )
+  applyParsedNullableOverride(
+    'cpuTjMaxCelsiusOverride' in value,
+    value.cpuTjMaxCelsiusOverride,
+    optionalCpuTjMaxCelsius,
+    (tjMaxCelsius) => { profile.cpuTjMaxCelsiusOverride = tjMaxCelsius },
+  )
+
+  return Object.keys(profile).length > 0 ? profile : undefined
+}
+
+/** `undefined` vs `null` are distinct sentinels — unset vs explicitly unassigned. */
+function sensorSlotIdentityEquals(
+  a: ServerSensorSlot | undefined,
+  b: ServerSensorSlot | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b
+  if (a === null || b === null) return a === b
+  return a.chip === b.chip && a.label === b.label
+}
+
+function nicBindingEquals(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  return a === b
 }
 
 /**
- * Merge a partial overrides update onto the stored set: a string sets the
- * field, `null` clears it, `undefined` leaves it untouched. Returns the new
- * effective set, or `undefined` when every field ends up cleared.
+ * Merge a partial hardware-profile update onto the stored profile.
+ *
+ * Per sensor-slot / NIC field: an assignment (or interface name) pins it, an
+ * explicit `null` marks it unassigned, `undefined` leaves it untouched.
+ * `hostingPath` / `drivetempEnabled` / `cpuTdpWattsOverride` /
+ * `cpuTjMaxCelsiusOverride` follow the same undefined-leaves, null-clears
+ * convention but never bump `generation` — they carry no sensor identity.
+ * `generation` bumps (and `generationAppliedAt` stamps `nowIso`) only when a
+ * sensor-slot or NIC identity actually changed; an otherwise no-op save is
+ * idempotent.
  */
-export function mergeServerMetricsOverrides(
-  existing: ServerMetricsOverrides | undefined,
-  update: {
-    [K in keyof ServerMetricsOverrides]?: string | null
-  },
-): ServerMetricsOverrides | undefined {
-  const keys = [
-    'cpuTemperature',
-    'gpuTemperature',
-    'cpuPower',
-    'gpuPower',
-    'hostingPath',
-  ] as const
-  const merged: ServerMetricsOverrides = { ...existing }
-  for (const key of keys) {
-    const value = update[key]
-    if (value === undefined) continue
-    if (value === null) {
-      delete merged[key]
-      continue
-    }
-    const trimmed = value.trim()
-    if (trimmed.length === 0) {
-      delete merged[key]
-      continue
-    }
-    merged[key] = trimmed
+function applySensorSlotUpdates(
+  existing: ServerHardwareProfile | undefined,
+  update: ServerHardwareProfileUpdate,
+  next: ServerHardwareProfile,
+): boolean {
+  let changed = false
+  for (const key of HARDWARE_PROFILE_SENSOR_SLOT_KEYS) {
+    const incoming = update[key]
+    if (incoming === undefined) continue
+    const value: ServerSensorSlot = incoming === null
+      ? null
+      : { chip: incoming.chip.trim(), label: incoming.label.trim() }
+    if (!sensorSlotIdentityEquals(existing?.[key], value)) changed = true
+    next[key] = value
   }
-  return Object.keys(merged).length > 0 ? merged : undefined
+  return changed
+}
+
+function applyNicBindingUpdates(
+  existing: ServerHardwareProfile | undefined,
+  update: ServerHardwareProfileUpdate,
+  next: ServerHardwareProfile,
+): boolean {
+  let changed = false
+  for (const key of HARDWARE_PROFILE_NIC_KEYS) {
+    const incoming = update[key]
+    if (incoming === undefined) continue
+    const value = incoming === null ? null : incoming.trim()
+    if (!nicBindingEquals(existing?.[key], value)) changed = true
+    next[key] = value
+  }
+  return changed
+}
+
+function applyHostingPathUpdate(
+  update: ServerHardwareProfileUpdate,
+  next: ServerHardwareProfile,
+): void {
+  if (update.hostingPath === undefined) return
+  if (update.hostingPath === null) {
+    delete next.hostingPath
+    return
+  }
+  const trimmed = update.hostingPath.trim()
+  if (trimmed.length === 0) delete next.hostingPath
+  else next.hostingPath = trimmed
+}
+
+/** `undefined` leaves a field untouched, `null` clears it, else it replaces it. */
+function applyNullableUpdate<V>(
+  incoming: V | null | undefined,
+  apply: (value: V) => void,
+  clear: () => void,
+): void {
+  if (incoming === undefined) return
+  if (incoming === null) {
+    clear()
+    return
+  }
+  apply(incoming)
+}
+
+function applyGenerationBump(
+  existing: ServerHardwareProfile | undefined,
+  next: ServerHardwareProfile,
+  identityChanged: boolean,
+  nowIso: string,
+): void {
+  if (identityChanged) {
+    next.generation = (existing?.generation ?? 0) + 1
+    next.generationAppliedAt = nowIso
+    return
+  }
+  if (existing?.generation === undefined) return
+  next.generation = existing.generation
+  if (existing.generationAppliedAt !== undefined) {
+    next.generationAppliedAt = existing.generationAppliedAt
+  }
+}
+
+export function mergeServerHardwareProfile(
+  existing: ServerHardwareProfile | undefined,
+  update: ServerHardwareProfileUpdate,
+  nowIso: string,
+): { profile: ServerHardwareProfile | undefined; identityChanged: boolean } {
+  const next: ServerHardwareProfile = { ...existing }
+
+  const sensorSlotsChanged = applySensorSlotUpdates(existing, update, next)
+  const nicBindingsChanged = applyNicBindingUpdates(existing, update, next)
+  const identityChanged = sensorSlotsChanged || nicBindingsChanged
+
+  applyHostingPathUpdate(update, next)
+  applyNullableUpdate(
+    update.drivetempEnabled,
+    (v) => { next.drivetempEnabled = v },
+    () => { delete next.drivetempEnabled },
+  )
+  applyNullableUpdate(
+    update.cpuTdpWattsOverride,
+    (v) => { next.cpuTdpWattsOverride = v },
+    () => { delete next.cpuTdpWattsOverride },
+  )
+  applyNullableUpdate(
+    update.cpuTjMaxCelsiusOverride,
+    (v) => { next.cpuTjMaxCelsiusOverride = v },
+    () => { delete next.cpuTjMaxCelsiusOverride },
+  )
+
+  applyGenerationBump(existing, next, identityChanged, nowIso)
+
+  const profile = Object.keys(next).length > 0 ? next : undefined
+  return { profile, identityChanged }
+}
+
+export type EffectiveCpuThermalLimits = {
+  tdpWatts: number | null
+  tjMaxCelsius: number | null
+  source: 'override' | 'catalog-exact' | 'catalog-family' | 'none'
+}
+
+/**
+ * Resolve effective CPU thermal limits for headroom display: a per-server
+ * override wins outright per field (a server may override just one of the
+ * two), otherwise both fall back together to the catalog entry resolved
+ * from the detected {@link ServerHardwareProfile.cpuModel}, otherwise
+ * `'none'`. Mixed override+catalog reports `'override'` — the caller cares
+ * whether *any* value came from an operator's deliberate choice.
+ */
+export function resolveEffectiveCpuThermalLimits(
+  profile: ServerHardwareProfile | undefined,
+): EffectiveCpuThermalLimits {
+  const tdpOverride = profile?.cpuTdpWattsOverride ?? null
+  const tjMaxOverride = profile?.cpuTjMaxCelsiusOverride ?? null
+  if (tdpOverride !== null || tjMaxOverride !== null) {
+    const catalog = resolveCpuCatalogEntry(profile?.cpuModel)
+    return {
+      tdpWatts: tdpOverride ?? catalog?.tdpWatts ?? null,
+      tjMaxCelsius: tjMaxOverride ?? catalog?.tjMaxCelsius ?? null,
+      source: 'override',
+    }
+  }
+
+  const catalog = resolveCpuCatalogEntry(profile?.cpuModel)
+  if (catalog) {
+    return {
+      tdpWatts: catalog.tdpWatts,
+      tjMaxCelsius: catalog.tjMaxCelsius,
+      source: isExactCpuCatalogMatch(profile?.cpuModel)
+        ? 'catalog-exact'
+        : 'catalog-family',
+    }
+  }
+
+  return { tdpWatts: null, tjMaxCelsius: null, source: 'none' }
 }
 
 export function serverDockerMetadataEquals(

@@ -67,3 +67,6 @@ SingletonSocket
 
 # co-located dev host stamp (normalize-dev-checkout.sh)
 .turbopanel-checkout-stamp
+
+# Local Claude Code settings (background-session isolation)
+.claude/settings.json

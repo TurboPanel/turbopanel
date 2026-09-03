@@ -1414,12 +1414,26 @@ it("wire mappings round-trip metrics live/capabilities/sensor kinds", () => {
     outboundEnvelopeToWireMessage({
       ...base,
       kind: "metrics-sensor-overrides-update",
-      overrides: { cpuTemperature: "coretemp", hostingPath: "/mnt/data" },
+      overrides: {
+        cpuTemperature: { chip: "coretemp", label: "Package id 0" },
+        nic1: "eth0",
+        hostingPath: "/mnt/data",
+        drivetempEnabled: true,
+        generation: 3,
+        generationAppliedAt: VALID_AT,
+      },
     }),
     {
       type: "metrics-sensor-overrides-update",
       id: "req-m",
-      overrides: { cpuTemperature: "coretemp", hostingPath: "/mnt/data" },
+      overrides: {
+        cpuTemperature: { chip: "coretemp", label: "Package id 0" },
+        nic1: "eth0",
+        hostingPath: "/mnt/data",
+        drivetempEnabled: true,
+        generation: 3,
+        generationAppliedAt: VALID_AT,
+      },
       at: VALID_AT,
     },
   );

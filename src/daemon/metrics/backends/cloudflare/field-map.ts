@@ -1,19 +1,34 @@
 /**
  * Cloudflare Analytics Engine positional field map — the single source of
  * truth for the double1..double20 / blob1..blob20 / indexes layout on the
- * `turbopanel_server_telemetry` dataset.
+ * `turbopanel_server_host_metrics` dataset.
  *
- * Schema v2 carries 38 named metrics but one AE data point only has 20
- * doubles, so every host sample is written as **two** data points:
+ * Schema v3 splits the metric allowlist into four `MetricPart`s (`core`,
+ * `extended`, `sensors`, `traffic`), each capped at
+ * `AE_METRIC_DOUBLE_SLOT_COUNT` (19) values so it fits one AE data point.
+ * `core` and `extended` are mandatory on every sample and always written,
+ * regardless of how many of their metric values are missing; `sensors`
+ * (hardware sensors detected) and `traffic` (sidecars running) are written
+ * only when the daemon declares them in `sample.parts` **and** at least one
+ * of that part's metric values actually resolved this tick — a declared but
+ * entirely-null optional part (every value missing) is never written, so one
+ * host sample is **two to four** `writeDataPoint` calls:
  *
- *   blob1 = "metrics", blob2 = "core"      → 19 core metrics + interval
- *   blob1 = "metrics", blob2 = "extended"  → 19 extended metrics + interval
+ *   blob1 = "metrics", blob2 = "core"      → always
+ *   blob1 = "metrics", blob2 = "extended"  → always
+ *   blob1 = "metrics", blob2 = "sensors"   → only when declared and non-empty
+ *   blob1 = "metrics", blob2 = "traffic"   → only when declared and non-empty
  *
- * Both parts reserve `double20` for the sample's `intervalSeconds` so query
+ * Every part reserves `double20` for the sample's `intervalSeconds` so query
  * aggregates can weight by true collection cadence
  * (`SUM(value * double20 * _sample_interval) / SUM(double20 * _sample_interval)`).
  * Connection-status transitions stay single data points (`blob1 = "status"`)
  * on the same dataset.
+ *
+ * Part → metric-key membership is derived from
+ * `HOST_METRICS_METRIC_DESCRIPTORS[key].part` (`metric-descriptors.ts`), not
+ * hand-maintained here — a metric's part can never drift between the
+ * descriptor map and the physical write layout.
  *
  * External storage contract: never inline positional literals elsewhere;
  * always derive columns and write payloads through this module.
@@ -21,21 +36,25 @@
 
 import {
   HOST_METRIC_KEYS,
-  METRICS_SCHEMA_VERSION,
   type HostMetricKey,
-  type HostMetrics,
+  METRIC_PARTS,
+  type MetricPart,
+  METRICS_SCHEMA_VERSION,
+  type PartialHostMetrics,
 } from "../../contract.ts";
+import { HOST_METRICS_METRIC_DESCRIPTORS } from "../../metric-descriptors.ts";
 import type {
   AuthenticatedHostMetricsSample,
   ServerStatusEvent,
 } from "../../types.ts";
 
 /**
- * Brand-new dataset name — the retired single-datapoint layout lives in
- * `turbopanel_server_metrics`; no query against this dataset ever touches
- * old rows.
+ * v3 dataset name — distinct from the retired `turbopanel_server_metrics`
+ * (single-datapoint) and `turbopanel_server_telemetry` (two-datapoint core/
+ * extended) layouts. AE datasets cannot be deleted, so no query against this
+ * dataset ever touches rows from either retired layout.
  */
-export const AE_DATASET_NAME = "turbopanel_server_telemetry";
+export const AE_DATASET_NAME = "turbopanel_server_host_metrics";
 
 export const AE_DOUBLE_COUNT = 20;
 export const AE_BLOB_COUNT = 20;
@@ -43,44 +62,33 @@ export const AE_BLOB_COUNT = 20;
 /** Metric-value double slots per part (double1..double19). */
 export const AE_METRIC_DOUBLE_SLOT_COUNT = 19;
 
-/** double20 on both metrics parts — the sample's `intervalSeconds`. */
+/** double20 on every metrics part — the sample's `intervalSeconds`. */
 export const AE_DOUBLE_INTERVAL_INDEX = 19;
 
 /** blob1 — event type discriminator: `"metrics"` or `"status"`. */
 export const AE_BLOB_EVENT_TYPE_INDEX = 0;
-/** blob2 — metrics part discriminator: `"core"` or `"extended"` (empty on status rows). */
+/** blob2 — metrics part discriminator (`"core"` / `"extended"` / `"sensors"` / `"traffic"`; empty on status rows). */
 export const AE_BLOB_PART_INDEX = 1;
 /** blob3 — schema version (stringified integer, both event types). */
 export const AE_BLOB_SCHEMA_VERSION_INDEX = 2;
-/** blob4 — daemon version string. */
-export const AE_BLOB_DAEMON_VERSION_INDEX = 3;
-/** blob5 — operating system. */
-export const AE_BLOB_OS_INDEX = 4;
-/** blob6 — architecture. */
-export const AE_BLOB_ARCH_INDEX = 5;
-/** blob7 — kernel release. */
-export const AE_BLOB_KERNEL_INDEX = 6;
-/** blob8 — collection mode (`"baseline"` / `"live"`). */
-export const AE_BLOB_COLLECTION_MODE_INDEX = 7;
-/** blob9 — daemon sample timestamp (wire `at`, ISO string). */
-export const AE_BLOB_SAMPLED_AT_INDEX = 8;
-/** blob10 — daemon sample sequence (stringified integer). */
-export const AE_BLOB_SEQUENCE_INDEX = 9;
-/** blob11 — selected CPU temperature sensor identity. */
-export const AE_BLOB_CPU_TEMPERATURE_SENSOR_INDEX = 10;
-/** blob12 — selected GPU temperature sensor identity. */
-export const AE_BLOB_GPU_TEMPERATURE_SENSOR_INDEX = 11;
-/** blob13 — selected CPU power sensor identity. */
-export const AE_BLOB_CPU_POWER_SENSOR_INDEX = 12;
-/** blob14 — selected GPU power sensor identity. */
-export const AE_BLOB_GPU_POWER_SENSOR_INDEX = 13;
-/** blob15 — uplink interface selection (comma-joined). */
-export const AE_BLOB_UPLINK_INTERFACES_INDEX = 14;
-/** blob16 — fabric interface selection (comma-joined). */
-export const AE_BLOB_FABRIC_INTERFACES_INDEX = 15;
+/** blob4 — collection mode (`"baseline"` / `"live"`). */
+export const AE_BLOB_COLLECTION_MODE_INDEX = 3;
+/** blob5 — daemon sample timestamp (wire `at`, ISO string). */
+export const AE_BLOB_SAMPLED_AT_INDEX = 4;
+/** blob6 — daemon sample sequence (stringified integer). */
+export const AE_BLOB_SEQUENCE_INDEX = 5;
+/** blob7 — hardware profile generation (stringified integer; sensor/NIC layout epoch). */
+export const AE_BLOB_HARDWARE_PROFILE_GENERATION_INDEX = 6;
+/**
+ * blob8 — `traffic`-part rows only: comma-joined contributing traffic
+ * sources (e.g. `"caddy,proxysql"`). Empty on every other part.
+ */
+export const AE_BLOB_TRAFFIC_SOURCES_INDEX = 7;
 /** blob17 — status rows only: {@link ServerStatusEvent.reason} (empty on metrics rows). */
 export const AE_BLOB_STATUS_REASON_INDEX = 16;
 
+/** blob9..blob16 stay reserved-empty on every event type (identities now live in Postgres). */
+export const AE_RESERVED_MID_BLOB_COUNT = 8;
 /** blob18..blob20 stay reserved-empty on every event type. */
 export const AE_RESERVED_BLOB_COUNT = 3;
 
@@ -89,11 +97,14 @@ export const AE_METRICS_EVENT_TYPE = "metrics";
 /** blob1 discriminator for connection-status transition rows. */
 export const AE_STATUS_EVENT_TYPE = "status";
 
-/** blob2 discriminator values for the two fixed metrics parts. */
+/** blob2 discriminator values for the four metrics parts. */
 export const AE_PART_CORE = "core";
 export const AE_PART_EXTENDED = "extended";
+export const AE_PART_SENSORS = "sensors";
+export const AE_PART_TRAFFIC = "traffic";
 
-export type AeMetricPart = typeof AE_PART_CORE | typeof AE_PART_EXTENDED;
+/** Alias kept for call-site stability — identical to the shared `MetricPart`. */
+export type AeMetricPart = MetricPart;
 
 /** double1 on status rows — connected (1) / disconnected (0). */
 export const AE_DOUBLE_STATUS_CONNECTED_INDEX = 0;
@@ -119,103 +130,73 @@ export const AE_TIMESTAMP_COLUMN = "timestamp";
  */
 export const AE_MISSING_METRIC_SENTINEL = -1e308;
 
-/**
- * The 19 core metrics — double1..double19 of the `blob2 = "core"` part, in
- * this exact order: CPU breakdown, load averages, memory/swap, CPU temp,
- * process count, uptime.
- */
-export const CORE_METRIC_KEYS = [
-  "cpuUserPercent",
-  "cpuSystemPercent",
-  "cpuNicePercent",
-  "cpuIdlePercent",
-  "cpuIowaitPercent",
-  "cpuIrqPercent",
-  "cpuSoftirqPercent",
-  "cpuStealPercent",
-  "load1",
-  "load5",
-  "load15",
-  "memoryTotalBytes",
-  "memoryAvailableBytes",
-  "memoryFreeBytes",
-  "swapTotalBytes",
-  "swapFreeBytes",
-  "cpuTemperatureCelsius",
-  "processCount",
-  "uptimeSeconds",
-] as const satisfies readonly HostMetricKey[];
+/** The `core` metrics — double1..doubleN of the `blob2 = "core"` part. */
+export const CORE_METRIC_KEYS: readonly HostMetricKey[] = HOST_METRIC_KEYS
+  .filter((key) => HOST_METRICS_METRIC_DESCRIPTORS[key].part === "core");
 
-/**
- * The 19 extended metrics — double1..double19 of the `blob2 = "extended"`
- * part, in this exact order: storage totals, disk throughput/ops/latency,
- * network rates, GPU temp, power draw.
- */
-export const EXTENDED_METRIC_KEYS = [
-  "systemStorageTotalBytes",
-  "systemStorageAvailableBytes",
-  "hostingStorageTotalBytes",
-  "hostingStorageAvailableBytes",
-  "dockerStorageTotalBytes",
-  "dockerStorageAvailableBytes",
-  "diskReadBytesPerSecond",
-  "diskWriteBytesPerSecond",
-  "diskReadOpsPerSecond",
-  "diskWriteOpsPerSecond",
-  "diskReadLatencyMs",
-  "diskWriteLatencyMs",
-  "uplinkReceiveBytesPerSecond",
-  "uplinkTransmitBytesPerSecond",
-  "fabricReceiveBytesPerSecond",
-  "fabricTransmitBytesPerSecond",
-  "gpuTemperatureCelsius",
-  "cpuPowerWatts",
-  "gpuPowerWatts",
-] as const satisfies readonly HostMetricKey[];
+/** The `extended` metrics — double1..doubleN of the `blob2 = "extended"` part. */
+export const EXTENDED_METRIC_KEYS: readonly HostMetricKey[] = HOST_METRIC_KEYS
+  .filter((key) => HOST_METRICS_METRIC_DESCRIPTORS[key].part === "extended");
 
-const PART_KEYS: Record<AeMetricPart, readonly HostMetricKey[]> = {
+/** The `sensors` metrics — double1..doubleN of the `blob2 = "sensors"` part. */
+export const SENSOR_METRIC_KEYS: readonly HostMetricKey[] = HOST_METRIC_KEYS
+  .filter((key) => HOST_METRICS_METRIC_DESCRIPTORS[key].part === "sensors");
+
+/** The `traffic` metrics — double1..doubleN of the `blob2 = "traffic"` part. */
+export const TRAFFIC_METRIC_KEYS: readonly HostMetricKey[] = HOST_METRIC_KEYS
+  .filter((key) => HOST_METRICS_METRIC_DESCRIPTORS[key].part === "traffic");
+
+const PART_KEYS: Record<MetricPart, readonly HostMetricKey[]> = {
   [AE_PART_CORE]: CORE_METRIC_KEYS,
   [AE_PART_EXTENDED]: EXTENDED_METRIC_KEYS,
+  [AE_PART_SENSORS]: SENSOR_METRIC_KEYS,
+  [AE_PART_TRAFFIC]: TRAFFIC_METRIC_KEYS,
 };
 
-const PART_BY_METRIC = new Map<HostMetricKey, AeMetricPart>();
-for (const key of CORE_METRIC_KEYS) PART_BY_METRIC.set(key, AE_PART_CORE);
-for (const key of EXTENDED_METRIC_KEYS) {
-  PART_BY_METRIC.set(key, AE_PART_EXTENDED);
-}
+const PART_BY_METRIC = new Map<HostMetricKey, MetricPart>(
+  HOST_METRIC_KEYS.map((
+    key,
+  ) => [key, HOST_METRICS_METRIC_DESCRIPTORS[key].part]),
+);
 
 /**
- * Module-load invariant: the core/extended partition is exactly
- * `HOST_METRIC_KEYS` — no overlap, no gaps, and both parts fit beside the
- * reserved interval slot. A contract change that breaks the split fails
- * every import of this module, not just a query at runtime.
+ * Module-load invariant: every part's key array is non-empty and fits within
+ * `AE_METRIC_DOUBLE_SLOT_COUNT`, and the four arrays partition
+ * `HOST_METRIC_KEYS` exactly (no gaps, no overlap). Since the arrays are
+ * derived by filtering `HOST_METRIC_KEYS` on the descriptor's `part`, the
+ * partition property holds by construction — this only catches an empty or
+ * over-full part, plus mirrors `metric-descriptors.ts`'s own
+ * `assertPartsPartitionHostMetricKeys` so drift is caught at daemon-repo
+ * import time too, since this module keeps its own copy of the layout.
  */
-function assertPartitionCoversHostMetricKeys(): void {
-  if (CORE_METRIC_KEYS.length !== AE_METRIC_DOUBLE_SLOT_COUNT) {
-    throw new TypeError(
-      `CORE_METRIC_KEYS length ${CORE_METRIC_KEYS.length} !== ${AE_METRIC_DOUBLE_SLOT_COUNT}`,
-    );
+function assertPartKeysPartitionHostMetricKeys(): void {
+  let total = 0;
+  for (const part of METRIC_PARTS) {
+    const keys = PART_KEYS[part];
+    if (keys.length < 1 || keys.length > AE_METRIC_DOUBLE_SLOT_COUNT) {
+      throw new TypeError(
+        `metric part ${part} has ${keys.length} keys, outside the 1..${AE_METRIC_DOUBLE_SLOT_COUNT} per-part range`,
+      );
+    }
+    total += keys.length;
   }
-  if (EXTENDED_METRIC_KEYS.length !== AE_METRIC_DOUBLE_SLOT_COUNT) {
+  if (total !== HOST_METRIC_KEYS.length) {
     throw new TypeError(
-      `EXTENDED_METRIC_KEYS length ${EXTENDED_METRIC_KEYS.length} !== ${AE_METRIC_DOUBLE_SLOT_COUNT}`,
-    );
-  }
-  if (PART_BY_METRIC.size !== HOST_METRIC_KEYS.length) {
-    throw new TypeError(
-      "core/extended metric parts overlap or miss a HOST_METRIC_KEYS entry",
+      `field-map part key arrays overlap or miss a HOST_METRIC_KEYS entry (assigned ${total}, expected ${HOST_METRIC_KEYS.length})`,
     );
   }
   for (const key of HOST_METRIC_KEYS) {
-    if (!PART_BY_METRIC.has(key)) {
-      throw new TypeError(`host metric ${key} is in neither metrics part`);
+    if (PART_BY_METRIC.get(key) === undefined) {
+      throw new TypeError(
+        `host metric ${key} is in no metrics part (field-map.ts)`,
+      );
     }
   }
 }
-assertPartitionCoversHostMetricKeys();
+assertPartKeysPartitionHostMetricKeys();
 
-/** Which metrics part (`"core"` / `"extended"`) stores a host metric. */
-export function metricPart(key: HostMetricKey): AeMetricPart {
+/** Which metrics part (`"core"` / `"extended"` / `"sensors"` / `"traffic"`) stores a host metric. */
+export function metricPart(key: HostMetricKey): MetricPart {
   const part = PART_BY_METRIC.get(key);
   if (part === undefined) {
     throw new TypeError(`unknown host metrics metric: ${key}`);
@@ -280,17 +261,26 @@ export type AnalyticsEngineDataPointLike = {
 /**
  * Map one part's metrics to double1..double19 in part-key order, with the
  * sample's `intervalSeconds` in double20.
- * Missing (`null`) → `AE_MISSING_METRIC_SENTINEL` (never 0).
+ * Missing (`null` or absent, since `metrics` is a `PartialHostMetrics`) →
+ * `AE_MISSING_METRIC_SENTINEL` (never 0).
  */
 export function mapPartMetricsToDoubles(
-  metrics: HostMetrics,
-  part: AeMetricPart,
+  metrics: PartialHostMetrics,
+  part: MetricPart,
   intervalSeconds: number,
 ): number[] {
-  const doubles: number[] = [];
-  for (const key of PART_KEYS[part]) {
-    doubles.push(metrics[key] ?? AE_MISSING_METRIC_SENTINEL);
-  }
+  // Every part has at most `AE_METRIC_DOUBLE_SLOT_COUNT` (19) keys, but a
+  // part with fewer than 19 (all four, now that the layout isn't a fixed
+  // 19/19 split) leaves a gap between its last metric slot and double20 —
+  // pre-fill the whole row with the sentinel first so that gap is never a
+  // sparse-array hole (which `Array.prototype.map`/`join` silently drop,
+  // corrupting the AE write payload and any SQL literal built from it).
+  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(
+    AE_MISSING_METRIC_SENTINEL,
+  );
+  PART_KEYS[part].forEach((key, i) => {
+    doubles[i] = metrics[key] ?? AE_MISSING_METRIC_SENTINEL;
+  });
   doubles[AE_DOUBLE_INTERVAL_INDEX] = intervalSeconds;
   return doubles;
 }
@@ -301,36 +291,30 @@ export function mapPartMetricsToDoubles(
  */
 export function mapHostSampleToBlobs(
   sample: AuthenticatedHostMetricsSample,
-  part: AeMetricPart,
+  part: MetricPart,
 ): string[] {
   const { dimensions } = sample;
   const blobs: string[] = new Array(AE_BLOB_COUNT).fill("");
   blobs[AE_BLOB_EVENT_TYPE_INDEX] = AE_METRICS_EVENT_TYPE;
   blobs[AE_BLOB_PART_INDEX] = part;
   blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(dimensions.schemaVersion);
-  blobs[AE_BLOB_DAEMON_VERSION_INDEX] = dimensions.daemonVersion;
-  blobs[AE_BLOB_OS_INDEX] = dimensions.operatingSystem;
-  blobs[AE_BLOB_ARCH_INDEX] = dimensions.architecture;
-  blobs[AE_BLOB_KERNEL_INDEX] = dimensions.kernelRelease;
   blobs[AE_BLOB_COLLECTION_MODE_INDEX] = sample.collectionMode;
   blobs[AE_BLOB_SAMPLED_AT_INDEX] = sample.at;
   blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.sequence);
-  blobs[AE_BLOB_CPU_TEMPERATURE_SENSOR_INDEX] =
-    dimensions.cpuTemperatureSensor ?? "";
-  blobs[AE_BLOB_GPU_TEMPERATURE_SENSOR_INDEX] =
-    dimensions.gpuTemperatureSensor ?? "";
-  blobs[AE_BLOB_CPU_POWER_SENSOR_INDEX] = dimensions.cpuPowerSensor ?? "";
-  blobs[AE_BLOB_GPU_POWER_SENSOR_INDEX] = dimensions.gpuPowerSensor ?? "";
-  blobs[AE_BLOB_UPLINK_INTERFACES_INDEX] =
-    dimensions.uplinkInterfaces?.join(",") ?? "";
-  blobs[AE_BLOB_FABRIC_INTERFACES_INDEX] =
-    dimensions.fabricInterfaces?.join(",") ?? "";
+  blobs[AE_BLOB_HARDWARE_PROFILE_GENERATION_INDEX] = String(
+    dimensions.hardwareProfileGeneration,
+  );
+  if (part === AE_PART_TRAFFIC) {
+    blobs[AE_BLOB_TRAFFIC_SOURCES_INDEX] = sample.trafficSources?.join(",") ??
+      "";
+  }
   return blobs;
 }
 
-function buildPartDataPoint(
+/** Build the AE data point for one declared metrics part of a host sample. */
+export function buildPartDataPoint(
   sample: AuthenticatedHostMetricsSample,
-  part: AeMetricPart,
+  part: MetricPart,
 ): AnalyticsEngineDataPointLike {
   const point: AnalyticsEngineDataPointLike = {
     indexes: [sample.serverId],
@@ -345,22 +329,49 @@ function buildPartDataPoint(
   return point;
 }
 
+/** Parts written unconditionally, even when every one of their metric values is missing. */
+const MANDATORY_PARTS: ReadonlySet<MetricPart> = new Set([
+  AE_PART_CORE,
+  AE_PART_EXTENDED,
+]);
+
 /**
- * Build the `blob2 = "core"` AE data point for a validated authenticated host
- * sample. `indexes` is exactly `[serverId]` (canonical UUID only) — never
- * org, account, hostname, composite, metric name, or timestamp.
+ * True when every metric-value slot (`double1`..`double19`) of a part's AE
+ * point is the missing sentinel — the reserved `double20` interval slot is
+ * never part of this check, since it always carries a real value.
  */
-export function buildCoreDataPoint(
-  sample: AuthenticatedHostMetricsSample,
-): AnalyticsEngineDataPointLike {
-  return buildPartDataPoint(sample, AE_PART_CORE);
+function isPartEntirelyMissing(doubles: readonly number[]): boolean {
+  for (let i = 0; i < AE_METRIC_DOUBLE_SLOT_COUNT; i++) {
+    if (doubles[i] !== AE_MISSING_METRIC_SENTINEL) return false;
+  }
+  return true;
 }
 
-/** Build the `blob2 = "extended"` AE data point for a host sample. */
-export function buildExtendedDataPoint(
+/**
+ * Build one AE data point per part declared in `sample.parts` — always
+ * `core` and `extended` (validation guarantees both, written even if every
+ * metric in them is missing), plus `sensors` and/or `traffic` only when the
+ * daemon declared them for this sample **and** at least one of that part's
+ * metric values actually resolved this tick. A declared optional part whose
+ * every metric sanitized to `null` never reaches `writeDataPoint` — writing
+ * it would be a wasted row with no queryable signal, in violation of the
+ * row-budget the four-part split exists to enforce. Output order is the
+ * canonical `METRIC_PARTS` order, not `sample.parts`'s declaration order.
+ */
+export function buildPartDataPoints(
   sample: AuthenticatedHostMetricsSample,
-): AnalyticsEngineDataPointLike {
-  return buildPartDataPoint(sample, AE_PART_EXTENDED);
+): AnalyticsEngineDataPointLike[] {
+  const declared = new Set(sample.parts);
+  const points: AnalyticsEngineDataPointLike[] = [];
+  for (const part of METRIC_PARTS) {
+    if (!declared.has(part)) continue;
+    const point = buildPartDataPoint(sample, part);
+    if (!MANDATORY_PARTS.has(part) && isPartEntirelyMissing(point.doubles)) {
+      continue;
+    }
+    points.push(point);
+  }
+  return points;
 }
 
 /**

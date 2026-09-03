@@ -58,6 +58,7 @@ type MetricsRouteJsonBody = {
   metrics?: string[]
   points?: Array<{
     values: Record<string, number | null>
+    derived?: Record<string, number | null>
     sampleCount?: number
   }>
   from?: string
@@ -73,6 +74,15 @@ type MetricsRouteJsonBody = {
   uptimePercent?: number
   truncated?: boolean
   events?: Array<{ reason?: string }>
+  cpuLimits?: {
+    tdpWatts: number | null
+    tjMaxCelsius: number | null
+    source: string
+  }
+  temperatureUnit?: string
+  sensorsAvailable?: boolean
+  generationBreaks?: number[]
+  hardwareProfileGenerations?: number[]
 }
 
 async function readMetricsJson(res: Response): Promise<MetricsRouteJsonBody> {
@@ -376,14 +386,13 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
     assertEquals(values.memoryTotalBytes, 8_000)
     assertEquals(values.memoryAvailableBytes, 2_000)
     assertEquals(values.swapTotalBytes, null)
-    // v2 stores raw fields only — derived presentation values come from them:
-    // CPU busy = 100 − idle, memory used % = (total − available) / total.
-    assertEquals(100 - values.cpuIdlePercent!, 25)
-    assertEquals(
-      ((values.memoryTotalBytes! - values.memoryAvailableBytes!) /
-        values.memoryTotalBytes!) * 100,
-      75,
-    )
+    // Derived presentation values are server-computed — the UI never
+    // reimplements CPU busy = 100 − idle, memory used % = (total −
+    // available) / total.
+    const derived = body.points![0]!.derived!
+    assertEquals(derived.cpuUsagePercent, 25)
+    assertEquals(derived.memoryUsedBytes, 6_000)
+    assertEquals(derived.memoryUsedPercent, 75)
     assertEquals(body.points![0]!.sampleCount, 1)
     assertEquals(fakeStore.seriesCalls.length, 1)
     assertEquals(fakeStore.seriesCalls[0]!.metrics, [
@@ -397,6 +406,161 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
     const cached = await app.request(url, { headers: { Cookie: cookie } })
     assertEquals(cached.status, 200)
     assertEquals(fakeStore.seriesCalls.length, 1)
+  }, fakeStore)
+})
+
+it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, sensorsAvailable, and generation breaks', async () => {
+  const fakeStore = createFakeMetricsStore({
+    queryHostSeries: (input) => Promise.resolve({
+      kind: 'duckdb',
+      available: true,
+      serverId: input.serverId,
+      metrics: input.metrics,
+      points: [
+        {
+          at: FROM,
+          values: { cpuIdlePercent: 90 },
+          sampleCount: 1,
+          partsPresent: ['core', 'sensors'],
+          hardwareProfileGeneration: 1,
+        },
+        {
+          at: TO,
+          values: { cpuIdlePercent: 80 },
+          sampleCount: 1,
+          partsPresent: ['core'],
+          hardwareProfileGeneration: 2,
+        },
+      ],
+      resolutionSeconds: input.resolutionSeconds ?? 60,
+      gapCount: 0,
+      sampleCount: 2,
+      hardwareProfileGenerations: [1, 2],
+    }),
+  })
+
+  await withMetricsFixtures(async ({ db, app, serverId, organizationId, cookie }) => {
+    await db
+      .update(server)
+      .set({
+        metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
+          JSON.stringify({ hardwareProfile: { cpuModel: 'AMD EPYC 7763' } })
+        }::jsonb`,
+      })
+      .where(eq(server.id, serverId))
+    await db
+      .update(organization)
+      .set({
+        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+          JSON.stringify({ temperatureUnit: 'fahrenheit' })
+        }::jsonb`,
+      })
+      .where(eq(organization.id, organizationId))
+
+    const url = `/servers/${serverId}/metrics/series?from=${FROM}&to=${TO}&metrics=cpuIdlePercent`
+    const res = await app.request(url, { headers: { Cookie: cookie } })
+    assertEquals(res.status, 200)
+    const body = await readMetricsJson(res)
+    assertEquals(body.cpuLimits, {
+      tdpWatts: 280,
+      tjMaxCelsius: 95,
+      source: 'catalog-exact',
+    })
+    assertEquals(body.temperatureUnit, 'fahrenheit')
+    assertEquals(body.sensorsAvailable, true)
+    assertEquals(body.generationBreaks, [1])
+    assertEquals(body.hardwareProfileGenerations, [1, 2])
+  }, fakeStore)
+})
+
+it('GET /servers/:id/metrics/series does not serve a stale cache entry across a hardware-profile generation bump', async () => {
+  const fakeStore = createFakeMetricsStore({
+    queryHostSeries: (input) => Promise.resolve({
+      kind: 'duckdb',
+      available: true,
+      serverId: input.serverId,
+      metrics: input.metrics,
+      points: [{ at: FROM, values: { cpuIdlePercent: 90 }, sampleCount: 1 }],
+      resolutionSeconds: input.resolutionSeconds ?? 60,
+      gapCount: 0,
+      sampleCount: 1,
+    }),
+  })
+
+  await withMetricsFixtures(async ({ db, app, serverId, cookie }) => {
+    const url =
+      `/servers/${serverId}/metrics/series?from=${FROM}&to=${TO}&metrics=cpuIdlePercent`
+
+    const first = await app.request(url, { headers: { Cookie: cookie } })
+    assertEquals(first.status, 200)
+    assertEquals(fakeStore.seriesCalls.length, 1)
+
+    // Same request again — served from cache, no new store call.
+    const cached = await app.request(url, { headers: { Cookie: cookie } })
+    assertEquals(cached.status, 200)
+    assertEquals(fakeStore.seriesCalls.length, 1)
+
+    // Bump the hardware-profile generation directly (a sensor/NIC
+    // reassignment) — via a raw jsonb update, not the PUT route, which
+    // needs a connected daemon for identity validation.
+    await db
+      .update(server)
+      .set({
+        metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
+          JSON.stringify({ hardwareProfile: { generation: 1 } })
+        }::jsonb`,
+      })
+      .where(eq(server.id, serverId))
+
+    // Identical (server, range, metrics) request — must not hit the
+    // pre-bump cache entry.
+    const afterBump = await app.request(url, { headers: { Cookie: cookie } })
+    assertEquals(afterBump.status, 200)
+    assertEquals(fakeStore.seriesCalls.length, 2)
+  }, fakeStore)
+})
+
+it('GET /servers/:id/metrics/series resolves cpuLimits from the daemon-reported CPU model when hardwareProfile.cpuModel is unset', async () => {
+  const fakeStore = createFakeMetricsStore({
+    queryHostSeries: (input) => Promise.resolve({
+      kind: 'duckdb',
+      available: true,
+      serverId: input.serverId,
+      metrics: input.metrics,
+      points: [{ at: FROM, values: { cpuIdlePercent: 90 }, sampleCount: 1 }],
+      resolutionSeconds: input.resolutionSeconds ?? 60,
+      gapCount: 0,
+      sampleCount: 1,
+    }),
+  })
+
+  await withMetricsFixtures(async ({ db, app, serverId, cookie }) => {
+    // No hardwareProfile.cpuModel set — only the raw daemon-reported
+    // resources.cpus[0].name (real cpuinfo string, trademark markers and
+    // trailing clock text included).
+    await db
+      .update(server)
+      .set({
+        metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
+          JSON.stringify({
+            resources: {
+              cpus: [{ name: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz' }],
+            },
+          })
+        }::jsonb`,
+      })
+      .where(eq(server.id, serverId))
+
+    const url =
+      `/servers/${serverId}/metrics/series?from=${FROM}&to=${TO}&metrics=cpuIdlePercent`
+    const res = await app.request(url, { headers: { Cookie: cookie } })
+    assertEquals(res.status, 200)
+    const body = await readMetricsJson(res)
+    assertEquals(body.cpuLimits, {
+      tdpWatts: 205,
+      tjMaxCelsius: 105,
+      source: 'catalog-exact',
+    })
   }, fakeStore)
 })
 
@@ -441,6 +605,7 @@ it('GET /servers/metrics/latest requests only v2 fleet usage metrics', async () 
       servers?: Array<{
         serverId: string
         values: Record<string, number | null>
+        derived: Record<string, number | null>
       }>
     }
     assertEquals(body.ok, true)
@@ -454,19 +619,12 @@ it('GET /servers/metrics/latest requests only v2 fleet usage metrics', async () 
 
     const row = body.servers!.find((entry) => entry.serverId === serverId)
     assertExists(row)
-    // Derived presentation values come from the raw fields: CPU busy =
-    // 100 − idle, used % from total/available (memory) and total/free (swap).
-    assertEquals(100 - row!.values.cpuIdlePercent!, 40)
-    assertEquals(
-      ((row!.values.memoryTotalBytes! - row!.values.memoryAvailableBytes!) /
-        row!.values.memoryTotalBytes!) * 100,
-      75,
-    )
-    assertEquals(
-      ((row!.values.swapTotalBytes! - row!.values.swapFreeBytes!) /
-        row!.values.swapTotalBytes!) * 100,
-      25,
-    )
+    // Derived presentation values are server-computed, not reimplemented by
+    // the UI: CPU busy = 100 − idle, used % from total/available (memory)
+    // and total/free (swap).
+    assertEquals(row!.derived.cpuUsagePercent, 40)
+    assertEquals(row!.derived.memoryUsedPercent, 75)
+    assertEquals(row!.derived.swapUsedPercent, 25)
   }, fakeStore)
 })
 
@@ -672,6 +830,50 @@ it('GET /servers/:id/metrics/summary returns normalized payload', async () => {
     assertEquals(body.sampleCount, 12)
     assertEquals(body.latestAt, TO)
     assertEquals(fakeStore.summaryCalls.length, 1)
+    // No hardware profile / org override set — falls through to "no limit".
+    assertEquals(body.cpuLimits, { tdpWatts: null, tjMaxCelsius: null, source: 'none' })
+    assertEquals(body.temperatureUnit, 'celsius')
+  }, fakeStore)
+})
+
+it('GET /servers/:id/metrics/summary attaches an operator TDP/Tjmax override', async () => {
+  const fakeStore = createFakeMetricsStore({
+    queryHostSummary: (input) => Promise.resolve({
+      kind: 'duckdb',
+      available: true,
+      serverId: input.serverId,
+      sampleCount: 3,
+      latestAt: TO,
+    }),
+  })
+
+  await withMetricsFixtures(async ({ db, app, serverId, cookie }) => {
+    await db
+      .update(server)
+      .set({
+        metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
+          JSON.stringify({
+            hardwareProfile: {
+              cpuModel: 'AMD EPYC 7763',
+              cpuTdpWattsOverride: 250,
+            },
+          })
+        }::jsonb`,
+      })
+      .where(eq(server.id, serverId))
+
+    const res = await app.request(
+      `/servers/${serverId}/metrics/summary?from=${FROM}&to=${TO}`,
+      { headers: { Cookie: cookie } },
+    )
+    assertEquals(res.status, 200)
+    const body = await readMetricsJson(res)
+    // Override wins for tdpWatts; tjMaxCelsius falls through to the catalog.
+    assertEquals(body.cpuLimits, {
+      tdpWatts: 250,
+      tjMaxCelsius: 95,
+      source: 'override',
+    })
   }, fakeStore)
 })
 
@@ -1157,11 +1359,66 @@ it('GET /servers/:id/metrics/capabilities maps a timeout to 503', async () => {
   }, undefined, registry)
 })
 
-it('PUT /servers/:id/metrics/sensor-overrides rejects unknown fields', async () => {
-  const registry = createFakeDaemonRegistry(() => ({ status: 'done' }))
+const SAMPLE_HARDWARE_CAPABILITIES = {
+  sensors: {
+    cpuTemperature: [{ chip: 'coretemp', label: 'Package id 0' }],
+    cpuPower: [{ chip: 'intel-rapl', label: 'package-0' }],
+    cpuFan: [{ chip: 'nct6775', label: 'fan1' }],
+    gpuFan: [{ chip: 'amdgpu', label: 'fan1' }],
+    boardTemperature: [{ chip: 'nct6775', label: 'board' }],
+    ambient1Temperature: [{ chip: 'nct6775', label: 'ambient' }],
+    ambient2Temperature: [{ chip: 'nct6775', label: 'ambient2' }],
+    disk1Temperature: [{ chip: 'drivetemp', label: 'sda' }],
+    disk2Temperature: [{ chip: 'drivetemp', label: 'sdb' }],
+    systemFan1: [{ chip: 'nct6775', label: 'sysfan1' }],
+    systemFan2: [{ chip: 'nct6775', label: 'sysfan2' }],
+    gpuDevices: [
+      {
+        chip: 'amdgpu',
+        temperature: [{ chip: 'amdgpu', label: 'edge' }],
+        power: [{ chip: 'amdgpu', label: 'power1' }],
+      },
+    ],
+  },
+  networkInterfaces: [{ name: 'eth0' }, { name: 'eth1' }],
+}
+
+/** Every canonical sensor-slot key — mirrors `HARDWARE_PROFILE_SENSOR_SLOT_KEYS`. */
+const ALL_HARDWARE_PROFILE_SENSOR_SLOT_FIELDS = [
+  'cpuTemperature',
+  'cpuPower',
+  'gpuDevice',
+  'gpuFan',
+  'disk1Temperature',
+  'disk2Temperature',
+  'ambient1Temperature',
+  'ambient2Temperature',
+  'boardTemperature',
+  'cpuFan',
+  'systemFan1',
+  'systemFan2',
+]
+
+/** Registry that answers `metrics-capabilities-request` and accepts the push. */
+function createHardwareProfileRegistry(
+  capabilities: unknown = SAMPLE_HARDWARE_CAPABILITIES,
+): DaemonCellRegistry & {
+  sent: DaemonOutboundEnvelope[]
+  enqueued: DaemonOutboundEnvelope[]
+} {
+  return createFakeDaemonRegistry((outbound) => {
+    if (outbound.kind === 'metrics-capabilities-request') {
+      return { status: 'done', result: { capabilities } }
+    }
+    return { status: 'done' }
+  })
+}
+
+it('PUT /servers/:id/metrics/hardware-profile rejects unknown fields', async () => {
+  const registry = createHardwareProfileRegistry()
   await withMetricsFixtures(async ({ app, serverId, cookie }) => {
     const res = await app.request(
-      `/servers/${serverId}/metrics/sensor-overrides`,
+      `/servers/${serverId}/metrics/hardware-profile`,
       {
         method: 'PUT',
         headers: { cookie, 'content-type': 'application/json' },
@@ -1172,17 +1429,28 @@ it('PUT /servers/:id/metrics/sensor-overrides rejects unknown fields', async () 
   }, undefined, registry)
 })
 
-it('PUT /servers/:id/metrics/sensor-overrides persists and pushes overrides', async () => {
-  const registry = createFakeDaemonRegistry(() => ({ status: 'done' }))
+it('PUT /servers/:id/metrics/hardware-profile validates, persists, and pushes the full profile', async () => {
+  const registry = createHardwareProfileRegistry()
   await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
+    await markServerConnected(db, serverId)
+
     const res = await app.request(
-      `/servers/${serverId}/metrics/sensor-overrides`,
+      `/servers/${serverId}/metrics/hardware-profile`,
       {
         method: 'PUT',
         headers: { cookie, 'content-type': 'application/json' },
         body: JSON.stringify({
-          cpuTemperature: 'coretemp:Package id 0',
+          cpuTemperature: { chip: 'coretemp', label: 'Package id 0' },
+          cpuPower: { chip: 'intel-rapl', label: 'package-0' },
+          gpuDevice: { chip: 'amdgpu', label: 'edge' },
+          gpuFan: { chip: 'amdgpu', label: 'fan1' },
+          disk1Temperature: { chip: 'drivetemp', label: 'sda' },
+          ambient1Temperature: { chip: 'nct6775', label: 'ambient' },
+          boardTemperature: { chip: 'nct6775', label: 'board' },
+          cpuFan: { chip: 'nct6775', label: 'fan1' },
+          nic1: 'eth0',
           hostingPath: '/mnt/hosting',
+          drivetempEnabled: true,
         }),
       },
     )
@@ -1190,12 +1458,31 @@ it('PUT /servers/:id/metrics/sensor-overrides persists and pushes overrides', as
     const body = await res.json() as {
       ok?: boolean
       pushed?: boolean
-      overrides?: Record<string, string>
+      profile?: Record<string, unknown>
     }
     assertEquals(body.ok, true)
     assertEquals(body.pushed, true)
-    assertEquals(body.overrides?.cpuTemperature, 'coretemp:Package id 0')
-    assertEquals(body.overrides?.hostingPath, '/mnt/hosting')
+    assertEquals(body.profile?.cpuTemperature, {
+      chip: 'coretemp',
+      label: 'Package id 0',
+    })
+    assertEquals(body.profile?.gpuDevice, { chip: 'amdgpu', label: 'edge' })
+    assertEquals(body.profile?.gpuFan, { chip: 'amdgpu', label: 'fan1' })
+    assertEquals(body.profile?.disk1Temperature, {
+      chip: 'drivetemp',
+      label: 'sda',
+    })
+    assertEquals(body.profile?.nic1, 'eth0')
+    assertEquals(body.profile?.hostingPath, '/mnt/hosting')
+    assertEquals(body.profile?.drivetempEnabled, true)
+    assertEquals(body.profile?.generation, 1)
+    assertExists(body.profile?.generationAppliedAt)
+
+    // The capability round trip runs before the push.
+    assertEquals(
+      registry.sent.some((e) => e.kind === 'metrics-capabilities-request'),
+      true,
+    )
 
     // Source of truth: the server row's metadata.
     const rows = await db
@@ -1204,46 +1491,300 @@ it('PUT /servers/:id/metrics/sensor-overrides persists and pushes overrides', as
       .where(eq(server.id, serverId))
       .limit(1)
     const metadata = rows[0]!.metadata as {
-      metricsOverrides?: Record<string, string>
+      hardwareProfile?: Record<string, unknown>
     }
-    assertEquals(
-      metadata.metricsOverrides?.cpuTemperature,
-      'coretemp:Package id 0',
-    )
-    assertEquals(metadata.metricsOverrides?.hostingPath, '/mnt/hosting')
+    assertEquals(metadata.hardwareProfile?.cpuTemperature, {
+      chip: 'coretemp',
+      label: 'Package id 0',
+    })
+    assertEquals(metadata.hardwareProfile?.generation, 1)
 
-    // Best-effort fan-out to the daemon (fire-and-forget enqueue).
+    // Best-effort fan-out to the daemon (fire-and-forget enqueue) carries the
+    // full profile, including generation.
     assertEquals(registry.enqueued.length, 1)
     const outbound = registry.enqueued[0]!
     assertEquals(outbound.kind, 'metrics-sensor-overrides-update')
     if (outbound.kind === 'metrics-sensor-overrides-update') {
-      assertEquals(outbound.overrides.cpuTemperature, 'coretemp:Package id 0')
+      assertEquals(outbound.overrides.cpuTemperature, {
+        chip: 'coretemp',
+        label: 'Package id 0',
+      })
       assertEquals(outbound.overrides.hostingPath, '/mnt/hosting')
+      assertEquals(outbound.overrides.generation, 1)
     }
-
-    // null clears one field and leaves the rest intact.
-    const clearRes = await app.request(
-      `/servers/${serverId}/metrics/sensor-overrides`,
-      {
-        method: 'PUT',
-        headers: { cookie, 'content-type': 'application/json' },
-        body: JSON.stringify({ cpuTemperature: null }),
-      },
-    )
-    assertEquals(clearRes.status, 200)
-    const cleared = await clearRes.json() as {
-      overrides?: Record<string, string>
-    }
-    assertEquals(cleared.overrides?.cpuTemperature, undefined)
-    assertEquals(cleared.overrides?.hostingPath, '/mnt/hosting')
   }, undefined, registry)
 })
 
-it('PUT /servers/:id/metrics/sensor-overrides rejects a relative hostingPath', async () => {
-  const registry = createFakeDaemonRegistry(() => ({ status: 'done' }))
+it('PUT /servers/:id/metrics/hardware-profile sets and clears cpu overrides without a daemon round trip or a generation bump', async () => {
+  await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
+    // No markServerConnected: cpu overrides carry no identity to validate,
+    // so this must succeed against an offline daemon.
+    const res = await app.request(
+      `/servers/${serverId}/metrics/hardware-profile`,
+      {
+        method: 'PUT',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          cpuTdpWattsOverride: 250,
+          cpuTjMaxCelsiusOverride: 95,
+        }),
+      },
+    )
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      ok?: boolean
+      profile?: Record<string, unknown>
+    }
+    assertEquals(body.ok, true)
+    assertEquals(body.profile?.cpuTdpWattsOverride, 250)
+    assertEquals(body.profile?.cpuTjMaxCelsiusOverride, 95)
+    assertEquals(body.profile?.generation, undefined)
+
+    const rows = await db
+      .select({ metadata: server.metadata })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    const metadata = rows[0]!.metadata as {
+      hardwareProfile?: Record<string, unknown>
+    }
+    assertEquals(metadata.hardwareProfile?.cpuTdpWattsOverride, 250)
+
+    const clearRes = await app.request(
+      `/servers/${serverId}/metrics/hardware-profile`,
+      {
+        method: 'PUT',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ cpuTdpWattsOverride: null }),
+      },
+    )
+    assertEquals(clearRes.status, 200)
+    const clearBody = await clearRes.json() as { profile?: Record<string, unknown> }
+    assertEquals(clearBody.profile?.cpuTdpWattsOverride, undefined)
+    assertEquals(clearBody.profile?.cpuTjMaxCelsiusOverride, 95)
+  })
+})
+
+it('PUT /servers/:id/metrics/hardware-profile rejects an out-of-range cpu override', async () => {
   await withMetricsFixtures(async ({ app, serverId, cookie }) => {
     const res = await app.request(
-      `/servers/${serverId}/metrics/sensor-overrides`,
+      `/servers/${serverId}/metrics/hardware-profile`,
+      {
+        method: 'PUT',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ cpuTdpWattsOverride: -5 }),
+      },
+    )
+    assertEquals(res.status, 400)
+  })
+})
+
+it('PUT /servers/:id/metrics/hardware-profile bumps generation only when an identity actually changes', async () => {
+  const registry = createHardwareProfileRegistry()
+  await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
+    await markServerConnected(db, serverId)
+
+    async function putProfile(payload: unknown) {
+      const res = await app.request(
+        `/servers/${serverId}/metrics/hardware-profile`,
+        {
+          method: 'PUT',
+          headers: { cookie, 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        },
+      )
+      assertEquals(res.status, 200)
+      return await res.json() as { profile?: { generation?: number } }
+    }
+
+    // First assignment: generation 0 -> 1.
+    const first = await putProfile({
+      cpuTemperature: { chip: 'coretemp', label: 'Package id 0' },
+    })
+    assertEquals(first.profile?.generation, 1)
+
+    // hostingPath / drivetempEnabled carry no sensor identity — no bump.
+    const hostingOnly = await putProfile({
+      hostingPath: '/mnt/hosting',
+      drivetempEnabled: true,
+    })
+    assertEquals(hostingOnly.profile?.generation, 1)
+
+    // Re-asserting the identical identity is idempotent — no bump.
+    const idempotent = await putProfile({
+      cpuTemperature: { chip: 'coretemp', label: 'Package id 0' },
+    })
+    assertEquals(idempotent.profile?.generation, 1)
+
+    // A NIC binding is also identity-bearing — bumps.
+    const nicChange = await putProfile({ nic1: 'eth0' })
+    assertEquals(nicChange.profile?.generation, 2)
+  }, undefined, registry)
+})
+
+it('PUT /servers/:id/metrics/hardware-profile persists an explicit unassigned disk-temp slot distinct from unset', async () => {
+  const registry = createHardwareProfileRegistry()
+  await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
+    // Explicitly unassigning a slot that was never configured is itself an
+    // identity change (auto-detect -> confirmed absent) and needs no
+    // capability round trip since nothing is being pinned.
+    const res = await app.request(
+      `/servers/${serverId}/metrics/hardware-profile`,
+      {
+        method: 'PUT',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ disk1Temperature: null }),
+      },
+    )
+    assertEquals(res.status, 200)
+    const body = await res.json() as {
+      profile?: { disk1Temperature?: unknown; generation?: number }
+    }
+    assertEquals(body.profile?.disk1Temperature, null)
+    assertEquals(body.profile?.generation, 1)
+
+    const rows = await db
+      .select({ metadata: server.metadata })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    const metadata = rows[0]!.metadata as {
+      hardwareProfile?: { disk1Temperature?: unknown }
+    }
+    // `null` round-trips distinctly from the key being absent entirely.
+    assertEquals('disk1Temperature' in (metadata.hardwareProfile ?? {}), true)
+    assertEquals(metadata.hardwareProfile?.disk1Temperature, null)
+
+    // Re-clearing the same slot is idempotent — no further generation bump.
+    const again = await app.request(
+      `/servers/${serverId}/metrics/hardware-profile`,
+      {
+        method: 'PUT',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ disk1Temperature: null }),
+      },
+    )
+    const againBody = await again.json() as { profile?: { generation?: number } }
+    assertEquals(againBody.profile?.generation, 1)
+  }, undefined, registry)
+})
+
+it('PUT /servers/:id/metrics/hardware-profile rejects a stale sensor identity', async () => {
+  const registry = createHardwareProfileRegistry()
+  await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
+    await markServerConnected(db, serverId)
+    const res = await app.request(
+      `/servers/${serverId}/metrics/hardware-profile`,
+      {
+        method: 'PUT',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          cpuTemperature: { chip: 'coretemp', label: 'no-such-label' },
+        }),
+      },
+    )
+    assertEquals(res.status, 400)
+    const body = await res.json() as { error?: string }
+    assertEquals(body.error?.includes('cpuTemperature'), true)
+    // Rejected before persisting — no push either.
+    assertEquals(registry.enqueued.length, 0)
+  }, undefined, registry)
+})
+
+it('PUT /servers/:id/metrics/hardware-profile rejects a stale identity for every sensor slot', async () => {
+  const registry = createHardwareProfileRegistry()
+  await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
+    await markServerConnected(db, serverId)
+
+    for (const field of ALL_HARDWARE_PROFILE_SENSOR_SLOT_FIELDS) {
+      const res = await app.request(
+        `/servers/${serverId}/metrics/hardware-profile`,
+        {
+          method: 'PUT',
+          headers: { cookie, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            [field]: { chip: 'bogus-chip', label: 'no-such-label' },
+          }),
+        },
+      )
+      assertEquals(res.status, 400, `${field} should be rejected as stale`)
+      const body = await res.json() as { error?: string }
+      assertEquals(
+        body.error?.includes(field),
+        true,
+        `${field} error should name the field, got: ${body.error}`,
+      )
+    }
+  }, undefined, registry)
+})
+
+it('PUT /servers/:id/metrics/hardware-profile requires the daemon online for every sensor slot', async () => {
+  const registry = createHardwareProfileRegistry()
+  await withMetricsFixtures(async ({ app, serverId, cookie }) => {
+    // No markServerConnected — every sensor-slot key is identity-bearing and
+    // must route through hardwareProfileUpdateNeedsValidation's true branch,
+    // which requires the daemon online before it can validate at all.
+    for (const field of ALL_HARDWARE_PROFILE_SENSOR_SLOT_FIELDS) {
+      const res = await app.request(
+        `/servers/${serverId}/metrics/hardware-profile`,
+        {
+          method: 'PUT',
+          headers: { cookie, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            [field]: { chip: 'some-chip', label: 'some-label' },
+          }),
+        },
+      )
+      assertEquals(res.status, 409, `${field} should require the daemon online`)
+    }
+  }, undefined, registry)
+})
+
+it('PUT /servers/:id/metrics/hardware-profile rejects a stale NIC binding', async () => {
+  const registry = createHardwareProfileRegistry()
+  await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
+    await markServerConnected(db, serverId)
+    const res = await app.request(
+      `/servers/${serverId}/metrics/hardware-profile`,
+      {
+        method: 'PUT',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ nic2: 'eth9' }),
+      },
+    )
+    assertEquals(res.status, 400)
+    const body = await res.json() as { error?: string }
+    assertEquals(body.error?.includes('nic2'), true)
+  }, undefined, registry)
+})
+
+it('PUT /servers/:id/metrics/hardware-profile returns 409 when assigning an identity while the daemon is offline', async () => {
+  const registry = createHardwareProfileRegistry()
+  await withMetricsFixtures(async ({ app, serverId, cookie }) => {
+    // No markServerConnected — the daemon is offline.
+    const res = await app.request(
+      `/servers/${serverId}/metrics/hardware-profile`,
+      {
+        method: 'PUT',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          cpuTemperature: { chip: 'coretemp', label: 'Package id 0' },
+        }),
+      },
+    )
+    assertEquals(res.status, 409)
+    const body = await res.json() as { error?: string }
+    assertEquals(body.error, 'server_offline')
+  }, undefined, registry)
+})
+
+it('PUT /servers/:id/metrics/hardware-profile rejects a relative hostingPath without needing the daemon online', async () => {
+  const registry = createHardwareProfileRegistry()
+  await withMetricsFixtures(async ({ app, serverId, cookie }) => {
+    // No markServerConnected — hostingPath alone needs no capability round
+    // trip, so validation failure must still surface as 400, not 409/503.
+    const res = await app.request(
+      `/servers/${serverId}/metrics/hardware-profile`,
       {
         method: 'PUT',
         headers: { cookie, 'content-type': 'application/json' },
@@ -1254,7 +1795,7 @@ it('PUT /servers/:id/metrics/sensor-overrides rejects a relative hostingPath', a
   }, undefined, registry)
 })
 
-it('PUT /servers/:id/metrics/sensor-overrides preserves concurrent daemon-projected metadata', async () => {
+it('PUT /servers/:id/metrics/hardware-profile preserves concurrent daemon-projected metadata', async () => {
   if (!dbUrl) return
 
   resetDenoMetricsChartCacheForTests()
@@ -1263,7 +1804,7 @@ it('PUT /servers/:id/metrics/sensor-overrides preserves concurrent daemon-projec
   // Simulate a daemon projection (resources / docker / geo) landing between
   // the route's SELECT and UPDATE: intercept the route's update call and merge
   // projected keys into the row first. The route must patch only the
-  // metricsOverrides subtree instead of writing back its stale snapshot.
+  // hardwareProfile subtree instead of writing back its stale snapshot.
   let injectConcurrentWrite: (() => Promise<void>) | undefined
   type UpdateBuilder = {
     set: (patch: unknown) => { where: (cond: unknown) => Promise<unknown> }
@@ -1293,7 +1834,7 @@ it('PUT /servers/:id/metrics/sensor-overrides preserves concurrent daemon-projec
     },
   }) as typeof db
 
-  const registry = createFakeDaemonRegistry(() => ({ status: 'done' }))
+  const registry = createHardwareProfileRegistry()
   const { app, secrets } = await createMetricsRoutesTestApp(
     racingDb,
     undefined,
@@ -1348,12 +1889,15 @@ it('PUT /servers/:id/metrics/sensor-overrides preserves concurrent daemon-projec
         .where(eq(server.id, serverId))
     }
 
+    // hostingPath carries no sensor identity, so this exercises the
+    // concurrency guard without needing a connected daemon / capability
+    // round trip.
     const res = await app.request(
-      `/servers/${serverId}/metrics/sensor-overrides`,
+      `/servers/${serverId}/metrics/hardware-profile`,
       {
         method: 'PUT',
         headers: { cookie, 'content-type': 'application/json' },
-        body: JSON.stringify({ cpuTemperature: 'coretemp:Package id 0' }),
+        body: JSON.stringify({ hostingPath: '/mnt/hosting' }),
       },
     )
     assertEquals(res.status, 200)
@@ -1367,23 +1911,20 @@ it('PUT /servers/:id/metrics/sensor-overrides preserves concurrent daemon-projec
       resources?: { memory?: { totalBytes?: number } }
       docker?: { version?: string }
       geo?: { city?: string }
-      metricsOverrides?: Record<string, string>
+      hardwareProfile?: { hostingPath?: string }
     }
     assertEquals(metadata.resources?.memory?.totalBytes, 1024)
     assertEquals(metadata.docker?.version, '28.3.3')
     assertEquals(metadata.geo?.city, 'Amsterdam')
-    assertEquals(
-      metadata.metricsOverrides?.cpuTemperature,
-      'coretemp:Package id 0',
-    )
+    assertEquals(metadata.hardwareProfile?.hostingPath, '/mnt/hosting')
 
-    // Clearing the last override drops only the metricsOverrides key.
+    // Clearing the last field drops only the hardwareProfile key.
     const clearRes = await app.request(
-      `/servers/${serverId}/metrics/sensor-overrides`,
+      `/servers/${serverId}/metrics/hardware-profile`,
       {
         method: 'PUT',
         headers: { cookie, 'content-type': 'application/json' },
-        body: JSON.stringify({ cpuTemperature: null }),
+        body: JSON.stringify({ hostingPath: null }),
       },
     )
     assertEquals(clearRes.status, 200)
@@ -1394,10 +1935,10 @@ it('PUT /servers/:id/metrics/sensor-overrides preserves concurrent daemon-projec
       .limit(1)
     const clearedMetadata = clearedRows[0]!.metadata as {
       resources?: { memory?: { totalBytes?: number } }
-      metricsOverrides?: Record<string, string>
+      hardwareProfile?: Record<string, unknown>
     }
     assertEquals(clearedMetadata.resources?.memory?.totalBytes, 1024)
-    assertEquals(clearedMetadata.metricsOverrides, undefined)
+    assertEquals(clearedMetadata.hardwareProfile, undefined)
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(grant).where(and(

@@ -224,6 +224,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/servers/command-dispatch-helpers.hostfree.test.ts \
   src/client/servers/colocated.test.ts \
   src/client/servers/delete-guards.test.ts \
+  src/client/servers/hardware-profile-replay-sweep.test.ts \
   src/client/servers/metrics-routes.test.ts \
   src/client/servers/metrics-routes-helpers.hostfree.test.ts \
   src/client/servers/routes.test.ts \

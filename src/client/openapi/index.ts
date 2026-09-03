@@ -26,6 +26,7 @@ import { repositoryPaths, repositorySchemas } from './repositories.ts'
 import { principalPaths, principalSchemas } from './principals.ts'
 import { deployPaths, deploySchemas } from './deploy.ts'
 import { managedPaths, managedSchemas } from './managed.ts'
+import { metricsPaths, metricsSchemas } from './metrics.ts'
 import { systemPaths, systemSchemas } from './system.ts'
 import { commandPaths, commandSchemas } from './commands.ts'
 
@@ -121,6 +122,7 @@ export function getClientOpenApiSpec(
         ...sharedSchemas,
         ...buildAuthSchemas(options?.runtime),
         ...serverSchemas,
+        ...metricsSchemas,
         ...networkSchemas,
         ...datacenterSchemas,
         ...ipSchemas,
@@ -152,6 +154,7 @@ export function getClientOpenApiSpec(
     paths: {
       ...authPaths,
       ...serverPaths,
+      ...metricsPaths,
       ...networkPaths,
       ...datacenterPaths,
       ...ipPaths,

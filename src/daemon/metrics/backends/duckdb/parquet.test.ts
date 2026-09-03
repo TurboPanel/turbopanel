@@ -46,14 +46,22 @@ async function insertSample(
   connection: DuckDbConnectionLike,
   atMs: number,
   cpuUserPercent: number | null = 10,
+  overrides: { hardwareProfileGeneration?: number | null; parts?: string } =
+    {},
 ): Promise<void> {
   await connection.run(
     `INSERT INTO ${HOST_METRICS_TABLE} ` +
-      `(server_id, sampled_at, received_at, interval_seconds, collection_mode, cpu_user_percent) ` +
+      `(server_id, sampled_at, received_at, interval_seconds, collection_mode, ` +
+      `hardware_profile_generation, parts, cpu_user_percent) ` +
       `VALUES (CAST(? AS UUID), ${timestampLiteralFromMs(atMs)}, ${
         timestampLiteralFromMs(atMs)
-      }, 60, 'baseline', ?)`,
-    [SERVER_ID, cpuUserPercent],
+      }, 60, 'baseline', ?, ?, ?)`,
+    [
+      SERVER_ID,
+      overrides.hardwareProfileGeneration ?? 1,
+      overrides.parts ?? "core,extended",
+      cpuUserPercent,
+    ],
   );
 }
 
@@ -181,6 +189,30 @@ it("sealDayToParquet exports, validates, renames, then deletes hot rows", async 
       if (entry.name.endsWith(".parquet")) tmpNames.push(entry.name);
     }
     assertEquals(tmpNames, []);
+  });
+});
+
+it("sealed partition carries hardware_profile_generation and parts through read_parquet", async () => {
+  await withTempDb(async (handle, paths) => {
+    await insertSample(handle.connection, DAY_START + 60_000, 10, {
+      hardwareProfileGeneration: 2,
+      parts: "core,extended,sensors",
+    });
+
+    const result = await sealDayToParquet(handle.connection, {
+      dayStartMs: DAY_START,
+      dayEndMs: DAY_START + MS_PER_DAY,
+      parquetRoot: paths.parquetRoot,
+      tmpDir: paths.tmpDir,
+    });
+
+    const reader = await handle.connection.runAndReadAll(
+      `SELECT hardware_profile_generation, parts ` +
+        `FROM read_parquet('${result.parquetPath}')`,
+    );
+    const row = reader.getRowObjectsJS()[0];
+    assertEquals(row?.hardware_profile_generation, 2);
+    assertEquals(row?.parts, "core,extended,sensors");
   });
 });
 

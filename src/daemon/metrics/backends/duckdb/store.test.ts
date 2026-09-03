@@ -55,6 +55,8 @@ function sample(overrides: {
   atMs: number;
   intervalSeconds?: number;
   metrics?: Partial<AuthenticatedHostMetricsSample["metrics"]>;
+  parts?: AuthenticatedHostMetricsSample["parts"];
+  hardwareProfileGeneration?: number;
 }): AuthenticatedHostMetricsSample {
   const metrics = {} as AuthenticatedHostMetricsSample["metrics"];
   for (const key of HOST_METRIC_KEYS) {
@@ -70,13 +72,12 @@ function sample(overrides: {
     sequence: 1,
     schemaVersion: METRICS_SCHEMA_VERSION,
     collectionMode: "baseline",
+    parts: overrides.parts ?? ["core", "extended"],
     dimensions: {
       schemaVersion: METRICS_SCHEMA_VERSION,
-      daemonVersion: "test",
-      operatingSystem: "linux",
-      architecture: "x86_64",
-      kernelRelease: "6.18.0",
       collectionMode: "baseline",
+      hardwareProfileGeneration: overrides.hardwareProfileGeneration ?? 1,
+      trafficSources: { caddy: false, proxysql: false },
     },
     metrics,
   };
@@ -680,5 +681,194 @@ it("descriptor aggregation dispatch: last (storage capacity) and max (uptime)", 
     assertEquals(snapshot.servers.length, 1);
     assertEquals(snapshot.servers[0]!.values.systemStorageTotalBytes, 2000);
     assertEquals(snapshot.servers[0]!.values.uptimeSeconds, 100);
+  });
+});
+
+it("descriptor aggregation dispatch: sum (traffic counter) totals rather than averages", async () => {
+  await withStore(async (store) => {
+    await store.writeHostSample(sample({
+      atMs: DAY_START + 60_000,
+      parts: ["core", "extended", "traffic"],
+      metrics: { caddyRequestsTotal: 100, caddyRequestsInFlight: 4 },
+    }));
+    await store.writeHostSample(sample({
+      atMs: DAY_START + 120_000,
+      parts: ["core", "extended", "traffic"],
+      metrics: { caddyRequestsTotal: 50, caddyRequestsInFlight: 2 },
+    }));
+
+    const series = await store.queryHostSeries({
+      serverId: SERVER_A,
+      metrics: ["caddyRequestsTotal", "caddyRequestsInFlight"],
+      from: new Date(DAY_START).toISOString(),
+      to: new Date(DAY_START + 600_000).toISOString(),
+      resolutionSeconds: 300,
+    });
+    assertEquals(series.points.length, 1);
+    const point = series.points[0]!;
+    // sum path: plain total, never scaled by interval_seconds.
+    assertEquals(point.values.caddyRequestsTotal, 150);
+    // weighted-average path: same "traffic" family, different aggregation —
+    // proves the dispatch keys off the descriptor's `aggregation`, not family.
+    assertEquals(point.values.caddyRequestsInFlight, 3);
+  });
+});
+
+it("writeHostSample persists parts and hardwareProfileGeneration; parts absence beats null", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: "tp-duckdb-parts-" });
+  try {
+    const store = makeStore(metricsDir);
+    // Declares "sensors" but every sensor value resolves to null this tick —
+    // distinct from a sample that never declares "sensors" at all.
+    await store.writeHostSample(sample({
+      atMs: DAY_START + 60_000,
+      parts: ["core", "extended", "sensors"],
+      hardwareProfileGeneration: 3,
+      metrics: { cpuUserPercent: 10, cpuTemperatureCelsius: null },
+    }));
+    await store.writeHostSample(sample({
+      atMs: DAY_START + 120_000,
+      parts: ["core", "extended"],
+      hardwareProfileGeneration: 3,
+      metrics: { cpuUserPercent: 20 },
+    }));
+    await store.close();
+
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) });
+    try {
+      const reader = await handle.connection.runAndReadAll(
+        `SELECT parts, hardware_profile_generation, cpu_temperature_celsius ` +
+          `FROM server_metric_samples ORDER BY sampled_at`,
+      );
+      const rows = reader.getRowObjectsJS();
+      assertEquals(rows[0]!.parts, "core,extended,sensors");
+      assertEquals(rows[0]!.hardware_profile_generation, 3);
+      // Declared-but-null: the column is NULL even though "sensors" is listed.
+      assertEquals(rows[0]!.cpu_temperature_celsius, null);
+      // Never declared: parts omits "sensors" entirely for this row.
+      assertEquals(rows[1]!.parts, "core,extended");
+      assertEquals(rows[1]!.cpu_temperature_celsius, null);
+    } finally {
+      handle.close();
+    }
+  } finally {
+    await Deno.remove(metricsDir, { recursive: true });
+  }
+});
+
+it("queryHostSeries exposes partsPresent and a uniform hardwareProfileGeneration per bucket", async () => {
+  await withStore(async (store) => {
+    // Bucket 0 (DAY_START..+300s): two samples, same generation, one of
+    // which additionally declares "sensors" — the bucket's partsPresent is
+    // the union across its contributing samples.
+    await store.writeHostSample(sample({
+      atMs: DAY_START + 60_000,
+      parts: ["core", "extended"],
+      hardwareProfileGeneration: 1,
+      metrics: { cpuUserPercent: 10 },
+    }));
+    await store.writeHostSample(sample({
+      atMs: DAY_START + 120_000,
+      parts: ["core", "extended", "sensors"],
+      hardwareProfileGeneration: 1,
+      metrics: { cpuUserPercent: 20, cpuTemperatureCelsius: 50 },
+    }));
+    // Bucket 1 (+300..+600s): a hardware reassignment — different generation.
+    await store.writeHostSample(sample({
+      atMs: DAY_START + 360_000,
+      parts: ["core", "extended"],
+      hardwareProfileGeneration: 2,
+      metrics: { cpuUserPercent: 30 },
+    }));
+
+    const series = await store.queryHostSeries({
+      serverId: SERVER_A,
+      metrics: ["cpuUserPercent"],
+      from: new Date(DAY_START).toISOString(),
+      to: new Date(DAY_START + 600_000).toISOString(),
+      resolutionSeconds: 300,
+    });
+    assertEquals(series.points.length, 2);
+    assertEquals(series.points[0]!.partsPresent, [
+      "core",
+      "extended",
+      "sensors",
+    ]);
+    assertEquals(series.points[0]!.hardwareProfileGeneration, 1);
+    assertEquals(series.points[1]!.partsPresent, ["core", "extended"]);
+    assertEquals(series.points[1]!.hardwareProfileGeneration, 2);
+    // Reassignment visible at the result level too.
+    assertEquals(series.hardwareProfileGenerations, [1, 2]);
+  });
+});
+
+it("queryHostSeries marks a bucket spanning a reassignment with a null generation boundary", async () => {
+  await withStore(async (store) => {
+    await store.writeHostSample(sample({
+      atMs: DAY_START + 60_000,
+      hardwareProfileGeneration: 1,
+      metrics: { cpuUserPercent: 10 },
+    }));
+    // Same bucket, different generation — the bucket itself can't be
+    // attributed to a single hardware profile.
+    await store.writeHostSample(sample({
+      atMs: DAY_START + 120_000,
+      hardwareProfileGeneration: 2,
+      metrics: { cpuUserPercent: 20 },
+    }));
+
+    const series = await store.queryHostSeries({
+      serverId: SERVER_A,
+      metrics: ["cpuUserPercent"],
+      from: new Date(DAY_START).toISOString(),
+      to: new Date(DAY_START + 300_000).toISOString(),
+      resolutionSeconds: 300,
+    });
+    assertEquals(series.points.length, 1);
+    assertEquals(series.points[0]!.hardwareProfileGeneration, null);
+    assertEquals(series.hardwareProfileGenerations, [1, 2]);
+  });
+});
+
+it("queryFleetHostSnapshot exposes partsPresent and hardwareProfileGeneration per server", async () => {
+  await withStore(async (store) => {
+    await store.writeHostSample(sample({
+      serverId: SERVER_A,
+      atMs: DAY_START + 60_000,
+      parts: ["core", "extended", "sensors"],
+      hardwareProfileGeneration: 5,
+      metrics: { cpuUserPercent: 10 },
+    }));
+    // Two samples for SERVER_B disagree on hardware profile generation.
+    await store.writeHostSample(sample({
+      serverId: SERVER_B,
+      atMs: DAY_START + 60_000,
+      hardwareProfileGeneration: 4,
+      metrics: { cpuUserPercent: 20 },
+    }));
+    await store.writeHostSample(sample({
+      serverId: SERVER_B,
+      atMs: DAY_START + 120_000,
+      hardwareProfileGeneration: 5,
+      metrics: { cpuUserPercent: 25 },
+    }));
+
+    const snapshot = await store.queryFleetHostSnapshot({
+      serverIds: [SERVER_A, SERVER_B],
+      metrics: ["cpuUserPercent"],
+      from: new Date(DAY_START).toISOString(),
+      to: new Date(DAY_START + 600_000).toISOString(),
+    });
+    assertEquals(snapshot.servers[0]!.serverId, SERVER_A);
+    assertEquals(snapshot.servers[0]!.partsPresent, [
+      "core",
+      "extended",
+      "sensors",
+    ]);
+    assertEquals(snapshot.servers[0]!.hardwareProfileGeneration, 5);
+    assertEquals(snapshot.servers[1]!.serverId, SERVER_B);
+    assertEquals(snapshot.servers[1]!.partsPresent, ["core", "extended"]);
+    // Reassignment inside the window — unattributable to one generation.
+    assertEquals(snapshot.servers[1]!.hardwareProfileGeneration, null);
   });
 });

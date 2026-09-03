@@ -59,6 +59,7 @@ import {
 import { resolveWorkersDb } from "../../workers-bindings.ts";
 import { runManagedIngressOrphanSweep } from "../../client/managed/ingress-desired.ts";
 import { runSystemReconcileSweep } from "../../client/system/reconcile.ts";
+import { runHardwareProfileReplaySweep } from "../../client/servers/hardware-profile-replay-sweep.ts";
 import { runLeafRenewalSweepTick } from "../../client/tls/leaf-renewal-sweep.ts";
 import type {
   DerivedSecretsConfig,
@@ -966,10 +967,23 @@ export async function sweepExpiredExecutionLogsSafely(
 }
 
 async function runQueuedCronSweeps(
+  env: CloudflareBindings,
   db: Db,
   queue: NonNullable<CloudflareBindings["TURBOPANEL_COMMAND_QUEUE"]>,
   tlsRenewal?: CronTlsRenewal | null,
 ): Promise<void> {
+  // Isolated from the `system.reconcile` try below: it pushes straight to
+  // the daemon cell (Durable Object registry), not through `queue` /
+  // `commandQueue`, so a `system.reconcile` failure must not skip it and
+  // vice versa.
+  try {
+    const registry = createDurableObjectDaemonCellRegistry(env, db);
+    await runHardwareProfileReplaySweep(db, registry);
+  } catch (err) {
+    sweepTrace("hardware-profile-replay-sweep-failed", {
+      error: sweepErrorMessage(err),
+    });
+  }
   try {
     const commandQueue = createWorkersCommandQueue(queue);
     await runSystemReconcileSweep(db, commandQueue);
@@ -1143,7 +1157,7 @@ async function runOptionalCronPhases(
     "reconcile",
     opts.scheduledTime,
     phasesSkipped,
-    () => runQueuedCronSweeps(db, commandQueue, tlsRenewal),
+    () => runQueuedCronSweeps(env, db, commandQueue, tlsRenewal),
   );
 }
 

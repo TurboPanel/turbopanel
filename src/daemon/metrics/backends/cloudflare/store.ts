@@ -1,11 +1,13 @@
 /**
  * Workers Analytics Engine host metrics store (Cloudflare backend).
  *
- * Each host sample is written as two data points (core + extended metrics
- * parts — see `field-map.ts`); status transitions stay one data point.
+ * Each host sample is written as one data point per declared `MetricPart` —
+ * always `core` + `extended`, plus `sensors` and/or `traffic` when the
+ * daemon declares them (see `field-map.ts`) — so 2 to 4 `writeDataPoint`
+ * calls per sample. Status transitions stay one data point.
  *
- * Cost envelope: 2 writes per sample ≈ 2,880 writes/day/server at the 60 s
- * baseline cadence — comfortably under Cloudflare's 250-datapoints-per-
+ * Cost envelope: 2-4 writes per sample ≈ 2,880-5,760 writes/day/server at the
+ * 60 s baseline cadence — comfortably under Cloudflare's 250-datapoints-per-
  * invocation Analytics Engine limit (one ingest request carries one sample).
  */
 
@@ -22,17 +24,13 @@ import type {
   StatusHistoryQuery,
   StatusHistoryResult,
 } from "../../types.ts";
+import { buildPartDataPoints, buildStatusDataPoint } from "./field-map.ts";
 import {
-  buildCoreDataPoint,
-  buildExtendedDataPoint,
-  buildStatusDataPoint,
-} from "./field-map.ts";
-import {
+  type CloudflareAnalyticsSqlConfig,
   queryFleetHostSnapshotViaSqlApi,
   queryHostSeriesViaSqlApi,
   queryHostSummaryViaSqlApi,
   queryStatusHistoryViaSqlApi,
-  type CloudflareAnalyticsSqlConfig,
 } from "./sql-api.ts";
 
 /**
@@ -72,13 +70,15 @@ export class CloudflareAnalyticsEngineServerMetricsStore
   }
 
   /**
-   * Exactly two `writeDataPoint` calls — core part then extended part —
-   * both synchronous, fire-and-forget, never awaited.
-   * Cloudflare docs: do not await; the runtime writes in the background.
+   * One `writeDataPoint` call per declared metrics part (2-4, always `core`
+   * + `extended`), in canonical part order, all synchronous, fire-and-forget,
+   * never awaited. Cloudflare docs: do not await; the runtime writes in the
+   * background.
    */
   writeHostSample(input: AuthenticatedHostMetricsSample): void {
-    this.#dataset.writeDataPoint(buildCoreDataPoint(input));
-    this.#dataset.writeDataPoint(buildExtendedDataPoint(input));
+    for (const point of buildPartDataPoints(input)) {
+      this.#dataset.writeDataPoint(point);
+    }
   }
 
   /**

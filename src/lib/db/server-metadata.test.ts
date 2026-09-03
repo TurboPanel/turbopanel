@@ -8,16 +8,19 @@ import {
 import {
   parseServerRuntimeMetadata,
   formatServerOsDisplay,
+  mergeServerHardwareProfile,
   osColumnsFromMetadata,
   osMetadataFromColumns,
   parseNtpServersColumn,
   parseServerDockerMetadata,
+  parseServerHardwareProfile,
   parseServerHostResources,
   parseServerOptions,
   parseServerOsMetadata,
   redactServerOptions,
   REDACTED_SERVER_OPTION_KEYS,
   parseServerTimeSync,
+  resolveEffectiveCpuThermalLimits,
   resolveEffectiveServerTimezone,
   resolveServerOsLogoKey,
   resolveServerResponseTimezone,
@@ -754,4 +757,104 @@ test('parseServerOptions never surfaces a secret-bearing key', () => {
   })
   assertEquals(parsed, { timezone: 'UTC' })
   assertEquals(JSON.stringify(parsed).includes('passwordSealed'), false)
+})
+
+test('parseServerHardwareProfile parses cpuModel and cpu overrides', () => {
+  assertEquals(
+    parseServerHardwareProfile({
+      cpuModel: '  Intel Xeon Gold 6338  ',
+      cpuTdpWattsOverride: 215,
+      cpuTjMaxCelsiusOverride: 100,
+    }),
+    {
+      cpuModel: 'Intel Xeon Gold 6338',
+      cpuTdpWattsOverride: 215,
+      cpuTjMaxCelsiusOverride: 100,
+    },
+  )
+})
+
+test('parseServerHardwareProfile drops out-of-range cpu overrides', () => {
+  assertEquals(
+    parseServerHardwareProfile({
+      cpuTdpWattsOverride: -5,
+      cpuTjMaxCelsiusOverride: 999,
+    }),
+    undefined,
+  )
+  assertEquals(
+    parseServerHardwareProfile({ cpuTdpWattsOverride: 0 }),
+    undefined,
+  )
+})
+
+test('parseServerHardwareProfile keeps an explicit null cpu override', () => {
+  assertEquals(
+    parseServerHardwareProfile({ cpuTdpWattsOverride: null }),
+    { cpuTdpWattsOverride: null },
+  )
+})
+
+test('mergeServerHardwareProfile sets and clears cpu overrides without bumping generation', () => {
+  const now = '2026-01-01T00:00:00.000Z'
+  const set = mergeServerHardwareProfile(undefined, {
+    cpuTdpWattsOverride: 200,
+    cpuTjMaxCelsiusOverride: 95,
+  }, now)
+  assertEquals(set.identityChanged, false)
+  assertEquals(set.profile?.cpuTdpWattsOverride, 200)
+  assertEquals(set.profile?.cpuTjMaxCelsiusOverride, 95)
+  assertEquals(set.profile?.generation, undefined)
+
+  const cleared = mergeServerHardwareProfile(set.profile, {
+    cpuTdpWattsOverride: null,
+  }, now)
+  assertEquals(cleared.identityChanged, false)
+  assertEquals(cleared.profile?.cpuTdpWattsOverride, undefined)
+  assertEquals(cleared.profile?.cpuTjMaxCelsiusOverride, 95)
+})
+
+test('resolveEffectiveCpuThermalLimits: override-only (no cpuModel)', () => {
+  assertEquals(
+    resolveEffectiveCpuThermalLimits({
+      cpuTdpWattsOverride: 300,
+      cpuTjMaxCelsiusOverride: 90,
+    }),
+    { tdpWatts: 300, tjMaxCelsius: 90, source: 'override' },
+  )
+})
+
+test('resolveEffectiveCpuThermalLimits: catalog-only, exact model match', () => {
+  assertEquals(
+    resolveEffectiveCpuThermalLimits({ cpuModel: 'AMD EPYC 7763' }),
+    { tdpWatts: 280, tjMaxCelsius: 95, source: 'catalog-exact' },
+  )
+})
+
+test('resolveEffectiveCpuThermalLimits: catalog-only, family regex fallback', () => {
+  assertEquals(
+    resolveEffectiveCpuThermalLimits({ cpuModel: 'AMD EPYC 9999' }),
+    { tdpWatts: 200, tjMaxCelsius: 95, source: 'catalog-family' },
+  )
+})
+
+test('resolveEffectiveCpuThermalLimits: mixed override+catalog fills only the overridden field', () => {
+  assertEquals(
+    resolveEffectiveCpuThermalLimits({
+      cpuModel: 'AMD EPYC 7763',
+      cpuTdpWattsOverride: 240,
+    }),
+    { tdpWatts: 240, tjMaxCelsius: 95, source: 'override' },
+  )
+})
+
+test('resolveEffectiveCpuThermalLimits: neither override nor recognized cpuModel', () => {
+  assertEquals(
+    resolveEffectiveCpuThermalLimits({ cpuModel: 'Totally Unknown Silicon' }),
+    { tdpWatts: null, tjMaxCelsius: null, source: 'none' },
+  )
+  assertEquals(
+    resolveEffectiveCpuThermalLimits(undefined),
+    { tdpWatts: null, tjMaxCelsius: null, source: 'none' },
+  )
 })

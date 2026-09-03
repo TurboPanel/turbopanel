@@ -1,6 +1,7 @@
 import type { ServerReportedIp } from "../../server-addresses.ts";
 import type {
   ServerDockerMetadata,
+  ServerHardwareProfile,
   ServerHostResources,
   ServerOsMetadata,
   ServerTimeSync,
@@ -56,17 +57,14 @@ export type FabricPathWireObservation = {
 };
 
 /**
- * Sensor / hosting-path override selections pushed to the daemon. Full
- * replacement semantics: an absent field clears that override on the daemon,
- * so the persisted `server.metadata` copy stays the source of truth.
+ * Hardware profile (sensor/NIC slots, hosting path, drivetemp opt-in,
+ * generation) pushed to the daemon. Full replacement semantics: an absent
+ * field clears that setting on the daemon, so the persisted
+ * `server.metadata.hardwareProfile` copy stays the source of truth. Carries
+ * `generation` so the daemon can stamp subsequent samples with
+ * `hardwareProfileGeneration`.
  */
-export type MetricsSensorOverridesUpdatePayload = {
-  cpuTemperature?: string;
-  gpuTemperature?: string;
-  cpuPower?: string;
-  gpuPower?: string;
-  hostingPath?: string;
-};
+export type MetricsSensorOverridesUpdatePayload = ServerHardwareProfile;
 
 /** JSON messages exchanged between the instance and daemon over /ws. */
 export type DaemonMessage =

@@ -36,7 +36,9 @@
     }
   ],
   "queues": {
-    "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "dev-daemon-commands" }],
+    "producers": [
+      { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "dev-daemon-commands" }
+    ],
     "consumers": [
       {
         "queue": "dev-daemon-commands",
@@ -101,16 +103,21 @@
   // Host metrics (Workers Analytics Engine). Dataset name is reused across
   // envs — AE datasets are account-scoped and auto-created on first write;
   // docs do not require globally unique names. Rows are keyed by index1=serverId.
-  // Each host sample is TWO data points (blob1="metrics", blob2="core"/"extended"
-  // — 19 v2 metrics per part, double20=intervalSeconds on both); status
-  // transitions are one blob1="status" row. Layout: backends/cloudflare/field-map.ts.
+  // Each host sample is TWO TO FOUR data points (blob1="metrics",
+  // blob2="core"/"extended"/"sensors"/"traffic" — up to 19 v3 metrics per
+  // part, double20=intervalSeconds on every part). "core"/"extended" are
+  // always written; "sensors"/"traffic" only when the daemon declares them.
+  // Status transitions are one blob1="status" row. Layout: backends/cloudflare/field-map.ts.
+  // Dataset renamed from the retired two-part "turbopanel_server_telemetry"
+  // layout — AE datasets can't be deleted, so a schema change that shifts
+  // blob/double positional meaning always gets a new name.
   // SQL API reads need secrets: TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN
   // (Account Analytics Read) plus CLOUDFLARE_ACCOUNT_ID (vars below / .dev.vars).
   // Optional: TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS (default = 90-day AE retention).
   "analytics_engine_datasets": [
     {
       "binding": "SERVER_METRICS",
-      "dataset": "turbopanel_server_telemetry"
+      "dataset": "turbopanel_server_host_metrics"
     }
   ],
   // Command execution logs (transcripts). Buckets are NOT auto-created — create
@@ -141,7 +148,10 @@
     "testing": {
       "queues": {
         "producers": [
-          { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "staging-daemon-commands" }
+          {
+            "binding": "TURBOPANEL_COMMAND_QUEUE",
+            "queue": "staging-daemon-commands"
+          }
         ],
         "consumers": [
           {
@@ -197,7 +207,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_telemetry"
+          "dataset": "turbopanel_server_host_metrics"
         }
       ],
       "r2_buckets": [
@@ -247,7 +257,9 @@
     "live": {
       "name": "instance",
       "queues": {
-        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "daemon-commands" }],
+        "producers": [
+          { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "daemon-commands" }
+        ],
         "consumers": [
           {
             "queue": "daemon-commands",
@@ -302,7 +314,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_telemetry"
+          "dataset": "turbopanel_server_host_metrics"
         }
       ],
       "r2_buckets": [

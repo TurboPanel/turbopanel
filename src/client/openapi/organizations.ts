@@ -72,6 +72,25 @@ export const organizationSchemas = {
       enforceServerTimezone: { type: "boolean" },
     },
   },
+  OrganizationTemperatureUnit: {
+    type: "object",
+    required: ["temperatureUnit"],
+    properties: {
+      temperatureUnit: {
+        type: "string",
+        enum: ["celsius", "fahrenheit"],
+        description:
+          "Display unit for temperature metrics (chart axes, tooltips, thresholds). Platform fallback is celsius.",
+      },
+    },
+  },
+  OrganizationTemperatureUnitUpdate: {
+    type: "object",
+    required: ["temperatureUnit"],
+    properties: {
+      temperatureUnit: { type: "string", enum: ["celsius", "fahrenheit"] },
+    },
+  },
   OrganizationHostDefaults: {
     type: "object",
     required: ["sshPort", "ntp", "defaultFabricEnabled"],
@@ -745,6 +764,109 @@ export const organizationPaths: Record<string, unknown> = {
         },
         "400": {
           description: "Invalid timezone or body",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Forbidden",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/organizations/{id}/temperature-unit": {
+    get: {
+      tags: ["Organizations"],
+      summary: "Get organization temperature display unit",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Org temperature display unit",
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/OrganizationTemperatureUnit",
+              },
+            },
+          },
+        },
+        "403": {
+          description: "Forbidden",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Organization not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ["Organizations"],
+      summary: "Update organization temperature display unit",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              $ref: "#/components/schemas/OrganizationTemperatureUnitUpdate",
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Updated org temperature display unit",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  {
+                    $ref: "#/components/schemas/OrganizationTemperatureUnit",
+                  },
+                  {
+                    type: "object",
+                    required: ["ok"],
+                    properties: { ok: { type: "boolean", const: true } },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Invalid temperatureUnit or body",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ErrorResponse" },

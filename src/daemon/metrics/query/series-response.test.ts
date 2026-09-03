@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
 import { HOST_METRIC_KEYS } from "../contract.ts";
 import {
+  computeGenerationBreaks,
   computeSeriesGapCount,
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
@@ -235,6 +236,142 @@ it("toHostSeriesChartResponse: maps series result into chart payload", () => {
   assertEquals(chart.points[0]?.values.cpuUserPercent, 12.5);
   assertEquals(chart.points[0]?.expectedSampleCount, 5);
   assertEquals(chart.gapCount, 0);
+  assertEquals(chart.generationBreaks, []);
+});
+
+it("toHostSeriesChartResponse: attaches server-computed derived values per point", () => {
+  const result: HostSeriesResult = {
+    kind: "duckdb",
+    available: true,
+    serverId: "11111111-1111-4111-8111-111111111111",
+    metrics: ["cpuIdlePercent", "cpuTemperatureCelsius", "cpuPowerWatts"],
+    points: [{
+      at: "2026-01-01T00:00:00.000Z",
+      values: {
+        cpuIdlePercent: 72,
+        cpuTemperatureCelsius: 70,
+        cpuPowerWatts: 150,
+      },
+      sampleCount: 1,
+    }],
+    resolutionSeconds: 300,
+    gapCount: 0,
+    sampleCount: 1,
+  };
+  const chart = toHostSeriesChartResponse({
+    serverId: result.serverId,
+    from: "2026-01-01T00:00:00.000Z",
+    to: "2026-01-01T00:05:00.000Z",
+    result,
+    cpuLimits: { tdpWatts: 200, tjMaxCelsius: 100 },
+  });
+  assertEquals(chart.points[0]?.derived.cpuUsagePercent, 28);
+  assertEquals(chart.points[0]?.derived.cpuThermalHeadroomPercent, 30);
+  assertEquals(chart.points[0]?.derived.cpuPowerHeadroomPercent, 25);
+});
+
+it("toHostSeriesChartResponse: headroom is null without cpuLimits", () => {
+  const result: HostSeriesResult = {
+    kind: "duckdb",
+    available: true,
+    serverId: "11111111-1111-4111-8111-111111111111",
+    metrics: ["cpuTemperatureCelsius"],
+    points: [{
+      at: "2026-01-01T00:00:00.000Z",
+      values: { cpuTemperatureCelsius: 70 },
+      sampleCount: 1,
+    }],
+    resolutionSeconds: 300,
+    gapCount: 0,
+    sampleCount: 1,
+  };
+  const chart = toHostSeriesChartResponse({
+    serverId: result.serverId,
+    from: "2026-01-01T00:00:00.000Z",
+    to: "2026-01-01T00:05:00.000Z",
+    result,
+  });
+  assertEquals(chart.points[0]?.derived.cpuThermalHeadroomPercent, null);
+  assertEquals(chart.points[0]?.derived.cpuPowerHeadroomPercent, null);
+});
+
+it("toHostSeriesChartResponse: carries hardwareProfileGeneration onto points and computes breaks", () => {
+  const result: HostSeriesResult = {
+    kind: "duckdb",
+    available: true,
+    serverId: "11111111-1111-4111-8111-111111111111",
+    metrics: ["cpuUserPercent"],
+    points: [
+      {
+        at: "2026-01-01T00:00:00.000Z",
+        values: { cpuUserPercent: 1 },
+        sampleCount: 1,
+        hardwareProfileGeneration: 1,
+      },
+      {
+        at: "2026-01-01T00:05:00.000Z",
+        values: { cpuUserPercent: 2 },
+        sampleCount: 1,
+        hardwareProfileGeneration: 2,
+      },
+    ],
+    resolutionSeconds: 300,
+    gapCount: 0,
+    sampleCount: 2,
+    hardwareProfileGenerations: [1, 2],
+  };
+  const chart = toHostSeriesChartResponse({
+    serverId: result.serverId,
+    from: "2026-01-01T00:00:00.000Z",
+    to: "2026-01-01T00:10:00.000Z",
+    result,
+  });
+  assertEquals(chart.points[0]?.hardwareProfileGeneration, 1);
+  assertEquals(chart.points[1]?.hardwareProfileGeneration, 2);
+  assertEquals(chart.generationBreaks, [1]);
+  assertEquals(chart.hardwareProfileGenerations, [1, 2]);
+});
+
+it("computeGenerationBreaks: no break on the first known generation", () => {
+  assertEquals(
+    computeGenerationBreaks([{ hardwareProfileGeneration: 3 }]),
+    [],
+  );
+});
+
+it("computeGenerationBreaks: unknown entries never break or reset the last-known generation", () => {
+  assertEquals(
+    computeGenerationBreaks([
+      { hardwareProfileGeneration: 1 },
+      { hardwareProfileGeneration: null },
+      { hardwareProfileGeneration: 1 },
+      { hardwareProfileGeneration: undefined },
+      { hardwareProfileGeneration: 2 },
+    ]),
+    [4],
+  );
+});
+
+it("computeGenerationBreaks: consecutive differing generations each mark a break", () => {
+  assertEquals(
+    computeGenerationBreaks([
+      { hardwareProfileGeneration: 1 },
+      { hardwareProfileGeneration: 2 },
+      { hardwareProfileGeneration: 3 },
+    ]),
+    [1, 2],
+  );
+});
+
+it("computeGenerationBreaks: all-unknown series has no breaks", () => {
+  assertEquals(
+    computeGenerationBreaks([
+      {},
+      { hardwareProfileGeneration: null },
+      { hardwareProfileGeneration: undefined },
+    ]),
+    [],
+  );
 });
 
 it("finalizeHostSeriesResult: replaces store gapCount with grid count", () => {

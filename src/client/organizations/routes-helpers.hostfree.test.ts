@@ -20,6 +20,9 @@ import {
   parseOrganizationCreateDisplayName,
   parseOrganizationPatchDisplayName,
   parseServerCapacityPutBody,
+  parseTemperatureUnitPatch,
+  temperatureUnitGetResponse,
+  temperatureUnitPutResponse,
   toOrganizationRecord,
   validateManagedDefaults,
 } from "./routes-helpers.ts";
@@ -284,6 +287,30 @@ test("parseDefaultTimezonePatch accepts null timezone and boolean enforcement", 
   }
   assertEquals(enforce.patch.defaultServerTimezone, "America/New_York");
   assertEquals(enforce.patch.enforceServerTimezone, true);
+});
+
+test("parseTemperatureUnitPatch requires the field and validates the value", () => {
+  assertEquals(parseTemperatureUnitPatch({}).ok, false);
+  assertEquals(
+    parseTemperatureUnitPatch({ temperatureUnit: "kelvin" }),
+    { ok: false, error: "Invalid temperatureUnit", status: 400 },
+  );
+  assertEquals(
+    parseTemperatureUnitPatch({ temperatureUnit: "fahrenheit" }),
+    { ok: true, patch: { temperatureUnit: "fahrenheit" } },
+  );
+});
+
+test("temperature unit response shapers", () => {
+  assertEquals(temperatureUnitGetResponse({}), { temperatureUnit: "celsius" });
+  assertEquals(
+    temperatureUnitGetResponse({ temperatureUnit: "fahrenheit" }),
+    { temperatureUnit: "fahrenheit" },
+  );
+  assertEquals(
+    temperatureUnitPutResponse({ temperatureUnit: "fahrenheit" }),
+    { ok: true, temperatureUnit: "fahrenheit" },
+  );
 });
 
 test("parseDefaultEnvironmentPutBody requires field and validates names", () => {

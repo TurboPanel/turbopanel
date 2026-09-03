@@ -1,6 +1,7 @@
 import { assertEquals, assertStringIncludes } from '@std/assert'
 import {
   HOST_METRIC_KEYS,
+  METRIC_PARTS,
   METRICS_SCHEMA_VERSION,
   type HostMetricsDimensions,
 } from '../metrics/contract.ts'
@@ -21,36 +22,37 @@ const test = Deno.test.bind(Deno)
  */
 const DIMENSION_KEYS = {
   schemaVersion: true,
-  daemonVersion: true,
-  operatingSystem: true,
-  architecture: true,
-  kernelRelease: true,
   collectionMode: true,
   runtimeMode: true,
-  cpuTemperatureSensor: true,
-  gpuTemperatureSensor: true,
-  cpuPowerSensor: true,
-  gpuPowerSensor: true,
-  uplinkInterfaces: true,
-  fabricInterfaces: true,
+  hardwareProfileGeneration: true,
+  trafficSources: true,
 } as const satisfies Record<keyof HostMetricsDimensions, true>
 
 type FrameSchema = {
   required: string[]
   properties: {
     version: { const: number }
-    metrics: { required: string[]; properties: Record<string, unknown> }
+    parts: { items: { enum: string[] } }
+    metrics: { required?: string[]; properties: Record<string, unknown> }
     dimensions: {
       required: string[]
-      properties: Record<string, { const?: number; enum?: string[] }>
+      properties: Record<
+        string,
+        {
+          const?: number
+          enum?: string[]
+          required?: string[]
+          properties?: Record<string, unknown>
+        }
+      >
     }
   }
 }
 
 const frame = metricsSchemas.DaemonHostMetricsFrame as unknown as FrameSchema
 
-test('DaemonHostMetricsFrame documents the v2 wire version', () => {
-  assertEquals(METRICS_SCHEMA_VERSION, 2)
+test('DaemonHostMetricsFrame documents the v3 wire version', () => {
+  assertEquals(METRICS_SCHEMA_VERSION, 3)
   assertEquals(frame.properties.version.const, METRICS_SCHEMA_VERSION)
   assertEquals(
     frame.properties.dimensions.properties.schemaVersion!.const,
@@ -58,40 +60,50 @@ test('DaemonHostMetricsFrame documents the v2 wire version', () => {
   )
 })
 
-test('DaemonHostMetricsFrame requires every v2 metric key', () => {
-  assertEquals(frame.properties.metrics.required, [...HOST_METRIC_KEYS])
+test('DaemonHostMetricsFrame requires `parts` and documents every declarable part', () => {
+  assertEquals(frame.required.includes('parts'), true)
+  assertEquals(
+    [...frame.properties.parts.items.enum].sort(),
+    [...METRIC_PARTS].sort(),
+  )
+})
+
+test('DaemonHostMetricsFrame documents every v3 metric key as optional (part-gated)', () => {
+  // v3 `metrics` only carries keys whose part was declared in `parts` — no
+  // key is unconditionally required at the wire-frame level.
+  assertEquals(frame.properties.metrics.required, undefined)
   assertEquals(
     Object.keys(frame.properties.metrics.properties),
     [...HOST_METRIC_KEYS],
   )
 })
 
-test('DaemonHostMetricsFrame dimensions match the v2 contract', () => {
-  // Required set mirrors the non-optional fields of HostMetricsDimensions —
-  // collectionMode became mandatory in v2.
+test('DaemonHostMetricsFrame dimensions match the v3 contract', () => {
   assertEquals(frame.properties.dimensions.required, [
     'schemaVersion',
-    'daemonVersion',
-    'operatingSystem',
-    'architecture',
-    'kernelRelease',
     'collectionMode',
+    'hardwareProfileGeneration',
+    'trafficSources',
   ])
   assertEquals(
     frame.properties.dimensions.properties.collectionMode!.enum,
     ['baseline', 'live'],
   )
+  assertEquals(
+    frame.properties.dimensions.properties.trafficSources!.required,
+    ['caddy', 'proxysql'],
+  )
   // Documented properties cover exactly the contract's dimension fields,
-  // optional sensor-identity and interface-selection fields included.
+  // optional `runtimeMode` included.
   assertEquals(
     Object.keys(frame.properties.dimensions.properties).sort(),
     Object.keys(DIMENSION_KEYS).sort(),
   )
 })
 
-test('metrics path describes the v2 ingest frame', () => {
+test('metrics path describes the v3 ingest frame', () => {
   const path = metricsPaths['/api/daemon/v1/metrics'] as {
     post: { description: string }
   }
-  assertStringIncludes(path.post.description, 'v2 host-metrics frame')
+  assertStringIncludes(path.post.description, 'v3 host-metrics frame')
 })

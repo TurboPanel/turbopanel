@@ -11,15 +11,23 @@
  *   `{ success, errors, result: { data, meta, rows } }` —
  * never read `data` from the top level.
  *
- * Read shape: each logical host sample is two data points (`blob1 =
- * "metrics"`, `blob2 = "core" | "extended"` — see `field-map.ts`). Host
+ * Read shape: each logical host sample is two to four data points (`blob1 =
+ * "metrics"`, `blob2 = "core" | "extended" | "sensors" | "traffic"` — see
+ * `field-map.ts`). `core` and `extended` are written on every sample;
+ * `sensors` and `traffic` are conditional on what the daemon declared. Host
  * series/fleet queries first recombine the physical part rows into one
  * logical sample per `(index1, timestamp)` in a subquery (dropping
- * extended-only orphans — the write path is two independent fire-and-forget
- * `writeDataPoint` calls, so one part can land without its twin), then
- * bucket/server-aggregate those logical rows, weighting every metric by
- * `double20 * _sample_interval` (true collection cadence × AE sampling
- * weight). All time ranges are canonical half-open `[from, to)`.
+ * non-core orphans — the write path is 2-4 independent fire-and-forget
+ * `writeDataPoint` calls, so any part can land without its siblings; a
+ * logical sample survives as long as its `core` row landed), then
+ * bucket/server-aggregate those logical rows. `weighted-average` /
+ * `last` / `max` metrics weight by `double20 * _sample_interval` (true
+ * collection cadence × AE sampling weight); `sum` metrics (monotonic
+ * traffic counters) weight the raw per-interval-delta value by
+ * `_sample_interval` only — **not** `intervalSeconds` — since the delta is
+ * already a total for its collection interval and only needs AE's
+ * documented row-sampling correction, not a second cadence weighting.
+ * All time ranges are canonical half-open `[from, to)`.
  *
  * @see https://developers.cloudflare.com/analytics/analytics-engine/sql-api/
  * @see https://developers.cloudflare.com/analytics/analytics-engine/limits/
@@ -28,6 +36,8 @@
 import {
   HOST_METRIC_KEYS,
   type HostMetricKey,
+  METRIC_PARTS,
+  type MetricPart,
   METRICS_SCHEMA_VERSION,
 } from "../../contract.ts";
 import type {
@@ -52,13 +62,16 @@ import {
 import { computeStatusUptime } from "../../query/uptime.ts";
 import {
   AE_BLOB_EVENT_TYPE_INDEX,
+  AE_BLOB_HARDWARE_PROFILE_GENERATION_INDEX,
   AE_BLOB_PART_INDEX,
   AE_BLOB_SCHEMA_VERSION_INDEX,
   AE_DATASET_NAME,
-  AE_METRICS_EVENT_TYPE,
   AE_INDEX_SERVER_ID_COLUMN,
+  AE_METRICS_EVENT_TYPE,
   AE_PART_CORE,
   AE_PART_EXTENDED,
+  AE_PART_SENSORS,
+  AE_PART_TRAFFIC,
   AE_STATUS_EVENT_TYPE,
   AE_TIMESTAMP_COLUMN,
   blobColumn,
@@ -243,11 +256,24 @@ export function statusEventDiscriminatorPredicates(): string[] {
   return eventDiscriminatorPredicates(AE_STATUS_EVENT_TYPE);
 }
 
-/** Restrict host reads to the two known metrics parts (`blob2`). */
+/**
+ * Restrict host reads to the four known metrics parts (`blob2`). `sensors`
+ * and `traffic` rows only ever exist for samples that declared them (a
+ * VM-less host simply never writes a `sensors` row), so widening this
+ * discriminator to all four parts costs nothing extra for hosts that never
+ * write the conditional parts — each metric's own aggregate is scoped to its
+ * owning part separately via `partPredicate(metricPart(key))`.
+ */
 export function hostPartsPredicate(): string {
   const partCol = blobColumn(AE_BLOB_PART_INDEX);
-  return `${partCol} IN (${quoteSqlString(AE_PART_CORE)}, ${
-    quoteSqlString(AE_PART_EXTENDED)
+  const parts = [
+    AE_PART_CORE,
+    AE_PART_EXTENDED,
+    AE_PART_SENSORS,
+    AE_PART_TRAFFIC,
+  ];
+  return `${partCol} IN (${
+    parts.map((part) => quoteSqlString(part)).join(", ")
   })`;
 }
 
@@ -255,6 +281,48 @@ export function hostPartsPredicate(): string {
 function partPredicate(part: string): string {
   return `${blobColumn(AE_BLOB_PART_INDEX)} = ${quoteSqlString(part)}`;
 }
+
+/**
+ * Canonical order for reporting `partsPresent` — alphabetical, matching the
+ * DuckDB backend's `[...parts].sort()` (`METRIC_PARTS` is already declared
+ * in that order).
+ */
+const PARTS_PRESENCE_ORDER: readonly MetricPart[] = METRIC_PARTS;
+
+/** Per-part presence-flag column name (`core_present`, `sensors_present`, …). */
+function partPresentColumn(part: MetricPart): string {
+  return `${part}_present`;
+}
+
+/**
+ * Per-part presence flags for the logical-sample subquery: `1.0` when this
+ * logical sample carries a row for the given part, else `0.0` — the same
+ * `if`/`MAX` idiom every other part-scoped aggregate in this module already
+ * relies on, so this introduces no new AE SQL surface.
+ */
+function partsPresentSelects(): string[] {
+  return PARTS_PRESENCE_ORDER.map((part) =>
+    `MAX(if(${partPredicate(part)}, 1.0, 0.0)) AS ${partPresentColumn(part)}`
+  );
+}
+
+/** Bucket-level presence flags: union (`MAX`) of the logical-sample flags. */
+function partsPresentBucketSelects(): string[] {
+  return PARTS_PRESENCE_ORDER.map((part) =>
+    `MAX(${partPresentColumn(part)}) AS ${partPresentColumn(part)}`
+  );
+}
+
+/**
+ * Every physical row of a logical sample (whichever part) carries the same
+ * `hardware_profile_generation` blob (see `mapHostSampleToBlobs`), so `MAX`
+ * over the group is just "the" value — never an aggregation across distinct
+ * generations at this grain.
+ */
+const HARDWARE_PROFILE_GENERATION_RAW_SELECT =
+  `MAX(${
+    blobColumn(AE_BLOB_HARDWARE_PROFILE_GENERATION_INDEX)
+  }) AS hardware_profile_generation_raw`;
 
 /**
  * Cap on status-history rows returned to the client. Builders request
@@ -339,6 +407,56 @@ export function rawValueExpressionForMetric(key: HostMetricKey): string {
 }
 
 /**
+ * Per-metric AE sampling weight at the logical-sample grain, for `sum`
+ * descriptor aggregations: the owning part's `_sample_interval` when that
+ * part's row is present in this logical sample, else `0.0`. Paired with
+ * {@link rawValueExpressionForMetric}'s sentinel-safe raw value (`<key>_value`)
+ * in {@link buildLogicalHostSampleSubquery} as `<key>_weight`, exactly the way
+ * weighted-average metrics carry a numerator/denominator pair — `sum` cannot
+ * reuse `core_weight` since every `sum` metric lives in the conditional
+ * `traffic` part, not `core`.
+ */
+export function sumWeightExpressionForMetric(key: HostMetricKey): string {
+  const part = partPredicate(metricPart(key));
+  return `MAX(if(${part}, _sample_interval * 1.0, 0.0))`;
+}
+
+/**
+ * Bucket/server-level `sum` aggregate over logical-sample `<key>_value` /
+ * `<key>_weight` columns: `SUM(value * weight)`, sentinel rows contributing
+ * `0.0` to that sum.
+ *
+ * `sum` metrics are monotonic per-interval deltas already computed
+ * daemon-side (a delta is already a total for its collection interval), so
+ * — unlike {@link weightedAvgExpressionForMetric} — this is **not** weighted
+ * by `intervalSeconds` (double20): doing so would double-count the interval
+ * a delta already spans. It **is** weighted by AE's own `_sample_interval`
+ * (via `<key>_weight`), since AE's documented row-sampling model assumes
+ * every aggregate scales every retained row by its sampling weight — a bare
+ * `SUM` would under-report totals once AE samples rows on a large query.
+ *
+ * A bucket where every logical sample lacks this metric's part (no traffic
+ * rows at all, e.g. no sidecar declared) must report missing, never a
+ * fabricated `0` requests — `SUM` alone cannot express that (it happily
+ * returns `0` over zero real rows). So the whole expression is scaled by
+ * `MAX(present) / MAX(present)`, where `present` is `1.0` for any
+ * logical sample that actually carried this metric's part and `0.0`
+ * otherwise: with real data, `MAX(present) = 1` and the scaling is a no-op;
+ * with none, both sides collapse to `0.0 / 0.0`, which is IEEE `NaN` — the
+ * same 0-numerator/0-denominator idiom {@link weightedAvgExpressionForMetric}
+ * already relies on for "no data" — and the query layer's
+ * `Number.isFinite` check (`parseMetricValues`) reports `NaN` as `null`,
+ * never `0`.
+ */
+export function sumExpressionForMetric(key: HostMetricKey): string {
+  const sentinel = aeMissingMetricSentinelSql();
+  const contribution =
+    `if(${key}_value = ${sentinel}, 0.0, ${key}_value * ${key}_weight)`;
+  const present = `if(${key}_value = ${sentinel}, 0.0, 1.0)`;
+  return `(SUM(${contribution}) * MAX(${present})) / MAX(${present})`;
+}
+
+/**
  * Bucket-level `last` aggregate over logical-sample `<key>_value` columns:
  * `argMax` (documented AE SQL) keyed by `sample_ts`, with sentinel rows
  * demoted to ordering key `sample_ts * 0` so any real observation always
@@ -380,6 +498,8 @@ function metricSelectExpression(key: HostMetricKey): string {
       return `${lastValueExpressionForMetric(key)} AS ${key}`;
     case "max":
       return `${maxValueExpressionForMetric(key)} AS ${key}`;
+    case "sum":
+      return `${sumExpressionForMetric(key)} AS ${key}`;
     default:
       return `SUM(${key}_num) / SUM(${key}_den) AS ${key}`;
   }
@@ -387,7 +507,10 @@ function metricSelectExpression(key: HostMetricKey): string {
 
 /**
  * Underlying-sample weight for a bucket/group. Counts only the core part —
- * every sample writes both parts, so counting both would double every count.
+ * every sample always writes `core` (and `extended`), so counting more than
+ * one part would double every count, and `core` is the one part guaranteed
+ * present regardless of which conditional parts (`sensors`/`traffic`) a
+ * given sample declared.
  */
 export function sampleCountExpression(): string {
   return `SUM(if(${partPredicate(AE_PART_CORE)}, _sample_interval * 1.0, 0.0))`;
@@ -409,14 +532,15 @@ export function weightedAvgIntervalSecondsExpression(): string {
 }
 
 /**
- * Logical-host-sample subquery: recombine the two physical rows of one host
- * sample (`blob2 = "core"` / `"extended"`) into a single row keyed by
- * `(index1, timestamp)` before any bucket/server aggregation. Outer queries
- * aggregate these logical rows filtered to `core_weight > 0.0`, so a
- * partially ingested sample (the write path is two independent
- * fire-and-forget `writeDataPoint` calls) can never skew results:
- * extended-only orphan rows are dropped entirely, and a core-only orphan
- * contributes nothing to extended-metric numerators or denominators.
+ * Logical-host-sample subquery: recombine the 2-4 physical rows of one host
+ * sample (`blob2 = "core"` / `"extended"` / `"sensors"` / `"traffic"`) into a
+ * single row keyed by `(index1, timestamp)` before any bucket/server
+ * aggregation. Outer queries aggregate these logical rows filtered to
+ * `core_weight > 0.0`, so a partially ingested sample (the write path is 2-4
+ * independent fire-and-forget `writeDataPoint` calls) can never skew
+ * results: a non-core orphan row is dropped entirely, and a core-only
+ * sample (no `sensors`/`traffic` declared, or their writes not yet landed)
+ * contributes nothing to those parts' metric numerators/denominators/values.
  * The range predicate is canonical half-open `[from, to)` — matches the
  * DuckDB backend and `computeSeriesGapCount`'s coverage grid.
  */
@@ -428,26 +552,38 @@ function buildLogicalHostSampleSubquery(opts: {
   toUnix: number;
 }): string {
   const discriminators = hostEventDiscriminatorPredicates();
-  // Weighted-average metrics carry a numerator/denominator pair; last/max
-  // metrics carry one sentinel-safe raw value at the logical-sample grain.
-  const metricSelects = opts.metrics.map((key) =>
-    HOST_METRICS_METRIC_DESCRIPTORS[key].aggregation === "weighted-average"
-      ? `${weightedAvgNumeratorForMetric(key)} AS ${key}_num,\n    ${
+  // Weighted-average metrics carry a numerator/denominator pair; sum metrics
+  // carry a sentinel-safe raw value paired with their own AE sampling weight
+  // (they can't share `core_weight` — every sum metric lives in `traffic`,
+  // not `core`); last/max metrics carry one sentinel-safe raw value at the
+  // logical-sample grain.
+  const metricSelects = opts.metrics.map((key) => {
+    const aggregation = HOST_METRICS_METRIC_DESCRIPTORS[key].aggregation;
+    if (aggregation === "weighted-average") {
+      return `${weightedAvgNumeratorForMetric(key)} AS ${key}_num,\n    ${
         weightedAvgDenominatorForMetric(key)
-      } AS ${key}_den`
-      : `${rawValueExpressionForMetric(key)} AS ${key}_value`
-  );
+      } AS ${key}_den`;
+    }
+    if (aggregation === "sum") {
+      return `${rawValueExpressionForMetric(key)} AS ${key}_value,\n    ${
+        sumWeightExpressionForMetric(key)
+      } AS ${key}_weight`;
+    }
+    return `${rawValueExpressionForMetric(key)} AS ${key}_value`;
+  });
   // Observed collection cadence, from the core part's reserved interval slot
   // (a logical sample without a core row is dropped by `core_weight > 0.0`).
-  const intervalSelect = `MAX(if(${partPredicate(AE_PART_CORE)}, ${
-    intervalSecondsColumn()
-  }, 0.0)) AS interval_seconds`;
+  const intervalSelect = `MAX(if(${
+    partPredicate(AE_PART_CORE)
+  }, ${intervalSecondsColumn()}, 0.0)) AS interval_seconds`;
   return [
     `  SELECT`,
     `    ${AE_INDEX_SERVER_ID_COLUMN} AS server_id,`,
     `    toUnixTimestamp(${AE_TIMESTAMP_COLUMN}) AS sample_ts,`,
     `    ${sampleCountExpression()} AS core_weight,`,
     `    ${intervalSelect},`,
+    `    ${HARDWARE_PROFILE_GENERATION_RAW_SELECT},`,
+    `    ${partsPresentSelects().join(",\n    ")},`,
     `    ${metricSelects.join(",\n    ")}`,
     `  FROM ${opts.dataset}`,
     `  WHERE ${opts.serverPredicate}`,
@@ -489,6 +625,9 @@ export function buildHostSeriesSql(
     `  intDiv(sample_ts, ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
     `  SUM(core_weight) AS sample_count,`,
     `  ${weightedAvgIntervalSecondsExpression()} AS avg_interval_seconds,`,
+    `  MIN(hardware_profile_generation_raw) AS hw_gen_min,`,
+    `  MAX(hardware_profile_generation_raw) AS hw_gen_max,`,
+    `  ${partsPresentBucketSelects().join(",\n  ")},`,
     `  ${metricSelects.join(",\n  ")}`,
     `FROM (`,
     buildLogicalHostSampleSubquery({
@@ -507,6 +646,60 @@ export function buildHostSeriesSql(
   ].join("\n");
 
   return { sql, metrics, bucketSeconds };
+}
+
+/**
+ * Distinct hardware-profile generations observed anywhere in a server's
+ * queried range — scoped to the `core` part (mandatory on every sample, see
+ * `field-map.ts`) so this is a simple `GROUP BY` over one row per generation,
+ * not a recombination of the 2-4 physical parts per sample. Paired with
+ * {@link buildHostSeriesSql} by {@link queryHostSeriesViaSqlApi} to populate
+ * {@link HostSeriesResult.hardwareProfileGenerations}, mirroring the DuckDB
+ * backend's `hardwareProfileGenerations` (see `backends/duckdb/store.ts`).
+ */
+export function buildHardwareProfileGenerationsSql(
+  input: HostSeriesQuery,
+  opts: {
+    dataset: string;
+    maxRangeSeconds: number;
+  },
+): string {
+  const serverId = assertSafeServerId(input.serverId);
+  const from = assertIsoTimestamp("from", input.from);
+  const to = assertIsoTimestamp("to", input.to);
+  assertRange(from, to, opts.maxRangeSeconds);
+  assertSafeDatasetName(opts.dataset);
+
+  const fromUnix = Math.floor(from.getTime() / 1000);
+  const toUnix = Math.floor(to.getTime() / 1000);
+  const discriminators = hostEventDiscriminatorPredicates();
+  const generationCol = blobColumn(AE_BLOB_HARDWARE_PROFILE_GENERATION_INDEX);
+
+  return [
+    "SELECT",
+    `  ${generationCol} AS generation`,
+    `FROM ${opts.dataset}`,
+    `WHERE ${AE_INDEX_SERVER_ID_COLUMN} = ${quoteSqlString(serverId)}`,
+    `  AND ${discriminators[0]}`,
+    `  AND ${discriminators[1]}`,
+    `  AND ${partPredicate(AE_PART_CORE)}`,
+    `  AND ${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix})`,
+    `  AND ${AE_TIMESTAMP_COLUMN} < toDateTime(${toUnix})`,
+    `GROUP BY generation`,
+  ].join("\n");
+}
+
+/** Parse {@link buildHardwareProfileGenerationsSql}'s rows into a sorted distinct list. */
+export function parseHardwareProfileGenerationsRows(
+  data: Array<Record<string, unknown>>,
+): number[] {
+  const generations = new Set<number>();
+  for (const row of data) {
+    const raw = row.generation;
+    const num = typeof raw === "number" ? raw : Number(raw);
+    if (Number.isFinite(num)) generations.add(num);
+  }
+  return [...generations].sort((a, b) => a - b);
 }
 
 export function buildHostSummarySql(
@@ -529,7 +722,19 @@ export function buildHostSummarySql(
   return [
     "SELECT",
     `  ${sampleCountExpression()} AS sample_count,`,
-    `  max(${AE_TIMESTAMP_COLUMN}) AS latest_at`,
+    // Scoped to the `core` part only — `sample_count` above already only
+    // counts core rows, and a logical sample's core row is its anchor
+    // (see `buildLogicalHostSampleSubquery`). Without this, a dropped core
+    // write plus a landed `sensors`/`traffic` orphan write (each part is an
+    // independent fire-and-forget `writeDataPoint` call) could report a
+    // `latest_at` newer than any row `sample_count` actually counts.
+    // Unix seconds via `toUnixTimestamp` (never a raw `DateTime` through
+    // `if()`) mirrors `buildLogicalHostSampleSubquery`'s `sample_ts` and
+    // `buildFleetHostSnapshotSql`'s `latest_at` — `parseAeLatestAtMs` already
+    // accepts unix seconds.
+    `  max(if(${
+      partPredicate(AE_PART_CORE)
+    }, toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), 0)) AS latest_at`,
     `FROM ${opts.dataset}`,
     `WHERE ${AE_INDEX_SERVER_ID_COLUMN} = ${quoteSqlString(serverId)}`,
     `  AND ${discriminators[0]}`,
@@ -728,9 +933,7 @@ export function parseAeLatestAtMs(raw: unknown): number | null {
   }
   if (typeof raw !== "string" || raw.length === 0) return null;
   const match = BACKEND_UTC_DATETIME_RE.exec(raw);
-  const normalized = match === null
-    ? raw
-    : `${match[1]}T${match[2]}Z`;
+  const normalized = match === null ? raw : `${match[1]}T${match[2]}Z`;
   const ms = Date.parse(normalized);
   return Number.isFinite(ms) ? ms : null;
 }
@@ -950,12 +1153,46 @@ function parseSeriesRows(
       values: parseMetricValues(metrics, row),
       sampleCount: hasSamples ? rowSamples : undefined,
       expectedSampleCount,
+      partsPresent: parsePartsPresentFromRow(row),
+      hardwareProfileGeneration: parseBucketHardwareProfileGeneration(row),
     });
   }
   return { points, sampleCount };
 }
 
 export { parseSeriesRows };
+
+/** Parse a bucket row's per-part presence flags into the parts actually seen. */
+function parsePartsPresentFromRow(row: Record<string, unknown>): MetricPart[] {
+  const parts: MetricPart[] = [];
+  for (const part of PARTS_PRESENCE_ORDER) {
+    const raw = row[partPresentColumn(part)];
+    const num = typeof raw === "number" ? raw : Number(raw);
+    if (Number.isFinite(num) && num > 0) parts.push(part);
+  }
+  return parts;
+}
+
+/**
+ * A bucket's `hardwareProfileGeneration` is the single generation shared by
+ * every contributing logical sample, or `null` when unknown (no samples) or
+ * mixed (a reassignment happened inside the bucket). `MIN`/`MAX` over the raw
+ * string blob are compared for equality only — never for numeric ordering —
+ * so lexicographic string comparison is safe here: identical values always
+ * compare equal regardless of digit count.
+ */
+function parseBucketHardwareProfileGeneration(
+  row: Record<string, unknown>,
+): number | null {
+  const min = row.hw_gen_min;
+  const max = row.hw_gen_max;
+  if (min === null || min === undefined || max === null || max === undefined) {
+    return null;
+  }
+  if (String(min) !== String(max)) return null;
+  const num = typeof min === "number" ? min : Number(min);
+  return Number.isFinite(num) ? num : null;
+}
 
 function parseBucketEpochSeconds(bucket: unknown): number {
   if (typeof bucket === "number") return bucket;
@@ -1016,11 +1253,21 @@ export async function queryHostSeriesViaSqlApi(
     dataset,
     maxRangeSeconds,
   });
-  const json = await executeSql(config, sql);
+  const generationsSql = buildHardwareProfileGenerationsSql(input, {
+    dataset,
+    maxRangeSeconds,
+  });
+  const [json, generationsResult] = await Promise.all([
+    executeSql(config, sql),
+    executeSql(config, generationsSql),
+  ]);
   const { points, sampleCount } = parseSeriesRows(
     metrics,
     json.data,
     bucketSeconds,
+  );
+  const hardwareProfileGenerations = parseHardwareProfileGenerationsRows(
+    generationsResult.data,
   );
   return finalizeHostSeriesResult(input.from, input.to, {
     kind: "analytics-engine",
@@ -1031,6 +1278,7 @@ export async function queryHostSeriesViaSqlApi(
     resolutionSeconds: bucketSeconds,
     gapCount: 0,
     sampleCount,
+    hardwareProfileGenerations,
   });
 }
 

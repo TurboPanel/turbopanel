@@ -13,7 +13,12 @@
  * (row count + age) and stay fire-and-forget at the ingest boundary.
  */
 
-import { HOST_METRIC_KEYS, type HostMetricKey } from "../../contract.ts";
+import {
+  HOST_METRIC_KEYS,
+  type HostMetricKey,
+  METRIC_PARTS,
+  type MetricPart,
+} from "../../contract.ts";
 import { HOST_METRICS_METRIC_DESCRIPTORS } from "../../metric-descriptors.ts";
 import {
   AE_DEFAULT_MAX_RANGE_SECONDS,
@@ -222,6 +227,8 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       toDuckDbTimestamp(input.receivedAt),
       Math.round(input.intervalSeconds),
       input.collectionMode,
+      input.dimensions.hardwareProfileGeneration ?? null,
+      input.parts.join(","),
     ];
     for (const key of HOST_METRIC_KEYS) {
       // Raw value or SQL NULL — never a sentinel, never a coerced 0.
@@ -275,6 +282,8 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       }) * ${bucketSeconds} AS DOUBLE) AS bucket,`,
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(avg(interval_seconds) AS DOUBLE) AS avg_interval_seconds,`,
+      `  string_agg(DISTINCT parts, ',') AS parts_present_raw,`,
+      `  string_agg(DISTINCT CAST(hardware_profile_generation AS VARCHAR), ',') AS hw_gen_raw,`,
       `  ${metricSelects.join(",\n  ")}`,
       `FROM ${source}`,
       `WHERE server_id = CAST(? AS UUID)`,
@@ -289,11 +298,12 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       toDuckDbTimestamp(from.toISOString()),
       toDuckDbTimestamp(to.toISOString()),
     ]);
-    const { points, sampleCount } = parseSeriesRows(
-      metrics,
-      reader.getRowObjectsJS(),
-      bucketSeconds,
-    );
+    const { points, sampleCount, hardwareProfileGenerations } =
+      parseSeriesRows(
+        metrics,
+        reader.getRowObjectsJS(),
+        bucketSeconds,
+      );
 
     return finalizeHostSeriesResult(from.toISOString(), to.toISOString(), {
       kind: "duckdb",
@@ -304,6 +314,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       resolutionSeconds: bucketSeconds,
       gapCount: 0,
       sampleCount,
+      hardwareProfileGenerations,
     });
   }
 
@@ -374,6 +385,8 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       `  CAST(server_id AS VARCHAR) AS server_id,`,
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(epoch_ms(max(sampled_at)) AS DOUBLE) AS latest_at_ms,`,
+      `  string_agg(DISTINCT parts, ',') AS parts_present_raw,`,
+      `  string_agg(DISTINCT CAST(hardware_profile_generation AS VARCHAR), ',') AS hw_gen_raw,`,
       `  ${metricSelects.join(",\n  ")}`,
       `FROM ${source}`,
       `WHERE server_id IN (${inList})`,
@@ -395,6 +408,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       if (!serverId) continue;
       const sampleCount = toFiniteNumber(row.sample_count) ?? 0;
       const latestAtMs = toFiniteNumber(row.latest_at_ms);
+      const generations = parseHardwareProfileGenerations(row.hw_gen_raw);
       servers.push({
         serverId,
         sampleCount,
@@ -402,6 +416,10 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
           ? null
           : new Date(latestAtMs).toISOString(),
         values: parseMetricValues(metrics, row),
+        partsPresent: parsePartsPresent(row.parts_present_raw),
+        hardwareProfileGeneration: generations.length === 1
+          ? generations[0]!
+          : null,
       });
     }
     servers.sort((a, b) => a.serverId.localeCompare(b.serverId));
@@ -719,8 +737,19 @@ export function maxValueSql(column: string): string {
 }
 
 /**
+ * Bucket total for a monotonic counter (traffic totals) — each stored value
+ * is already a per-interval delta, so summing it is the bucket total; no
+ * `interval_seconds` weighting applies (that's for gauges being averaged,
+ * not counters being totaled). NULLs are ignored by SQL `SUM` semantics, so
+ * an all-missing group correctly sums to NULL rather than a fabricated 0.
+ */
+export function sumValueSql(column: string): string {
+  return `SUM(${column})`;
+}
+
+/**
  * Descriptor-driven bucket aggregate for one metric — weighted-average,
- * last, or max per `HOST_METRICS_METRIC_DESCRIPTORS[key].aggregation`.
+ * last, max, or sum per `HOST_METRICS_METRIC_DESCRIPTORS[key].aggregation`.
  */
 export function metricAggregateSql(key: HostMetricKey): string {
   const column = metricColumnName(key);
@@ -729,6 +758,8 @@ export function metricAggregateSql(key: HostMetricKey): string {
       return lastValueSql(column);
     case "max":
       return maxValueSql(column);
+    case "sum":
+      return sumValueSql(column);
     default:
       return intervalWeightedAvgSql(column);
   }
@@ -739,6 +770,8 @@ const HOST_INSERT_TUPLE = "(" + [
   "CAST(? AS UUID)",
   "CAST(? AS TIMESTAMP)",
   "CAST(? AS TIMESTAMP)",
+  "CAST(? AS SMALLINT)",
+  "?",
   "CAST(? AS SMALLINT)",
   "?",
   ...HOST_METRIC_KEYS.map(() => "?"),
@@ -779,9 +812,14 @@ function parseSeriesRows(
   metrics: readonly HostMetricKey[],
   rows: DuckDbRow[],
   resolutionSeconds: number,
-): { points: HostSeriesPoint[]; sampleCount: number } {
+): {
+  points: HostSeriesPoint[];
+  sampleCount: number;
+  hardwareProfileGenerations: number[];
+} {
   const points: HostSeriesPoint[] = [];
   let sampleCount = 0;
+  const allGenerations = new Set<number>();
   for (const row of rows) {
     const bucketEpochSeconds = toFiniteNumber(row.bucket);
     if (bucketEpochSeconds === null) continue;
@@ -793,14 +831,57 @@ function parseSeriesRows(
     const expectedSampleCount = avgIntervalSeconds !== null
       ? defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds)
       : defaultExpectedSamplesPerBucket(resolutionSeconds);
+    const bucketGenerations = parseHardwareProfileGenerations(row.hw_gen_raw);
+    for (const generation of bucketGenerations) allGenerations.add(generation);
     points.push({
       at: new Date(bucketEpochSeconds * 1000).toISOString(),
       values: parseMetricValues(metrics, row),
       sampleCount: rowSamples,
       expectedSampleCount,
+      partsPresent: parsePartsPresent(row.parts_present_raw),
+      hardwareProfileGeneration: bucketGenerations.length === 1
+        ? bucketGenerations[0]!
+        : null,
     });
   }
-  return { points, sampleCount };
+  return {
+    points,
+    sampleCount,
+    hardwareProfileGenerations: [...allGenerations].sort((a, b) => a - b),
+  };
+}
+
+const METRIC_PART_SET = new Set<string>(METRIC_PARTS);
+
+/**
+ * Parse a `string_agg(DISTINCT parts, ',')` aggregate — each row's `parts`
+ * is itself comma-joined, so the concatenation is uniformly comma-delimited
+ * regardless of how many rows contributed — into a deduped, sorted set of
+ * valid {@link MetricPart} tokens (the column is free-form `VARCHAR`).
+ */
+function parsePartsPresent(raw: unknown): MetricPart[] {
+  if (typeof raw !== "string" || raw.length === 0) return [];
+  const parts = new Set<MetricPart>();
+  for (const token of raw.split(",")) {
+    const trimmed = token.trim();
+    if (METRIC_PART_SET.has(trimmed)) parts.add(trimmed as MetricPart);
+  }
+  return [...parts].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Parse a `string_agg(DISTINCT CAST(hardware_profile_generation AS VARCHAR), ',')`
+ * aggregate into the distinct generations observed, sorted ascending.
+ * `string_agg` drops NULLs, so an all-NULL group yields an empty array.
+ */
+function parseHardwareProfileGenerations(raw: unknown): number[] {
+  if (typeof raw !== "string" || raw.length === 0) return [];
+  const values = new Set<number>();
+  for (const token of raw.split(",")) {
+    const value = toFiniteNumber(token.trim());
+    if (value !== null) values.add(value);
+  }
+  return [...values].sort((a, b) => a - b);
 }
 
 function parseMetricValues(

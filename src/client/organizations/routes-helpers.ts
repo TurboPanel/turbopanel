@@ -1,6 +1,8 @@
 import {
   parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
+  parseTemperatureUnitInput,
+  type TemperatureUnit,
 } from "../../lib/organization-options.ts";
 import { DISPLAY_NAME_MAX_LENGTH } from "../../lib/display-name-format.ts";
 import { isAllowedTimezone } from "../../lib/timezones.ts";
@@ -40,6 +42,10 @@ export type OrganizationRouteValidationError = {
 export type DefaultTimezonePatch = {
   defaultServerTimezone?: string | null;
   enforceServerTimezone?: boolean;
+};
+
+export type TemperatureUnitPatch = {
+  temperatureUnit: TemperatureUnit;
 };
 
 export type HostDefaultsPatch = {
@@ -213,6 +219,22 @@ export function parseDefaultTimezonePatch(
   return { ok: true, patch };
 }
 
+/** `temperatureUnit` is required — unlike timezone, there is no clear-to-null case. */
+export function parseTemperatureUnitPatch(
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: TemperatureUnitPatch }
+  | OrganizationRouteValidationError {
+  if (!("temperatureUnit" in body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
+  }
+  const parsed = parseTemperatureUnitInput(body.temperatureUnit);
+  if (!parsed.ok) {
+    return { ok: false, error: "Invalid temperatureUnit", status: 400 };
+  }
+  return { ok: true, patch: { temperatureUnit: parsed.value } };
+}
+
 export function parseHostDefaultsPatch(
   body: Record<string, unknown>,
 ):
@@ -372,6 +394,23 @@ export function defaultTimezonePutResponse(options: {
   return {
     ok: true as const,
     ...defaultTimezoneGetResponse(options),
+  };
+}
+
+export function temperatureUnitGetResponse(options: {
+  temperatureUnit?: TemperatureUnit | null;
+}) {
+  return {
+    temperatureUnit: options.temperatureUnit ?? "celsius",
+  };
+}
+
+export function temperatureUnitPutResponse(options: {
+  temperatureUnit?: TemperatureUnit | null;
+}) {
+  return {
+    ok: true as const,
+    ...temperatureUnitGetResponse(options),
   };
 }
 

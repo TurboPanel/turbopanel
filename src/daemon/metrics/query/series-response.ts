@@ -1,6 +1,7 @@
 import {
   HOST_METRIC_KEYS,
   type HostMetricKey,
+  type MetricPart,
 } from "../contract.ts";
 import type {
   HostSeriesPoint,
@@ -8,6 +9,25 @@ import type {
   MetricsBackendKind,
 } from "../types.ts";
 import { bucketFloor } from "./buckets.ts";
+import {
+  computeDerivedHostValues,
+  computePowerHeadroom,
+  computeThermalHeadroom,
+  type DerivedHostValues,
+} from "./derived-metrics.ts";
+
+/**
+ * Server-computed presentation values for one series point — so the UI never
+ * reimplements CPU busy / memory-swap-storage used / HTTP error rate /
+ * average latency, or CPU thermal/power headroom. Headroom is `null` when
+ * `cpuLimits` was not passed to {@link toHostSeriesChartResponse} (no
+ * resolved TDP/Tjmax for this host) as well as when the point carries no
+ * sensor reading — same "missing input" discipline as `derived-metrics.ts`.
+ */
+export type HostSeriesChartPointDerived = DerivedHostValues & {
+  cpuThermalHeadroomPercent: number | null;
+  cpuPowerHeadroomPercent: number | null;
+};
 
 export type HostSeriesChartPoint = {
   at: string;
@@ -16,8 +36,16 @@ export type HostSeriesChartPoint = {
   minimums?: Partial<Record<HostMetricKey, number | null>>;
   /** Deferred — not populated until min/max aggregates are unified across backends. */
   maximums?: Partial<Record<HostMetricKey, number | null>>;
+  /** Server-computed presentation values derived from `values` — see {@link HostSeriesChartPointDerived}. */
+  derived: HostSeriesChartPointDerived;
   sampleCount: number;
   expectedSampleCount?: number;
+  /**
+   * Hardware-profile generation shared by every contributing sample in this
+   * bucket — see {@link HostSeriesPoint.hardwareProfileGeneration}. Omitted
+   * when the backend doesn't track generations.
+   */
+  hardwareProfileGeneration?: number | null;
 };
 
 export type HostSeriesChartResponse = {
@@ -32,6 +60,19 @@ export type HostSeriesChartResponse = {
   sampleCount: number;
   gapCount: number;
   points: HostSeriesChartPoint[];
+  /**
+   * Point indices where `hardwareProfileGeneration` differs from the
+   * previous known generation — a boundary marker so the UI can segment
+   * chart continuity without inferring it from raw generation numbers
+   * itself. See {@link computeGenerationBreaks}.
+   */
+  generationBreaks: number[];
+  /**
+   * Distinct hardware-profile generations observed anywhere in the queried
+   * range — see {@link HostSeriesResult.hardwareProfileGenerations}. Omitted
+   * when the backend doesn't track generations.
+   */
+  hardwareProfileGenerations?: number[];
 };
 
 export type ParseRequestedMetricsResult =
@@ -156,11 +197,49 @@ export function parseRequestedMetrics(
   return { ok: true, metrics };
 }
 
+/**
+ * Indices where `hardwareProfileGeneration` differs from the previous
+ * *known* generation (a `null`/`undefined` entry is "unknown" and never
+ * itself a break — it neither starts nor ends a segment). The first point
+ * establishing a known generation is never a break (nothing precedes it to
+ * differ from).
+ */
+export function computeGenerationBreaks(
+  points: readonly { hardwareProfileGeneration?: number | null }[],
+): number[] {
+  const breaks: number[] = [];
+  let lastKnown: number | undefined;
+  for (let i = 0; i < points.length; i++) {
+    const generation = points[i].hardwareProfileGeneration;
+    if (generation === null || generation === undefined) continue;
+    if (lastKnown !== undefined && generation !== lastKnown) {
+      breaks.push(i);
+    }
+    lastKnown = generation;
+  }
+  return breaks;
+}
+
+/**
+ * True when at least one point in the queried range declared the
+ * `"sensors"` part — lets the UI hide the hardware group when the daemon
+ * never once reported hardware sensors, without scanning null value arrays
+ * itself. `false` on a backend that doesn't track `partsPresent` (every
+ * point omits it) — same as "never declared".
+ */
+export function computeSensorsAvailable(
+  points: readonly { partsPresent?: MetricPart[] }[],
+): boolean {
+  return points.some((point) => point.partsPresent?.includes("sensors") ?? false);
+}
+
 export function toHostSeriesChartResponse(input: {
   serverId: string;
   from: string;
   to: string;
   result: HostSeriesResult;
+  /** Resolved CPU thermal/power limits — omitted when unresolved for this host. */
+  cpuLimits?: { tdpWatts: number | null; tjMaxCelsius: number | null };
 }): HostSeriesChartResponse {
   const result = finalizeHostSeriesResult(
     input.from,
@@ -170,9 +249,23 @@ export function toHostSeriesChartResponse(input: {
   const points: HostSeriesChartPoint[] = result.points.map((point) => ({
     at: point.at,
     values: point.values,
+    derived: {
+      ...computeDerivedHostValues(point.values),
+      cpuThermalHeadroomPercent: computeThermalHeadroom({
+        valueCelsius: point.values.cpuTemperatureCelsius ?? null,
+        limitCelsius: input.cpuLimits?.tjMaxCelsius ?? null,
+      }),
+      cpuPowerHeadroomPercent: computePowerHeadroom({
+        valueWatts: point.values.cpuPowerWatts ?? null,
+        limitWatts: input.cpuLimits?.tdpWatts ?? null,
+      }),
+    },
     sampleCount: point.sampleCount ?? 0,
     ...(point.expectedSampleCount !== undefined
       ? { expectedSampleCount: point.expectedSampleCount }
+      : {}),
+    ...(point.hardwareProfileGeneration !== undefined
+      ? { hardwareProfileGeneration: point.hardwareProfileGeneration }
       : {}),
   }));
 
@@ -188,6 +281,10 @@ export function toHostSeriesChartResponse(input: {
     sampleCount: result.sampleCount,
     gapCount: result.gapCount,
     points,
+    generationBreaks: computeGenerationBreaks(points),
+    ...(result.hardwareProfileGenerations !== undefined
+      ? { hardwareProfileGenerations: result.hardwareProfileGenerations }
+      : {}),
   };
 }
 

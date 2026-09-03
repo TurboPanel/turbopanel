@@ -9,7 +9,7 @@ import {
   resolveEffectiveServerTimezone,
   resolveServerResponseTimezone,
   resolveServerOsLogoKey,
-  type ServerMetricsOverrides,
+  type ServerHardwareProfile,
   type ServerOptions,
   type ServerOsMetadata,
   type ServerTimeSync,
@@ -420,8 +420,8 @@ export type PresenceLike = {
   docker?: ServerDockerMetadata | null
   /** Runtimes the daemon reports installed; `null` when it has not reported. */
   runtimes?: ServerRuntimeMetadata | null
-  /** Operator sensor / hosting-path overrides; `null` when none are set. */
-  metricsOverrides?: ServerMetricsOverrides | null
+  /** Operator hardware profile (sensor/NIC slots, hosting path); `null` when none are set. */
+  hardwareProfile?: ServerHardwareProfile | null
 }
 
 export type ServerListTimezoneFields = {
@@ -515,7 +515,7 @@ export function shapeServerPresenceFields(
     timeSync: live?.timeSync ?? null,
     docker: live?.docker ?? null,
     runtimes: live?.runtimes ?? null,
-    metricsOverrides: live?.metricsOverrides ?? null,
+    hardwareProfile: live?.hardwareProfile ?? null,
   }
 }
 

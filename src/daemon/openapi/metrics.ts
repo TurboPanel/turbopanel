@@ -1,5 +1,6 @@
 import {
   HOST_METRIC_KEYS,
+  METRIC_PARTS,
   METRICS_SCHEMA_VERSION,
 } from "../metrics/contract.ts";
 
@@ -19,6 +20,7 @@ export const metricsSchemas = {
       "at",
       "intervalSeconds",
       "sequence",
+      "parts",
       "metrics",
       "dimensions",
     ],
@@ -28,9 +30,19 @@ export const metricsSchemas = {
       at: { type: "string", format: "date-time" },
       intervalSeconds: { type: "number" },
       sequence: { type: "integer" },
+      parts: {
+        type: "array",
+        description:
+          "Metric groupings collected this tick — always includes \"core\" and \"extended\".",
+        items: { type: "string", enum: [...METRIC_PARTS] },
+        minItems: 1,
+      },
       metrics: {
         type: "object",
-        required: [...HOST_METRIC_KEYS],
+        description:
+          "Only carries keys whose MetricPart is present in `parts` — an " +
+          "absent key means \"not collected this tick\", distinct from a " +
+          "validated `null` (collected, no reading available).",
         properties: hostMetricProperties,
         additionalProperties: false,
       },
@@ -38,27 +50,32 @@ export const metricsSchemas = {
         type: "object",
         required: [
           "schemaVersion",
-          "daemonVersion",
-          "operatingSystem",
-          "architecture",
-          "kernelRelease",
           "collectionMode",
+          "hardwareProfileGeneration",
+          "trafficSources",
         ],
         properties: {
           schemaVersion: { type: "integer", const: METRICS_SCHEMA_VERSION },
-          daemonVersion: { type: "string" },
-          operatingSystem: { type: "string" },
-          architecture: { type: "string" },
-          kernelRelease: { type: "string" },
           collectionMode: { type: "string", enum: ["baseline", "live"] },
           runtimeMode: { type: "string" },
-          cpuTemperatureSensor: { type: "string" },
-          gpuTemperatureSensor: { type: "string" },
-          cpuPowerSensor: { type: "string" },
-          gpuPowerSensor: { type: "string" },
-          uplinkInterfaces: { type: "array", items: { type: "string" } },
-          fabricInterfaces: { type: "array", items: { type: "string" } },
+          hardwareProfileGeneration: {
+            type: "integer",
+            description:
+              "Generation of the detected hardware profile (sensor/NIC layout) at collection time.",
+          },
+          trafficSources: {
+            type: "object",
+            description:
+              "Which traffic sidecars actually contributed data this tick.",
+            required: ["caddy", "proxysql"],
+            properties: {
+              caddy: { type: "boolean" },
+              proxysql: { type: "boolean" },
+            },
+            additionalProperties: false,
+          },
         },
+        additionalProperties: false,
       },
     },
   },
@@ -76,7 +93,7 @@ export const metricsPaths: Record<string, unknown> = {
     post: {
       tags: ["Daemon"],
       summary: "Ingest host metrics sample",
-      description: "Authenticated daemon posts a v2 host-metrics frame. " +
+      description: "Authenticated daemon posts a v3 host-metrics frame. " +
         "serverId is taken from the JWT `sub` — never from the body. " +
         "Writes are fire-and-forget to Analytics Engine / DuckDB; " +
         "never wakes the Durable Object.",

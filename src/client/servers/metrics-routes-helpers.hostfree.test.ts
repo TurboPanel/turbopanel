@@ -9,6 +9,8 @@ import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.
 import type { StatusHistoryResult } from '../../daemon/metrics/types.ts'
 import {
   resolveStoreBackendKind,
+  buildCpuLimitsEnvelope,
+  parseHardwareProfileBody,
   parseIsoTimestampQuery,
   parseOptionalResolution,
   metricsBackendUnavailableResponse,
@@ -205,6 +207,10 @@ test('buildHostSummaryPayload and metricsQueryErrorMessage', () => {
         sampleCount: 0,
         latestAt: null,
       },
+      envelope: {
+        cpuLimits: { tdpWatts: null, tjMaxCelsius: null, source: 'none' },
+        temperatureUnit: 'celsius',
+      },
     }),
     {
       ok: true,
@@ -215,8 +221,89 @@ test('buildHostSummaryPayload and metricsQueryErrorMessage', () => {
       available: false,
       sampleCount: 0,
       latestAt: null,
+      cpuLimits: { tdpWatts: null, tjMaxCelsius: null, source: 'none' },
+      temperatureUnit: 'celsius',
     },
   )
   assertEquals(metricsQueryErrorMessage(new Error('down')), 'down')
   assertEquals(metricsQueryErrorMessage('oops'), 'oops')
+})
+
+test('buildCpuLimitsEnvelope resolves thermal limits and temperature unit from resolved inputs', () => {
+  assertEquals(
+    buildCpuLimitsEnvelope(
+      { cpuModel: 'AMD EPYC 7763' },
+      { temperatureUnit: 'fahrenheit' },
+    ),
+    {
+      cpuLimits: { tdpWatts: 280, tjMaxCelsius: 95, source: 'catalog-exact' },
+      temperatureUnit: 'fahrenheit',
+    },
+  )
+})
+
+test('buildCpuLimitsEnvelope falls back cleanly when nothing is resolved', () => {
+  assertEquals(
+    buildCpuLimitsEnvelope(undefined, undefined),
+    {
+      cpuLimits: { tdpWatts: null, tjMaxCelsius: null, source: 'none' },
+      temperatureUnit: 'celsius',
+    },
+  )
+})
+
+test('parseHardwareProfileBody accepts cpu override fields in range, and null clears', () => {
+  const accepted = parseHardwareProfileBody({
+    cpuTdpWattsOverride: 240,
+    cpuTjMaxCelsiusOverride: 95,
+  })
+  assertEquals(accepted, {
+    ok: true,
+    update: { cpuTdpWattsOverride: 240, cpuTjMaxCelsiusOverride: 95 },
+  })
+
+  const cleared = parseHardwareProfileBody({
+    cpuTdpWattsOverride: null,
+    cpuTjMaxCelsiusOverride: null,
+  })
+  assertEquals(cleared, {
+    ok: true,
+    update: { cpuTdpWattsOverride: null, cpuTjMaxCelsiusOverride: null },
+  })
+})
+
+test('parseHardwareProfileBody rejects cpuTdpWattsOverride out of range or non-finite', () => {
+  assertEquals(parseHardwareProfileBody({ cpuTdpWattsOverride: 0 }).ok, false)
+  assertEquals(parseHardwareProfileBody({ cpuTdpWattsOverride: -10 }).ok, false)
+  assertEquals(
+    parseHardwareProfileBody({ cpuTdpWattsOverride: 1001 }).ok,
+    false,
+  )
+  assertEquals(
+    parseHardwareProfileBody({ cpuTdpWattsOverride: Number.NaN }).ok,
+    false,
+  )
+  assertEquals(
+    parseHardwareProfileBody({ cpuTdpWattsOverride: '200' }).ok,
+    false,
+  )
+})
+
+test('parseHardwareProfileBody rejects cpuTjMaxCelsiusOverride out of the plausible silicon range', () => {
+  assertEquals(
+    parseHardwareProfileBody({ cpuTjMaxCelsiusOverride: 39 }).ok,
+    false,
+  )
+  assertEquals(
+    parseHardwareProfileBody({ cpuTjMaxCelsiusOverride: 131 }).ok,
+    false,
+  )
+  assertEquals(
+    parseHardwareProfileBody({ cpuTjMaxCelsiusOverride: 40 }),
+    { ok: true, update: { cpuTjMaxCelsiusOverride: 40 } },
+  )
+  assertEquals(
+    parseHardwareProfileBody({ cpuTjMaxCelsiusOverride: 130 }),
+    { ok: true, update: { cpuTjMaxCelsiusOverride: 130 } },
+  )
 })

@@ -1,50 +1,42 @@
 import { it } from "@std/testing/bdd";
-import {
-  assertEquals,
-  assertThrows,
-} from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
   HOST_METRIC_KEYS,
-  METRICS_SCHEMA_VERSION,
   type HostMetricKey,
+  METRICS_SCHEMA_VERSION,
 } from "../../contract.ts";
 import type { AuthenticatedHostMetricsSample } from "../../types.ts";
+import { validateHostMetricsSample } from "../../validation.ts";
 import {
-  AE_BLOB_ARCH_INDEX,
   AE_BLOB_COLLECTION_MODE_INDEX,
   AE_BLOB_COUNT,
-  AE_BLOB_CPU_POWER_SENSOR_INDEX,
-  AE_BLOB_CPU_TEMPERATURE_SENSOR_INDEX,
-  AE_BLOB_DAEMON_VERSION_INDEX,
   AE_BLOB_EVENT_TYPE_INDEX,
-  AE_BLOB_FABRIC_INTERFACES_INDEX,
-  AE_BLOB_GPU_POWER_SENSOR_INDEX,
-  AE_BLOB_GPU_TEMPERATURE_SENSOR_INDEX,
-  AE_BLOB_KERNEL_INDEX,
-  AE_BLOB_OS_INDEX,
+  AE_BLOB_HARDWARE_PROFILE_GENERATION_INDEX,
   AE_BLOB_PART_INDEX,
   AE_BLOB_SAMPLED_AT_INDEX,
   AE_BLOB_SCHEMA_VERSION_INDEX,
   AE_BLOB_SEQUENCE_INDEX,
   AE_BLOB_STATUS_REASON_INDEX,
-  AE_BLOB_UPLINK_INTERFACES_INDEX,
+  AE_BLOB_TRAFFIC_SOURCES_INDEX,
   AE_DATASET_NAME,
   AE_DOUBLE_COUNT,
   AE_DOUBLE_INTERVAL_INDEX,
   AE_DOUBLE_STATUS_CONNECTED_INDEX,
+  AE_INDEX_SERVER_ID_COLUMN,
   AE_METRIC_DOUBLE_SLOT_COUNT,
   AE_METRICS_EVENT_TYPE,
-  AE_INDEX_SERVER_ID_COLUMN,
   AE_MISSING_METRIC_SENTINEL,
   AE_PART_CORE,
   AE_PART_EXTENDED,
+  AE_PART_SENSORS,
+  AE_PART_TRAFFIC,
   AE_RESERVED_BLOB_COUNT,
   AE_STATUS_EVENT_TYPE,
   AE_TIMESTAMP_COLUMN,
   assertAnalyticsEngineDataPointShape,
   blobColumn,
-  buildCoreDataPoint,
-  buildExtendedDataPoint,
+  buildPartDataPoint,
+  buildPartDataPoints,
   buildStatusDataPoint,
   CORE_METRIC_KEYS,
   doubleColumn,
@@ -54,8 +46,10 @@ import {
   mapHostSampleToBlobs,
   mapPartMetricsToDoubles,
   metricPart,
+  SENSOR_METRIC_KEYS,
   statusConnectedColumn,
   statusReasonColumn,
+  TRAFFIC_METRIC_KEYS,
 } from "./field-map.ts";
 
 function baseSample(
@@ -74,32 +68,46 @@ function baseSample(
     sequence: 7,
     schemaVersion: METRICS_SCHEMA_VERSION,
     collectionMode: "baseline",
+    parts: ["core", "extended"],
     dimensions: {
       schemaVersion: METRICS_SCHEMA_VERSION,
-      daemonVersion: "1.2.3",
-      operatingSystem: "linux",
-      architecture: "arm64",
-      kernelRelease: "6.12.0",
       collectionMode: "baseline",
+      hardwareProfileGeneration: 1,
+      trafficSources: { caddy: false, proxysql: false },
     },
     metrics,
     ...overrides,
   };
 }
 
-it("core/extended parts partition HOST_METRIC_KEYS exactly", () => {
-  assertEquals(CORE_METRIC_KEYS.length, AE_METRIC_DOUBLE_SLOT_COUNT);
-  assertEquals(EXTENDED_METRIC_KEYS.length, AE_METRIC_DOUBLE_SLOT_COUNT);
+it("the four parts partition HOST_METRIC_KEYS exactly", () => {
+  const core = new Set<HostMetricKey>(CORE_METRIC_KEYS);
+  const extended = new Set<HostMetricKey>(EXTENDED_METRIC_KEYS);
+  const sensors = new Set<HostMetricKey>(SENSOR_METRIC_KEYS);
+  const traffic = new Set<HostMetricKey>(TRAFFIC_METRIC_KEYS);
+  for (
+    const keys of [
+      CORE_METRIC_KEYS,
+      EXTENDED_METRIC_KEYS,
+      SENSOR_METRIC_KEYS,
+      TRAFFIC_METRIC_KEYS,
+    ]
+  ) {
+    assertEquals(keys.length > 0, true);
+    assertEquals(keys.length <= AE_METRIC_DOUBLE_SLOT_COUNT, true);
+  }
   const union = new Set<HostMetricKey>([
-    ...CORE_METRIC_KEYS,
-    ...EXTENDED_METRIC_KEYS,
+    ...core,
+    ...extended,
+    ...sensors,
+    ...traffic,
   ]);
   assertEquals(union.size, HOST_METRIC_KEYS.length);
   assertEquals(union, new Set(HOST_METRIC_KEYS));
 });
 
-it("dataset name is the brand-new telemetry dataset", () => {
-  assertEquals(AE_DATASET_NAME, "turbopanel_server_telemetry");
+it("dataset name is the v3 four-part dataset", () => {
+  assertEquals(AE_DATASET_NAME, "turbopanel_server_host_metrics");
 });
 
 it("metricPart: every key resolves to the part that lists it", () => {
@@ -109,6 +117,12 @@ it("metricPart: every key resolves to the part that lists it", () => {
   for (const key of EXTENDED_METRIC_KEYS) {
     assertEquals(metricPart(key), AE_PART_EXTENDED);
   }
+  for (const key of SENSOR_METRIC_KEYS) {
+    assertEquals(metricPart(key), AE_PART_SENSORS);
+  }
+  for (const key of TRAFFIC_METRIC_KEYS) {
+    assertEquals(metricPart(key), AE_PART_TRAFFIC);
+  }
   assertThrows(
     () => metricPart("notAMetric" as HostMetricKey),
     TypeError,
@@ -116,7 +130,7 @@ it("metricPart: every key resolves to the part that lists it", () => {
   );
 });
 
-it("mapPartMetricsToDoubles: part order → double1..double19, interval → double20", () => {
+it("mapPartMetricsToDoubles: part order → double1..doubleN, interval → double20", () => {
   const metrics = {} as AuthenticatedHostMetricsSample["metrics"];
   for (const key of HOST_METRIC_KEYS) {
     metrics[key] = null;
@@ -127,26 +141,36 @@ it("mapPartMetricsToDoubles: part order → double1..double19, interval → doub
   EXTENDED_METRIC_KEYS.forEach((key, i) => {
     metrics[key] = 2000 + i;
   });
+  SENSOR_METRIC_KEYS.forEach((key, i) => {
+    metrics[key] = 3000 + i;
+  });
+  TRAFFIC_METRIC_KEYS.forEach((key, i) => {
+    metrics[key] = 4000 + i;
+  });
 
   const core = mapPartMetricsToDoubles(metrics, AE_PART_CORE, 60);
   assertEquals(core.length, AE_DOUBLE_COUNT);
-  CORE_METRIC_KEYS.forEach((_key, i) => {
-    assertEquals(core[i], 1000 + i);
-  });
+  CORE_METRIC_KEYS.forEach((_key, i) => assertEquals(core[i], 1000 + i));
   assertEquals(core[AE_DOUBLE_INTERVAL_INDEX], 60);
 
   const extended = mapPartMetricsToDoubles(metrics, AE_PART_EXTENDED, 15);
   assertEquals(extended.length, AE_DOUBLE_COUNT);
-  EXTENDED_METRIC_KEYS.forEach((_key, i) => {
-    assertEquals(extended[i], 2000 + i);
-  });
+  EXTENDED_METRIC_KEYS.forEach((_key, i) =>
+    assertEquals(extended[i], 2000 + i)
+  );
   assertEquals(extended[AE_DOUBLE_INTERVAL_INDEX], 15);
+
+  const sensors = mapPartMetricsToDoubles(metrics, AE_PART_SENSORS, 60);
+  SENSOR_METRIC_KEYS.forEach((_key, i) => assertEquals(sensors[i], 3000 + i));
+
+  const traffic = mapPartMetricsToDoubles(metrics, AE_PART_TRAFFIC, 60);
+  TRAFFIC_METRIC_KEYS.forEach((_key, i) => assertEquals(traffic[i], 4000 + i));
 });
 
-it("mapPartMetricsToDoubles: null → AE_MISSING_METRIC_SENTINEL, never 0", () => {
+it("mapPartMetricsToDoubles: null/absent → AE_MISSING_METRIC_SENTINEL, never 0", () => {
   const sample = baseSample();
   const doubles = mapPartMetricsToDoubles(sample.metrics, AE_PART_CORE, 60);
-  for (let i = 0; i < AE_METRIC_DOUBLE_SLOT_COUNT; i++) {
+  for (let i = 0; i < CORE_METRIC_KEYS.length; i++) {
     assertEquals(doubles[i], AE_MISSING_METRIC_SENTINEL);
   }
   assertEquals(doubles[AE_DOUBLE_INTERVAL_INDEX], 60);
@@ -156,17 +180,9 @@ it("mapHostSampleToBlobs: identity slots filled, rest reserved empty", () => {
   const sample = baseSample({
     dimensions: {
       schemaVersion: METRICS_SCHEMA_VERSION,
-      daemonVersion: "1.2.3",
-      operatingSystem: "linux",
-      architecture: "arm64",
-      kernelRelease: "6.12.0",
       collectionMode: "live",
-      cpuTemperatureSensor: "coretemp",
-      gpuTemperatureSensor: "amdgpu",
-      cpuPowerSensor: "rapl",
-      gpuPowerSensor: "nvml",
-      uplinkInterfaces: ["eth0", "eth1"],
-      fabricInterfaces: ["wg0"],
+      hardwareProfileGeneration: 3,
+      trafficSources: { caddy: false, proxysql: false },
     },
     collectionMode: "live",
   });
@@ -178,19 +194,12 @@ it("mapHostSampleToBlobs: identity slots filled, rest reserved empty", () => {
     blobs[AE_BLOB_SCHEMA_VERSION_INDEX],
     String(METRICS_SCHEMA_VERSION),
   );
-  assertEquals(blobs[AE_BLOB_DAEMON_VERSION_INDEX], "1.2.3");
-  assertEquals(blobs[AE_BLOB_OS_INDEX], "linux");
-  assertEquals(blobs[AE_BLOB_ARCH_INDEX], "arm64");
-  assertEquals(blobs[AE_BLOB_KERNEL_INDEX], "6.12.0");
   assertEquals(blobs[AE_BLOB_COLLECTION_MODE_INDEX], "live");
   assertEquals(blobs[AE_BLOB_SAMPLED_AT_INDEX], "2026-01-01T00:00:00.000Z");
   assertEquals(blobs[AE_BLOB_SEQUENCE_INDEX], "7");
-  assertEquals(blobs[AE_BLOB_CPU_TEMPERATURE_SENSOR_INDEX], "coretemp");
-  assertEquals(blobs[AE_BLOB_GPU_TEMPERATURE_SENSOR_INDEX], "amdgpu");
-  assertEquals(blobs[AE_BLOB_CPU_POWER_SENSOR_INDEX], "rapl");
-  assertEquals(blobs[AE_BLOB_GPU_POWER_SENSOR_INDEX], "nvml");
-  assertEquals(blobs[AE_BLOB_UPLINK_INTERFACES_INDEX], "eth0,eth1");
-  assertEquals(blobs[AE_BLOB_FABRIC_INTERFACES_INDEX], "wg0");
+  assertEquals(blobs[AE_BLOB_HARDWARE_PROFILE_GENERATION_INDEX], "3");
+  // traffic-sources marker only populated on the traffic part.
+  assertEquals(blobs[AE_BLOB_TRAFFIC_SOURCES_INDEX], "");
   // Status-reason slot + tail reserved slots stay empty on metrics rows.
   assertEquals(blobs[AE_BLOB_STATUS_REASON_INDEX], "");
   for (let i = AE_BLOB_COUNT - AE_RESERVED_BLOB_COUNT; i < AE_BLOB_COUNT; i++) {
@@ -198,35 +207,151 @@ it("mapHostSampleToBlobs: identity slots filled, rest reserved empty", () => {
   }
 });
 
-it("mapHostSampleToBlobs: optional sensor/interface identity defaults to empty", () => {
-  const blobs = mapHostSampleToBlobs(baseSample(), AE_PART_CORE);
-  assertEquals(blobs[AE_BLOB_PART_INDEX], AE_PART_CORE);
-  assertEquals(blobs[AE_BLOB_CPU_TEMPERATURE_SENSOR_INDEX], "");
-  assertEquals(blobs[AE_BLOB_GPU_TEMPERATURE_SENSOR_INDEX], "");
-  assertEquals(blobs[AE_BLOB_CPU_POWER_SENSOR_INDEX], "");
-  assertEquals(blobs[AE_BLOB_GPU_POWER_SENSOR_INDEX], "");
-  assertEquals(blobs[AE_BLOB_UPLINK_INTERFACES_INDEX], "");
-  assertEquals(blobs[AE_BLOB_FABRIC_INTERFACES_INDEX], "");
+it("mapHostSampleToBlobs: traffic part carries the trafficSources marker, others stay empty", () => {
+  const sample = baseSample({
+    parts: ["core", "extended", "traffic"],
+    trafficSources: ["caddy", "proxysql"],
+  });
+  const traffic = mapHostSampleToBlobs(sample, AE_PART_TRAFFIC);
+  assertEquals(traffic[AE_BLOB_TRAFFIC_SOURCES_INDEX], "caddy,proxysql");
+
+  const core = mapHostSampleToBlobs(sample, AE_PART_CORE);
+  assertEquals(core[AE_BLOB_TRAFFIC_SOURCES_INDEX], "");
 });
 
-it("buildCoreDataPoint / buildExtendedDataPoint: indexes is exactly [serverId]", () => {
+it("buildPartDataPoint: indexes is exactly [serverId], per-part shape", () => {
   const sample = baseSample({
     serverId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
   });
-  for (const point of [buildCoreDataPoint(sample), buildExtendedDataPoint(sample)]) {
+  for (
+    const part of [
+      AE_PART_CORE,
+      AE_PART_EXTENDED,
+      AE_PART_SENSORS,
+      AE_PART_TRAFFIC,
+    ] as const
+  ) {
+    const point = buildPartDataPoint(sample, part);
     assertEquals(point.indexes, ["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"]);
     assertEquals(point.doubles.length, AE_DOUBLE_COUNT);
     assertEquals(point.blobs.length, AE_BLOB_COUNT);
     assertEquals(point.doubles[AE_DOUBLE_INTERVAL_INDEX], 60);
+    assertEquals(point.blobs[AE_BLOB_PART_INDEX], part);
   }
+});
+
+function metricsWith(
+  overrides: Partial<Record<HostMetricKey, number | null>>,
+): AuthenticatedHostMetricsSample["metrics"] {
+  const metrics = {} as AuthenticatedHostMetricsSample["metrics"];
+  for (const key of HOST_METRIC_KEYS) {
+    metrics[key] = null;
+  }
+  return { ...metrics, ...overrides };
+}
+
+it("buildPartDataPoints: one point per declared, non-empty part, in canonical order", () => {
+  const twoPart = buildPartDataPoints(
+    baseSample({ parts: ["core", "extended"] }),
+  );
+  assertEquals(twoPart.length, 2);
+  assertEquals(twoPart[0]!.blobs[AE_BLOB_PART_INDEX], AE_PART_CORE);
+  assertEquals(twoPart[1]!.blobs[AE_BLOB_PART_INDEX], AE_PART_EXTENDED);
+
+  // Declaration order in `parts` must not change output order. sensors/traffic
+  // each need one resolved metric to actually produce a data point.
+  const fourPart = buildPartDataPoints(
+    baseSample({
+      parts: ["traffic", "sensors", "extended", "core"],
+      metrics: metricsWith({
+        cpuTemperatureCelsius: 42, // sensors
+        caddyRequestsTotal: 7, // traffic
+      }),
+    }),
+  );
+  assertEquals(fourPart.length, 4);
   assertEquals(
-    buildCoreDataPoint(sample).blobs[AE_BLOB_PART_INDEX],
-    AE_PART_CORE,
+    fourPart.map((p) => p.blobs[AE_BLOB_PART_INDEX]),
+    [AE_PART_CORE, AE_PART_EXTENDED, AE_PART_SENSORS, AE_PART_TRAFFIC],
+  );
+
+  const sensorsOnly = buildPartDataPoints(
+    baseSample({
+      parts: ["core", "extended", "sensors"],
+      metrics: metricsWith({ cpuTemperatureCelsius: 42 }),
+    }),
   );
   assertEquals(
-    buildExtendedDataPoint(sample).blobs[AE_BLOB_PART_INDEX],
-    AE_PART_EXTENDED,
+    sensorsOnly.map((p) => p.blobs[AE_BLOB_PART_INDEX]),
+    [AE_PART_CORE, AE_PART_EXTENDED, AE_PART_SENSORS],
   );
+});
+
+it("buildPartDataPoints: a declared but entirely-null optional part writes no row", () => {
+  // Every metric is null (baseSample()'s default) — sensors/traffic are
+  // declared but resolved nothing this tick, so writing them would be an
+  // empty row with no queryable signal.
+  const allNull = buildPartDataPoints(
+    baseSample({ parts: ["core", "extended", "sensors", "traffic"] }),
+  );
+  assertEquals(
+    allNull.map((p) => p.blobs[AE_BLOB_PART_INDEX]),
+    [AE_PART_CORE, AE_PART_EXTENDED],
+  );
+  assertEquals(allNull.length < 4, true);
+});
+
+it("buildPartDataPoints: core and extended still write when every metric in them is null", () => {
+  const points = buildPartDataPoints(
+    baseSample({ parts: ["core", "extended"] }),
+  );
+  assertEquals(points.length, 2);
+});
+
+it("end-to-end: a validated daemon payload with dimensions.trafficSources writes blob8 on the traffic part", () => {
+  const parts = ["core", "extended", "traffic"];
+  const metrics: Record<string, number | null> = {};
+  for (const key of [...CORE_METRIC_KEYS, ...EXTENDED_METRIC_KEYS, ...TRAFFIC_METRIC_KEYS]) {
+    metrics[key] = null;
+  }
+  metrics.caddyRequestsTotal = 42; // one resolved traffic metric so the part actually writes
+
+  const result = validateHostMetricsSample(
+    {
+      type: "metrics",
+      version: METRICS_SCHEMA_VERSION,
+      at: new Date().toISOString(),
+      intervalSeconds: 60,
+      sequence: 1,
+      parts,
+      metrics,
+      dimensions: {
+        schemaVersion: METRICS_SCHEMA_VERSION,
+        collectionMode: "baseline",
+        hardwareProfileGeneration: 1,
+        trafficSources: { caddy: true, proxysql: true },
+      },
+    },
+    {
+      serverId: "11111111-2222-4333-8444-555555555555",
+      receivedAt: new Date().toISOString(),
+    },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const points = buildPartDataPoints(result.sample);
+  const trafficPoint = points.find((p) =>
+    p.blobs[AE_BLOB_PART_INDEX] === AE_PART_TRAFFIC
+  );
+  const corePoint = points.find((p) =>
+    p.blobs[AE_BLOB_PART_INDEX] === AE_PART_CORE
+  );
+  assertEquals(trafficPoint !== undefined, true);
+  assertEquals(corePoint !== undefined, true);
+  assertEquals(trafficPoint!.blobs[AE_BLOB_TRAFFIC_SOURCES_INDEX], "caddy,proxysql");
+  // The marker only ever appears on the traffic part's own row.
+  assertEquals(corePoint!.blobs[AE_BLOB_TRAFFIC_SOURCES_INDEX], "");
 });
 
 it("part data points carry their own part's metric values", () => {
@@ -234,20 +359,20 @@ it("part data points carry their own part's metric values", () => {
   for (const key of HOST_METRIC_KEYS) {
     metrics[key] = null;
   }
-  metrics.cpuUserPercent = 42; // core, slot 0
-  metrics.gpuPowerWatts = 99; // extended, last slot
+  metrics.cpuUserPercent = 42; // core
+  metrics.gpuPowerWatts = 99; // extended
   const sample = baseSample({ metrics });
 
-  const core = buildCoreDataPoint(sample);
+  const core = buildPartDataPoint(sample, AE_PART_CORE);
   assertEquals(core.doubles[CORE_METRIC_KEYS.indexOf("cpuUserPercent")], 42);
 
-  const extended = buildExtendedDataPoint(sample);
+  const extended = buildPartDataPoint(sample, AE_PART_EXTENDED);
   assertEquals(
     extended.doubles[EXTENDED_METRIC_KEYS.indexOf("gpuPowerWatts")],
     99,
   );
   // The core value never leaks into the extended part's slots.
-  for (let i = 0; i < AE_METRIC_DOUBLE_SLOT_COUNT; i++) {
+  for (let i = 0; i < EXTENDED_METRIC_KEYS.length; i++) {
     if (i === EXTENDED_METRIC_KEYS.indexOf("gpuPowerWatts")) continue;
     assertEquals(extended.doubles[i], AE_MISSING_METRIC_SENTINEL);
   }
@@ -259,12 +384,18 @@ it("identity column constants match the shared positional layout", () => {
 });
 
 it("doubleColumnForMetric: part-key order → doubleN within the part", () => {
-  CORE_METRIC_KEYS.forEach((key, index) => {
-    assertEquals(doubleColumnForMetric(key), `double${index + 1}`);
-  });
-  EXTENDED_METRIC_KEYS.forEach((key, index) => {
-    assertEquals(doubleColumnForMetric(key), `double${index + 1}`);
-  });
+  for (
+    const keys of [
+      CORE_METRIC_KEYS,
+      EXTENDED_METRIC_KEYS,
+      SENSOR_METRIC_KEYS,
+      TRAFFIC_METRIC_KEYS,
+    ]
+  ) {
+    keys.forEach((key, index) => {
+      assertEquals(doubleColumnForMetric(key), `double${index + 1}`);
+    });
+  }
 });
 
 it("doubleColumnForMetric: unknown key throws TypeError", () => {
@@ -294,7 +425,11 @@ it("blobColumn and doubleColumn: reject invalid indices", () => {
 
 it("assertAnalyticsEngineDataPointShape: rejects malformed lengths", () => {
   assertThrows(
-    () => assertAnalyticsEngineDataPointShape({ doubles: [1], blobs: new Array(20).fill("") }),
+    () =>
+      assertAnalyticsEngineDataPointShape({
+        doubles: [1],
+        blobs: new Array(20).fill(""),
+      }),
     TypeError,
     "AE doubles length",
   );

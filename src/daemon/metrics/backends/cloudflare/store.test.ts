@@ -1,22 +1,18 @@
 import { assertEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
-import {
-  HOST_METRIC_KEYS,
-  METRICS_SCHEMA_VERSION,
-} from "../../contract.ts";
+import { HOST_METRIC_KEYS, METRICS_SCHEMA_VERSION } from "../../contract.ts";
 import type { AuthenticatedHostMetricsSample } from "../../types.ts";
 import {
   AE_BLOB_PART_INDEX,
   AE_PART_CORE,
   AE_PART_EXTENDED,
-  buildCoreDataPoint,
-  buildExtendedDataPoint,
+  buildPartDataPoints,
   buildStatusDataPoint,
 } from "./field-map.ts";
 import type { CloudflareAnalyticsSqlConfig } from "./sql-api.ts";
 import {
-  CloudflareAnalyticsEngineServerMetricsStore,
   type AnalyticsEngineDatasetLike,
+  CloudflareAnalyticsEngineServerMetricsStore,
 } from "./store.ts";
 
 function sample(
@@ -36,13 +32,12 @@ function sample(
     sequence: 1,
     schemaVersion: METRICS_SCHEMA_VERSION,
     collectionMode: "baseline",
+    parts: ["core", "extended"],
     dimensions: {
       schemaVersion: METRICS_SCHEMA_VERSION,
-      daemonVersion: "1.0.0",
-      operatingSystem: "linux",
-      architecture: "arm64",
-      kernelRelease: "6.12.0",
       collectionMode: "baseline",
+      hardwareProfileGeneration: 1,
+      trafficSources: { caddy: false, proxysql: false },
     },
     metrics,
     ...overrides,
@@ -72,8 +67,7 @@ it("writeHostSample: exactly two writeDataPoints — core then extended", () => 
   const input = sample();
   store.writeHostSample(input);
   assertEquals(fake.calls.length, 2);
-  assertEquals(fake.calls[0], buildCoreDataPoint(input));
-  assertEquals(fake.calls[1], buildExtendedDataPoint(input));
+  assertEquals(fake.calls, buildPartDataPoints(input));
   assertEquals(fake.calls[0]!.blobs![AE_BLOB_PART_INDEX], AE_PART_CORE);
   assertEquals(fake.calls[1]!.blobs![AE_BLOB_PART_INDEX], AE_PART_EXTENDED);
 });

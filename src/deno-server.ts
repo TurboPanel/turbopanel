@@ -29,6 +29,7 @@ import {
 import { registerWebhookRoutes } from "./webhook/routes.ts";
 import { runManagedIngressOrphanSweep } from "./client/managed/ingress-desired.ts";
 import { runSystemReconcileSweep } from "./client/system/reconcile.ts";
+import { runHardwareProfileReplaySweep } from "./client/servers/hardware-profile-replay-sweep.ts";
 import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
   runLeafRenewalSweepTick,
@@ -438,6 +439,16 @@ export async function startDenoServer(
 
   const abort = new AbortController();
   const runSystemReconcileSweepTick = (): void => {
+    // Hardware-profile replay pushes straight to the daemon cell (redis
+    // registry), not through `commandQueue` — it must run even when the
+    // command queue itself is unconfigured (dev/test), so it rides this
+    // tick outside the `isNoopCommandQueue` guard below.
+    void runHardwareProfileReplaySweep(db, daemonCellRegistry).catch((err) => {
+      logWarn(
+        "daemon-cell",
+        `hardware profile replay sweep error: ${String(err)}`,
+      );
+    });
     if (isNoopCommandQueue(commandQueue)) return;
     void runSystemReconcileSweep(db, commandQueue).catch((err) => {
       logWarn("daemon-cell", `system reconcile sweep error: ${String(err)}`);

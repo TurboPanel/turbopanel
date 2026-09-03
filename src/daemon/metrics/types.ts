@@ -1,15 +1,19 @@
 import type {
   HostMetricKey,
-  HostMetrics,
   HostMetricsDimensions,
+  MetricPart,
+  METRICS_SCHEMA_VERSION,
   MetricsCollectionMode,
+  PartialHostMetrics,
 } from "./contract.ts";
 
 export type {
   HostMetricKey,
   HostMetrics,
   HostMetricsDimensions,
+  MetricPart,
   MetricsCollectionMode,
+  PartialHostMetrics,
 } from "./contract.ts";
 
 /** Live cadence granted to a lease holder, in seconds. */
@@ -40,11 +44,19 @@ export type AuthenticatedHostMetricsSample = {
   receivedAt: string;
   intervalSeconds: number;
   sequence: number;
-  schemaVersion: 2;
+  schemaVersion: typeof METRICS_SCHEMA_VERSION;
   /** Mirrored from `dimensions.collectionMode` for convenient store access. */
   collectionMode: MetricsCollectionMode;
+  /** Metric groupings declared by the daemon for this sample. */
+  parts: MetricPart[];
   dimensions: HostMetricsDimensions;
-  metrics: HostMetrics;
+  metrics: PartialHostMetrics;
+  /**
+   * Contributing traffic sources (e.g. `["caddy", "proxysql"]`) — only
+   * meaningful when `parts` includes `"traffic"`; written to `blob8` on the
+   * `traffic` part's AE data point (see `backends/cloudflare/field-map.ts`).
+   */
+  trafficSources?: string[];
 };
 
 /**
@@ -70,6 +82,22 @@ export type HostSeriesPoint = {
   sampleCount?: number;
   /** Expected samples for full bucket coverage (gap detection). */
   expectedSampleCount?: number;
+  /**
+   * Parts declared by at least one contributing sample in this bucket — lets
+   * a consumer tell "part never collected" (absent here) apart from "part
+   * collected, value missing" (present here, `values[key]` still `null`)
+   * without touching the value map itself. Omitted when the backend doesn't
+   * track parts.
+   */
+  partsPresent?: MetricPart[];
+  /**
+   * Hardware-profile generation shared by every contributing sample in this
+   * bucket, or `null` when it's unknown or the bucket spans a hardware
+   * reassignment (mixed generations) — a boundary marker so a consumer can
+   * break series continuity there. Omitted when the backend doesn't track
+   * generations.
+   */
+  hardwareProfileGeneration?: number | null;
 };
 
 export type HostSeriesResult = {
@@ -84,6 +112,12 @@ export type HostSeriesResult = {
   gapCount: number;
   /** Number of underlying samples contributing to the series. */
   sampleCount: number;
+  /**
+   * Distinct hardware-profile generations observed anywhere in the queried
+   * range, sorted ascending — `length > 1` means the server was reassigned
+   * during the window. Omitted when the backend doesn't track generations.
+   */
+  hardwareProfileGenerations?: number[];
 };
 
 export type HostSummaryQuery = {
@@ -117,6 +151,19 @@ export type FleetHostSnapshotServer = {
   latestAt: string | null;
   values: Partial<Record<HostMetricKey, number | null>>;
   sampleCount: number;
+  /**
+   * Parts declared by at least one contributing sample in the queried
+   * window — see {@link HostSeriesPoint.partsPresent}. Omitted when the
+   * backend doesn't track parts.
+   */
+  partsPresent?: MetricPart[];
+  /**
+   * Hardware-profile generation shared by every contributing sample in the
+   * queried window, or `null` when unknown or mixed (a reassignment
+   * happened inside the window). Omitted when the backend doesn't track
+   * generations.
+   */
+  hardwareProfileGeneration?: number | null;
 };
 
 export type FleetHostSnapshotResult = {
