@@ -200,6 +200,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/openapi/hostings.test.ts \
   src/client/openapi/index.test.ts \
   src/client/openapi/licenses.test.ts \
+  src/client/openapi/metrics.test.ts \
   src/client/openapi/servers.test.ts \
   src/client/openapi/system.test.ts \
   src/client/org-context-parse.test.ts \
@@ -306,6 +307,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/metrics/backends/cloudflare/sql-api.test.ts \
   src/daemon/metrics/backends/cloudflare/store.test.ts \
   src/daemon/metrics/backends/cloudflare/write-path-parity.test.ts \
+  src/daemon/metrics/backends/duckdb/database.test.ts \
   src/daemon/metrics/backends/duckdb/parquet.test.ts \
   src/daemon/metrics/backends/duckdb/schema.test.ts \
   src/daemon/metrics/backends/duckdb/store.test.ts \
@@ -314,6 +316,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/metrics/metric-descriptors.test.ts \
   src/daemon/metrics/status-events.test.ts \
   src/daemon/metrics/query/cache.test.ts \
+  src/daemon/metrics/query/derived-metrics.test.ts \
   src/daemon/metrics/query/resolution.test.ts \
   src/daemon/metrics/query/series-response.test.ts \
   src/daemon/metrics/query/uptime.test.ts \
@@ -445,6 +448,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/geo/server-geo.test.ts \
   src/lib/geo/self-hosted-geo-provider.test.ts \
   src/lib/git/ \
+  src/lib/hardware/cpu-catalog.test.ts \
   src/lib/hosting-compose-owner.test.ts \
   src/lib/hosting-options.test.ts \
   src/lib/hosting-web-env.test.ts \
