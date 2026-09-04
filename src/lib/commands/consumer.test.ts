@@ -2035,7 +2035,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
 
-    const composeNames = ['database', 'queue', 'analytics'] as const
+    const composeNames = ['database', 'queue'] as const
     const serviceIds: string[] = []
     const containerRowIds: string[] = []
     for (const composeServiceName of composeNames) {
@@ -2084,7 +2084,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
         },
       })
 
-      // Daemon reports only database running — queue/analytics must remain
+      // Daemon reports only database running — queue must remain
       // with the same row ids and null Docker ids (not deleted).
       const registry = createDispatchMockRegistry(serverId, {
         waitForRequestResult: {
@@ -2127,7 +2127,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
         .from(container)
         .where(eq(container.serverId, serverId))
 
-      assertEquals(rows.length, 3)
+      assertEquals(rows.length, 2)
       const byService = new Map(rows.map((row) => [row.serviceId, row]))
       assertEquals(byService.get(serviceIds[0]!)?.id, containerRowIds[0])
       assertEquals(byService.get(serviceIds[0]!)?.containerId, 'db-only-cid')
@@ -2135,9 +2135,6 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
       assertEquals(byService.get(serviceIds[1]!)?.id, containerRowIds[1])
       assertEquals(byService.get(serviceIds[1]!)?.containerId, null)
       assertEquals(byService.get(serviceIds[1]!)?.status, 'exited')
-      assertEquals(byService.get(serviceIds[2]!)?.id, containerRowIds[2])
-      assertEquals(byService.get(serviceIds[2]!)?.containerId, null)
-      assertEquals(byService.get(serviceIds[2]!)?.status, 'exited')
     } finally {
       await db.delete(container).where(eq(container.serverId, serverId))
       await db.delete(service).where(eq(service.environmentId, environmentId))

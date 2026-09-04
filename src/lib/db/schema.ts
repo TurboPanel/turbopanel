@@ -1955,7 +1955,7 @@ export const container = pgTable(
      * `<service.id>-in` via `ingressContainerNameFromService` — both the
      * per-service Traefik frontend and the shared per-server ProxySQL
      * managed-ingress frontend. `role='turbopanel'` is the platform
-     * `turbopanel-system` compose stack (`database` / `queue` / `analytics`)
+     * `turbopanel-system` compose stack (`database` / `queue`)
      * plus Orchestrator (`-ha`). `role='service'` is the ordinary
      * workload/engine replica. A service may hold N service replicas plus
      * exactly one ingress row.

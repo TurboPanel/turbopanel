@@ -263,7 +263,7 @@ function buildSystemReconcileComponents(
     const components: SystemReconcileComponent[] = []
     for (const svc of entry.services) {
       if (!isSystemSelfHostComposeServiceName(svc.composeServiceName)) continue
-      // Self-host database/queue/analytics are always desired — there is no
+      // Self-host database/queue are always desired — there is no
       // enable/disable toggle like hosting-ingress.
       components.push({
         component: svc.composeServiceName,
@@ -619,7 +619,7 @@ export async function enqueueSystemReconcileIfConnected(
  *   window) whose ingress was already observed, even when the row still
  *   says `running` — disconnect only flips `server.is_connected`, so inventory
  *   can be stale after reconnect
- * - self-host (`turbopanel`) database/queue/analytics containers not running
+ * - self-host (`turbopanel`) database/queue containers not running
  *   or missing a Docker id
  * - managed-ingress (ProxySQL) on servers that host managed members **or**
  *   are bound managed consumers (environment pin, project default, or slot

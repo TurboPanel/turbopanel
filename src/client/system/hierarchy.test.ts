@@ -282,7 +282,7 @@ test('ensureSelfHostSystemHierarchy is idempotent for the same org/server', asyn
   })
 })
 
-test('ensureSelfHostSystemHierarchy provisions database/queue/analytics with pending uuid-named containers', async () => {
+test('ensureSelfHostSystemHierarchy provisions database/queue with pending uuid-named containers', async () => {
   await withHierarchyFixtures(async ({ db, organizationId, serverId }) => {
     const result = await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
 
@@ -296,7 +296,7 @@ test('ensureSelfHostSystemHierarchy provisions database/queue/analytics with pen
     // Their status/restart lives on the server Control tab, not the container table.
     assertEquals(
       result.services.map((svc) => svc.composeServiceName).sort(),
-      ['analytics', 'database', 'queue'],
+      ['database', 'queue'],
     )
 
     const [projectRow] = await db

@@ -548,16 +548,14 @@ test('ensureManagedIngressHierarchy throws when allocation empty', async () => {
   )
 })
 
-test('ensureSelfHostSystemHierarchy provisions database/queue/analytics', async () => {
+test('ensureSelfHostSystemHierarchy provisions database/queue', async () => {
   const serviceIds = [
     '00000000-0000-4000-8000-0000000000a1',
     '00000000-0000-4000-8000-0000000000a2',
-    '00000000-0000-4000-8000-0000000000a3',
   ]
   const containerIds = [
     '00000000-0000-4000-8000-0000000000c1',
     '00000000-0000-4000-8000-0000000000c2',
-    '00000000-0000-4000-8000-0000000000c3',
   ]
 
   const tx = createSequencedDb({
@@ -570,7 +568,6 @@ test('ensureSelfHostSystemHierarchy provisions database/queue/analytics', async 
       [], // no existing env
       [{ id: serviceIds[0] }],
       [{ id: serviceIds[1] }],
-      [{ id: serviceIds[2] }],
       [{
         id: containerIds[0],
         serverId: SERVER,
@@ -583,12 +580,6 @@ test('ensureSelfHostSystemHierarchy provisions database/queue/analytics', async 
         containerName: 'pending',
         composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
       }],
-      [{
-        id: containerIds[2],
-        serverId: SERVER,
-        containerName: 'pending',
-        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[2],
-      }],
     ],
     insertReturning: [[{ id: ENV }]],
   })
@@ -600,7 +591,7 @@ test('ensureSelfHostSystemHierarchy provisions database/queue/analytics', async 
   assertEquals(result.workspaceId, WS)
   assertEquals(result.projectId, PROJ)
   assertEquals(result.environmentId, ENV)
-  assertEquals(result.services.length, 3)
+  assertEquals(result.services.length, 2)
   assertEquals(
     result.services.map((s) => s.composeServiceName),
     [...SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES],
@@ -639,7 +630,6 @@ test('ensureSelfHostSystemHierarchy throws when a container allocation is missin
   const serviceIds = [
     '00000000-0000-4000-8000-0000000000a1',
     '00000000-0000-4000-8000-0000000000a2',
-    '00000000-0000-4000-8000-0000000000a3',
   ]
   const tx = createSequencedDb({
     execute: [
@@ -651,21 +641,14 @@ test('ensureSelfHostSystemHierarchy throws when a container allocation is missin
       [{ id: ENV }],
       [{ id: serviceIds[0] }],
       [{ id: serviceIds[1] }],
-      [{ id: serviceIds[2] }],
-      // Only two allocations succeed — third service missing from map
+      // Only one allocation succeeds — second service missing from map
       [{
         id: 'c1',
         serverId: SERVER,
         containerName: serviceIds[0],
         composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[0],
       }],
-      [{
-        id: 'c2',
-        serverId: SERVER,
-        containerName: serviceIds[1],
-        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
-      }],
-      // Third allocate select empty → allocateServiceContainers throws.
+      // Second allocate select empty → allocateServiceContainers throws.
       [],
     ],
   })
@@ -832,12 +815,10 @@ test('ensureSelfHostSystemHierarchy normalizes a stale self-host project', async
   const serviceIds = [
     '00000000-0000-4000-8000-0000000000a1',
     '00000000-0000-4000-8000-0000000000a2',
-    '00000000-0000-4000-8000-0000000000a3',
   ]
   const containerIds = [
     '00000000-0000-4000-8000-0000000000c1',
     '00000000-0000-4000-8000-0000000000c2',
-    '00000000-0000-4000-8000-0000000000c3',
   ]
   const tx = createSequencedDb({
     track,
@@ -855,7 +836,6 @@ test('ensureSelfHostSystemHierarchy normalizes a stale self-host project', async
       [{ id: ENV }],
       [{ id: serviceIds[0] }],
       [{ id: serviceIds[1] }],
-      [{ id: serviceIds[2] }],
       [{
         id: containerIds[0],
         serverId: SERVER,
@@ -867,12 +847,6 @@ test('ensureSelfHostSystemHierarchy normalizes a stale self-host project', async
         serverId: SERVER,
         containerName: serviceIds[1],
         composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[1],
-      }],
-      [{
-        id: containerIds[2],
-        serverId: SERVER,
-        containerName: serviceIds[2],
-        composeServiceName: SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES[2],
       }],
     ],
   })

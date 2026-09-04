@@ -350,7 +350,7 @@ test('buildSystemReconcilePayload returns one payload per system environment', a
     assertEquals(ingressComponent?.desired, 'present')
     assertEquals(ingressComponent?.containerName, `${ingressComponent?.serviceId}-in`)
 
-    // self-host: three components (database/queue/analytics), role system,
+    // self-host: two components (database/queue), role system,
     // containerName = serviceId, always desired 'present'.
     assertEquals(selfHost?.components.length, SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES.length)
     assertEquals(

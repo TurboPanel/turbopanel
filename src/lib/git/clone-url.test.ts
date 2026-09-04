@@ -7,6 +7,8 @@ import {
   COMMIT_MESSAGE_MAX_CHARS,
   isCommitSha,
   isGithubDotComHttpsCloneUrl,
+  isSafeGitRef,
+  isSafeRepositoryPath,
   isSshCloneUrl,
   NULL_COMMIT_SHA,
   parseRepositoryOwnerRepo,
@@ -167,4 +169,48 @@ test('isCommitSha validates 40-hex SHAs and rejects the null SHA', () => {
   assertEquals(isCommitSha(NULL_COMMIT_SHA), false)
   assertEquals(isCommitSha('abc'), false)
   assertEquals(isCommitSha(123), false)
+})
+
+test('isSafeGitRef accepts plain branch, tag, and SHA names', () => {
+  assertEquals(isSafeGitRef('main'), true)
+  assertEquals(isSafeGitRef('feature/x-y_z.1'), true)
+  assertEquals(isSafeGitRef('v1.2.3'), true)
+  assertEquals(isSafeGitRef('refs/heads/main'), true)
+  assertEquals(isSafeGitRef('a'.repeat(40)), true)
+  assertEquals(isSafeGitRef('a'.repeat(250)), true)
+})
+
+test('isSafeGitRef rejects anything that could reshape a request URL', () => {
+  assertEquals(isSafeGitRef(''), false)
+  assertEquals(isSafeGitRef('a'.repeat(251)), false)
+  assertEquals(isSafeGitRef('/main'), false)
+  assertEquals(isSafeGitRef('-main'), false)
+  assertEquals(isSafeGitRef('../main'), false)
+  assertEquals(isSafeGitRef('main/../other'), false)
+  assertEquals(isSafeGitRef('main?x=1'), false)
+  assertEquals(isSafeGitRef('main#frag'), false)
+  assertEquals(isSafeGitRef('main%2Fother'), false)
+  assertEquals(isSafeGitRef('main other'), false)
+  assertEquals(isSafeGitRef('main\0'), false)
+  assertEquals(isSafeGitRef('https://evil.example'), false)
+})
+
+test('isSafeRepositoryPath accepts the root and relative directories', () => {
+  assertEquals(isSafeRepositoryPath(''), true)
+  assertEquals(isSafeRepositoryPath('src'), true)
+  assertEquals(isSafeRepositoryPath('apps/web'), true)
+  assertEquals(isSafeRepositoryPath('a.b/c_d-e'), true)
+  assertEquals(isSafeRepositoryPath('a'.repeat(200)), true)
+})
+
+test('isSafeRepositoryPath rejects absolute, traversing, and odd paths', () => {
+  assertEquals(isSafeRepositoryPath('a'.repeat(201)), false)
+  assertEquals(isSafeRepositoryPath('/src'), false)
+  assertEquals(isSafeRepositoryPath('\\src'), false)
+  assertEquals(isSafeRepositoryPath('../src'), false)
+  assertEquals(isSafeRepositoryPath('src/../etc'), false)
+  assertEquals(isSafeRepositoryPath('src?x=1'), false)
+  assertEquals(isSafeRepositoryPath('src%2Fetc'), false)
+  assertEquals(isSafeRepositoryPath('src etc'), false)
+  assertEquals(isSafeRepositoryPath('src\0'), false)
 })

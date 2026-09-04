@@ -471,10 +471,10 @@ test("parseSystemReconcilePayload round-trips and rejects invalid shapes", () =>
   );
 });
 
-test("parseSystemReconcilePayload accepts the widened database/queue/analytics component keys with system role and bare serviceId containerName", () => {
+test("parseSystemReconcilePayload accepts the widened database/queue component keys with system role and bare serviceId containerName", () => {
   const serviceId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
   const environmentId = "11111111-2222-3333-4444-555555555555";
-  for (const component of ["database", "queue", "analytics"] as const) {
+  for (const component of ["database", "queue"] as const) {
     assertEquals(
       parseSystemReconcilePayload({
         environmentId,

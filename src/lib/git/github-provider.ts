@@ -338,7 +338,14 @@ export async function resolveGithubCommit(
   }/commits/${encodeURIComponent(ref)}`
   let response: Response
   try {
-    response = await fetch(url, { headers: githubApiHeaders(auth.token, 'token') })
+    // Sonar's taint engine does not read regex validators, so it still sees
+    // the query-param `ref` reaching this sink. The host is the stored app
+    // `apiBase`, owner/repo/ref are percent-encoded per segment, and `ref`
+    // passed the `isSafeGitRef` allow-list above — the value cannot reshape
+    // the request URL.
+    response = await fetch(url, { // NOSONAR typescript:S5144 — validated above
+      headers: githubApiHeaders(auth.token, 'token'),
+    })
   } catch (error) {
     throw new GithubAppTokenError(
       `github commit lookup failed: ${
@@ -494,6 +501,14 @@ export const githubProvider: GitProvider = {
     const auth = await githubReadAuth(ctx, params.row)
     if ('unsupported' in auth || 'failure' in auth) return auth
 
+    // `params.path` is the inspect route's `listPath` query param — validated
+    // there with `isSafeRoot`, but re-checked here against the same shape so
+    // this sink does not depend on a sanitizer applied in another module.
+    // Checked before the commit lookup so a bad path costs no API call.
+    if (!isSafeRepositoryPath(params.path)) {
+      return { failure: 'listing path is not a valid repository path' }
+    }
+
     let commitSha: string
     try {
       commitSha =
@@ -505,19 +520,16 @@ export const githubProvider: GitProvider = {
 
     const parsed = parseRepositoryOwnerRepo(params.row.repositoryUrl)
     if (!parsed) return { failure: 'source repository url is not a github path' }
-    // `params.path` is the inspect route's `listPath` query param — validated
-    // there with `isSafeRoot`, but re-checked here against the same shape so
-    // this sink does not depend on a sanitizer applied in another module.
-    if (!isSafeRepositoryPath(params.path)) {
-      return { failure: 'listing path is not a valid repository path' }
-    }
     const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${
       encodeURIComponent(parsed.repo)
     }/contents/${encodePathSegments(params.path)}?ref=${encodeURIComponent(commitSha)}`
 
     let response: Response
     try {
-      response = await fetch(url, {
+      // Same story as `resolveGithubCommit`: `params.path` passed the
+      // `isSafeRepositoryPath` allow-list above and is encoded per segment;
+      // `commitSha` is GitHub's own answer, not caller input.
+      response = await fetch(url, { // NOSONAR typescript:S5144 — validated above
         headers: githubApiHeaders(auth.token, 'token'),
       })
     } catch (error) {

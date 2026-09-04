@@ -1,7 +1,7 @@
 /**
  * System hierarchy provisioning for per-server hosting ingress, managed
  * (ProxySQL) ingress, and the co-located self-host stack (`turbopanel`
- * component: database/queue/analytics).
+ * component: database/queue).
  *
  * Identity contract (do not store org/server ids in project/service/container
  * metadata — these keys are the source of truth):
@@ -31,7 +31,7 @@
  * - `project.metadata.component = 'turbopanel'` — shared self-host project
  * - `environment.server_id` under that project — one environment on the
  *   colocated server
- * - `service.composeServiceName` in `database` / `queue` / `analytics`
+ * - `service.composeServiceName` in `database` / `queue`
  * - `container` via `allocateEnvironmentContainers` (`role='turbopanel'`, uuid naming)
  *
  * The TurboPanel workspace (`kind='turbopanel'`) is provisioned at
@@ -90,13 +90,11 @@ export const SYSTEM_SELF_HOST_ENVIRONMENT_DISPLAY_NAME = 'Production'
 
 export const SYSTEM_SELF_HOST_DATABASE_COMPOSE_SERVICE_NAME = 'database'
 export const SYSTEM_SELF_HOST_QUEUE_COMPOSE_SERVICE_NAME = 'queue'
-export const SYSTEM_SELF_HOST_ANALYTICS_COMPOSE_SERVICE_NAME = 'analytics'
 
 /** Ordered so `ensureSelfHostSystemHierarchy` provisions deterministically. */
 export const SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES = [
   SYSTEM_SELF_HOST_DATABASE_COMPOSE_SERVICE_NAME,
   SYSTEM_SELF_HOST_QUEUE_COMPOSE_SERVICE_NAME,
-  SYSTEM_SELF_HOST_ANALYTICS_COMPOSE_SERVICE_NAME,
 ] as const
 
 export type SystemSelfHostComposeServiceName =
@@ -387,7 +385,7 @@ async function ensureServerEnvironment(
 /**
  * Idempotent service upsert under a system environment, keyed on the existing
  * `(environment_id, compose_service_name)` unique target. Shared by the
- * hosting-ingress traefik service and the self-host database/queue/analytics
+ * hosting-ingress traefik service and the self-host database/queue
  * services — display `name` defaults to the compose service name in both cases.
  */
 async function ensureComposeService(
@@ -772,7 +770,7 @@ async function ensureSelfHostProject(
 
 /**
  * Idempotently ensure workspace(kind=system) → project(turbopanel) →
- * environment(colocated server) → service(database/queue/analytics) →
+ * environment(colocated server) → service(database/queue) →
  * container(role=system, uuid naming, 1 instance each).
  *
  * Same one-transaction / partial-unique discipline as

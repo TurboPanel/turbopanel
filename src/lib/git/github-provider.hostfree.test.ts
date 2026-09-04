@@ -327,6 +327,23 @@ test('resolveGithubCommit maps URL, network, HTTP, and empty-sha failures', asyn
   )
 })
 
+test('resolveGithubCommit rejects an unsafe ref before any request', async () => {
+  for (const ref of ['../main', '/main', 'main?x=1', 'main other', '']) {
+    await withFetch(
+      () => {
+        throw new Error('fetch must not be reached for an unsafe ref')
+      },
+      async () => {
+        await assertRejects(
+          () => resolveGithubCommit(AUTH, 'https://github.com/acme/app.git', ref),
+          GithubAppTokenError,
+          'source ref is not a valid git ref',
+        )
+      },
+    )
+  }
+})
+
 test('successfulCheckSha only honors a fully green suite', () => {
   assertEquals(
     successfulCheckSha('check_suite', {
@@ -768,6 +785,31 @@ test('githubProvider.listRepositoryEntries rejects a non-github repository url',
       'github request failed: source repository url is not a github repository path',
     )
   })
+})
+
+test('githubProvider.listRepositoryEntries rejects an unsafe path before any request', async () => {
+  const ctx = await mintedCtx()
+  for (const path of ['../secrets', '/etc', 'src?ref=other', 'src other']) {
+    const seen: string[] = []
+    await withFetch((url) => {
+      seen.push(url)
+      if (url.includes('/access_tokens')) {
+        return new Response(JSON.stringify({ token: 'ghs_ls' }))
+      }
+      throw new Error('fetch must not be reached for an unsafe path')
+    }, async () => {
+      assertEquals(
+        await githubProvider.listRepositoryEntries(ctx, {
+          row: sourceRow,
+          ref: 'main',
+          path,
+        }),
+        { failure: 'listing path is not a valid repository path' },
+      )
+    })
+    // Only the token mint may have happened — no commit lookup, no listing.
+    assertEquals(seen.filter((url) => !url.includes('/access_tokens')), [])
+  }
 })
 
 test('githubProvider.listRepositoryEntries maps HTTP and network failures', async () => {
