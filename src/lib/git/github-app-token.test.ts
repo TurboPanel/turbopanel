@@ -92,6 +92,13 @@ test('githubApiHeaders sets the GitHub REST contract', () => {
   assertEquals(headers['user-agent'], GITHUB_USER_AGENT)
 })
 
+test('githubApiHeaders omits authorization for anonymous public REST', () => {
+  const headers = githubApiHeaders('', 'token') as Record<string, string>
+  assertEquals('authorization' in headers, false)
+  assertEquals(headers.accept, GITHUB_API_ACCEPT)
+  assertEquals(headers['user-agent'], GITHUB_USER_AGENT)
+})
+
 test('signGithubAppJwt produces a three-part RS256 JWT', async () => {
   const pem = await generatePkcs8Pem()
   const nowMs = Date.parse('2030-06-15T12:00:00.000Z')

@@ -3097,9 +3097,11 @@ export const gitConnection = pgTable(
  * slash) so the per-organization unique below actually deduplicates spellings
  * of the same repository.
  *
- * `metadata` holds provider-observed facts the instance refreshes over time —
- * `{ detectedDefaultBranch, defaultBranchCheckedAt, lastInspectedAt,
- * lastInspectedCommitSha }` — as opposed to `options`, which holds operator
+ * `detected_default_branch` / `default_branch_checked_at` /
+ * `last_inspected_at` / `last_inspected_commit_sha` are provider-observed
+ * facts the instance refreshes over time — real columns rather than
+ * `metadata` because every row carries them, not sparse per-repo extras.
+ * `metadata` remains for anything genuinely sparse; `options` holds operator
  * policy and trigger state.
  */
 export const repository = pgTable(
@@ -3130,6 +3132,19 @@ export const repository = pgTable(
     /** Relative checkout subdirectory; same rule as compose `x-turbopanel.root`. */
     subdirectory: text(),
     autoDeploy: text('auto_deploy').default('disabled').notNull(),
+    /** Provider-reported default branch from the most recent refresh/inspect. */
+    detectedDefaultBranch: varchar('detected_default_branch', { length: 255 }),
+    defaultBranchCheckedAt: timestamp('default_branch_checked_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    lastInspectedAt: timestamp('last_inspected_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    lastInspectedCommitSha: text('last_inspected_commit_sha'),
   },
   (table) => [
     index('idx_repository_organization_id').using(

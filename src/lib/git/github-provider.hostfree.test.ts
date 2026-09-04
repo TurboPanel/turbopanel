@@ -21,6 +21,7 @@ import {
   githubProvider,
   githubRepositoryExternalId,
   listGithubInstallationRepositories,
+  fetchPublicGithubDefaultBranch,
   resolveGithubCommit,
   successfulCheckSha,
   toGithubRepositorySummary,
@@ -154,6 +155,58 @@ const sourceRow: GitProviderSourceRow = {
 function repoPayload(id: number, extra: Record<string, unknown> = {}) {
   return { id, full_name: `acme/app-${id}`, default_branch: 'main', private: true, ...extra }
 }
+
+test('fetchPublicGithubDefaultBranch reads anonymous REST and ignores non-github URLs', async () => {
+  assertEquals(
+    await fetchPublicGithubDefaultBranch('https://gitlab.com/acme/app.git'),
+    null,
+  )
+  await withFetch((url) => {
+    assertEquals(url.includes('/repos/acme/app'), true)
+    return new Response(JSON.stringify({ default_branch: 'trunk' }))
+  }, async () => {
+    assertEquals(
+      await fetchPublicGithubDefaultBranch('https://github.com/acme/app.git'),
+      'trunk',
+    )
+  })
+  await withFetch(
+    () => new Response('', { status: 404 }),
+    async () => {
+      assertEquals(
+        await fetchPublicGithubDefaultBranch('https://github.com/acme/missing.git'),
+        null,
+      )
+    },
+  )
+})
+
+test('githubProvider.readRepositoryFiles uses anonymous REST for a public github.com clone', async () => {
+  await withFetch((url, init) => {
+    const headers = new Headers(init?.headers)
+    assertEquals(headers.has('authorization'), false)
+    if (url.includes('/commits/')) {
+      return new Response(JSON.stringify({ sha: SHA }))
+    }
+    if (url.includes('/contents/package.json')) {
+      return new Response('{"name":"app"}', {
+        headers: { 'content-type': 'text/plain' },
+      })
+    }
+    return new Response('', { status: 500 })
+  }, async () => {
+    const result = await githubProvider.readRepositoryFiles({ db: gitDb({}) }, {
+      row: { ...sourceRow, connectionId: null, secretId: null },
+      ref: 'trunk',
+      paths: ['package.json'],
+    })
+    if (!result || isGitProviderFailure(result) || 'unsupported' in result) {
+      throw new TypeError('expected a file set')
+    }
+    assertEquals(result.commitSha, SHA)
+    assertEquals(result.files[0]?.found, true)
+  })
+})
 
 test('toGithubRepositorySummary and external-id helpers', () => {
   assertEquals(toGithubRepositorySummary(null), null)
@@ -578,7 +631,7 @@ test('githubProvider.readRepositoryFiles aborts on transport failure', async () 
 test('githubProvider.readRepositoryFiles reports miss reasons and auth gaps', async () => {
   assertEquals(
     await githubProvider.readRepositoryFiles({ db: gitDb({}) }, {
-      row: { ...sourceRow, connectionId: null },
+      row: { ...sourceRow, connectionId: null, secretId: 'key-1' },
       ref: 'main',
       paths: ['compose.yaml'],
     }),

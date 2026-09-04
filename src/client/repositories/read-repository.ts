@@ -185,8 +185,9 @@ export type ResolveDefaultBranchOutcome =
  * --symref`, no clone.
  *
  * Anonymous only, unlike {@link readRepositoryViaDaemon}: this exists for a
- * public clone URL the operator gave no default branch, so it never carries a
- * credential. A private repository still needs the branch named by hand.
+ * public clone URL whose default branch GitHub REST could not name, so it
+ * never carries a credential. A keyed private remote that REST cannot see
+ * still lands with no default branch.
  */
 export async function resolveDefaultBranchViaDaemon(
   db: Db,

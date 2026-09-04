@@ -10,7 +10,20 @@ import {
   type RepositoryFileEntry,
 } from '../../lib/git/git-provider.ts'
 import { resolveGitProvider } from '../../lib/git/git-provider.ts'
+import { isGithubDotComHttpsCloneUrl } from '../../lib/git/clone-url.ts'
 import { readRepositoryViaDaemon } from './read-repository.ts'
+
+/**
+ * Public github.com HTTPS clones are stored as `provider: 'git'` (no App),
+ * but anonymous REST can still read them. Use the GitHub adapter for those
+ * rows so inspect does not wait on a daemon clone.
+ */
+function providerForInspect(row: GitProviderSourceRow) {
+  if (!row.secretId && isGithubDotComHttpsCloneUrl(row.repositoryUrl)) {
+    return resolveGitProvider('github')
+  }
+  return resolveGitProvider(row.provider)
+}
 
 /**
  * Filenames the wizard probes. Fixed rather than caller-supplied: this route is
@@ -149,7 +162,7 @@ export async function inspectRepository(
   params: InspectRepositoryParams,
 ): Promise<InspectOutcome> {
   const paths = params.paths ?? INSPECT_PROBE_PATHS
-  const provider = resolveGitProvider(params.row.provider)
+  const provider = providerForInspect(params.row)
   const ctx = {
     db: params.db,
     ...(params.dataEncryptionSecrets

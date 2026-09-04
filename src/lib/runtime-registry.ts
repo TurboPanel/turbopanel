@@ -36,3 +36,20 @@ export function runtimeSeries(runtime: string): readonly string[] {
   if (runtime === 'node') return ['22', '24']
   return []
 }
+
+/** Default Node series when a native app declares no `nodeVersion`. */
+export const DEFAULT_NATIVE_APP_NODE_SERIES = '24'
+
+/**
+ * Normalize a Node pin to the **exec boundary** (`24.17.0` → `24`).
+ *
+ * Mirrors `entitlementSeries('node', …)` in the daemon registry so deploy
+ * grants and vendored paths agree on the series directory.
+ */
+export function nodeEntitlementSeries(
+  version: string = DEFAULT_NATIVE_APP_NODE_SERIES,
+): string {
+  const major = version.trim().split('.')[0]
+  if (!major || !/^\d+$/.test(major)) return DEFAULT_NATIVE_APP_NODE_SERIES
+  return major
+}

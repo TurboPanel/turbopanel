@@ -42,10 +42,12 @@ import {
   commitSubject,
   COMMIT_AUTHOR_MAX_CHARS,
   isCommitSha,
+  isGithubDotComHttpsCloneUrl,
   parseRepositoryOwnerRepo,
   trimCommitField,
 } from './clone-url.ts'
 import {
+  GITHUB_API_BASE,
   type GithubApiAuth,
   githubApiHeaders,
   GithubAppTokenError,
@@ -183,6 +185,41 @@ function githubReadFailure(error: unknown): GitProviderFailure {
   return { failure: networkFailureMessage(error) }
 }
 
+/**
+ * The public default branch GitHub advertises for a github.com HTTPS clone
+ * URL, via anonymous REST. No App, no token.
+ *
+ * Never throws: a missing repo, a private repo, a rate limit, or a network
+ * blip all return null so the caller can fall through to a daemon `ls-remote`
+ * (or to asking the operator). This is the fast path for a pasted public
+ * GitHub URL, where waiting on a connected server to run git would stall the
+ * wizard for the full read timeout.
+ */
+export async function fetchPublicGithubDefaultBranch(
+  cloneUrl: string,
+): Promise<string | null> {
+  if (!isGithubDotComHttpsCloneUrl(cloneUrl)) return null
+  const parsed = parseRepositoryOwnerRepo(cloneUrl)
+  if (!parsed) return null
+  const url = `${GITHUB_API_BASE}/repos/${
+    encodeURIComponent(parsed.owner)
+  }/${encodeURIComponent(parsed.repo)}`
+  try {
+    const response = await fetch(url, {
+      headers: githubApiHeaders('', 'token'),
+    })
+    if (!response.ok) return null
+    const payload = (await response.json().catch(() => null)) as
+      | { default_branch?: unknown }
+      | null
+    if (typeof payload?.default_branch !== 'string') return null
+    const branch = payload.default_branch.trim()
+    return branch.length > 0 ? branch : null
+  } catch {
+    return null
+  }
+}
+
 /** Mint a short-lived installation token, or say why we cannot read. */
 async function githubReadAuth(
   ctx: GitProviderContext,
@@ -190,9 +227,16 @@ async function githubReadAuth(
 ): Promise<
   GithubApiAuth | GitProviderFailure | RepositoryReadUnsupported
 > {
-  // A GitHub source with no App installation cannot be read over the API at
-  // all — the daemon clones it with the stored credential instead.
-  if (!row.connectionId) return { unsupported: true }
+  // A GitHub App installation is the authenticated lane. A public github.com
+  // HTTPS clone with no App and no deploy key is still readable over anonymous
+  // REST — that is the wizard's "paste a public URL" path. A deploy key means
+  // the operator chose the private lane; keep going through the daemon.
+  if (!row.connectionId) {
+    if (!row.secretId && isGithubDotComHttpsCloneUrl(row.repositoryUrl)) {
+      return { token: '', apiBase: GITHUB_API_BASE }
+    }
+    return { unsupported: true }
+  }
   if (!ctx.dataEncryptionSecrets) {
     return { failure: 'github app credentials are unreadable' }
   }

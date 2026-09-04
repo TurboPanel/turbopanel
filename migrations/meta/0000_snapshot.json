@@ -1,5 +1,5 @@
 {
-  "id": "730bdf89-7682-4dce-ae02-a6b9df1a8721",
+  "id": "9c88c163-2e18-472b-aee5-ed13d025223e",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -5474,6 +5474,30 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'disabled'"
+        },
+        "detected_default_branch": {
+          "name": "detected_default_branch",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "default_branch_checked_at": {
+          "name": "default_branch_checked_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_inspected_at": {
+          "name": "last_inspected_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_inspected_commit_sha": {
+          "name": "last_inspected_commit_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

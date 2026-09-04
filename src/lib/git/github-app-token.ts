@@ -219,12 +219,15 @@ export async function signGithubAppJwt(
 
 /** Standard headers for every GitHub REST call made from the instance. */
 export function githubApiHeaders(token: string, scheme: 'Bearer' | 'token'): HeadersInit {
-  return {
-    authorization: `${scheme} ${token}`,
+  const headers: Record<string, string> = {
     accept: GITHUB_API_ACCEPT,
     'x-github-api-version': GITHUB_API_VERSION,
     'user-agent': GITHUB_USER_AGENT,
   }
+  // An empty token is anonymous public REST — GitHub rejects `Authorization`
+  // with a blank credential, so omit the header entirely.
+  if (token.length > 0) headers.authorization = `${scheme} ${token}`
+  return headers
 }
 
 async function readGithubError(response: Response): Promise<string> {

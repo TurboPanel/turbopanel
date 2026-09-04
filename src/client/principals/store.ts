@@ -204,6 +204,42 @@ export async function replaceEntitlements(
   }
 }
 
+/**
+ * Insert deploy-implied runtime grants without revoking existing rows.
+ *
+ * Used when a native app declares a Node series the principal does not yet
+ * hold in Postgres — the wire merge alone is not enough for
+ * `server.principals.reconcile`.
+ */
+export async function insertDeployEntitlementsIfMissing(
+  db: Db,
+  entries: readonly {
+    principalId: string
+    runtime: string
+    series: string
+  }[],
+): Promise<void> {
+  if (entries.length === 0) return
+  const unique = new Map<string, PrincipalEntitlementRow & { principalId: string }>()
+  for (const entry of entries) {
+    unique.set(
+      `${entry.principalId}@${entry.runtime}@${entry.series}`,
+      {
+        principalId: entry.principalId,
+        runtime: entry.runtime,
+        series: entry.series,
+        grantedBy: 'deploy',
+      },
+    )
+  }
+  await db
+    .insert(entitlement)
+    .values([...unique.values()])
+    .onConflictDoNothing({
+      target: [entitlement.principalId, entitlement.runtime, entitlement.series],
+    })
+}
+
 export type CreatePrincipalFields = {
   kind: string
   provider: string

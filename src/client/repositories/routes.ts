@@ -69,6 +69,7 @@ import {
   type RepositorySummary,
 } from '../../lib/git/git-provider.ts'
 import { canonicalizeRepositoryUrl } from '../../lib/git/clone-url.ts'
+import { fetchPublicGithubDefaultBranch } from '../../lib/git/github-provider.ts'
 import {
   exchangeGitlabAuthorizationCode,
   gitlabAuthorizeUrl,
@@ -480,6 +481,66 @@ async function persistRefreshPatch(
     // keep the stored URL and still record the refreshed branch facts.
     delete patch.repositoryUrl
     await db.update(repository).set(patch).where(eq(repository.id, id))
+  }
+}
+
+type InspectSourceRow = {
+  id: string
+  repositoryUrl: string
+  defaultBranch: string | null
+  metadata: unknown
+}
+
+/**
+ * Prefer the caller-supplied ref, then the stored default branch, then a
+ * public-GitHub probe. Best-effort persist when the probe fills a blank.
+ */
+async function resolveInspectRef(
+  db: Db,
+  row: InspectSourceRow,
+  queryRef: string,
+): Promise<string> {
+  if (queryRef.length > 0) return queryRef
+  const stored = (row.defaultBranch ?? '').trim()
+  if (stored.length > 0) return stored
+
+  const detected = await fetchPublicGithubDefaultBranch(row.repositoryUrl)
+  if (!detected) return ''
+
+  try {
+    const metadata = readSourceMetadata(row.metadata)
+    metadata.detectedDefaultBranch = detected
+    metadata.defaultBranchCheckedAt = new Date().toISOString()
+    await db
+      .update(repository)
+      .set({
+        defaultBranch: detected,
+        metadata,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(repository.id, row.id))
+  } catch (error) {
+    logWarn('repository inspect default branch persist failed', { error })
+  }
+  return detected
+}
+
+/** Remember a successful inspect; never fail the read if the write fails. */
+async function recordInspectBookkeeping(
+  db: Db,
+  row: InspectSourceRow,
+  commitSha: string,
+): Promise<void> {
+  try {
+    const metadata = readSourceMetadata(row.metadata)
+    metadata.lastInspectedAt = new Date().toISOString()
+    metadata.lastInspectedCommitSha = commitSha
+    await db
+      .update(repository)
+      .set({ metadata, updatedAt: new Date().toISOString() })
+      .where(eq(repository.id, row.id))
+  } catch (error) {
+    logWarn('repository inspect metadata update failed', { error })
   }
 }
 
@@ -1275,7 +1336,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const ref = (c.req.query('ref') ?? row.defaultBranch ?? '').trim()
+    const ref = await resolveInspectRef(db, row, (c.req.query('ref') ?? '').trim())
     if (ref.length === 0) {
       return c.json({
         error: 'ref_required',
@@ -1302,7 +1363,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         id: row.id,
         provider: row.provider,
         repositoryUrl: row.repositoryUrl,
-        defaultBranch: row.defaultBranch,
+        defaultBranch: ref,
         subdirectory: row.subdirectory,
         connectionId: row.connectionId,
         secretId: row.secretId,
@@ -1326,17 +1387,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     // Bookkeeping, not the answer: remember what this successful read saw so
     // the repositories screen can say when the repo was last reachable and at
     // which commit. A failed write must not fail a read that succeeded.
-    try {
-      const metadata = readSourceMetadata(row.metadata)
-      metadata.lastInspectedAt = new Date().toISOString()
-      metadata.lastInspectedCommitSha = outcome.commitSha
-      await db
-        .update(repository)
-        .set({ metadata, updatedAt: new Date().toISOString() })
-        .where(eq(repository.id, row.id))
-    } catch (error) {
-      logWarn('repository inspect metadata update failed', { error })
-    }
+    await recordInspectBookkeeping(db, row, outcome.commitSha)
 
     return c.json({
       commitSha: outcome.commitSha,
@@ -1453,16 +1504,20 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   /**
-   * Best-effort default-branch detection for a public clone URL the operator
-   * left blank — `git ls-remote --symref`, through whatever connected server
-   * answers first.
+   * Best-effort default-branch detection for a clone URL the operator left
+   * blank — the clone-URL form never asks for a branch.
    *
-   * Anonymous only: a `secretId` means the operator is on the private
-   * deploy-key lane, which still needs the branch named by hand (resolving it
-   * would mean cloning with the key before they have confirmed it is even
-   * added). A `connectionId` means this row is provider-connected — its
-   * default branch is a provider fact `/repositories/attach` already carries
-   * in from the picker, so this generic route should not go around it with a
+   * github.com HTTPS URLs are resolved first via anonymous REST
+   * (`default_branch`) so the wizard does not wait on a daemon `ls-remote`.
+   * A deploy key does not skip that: a public github.com repo is still
+   * readable anonymously, and the operator may have picked Private by
+   * mistake. Other remotes still use `git ls-remote --symref` through
+   * whatever connected server answers first — anonymous only, so a keyed
+   * private remote that GitHub REST cannot see falls through with no branch.
+   *
+   * A `connectionId` means this row is provider-connected — its default
+   * branch is a provider fact `/repositories/attach` already carries in from
+   * the picker, so this generic route should not go around it with a
    * clone-based guess. Never fatal either way — no connected server, a
    * timeout, or an empty answer all fall through to creating the row with no
    * default branch, exactly as it always has.
@@ -1473,11 +1528,14 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     organizationId: string,
     fields: SourceCreateFields,
   ): Promise<{ defaultBranch: string; detectedAt: string } | null> {
-    if (
-      fields.defaultBranch !== null ||
-      fields.secretId !== null ||
-      fields.connectionId !== null
-    ) {
+    if (fields.defaultBranch !== null || fields.connectionId !== null) {
+      return null
+    }
+    const githubBranch = await fetchPublicGithubDefaultBranch(fields.repositoryUrl)
+    if (githubBranch) {
+      return { defaultBranch: githubBranch, detectedAt: new Date().toISOString() }
+    }
+    if (fields.secretId !== null) {
       return null
     }
     const registry = getDaemonCellRegistry(c)

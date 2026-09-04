@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
+  nodeEntitlementSeries,
   runtimeSeries,
   SUPPORTED_RUNTIME_SERIES,
   SUPPORTED_RUNTIMES,
@@ -26,4 +27,10 @@ test('runtimeSeries returns PHP and Node series only for known runtimes', () => 
   assertEquals(runtimeSeries('node'), ['22', '24'])
   assertEquals(runtimeSeries('ruby'), [])
   assertEquals(runtimeSeries(''), [])
+})
+
+test('nodeEntitlementSeries normalizes Node pins to the major series', () => {
+  assertEquals(nodeEntitlementSeries('24.17.0'), '24')
+  assertEquals(nodeEntitlementSeries('22'), '22')
+  assertEquals(nodeEntitlementSeries(''), '24')
 })

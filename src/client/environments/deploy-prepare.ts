@@ -89,7 +89,7 @@ import {
   resolvePrincipalIdOverride,
   resolvePrincipalShell,
 } from "../../lib/principal-options.ts";
-import { loadEntitlementsByPrincipalIds } from "../principals/store.ts";
+import { loadEntitlementsByPrincipalIds, insertDeployEntitlementsIfMissing } from "../principals/store.ts";
 import { renderPhpForDeploy } from "../../lib/php-settings.ts";
 import {
   isComposeChainError,
@@ -223,6 +223,10 @@ import {
   readTargetPort,
   tlsPinErrorCode,
 } from "./deploy-routes-helpers.ts";
+import {
+  type DeployRuntimeEntitlement,
+  mergeDeployPrincipalRuntimes,
+} from "./merge-deploy-principal-runtimes.ts";
 import {
   ensureSystemHierarchy,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
@@ -2803,6 +2807,20 @@ async function resolveManagedNetworkHostName(
   return network.hostName;
 }
 
+/**
+ * Persist Node runtime entitlements implied by this deploy.
+ *
+ * Preview must not write. Empty lists are a no-op inside the store helper.
+ */
+async function persistDeployRuntimeEntitlements(
+  db: Db,
+  mode: DeployPrepareMode,
+  entitlements: readonly DeployRuntimeEntitlement[],
+): Promise<void> {
+  if (mode === "preview") return;
+  await insertDeployEntitlementsIfMissing(db, entitlements);
+}
+
 export async function prepareDeployCompose(
   c: Context<AppEnv>,
   db: Db,
@@ -3060,6 +3078,14 @@ export async function prepareDeployCompose(
   });
   if (!Array.isArray(localSourceMaterial)) return localSourceMaterial;
 
+  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
+    mergeDeployPrincipalRuntimes({
+      principalMaterial,
+      nativeAppServices: localNativeApps,
+      sourceMaterial: localSourceMaterial,
+    });
+  await persistDeployRuntimeEntitlements(db, mode, deployEntitlements);
+
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(
     split.composeYaml,
   );
@@ -3148,7 +3174,7 @@ export async function prepareDeployCompose(
     hooks,
     variableMaterial,
     storageMaterial,
-    principalMaterial,
+    principalMaterial: principalMaterialWithRuntimes,
     sites: localSite,
     nativeAppServices: localNativeApps,
     sourceMaterial: localSourceMaterial,

@@ -6,6 +6,7 @@ import {
   COMMIT_AUTHOR_MAX_CHARS,
   COMMIT_MESSAGE_MAX_CHARS,
   isCommitSha,
+  isGithubDotComHttpsCloneUrl,
   isSshCloneUrl,
   NULL_COMMIT_SHA,
   parseRepositoryOwnerRepo,
@@ -27,6 +28,26 @@ test('isSshCloneUrl recognizes ssh:// and scp-like git@host:path forms', () => {
   assertEquals(isSshCloneUrl('git@gitlab.example.com:group/sub/repo.git'), true)
   assertEquals(isSshCloneUrl('https://github.com/org/repo.git'), false)
   assertEquals(isSshCloneUrl('git@invalid'), false)
+})
+
+test('isGithubDotComHttpsCloneUrl accepts only github.com HTTPS clones', () => {
+  assertEquals(
+    isGithubDotComHttpsCloneUrl('https://github.com/acme/app.git'),
+    true,
+  )
+  assertEquals(
+    isGithubDotComHttpsCloneUrl('https://www.github.com/acme/app.git'),
+    true,
+  )
+  assertEquals(
+    isGithubDotComHttpsCloneUrl('git@github.com:acme/app.git'),
+    false,
+  )
+  assertEquals(
+    isGithubDotComHttpsCloneUrl('https://gitlab.com/acme/app.git'),
+    false,
+  )
+  assertEquals(isGithubDotComHttpsCloneUrl('not-a-url'), false)
 })
 
 test('canonicalizeRepositoryUrl settles every spelling on the .git clone URL', () => {

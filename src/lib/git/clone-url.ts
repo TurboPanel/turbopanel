@@ -96,6 +96,22 @@ function ensureGitSuffix(path: string): string {
  * nested in subgroups needs its full encoded path instead, which
  * {@link repositoryPathFromCloneUrl} answers.
  */
+/**
+ * github.com HTTPS clone URLs can be read with anonymous REST — no App, no
+ * deploy key. SSH (`git@github.com:`) is not this lane: publickey auth has
+ * no anonymous form.
+ */
+export function isGithubDotComHttpsCloneUrl(repositoryUrl: string): boolean {
+  try {
+    const parsed = new URL(repositoryUrl)
+    if (parsed.protocol !== 'https:') return false
+    const host = parsed.hostname.toLowerCase()
+    return host === 'github.com' || host === 'www.github.com'
+  } catch {
+    return false
+  }
+}
+
 export function parseRepositoryOwnerRepo(
   repositoryUrl: string,
 ): { owner: string; repo: string } | null {

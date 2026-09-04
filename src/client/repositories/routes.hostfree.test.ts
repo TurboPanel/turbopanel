@@ -933,8 +933,8 @@ test('inspect requires a ref when the source has no default branch', async () =>
       organizationId: ORG_ID,
       connectionId: CONNECTION_ID,
       secretId: null,
-      provider: 'github',
-      repositoryUrl: 'https://github.com/acme/app.git',
+      provider: 'git',
+      repositoryUrl: 'https://example.com/acme/app.git',
       repositoryExternalId: '99',
       defaultBranch: null,
       subdirectory: null,
@@ -1443,7 +1443,106 @@ test('create resolves an anonymous clone URL default branch through a connected 
   assertEquals(typeof written.metadata?.defaultBranchCheckedAt, 'string')
 })
 
-test('create never attempts branch detection for a provider-connected or keyed row', async () => {
+test('create resolves a public github.com default branch via anonymous REST', async () => {
+  const insertValues: unknown[] = []
+  const db = sourceHttpDb({
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [],
+    ],
+    insertId: SOURCE_ID,
+    insertValues,
+  })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input)
+    if (url.includes('api.github.com/repos/acme/app')) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ default_branch: 'trunk' })),
+      )
+    }
+    return Promise.resolve(new Response('', { status: 500 }))
+  }) as typeof fetch
+  try {
+    const { app, cookie } = await buildSourceApp(db)
+    await expectJson(
+      await app.request('/repositories', {
+        method: 'POST',
+        headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'git',
+          repositoryUrl: 'https://github.com/acme/app.git',
+        }),
+      }),
+      201,
+      { ok: true, id: SOURCE_ID, reused: false },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  const written = insertValues[0] as {
+    defaultBranch?: unknown
+    metadata?: { detectedDefaultBranch?: unknown }
+  }
+  assertEquals(written.defaultBranch, 'trunk')
+  assertEquals(written.metadata?.detectedDefaultBranch, 'trunk')
+})
+
+test('create still resolves a keyed github.com default branch via anonymous REST', async () => {
+  const insertValues: unknown[] = []
+  const db = sourceHttpDb({
+    limitQueue: [
+      [{ role: 'superadmin' }],
+      [{
+        organizationId: ORG_ID,
+        provider: GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
+      }],
+      [],
+    ],
+    insertId: SOURCE_ID,
+    insertValues,
+  })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input)
+    if (url.includes('api.github.com/repos/acme/app')) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ default_branch: 'trunk' })),
+      )
+    }
+    return Promise.resolve(new Response('', { status: 500 }))
+  }) as typeof fetch
+  try {
+    const { app, cookie } = await buildSourceApp(db)
+    await expectJson(
+      await app.request('/repositories', {
+        method: 'POST',
+        headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'git',
+          repositoryUrl: 'https://github.com/acme/app.git',
+          secretId: CREDENTIAL_ID,
+        }),
+      }),
+      201,
+      { ok: true, id: SOURCE_ID, reused: false },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  const written = insertValues[0] as {
+    defaultBranch?: unknown
+    secretId?: unknown
+    metadata?: { detectedDefaultBranch?: unknown }
+  }
+  assertEquals(written.secretId, CREDENTIAL_ID)
+  assertEquals(written.defaultBranch, 'trunk')
+  assertEquals(written.metadata?.detectedDefaultBranch, 'trunk')
+})
+
+test('create never attempts branch detection for a provider-connected row', async () => {
   const connectedInsert: unknown[] = []
   const connected = sourceHttpDb({
     limitQueue: [
