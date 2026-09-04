@@ -297,7 +297,16 @@ function serviceLabelsFromMapping(
       labels[key] = ''
       continue
     }
-    if (typeof value === 'object') continue
+    // Allow-list the scalar types worth stringifying, rather than excluding
+    // `object`: the narrower guard is what tells a static analyzer `value`
+    // can no longer be a bare object collapsing to `[object Object]` below.
+    if (
+      typeof value !== 'string' &&
+      typeof value !== 'number' &&
+      typeof value !== 'boolean'
+    ) {
+      continue
+    }
     labels[key] = String(value)
   }
   return labels

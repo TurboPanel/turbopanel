@@ -1189,6 +1189,10 @@ function parseBucketHardwareProfileGeneration(
   if (min === null || min === undefined || max === null || max === undefined) {
     return null;
   }
+  // Narrow before stringifying: an object value would otherwise collapse to
+  // `[object Object]` for both sides and compare equal by accident.
+  if (typeof min !== "string" && typeof min !== "number") return null;
+  if (typeof max !== "string" && typeof max !== "number") return null;
   if (String(min) !== String(max)) return null;
   const num = typeof min === "number" ? min : Number(min);
   return Number.isFinite(num) ? num : null;

@@ -43,6 +43,8 @@ import {
   COMMIT_AUTHOR_MAX_CHARS,
   isCommitSha,
   isGithubDotComHttpsCloneUrl,
+  isSafeGitRef,
+  isSafeRepositoryPath,
   parseRepositoryOwnerRepo,
   trimCommitField,
 } from './clone-url.ts'
@@ -325,6 +327,12 @@ export async function resolveGithubCommit(
       'source repository url is not a github repository path',
     )
   }
+  // `ref` reaches this function straight from the inspect route's query
+  // param — validate it against a known ref shape before it becomes part of
+  // a request URL, rather than relying on `encodeURIComponent` alone.
+  if (!isSafeGitRef(ref)) {
+    throw new GithubAppTokenError('source ref is not a valid git ref')
+  }
   const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${
     encodeURIComponent(parsed.repo)
   }/commits/${encodeURIComponent(ref)}`
@@ -497,6 +505,12 @@ export const githubProvider: GitProvider = {
 
     const parsed = parseRepositoryOwnerRepo(params.row.repositoryUrl)
     if (!parsed) return { failure: 'source repository url is not a github path' }
+    // `params.path` is the inspect route's `listPath` query param — validated
+    // there with `isSafeRoot`, but re-checked here against the same shape so
+    // this sink does not depend on a sanitizer applied in another module.
+    if (!isSafeRepositoryPath(params.path)) {
+      return { failure: 'listing path is not a valid repository path' }
+    }
     const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${
       encodeURIComponent(parsed.repo)
     }/contents/${encodePathSegments(params.path)}?ref=${encodeURIComponent(commitSha)}`

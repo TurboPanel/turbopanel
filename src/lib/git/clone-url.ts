@@ -12,6 +12,8 @@
  * `src/workers.ts` (`pnpm check:workers-bundle`).
  */
 
+import { stripTrailingSlashes } from './origin.ts'
+
 /** `git@host:owner/repo.git` — the scp-like form git accepts. */
 const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
 
@@ -67,7 +69,7 @@ export function canonicalizeRepositoryUrl(raw: string): string {
 
   if (parsed) {
     // URL already lower-cases protocol and hostname on parse.
-    const path = ensureGitSuffix(parsed.pathname.replace(/\/+$/, ''))
+    const path = ensureGitSuffix(stripTrailingSlashes(parsed.pathname))
     if (path.length === 0) return url
     const port = parsed.port ? `:${parsed.port}` : ''
     const user = parsed.username ? `${parsed.username}@` : ''
@@ -78,7 +80,7 @@ export function canonicalizeRepositoryUrl(raw: string): string {
   const scp = /^([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+):(\S+)$/.exec(url)
   if (!scp) return url
   const [, user, host, rawPath] = scp
-  const path = ensureGitSuffix(rawPath.replace(/\/+$/, ''))
+  const path = ensureGitSuffix(stripTrailingSlashes(rawPath))
   if (path.length === 0) return url
   return `${user}@${host.toLowerCase()}:${path}`
 }
@@ -198,4 +200,40 @@ export const NULL_COMMIT_SHA = '0000000000000000000000000000000000000000'
 
 export function isCommitSha(value: unknown): value is string {
   return typeof value === 'string' && SHA_RE.test(value) && value !== NULL_COMMIT_SHA
+}
+
+/**
+ * A branch, tag, or SHA safe to interpolate into a provider REST path.
+ *
+ * The caller-supplied `ref` (an inspect-wizard query param) reaches
+ * `resolveGithubCommit` untouched by any allow-list — `encodeURIComponent`
+ * keeps it from reshaping the request URL, but does not validate it against a
+ * known-good ref shape, which is what a tainted-URL check wants to see before
+ * the value is used to build a request. `..` and a leading `/` or `-` are
+ * rejected outright; everything else must be a plain ref-name character.
+ */
+const SAFE_GIT_REF_RE = /^[A-Za-z0-9._/-]+$/
+
+export function isSafeGitRef(value: string): boolean {
+  if (value.length === 0 || value.length > 250) return false
+  if (value.startsWith('/') || value.startsWith('-')) return false
+  if (value.includes('..')) return false
+  return SAFE_GIT_REF_RE.test(value)
+}
+
+/**
+ * A repository-relative directory path safe to interpolate into a provider
+ * REST path. Empty means the repository root. Mirrors `isSafeRoot` (used for
+ * `x-turbopanel.root` and the inspect route's own `listPath` check) but lives
+ * here so the git-provider sink validates it directly rather than relying on
+ * a cross-module sanitizer a static analyzer may not trace.
+ */
+const SAFE_REPOSITORY_PATH_RE = /^[A-Za-z0-9._/-]+$/
+
+export function isSafeRepositoryPath(value: string): boolean {
+  if (value.length === 0) return true
+  if (value.length > 200) return false
+  if (value.startsWith('/') || value.startsWith('\\')) return false
+  if (value.includes('..')) return false
+  return SAFE_REPOSITORY_PATH_RE.test(value)
 }
