@@ -277,6 +277,18 @@ function fetchWhereRows(
       createdAt: row.createdAt ?? row.expiresAt,
     })))
   }
+  if (table === account) {
+    // Every account row this double stores is a credential account (the app
+    // never creates any other provider) — same "where is ignored, state is
+    // small and scenario-scoped" convention the `user` case above uses.
+    return Promise.resolve(
+      state.accounts.map((row) => ({
+        id: row.userId,
+        userId: row.userId,
+        providerId: 'credential',
+      })),
+    )
+  }
   return Promise.resolve([])
 }
 

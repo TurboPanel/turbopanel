@@ -1,7 +1,8 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import type { RateLimiter } from '../../daemon/rate-limit/contracts.ts'
 import {
+  AUTH_RATE_LIMIT_PURPOSE_TIERS,
   type AuthRateLimitPurpose,
   authRateLimitKeys,
   createAuthRateLimiter,
@@ -207,6 +208,99 @@ describe('createDurableAuthRateLimiter', () => {
       (await limiter.check('sign-in', 'a@example.com', '203.0.113.30')).allowed,
       false,
     )
+  })
+})
+
+describe('createDurableAuthRateLimiter tiering', () => {
+  it('routes strict-tier purposes to the strict backend and default-tier to the default backend', async () => {
+    const defaultLimiter = createFakeDurableRateLimiter(10)
+    const strictLimiter = createFakeDurableRateLimiter(5)
+    const limiter = createDurableAuthRateLimiter({
+      default: defaultLimiter,
+      strict: strictLimiter,
+    })
+
+    // 'sign-up' is strict (limit 5) — blocks at attempt 6.
+    for (let i = 0; i < 5; i++) {
+      assertEquals(
+        (await limiter.check('sign-up', 'victim@example.com', '203.0.113.50')).allowed,
+        true,
+      )
+    }
+    assertEquals(
+      (await limiter.check('sign-up', 'victim@example.com', '203.0.113.50')).allowed,
+      false,
+    )
+
+    // 'sign-in' is default (limit 10) — still allowed at attempt 6, same
+    // identity/IP as the now-blocked strict purpose above (independent
+    // backend instances, independent buckets).
+    for (let i = 0; i < 6; i++) {
+      assertEquals(
+        (await limiter.check('sign-in', 'victim@example.com', '203.0.113.50')).allowed,
+        true,
+      )
+    }
+  })
+
+  it('every strict-tier purpose in AUTH_RATE_LIMIT_PURPOSE_TIERS blocks at 5 against a limit-5 backend', async () => {
+    const strictPurposes = (Object.keys(AUTH_RATE_LIMIT_PURPOSE_TIERS) as AuthRateLimitPurpose[])
+      .filter((p) => AUTH_RATE_LIMIT_PURPOSE_TIERS[p] === 'strict')
+    // Sanity: the purposes this comment names are actually tagged strict.
+    assertEquals(strictPurposes.includes('sign-up'), true)
+    assertEquals(strictPurposes.includes('send-otp'), true)
+    assertEquals(strictPurposes.includes('reset-password-request'), true)
+
+    for (const purpose of strictPurposes) {
+      const limiter = createDurableAuthRateLimiter({
+        default: createFakeDurableRateLimiter(10),
+        strict: createFakeDurableRateLimiter(5),
+      })
+      for (let i = 0; i < 5; i++) {
+        assertEquals(
+          (await limiter.check(purpose, 'a@example.com', '203.0.113.51')).allowed,
+          true,
+          `${purpose} attempt ${i + 1} should be allowed`,
+        )
+      }
+      assertEquals(
+        (await limiter.check(purpose, 'a@example.com', '203.0.113.51')).allowed,
+        false,
+        `${purpose} attempt 6 should be blocked`,
+      )
+    }
+  })
+
+  it('falls back to whichever tier backend is present when the other is missing', async () => {
+    const onlyDefault = createDurableAuthRateLimiter({
+      default: createFakeDurableRateLimiter(1),
+    })
+    // 'sign-up' is strict, but only the default backend was supplied.
+    assertEquals(
+      (await onlyDefault.check('sign-up', 'a@example.com', '203.0.113.52')).allowed,
+      true,
+    )
+    assertEquals(
+      (await onlyDefault.check('sign-up', 'a@example.com', '203.0.113.52')).allowed,
+      false,
+    )
+  })
+
+  it('a single RateLimiter (no tiering) still works for every purpose — back-compat', async () => {
+    const limiter = createDurableAuthRateLimiter(createFakeDurableRateLimiter(1))
+    assertEquals(
+      (await limiter.check('sign-up', 'a@example.com', '203.0.113.53')).allowed,
+      true,
+    )
+    assertEquals(
+      (await limiter.check('sign-in', 'b@example.com', '203.0.113.54')).allowed,
+      true,
+    )
+  })
+
+  it('rejects when neither tier backend is supplied', async () => {
+    const limiter = createDurableAuthRateLimiter({})
+    await assertRejects(() => limiter.check('sign-up', 'a@example.com', '203.0.113.55'))
   })
 })
 

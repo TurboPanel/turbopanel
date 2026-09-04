@@ -82,6 +82,37 @@ const SHARED_POLICIES: Partial<Record<AuthRateLimitPurpose, AuthRateLimitPolicy>
   'install-complete': { limit: 10, windowMs: 60_000 },
 }
 
+/**
+ * Two policy tiers among {@link AuthRateLimitPurpose}s, mirroring
+ * {@link SHARED_POLICIES}'s two distinct limits (5 vs 10 per window):
+ * `strict` for purposes an attacker can use to spam an arbitrary address
+ * (sign-up, send-otp, reset-password request) or enumerate accounts fastest;
+ * `default` for everything else. The in-memory limiter already enforces this
+ * per purpose directly — durable backends (a single Cloudflare `RateLimit`
+ * binding, a single Redis bucket) cannot express two limits from one
+ * instance, so {@link createDurableAuthRateLimiter} dispatches by tier across
+ * two backend instances instead. See `workers-bindings.ts` /
+ * `deno-server.ts`.
+ */
+export type AuthRateLimitTier = 'default' | 'strict'
+
+export const AUTH_RATE_LIMIT_PURPOSE_TIERS: Record<AuthRateLimitPurpose, AuthRateLimitTier> = {
+  'sign-in': 'default',
+  'sign-up': 'strict',
+  'send-otp': 'strict',
+  'verify-otp': 'default',
+  'sign-in-otp': 'default',
+  'verify-email-otp': 'default',
+  'reset-password-request': 'strict',
+  'reset-password': 'default',
+  'install-bootstrap': 'default',
+  'install-complete': 'default',
+}
+
+function tierForPurpose(purpose: AuthRateLimitPurpose): AuthRateLimitTier {
+  return AUTH_RATE_LIMIT_PURPOSE_TIERS[purpose] ?? 'default'
+}
+
 export interface AuthRateLimiter {
   /**
    * Record and evaluate a single attempt. Resolves `allowed: false` once the
@@ -217,26 +248,52 @@ export function createAuthRateLimiter(
 }
 
 /**
- * Compose an {@link AuthRateLimiter} over a durable {@link RateLimiter} (the
- * Cloudflare `RateLimit` binding via `createWorkersRateLimiter`, or the Deno
- * Redis token bucket via `createRedisRateLimiter`). Counters are globally
- * shared across isolates/processes; identity and IP are keyed separately so the
- * two-bucket guarantee holds. The backend reports only success/failure, so
- * Retry-After falls back to the fixed window length.
+ * Compose an {@link AuthRateLimiter} over one or more durable
+ * {@link RateLimiter}s (the Cloudflare `RateLimit` binding via
+ * `createWorkersRateLimiter`, or the Deno Redis token bucket via
+ * `createRedisRateLimiter`). Counters are globally shared across
+ * isolates/processes; identity and IP are keyed separately so the two-bucket
+ * guarantee holds. The backend reports only success/failure, so Retry-After
+ * falls back to the fixed window length.
+ *
+ * Accepts either:
+ * - a single {@link RateLimiter} — every purpose shares its one limit/window
+ *   (the historical behavior, still fine for a fail-closed limiter or a
+ *   single dev-surface binding); or
+ * - `{ default, strict }` — two backend instances, one per
+ *   {@link AuthRateLimitTier}, so the stricter purposes
+ *   ({@link AUTH_RATE_LIMIT_PURPOSE_TIERS}) get their own durable budget
+ *   instead of sharing the looser one. A missing tier falls back to
+ *   whichever of the two is present.
  */
 export function createDurableAuthRateLimiter(
-  rateLimiter: RateLimiter,
+  rateLimiter: RateLimiter | Partial<Record<AuthRateLimitTier, RateLimiter>>,
   options: { windowSeconds?: number } = {},
 ): AuthRateLimiter {
   const retryAfterSeconds = options.windowSeconds ?? DEFAULT_DURABLE_AUTH_WINDOW_SECONDS
+
+  function resolveLimiter(purpose: AuthRateLimitPurpose): RateLimiter {
+    if (typeof (rateLimiter as RateLimiter).limit === 'function') {
+      return rateLimiter as RateLimiter
+    }
+    const tiered = rateLimiter as Partial<Record<AuthRateLimitTier, RateLimiter>>
+    const tier = tierForPurpose(purpose)
+    const chosen = tiered[tier] ?? tiered.default ?? tiered.strict
+    if (!chosen) {
+      throw new Error('createDurableAuthRateLimiter: no RateLimiter provided for either tier')
+    }
+    return chosen
+  }
+
   return {
     async check(purpose, identity, ip): Promise<AuthRateLimitResult> {
+      const limiter = resolveLimiter(purpose)
       const { identityKey, ipKey } = await authRateLimitKeys(purpose, identity, ip)
       // Independent buckets — both must pass. Prefix keeps auth counters from
       // colliding with daemon rate-limit keys in a shared backend namespace.
       const [identityOutcome, ipOutcome] = await Promise.all([
-        rateLimiter.limit({ key: `auth:${identityKey}` }),
-        rateLimiter.limit({ key: `auth:${ipKey}` }),
+        limiter.limit({ key: `auth:${identityKey}` }),
+        limiter.limit({ key: `auth:${ipKey}` }),
       ])
       const allowed = identityOutcome.success && ipOutcome.success
       return {

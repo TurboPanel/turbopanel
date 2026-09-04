@@ -25,6 +25,22 @@ export const DEFAULT_DAEMON_METRICS_RATE_LIMIT = 3
 export const DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS = 60
 
 /**
+ * Defaults match `SHARED_POLICIES` (`client/authn/auth-rate-limit.ts`) and
+ * Wrangler `CLIENT_AUTH_RATE_LIMITER` (`{ limit: 10, period: 60 }`) — the
+ * `default` tier in `AUTH_RATE_LIMIT_PURPOSE_TIERS`.
+ */
+export const DEFAULT_CLIENT_AUTH_RATE_LIMIT = 10
+export const DEFAULT_CLIENT_AUTH_RATE_PERIOD_SECONDS = 60
+
+/**
+ * Defaults match `SHARED_POLICIES` and Wrangler
+ * `CLIENT_AUTH_STRICT_RATE_LIMITER` (`{ limit: 5, period: 60 }`) — the
+ * `strict` tier (sign-up, send-otp, reset-password request).
+ */
+export const DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT = 5
+export const DEFAULT_CLIENT_AUTH_STRICT_RATE_PERIOD_SECONDS = 60
+
+/**
  * Defaults match Wrangler `GITHUB_WEBHOOK_RATE_LIMITER` /
  * `GITLAB_WEBHOOK_RATE_LIMITER` (`{ limit: 120, period: 60 }` each).
  * A single `git push` can fan out into a handful of deliveries (push +
@@ -91,6 +107,36 @@ export function resolveDaemonMetricsRateLimit(env: {
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_METRICS_RATE_PERIOD'),
       DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS,
+    ),
+  }
+}
+
+export function resolveClientAuthRateLimit(env: {
+  get(key: string): string | undefined
+} = Deno.env): { limit: number; periodSeconds: number } {
+  return {
+    limit: parsePositiveIntEnv(
+      env.get('TURBOPANEL_CLIENT_AUTH_RATE_LIMIT'),
+      DEFAULT_CLIENT_AUTH_RATE_LIMIT,
+    ),
+    periodSeconds: parsePositiveIntEnv(
+      env.get('TURBOPANEL_CLIENT_AUTH_RATE_PERIOD'),
+      DEFAULT_CLIENT_AUTH_RATE_PERIOD_SECONDS,
+    ),
+  }
+}
+
+export function resolveClientAuthStrictRateLimit(env: {
+  get(key: string): string | undefined
+} = Deno.env): { limit: number; periodSeconds: number } {
+  return {
+    limit: parsePositiveIntEnv(
+      env.get('TURBOPANEL_CLIENT_AUTH_STRICT_RATE_LIMIT'),
+      DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT,
+    ),
+    periodSeconds: parsePositiveIntEnv(
+      env.get('TURBOPANEL_CLIENT_AUTH_STRICT_RATE_PERIOD'),
+      DEFAULT_CLIENT_AUTH_STRICT_RATE_PERIOD_SECONDS,
     ),
   }
 }

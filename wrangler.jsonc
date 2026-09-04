@@ -77,6 +77,13 @@
       "simple": { "limit": 10, "period": 60 }
     },
     {
+      // Stricter budget for sign-up / send-otp / reset-password request — see
+      // AUTH_RATE_LIMIT_PURPOSE_TIERS in client/authn/auth-rate-limit.ts.
+      "name": "CLIENT_AUTH_STRICT_RATE_LIMITER",
+      "namespace_id": "1008",
+      "simple": { "limit": 5, "period": 60 }
+    },
+    {
       // Host-metrics ingest (~1 sample/min/server) with small reconnect burst.
       "name": "DAEMON_METRICS_RATE_LIMITER",
       "namespace_id": "1004",
@@ -188,6 +195,11 @@
           "simple": { "limit": 10, "period": 60 }
         },
         {
+          "name": "CLIENT_AUTH_STRICT_RATE_LIMITER",
+          "namespace_id": "2008",
+          "simple": { "limit": 5, "period": 60 }
+        },
+        {
           "name": "DAEMON_METRICS_RATE_LIMITER",
           "namespace_id": "2004",
           "simple": { "limit": 3, "period": 60 }
@@ -293,6 +305,11 @@
           "name": "CLIENT_AUTH_RATE_LIMITER",
           "namespace_id": "3003",
           "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "CLIENT_AUTH_STRICT_RATE_LIMITER",
+          "namespace_id": "3008",
+          "simple": { "limit": 5, "period": 60 }
         },
         {
           "name": "DAEMON_METRICS_RATE_LIMITER",

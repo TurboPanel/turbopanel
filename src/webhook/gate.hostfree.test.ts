@@ -289,7 +289,7 @@ test('a JSON value that is not an object is rejected after the claim', async () 
   assertEquals(trace.includes('dispatch'), false)
 })
 
-test('an oversized body without content-length is refused after buffering', async () => {
+test('an oversized body without content-length is refused', async () => {
   const trace: Trace = []
   const app = await buildApp(trace)
   const res = await app.request(
@@ -301,6 +301,40 @@ test('an oversized body without content-length is refused after buffering', asyn
   )
   assertEquals(res.status, 413)
   assertEquals(trace.includes('dispatch'), false)
+})
+
+test('an oversized body without content-length is refused without buffering the full payload', async () => {
+  // maxBodyBytes is 64 in this suite's stub gate. Stream far more than that
+  // through a custom ReadableStream and assert the reader stops pulling
+  // shortly after crossing the budget — not after draining the whole body.
+  const trace: Trace = []
+  const app = await buildApp(trace)
+  const chunkSize = 1024
+  const totalChunks = 4096 // 4 MiB if fully drained
+  let pulls = 0
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1
+      if (pulls > totalChunks) {
+        controller.close()
+        return
+      }
+      controller.enqueue(new Uint8Array(chunkSize).fill(120))
+    },
+  })
+
+  const init = {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+    duplex: 'half',
+    // deno-lint-ignore no-explicit-any
+  } as any
+  const res = await app.request(new Request(`http://instance${PATH}`, init))
+  assertEquals(res.status, 413)
+  // The reader aborts once the accumulated bytes cross maxBodyBytes (64) —
+  // nowhere near the 4096 chunks a full drain would require.
+  assertEquals(pulls < totalChunks, true)
 })
 
 test('a missing database answers 503 before resolution', async () => {

@@ -1,6 +1,5 @@
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
-import type { DerivedSecretsConfig } from "./secrets.ts";
 import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
 import { resolveFleetPresence } from "../../daemon/cell/fleet-presence.ts";
 import {
@@ -24,10 +23,7 @@ import { clearServerDaemonState } from "../../daemon/authn/server-identity-db.ts
 import { hashPassword } from "./password.ts";
 import { SUPERADMIN_ROLE } from "./session-store.ts";
 import { compatLogInfo, compatLogWarn } from "../../log-compat.ts";
-import {
-  isEmailActiveForRuntime,
-  resolveEmailSettings,
-} from "../../lib/settings/email-settings.ts";
+import { resolveEmailActivePresence } from "../../lib/settings/email-settings.ts";
 import { deriveMachineKey } from "../../lib/machine-key.ts";
 import {
   ensureSelfHostSystemHierarchy,
@@ -473,7 +469,6 @@ export async function getInstallStatus(
   db: Db,
   envOverride?: SignupEnvOverride,
   platformEnv: Record<string, string | undefined> = {},
-  dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<InstallStatus> {
   // Sequential: parallel drizzle queries on postgres.js can wedge the pool (Deno dev).
   const installed = await isInstanceInstalled(db);
@@ -482,14 +477,12 @@ export async function getInstallStatus(
     "deno",
     envOverride,
   );
-  const emailSettings = await resolveEmailSettings(
+  // Public status only needs whether email delivery is configured, not the
+  // secret's content — resolveEmailActivePresence never decrypts
+  // MAILGUN_API_KEY/SMTP_PASS for this (see its docs).
+  const emailVerificationEnabled = await resolveEmailActivePresence(
     db,
     platformEnv,
-    dataEncryptionSecrets,
-  );
-  const emailVerificationEnabled = isEmailActiveForRuntime(
-    emailSettings,
-    "deno",
   );
   const needsInstall = !installed;
   return {
@@ -523,14 +516,8 @@ export async function getClientPublicStatus(
   runtime: "deno" | "workers",
   envOverride?: SignupEnvOverride,
   platformEnv: Record<string, string | undefined> = {},
-  dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<ClientPublicStatus | null> {
   if (runtime === "workers") {
-    const emailSettings = await resolveEmailSettings(
-      db,
-      platformEnv,
-      dataEncryptionSecrets,
-    );
     return {
       ok: true,
       runtime: "workers",
@@ -539,9 +526,10 @@ export async function getClientPublicStatus(
         runtime,
         envOverride,
       ),
-      isSignupEmailVerificationEnabled: isEmailActiveForRuntime(
-        emailSettings,
-        runtime,
+      // Presence-only — see the comment in getInstallStatus() above.
+      isSignupEmailVerificationEnabled: await resolveEmailActivePresence(
+        db,
+        platformEnv,
       ),
     };
   }
@@ -554,7 +542,6 @@ export async function getClientPublicStatus(
     db,
     envOverride,
     platformEnv,
-    dataEncryptionSecrets,
   );
   return { ok: true, runtime: "deno", ...status };
 }
@@ -599,6 +586,12 @@ export function validateSuperadminEmail(email: string): string | null {
 export const PASSWORD_SPECIAL_CHARS_PATTERN = /[$!@%&*#^()_+=-]/;
 const PASSWORD_DIGIT_PATTERN = /\d/;
 export const PASSWORD_MIN_LENGTH = 8;
+/**
+ * Reject before hashing rather than after: an unbounded password turns
+ * argon2 into an attacker-controlled CPU cost. Matches
+ * `MAX_AUTH_PASSWORD_CHARS` (`auth-body-limits.ts`).
+ */
+export const PASSWORD_MAX_LENGTH = 256;
 
 /**
  * Canonical server-side password policy, enforced on every password-setting
@@ -617,6 +610,9 @@ export function validateSuperadminPassword(password: string): string | null {
   }
   if (password.length < PASSWORD_MIN_LENGTH) {
     return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`;
+  }
+  if (password.length > PASSWORD_MAX_LENGTH) {
+    return `Password must be at most ${PASSWORD_MAX_LENGTH} characters`;
   }
   if (!PASSWORD_DIGIT_PATTERN.test(password)) {
     return "Password must include at least one number";

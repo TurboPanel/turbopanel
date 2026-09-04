@@ -3,6 +3,7 @@ import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
 import {
   emailSettingsToApiShape,
   isEmailActiveForRuntime,
+  resolveEmailActivePresence,
   resolveEmailSettings,
   SYSTEM_EMAIL_DB_KEY,
   updateEmailSettings,
@@ -159,6 +160,82 @@ describe('isEmailActiveForRuntime', () => {
     })
     expect(isEmailActiveForRuntime(withSmtp, 'deno')).toBe(true)
     expect(isEmailActiveForRuntime(withSmtp, 'workers')).toBe(true)
+  })
+})
+
+describe('resolveEmailActivePresence', () => {
+  it('mirrors isEmailActiveForRuntime for env-provided settings, without a decrypt', async () => {
+    const active = await resolveEmailActivePresence(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+      TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-abc',
+      TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
+    })
+    expect(active).toBe(true)
+
+    const inactive = await resolveEmailActivePresence(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+    })
+    expect(inactive).toBe(false)
+  })
+
+  it('treats mailpit as active with no configuration at all', async () => {
+    expect(
+      await resolveEmailActivePresence(undefined, {
+        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+      }),
+    ).toBe(true)
+  })
+
+  it('requires SMTP host and a numeric port', async () => {
+    expect(
+      await resolveEmailActivePresence(undefined, {
+        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
+      }),
+    ).toBe(false)
+    expect(
+      await resolveEmailActivePresence(undefined, {
+        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
+        TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: '127.0.0.1',
+        TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '1025',
+      }),
+    ).toBe(true)
+  })
+
+  it('reports a DB-sealed Mailgun key as active without any data-encryption secrets', async () => {
+    // The whole point: presence never decrypts, so it needs no secrets at
+    // all — resolveEmailSettings()+isEmailActiveForRuntime() would report
+    // this as inactive without them (decrypt fails closed).
+    const secrets = await deriveDataEncryptionSecrets(`1:${V1_SECRET}`)
+    const fakeDb = createFakeSettingDb()
+    await updateEmailSettings(
+      fakeDb as unknown as Db,
+      {},
+      {
+        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'db-mailgun-key',
+        TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
+      },
+      secrets,
+    )
+
+    const withoutSecrets = await resolveEmailSettings(fakeDb as unknown as Db, {})
+    expect(isEmailActiveForRuntime(withoutSecrets, 'workers')).toBe(false)
+
+    expect(await resolveEmailActivePresence(fakeDb as unknown as Db, {})).toBe(true)
+  })
+
+  it('does not treat a plaintext (unsealed) DB secret value as present', async () => {
+    // Same fail-closed rule as decryptEmailSecretValue()'s own rollout guard
+    // (see the parallel test in the DB-backed-secret-encryption suite below)
+    // — presence must not report a corrupted/legacy plaintext row as active.
+    const fakeDb = createFakeSettingDb()
+    fakeDb.seedStored({
+      PROVIDER: 'mailgun',
+      MAILGUN_API_KEY: 'plaintext-mailgun-key',
+      MAILGUN_DOMAIN: 'mg.example.com',
+    })
+
+    expect(await resolveEmailActivePresence(fakeDb as unknown as Db, {})).toBe(false)
   })
 })
 

@@ -8,12 +8,15 @@
 import { env } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Db } from './db.ts'
-import { HEALTH_PATH } from './surfaces.ts'
+import { CLIENT_API_PREFIX, GITHUB_WEBHOOK_PATH, HEALTH_PATH } from './surfaces.ts'
 import {
   resetWorkersBindingWarningsForTests,
   setWorkersDbFactoryForTests,
 } from './workers-bindings.ts'
-import workers, { resetWorkerAppCachesForTests } from './workers.ts'
+import workers, {
+  getLazyEmailQueueResolveCallsForTests,
+  resetWorkerAppCachesForTests,
+} from './workers.ts'
 import { takeLastOfflineSweepScheduledTimeForTests } from './daemon/cell/offline-sweep.ts'
 
 function mockDb(label: string): Db {
@@ -169,6 +172,56 @@ describe('workers.ts entry handlers', () => {
     expect(msg.acked).toBe(true)
     expect(msg.retried).toBe(false)
     expect(batch.retriedAll).toBe(false)
+  }, 30_000)
+
+  it('a rate-limited auth request never resolves the email queue', async () => {
+    // No CLIENT_AUTH_RATE_LIMITER binding and not a dev surface -> the auth
+    // limiter fails closed (429) before the route body even runs. The lazy
+    // email-queue resolver (Comment 1) must never be reached on this path.
+    const ctx = fakeExecutionContext()
+    const response = await workers.fetch(
+      new Request(`https://panel.example.com${CLIENT_API_PREFIX}/auth/sign-in`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
+      }),
+      workersTestEnv(),
+      ctx,
+    )
+    expect(response.status).toBe(429)
+    expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
+    await Promise.all(ctx.waitUntilPromises)
+  }, 30_000)
+
+  it('a rate-limited webhook request never resolves the email queue', async () => {
+    // No GITHUB_WEBHOOK_RATE_LIMITER binding and not a dev surface -> the
+    // webhook gate's rate limit step (the first step) fails closed before
+    // any signature verification or DB work.
+    const ctx = fakeExecutionContext()
+    const response = await workers.fetch(
+      new Request(`https://panel.example.com${GITHUB_WEBHOOK_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }),
+      workersTestEnv(),
+      ctx,
+    )
+    expect(response.status).toBe(429)
+    expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
+    await Promise.all(ctx.waitUntilPromises)
+  }, 30_000)
+
+  it('a plain health check never resolves the email queue', async () => {
+    const ctx = fakeExecutionContext()
+    const response = await workers.fetch(
+      new Request(`https://panel.example.com${HEALTH_PATH}`),
+      workersTestEnv(),
+      ctx,
+    )
+    expect(response.status).toBe(200)
+    expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
+    await Promise.all(ctx.waitUntilPromises)
   }, 30_000)
 
   it('queue retries transient process failures', async () => {

@@ -45,6 +45,13 @@
 
 	@api path /api/*
 	handle @api {
+		# Defense in depth only — the app itself enforces the real per-route
+		# budgets (a few KB for auth, 2 MB for the largest daemon body) via
+		# streaming readers that never buffer past the limit either way. This
+		# just keeps an oversized request from reaching the app socket at all.
+		request_body {
+			max_size 8MB
+		}
 		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
 			header_up X-Real-IP {remote_host}
 		}
@@ -64,6 +71,11 @@
 	# on the instance shares one bucket.
 	@webhook path /webhook/*
 	handle @webhook {
+		# Defense in depth — GITHUB_WEBHOOK_MAX_BODY_BYTES / GITLAB_WEBHOOK_MAX_BODY_BYTES
+		# are both 1 MB; the app's own streaming reader is the authoritative limit.
+		request_body {
+			max_size 2MB
+		}
 		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
 			header_up X-Real-IP {remote_host}
 		}

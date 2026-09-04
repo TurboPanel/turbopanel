@@ -1,3 +1,9 @@
+import {
+  MAX_AUTH_EMAIL_CHARS,
+  MAX_AUTH_PASSWORD_CHARS,
+  MAX_AUTH_USERNAME_CHARS,
+} from '../../client/authn/auth-body-limits.ts'
+
 export type InstallHostCredentials = {
   username: string
   password: string
@@ -29,8 +35,10 @@ export function parseInstallHostCredentialsBody(
   if (
     typeof username !== 'string' ||
     !username.trim() ||
+    username.length > MAX_AUTH_USERNAME_CHARS ||
     typeof password !== 'string' ||
-    !password
+    !password ||
+    password.length > MAX_AUTH_PASSWORD_CHARS
   ) {
     return { ok: false, error: 'Invalid request' }
   }
@@ -52,10 +60,14 @@ export function parseCompleteInstallBodyRaw(
   if (
     typeof username !== 'string' ||
     !username.trim() ||
+    username.length > MAX_AUTH_USERNAME_CHARS ||
     typeof password !== 'string' ||
     !password ||
+    password.length > MAX_AUTH_PASSWORD_CHARS ||
     typeof superadminEmail !== 'string' ||
-    typeof superadminPassword !== 'string'
+    superadminEmail.length > MAX_AUTH_EMAIL_CHARS ||
+    typeof superadminPassword !== 'string' ||
+    superadminPassword.length > MAX_AUTH_PASSWORD_CHARS
   ) {
     return { ok: false, error: 'Invalid request' }
   }

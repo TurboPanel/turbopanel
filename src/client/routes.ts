@@ -75,7 +75,6 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       opts.runtime,
       resolveSignupEnvOverrideFromContext(platformEnv, opts.signupEnvOverride),
       platformEnv,
-      c.get('dataEncryptionSecrets'),
     )
     if (payload === null) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)

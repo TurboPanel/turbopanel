@@ -50,6 +50,12 @@ import {
   parseTrustedProxyCidrs,
   resolvePeerAddress,
 } from '../../lib/peer-address.ts'
+import { readBoundedJson } from '../../lib/http/bounded-body.ts'
+import {
+  AUTH_SIGN_IN_MAX_BODY_BYTES,
+  AUTH_SIGN_UP_MAX_BODY_BYTES,
+  MAX_AUTH_PASSWORD_CHARS,
+} from './auth-body-limits.ts'
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig
@@ -201,6 +207,64 @@ export async function enforceAuthRateLimit(
   })
 }
 
+export type AuthBodyValidation<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string }
+
+/**
+ * Bounded read → parse/validate → rate limit, in that order, for every public
+ * auth route (`http.ts`, `otp-http.ts`, `lib/install/routes.ts`).
+ *
+ * The order matters: a malformed or oversized body must still charge a
+ * rate-limit bucket before the handler returns, so the shape-validation path
+ * cannot be used as a free probe. Since there is no parsed identity yet on
+ * that path, it charges the purpose's **anonymous** identity bucket (plus the
+ * caller's IP bucket, as always) — `enforceAuthRateLimit` with `identity:
+ * null`. A request that parses and validates is charged exactly once, by its
+ * real identity, after this returns.
+ *
+ * Also the point where {@link resolveEmailSettings} / other expensive,
+ * secret-decrypting work must not run before — callers resolve that only
+ * after this returns `ok: true`.
+ */
+export async function readGatedAuthJsonBody<T>(
+  c: Context,
+  opts: {
+    runtime: 'deno' | 'workers'
+    purpose: AuthRateLimitPurpose
+    maxBytes: number
+    parse: (body: unknown) => AuthBodyValidation<T>
+    /** Identity to charge the real rate-limit bucket against once validated. */
+    identity: (value: T) => string
+  },
+): Promise<{ ok: true; value: T } | { ok: false; response: Response }> {
+  const read = await readBoundedJson(c, opts.maxBytes)
+  if (!read.ok) {
+    const anonLimited = await enforceAuthRateLimit(c, opts.purpose, null, opts.runtime)
+    if (anonLimited) return { ok: false, response: anonLimited }
+    const status = read.reason === 'too-large' ? 413 : 400
+    const error = read.reason === 'too-large' ? 'Request body too large' : 'Invalid request'
+    return { ok: false, response: c.json({ ok: false, error }, status) }
+  }
+
+  const parsed = opts.parse(read.body)
+  if (!parsed.ok) {
+    const anonLimited = await enforceAuthRateLimit(c, opts.purpose, null, opts.runtime)
+    if (anonLimited) return { ok: false, response: anonLimited }
+    return { ok: false, response: c.json({ ok: false, error: parsed.error }, 400) }
+  }
+
+  const limited = await enforceAuthRateLimit(
+    c,
+    opts.purpose,
+    opts.identity(parsed.value),
+    opts.runtime,
+  )
+  if (limited) return { ok: false, response: limited }
+
+  return { ok: true, value: parsed.value }
+}
+
 function nowTs(): string {
   return new Date().toISOString()
 }
@@ -318,7 +382,8 @@ export function parseSignupBody(body: unknown): ParsedSignupBody {
     typeof email !== 'string' ||
     !email ||
     typeof password !== 'string' ||
-    !password
+    !password ||
+    password.length > MAX_AUTH_PASSWORD_CHARS
   ) {
     return { ok: false, error: 'Invalid request' }
   }
@@ -331,6 +396,36 @@ export function parseSignupBody(body: unknown): ParsedSignupBody {
   const passwordError = validateSuperadminPassword(password)
   if (passwordError) {
     return { ok: false, error: passwordError }
+  }
+
+  return { ok: true, email, password }
+}
+
+type ParsedSignInBody =
+  | { ok: true; email: string; password: string }
+  | { ok: false; error: string }
+
+/**
+ * Shape-only validation — sign-in must accept any historically-valid
+ * password (no complexity re-check against `validateSuperadminPassword`),
+ * but still caps length before it ever reaches `verifyCredentials`
+ * (argon2 verify cost scales with input size).
+ */
+export function parseSignInBody(body: unknown): ParsedSignInBody {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+
+  const { email, password } = body as { email?: unknown; password?: unknown }
+
+  if (
+    typeof email !== 'string' ||
+    !email ||
+    typeof password !== 'string' ||
+    !password ||
+    password.length > MAX_AUTH_PASSWORD_CHARS
+  ) {
+    return { ok: false, error: 'Invalid request' }
   }
 
   return { ok: true, email, password }
@@ -552,40 +647,19 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
     if (!secrets) {
       return c.json({ ok: false, error: 'Not configured' }, 503)
     }
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
 
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const { email, password } = body as {
-      email?: unknown
-      password?: unknown
-    }
-
-    if (
-      typeof email !== 'string' ||
-      !email ||
-      typeof password !== 'string' ||
-      !password
-    ) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const signInLimited = await enforceAuthRateLimit(
-      c,
-      'sign-in',
-      email,
-      opts.runtime,
-    )
-    if (signInLimited) {
-      return signInLimited
-    }
+    const gated = await readGatedAuthJsonBody(c, {
+      runtime: opts.runtime,
+      purpose: 'sign-in',
+      maxBytes: AUTH_SIGN_IN_MAX_BODY_BYTES,
+      parse: (body) => {
+        const parsed = parseSignInBody(body)
+        return parsed.ok ? { ok: true, value: parsed } : parsed
+      },
+      identity: (v) => v.email,
+    })
+    if (!gated.ok) return gated.response
+    const { email, password } = gated.value
 
     if (
       opts.runtime === 'deno' &&
@@ -683,35 +757,28 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
+    // Bounded read, shape validation, and the rate-limit charge all run before
+    // any DB/crypto work — resolveSignupGate() below decrypts email settings,
+    // which must never run for an unauthenticated flood ahead of the limiter.
+    const gated = await readGatedAuthJsonBody(c, {
+      runtime: opts.runtime,
+      purpose: 'sign-up',
+      maxBytes: AUTH_SIGN_UP_MAX_BODY_BYTES,
+      parse: (body) => {
+        const parsed = parseSignupBody(body)
+        return parsed.ok ? { ok: true, value: parsed } : parsed
+      },
+      identity: (v) => v.email.trim().toLowerCase(),
+    })
+    if (!gated.ok) return gated.response
+    const parsed = gated.value
+    const trimmedEmail = parsed.email.trim().toLowerCase()
+
     const gate = await resolveSignupGate(c, opts, db)
     if (!gate.ok) {
       return gate.response
     }
     const { emailVerificationEnabled, emailQueue: signupQueue, emailFrom } = gate
-
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const parsed = parseSignupBody(body)
-    if (!parsed.ok) {
-      return c.json({ ok: false, error: parsed.error }, 400)
-    }
-
-    const trimmedEmail = parsed.email.trim().toLowerCase()
-
-    const signupLimited = await enforceAuthRateLimit(
-      c,
-      'sign-up',
-      trimmedEmail,
-      opts.runtime,
-    )
-    if (signupLimited) {
-      return signupLimited
-    }
 
     // Check email delivery before the existing-user branch so both new and
     // duplicate submissions see the same 503 when verification is required

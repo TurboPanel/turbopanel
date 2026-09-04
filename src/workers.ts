@@ -51,11 +51,12 @@ import {
   resolveWorkersGitlabWebhookRateLimiter,
   warnIfCachedHyperdriveMissing,
   warnIfClientAuthRateLimiterMissing,
+  warnIfClientAuthStrictRateLimiterMissing,
   warnIfDaemonRateLimitersMissing,
   warnIfGithubWebhookRateLimiterMissing,
   warnIfGitlabWebhookRateLimiterMissing,
 } from './workers-bindings.ts'
-import { endDbConnection, type createWorkersDb } from './db.ts'
+import { endDbConnection, type createWorkersDb, type Db } from './db.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 
@@ -93,7 +94,62 @@ export function resetWorkerAppCachesForTests(): void {
   cachedExecutionLogStore = null
   cachedAuthRateLimiter = null
   cachedDaemonCellRegistryFactory = null
+  lazyEmailQueueResolveCallsForTests = 0
 }
+
+/**
+ * @internal Test seam: count of `resolveWorkersEmailQueue()` calls made by
+ * {@link createLazyWorkersEmailQueue}. ESM imports cannot be monkeypatched
+ * from a test, so the lazy resolver's own call count is the seam — a
+ * rate-limited or non-email-sending request must leave this at 0.
+ */
+let lazyEmailQueueResolveCallsForTests = 0
+
+export function resetLazyEmailQueueResolveCallsForTests(): void {
+  lazyEmailQueueResolveCallsForTests = 0
+}
+
+export function getLazyEmailQueueResolveCallsForTests(): number {
+  return lazyEmailQueueResolveCallsForTests
+}
+
+/**
+ * Wrap {@link resolveWorkersEmailQueue} in an `EmailQueue` that only resolves
+ * (and memoizes) the real queue when a caller actually enqueues a job.
+ *
+ * Resolving eagerly on every request means every webhook delivery, health
+ * check, and auth probe pays a DB read plus an AES-GCM decrypt of the
+ * Mailgun/SMTP secret before the route (or the auth rate limiter) ever sees
+ * the request — see `src/workers.ts` module docs and the `fetch` handler.
+ * Deferring to first `enqueue()` means that cost is paid only by the routes
+ * that actually send email, and only after those routes' own rate limiting.
+ */
+function createLazyWorkersEmailQueue(
+  db: Db | undefined,
+  platformEnv: Record<string, string | undefined>,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+): EmailQueue {
+  let resolved: Promise<EmailQueue> | null = null
+  const resolve = (): Promise<EmailQueue> => {
+    resolved ??= (() => {
+      lazyEmailQueueResolveCallsForTests += 1
+      return resolveWorkersEmailQueue(db, platformEnv, dataEncryptionSecrets)
+    })()
+    return resolved
+  }
+  return {
+    async enqueue(job) {
+      const queue = await resolve()
+      await queue.enqueue(job)
+    },
+    async close() {
+      if (!resolved) return
+      const queue = await resolved
+      await queue.close?.()
+    },
+  }
+}
+
 async function initWorkerApp(env: CloudflareBindings) {
   const secretsConfig = parseSecretsFromEnv(
     {
@@ -151,6 +207,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   })
   warnIfDaemonRateLimitersMissing(env)
   warnIfClientAuthRateLimiterMissing(env)
+  warnIfClientAuthStrictRateLimiterMissing(env)
   warnIfGithubWebhookRateLimiterMissing(env)
   warnIfGitlabWebhookRateLimiterMissing(env)
   cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env)
@@ -220,10 +277,16 @@ export default {
     const { db, queryCache } = dbHandles
     try {
       const platformEnv = stringBindingEnv(env)
-      // Resolve email delivery from current DB + platform env on every request so
-      // admin PUT /settings/email takes effect without restarting the Worker.
-      // (Workers Mailgun sends directly — no AMQP.)
-      const emailQueue: EmailQueue = await resolveWorkersEmailQueue(
+      // Lazy: resolving email settings decrypts the Mailgun/SMTP secret on
+      // every call, so it must not run ahead of routing (or the auth rate
+      // limiter) for requests that never send email — a webhook flood or an
+      // unauthenticated auth probe would otherwise spend that DB read + AES-GCM
+      // decrypt before any throttle sees the request. `enqueue()` resolves
+      // (and memoizes) the real queue on first use, from the *current*
+      // DB/platform env, so admin PUT /settings/email still takes effect
+      // without restarting the Worker — same as the eager resolve this
+      // replaces, just deferred to the route that actually needs it.
+      const emailQueue: EmailQueue = createLazyWorkersEmailQueue(
         db,
         platformEnv,
         cachedDataEncryptionSecrets ?? undefined,

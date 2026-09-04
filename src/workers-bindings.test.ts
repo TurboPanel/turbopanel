@@ -12,6 +12,7 @@ import {
   setWorkersDbFactoryForTests,
   warnIfCachedHyperdriveMissing,
   warnIfClientAuthRateLimiterMissing,
+  warnIfClientAuthStrictRateLimiterMissing,
   warnIfDaemonRateLimitersMissing,
 } from './workers-bindings.ts'
 import type { Db } from './db.ts'
@@ -403,6 +404,79 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
     }
   })
 
+  it('resolveWorkersClientAuthRateLimiter routes strict-tier purposes to CLIENT_AUTH_STRICT_RATE_LIMITER', async () => {
+    const defaultKeys: string[] = []
+    const strictKeys: string[] = []
+    const env = {
+      CLIENT_AUTH_RATE_LIMITER: {
+        limit: (options: { key: string }) => {
+          defaultKeys.push(options.key)
+          return Promise.resolve({ success: true })
+        },
+      },
+      CLIENT_AUTH_STRICT_RATE_LIMITER: {
+        limit: (options: { key: string }) => {
+          strictKeys.push(options.key)
+          return Promise.resolve({ success: true })
+        },
+      },
+    } as unknown as CloudflareBindings
+
+    const limiter = resolveWorkersClientAuthRateLimiter(env)
+    // 'sign-up' is a strict-tier purpose (AUTH_RATE_LIMIT_PURPOSE_TIERS).
+    await limiter.check('sign-up', 'user@example.com', '203.0.113.10')
+    expect(strictKeys).toHaveLength(2) // identity + IP buckets
+    expect(defaultKeys).toHaveLength(0)
+
+    // 'sign-in' is default-tier — goes to the other binding.
+    await limiter.check('sign-in', 'user@example.com', '203.0.113.10')
+    expect(defaultKeys).toHaveLength(2)
+    expect(strictKeys).toHaveLength(2) // unchanged
+  })
+
+  it('resolveWorkersClientAuthRateLimiter fails closed for strict purposes in production when strict binding is unbound', async () => {
+    const keys: string[] = []
+    const env = {
+      CLIENT_AUTH_RATE_LIMITER: {
+        limit: (options: { key: string }) => {
+          keys.push(options.key)
+          return Promise.resolve({ success: true })
+        },
+      },
+    } as unknown as CloudflareBindings
+
+    const limiter = resolveWorkersClientAuthRateLimiter(env)
+    // Strict-tier purpose (sign-up) must fail closed rather than silently
+    // sharing the default binding's looser budget.
+    const strictResult = await limiter.check('sign-up', 'user@example.com', '203.0.113.11')
+    expect(strictResult.allowed).toBe(false)
+    expect(strictResult.retryAfterSeconds).toBeGreaterThan(0)
+    expect(keys).toHaveLength(0)
+
+    // Default-tier purpose (sign-in) still runs against the bound default limiter.
+    const defaultResult = await limiter.check('sign-in', 'user@example.com', '203.0.113.11')
+    expect(defaultResult.allowed).toBe(true)
+    expect(keys).toHaveLength(2)
+  })
+
+  it('resolveWorkersClientAuthRateLimiter falls back to the default binding for strict purposes on the dev surface when strict is unbound', async () => {
+    const keys: string[] = []
+    const env = {
+      TURBOPANEL_DEV_SURFACE: '1',
+      CLIENT_AUTH_RATE_LIMITER: {
+        limit: (options: { key: string }) => {
+          keys.push(options.key)
+          return Promise.resolve({ success: true })
+        },
+      },
+    } as unknown as CloudflareBindings
+
+    const limiter = resolveWorkersClientAuthRateLimiter(env)
+    const result = await limiter.check('sign-up', 'user@example.com', '203.0.113.11')
+    expect(result.allowed).toBe(true)
+    expect(keys).toHaveLength(2)
+  })
+
   it('resolveWorkersClientAuthRateLimiter fails closed in production when binding missing', async () => {
     // Production-like env (no dev surface flag, no binding).
     const env = {} as CloudflareBindings
@@ -569,6 +643,45 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
       warnIfClientAuthRateLimiterMissing({} as CloudflareBindings)
       expect(messages).toHaveLength(1)
       expect(messages[0]).toContain('CLIENT_AUTH_RATE_LIMITER binding missing')
+    } finally {
+      console.warn = warn
+    }
+  })
+
+  it('warnIfClientAuthStrictRateLimiterMissing logs once when the default binding is present but strict is not', () => {
+    const warn = console.warn
+    const messages: string[] = []
+    console.warn = (...args: unknown[]) => {
+      messages.push(String(args[0]))
+    }
+    try {
+      const env = {
+        CLIENT_AUTH_RATE_LIMITER: { limit: () => Promise.resolve({ success: true }) },
+      } as unknown as CloudflareBindings
+      warnIfClientAuthStrictRateLimiterMissing(env)
+      warnIfClientAuthStrictRateLimiterMissing(env)
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).toContain('CLIENT_AUTH_STRICT_RATE_LIMITER binding missing')
+    } finally {
+      console.warn = warn
+    }
+  })
+
+  it('warnIfClientAuthStrictRateLimiterMissing stays silent when neither or both bindings are present', () => {
+    const warn = console.warn
+    const messages: string[] = []
+    console.warn = (...args: unknown[]) => {
+      messages.push(String(args[0]))
+    }
+    try {
+      // Neither bound — that's warnIfClientAuthRateLimiterMissing's job, not this one's.
+      warnIfClientAuthStrictRateLimiterMissing({} as CloudflareBindings)
+      // Both bound — fully configured.
+      warnIfClientAuthStrictRateLimiterMissing({
+        CLIENT_AUTH_RATE_LIMITER: { limit: () => Promise.resolve({ success: true }) },
+        CLIENT_AUTH_STRICT_RATE_LIMITER: { limit: () => Promise.resolve({ success: true }) },
+      } as unknown as CloudflareBindings)
+      expect(messages).toHaveLength(0)
     } finally {
       console.warn = warn
     }

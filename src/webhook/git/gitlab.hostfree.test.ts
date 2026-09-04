@@ -427,6 +427,41 @@ test('an oversized declared body is refused before it is buffered', async () => 
   assertEquals(res.status, 413)
 })
 
+test('an oversized body with no Content-Length is refused without buffering the full payload', async () => {
+  const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
+  const chunkSize = 65_536
+  const totalChunks = Math.ceil((GITLAB_WEBHOOK_MAX_BODY_BYTES * 4) / chunkSize)
+  let pulls = 0
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1
+      if (pulls > totalChunks) {
+        controller.close()
+        return
+      }
+      controller.enqueue(new Uint8Array(chunkSize).fill(120))
+    },
+  })
+
+  const res = await app.request(
+    new Request(`http://instance${GITLAB_WEBHOOK_PATH}/${WEBHOOK_REF}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-gitlab-token': WEBHOOK_SECRET,
+        'x-gitlab-event': 'Push Hook',
+      },
+      body,
+      duplex: 'half',
+      // deno-lint-ignore no-explicit-any
+    } as any),
+  )
+  assertEquals(res.status, 413)
+  // GITLAB_WEBHOOK_MAX_BODY_BYTES is 1 MiB; the reader must abort within a
+  // handful of 64 KiB chunks past that, nowhere near draining 4x the budget.
+  assertEquals(pulls < totalChunks, true)
+})
+
 test('the scoped and bare paths both reach the same gate', async () => {
   const tokenHash = await hashWebhookToken(WEBHOOK_SECRET)
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET, webhookTokenHash: tokenHash })

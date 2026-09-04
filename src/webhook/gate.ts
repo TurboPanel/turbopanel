@@ -55,6 +55,7 @@ import {
   type WebhookDeliveryProvider,
 } from '../lib/db/webhook-delivery-records.ts'
 import { resolveClientIp } from '../client/authn/http.ts'
+import { readBoundedBodyBytes } from '../lib/http/bounded-body.ts'
 
 /** Case-insensitive header access, so an adapter never touches Hono directly. */
 export type HeaderReader = { get(name: string): string | null }
@@ -208,19 +209,20 @@ async function withinRateLimit<THolder>(
  * Step 3. The exact bytes the sender sent, never `c.req.json()` — a signature
  * covers the bytes, and parsing then re-encoding changes key order and escapes.
  *
- * `null` is over the ceiling. `content-length` is checked first so an oversized
- * body is refused before it is buffered, and the buffered length again because
- * that header is the sender's claim rather than a fact.
+ * `null` is over the ceiling. `content-length` is checked first so a body that
+ * declares itself oversized is refused before any read, and — because that
+ * header is the sender's claim rather than a fact — the shared streaming
+ * reader (`src/lib/http/bounded-body.ts`) aborts as soon as the accumulated
+ * byte count crosses `maxBodyBytes`, so a chunked-encoded upload with no (or a
+ * lying) `Content-Length` is never fully buffered either.
  */
 async function readRawBody(
   c: Context<AppEnv>,
   maxBodyBytes: number,
 ): Promise<Uint8Array | null> {
-  const declared = Number.parseInt(c.req.header('content-length') ?? '', 10)
-  if (Number.isFinite(declared) && declared > maxBodyBytes) return null
-  const buffer = await c.req.arrayBuffer()
-  if (buffer.byteLength > maxBodyBytes) return null
-  return new Uint8Array(buffer)
+  const read = await readBoundedBodyBytes(c, maxBodyBytes)
+  if (!read.ok) return null
+  return read.bytes
 }
 
 /**

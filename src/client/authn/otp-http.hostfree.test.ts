@@ -355,6 +355,122 @@ test('send-otp returns 200 during resend cooldown without leaking state', async 
   assertEquals((await readJsonBody<{ ok: boolean }>(res)).ok, true)
 })
 
+test('send-otp forget-password does not email an unknown address', async () => {
+  // Generic send-otp must apply the same reset-password eligibility gate as
+  // reset-password/request-otp — an unreachable reset flow must not create
+  // an OTP row or enqueue email, but the response stays `{ ok: true }`
+  // (anti-enumeration).
+  const state = createEmptyMockAuthState()
+  let enqueued = false
+  const { app } = await buildOtpApp(createMockAuthDb(state), {
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${AUTH_PREFIX}/send-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.140' },
+    body: JSON.stringify({ email: 'unknown-forget@example.com', type: 'forget-password' }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals((await readJsonBody<{ ok: boolean }>(res)).ok, true)
+  assertEquals(enqueued, false)
+  assertEquals(state.verificationRows.length, 0)
+})
+
+test('send-otp forget-password does not email a disabled user', async () => {
+  const state = createEmptyMockAuthState()
+  const email = 'disabled-forget@example.com'
+  seedMockUser(state, {
+    id: crypto.randomUUID(),
+    email,
+    isDisabled: true,
+    isEmailVerified: true,
+    role: 'user',
+  })
+  let enqueued = false
+  const { app } = await buildOtpApp(createMockAuthDb(state), {
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${AUTH_PREFIX}/send-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.141' },
+    body: JSON.stringify({ email, type: 'forget-password' }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals((await readJsonBody<{ ok: boolean }>(res)).ok, true)
+  assertEquals(enqueued, false)
+  assertEquals(state.verificationRows.length, 0)
+})
+
+test('send-otp forget-password does not email a user without a credential account', async () => {
+  const state = createEmptyMockAuthState()
+  const email = 'no-credential-forget@example.com'
+  seedMockUser(state, {
+    id: crypto.randomUUID(),
+    email,
+    isDisabled: false,
+    isEmailVerified: true,
+    role: 'user',
+  })
+  let enqueued = false
+  const { app } = await buildOtpApp(createMockAuthDb(state), {
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${AUTH_PREFIX}/send-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.142' },
+    body: JSON.stringify({ email, type: 'forget-password' }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals((await readJsonBody<{ ok: boolean }>(res)).ok, true)
+  assertEquals(enqueued, false)
+  assertEquals(state.verificationRows.length, 0)
+})
+
+test('send-otp forget-password emails an active user with a credential account', async () => {
+  const state = createEmptyMockAuthState()
+  const email = 'has-credential-forget@example.com'
+  seedMockCredentialUser(state, {
+    id: crypto.randomUUID(),
+    email,
+    password: await hashPassword('Old-secret1!'),
+  })
+  let enqueued = false
+  const { app } = await buildOtpApp(createMockAuthDb(state), {
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${AUTH_PREFIX}/send-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.143' },
+    body: JSON.stringify({ email, type: 'forget-password' }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(enqueued, true)
+})
+
 test('reset-password/otp updates password for mock credential user', async () => {
   const otpVerifierSecrets = await deriveSecretsConfig(
     parseTestSecretsConfig('deno'),

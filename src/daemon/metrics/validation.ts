@@ -241,7 +241,8 @@ function parseEnvelope(
   if (raw.version !== METRICS_SCHEMA_VERSION) {
     return {
       ok: false,
-      reason: `metrics version must be ${METRICS_SCHEMA_VERSION}`,
+      reason:
+        `metrics version must be ${METRICS_SCHEMA_VERSION} (got ${String(raw.version)})`,
     };
   }
   return { ok: true, value: raw };

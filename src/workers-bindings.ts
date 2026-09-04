@@ -215,22 +215,40 @@ function resolveDaemonLimiterBinding(
 /**
  * Resolve the durable client-auth limiter for Workers.
  *
- * - Binding present → durable, globally-shared limiter over the `RateLimit`
- *   binding (counters shared across isolates).
- * - Binding absent on a **dev** surface → per-isolate limiter (acceptable for
- *   local `wrangler dev`).
- * - Binding absent on **production** → fail-closed limiter. Auth endpoints
- *   return 429 rather than silently degrading to a bypassable per-isolate
- *   counter. This is the configuration check that stops production Workers from
- *   quietly running without a shared throttle.
+ * - `CLIENT_AUTH_RATE_LIMITER` present → durable, globally-shared limiter over
+ *   the `RateLimit` binding(s) (counters shared across isolates). When
+ *   `CLIENT_AUTH_STRICT_RATE_LIMITER` is also bound, the stricter purposes
+ *   (sign-up, send-otp, reset-password request — see
+ *   `AUTH_RATE_LIMIT_PURPOSE_TIERS`) are throttled against that separate,
+ *   tighter budget instead of sharing the default one.
+ * - `CLIENT_AUTH_STRICT_RATE_LIMITER` absent on the **dev** surface → strict
+ *   purposes fall back to the default binding (acceptable for local
+ *   `wrangler dev`, where neither binding may be configured).
+ * - `CLIENT_AUTH_STRICT_RATE_LIMITER` absent on **production** → strict
+ *   purposes fail closed (429) instead of silently sharing the looser default
+ *   budget; default-tier purposes still run against `CLIENT_AUTH_RATE_LIMITER`.
+ *   A misconfigured deploy must never quietly downgrade the strict tier.
+ * - `CLIENT_AUTH_RATE_LIMITER` itself absent on a **dev** surface → per-isolate
+ *   limiter (acceptable for local `wrangler dev`).
+ * - `CLIENT_AUTH_RATE_LIMITER` itself absent on **production** → fail-closed
+ *   limiter for the whole auth surface. Auth endpoints return 429 rather than
+ *   silently degrading to a bypassable per-isolate counter. This is the
+ *   configuration check that stops production Workers from quietly running
+ *   without a shared throttle.
  */
 export function resolveWorkersClientAuthRateLimiter(
   env: CloudflareBindings,
 ): AuthRateLimiter {
   if (env.CLIENT_AUTH_RATE_LIMITER) {
-    return createDurableAuthRateLimiter(
-      createWorkersRateLimiter(env.CLIENT_AUTH_RATE_LIMITER),
-    )
+    const defaultLimiter = createWorkersRateLimiter(env.CLIENT_AUTH_RATE_LIMITER)
+    if (env.CLIENT_AUTH_STRICT_RATE_LIMITER) {
+      const strictLimiter = createWorkersRateLimiter(env.CLIENT_AUTH_STRICT_RATE_LIMITER)
+      return createDurableAuthRateLimiter({ default: defaultLimiter, strict: strictLimiter })
+    }
+    const strictLimiter = isWorkersDevSurface(env)
+      ? defaultLimiter
+      : createFailClosedRateLimiter()
+    return createDurableAuthRateLimiter({ default: defaultLimiter, strict: strictLimiter })
   }
   if (isWorkersDevSurface(env)) {
     return getSharedAuthRateLimiter()
@@ -241,6 +259,7 @@ export function resolveWorkersClientAuthRateLimiter(
 let cachedHyperdriveWarningLogged = false
 let daemonRateLimiterWarningLogged = false
 let clientAuthRateLimiterWarningLogged = false
+let clientAuthStrictRateLimiterWarningLogged = false
 let githubWebhookRateLimiterWarningLogged = false
 let gitlabWebhookRateLimiterWarningLogged = false
 
@@ -249,6 +268,7 @@ export function resetWorkersBindingWarningsForTests(): void {
   cachedHyperdriveWarningLogged = false
   daemonRateLimiterWarningLogged = false
   clientAuthRateLimiterWarningLogged = false
+  clientAuthStrictRateLimiterWarningLogged = false
   githubWebhookRateLimiterWarningLogged = false
   gitlabWebhookRateLimiterWarningLogged = false
 }
@@ -303,6 +323,25 @@ export function warnIfClientAuthRateLimiterMissing(env: CloudflareBindings): voi
   clientAuthRateLimiterWarningLogged = true
   console.warn(
     'CLIENT_AUTH_RATE_LIMITER binding missing; client auth endpoints fail closed (429) until it is bound.',
+  )
+}
+
+/**
+ * Warn once when a production-like Workers env has `CLIENT_AUTH_RATE_LIMITER`
+ * but not the stricter `CLIENT_AUTH_STRICT_RATE_LIMITER` — sign-up, send-otp,
+ * and reset-password-request fail closed (429) instead of sharing the looser
+ * default budget, until the strict binding is bound.
+ */
+export function warnIfClientAuthStrictRateLimiterMissing(env: CloudflareBindings): void {
+  if (clientAuthStrictRateLimiterWarningLogged) return
+  if (!env.CLIENT_AUTH_RATE_LIMITER) return
+  if (env.CLIENT_AUTH_STRICT_RATE_LIMITER) return
+  if (isWorkersDevSurface(env)) return
+
+  clientAuthStrictRateLimiterWarningLogged = true
+  console.warn(
+    'CLIENT_AUTH_STRICT_RATE_LIMITER binding missing; sign-up/send-otp/reset-password-request ' +
+      'fail closed (429) until it is bound, instead of sharing the default CLIENT_AUTH_RATE_LIMITER budget.',
   )
 }
 

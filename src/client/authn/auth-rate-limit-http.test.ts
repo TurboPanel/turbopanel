@@ -132,6 +132,56 @@ it('sign-in returns 429 with Retry-After once the limiter blocks', async () => {
   assertEquals(second.headers.get('Retry-After') !== null, true)
 })
 
+it('a malformed sign-in body still charges the rate-limit bucket (anonymous + IP)', async () => {
+  // Comment 2: shape-validation failures must not be a free probe. Even
+  // though the identity here is "anonymous" (no email was ever parsed), the
+  // IP bucket is spent — so a follow-up request from the same IP is blocked
+  // regardless of whether its body is valid.
+  const app = await buildApp(
+    createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
+    'workers',
+  )
+
+  const malformed = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.30' },
+    body: 'not json',
+  })
+  assertEquals(malformed.status, 400)
+
+  const validButSameIp = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.30' },
+    body: JSON.stringify({ email: 'someone-else@example.com', password: 'x' }),
+  })
+  assertEquals(validButSameIp.status, 429)
+  assertEquals(validButSameIp.headers.get('Retry-After') !== null, true)
+})
+
+it('an oversized sign-in body (no Content-Length) still charges the rate-limit bucket', async () => {
+  const app = await buildApp(
+    createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
+    'workers',
+  )
+
+  // AUTH_SIGN_IN_MAX_BODY_BYTES is 4 KiB — well over that, streamed with no
+  // Content-Length header so the byte-limit reader (not the header precheck)
+  // is what trips.
+  const oversized = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.31' },
+    body: JSON.stringify({ email: 'a@example.com', password: 'x'.repeat(8192) }),
+  })
+  assertEquals(oversized.status, 413)
+
+  const validButSameIp = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.31' },
+    body: JSON.stringify({ email: 'b@example.com', password: 'x' }),
+  })
+  assertEquals(validButSameIp.status, 429)
+})
+
 it('spoofed X-Real-IP / X-Forwarded-For cannot bypass Workers rate limits', async () => {
   const app = await buildApp(
     createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),

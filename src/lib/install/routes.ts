@@ -8,7 +8,7 @@ import {
 import { verifyInstallHostCredentials } from '../../client/authn/credentials.ts'
 import {
   buildSessionResponse,
-  enforceAuthRateLimit,
+  readGatedAuthJsonBody,
   resolveClientIp,
   type AuthRouteOpts,
 } from '../../client/authn/http.ts'
@@ -19,36 +19,14 @@ import {
 import { createSession, getSession } from '../../client/authn/session-store.ts'
 import { getDb } from '../../db.ts'
 import {
+  INSTALL_BOOTSTRAP_MAX_BODY_BYTES,
+  INSTALL_COMPLETE_MAX_BODY_BYTES,
+} from '../../client/authn/auth-body-limits.ts'
+import {
   parseCompleteInstallBodyRaw,
   parseInstallHostCredentialsBody,
 } from './parse-body.ts'
 import { INSTALL_API_PREFIX } from '../../surfaces.ts'
-
-async function parseCompleteInstallBody(
-  c: Context,
-): Promise<
-  | {
-    username: string
-    password: string
-    superadminEmail: string
-    superadminPassword: string
-  }
-  | { response: Response }
-> {
-  let body: unknown
-  try {
-    body = await c.req.json()
-  } catch {
-    return { response: c.json({ ok: false, error: 'Invalid request' }, 400) }
-  }
-
-  const parsed = parseCompleteInstallBodyRaw(body)
-  if (!parsed.ok) {
-    return { response: c.json({ ok: false, error: parsed.error }, 400) }
-  }
-
-  return parsed.value
-}
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   if (opts.runtime !== 'deno') {
@@ -68,21 +46,15 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
     return c.json({ ok: false, error: 'Instance is already configured' }, 409)
   }
 
-  const parsed = await parseCompleteInstallBody(c)
-  if ('response' in parsed) {
-    return parsed.response
-  }
-  const { username, password, superadminEmail, superadminPassword } = parsed
-
-  const limited = await enforceAuthRateLimit(
-    c,
-    'install-complete',
-    username.trim(),
-    opts.runtime,
-  )
-  if (limited) {
-    return limited
-  }
+  const gated = await readGatedAuthJsonBody(c, {
+    runtime: opts.runtime,
+    purpose: 'install-complete',
+    maxBytes: INSTALL_COMPLETE_MAX_BODY_BYTES,
+    parse: parseCompleteInstallBodyRaw,
+    identity: (v) => v.username.trim(),
+  })
+  if (!gated.ok) return gated.response
+  const { username, password, superadminEmail, superadminPassword } = gated.value
 
   const hostOk = await verifyInstallHostCredentials(
     username.trim(),
@@ -171,28 +143,15 @@ export function registerInstallRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       return c.json({ ok: false, error: 'Instance is already configured' }, 409)
     }
 
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const parsed = parseInstallHostCredentialsBody(body)
-    if (!parsed.ok) {
-      return c.json({ ok: false, error: parsed.error }, 400)
-    }
-    const { username, password } = parsed.value
-
-    const limited = await enforceAuthRateLimit(
-      c,
-      'install-bootstrap',
-      username.trim(),
-      opts.runtime,
-    )
-    if (limited) {
-      return limited
-    }
+    const gated = await readGatedAuthJsonBody(c, {
+      runtime: opts.runtime,
+      purpose: 'install-bootstrap',
+      maxBytes: INSTALL_BOOTSTRAP_MAX_BODY_BYTES,
+      parse: parseInstallHostCredentialsBody,
+      identity: (v) => v.username.trim(),
+    })
+    if (!gated.ok) return gated.response
+    const { username, password } = gated.value
 
     const ok = await verifyInstallHostCredentials(
       username.trim(),

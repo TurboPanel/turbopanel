@@ -27,17 +27,28 @@ import {
   getSession,
   type SessionData,
 } from './session-store.ts'
-import type { AuthRouteOpts } from './http.ts'
 import {
+  type AuthBodyValidation,
+  type AuthRouteOpts,
   buildSessionResponse,
-  enforceAuthRateLimit,
+  readGatedAuthJsonBody,
   resolveClientIp,
 } from './http.ts'
 import { compatLogWarn } from '../../log-compat.ts'
 import { getDb, type Db } from '../../db.ts'
 import { account, user } from '../../lib/db/schema.ts'
-import { getEmailQueue } from '../../lib/email/types.ts'
-import type { OtpType } from '../../lib/email/types.ts'
+import { getEmailQueue, type OtpType } from '../../lib/email/types.ts'
+import {
+  AUTH_RESET_PASSWORD_MAX_BODY_BYTES,
+  AUTH_RESET_PASSWORD_REQUEST_MAX_BODY_BYTES,
+  AUTH_SEND_OTP_MAX_BODY_BYTES,
+  AUTH_SIGN_IN_OTP_MAX_BODY_BYTES,
+  AUTH_VERIFY_EMAIL_OTP_MAX_BODY_BYTES,
+  AUTH_VERIFY_OTP_MAX_BODY_BYTES,
+  MAX_AUTH_NAME_CHARS,
+  MAX_AUTH_OTP_CHARS,
+  MAX_AUTH_PASSWORD_CHARS,
+} from './auth-body-limits.ts'
 
 const VALID_OTP_TYPES = new Set<OtpType>([
   'sign-in',
@@ -208,6 +219,221 @@ async function resolveOtpSignInUserId(
   return { userId: created.id }
 }
 
+/**
+ * Whether an unauthenticated `send-otp` (`type: 'sign-in'`) should actually
+ * create and email an OTP. An active existing user is always eligible; an
+ * unknown address is eligible only when public sign-up / OTP
+ * auto-registration is enabled for this runtime — otherwise `sign-in/otp`
+ * could never complete for it (see `resolveOtpSignInUserId`), and sending
+ * the email would just be spamming an arbitrary address.
+ *
+ * Callers must return the same `{ ok: true }` response regardless of the
+ * result (anti-enumeration) — only whether an OTP is actually created and
+ * enqueued differs.
+ */
+async function isSignInOtpSendEligible(
+  c: Context,
+  opts: AuthRouteOpts,
+  db: Db,
+  trimmedEmail: string,
+): Promise<boolean> {
+  const existingUsers = await db
+    .select({ id: user.id, isDisabled: user.isDisabled })
+    .from(user)
+    .where(eq(user.email, trimmedEmail))
+    .limit(1)
+
+  const existingUser = existingUsers[0]
+  if (existingUser) {
+    return !existingUser.isDisabled
+  }
+
+  return await resolveEffectiveSignupEnabled(
+    db,
+    opts.runtime,
+    resolveSignupEnvOverrideFromContext(
+      c.get('platformEnv') as Record<string, string | undefined> | undefined,
+      opts.signupEnvOverride,
+    ),
+  )
+}
+
+/**
+ * Whether `reset-password/request-otp` should actually create and email an
+ * OTP: only for an active user that has a credential account.
+ * `reset-password/otp` later fails closed (404) for a missing/disabled user
+ * or a missing credential account — sending the OTP email first for a flow
+ * that can never complete would just be spamming the address.
+ *
+ * Callers must return the same `{ ok: true }` response regardless of the
+ * result (anti-enumeration).
+ */
+async function isResetPasswordRequestEligible(
+  db: Db,
+  trimmedEmail: string,
+): Promise<boolean> {
+  const existingUsers = await db
+    .select({ id: user.id, isDisabled: user.isDisabled })
+    .from(user)
+    .where(eq(user.email, trimmedEmail))
+    .limit(1)
+
+  const existingUser = existingUsers[0]
+  if (!existingUser || existingUser.isDisabled) return false
+
+  const accountRows = await db
+    .select({ id: account.id })
+    .from(account)
+    .where(
+      and(eq(account.userId, existingUser.id), eq(account.providerId, 'credential')),
+    )
+    .limit(1)
+
+  return accountRows.length > 0
+}
+
+type SendOtpBody = { email: string; type: OtpType }
+
+function parseSendOtpBody(body: unknown): AuthBodyValidation<SendOtpBody> {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const { email, type } = body as { email?: unknown; type?: unknown }
+  if (typeof email !== 'string' || !email || !isOtpType(type)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const emailError = validateSuperadminEmail(email)
+  if (emailError) return { ok: false, error: emailError }
+  return { ok: true, value: { email, type } }
+}
+
+type VerifyOtpBody = { email: string; otp: string; type: OtpType }
+
+function parseVerifyOtpBody(body: unknown): AuthBodyValidation<VerifyOtpBody> {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const { email, otp, type } = body as {
+    email?: unknown
+    otp?: unknown
+    type?: unknown
+  }
+  if (
+    typeof email !== 'string' ||
+    !email ||
+    typeof otp !== 'string' ||
+    !otp ||
+    otp.length > MAX_AUTH_OTP_CHARS ||
+    !isOtpType(type)
+  ) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const emailError = validateSuperadminEmail(email)
+  if (emailError) return { ok: false, error: emailError }
+  return { ok: true, value: { email, otp, type } }
+}
+
+type SignInOtpBody = { email: string; otp: string; name: string | undefined }
+
+function parseSignInOtpBody(body: unknown): AuthBodyValidation<SignInOtpBody> {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const { email, otp, name } = body as {
+    email?: unknown
+    otp?: unknown
+    name?: unknown
+  }
+  if (
+    typeof email !== 'string' ||
+    !email ||
+    typeof otp !== 'string' ||
+    !otp ||
+    otp.length > MAX_AUTH_OTP_CHARS
+  ) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  if (name !== undefined && (typeof name !== 'string' || name.length > MAX_AUTH_NAME_CHARS)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const emailError = validateSuperadminEmail(email)
+  if (emailError) return { ok: false, error: emailError }
+  return { ok: true, value: { email, otp, name: typeof name === 'string' ? name : undefined } }
+}
+
+type VerifyEmailOtpBody = { email: string; otp: string }
+
+function parseVerifyEmailOtpBody(body: unknown): AuthBodyValidation<VerifyEmailOtpBody> {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const { email, otp } = body as { email?: unknown; otp?: unknown }
+  if (
+    typeof email !== 'string' ||
+    !email ||
+    typeof otp !== 'string' ||
+    !otp ||
+    otp.length > MAX_AUTH_OTP_CHARS
+  ) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const emailError = validateSuperadminEmail(email)
+  if (emailError) return { ok: false, error: emailError }
+  return { ok: true, value: { email, otp } }
+}
+
+type ResetPasswordRequestBody = { email: string }
+
+function parseResetPasswordRequestBody(
+  body: unknown,
+): AuthBodyValidation<ResetPasswordRequestBody> {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const { email } = body as { email?: unknown }
+  if (typeof email !== 'string' || !email) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const emailError = validateSuperadminEmail(email)
+  if (emailError) return { ok: false, error: emailError }
+  return { ok: true, value: { email } }
+}
+
+type ResetPasswordOtpBody = { email: string; otp: string; password: string }
+
+function parseResetPasswordOtpBody(
+  body: unknown,
+): AuthBodyValidation<ResetPasswordOtpBody> {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  const { email, otp, password } = body as {
+    email?: unknown
+    otp?: unknown
+    password?: unknown
+  }
+  if (
+    typeof email !== 'string' ||
+    !email ||
+    typeof otp !== 'string' ||
+    !otp ||
+    otp.length > MAX_AUTH_OTP_CHARS ||
+    typeof password !== 'string' ||
+    !password ||
+    password.length > MAX_AUTH_PASSWORD_CHARS
+  ) {
+    return { ok: false, error: 'Invalid request' }
+  }
+  // Password error takes priority over email format, matching the original
+  // handler order (weak-password tests assert this message even when the
+  // email is otherwise well-formed).
+  const passwordError = validateSuperadminPassword(password)
+  if (passwordError) return { ok: false, error: passwordError }
+  const emailError = validateSuperadminEmail(email)
+  if (emailError) return { ok: false, error: emailError }
+  return { ok: true, value: { email, otp, password } }
+}
+
 export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteOpts) {
   auth.post('/send-otp', async (c) => {
     const db = getDb(c)
@@ -215,38 +441,16 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const { email, type } = body as { email?: unknown; type?: unknown }
-    if (typeof email !== 'string' || !email || !isOtpType(type)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const emailError = validateSuperadminEmail(email)
-    if (emailError) {
-      return c.json({ ok: false, error: emailError }, 400)
-    }
-
-    let trimmedEmail = email.trim().toLowerCase()
-
-    const sendOtpLimited = await enforceAuthRateLimit(
-      c,
-      'send-otp',
-      trimmedEmail,
-      opts.runtime,
-    )
-    if (sendOtpLimited) {
-      return sendOtpLimited
-    }
+    const gated = await readGatedAuthJsonBody(c, {
+      runtime: opts.runtime,
+      purpose: 'send-otp',
+      maxBytes: AUTH_SEND_OTP_MAX_BODY_BYTES,
+      parse: parseSendOtpBody,
+      identity: (v) => v.email.trim().toLowerCase(),
+    })
+    if (!gated.ok) return gated.response
+    const { type } = gated.value
+    let trimmedEmail = gated.value.email.trim().toLowerCase()
 
     if (type === 'email-verification') {
       const sessionData = await readActiveSession(c, opts)
@@ -265,6 +469,27 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json({ ok: false, error: 'Not configured' }, 503)
     }
 
+    // `sign-in` can email an address that never completes the flow (unknown
+    // + auto-registration disabled, or a disabled account) — skip creating
+    // and sending the OTP for those, but answer identically so the response
+    // never reveals whether the address is reachable.
+    if (
+      type === 'sign-in' &&
+      !(await isSignInOtpSendEligible(c, opts, db, trimmedEmail))
+    ) {
+      return c.json({ ok: true }, 200)
+    }
+
+    // `forget-password` goes through this same generic endpoint — apply the
+    // same eligibility gate as `reset-password/request-otp` so it cannot be
+    // used to spam an address that could never complete a reset.
+    if (
+      type === 'forget-password' &&
+      !(await isResetPasswordRequestEligible(db, trimmedEmail))
+    ) {
+      return c.json({ ok: true }, 200)
+    }
+
     const otpResult = await createEmailOtp(db, trimmedEmail, type, otpSecrets)
     if (otpResult.status === 'cooldown') {
       // Resend cooldown active — respond identically so callers cannot probe.
@@ -281,49 +506,16 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const { email, otp, type } = body as {
-      email?: unknown
-      otp?: unknown
-      type?: unknown
-    }
-
-    if (
-      typeof email !== 'string' ||
-      !email ||
-      typeof otp !== 'string' ||
-      !otp ||
-      !isOtpType(type)
-    ) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const emailError = validateSuperadminEmail(email)
-    if (emailError) {
-      return c.json({ ok: false, error: emailError }, 400)
-    }
-
-    const trimmedEmail = email.trim().toLowerCase()
-
-    const verifyOtpLimited = await enforceAuthRateLimit(
-      c,
-      'verify-otp',
-      trimmedEmail,
-      opts.runtime,
-    )
-    if (verifyOtpLimited) {
-      return verifyOtpLimited
-    }
+    const gated = await readGatedAuthJsonBody(c, {
+      runtime: opts.runtime,
+      purpose: 'verify-otp',
+      maxBytes: AUTH_VERIFY_OTP_MAX_BODY_BYTES,
+      parse: parseVerifyOtpBody,
+      identity: (v) => v.email.trim().toLowerCase(),
+    })
+    if (!gated.ok) return gated.response
+    const { otp, type } = gated.value
+    const trimmedEmail = gated.value.email.trim().toLowerCase()
 
     const otpSecrets = opts.otpVerifierSecrets
     if (!otpSecrets) {
@@ -343,47 +535,16 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const { email, otp, name } = body as {
-      email?: unknown
-      otp?: unknown
-      name?: unknown
-    }
-
-    if (typeof email !== 'string' || !email || typeof otp !== 'string' || !otp) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    if (name !== undefined && typeof name !== 'string') {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const emailError = validateSuperadminEmail(email)
-    if (emailError) {
-      return c.json({ ok: false, error: emailError }, 400)
-    }
-
-    const trimmedEmail = email.trim().toLowerCase()
-
-    const signInOtpLimited = await enforceAuthRateLimit(
-      c,
-      'sign-in-otp',
-      trimmedEmail,
-      opts.runtime,
-    )
-    if (signInOtpLimited) {
-      return signInOtpLimited
-    }
+    const gated = await readGatedAuthJsonBody(c, {
+      runtime: opts.runtime,
+      purpose: 'sign-in-otp',
+      maxBytes: AUTH_SIGN_IN_OTP_MAX_BODY_BYTES,
+      parse: parseSignInOtpBody,
+      identity: (v) => v.email.trim().toLowerCase(),
+    })
+    if (!gated.ok) return gated.response
+    const { otp, name } = gated.value
+    const trimmedEmail = gated.value.email.trim().toLowerCase()
 
     const otpSecrets = opts.otpVerifierSecrets
     if (!otpSecrets) {
@@ -407,7 +568,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       opts,
       db,
       trimmedEmail,
-      typeof name === 'string' ? name : undefined,
+      name,
     )
     if ('response' in resolved) {
       return resolved.response
@@ -451,42 +612,22 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
     if (!sessionData) {
       return c.json({ ok: false, error: 'Unauthorized' }, 401)
     }
-
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const { email, otp } = body as { email?: unknown; otp?: unknown }
-    if (typeof email !== 'string' || !email || typeof otp !== 'string' || !otp) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const emailError = validateSuperadminEmail(email)
-    if (emailError) {
-      return c.json({ ok: false, error: emailError }, 400)
-    }
-
     const sessionEmail = sessionData.email.trim().toLowerCase()
-    const trimmedEmail = email.trim().toLowerCase()
+
+    // Rate-limit identity is the session's own email, not the submitted one —
+    // a caller cannot spend someone else's bucket by submitting their address.
+    const gated = await readGatedAuthJsonBody(c, {
+      runtime: opts.runtime,
+      purpose: 'verify-email-otp',
+      maxBytes: AUTH_VERIFY_EMAIL_OTP_MAX_BODY_BYTES,
+      parse: parseVerifyEmailOtpBody,
+      identity: () => sessionEmail,
+    })
+    if (!gated.ok) return gated.response
+    const { otp } = gated.value
+    const trimmedEmail = gated.value.email.trim().toLowerCase()
     if (trimmedEmail !== sessionEmail) {
       return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const verifyEmailLimited = await enforceAuthRateLimit(
-      c,
-      'verify-email-otp',
-      sessionEmail,
-      opts.runtime,
-    )
-    if (verifyEmailLimited) {
-      return verifyEmailLimited
     }
 
     const otpSecrets = opts.otpVerifierSecrets
@@ -520,42 +661,27 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const { email } = body as { email?: unknown }
-    if (typeof email !== 'string' || !email) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const emailError = validateSuperadminEmail(email)
-    if (emailError) {
-      return c.json({ ok: false, error: emailError }, 400)
-    }
-
-    const trimmedEmail = email.trim().toLowerCase()
-
-    const resetRequestLimited = await enforceAuthRateLimit(
-      c,
-      'reset-password-request',
-      trimmedEmail,
-      opts.runtime,
-    )
-    if (resetRequestLimited) {
-      return resetRequestLimited
-    }
+    const gated = await readGatedAuthJsonBody(c, {
+      runtime: opts.runtime,
+      purpose: 'reset-password-request',
+      maxBytes: AUTH_RESET_PASSWORD_REQUEST_MAX_BODY_BYTES,
+      parse: parseResetPasswordRequestBody,
+      identity: (v) => v.email.trim().toLowerCase(),
+    })
+    if (!gated.ok) return gated.response
+    const trimmedEmail = gated.value.email.trim().toLowerCase()
 
     const otpSecrets = opts.otpVerifierSecrets
     if (!otpSecrets) {
       return c.json({ ok: false, error: 'Not configured' }, 503)
+    }
+
+    // Only an active user with a credential account can ever complete a
+    // reset — `reset-password/otp` fails closed (404) otherwise. Skip
+    // creating and emailing the OTP for a flow that cannot complete, but
+    // answer identically (anti-enumeration).
+    if (!(await isResetPasswordRequestEligible(db, trimmedEmail))) {
+      return c.json({ ok: true }, 200)
     }
 
     const otpResult = await createEmailOtp(
@@ -578,55 +704,16 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const { email, otp, password } = body as {
-      email?: unknown
-      otp?: unknown
-      password?: unknown
-    }
-
-    if (
-      typeof email !== 'string' ||
-      !email ||
-      typeof otp !== 'string' ||
-      !otp ||
-      typeof password !== 'string' ||
-      !password
-    ) {
-      return c.json({ ok: false, error: 'Invalid request' }, 400)
-    }
-
-    const passwordError = validateSuperadminPassword(password)
-    if (passwordError) {
-      return c.json({ ok: false, error: passwordError }, 400)
-    }
-
-    const emailError = validateSuperadminEmail(email)
-    if (emailError) {
-      return c.json({ ok: false, error: emailError }, 400)
-    }
-
-    const trimmedEmail = email.trim().toLowerCase()
-
-    const resetLimited = await enforceAuthRateLimit(
-      c,
-      'reset-password',
-      trimmedEmail,
-      opts.runtime,
-    )
-    if (resetLimited) {
-      return resetLimited
-    }
+    const gated = await readGatedAuthJsonBody(c, {
+      runtime: opts.runtime,
+      purpose: 'reset-password',
+      maxBytes: AUTH_RESET_PASSWORD_MAX_BODY_BYTES,
+      parse: parseResetPasswordOtpBody,
+      identity: (v) => v.email.trim().toLowerCase(),
+    })
+    if (!gated.ok) return gated.response
+    const { otp, password } = gated.value
+    const trimmedEmail = gated.value.email.trim().toLowerCase()
 
     const otpSecrets = opts.otpVerifierSecrets
     if (!otpSecrets) {

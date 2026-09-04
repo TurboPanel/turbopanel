@@ -20,6 +20,10 @@ import {
   getServerMetricsStore,
 } from "../db.ts";
 import {
+  contentLengthExceeds,
+  readBodyWithByteLimit,
+} from "../lib/http/bounded-body.ts";
+import {
   MAX_METRICS_PAYLOAD_BYTES,
   metricsPayloadByteLength,
   rateLimitedMetricsLog,
@@ -92,41 +96,19 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
  * Read a request body while enforcing a hard byte budget, aborting the stream
  * as soon as the budget is exceeded so an oversized upload is never fully
  * buffered. Returns `{ ok: false }` when the limit is exceeded.
+ *
+ * Thin text-decoding wrapper over the shared streaming reader in
+ * `src/lib/http/bounded-body.ts` — every surface that reads an unauthenticated
+ * body (this module, the webhook gate, public auth routes) shares one tested
+ * implementation.
  */
 async function readRequestBodyWithLimit(
   c: Context,
   maxBytes: number,
 ): Promise<{ ok: true; text: string } | { ok: false }> {
-  const stream = c.req.raw.body;
-  if (!stream) {
-    return { ok: true, text: "" };
-  }
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => {});
-        return { ok: false };
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { ok: true, text: new TextDecoder().decode(merged) };
+  const bodyRead = await readBodyWithByteLimit(c, maxBytes);
+  if (!bodyRead.ok) return { ok: false };
+  return { ok: true, text: new TextDecoder().decode(bodyRead.bytes) };
 }
 
 /** Maximum number of ciphertexts accepted per `/secrets/decrypt` request. */
@@ -162,11 +144,8 @@ function rejectIfContentLengthTooLarge(
   c: Context,
   maxBytes: number,
 ): Response | null {
-  const declaredLength = Number(c.req.header("content-length") ?? "");
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    return c.json({ ok: false, error: "request body too large" }, 413);
-  }
-  return null;
+  if (!contentLengthExceeds(c, maxBytes)) return null;
+  return c.json({ ok: false, error: "request body too large" }, 413);
 }
 
 /**

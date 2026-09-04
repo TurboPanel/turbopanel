@@ -372,6 +372,77 @@ async function createEmailSettingsResolver(
   })
 }
 
+/**
+ * Presence-only DB values for {@link resolveEmailActivePresence}: secret keys
+ * (`MAILGUN_API_KEY`, `SMTP_PASS`) map to a non-empty placeholder when a
+ * *sealed* value is stored, never the decrypted plaintext. Whether email is
+ * "active" only ever depends on whether a secret is set, never its content,
+ * so this never needs {@link decryptEmailSecretValue} — but a stored value
+ * that is not a sealed envelope (plaintext, corruption) must still resolve as
+ * unset, matching {@link decryptEmailSecretValue}'s own fail-closed rule, so
+ * this still checks {@link isSealedEnvelope} (a cheap prefix/shape check, no
+ * decrypt) rather than trusting non-emptiness alone.
+ */
+async function loadEmailSettingPresenceDbValues(db: Db): Promise<Map<string, string>> {
+  const obj = await loadSystemEmailObject(db)
+  const out = new Map<string, string>()
+  for (const shortKey of EMAIL_SETTING_SHORT_KEYS) {
+    const stored = obj[shortKey]
+    if (stored === undefined || stored === '') continue
+    if (EMAIL_SECRET_KEYS.has(shortKey)) {
+      if (isSealedEnvelope(stored)) {
+        out.set(fullEmailSettingKey(shortKey), 'set')
+      }
+      continue
+    }
+    out.set(fullEmailSettingKey(shortKey), stored)
+  }
+  return out
+}
+
+async function createEmailPresenceResolver(
+  db: Db | undefined,
+  env: Record<string, string | undefined>,
+): Promise<SettingsResolver> {
+  const dbValues = db
+    ? await loadEmailSettingPresenceDbValues(db)
+    : new Map<string, string>()
+  return new SettingsResolver({
+    prefix: EMAIL_SETTINGS_PREFIX,
+    keys: EMAIL_SETTINGS_SCHEMA,
+    env,
+    dbValues,
+  })
+}
+
+/**
+ * Cheap public-availability check for `GET /api/client/v1/status`: whether
+ * email delivery would be active, without decrypting `MAILGUN_API_KEY` /
+ * `SMTP_PASS`. An unauthenticated status poll must not pay a DB read plus an
+ * AES-GCM decrypt of the delivery secret on every call — presence of a
+ * non-empty stored/env value stands in for the decrypted value, since
+ * activation ({@link isEmailActive}) only ever depends on whether a secret is
+ * *set*, never on its content.
+ */
+export async function resolveEmailActivePresence(
+  db: Db | undefined,
+  env: Record<string, string | undefined>,
+): Promise<boolean> {
+  const resolver = await createEmailPresenceResolver(db, env)
+  const provider = parseProvider(resolver.resolve('PROVIDER').value)
+  if (provider === 'mailpit') return true
+  if (provider === 'smtp') {
+    const host = resolver.resolve('SMTP_HOST').value.trim()
+    const port = resolver.resolve('SMTP_PORT').value.trim()
+    return host !== '' && port !== '' && !Number.isNaN(Number.parseInt(port, 10))
+  }
+  if (provider === 'mailgun') {
+    return resolver.resolve('MAILGUN_API_KEY').value.trim() !== '' &&
+      resolver.resolve('MAILGUN_DOMAIN').value.trim() !== ''
+  }
+  return false
+}
+
 export async function resolveEmailSettings(
   db: Db | undefined,
   env: Record<string, string | undefined>,

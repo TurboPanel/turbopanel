@@ -6,12 +6,18 @@ import {
 import { rateLimitKey } from '../cell/redis/keys.ts'
 import {
   createRedisRateLimiter,
+  DEFAULT_CLIENT_AUTH_RATE_LIMIT,
+  DEFAULT_CLIENT_AUTH_RATE_PERIOD_SECONDS,
+  DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT,
+  DEFAULT_CLIENT_AUTH_STRICT_RATE_PERIOD_SECONDS,
   DEFAULT_DAEMON_CONNECT_RATE_LIMIT,
   DEFAULT_DAEMON_CONNECT_RATE_PERIOD_SECONDS,
   DEFAULT_DAEMON_METRICS_RATE_LIMIT,
   DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS,
   DEFAULT_DAEMON_REST_RATE_LIMIT,
   DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS,
+  resolveClientAuthRateLimit,
+  resolveClientAuthStrictRateLimit,
   resolveDaemonConnectRateLimit,
   resolveDaemonMetricsRateLimit,
   resolveDaemonRestRateLimit,
@@ -255,6 +261,74 @@ test('resolveDaemonWsInboundLimits defaults and env overrides', () => {
     { limit: 90, windowMs: 45_000 },
   )
 })
+
+test('resolveClientAuthRateLimit / resolveClientAuthStrictRateLimit defaults match SHARED_POLICIES', () => {
+  const empty = { get: () => undefined }
+  assertEquals(resolveClientAuthRateLimit(empty), {
+    limit: DEFAULT_CLIENT_AUTH_RATE_LIMIT,
+    periodSeconds: DEFAULT_CLIENT_AUTH_RATE_PERIOD_SECONDS,
+  })
+  assertEquals(resolveClientAuthStrictRateLimit(empty), {
+    limit: DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT,
+    periodSeconds: DEFAULT_CLIENT_AUTH_STRICT_RATE_PERIOD_SECONDS,
+  })
+  // Strict must actually be stricter than default — the whole point of the tier.
+  assertEquals(DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT < DEFAULT_CLIENT_AUTH_RATE_LIMIT, true)
+})
+
+test('resolveClientAuth*RateLimit reads env overrides independently', () => {
+  const env = {
+    get: (key: string) => {
+      const values: Record<string, string> = {
+        TURBOPANEL_CLIENT_AUTH_RATE_LIMIT: '15',
+        TURBOPANEL_CLIENT_AUTH_STRICT_RATE_LIMIT: '3',
+        TURBOPANEL_CLIENT_AUTH_STRICT_RATE_PERIOD: '30',
+      }
+      return values[key]
+    },
+  }
+  assertEquals(resolveClientAuthRateLimit(env), {
+    limit: 15,
+    periodSeconds: DEFAULT_CLIENT_AUTH_RATE_PERIOD_SECONDS,
+  })
+  assertEquals(resolveClientAuthStrictRateLimit(env), {
+    limit: 3,
+    periodSeconds: 30,
+  })
+})
+
+test(
+  'a strict-tier durable Redis limiter blocks at 5 attempts, independent from the default-tier bucket',
+  withRedis(async (client) => {
+    const key = `test-strict-${crypto.randomUUID()}`
+    const defaultKey = `test-default-${crypto.randomUUID()}`
+    const strictLimiter = createRedisRateLimiter({
+      client,
+      limit: DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT,
+      periodSeconds: 60,
+    })
+    const defaultLimiter = createRedisRateLimiter({
+      client,
+      limit: DEFAULT_CLIENT_AUTH_RATE_LIMIT,
+      periodSeconds: 60,
+    })
+    try {
+      for (let i = 0; i < DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT; i++) {
+        assertEquals(await strictLimiter.limit({ key }), { success: true })
+      }
+      assertEquals(await strictLimiter.limit({ key }), { success: false })
+
+      // The default-tier bucket for the same purpose family is untouched —
+      // separate instances, separate budgets.
+      for (let i = 0; i < DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT; i++) {
+        assertEquals(await defaultLimiter.limit({ key: defaultKey }), { success: true })
+      }
+      assertEquals(await defaultLimiter.limit({ key: defaultKey }), { success: true })
+    } finally {
+      await client.del(rateLimitKey(key), rateLimitKey(defaultKey))
+    }
+  }),
+)
 
 test('createRedisRateLimiter denies when eval returns non-one', async () => {
   const client = {

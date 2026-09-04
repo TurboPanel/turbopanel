@@ -564,8 +564,20 @@ test('sign-in/otp requires install before auto-registration on Deno', async () =
 })
 
 test('send-otp enqueues email when queue is configured', async () => {
+  // `sign-in` only reaches the queue for a reachable flow — an active
+  // existing user (see the ineligibility tests below for the unreachable
+  // case).
+  const state = createEmptyMockAuthState()
+  const email = 'queued-otp@example.com'
+  seedMockUser(state, {
+    id: crypto.randomUUID(),
+    email,
+    isDisabled: false,
+    isEmailVerified: true,
+    role: 'user',
+  })
   let enqueued = false
-  const { app } = await buildOtpAuthApp(createMockAuthDb(createEmptyMockAuthState()), {
+  const { app } = await buildOtpAuthApp(createMockAuthDb(state), {
     emailQueue: {
       enqueue: () => {
         enqueued = true
@@ -577,7 +589,172 @@ test('send-otp enqueues email when queue is configured', async () => {
   const res = await app.request(`${CLIENT_API_PREFIX}/auth/send-otp`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.87' },
-    body: JSON.stringify({ email: 'queued-otp@example.com', type: 'sign-in' }),
+    body: JSON.stringify({ email, type: 'sign-in' }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(enqueued, true)
+})
+
+test('send-otp does not email an unknown address when sign-up is disabled', async () => {
+  // Comment 4: an unreachable sign-in OTP flow (unknown address, no
+  // auto-registration) must not create an OTP row or enqueue email — but the
+  // HTTP response stays the same `{ ok: true }` as the reachable case
+  // (anti-enumeration).
+  const state = createEmptyMockAuthState()
+  let enqueued = false
+  const { app } = await buildOtpAuthApp(createMockAuthDb(state), {
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/send-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.130' },
+    body: JSON.stringify({ email: 'unreachable-otp@example.com', type: 'sign-in' }),
+  })
+  assertEquals(res.status, 200)
+  const body = await res.json() as { ok?: boolean }
+  assertEquals(body.ok, true)
+  assertEquals(enqueued, false)
+  assertEquals(state.verificationRows.length, 0)
+})
+
+test('send-otp does not email a disabled existing user', async () => {
+  const state = createEmptyMockAuthState()
+  const email = 'disabled-send-otp@example.com'
+  seedMockUser(state, {
+    id: crypto.randomUUID(),
+    email,
+    isDisabled: true,
+    isEmailVerified: true,
+    role: 'user',
+  })
+  let enqueued = false
+  const { app } = await buildOtpAuthApp(createMockAuthDb(state), {
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/send-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.131' },
+    body: JSON.stringify({ email, type: 'sign-in' }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(enqueued, false)
+  assertEquals(state.verificationRows.length, 0)
+})
+
+test('send-otp emails an unknown address when sign-up is enabled', async () => {
+  // The reachable half of the unknown-address branch: with auto-registration
+  // on, sign-in/otp *can* complete for this address (it creates the user),
+  // so the OTP is still sent.
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, true)
+  let enqueued = false
+  const { app } = await buildOtpAuthApp(createMockAuthDb(state), {
+    signupEnvOverride: '1',
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/send-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.132' },
+    body: JSON.stringify({ email: 'auto-register-otp@example.com', type: 'sign-in' }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(enqueued, true)
+})
+
+test('reset-password/request-otp does not email an unknown address', async () => {
+  const state = createEmptyMockAuthState()
+  let enqueued = false
+  const { app } = await buildOtpAuthApp(createMockAuthDb(state), {
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/reset-password/request-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.133' },
+    body: JSON.stringify({ email: 'unknown-reset@example.com' }),
+  })
+  assertEquals(res.status, 200)
+  const body = await res.json() as { ok?: boolean }
+  assertEquals(body.ok, true)
+  assertEquals(enqueued, false)
+  assertEquals(state.verificationRows.length, 0)
+})
+
+test('reset-password/request-otp does not email a user without a credential account', async () => {
+  const state = createEmptyMockAuthState()
+  const email = 'no-credential-reset@example.com'
+  seedMockUser(state, {
+    id: crypto.randomUUID(),
+    email,
+    isDisabled: false,
+    isEmailVerified: true,
+    role: 'user',
+  })
+  let enqueued = false
+  const { app } = await buildOtpAuthApp(createMockAuthDb(state), {
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/reset-password/request-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.134' },
+    body: JSON.stringify({ email }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(enqueued, false)
+  assertEquals(state.verificationRows.length, 0)
+})
+
+test('reset-password/request-otp emails an active user with a credential account', async () => {
+  const state = createEmptyMockAuthState()
+  const email = 'has-credential-reset@example.com'
+  seedMockCredentialUser(state, {
+    id: crypto.randomUUID(),
+    email,
+    password: await hashPassword('Old-secret1!'),
+  })
+  let enqueued = false
+  const { app } = await buildOtpAuthApp(createMockAuthDb(state), {
+    emailQueue: {
+      enqueue: () => {
+        enqueued = true
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/reset-password/request-otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.135' },
+    body: JSON.stringify({ email }),
   })
   assertEquals(res.status, 200)
   assertEquals(enqueued, true)

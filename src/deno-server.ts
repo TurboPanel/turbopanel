@@ -60,6 +60,8 @@ import { setExecutionLogSealSink } from "./lib/execution-logs/seal-on-terminal.t
 import { EXECUTION_LOG_SWEEP_LIMIT } from "./lib/execution-logs/types.ts";
 import {
   createRedisRateLimiter,
+  resolveClientAuthRateLimit,
+  resolveClientAuthStrictRateLimit,
   resolveDaemonConnectRateLimit,
   resolveDaemonMetricsRateLimit,
   resolveDaemonRestRateLimit,
@@ -351,14 +353,27 @@ export async function startDenoServer(
   // as the daemon limiters). Auth uses onError: 'closed' so a Redis hiccup cannot
   // fail open into unthrottled login/OTP/install; daemon limiters keep the
   // default fail-open behaviour.
-  const authRateLimiter = createDurableAuthRateLimiter(
-    createRedisRateLimiter({
+  //
+  // Two separate buckets, one per AUTH_RATE_LIMIT_PURPOSE_TIERS tier: sign-up /
+  // send-otp / reset-password-request get their own stricter budget instead of
+  // sharing the looser default one — mirrors the in-memory SHARED_POLICIES this
+  // replaces for Deno (see src/client/authn/auth-rate-limit.ts).
+  const clientAuthRate = resolveClientAuthRateLimit();
+  const clientAuthStrictRate = resolveClientAuthStrictRateLimit();
+  const authRateLimiter = createDurableAuthRateLimiter({
+    default: createRedisRateLimiter({
       client: daemonCellRegistry.client,
-      limit: 10,
-      periodSeconds: 60,
+      limit: clientAuthRate.limit,
+      periodSeconds: clientAuthRate.periodSeconds,
       onError: "closed",
     }),
-  );
+    strict: createRedisRateLimiter({
+      client: daemonCellRegistry.client,
+      limit: clientAuthStrictRate.limit,
+      periodSeconds: clientAuthStrictRate.periodSeconds,
+      onError: "closed",
+    }),
+  });
 
   const commandConsumer = await startOptionalCommandConsumer({
     db,
