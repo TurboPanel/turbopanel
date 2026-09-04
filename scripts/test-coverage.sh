@@ -148,6 +148,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/docker-run/routes-helpers.hostfree.test.ts \
   src/client/environments/deploy-prepare.test.ts \
   src/client/environments/deploy-layers.test.ts \
+  src/client/environments/merge-deploy-principal-runtimes.test.ts \
   src/client/environments/deploy-routes.test.ts \
   src/client/environments/deploy-routes.hostfree.test.ts \
   src/client/environments/deploy-sources.hostfree.test.ts \
