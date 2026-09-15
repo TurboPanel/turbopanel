@@ -37,6 +37,11 @@ const GITHUB_ENV = {
   TURBOPANEL_AUTH_PROVIDERS__GITHUB_CLIENT_ID: "gh-client",
   TURBOPANEL_AUTH_PROVIDERS__GITHUB_CLIENT_SECRET: "gh-secret",
 };
+const GOOGLE_ENV = {
+  TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_ID: "google-client",
+  TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_SECRET: "google-secret",
+};
+const BOTH_PROVIDERS_ENV = { ...GITHUB_ENV, ...GOOGLE_ENV };
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -72,10 +77,37 @@ function stubGithubIdentityFetch(identity?: { id?: number }): () => void {
   };
 }
 
+function stubGoogleIdentityFetch(
+  identity?: { sub?: string; email?: string },
+): () => void {
+  const sub = identity?.sub ?? "google-sub-99";
+  const email = identity?.email ?? "googler@example.com";
+  const original = globalThis.fetch;
+  globalThis.fetch = (input) => {
+    const url = String(input);
+    if (url.includes("oauth2.googleapis.com/token")) {
+      return Promise.resolve(jsonResponse({ access_token: "ya29_test" }));
+    }
+    if (url.includes("openidconnect.googleapis.com/v1/userinfo")) {
+      return Promise.resolve(jsonResponse({
+        sub,
+        email,
+        email_verified: true,
+        name: "Googler",
+      }));
+    }
+    return Promise.reject(new Error(`unexpected fetch ${url}`));
+  };
+  return () => {
+    globalThis.fetch = original;
+  };
+}
+
 async function buildApp(opts?: {
   signupEnabled?: boolean;
   withSecrets?: boolean;
   withTwoFactorChallengeSecrets?: boolean;
+  platformEnv?: Record<string, string | undefined>;
 }) {
   const config = parseTestSecretsConfig("deno");
   const secrets = await deriveSecretsConfig(config, "session-signing");
@@ -95,7 +127,7 @@ async function buildApp(opts?: {
   app.use("*", (c, next) => {
     c.set("db", db);
     c.set("secretsConfig", config);
-    c.set("platformEnv", GITHUB_ENV);
+    c.set("platformEnv", opts?.platformEnv ?? GITHUB_ENV);
     c.set("authRateLimiter", limiter);
     return next();
   });
@@ -287,6 +319,164 @@ test("2FA user is redirected to a tp2fa challenge instead of a session", async (
     assertEquals(location.startsWith("/sign-in?challenge="), true);
     assertEquals((res.headers.get("set-cookie") ?? "").length, 0);
   } finally {
+    restore();
+  }
+});
+
+test("start redirects to Google authorize URL with signed state", async () => {
+  const { app } = await buildApp({ platformEnv: GOOGLE_ENV });
+  const res = await app.request(`${ORIGIN}${AUTH}/oauth/google/start`);
+  assertEquals(res.status, 302);
+  const location = res.headers.get("location") ?? "";
+  assertEquals(
+    location.includes("https://accounts.google.com/o/oauth2/v2/auth"),
+    true,
+  );
+  assertEquals(location.includes("client_id=google-client"), true);
+  assertEquals(location.includes("state="), true);
+});
+
+test("Google existing match issues a session cookie and redirects to redirectTo", async () => {
+  const { app, state, config } = await buildApp({
+    platformEnv: BOTH_PROVIDERS_ENV,
+  });
+  const userId = crypto.randomUUID();
+  seedMockUser(state, {
+    id: userId,
+    email: "googler@example.com",
+    isDisabled: false,
+    isEmailVerified: true,
+    is2FaEnabled: false,
+    role: "user",
+  });
+  state.accounts.push({
+    userId,
+    password: null,
+    providerId: "google",
+    providerUserId: "google-sub-99",
+  });
+  const oauthState = await signOAuthState(config, {
+    provider: "google",
+    nonce: "n",
+    redirectTo: "/welcome",
+  });
+  const restore = stubGoogleIdentityFetch();
+  try {
+    const res = await app.request(
+      `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${
+        encodeURIComponent(oauthState)
+      }`,
+    );
+    assertEquals(res.status, 302);
+    assertEquals(res.headers.get("location"), "/welcome");
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    assertEquals(setCookie.includes(HTTPS_SESSION_COOKIE_NAME), true);
+  } finally {
+    restore();
+  }
+});
+
+test("Google 2FA user is redirected to a tp2fa challenge instead of a session", async () => {
+  const { app, state, config } = await buildApp({
+    platformEnv: BOTH_PROVIDERS_ENV,
+  });
+  const userId = crypto.randomUUID();
+  seedMockUser(state, {
+    id: userId,
+    email: "googler-2fa@example.com",
+    isDisabled: false,
+    isEmailVerified: true,
+    is2FaEnabled: true,
+    role: "user",
+  });
+  state.accounts.push({
+    userId,
+    password: null,
+    providerId: "google",
+    providerUserId: "google-sub-2fa",
+  });
+  const oauthState = await signOAuthState(config, {
+    provider: "google",
+    nonce: "n",
+    redirectTo: "/",
+  });
+  const restore = stubGoogleIdentityFetch({ sub: "google-sub-2fa" });
+  try {
+    const res = await app.request(
+      `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${
+        encodeURIComponent(oauthState)
+      }`,
+    );
+    assertEquals(res.status, 302);
+    const location = res.headers.get("location") ?? "";
+    assertEquals(location.startsWith("/sign-in?challenge="), true);
+    assertEquals((res.headers.get("set-cookie") ?? "").length, 0);
+  } finally {
+    restore();
+  }
+});
+
+test("Google signup with no existing account creates a new user, unverified email preserved", async () => {
+  const { app, state, config } = await buildApp({
+    signupEnabled: true,
+    platformEnv: GOOGLE_ENV,
+  });
+  const oauthState = await signOAuthState(config, {
+    provider: "google",
+    nonce: "n",
+    redirectTo: "/dashboard",
+  });
+  const restore = stubGoogleIdentityFetch({
+    sub: "google-new-user",
+    email: "new-google-user@example.com",
+  });
+  // stubGoogleIdentityFetch always returns email_verified: true; override it
+  // here to confirm identity.emailVerified is passed through unchanged
+  // rather than the signup path assuming every OAuth identity is verified.
+  const original = globalThis.fetch;
+  globalThis.fetch = (input) => {
+    const url = String(input);
+    if (url.includes("oauth2.googleapis.com/token")) {
+      return Promise.resolve(jsonResponse({ access_token: "ya29_test" }));
+    }
+    if (url.includes("openidconnect.googleapis.com/v1/userinfo")) {
+      return Promise.resolve(jsonResponse({
+        sub: "google-new-user",
+        email: "new-google-user@example.com",
+        email_verified: false,
+        name: "New Googler",
+      }));
+    }
+    return Promise.reject(new Error(`unexpected fetch ${url}`));
+  };
+  try {
+    const res = await app.request(
+      `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${
+        encodeURIComponent(oauthState)
+      }`,
+    );
+    assertEquals(res.status, 302);
+    assertEquals(res.headers.get("location"), "/dashboard");
+    assertEquals(
+      (res.headers.get("set-cookie") ?? "").includes(HTTPS_SESSION_COOKIE_NAME),
+      true,
+    );
+
+    const created = state.users.find((u) =>
+      u.email === "new-google-user@example.com"
+    );
+    assertEquals(created !== undefined, true);
+    assertEquals(created?.isEmailVerified, false);
+    assertEquals(
+      state.accounts.some((row) =>
+        row.providerId === "google" &&
+        row.providerUserId === "google-new-user" &&
+        row.userId === created?.id
+      ),
+      true,
+    );
+  } finally {
+    globalThis.fetch = original;
     restore();
   }
 });
