@@ -17,8 +17,11 @@ import {
   principal,
   setting,
   tls,
+  twoFactor,
+  user,
   variable,
 } from "../lib/db/schema.ts";
+import { SYSTEM_AUTH_PROVIDERS_DB_KEY } from "../lib/settings/auth-provider-settings.ts";
 import { SYSTEM_EMAIL_DB_KEY } from "../lib/settings/email-settings.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
 import {
@@ -55,8 +58,7 @@ function createV1OnlySecrets() {
 }
 
 function createRotatedSecrets() {
-  const config = parseSecretsEnv(`2:${V2_SECRET},1:${V1_SECRET}`,
-    "deno");
+  const config = parseSecretsEnv(`2:${V2_SECRET},1:${V1_SECRET}`, "deno");
   return deriveEncryptionSecretsConfig(config, "data-encryption");
 }
 
@@ -154,6 +156,31 @@ async function installIsolatedFixtureSchema(
       key text NOT NULL,
       value jsonb NOT NULL,
       CONSTRAINT setting_key_unique UNIQUE (key)
+    )
+  `));
+  await tx.execute(sql.raw(`
+    CREATE TABLE "user" (
+      id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+      created_at timestamptz(3) DEFAULT now() NOT NULL,
+      updated_at timestamptz(3) DEFAULT now() NOT NULL,
+      metadata jsonb,
+      options jsonb,
+      name varchar(255),
+      email varchar(255) NOT NULL,
+      is_email_verified boolean DEFAULT false NOT NULL,
+      is_2fa_enabled boolean DEFAULT false NOT NULL,
+      is_disabled boolean DEFAULT false NOT NULL,
+      role text DEFAULT 'user' NOT NULL
+    )
+  `));
+  await tx.execute(sql.raw(`
+    CREATE TABLE "2fa" (
+      id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+      created_at timestamptz(3) DEFAULT now() NOT NULL,
+      user_id uuid NOT NULL,
+      secret text NOT NULL,
+      is_verified boolean DEFAULT false NOT NULL,
+      backup_codes text NOT NULL
     )
   `));
 }
@@ -647,6 +674,109 @@ test("tryBeginReencryptSweep allows only one of two independent concurrent calle
     assertEquals(held.length, 1);
     await endReencryptSweep(scoped, held[0]!);
     assertEquals((await tryBeginReencryptSweep(scoped)) !== null, true);
+  });
+});
+
+test("reencryptAtRestSecrets reseals 2fa.secret onto the current key version", async () => {
+  const v1Only = await createV1OnlySecrets();
+  const rotated = await createRotatedSecrets();
+  const totpPlain = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+  const v1Envelope = await encryptSecret(v1Only, totpPlain);
+
+  await withIsolatedFixture("reencrypt_2fa", async (scoped) => {
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const [owner] = await scoped
+      .insert(user)
+      .values({
+        email: `reencrypt-2fa-${suffix}@example.com`,
+        isEmailVerified: true,
+        role: "user",
+      })
+      .returning({ id: user.id });
+
+    const [row] = await scoped
+      .insert(twoFactor)
+      .values({
+        userId: owner!.id,
+        secret: v1Envelope,
+        isVerified: true,
+        backupCodes: "[]",
+      })
+      .returning({ id: twoFactor.id });
+
+    const summary = await reencryptAtRestSecrets(scoped, rotated, {
+      cursor: { stage: "twofactor" },
+    });
+
+    assertEquals(summary.scanned, 1);
+    assertEquals(summary.reencrypted, 1);
+    assertEquals(summary.skipped, 0);
+    assertEquals(summary.failed, 0);
+    assertEquals(summary.completed, true);
+
+    const [updated] = await scoped
+      .select({ secret: twoFactor.secret })
+      .from(twoFactor)
+      .where(eq(twoFactor.id, row!.id));
+    assertEquals(parseSecretEnvelope(updated!.secret), { keyVersion: 2 });
+    assertEquals(await decryptSecret(rotated, updated!.secret), totpPlain);
+  });
+});
+
+test("reencryptAtRestSecrets reseals SYSTEM_AUTH_PROVIDERS then continues to email", async () => {
+  const v1Only = await createV1OnlySecrets();
+  const rotated = await createRotatedSecrets();
+  const githubPlain = "github-client-secret-v1";
+  const smtpPlain = "smtp-pass-v1";
+  const v1Github = await encryptSecret(v1Only, githubPlain);
+  const v1Smtp = await encryptSecret(v1Only, smtpPlain);
+
+  await withIsolatedFixture("reencrypt_authproviders", async (scoped) => {
+    await scoped.insert(setting).values({
+      key: SYSTEM_AUTH_PROVIDERS_DB_KEY,
+      value: {
+        GITHUB_CLIENT_ID: "gh-id",
+        GITHUB_CLIENT_SECRET: v1Github,
+        GOOGLE_CLIENT_SECRET: "plaintext-google",
+      },
+    });
+    await scoped.insert(setting).values({
+      key: SYSTEM_EMAIL_DB_KEY,
+      value: { SMTP_PASS: v1Smtp },
+    });
+
+    const summary = await reencryptAtRestSecrets(scoped, rotated, {
+      cursor: { stage: "authproviders" },
+    });
+
+    assertEquals(summary.scanned, 3);
+    assertEquals(summary.reencrypted, 2);
+    assertEquals(summary.skipped, 0);
+    assertEquals(summary.failed, 1);
+    assertEquals(summary.completed, true);
+    assertEquals(summary.cursor, null);
+
+    const [providers] = await scoped
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, SYSTEM_AUTH_PROVIDERS_DB_KEY));
+    const providerObj = providers!.value as Record<string, string>;
+    assertEquals(parseSecretEnvelope(providerObj.GITHUB_CLIENT_SECRET), {
+      keyVersion: 2,
+    });
+    assertEquals(
+      await decryptSecret(rotated, providerObj.GITHUB_CLIENT_SECRET),
+      githubPlain,
+    );
+    assertEquals(providerObj.GOOGLE_CLIENT_SECRET, "plaintext-google");
+
+    const [email] = await scoped
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, SYSTEM_EMAIL_DB_KEY));
+    const emailObj = email!.value as Record<string, string>;
+    assertEquals(parseSecretEnvelope(emailObj.SMTP_PASS), { keyVersion: 2 });
+    assertEquals(await decryptSecret(rotated, emailObj.SMTP_PASS), smtpPlain);
   });
 });
 

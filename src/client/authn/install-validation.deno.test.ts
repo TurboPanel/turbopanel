@@ -129,6 +129,7 @@ it("getClientPublicStatus returns workers shape without install fields", async (
     runtime: "workers",
     isSignupEnabled: false,
     isSignupEmailVerificationEnabled: false,
+    authProviders: [],
     billingEnabled: false,
   });
 });

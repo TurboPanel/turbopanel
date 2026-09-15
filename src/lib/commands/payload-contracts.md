@@ -1,11 +1,11 @@
 # Command payload contracts (per command type)
 
-Referenced from `AGENTS.md` (**Consumer behavior**). Per-command-type
-payload and result contracts the consumer and daemon both honor —
-TurboFabric, `environment.deploy` (compose files, releases, hosting,
-raw ports, sites), managed engines + HA, org TLS, system reconcile.
-**Keep current when a command payload or result shape changes**
-(`schemas.ts` / `types.ts` are the code-side source of truth).
+Referenced from `AGENTS.md` (**Consumer behavior**). Per-command-type payload
+and result contracts the consumer and daemon both honor — TurboFabric,
+`environment.deploy` (compose files, releases, hosting, raw ports, sites),
+managed engines + HA, org TLS, system reconcile. **Keep current when a command
+payload or result shape changes** (`schemas.ts` / `types.ts` are the code-side
+source of truth).
 
 **TurboFabric gateway/member model:** relays are `role = 'gateway' | 'member'`.
 Members always get a host `/32` route. Gateways also advertise `advertisedCidrs`
@@ -16,17 +16,18 @@ verbatim). Apply returns **422** `gateway_datacenter_required` /
 datacenter has no subnet at all (`gateway_datacenter_cidr_required` now means
 "that datacenter has no subnet at all"). `POST /organizations/:id/fabric/apply`
 force-reconciles every relay; PUT disable tears down the mesh and reclaims
-`network(kind='compose')` / `subnet` rows (compose-bridge CIDRs, not datacenter subnets). Overlay addresses auto-allocate from
-`fabric.cidr`. For `environment.deploy` / `environment.stop` success, the
-consumer reconciles canonical `container` rows via
-`reconcileEnvironmentContainers` (`src/lib/db/container-records.ts`) from the
-daemon's authoritative `containers[]` result (identity match by
-`container_name`, else compose service / ordinal — including multi-instance
-`web-N` clones). Stop returns `containers: []` so rows reset to `exited` with
-null `container_id` (identity preserved for restart). When a reported compose
-service has no `service` row yet (deploy before hostname config), reconcile
-creates that service so container FKs can resolve; reconciliation failures are
-logged and never revert the already-succeeded command.
+`network(kind='compose')` / `subnet` rows (compose-bridge CIDRs, not datacenter
+subnets). Overlay addresses auto-allocate from `fabric.cidr`. For
+`environment.deploy` / `environment.stop` success, the consumer reconciles
+canonical `container` rows via `reconcileEnvironmentContainers`
+(`src/lib/db/container-records.ts`) from the daemon's authoritative
+`containers[]` result (identity match by `container_name`, else compose service
+/ ordinal — including multi-instance `web-N` clones). Stop returns
+`containers: []` so rows reset to `exited` with null `container_id` (identity
+preserved for restart). When a reported compose service has no `service` row yet
+(deploy before hostname config), reconcile creates that service so container FKs
+can resolve; reconciliation failures are logged and never revert the
+already-succeeded command.
 
 `server.reboot` requires `organization:manage`, carries an empty payload, uses a
 120s consumer timeout, has no `touchServerMetadata` side-effect, and is executed
@@ -66,20 +67,23 @@ identify the per-host snapshot.
 enqueue time next to `replicaCounts` and for the same reason — `deployment` is
 upsert-per-target and `dispatch.payload` is deleted at terminal state, so this
 is the only durable record that release id `X` of service `web` ever existed.
-Each entry is `{ composeServiceName, releaseId, sourceId, commitSha,
-commitMessage?, commitAuthor?, rollbackToReleaseId? }`, all non-secret;
-`normalizeContextReleases` drops the whole array rather than persisting a
-partial one when a **required** field is missing, because a releases list with
-holes would offer a rollback target that was never built — the display-only
-commit subject/author are dropped individually instead. It is the read model
-behind `lib/db/releases.ts` (`listServiceReleases`) and therefore behind `GET
-/environments/:id/releases` and the `POST /environments/:id/rollback` gate.
+Each entry is
+`{ composeServiceName, releaseId, sourceId, commitSha,
+commitMessage?, commitAuthor?, rollbackToReleaseId? }`,
+all non-secret; `normalizeContextReleases` drops the whole array rather than
+persisting a partial one when a **required** field is missing, because a
+releases list with holes would offer a rollback target that was never built —
+the display-only commit subject/author are dropped individually instead. It is
+the read model behind `lib/db/releases.ts` (`listServiceReleases`) and therefore
+behind `GET
+/environments/:id/releases` and the
+`POST /environments/:id/rollback` gate.
 
 Release ids are allocated **once per compose service per deploy**
 (`createReleaseIdAllocator`, `client/environments/deploy-sources.ts`), before
 the per-server prepare fan-out, and the same allocator is threaded through every
 `prepareDeployCompose()` call in that deploy. So a service scheduled onto three
-servers writes three `command` rows carrying the *same* release id, and
+servers writes three `command` rows carrying the _same_ release id, and
 `listServiceReleases` folds them back into one environment-scoped record whose
 status is the aggregate over all of them. Minting the id inside the per-host
 prepare instead would make each host's release id different, and a rollback
@@ -94,6 +98,17 @@ status is `succeeded` **and** which is materialized on every server the
 environment currently deploys to (`isReleaseMaterializedEverywhere`), and it
 carries the release's recorded commit metadata forward so the rollback's own
 release row names the commit going live rather than the branch placeholder.
+
+**`EnvironmentDeployHosting.tlsMode`:** optional
+`'internal' | 'pinned' | 'acme'`. Absent = expand-only (daemon uses a
+materialized `tlsId` pair or `tls internal`). `acme` omits the Caddy `tls`
+directive so the host ACME client issues the cert; those hostings carry **no**
+`tlsMaterial` entry. Older daemons that ignore the field fall back to
+`tls internal` because `tlsId` is omitted. `forceHttps: false` is incompatible
+with `tlsMode: 'acme'` — including when a sibling path route on the same
+hostname disables HTTPS. Deploy validation rejects that mix; hosting Caddy still
+emits the HTTPS site if an older payload slips through, because ACME cannot
+issue on an HTTP-only hostname.
 
 **`EnvironmentDeployHosting.bindAddress`:** optional IPv4/IPv6 literal resolved
 on the instance at deploy-prepare time (`resolveHostingBindAddress`) from
@@ -134,12 +149,13 @@ an `ingressServices[]` entry (`EnvironmentDeployIngressService`: `serviceId`,
 upsert as managed ingress). HTTP hostings never get an ingress container — they
 stay on the shared loopback Traefik via Docker labels only. HTTP hostname
 deploys also carry `hostingIngress` (`EnvironmentDeployIngressService` with
-`composeServiceName: 'traefik'` and `containerName === <hosting-ingress
-serviceId>-in`) so the daemon can write `<stateDir>/system/hosting-ingress.json`
-before `ensureHostingIngress` on first tenant HTTP deploy — that is the
-**platform** hosting-ingress UUID, not the workload service UUID, and not a
-per-tenant Traefik. Deploy-preview
-merges those ingress rows into `containers[]` with `role: 'ingress'`. See daemon
+`composeServiceName: 'traefik'` and
+`containerName === <hosting-ingress
+serviceId>-in`) so the daemon can write
+`<stateDir>/system/hosting-ingress.json` before `ensureHostingIngress` on first
+tenant HTTP deploy — that is the **platform** hosting-ingress UUID, not the
+workload service UUID, and not a per-tenant Traefik. Deploy-preview merges those
+ingress rows into `containers[]` with `role: 'ingress'`. See daemon
 `src/deploy/AGENTS.md` → "Raw TCP/UDP port hosting" for the per-service Traefik
 project / claim-file / conflict-detection mechanics — cross-service
 published-port uniqueness is enforced **daemon-side** (the instance does not
@@ -158,13 +174,13 @@ snippet, reclaims listed `siteReleases[]` trees, deletes the deployment dir, and
 (`turbopaneld/src/instance/commands/stop-environment.ts`).
 
 **`siteReleases[]` (`{ serviceId, username }[]`) is generic host reclaim, not a
-site detail.** It names `<principalHome>/sites/<serviceId>` — the
-tree the Git release engine publishes into (`releases/`, `current`, `shared/`)
-and the one the native-runtime phase will run out of. Like `fabricNetworks[]`,
-it is resolved from `tenancy` rows **before** they can
-go away (`client/environments/site-releases.ts`, shared by the explicit stop
-route, the drained-server stop, and delete teardown), because the payload is the
-only remaining copy by the time a delete-triggered stop reaches the host. The
+site detail.** It names `<principalHome>/sites/<serviceId>` — the tree the Git
+release engine publishes into (`releases/`, `current`, `shared/`) and the one
+the native-runtime phase will run out of. Like `fabricNetworks[]`, it is
+resolved from `tenancy` rows **before** they can go away
+(`client/environments/site-releases.ts`, shared by the explicit stop route, the
+drained-server stop, and delete teardown), because the payload is the only
+remaining copy by the time a delete-triggered stop reaches the host. The
 resolver returns a **union**: the trees the current merged compose still
 declares, plus the ones recorded in `deployment.options.siteReleases` by the
 deploy that published them. Without the recorded half, a Git-backed service
@@ -190,16 +206,15 @@ reconciled. Failures write nothing beyond the terminal command row.
 
 `system.reconcile` uses a **300 s** consumer timeout (self-heal may pull the
 Traefik image). Offline fail-fast applies. The component set is
-`hosting-ingress | managed-ingress | managed-ha | database | queue | analytics` — each
-`SystemReconcileComponent` carries a `role` (`'ingress'` for the shared
+`hosting-ingress | managed-ingress | managed-ha | database | queue | analytics`
+— each `SystemReconcileComponent` carries a `role` (`'ingress'` for the shared
 per-server Traefik and managed-ingress ProxySQL, `'turbopanel'` for managed-ha
-Orchestrator, and the
-co-located self-host database/queue/analytics services) and a per-component
-`containerName`: `hosting-ingress` → `<serviceId>-in`, `managed-ingress` →
-`<serviceId>-in`, `managed-ha` → `<serviceId>-ha`,
-`database`/`queue`/`analytics` → bare `serviceId` (uuid
-naming). `buildSystemReconcilePayload` resolves **every** system-workspace
-environment pinned to the server in one query (component identity from
+Orchestrator, and the co-located self-host database/queue/analytics services)
+and a per-component `containerName`: `hosting-ingress` → `<serviceId>-in`,
+`managed-ingress` → `<serviceId>-in`, `managed-ha` → `<serviceId>-ha`,
+`database`/`queue`/`analytics` → bare `serviceId` (uuid naming).
+`buildSystemReconcilePayload` resolves **every** system-workspace environment
+pinned to the server in one query (component identity from
 **`project.metadata.component`**, never `environment.metadata.component`) and
 returns **one payload per environment** — a colocated server can carry both a
 `hosting-ingress` environment and the `turbopanel` self-host environment side by
@@ -231,52 +246,51 @@ hosting enable (`PATCH /servers/:id` → `reconcile`), hosting disable (`PATCH` 
 `stop` scoped to hosting-ingress), operate restart
 (`POST /servers/:id/system/:component/restart` — hosting-ingress only, see
 `SYSTEM_OPERATE_COMPONENTS`), and a storage-free drift sweep (Workers
-offline-sweep cron + Deno maintenance timer, including an immediate tick on
-Deno boot) that enqueues for connected servers
-where either the hosting-ingress row needs heal **because demand/observation
-exists** (and is not running, missing a Docker id, or the server recently
-reconnected), **or** a self-host `database`/`queue`/`analytics` system-role
-container is not running or missing a Docker id, throttled to one enqueue per
-**server** (not per environment — one sweep hit still fans out to every system
-environment) per **5 minutes** via the `command` table itself
-(`actorType: 'system'`, `actorId = serverId` for sweep-driven rows —
-`command.actor_id` is a uuid with no FK). Install (`completeInstanceInstall`)
-also enqueues from the request isolate when the colocated daemon is already
-connected. Never enqueue from `onDaemonConnected` / Durable Object handlers.
-See `../../client/system/hierarchy.ts` (provisioning)
+offline-sweep cron + Deno maintenance timer, including an immediate tick on Deno
+boot) that enqueues for connected servers where either the hosting-ingress row
+needs heal **because demand/observation exists** (and is not running, missing a
+Docker id, or the server recently reconnected), **or** a self-host
+`database`/`queue`/`analytics` system-role container is not running or missing a
+Docker id, throttled to one enqueue per **server** (not per environment — one
+sweep hit still fans out to every system environment) per **5 minutes** via the
+`command` table itself (`actorType: 'system'`, `actorId = serverId` for
+sweep-driven rows — `command.actor_id` is a uuid with no FK). Install
+(`completeInstanceInstall`) also enqueues from the request isolate when the
+colocated daemon is already connected. Never enqueue from `onDaemonConnected` /
+Durable Object handlers. See `../../client/system/hierarchy.ts` (provisioning)
 and `../../client/system/reconcile.ts` (payload/sweep); production inventory
 rationale lives in `../../../AGENTS.md` → "Self-host system inventory".
 
 **Managed engine commands** (compose + config + credentials are generated by the
 platform — never conflate with `environment.deploy` hosting ingress). Like
 TurboFabric membership reconcile, **apply / lifecycle / destroy fan out one
-command per managed cluster `replica` server**; each payload carries `memberId` /
-`memberRole` / `memberOrdinal` / `readEligible` / `peers[]` (private endpoints
+command per managed cluster `replica` server**; each payload carries `memberId`
+/ `memberRole` / `memberOrdinal` / `readEligible` / `peers[]` (private endpoints
 to other members). Exposure no longer ships an `ingress` identity on the payload
 — shared ProxySQL is reconciled separately:
 
-| Type                        | Timeout         | Success side-effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| --------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Type                        | Timeout         | Success side-effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `managed.apply`             | 600 s           | Sets `managed.status = 'ready'`. When `memberRole` is `primary`, also pins `managed.server_id` and merges `metadata.host` / `metadata.port` (replica successes never re-home the primary pin). Reconciles `containers[]` for every member when reported. Optional `privateListener` / `replication` on multi-member clusters; `privateListener.transport` (`local` \| `datacenter` \| `fabric` \| `public`, omitted = not public) tags the resolved bind so a **`public`** listener is refused by the daemon without `orgTlsMaterial` and is firewall-scoped to known peers; result `member` health projects onto `replica`. Optional `tlsMaterial` / `orgTlsMaterial` for engine + ProxySQL TLS. Apply-prepare ensures the Organization CA leaf (with member SANs), replication principal, and per-member config. Minted engine-leaf tracking rides command `pendingTlsLeaf` metadata and is upserted onto `leaf` only on success (enqueue / terminal failure leaves the previous deployed expiry visible to the renewal sweep). **HTTP returns after the primary command is queued** — multi-member `pendingStandbyApplies` ride command `metadata` and the consumer enqueues standby applies only after primary success. After apply, the instance may enqueue **`managed.ingress.reconcile`**. |
-| `managed.lifecycle`         | 120 s           | Projects daemon-observed `result.status` onto `managed.status` (`ready` / `stopped` / `failed`) — never infers status from the requested action. Optional `memberId` for fan-out; optional `engine` (postgres\|mysql\|mariadb) so the daemon resolves the correct runtime for member health (absent → postgres for in-flight older commands). Result may include `member` replication health for projection. Promote path fences via `stop` with **`followUpPromote` metadata** — consumer enqueues `managed.promote` only after fence success.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `managed.destroy`           | 300 s           | Always tears down host runtime (`compose -p <managedId> down` — the bare `managed` row UUID — plus leftover-container sweep) even when the state dir is missing; compose down failure is **not** success while labeled containers remain. Projects daemon-observed `result.status`, always returns `containers: []`, and reconciles pins clear. `deleteAfterDestroy` is stamped only on the **primary** member's command so the `managed` row is deleted once. Member DELETE uses **`deleteMemberAfterDestroy`**: the member stays visible (`applying`) until destroy succeeds (then deleted + optional `pendingPrimaryReapply`); destroy failure marks the member `failed` (retryable). Follow-up **`managed.ingress.reconcile`** drops destroyed clusters from ProxySQL desired state.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `managed.promote`           | 600 s           | Enqueued to a replica with `{ managedId, memberId, demoteMemberId?, engine? }`. Optional `engine` selects the promotion runtime (default postgres when omitted). Sets `managed.status = 'applying'`. Lag/health gate (or `{ force: true }` on a **failover** replica only). Read-class promotion uses the disaster-recovery HTTP route, not this command's class bypass. On success: flip roles from `result.promotedMemberId`, demote → `needs_resync`, re-point `managed.server_id`, set `ready`, then fan-out ingress + HA reconcile. Failure/timeout → `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `managed.backup`            | 1800 s (30 min) | `action: 'create'` success reads `managed.options`, appends a `ManagedBackupRecord` (`id`, `createdAt`, `sizeBytes`, `checksum`, `database?`, `path`) built from the result, drops any ids in `result.pruned`, caps the list, and writes back (read-modify-write; log-only on failure, never reverts the succeeded command). `action: 'delete'` success just removes that id from the list. **Does not** set `managed.status = 'failed'` on failure — a read-only backup failure must never mark a healthy engine failed (see asymmetry note below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `managed.restore`           | 1800 s (30 min) | Success projects `managed.status = 'ready'` via `projectManagedObservedStatus` (the engine's data changed, so status is reasserted even though it was likely already `ready`). Failure/timeout **does** set `managed.status = 'failed'` — a failed restore leaves the engine's data in an uncertain state.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `managed.ingress.reconcile` | 300 s           | **Whole-server** ProxySQL desired state only — not per-managed-id. Payload: `serverId`, optional `bindAddresses`, `clusters[]` (each cluster: `managedId`, `engine`, `protocolPort` 15432\|13306 with legacy 5432\|3306 accepted for skew, writer/reader hostgroups, `backends[]`, `users[]` with passwords resealed for **this** server's daemon key), plus optional `orgTlsMaterial` scoped to the **server-owner organization** (the org that owns `server.organization_id` — may differ from a grant-placed project's org). Empty `clusters[]` (no TLS) tears the stack down. Daemon writes compose + full `proxysql.cnf`, materializes TLS under `configDir/proxysql/tls/`, restarts only when static listener section changes, otherwise admin-applies users/servers/rules. Success may reconcile the `managed-ingress` system container when reported. Success also commits `pendingTlsLeaf` metadata onto `leaf` `kind='ingress'` (mint no longer upserts at payload generation). **Never** embeds on `managed.apply`. Offline fail-fast. Failure does **not** flip individual `managed.status` (ingress is server-scoped infrastructure).                                                    |
-| `managed.ha.reconcile`      | 300 s           | **Whole-server** Orchestrator desired state (mirror of ingress reconcile). Payload: `serverId`, `desired` present/absent, Raft peers/advertise, registered cluster aliases (managed UUIDs), `identity` (`serviceId` + `-ha` container). Ansible host-prep then daemon compose. Offline fail-fast. Failure does **not** flip individual `managed.status`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `managed.ha.failover`       | 600 s           | Per-cluster fence/recover step `{ managedId, sourceMemberId, targetMemberId, phase: 'drain' \| 'recover', … }`. Drain applies ProxySQL writer drain; recover calls Orchestrator recover-to after TurboPanel policy, then falls back to `managed.promote` if Orchestrator is absent or recover fails (`Recover: false` — TurboPanel still picks the candidate). `Future:` fail-closed HA lease. Consumer advances the `recovery` journal. Offline fail-fast.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `managed.lifecycle`         | 120 s           | Projects daemon-observed `result.status` onto `managed.status` (`ready` / `stopped` / `failed`) — never infers status from the requested action. Optional `memberId` for fan-out; optional `engine` (postgres\|mysql\|mariadb) so the daemon resolves the correct runtime for member health (absent → postgres for in-flight older commands). Result may include `member` replication health for projection. Promote path fences via `stop` with **`followUpPromote` metadata** — consumer enqueues `managed.promote` only after fence success.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `managed.destroy`           | 300 s           | Always tears down host runtime (`compose -p <managedId> down` — the bare `managed` row UUID — plus leftover-container sweep) even when the state dir is missing; compose down failure is **not** success while labeled containers remain. Projects daemon-observed `result.status`, always returns `containers: []`, and reconciles pins clear. `deleteAfterDestroy` is stamped only on the **primary** member's command so the `managed` row is deleted once. Member DELETE uses **`deleteMemberAfterDestroy`**: the member stays visible (`applying`) until destroy succeeds (then deleted + optional `pendingPrimaryReapply`); destroy failure marks the member `failed` (retryable). Follow-up **`managed.ingress.reconcile`** drops destroyed clusters from ProxySQL desired state.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `managed.promote`           | 600 s           | Enqueued to a replica with `{ managedId, memberId, demoteMemberId?, engine? }`. Optional `engine` selects the promotion runtime (default postgres when omitted). Sets `managed.status = 'applying'`. Lag/health gate (or `{ force: true }` on a **failover** replica only). Read-class promotion uses the disaster-recovery HTTP route, not this command's class bypass. On success: flip roles from `result.promotedMemberId`, demote → `needs_resync`, re-point `managed.server_id`, set `ready`, then fan-out ingress + HA reconcile. Failure/timeout → `failed`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `managed.backup`            | 1800 s (30 min) | `action: 'create'` success reads `managed.options`, appends a `ManagedBackupRecord` (`id`, `createdAt`, `sizeBytes`, `checksum`, `database?`, `path`) built from the result, drops any ids in `result.pruned`, caps the list, and writes back (read-modify-write; log-only on failure, never reverts the succeeded command). `action: 'delete'` success just removes that id from the list. **Does not** set `managed.status = 'failed'` on failure — a read-only backup failure must never mark a healthy engine failed (see asymmetry note below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `managed.restore`           | 1800 s (30 min) | Success projects `managed.status = 'ready'` via `projectManagedObservedStatus` (the engine's data changed, so status is reasserted even though it was likely already `ready`). Failure/timeout **does** set `managed.status = 'failed'` — a failed restore leaves the engine's data in an uncertain state.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `managed.ingress.reconcile` | 300 s           | **Whole-server** ProxySQL desired state only — not per-managed-id. Payload: `serverId`, optional `bindAddresses`, `clusters[]` (each cluster: `managedId`, `engine`, `protocolPort` 15432\|13306 with legacy 5432\|3306 accepted for skew, writer/reader hostgroups, `backends[]`, `users[]` with passwords resealed for **this** server's daemon key), plus optional `orgTlsMaterial` scoped to the **server-owner organization** (the org that owns `server.organization_id` — may differ from a grant-placed project's org). Empty `clusters[]` (no TLS) tears the stack down. Daemon writes compose + full `proxysql.cnf`, materializes TLS under `configDir/proxysql/tls/`, restarts only when static listener section changes, otherwise admin-applies users/servers/rules. Success may reconcile the `managed-ingress` system container when reported. Success also commits `pendingTlsLeaf` metadata onto `leaf` `kind='ingress'` (mint no longer upserts at payload generation). **Never** embeds on `managed.apply`. Offline fail-fast. Failure does **not** flip individual `managed.status` (ingress is server-scoped infrastructure).                                                                                                                                                 |
+| `managed.ha.reconcile`      | 300 s           | **Whole-server** Orchestrator desired state (mirror of ingress reconcile). Payload: `serverId`, `desired` present/absent, Raft peers/advertise, registered cluster aliases (managed UUIDs), `identity` (`serviceId` + `-ha` container). Ansible host-prep then daemon compose. Offline fail-fast. Failure does **not** flip individual `managed.status`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `managed.ha.failover`       | 600 s           | Per-cluster fence/recover step `{ managedId, sourceMemberId, targetMemberId, phase: 'drain' \| 'recover', … }`. Drain applies ProxySQL writer drain; recover calls Orchestrator recover-to after TurboPanel policy, then falls back to `managed.promote` if Orchestrator is absent or recover fails (`Recover: false` — TurboPanel still picks the candidate). `Future:` fail-closed HA lease. Consumer advances the `recovery` journal. Offline fail-fast.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 Managed failure/timeout paths (`failed` / `timed_out` on apply, lifecycle,
 destroy, promote, or **restore**) set `managed.status = 'failed'` without
 altering terminal `command` row semantics. **`managed.backup` is the deliberate
 exception** — it is read-only against the engine, so a failed/timed-out backup
 leaves `managed.status` untouched. **`managed.ingress.reconcile`** and
-**`managed.ha.reconcile` / `managed.ha.failover` failure** also
-leave per-engine `managed.status` untouched unless the recovery journal is
-already promoting that cluster (then the consumer marks the journal `failed`). Other command types still write
-nothing beyond the terminal `command` row on failure (same resiliency contract
-as deploy/stop — never revert an already-succeeded command).
+**`managed.ha.reconcile` / `managed.ha.failover` failure** also leave per-engine
+`managed.status` untouched unless the recovery journal is already promoting that
+cluster (then the consumer marks the journal `failed`). Other command types
+still write nothing beyond the terminal `command` row on failure (same
+resiliency contract as deploy/stop — never revert an already-succeeded command).
 
 **Organization CA & org TLS library (`tls` table):** organization-scoped
 certificates (`upload` / `lets_encrypt` / `self_signed` / `organization_ca`) in
@@ -284,37 +298,42 @@ certificates (`upload` / `lets_encrypt` / `self_signed` / `organization_ca`) in
 `../tls/AGENTS.md`. At most one **active** `organization_ca` per org (partial
 unique `uniq_tls_organization_active_ca` where `ca_state = 'active'`; rotate
 retires the prior row (`ca_state='retired'`, `status` stays `'ready'`), inserts
-generation N+1 as `ca_state='active'`, and records a `changeover` journal). Hosting may pin `hosting.tls_id` to a library
-cert, or leave null for **basic self-signed** (Caddy `tls internal`). Library
-certs — including Let's Encrypt — are never auto-selected; the operator must pin
-them. Private keys are sealed `tpsecret` envelopes at rest — never returned on
-client GET. Deploy and managed Organization-CA-signed leaves re-seal via
-`resealSecretForDaemon` to `tpdaemon(serverId, keyId)` for the target server →
-payload `tlsMaterial[]` / `orgTlsMaterial`; daemon decrypts via
-`POST /api/daemon/v1/secrets/decrypt` and writes files under
-`/etc/turbopanel/tls/<tlsId>/` or managed / ProxySQL `tls/` PEMs. Managed apply
-ensure-or-creates the active Organization CA (mint when missing), issues a leaf,
-and attaches `orgTlsMaterial` so the daemon materializes ProxySQL PEMs without a
-separate TLS wizard (`caCertPem` is the active+retired trust bundle; ProxySQL
-`ssl_ca` and Postgres `ssl_ca_file` accept multi-PEM). **Ingress reconcile scopes Organization CA/leaf to the
-server-owner org** so multi-org clusters on one host share a single frontend
-identity for that server. LE rows start `metadata.status: pending` (not
-selectable until ready). CRUD: `/api/client/v1/tls`; Organization CA
-ensure-or-create **`GET /tls/ca`** (`{ tls, trustBundlePem }`), rotate **`POST /tls/ca/rotate`**
-(lease-guarded journal + fan-out of existing **`managed.apply`** /
-**`managed.ingress.reconcile`** plus binding rematerialize — no new command type,
-no `environment.deploy`; see `../tls/AGENTS.md`), status **`GET /tls/ca/rotation`**,
-retire-gate **`POST /tls/ca/retire`** (revokes retired generations only after every
-tracked command `succeeded` and binding rematerialize rows are not failed;
-`PATCH /tls/:id` `revoke:true` cannot revoke an Organization CA), PEM-only
-download **`GET /tls/ca/download`** (concatenated active+retired bundle). **TurboFabric apply** ships via
+generation N+1 as `ca_state='active'`, and records a `changeover` journal).
+Hosting may pin `hosting.tls_id` to a library cert, leave null for **basic
+self-signed** (Caddy `tls internal`), or pin a `managed` Let's Encrypt row.
+Library certs — including Let's Encrypt — are never auto-selected; the operator
+must pin them. A `managed` `lets_encrypt` pin deploys as
+`hostings[].tlsMode: 'acme'` with no `tlsId` and **no** `tlsMaterial` entry —
+Caddy issues the leaf on the host. Private keys are sealed `tpsecret` envelopes
+at rest — never returned on client GET. Deploy and managed
+Organization-CA-signed leaves re-seal via `resealSecretForDaemon` to
+`tpdaemon(serverId, keyId)` for the target server → payload `tlsMaterial[]` /
+`orgTlsMaterial`; daemon decrypts via `POST /api/daemon/v1/secrets/decrypt` and
+writes files under `/etc/turbopanel/tls/<tlsId>/` or managed / ProxySQL `tls/`
+PEMs. Managed apply ensure-or-creates the active Organization CA (mint when
+missing), issues a leaf, and attaches `orgTlsMaterial` so the daemon
+materializes ProxySQL PEMs without a separate TLS wizard (`caCertPem` is the
+active+retired trust bundle; ProxySQL `ssl_ca` and Postgres `ssl_ca_file` accept
+multi-PEM). **Ingress reconcile scopes Organization CA/leaf to the server-owner
+org** so multi-org clusters on one host share a single frontend identity for
+that server. LE rows insert as `metadata.status: managed` (pinnable without
+PEMs; Caddy issues on a public bind). CRUD: `/api/client/v1/tls`; Organization
+CA ensure-or-create **`GET /tls/ca`** (`{ tls, trustBundlePem }`), rotate
+**`POST /tls/ca/rotate`** (lease-guarded journal + fan-out of existing
+**`managed.apply`** / **`managed.ingress.reconcile`** plus binding rematerialize
+— no new command type, no `environment.deploy`; see `../tls/AGENTS.md`), status
+**`GET /tls/ca/rotation`**, retire-gate **`POST /tls/ca/retire`** (revokes
+retired generations only after every tracked command `succeeded` and binding
+rematerialize rows are not failed; `PATCH /tls/:id` `revoke:true` cannot revoke
+an Organization CA), PEM-only download **`GET /tls/ca/download`** (concatenated
+active+retired bundle). **TurboFabric apply** ships via
 `POST /organizations/:id/fabric/apply` → `server.fabric.reconcile` (see consumer
 paragraph above). **Platform CA rotation** ships via admin public-URL apply /
-explicit rotate → `server.tls.trust.reconcile` (`{ bundlePem, fingerprint,
-allowRemoval? }`) to every connected server over the existing WSS session.
-**Site deploy:** compose
-`serviceKind: site` services are stripped into
-`sites[]` (nginx, Apache, and OpenLiteSpeed all supported) —
+explicit rotate → `server.tls.trust.reconcile`
+(`{ bundlePem, fingerprint,
+allowRemoval? }`) to every connected server over the
+existing WSS session. **Site deploy:** compose `serviceKind: site` services are
+stripped into `sites[]` (nginx, Apache, and OpenLiteSpeed all supported) —
 hosting `options.web.php` (`version` / `memoryLimit` / `maxExecutionTime`) and
 `options.web.env` merge into the site payload (`webEnv` / `php` on each site);
 all three engines run PHP: nginx/Apache apply vendors php-fpm (never mod_php)
@@ -323,11 +342,11 @@ and writes pool `php_admin_value` for memory/time limits, reached via
 each vhost its own LSAPI processor under suEXEC, with the same limits as
 `phpIniOverride` values. One PHP series per host across all three engines —
 conflicting `version` hints fail the deploy. `web.env` is still Apache-only
-(`SetEnv`). When a project principal is assigned to the service,
-deploy-prepare pins `sites[].principal` (at most one — else
-**422** `site_principal_ambiguous`); the daemon owns the site tree as
-that user (engine group retains read) and runs the site's PHP workers — FPM pool
-or LSAPI process — as the principal. **Git-backed releases:** compose services declaring
+(`SetEnv`). When a project principal is assigned to the service, deploy-prepare
+pins `sites[].principal` (at most one — else **422**
+`site_principal_ambiguous`); the daemon owns the site tree as that user (engine
+group retains read) and runs the site's PHP workers — FPM pool or LSAPI process
+— as the principal. **Git-backed releases:** compose services declaring
 `x-turbopanel.source` are resolved into payload **`sourceMaterial[]`**
 (`{ sourceId, composeServiceName, provider, cloneUrl, ref, commitSha,
 subdirectory?, credential?, releaseId, principal?, build }`)
@@ -343,11 +362,10 @@ out, builds, and atomically promotes `<principalHome>/sites/<serviceId>/current`
 is served or supervised. Payload **`dockerExternalNetworks[]`** lists compose
 external network host names that must already exist as org `network` rows
 (`kind: docker`, `options.dockerNetworkName`); the daemon ensures them with
-`docker network create` before compose up. Mixed container + site
-deploys rely on daemon-side `host.docker.internal` +
-`TURBOPANEL_SITE_*` env injection — not instance payload fields. See
-`../compose/AGENTS.md` and daemon `src/deploy/AGENTS.md`. Future: swarm-style
-replicas — seams only.
+`docker network create` before compose up. Mixed container + site deploys rely
+on daemon-side `host.docker.internal` + `TURBOPANEL_SITE_*` env injection — not
+instance payload fields. See `../compose/AGENTS.md` and daemon
+`src/deploy/AGENTS.md`. Future: swarm-style replicas — seams only.
 
 Future webhook-triggered operations — deploy service, rebuild app, rotate tunnel
 token, update daemon, restart service, collect diagnostics, stream logs — reuse
@@ -372,9 +390,9 @@ importable from both runtimes and the in-process consumer:
 - `workers-queue.ts` — Workers Cloudflare Queues producer
 - `noop-command-queue.ts` — fallback when broker/binding unavailable
 - `context.ts` — `commandContextFromPayload` (allowlisted, non-secret
-  identifiers copied onto `command.context`) + `normalizeReplicaCounts` (the
-  one structured value on the allowlist: a `service -> positive integer` map,
-  kept durable so deploy-history detail can report replica counts after the
+  identifiers copied onto `command.context`) + `normalizeReplicaCounts` (the one
+  structured value on the allowlist: a `service -> positive integer` map, kept
+  durable so deploy-history detail can report replica counts after the
   `dispatch` payload is deleted)
 - `consumer.ts` — `processCommandEnvelope` (shared consumer logic)
 - `deno-consumer.ts` — `startCommandConsumer` (Deno in-process AMQP consumer)
@@ -384,4 +402,3 @@ DB helpers: `src/lib/db/command-records.ts` — `createCommandRecord`,
 flat `CommandRecord` (mapped from real columns; no payload). Dispatch-payload
 helpers live beside them: `getCommandDispatchPayload`, `deleteCommandDispatch`,
 `retainCommandDispatch`, `sweepExpiredCommandDispatch`.
-

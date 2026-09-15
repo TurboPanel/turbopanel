@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   createEmailOtpEmail,
   createEmailVerificationLinkEmail,
+  createInvitationEmail,
 } from './templates.ts'
 
 /**
@@ -56,4 +57,24 @@ test('createEmailOtpEmail covers otp types and escapes otp in HTML', () => {
   assertEquals(xss.html.includes('<script>'), false)
   assertEquals(xss.html.includes('&lt;script&gt;'), true)
   assertEquals(xss.text.includes('<script>'), true)
+})
+
+test('createInvitationEmail escapes interpolated fields and sets the subject', () => {
+  const { subject, html, text } = createInvitationEmail({
+    type: 'invitation',
+    to: 'invitee@example.com',
+    from: 'noreply@example.com',
+    inviterEmail: 'owner@<org>.example',
+    organizationName: 'Acme <script>',
+    teamName: 'Ops & "Core"',
+    acceptUrl: 'https://example.com/accept-invitation?id=<script>',
+  })
+  assertEquals(subject, "You've been invited to Acme <script> on TurboPanel")
+  assertEquals(html.includes('<script>'), false)
+  assertEquals(html.includes('&lt;script&gt;'), true)
+  assertEquals(html.includes('&amp;'), true)
+  assertEquals(html.includes('&quot;'), true)
+  assertEquals(html.includes('owner@&lt;org&gt;.example'), true)
+  assertEquals(text.includes('Acme <script>'), true)
+  assertEquals(text.includes('https://example.com/accept-invitation?id=<script>'), true)
 })

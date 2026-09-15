@@ -67,6 +67,11 @@ import {
 import { type createWorkersDb, type Db, endDbConnection } from './db.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
+import { WEBAUTHN_CHALLENGE_PURPOSE } from './client/authn/passkeys.ts'
+import {
+  BACKUP_CODE_VERIFIER_PURPOSE,
+  TWO_FACTOR_CHALLENGE_PURPOSE,
+} from './client/authn/two-factor.ts'
 
 export { DaemonCellObject } from './daemon/cell/do.ts'
 
@@ -74,6 +79,9 @@ let initPromise: Promise<void> | null = null
 let cachedApp: ReturnType<typeof createApp> | null = null
 let cachedSessionSecrets: Awaited<ReturnType<typeof deriveSecretsConfig>> | null = null
 let cachedOtpVerifierSecrets: DerivedSecretsConfig | null = null
+let cachedTwoFactorChallengeSecrets: DerivedSecretsConfig | null = null
+let cachedBackupCodeVerifierSecrets: DerivedSecretsConfig | null = null
+let cachedWebauthnChallengeSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
@@ -95,6 +103,9 @@ export function resetWorkerAppCachesForTests(): void {
   cachedApp = null
   cachedSessionSecrets = null
   cachedOtpVerifierSecrets = null
+  cachedTwoFactorChallengeSecrets = null
+  cachedBackupCodeVerifierSecrets = null
+  cachedWebauthnChallengeSecrets = null
   cachedDaemonJwtKeyring = null
   cachedChallengeSigningSecrets = null
   cachedDataEncryptionSecrets = null
@@ -176,6 +187,18 @@ async function initWorkerApp(env: CloudflareBindings) {
   cachedSecretsConfig = secretsConfig
   cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   cachedOtpVerifierSecrets = await deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE)
+  cachedTwoFactorChallengeSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    TWO_FACTOR_CHALLENGE_PURPOSE,
+  )
+  cachedBackupCodeVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    BACKUP_CODE_VERIFIER_PURPOSE,
+  )
+  cachedWebauthnChallengeSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    WEBAUTHN_CHALLENGE_PURPOSE,
+  )
   cachedDaemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
   cachedChallengeSigningSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -220,6 +243,9 @@ async function initWorkerApp(env: CloudflareBindings) {
     commandQueue: cachedCommandQueue,
     secrets: cachedSessionSecrets,
     otpVerifierSecrets: cachedOtpVerifierSecrets ?? undefined,
+    twoFactorChallengeSecrets: cachedTwoFactorChallengeSecrets ?? undefined,
+    backupCodeVerifierSecrets: cachedBackupCodeVerifierSecrets ?? undefined,
+    webauthnChallengeSecrets: cachedWebauthnChallengeSecrets ?? undefined,
     runtime: 'workers',
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,

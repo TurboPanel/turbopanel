@@ -18,6 +18,7 @@ const TLS_STATUSES = new Set<TlsStatus>([
   'expired',
   'failed',
   'revoked',
+  'managed',
 ])
 
 function isTlsStatus(value: unknown): value is TlsStatus {
@@ -123,6 +124,7 @@ export function refreshTlsStatus(
   metadata: TlsMetadata,
   now: Date = new Date(),
 ): TlsMetadata {
+  // `managed` is Caddy ACME intent — no leaf dates to expire here.
   if (metadata.status !== 'ready') return metadata
   const notAfter = Date.parse(metadata.notAfter)
   if (!Number.isNaN(notAfter) && now.getTime() > notAfter) {

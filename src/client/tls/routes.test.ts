@@ -15,20 +15,29 @@ import {
   parseSecretsEnv,
 } from "../authn/secrets.ts";
 import {
+  changeover,
   command,
   environment,
   grant,
   managed,
   organization,
   project,
-  changeover,
   server,
   tls,
   user,
   workspace,
 } from "../../lib/db/schema.ts";
-import { mintSelfSignedCertificate } from "../../lib/tls/index.ts";
-import type { TlsMetadata } from "../../lib/tls/types.ts";
+import {
+  assembleTlsMetadata,
+  mintSelfSignedCertificate,
+  parseTlsOptions,
+  resolveTlsForHosting,
+} from "../../lib/tls/index.ts";
+import type {
+  TlsCandidate,
+  TlsMetadata,
+  TlsSource,
+} from "../../lib/tls/types.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerTlsRoutes } from "./routes.ts";
 import { ROTATION_FANOUT_BATCH_SIZE } from "./changeover-fanout.ts";
@@ -79,8 +88,10 @@ function createStubRegistry(): DaemonCellRegistry {
 }
 
 async function createTlsTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+  const secretsConfig = parseSecretsEnv(
+    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno",
+  );
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
@@ -95,7 +106,11 @@ async function createTlsTestApp(db: ReturnType<typeof createDenoDb>) {
     c.set("commandQueue", createRecordingCommandQueue());
     return next();
   });
-  registerTlsRoutes(app, { secrets, runtime: "deno", signupEnvOverride: undefined });
+  registerTlsRoutes(app, {
+    secrets,
+    runtime: "deno",
+    signupEnvOverride: undefined,
+  });
   return { app, secrets };
 }
 
@@ -234,7 +249,7 @@ async function deleteSeededManagedClusters(
   await db.delete(workspace).where(eq(workspace.id, seeded.workspaceId));
 }
 
-test("POST /tls lets_encrypt pending cert appears in list and detail with empty fingerprint", async () => {
+test("POST /tls lets_encrypt managed cert appears in list and detail with empty fingerprint", async () => {
   await withTlsFixtures(
     async ({ db, app, secrets, userId, organizationId }) => {
       const cookie = await sessionCookie(db, secrets, userId);
@@ -272,7 +287,7 @@ test("POST /tls lets_encrypt pending cert appears in list and detail with empty 
       };
       const listed = listBody.tls.find((entry) => entry.id === created.id);
       assertEquals(listed !== undefined, true);
-      assertEquals(listed?.metadata.status, "pending");
+      assertEquals(listed?.metadata.status, "managed");
       assertEquals(listed?.metadata.fingerprintSha256, "");
       assertEquals(listed?.metadata.dnsNames, ["pending.example.com"]);
       assertEquals(listed?.metadata.acme?.challengeType, "http-01");
@@ -282,9 +297,100 @@ test("POST /tls lets_encrypt pending cert appears in list and detail with empty 
       const detailBody = await detailRes.json() as {
         tls: { metadata: TlsMetadata };
       };
-      assertEquals(detailBody.tls.metadata.status, "pending");
+      assertEquals(detailBody.tls.metadata.status, "managed");
       assertEquals(detailBody.tls.metadata.fingerprintSha256, "");
       assertEquals(detailBody.tls.metadata.dnsNames, ["pending.example.com"]);
+    },
+  );
+});
+
+async function loadTlsCandidate(
+  db: ReturnType<typeof createDenoDb>,
+  tlsId: string,
+): Promise<TlsCandidate> {
+  const [row] = await db
+    .select({
+      id: tls.id,
+      source: tls.source,
+      status: tls.status,
+      notAfter: tls.notAfter,
+      fingerprintSha256: tls.fingerprintSha256,
+      metadata: tls.metadata,
+      options: tls.options,
+    })
+    .from(tls)
+    .where(eq(tls.id, tlsId))
+    .limit(1);
+  if (!row) throw new TypeError("expected tls row");
+  const metadata = assembleTlsMetadata(
+    {
+      status: row.status,
+      notAfter: row.notAfter,
+      fingerprintSha256: row.fingerprintSha256,
+    },
+    row.metadata,
+  );
+  if (!metadata) throw new TypeError("expected tls metadata");
+  return {
+    id: row.id,
+    metadata,
+    options: parseTlsOptions(row.options),
+    source: row.source as TlsSource,
+  };
+}
+
+test("PATCH /tls/:id revoke:true on lets_encrypt falls back to internal TLS on deploy", async () => {
+  await withTlsFixtures(
+    async ({ db, app, secrets, userId, organizationId }) => {
+      const cookie = await sessionCookie(db, secrets, userId);
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      };
+
+      const createRes = await app.request("/tls", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "lets_encrypt",
+          name: "Revoke fallback LE",
+          hostnames: ["app.example.com"],
+          challengeType: "http-01",
+        }),
+      });
+      assertEquals(createRes.status, 200);
+      const created = await createRes.json() as { ok: true; id: string };
+
+      const before = await loadTlsCandidate(db, created.id);
+      assertEquals(
+        resolveTlsForHosting({
+          pinId: created.id,
+          hostnames: ["app.example.com"],
+          candidates: [before],
+        }),
+        { ok: true, tlsId: created.id, reason: "pin" },
+      );
+
+      const revoke = await app.request(`/tls/${created.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ revoke: true }),
+      });
+      assertEquals(revoke.status, 200);
+
+      const after = await loadTlsCandidate(db, created.id);
+      assertEquals(after.metadata.status, "revoked");
+      // Same resolution path deploy-prepare uses: omit the pin so the daemon
+      // emits `tls internal` instead of failing with tls_pin_not_ready.
+      assertEquals(
+        resolveTlsForHosting({
+          pinId: created.id,
+          hostnames: ["app.example.com"],
+          candidates: [after],
+        }),
+        { ok: true, tlsId: null, reason: "internal" },
+      );
     },
   );
 });
@@ -405,7 +511,10 @@ test("GET /tls/ca ensure-or-create is idempotent", async () => {
       assertEquals(typeof firstBody.leafHealth.dueCount, "number");
       assertEquals(firstBody.leafHealth.dueCount, 0);
       assertEquals(firstBody.leafHealth.caGeneration, 1);
-      assertEquals(firstBody.leafHealth.caGeneration, firstBody.tls.caGeneration);
+      assertEquals(
+        firstBody.leafHealth.caGeneration,
+        firstBody.tls.caGeneration,
+      );
       assertEquals(typeof firstBody.leafHealth.caNotAfter, "string");
 
       const second = await app.request("/tls/ca", { headers });

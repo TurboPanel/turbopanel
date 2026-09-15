@@ -36,7 +36,7 @@ export const tlsSchemas = {
       issuer: { type: "string" },
       status: {
         type: "string",
-        enum: ["ready", "pending", "expired", "failed", "revoked"],
+        enum: ["ready", "pending", "expired", "failed", "revoked", "managed"],
         description:
           "Column value mirrored into metadata for API stability (shape unchanged).",
       },
@@ -115,7 +115,12 @@ export const tlsSchemas = {
       },
       prefer: { type: "number" },
       autoRenew: { type: "boolean" },
-      challengeType: { type: "string", enum: ["http-01", "dns-01"] },
+      challengeType: {
+        type: "string",
+        enum: ["http-01", "dns-01"],
+        description:
+          "http-01 only. dns-01 is rejected (`dns_01_unsupported`); Caddy issues on the host.",
+      },
     },
   },
   PatchTlsRequest: {

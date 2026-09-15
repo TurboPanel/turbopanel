@@ -3218,6 +3218,7 @@ test("parseEnvironmentDeployPayload parses rich hostings and optional material",
   });
   assertEquals(result.hostings[0]?.pathPrefix, "/api");
   assertEquals(result.hostings[0]?.tlsId, null);
+  assertEquals(result.hostings[0]?.tlsMode, undefined);
   assertEquals(result.hostings[0]?.bindAddress, "203.0.113.10");
   assertEquals(result.hostings[0]?.proxy, {
     forceHttps: true,
@@ -3242,6 +3243,41 @@ test("parseEnvironmentDeployPayload parses rich hostings and optional material",
   assertEquals(
     result.ingressServices?.[0]?.containerName,
     `${INGRESS_SERVICE_ID}-in`,
+  );
+});
+
+test("parseEnvironmentDeployPayload accepts optional tlsMode acme and rejects unknown modes", () => {
+  const hostingIngressNetwork = "00000000-0000-4000-8000-0000000000bb";
+  const parsed = parseEnvironmentDeployPayload({
+    ...BASE_ENVIRONMENT_DEPLOY,
+    hostingIngressNetwork,
+    hostings: [{
+      hostingId: "h1",
+      serviceId: "s1",
+      composeServiceName: "web",
+      hostnames: ["app.example.com"],
+      tlsId: null,
+      tlsMode: "acme",
+    }],
+  });
+  assertEquals(parsed.hostings[0]?.tlsMode, "acme");
+  assertEquals(parsed.hostings[0]?.tlsId, null);
+
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        hostingIngressNetwork,
+        hostings: [{
+          hostingId: "h1",
+          serviceId: "s1",
+          composeServiceName: "web",
+          hostnames: ["app.example.com"],
+          tlsMode: "dns",
+        }],
+      }),
+    Error,
+    "Invalid environment.deploy payload",
   );
 });
 

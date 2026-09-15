@@ -39,6 +39,7 @@ import {
   fabricNetworksFromSchedule,
   findUnavailableStorageCopy,
   healthCheckAcknowledge,
+  hostingTlsWireFromResolved,
   listComposeServiceKeys,
   listContainerComposeNames,
   loadPrincipalMaterial,
@@ -2337,6 +2338,49 @@ describe("findUnavailableStorageCopy", () => {
         },
       ),
       null,
+    );
+  });
+});
+
+describe("hostingTlsWireFromResolved", () => {
+  it("sets acme mode for a public-bound managed pin and excludes tlsId from sealing", () => {
+    assertEquals(
+      hostingTlsWireFromResolved({
+        tlsId: "tls-le",
+        status: "managed",
+        bindScope: "public",
+      }),
+      { ok: true, tlsId: null, tlsMode: "acme" },
+    );
+  });
+
+  it("refuses managed ACME on local or datacenter bind scopes", () => {
+    assertEquals(
+      hostingTlsWireFromResolved({
+        tlsId: "tls-le",
+        status: "managed",
+        bindScope: "local",
+      }),
+      { ok: false, error: "acme_requires_public_bind" },
+    );
+    assertEquals(
+      hostingTlsWireFromResolved({
+        tlsId: "tls-le",
+        status: "managed",
+        bindScope: "datacenter",
+      }),
+      { ok: false, error: "acme_requires_public_bind" },
+    );
+  });
+
+  it("leaves ready pins unchanged so PEM sealing still runs", () => {
+    assertEquals(
+      hostingTlsWireFromResolved({
+        tlsId: "tls-ready",
+        status: "ready",
+        bindScope: "public",
+      }),
+      { ok: true, tlsId: "tls-ready" },
     );
   });
 });

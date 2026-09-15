@@ -605,6 +605,27 @@ test("POST /tls rejects invalid source, name, and missing encryption", async () 
   });
   await expectJson(badName, 400, { error: "Invalid request" });
 
+  const wildcard = await app.request("/tls", {
+    method: "POST",
+    headers: authHeaders(cookie, json),
+    body: JSON.stringify({
+      source: "lets_encrypt",
+      hostnames: ["*.example.com"],
+    }),
+  });
+  await expectJson(wildcard, 400, { error: "wildcard_unsupported" });
+
+  const dns01 = await app.request("/tls", {
+    method: "POST",
+    headers: authHeaders(cookie, json),
+    body: JSON.stringify({
+      source: "lets_encrypt",
+      hostnames: ["app.example.com"],
+      challengeType: "dns-01",
+    }),
+  });
+  await expectJson(dns01, 400, { error: "dns_01_unsupported" });
+
   const noKey = await buildTlsApp({ encryption: false });
   const missing = await noKey.app.request("/tls", {
     method: "POST",

@@ -2,12 +2,20 @@
 export type TlsSource = 'upload' | 'lets_encrypt' | 'self_signed' | 'organization_ca'
 
 /** Lifecycle status — dedicated `tls.status` column (also in API metadata DTO). */
-export type TlsStatus = 'ready' | 'pending' | 'expired' | 'failed' | 'revoked'
+export type TlsStatus =
+  | 'ready'
+  | 'pending'
+  | 'expired'
+  | 'failed'
+  | 'revoked'
+  | 'managed'
 
 export type TlsAcmeMetadata = {
   orderUrl?: string
   challengeType?: 'http-01' | 'dns-01'
   lastError?: string
+  /** Present on `lets_encrypt` rows Caddy issues and renews on the host. */
+  managedBy?: 'caddy'
 }
 
 /**
@@ -55,6 +63,8 @@ export type TlsCandidate = {
   id: string
   metadata: TlsMetadata
   options: TlsOptions | null
+  /** Discriminator from `tls.source`; required to pin a `managed` LE row. */
+  source?: TlsSource
 }
 
 export type ResolveTlsResult =

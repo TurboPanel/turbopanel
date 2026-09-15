@@ -35,18 +35,18 @@ import {
 } from "../../lib/compose/apply-variables.ts";
 import type { DeploySecretPlanEntry } from "../../lib/compose/secret-files.ts";
 import {
+  type ComposeDeployValidationError,
   type ComposeDocument,
   composeDocumentToRuntimeYaml,
-  type ComposeDeployValidationError,
   type ComposeLayer,
   emptyContainerComposeYaml,
   isNodeComposeService,
   isSiteComposeService,
   mergeComposeLayers,
   type NativeAppServiceSpec,
+  type SiteSpec,
   splitNativeAppServices,
   splitSiteServices,
-  type SiteSpec,
   validateComposeForDeploy,
 } from "../../lib/compose/index.ts";
 import type { ComposeServiceCronJob } from "../../lib/compose/service-kind.ts";
@@ -89,7 +89,10 @@ import {
   resolvePrincipalIdOverride,
   resolvePrincipalShell,
 } from "../../lib/principal-options.ts";
-import { loadEntitlementsByPrincipalIds, insertDeployEntitlementsIfMissing } from "../principals/store.ts";
+import {
+  insertDeployEntitlementsIfMissing,
+  loadEntitlementsByPrincipalIds,
+} from "../principals/store.ts";
 import { renderPhpForDeploy } from "../../lib/php-settings.ts";
 import {
   isComposeChainError,
@@ -132,24 +135,24 @@ import {
 import { registerComposeMounts } from "./register-compose-mounts.ts";
 import type {
   EnvironmentDeployComposeFile,
+  EnvironmentDeployCronJob,
   EnvironmentDeployDockerNetwork,
   EnvironmentDeployFabricNetwork,
   EnvironmentDeployHosting,
   EnvironmentDeployIngressService,
   EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
+  EnvironmentDeploySite,
+  EnvironmentDeploySitePrincipal,
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployStorageMount,
-  EnvironmentDeploySitePrincipal,
-  EnvironmentDeploySite,
-  EnvironmentDeployCronJob,
   EnvironmentDeployTlsMaterial,
   EnvironmentDeployVariableMaterial,
 } from "../../lib/commands/schemas.ts";
 import {
-  type DeploySourcePrepareError,
   type DeployRollbackRequest,
+  type DeploySourcePrepareError,
   type ReleaseIdAllocator,
   resolveDeploySourceMaterial,
 } from "./deploy-sources.ts";
@@ -158,7 +161,6 @@ import {
   environment,
   hosting,
   ip,
-  storageCopy,
   mount,
   organization,
   principal,
@@ -166,6 +168,7 @@ import {
   server,
   service,
   storage,
+  storageCopy,
   tls,
 } from "../../lib/db/schema.ts";
 import {
@@ -174,6 +177,7 @@ import {
   sumServiceResourceUsage,
 } from "../../lib/resource-limits.ts";
 import {
+  type HostingBindScope,
   parseHostingOptions,
   resolveHostingBind,
   resolveHostingProxy,
@@ -182,8 +186,8 @@ import { inetAddressToString } from "../../lib/ip-address.ts";
 import { loadServerDatacenterAddress } from "../../lib/net/private-endpoint.ts";
 import { reconcileServicesFromCompose } from "./reconcile-services.ts";
 import {
-  reconcileHostingsFromCompose,
   type ComposeHostingError,
+  reconcileHostingsFromCompose,
 } from "./reconcile-hostings.ts";
 import type { Db } from "../../db.ts";
 import {
@@ -211,7 +215,10 @@ import {
   assembleTlsMetadata,
   parseTlsOptions,
   resolveTlsForHosting,
+  TLS_SOURCES,
   type TlsCandidate,
+  type TlsSource,
+  type TlsStatus,
 } from "../../lib/tls/index.ts";
 import {
   deployMaterialsErrorResponse,
@@ -478,7 +485,11 @@ export type DeployPrepareError =
    * the document predates the rule or was written past the API. Silently
    * ignoring it would run the service as nobody.
    */
-  | { kind: "principal_alias_unknown"; composeServiceName: string; alias: string }
+  | {
+    kind: "principal_alias_unknown";
+    composeServiceName: string;
+    alias: string;
+  }
   /**
    * A host-native service declares no alias **and** has no steward to fall back
    * on. `site_principal_ambiguous` / `source_principal_ambiguous` stay the
@@ -1218,10 +1229,10 @@ export async function loadPrincipalMaterial(
     // format gate matters: for a server principal the column only ever holds
     // a sha512-crypt hash, but anything else (or a value from before this
     // gate) must not be forwarded to `chpasswd -e` on a host.
-    const passwordHash =
-      typeof row.password === "string" && SHA512_CRYPT_HASH_RE.test(row.password)
-        ? row.password
-        : undefined;
+    const passwordHash = typeof row.password === "string" &&
+        SHA512_CRYPT_HASH_RE.test(row.password)
+      ? row.password
+      : undefined;
     // naming.ts is the single source of truth for home; metadata.home is a
     // mirror for display only.
     material.push({
@@ -2245,7 +2256,11 @@ async function prepareLocalSourceMaterial(
       : { releaseIds: params.releaseIds }),
   });
   if (resolved instanceof Response) return resolved;
-  const forMode = resolveSourceMaterialForMode(args.mode, args.warnings, resolved);
+  const forMode = resolveSourceMaterialForMode(
+    args.mode,
+    args.warnings,
+    resolved,
+  );
   if (!Array.isArray(forMode)) return forMode;
   return sitesOnScheduledServer(forMode, args.localServiceNames);
 }
@@ -3106,12 +3121,14 @@ export async function prepareDeployCompose(
   });
   if (!Array.isArray(localSourceMaterial)) return localSourceMaterial;
 
-  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
-    mergeDeployPrincipalRuntimes({
-      principalMaterial,
-      nativeAppServices: localNativeApps,
-      sourceMaterial: localSourceMaterial,
-    });
+  const {
+    principalMaterial: principalMaterialWithRuntimes,
+    deployEntitlements,
+  } = mergeDeployPrincipalRuntimes({
+    principalMaterial,
+    nativeAppServices: localNativeApps,
+    sourceMaterial: localSourceMaterial,
+  });
   await persistDeployRuntimeEntitlements(db, mode, deployEntitlements);
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(
@@ -3431,7 +3448,11 @@ function renderCronForDeploy(
     const command = parseCronCommand(job.command);
     if (!command.ok) continue;
     seen.add(job.name);
-    out.push({ name: job.name, schedule: schedule.value, command: command.value });
+    out.push({
+      name: job.name,
+      schedule: schedule.value,
+      command: command.value,
+    });
   }
   return out;
 }
@@ -3545,10 +3566,36 @@ type BuildHostingResult =
   | { error: Response }
   | { prepareError: DeployPrepareError };
 
+function isTlsSource(value: string): value is TlsSource {
+  return (TLS_SOURCES as readonly string[]).includes(value);
+}
+
 type OrgTlsCandidate = TlsCandidate & {
   certificatePem: string | null;
   privateKeyPem: string | null;
 };
+
+export type HostingTlsWire =
+  | { ok: true; tlsId: string | null; tlsMode?: "acme" }
+  | { ok: false; error: "acme_requires_public_bind" };
+
+/**
+ * ACME-managed Let's Encrypt pins omit `tlsId` on the wire so older daemons
+ * fall back to `tls internal`, and they are excluded from `tlsMaterial`.
+ */
+export function hostingTlsWireFromResolved(params: {
+  tlsId: string | null;
+  status: TlsStatus | undefined;
+  bindScope: HostingBindScope;
+}): HostingTlsWire {
+  if (params.status !== "managed") {
+    return { ok: true, tlsId: params.tlsId };
+  }
+  if (params.bindScope === "local" || params.bindScope === "datacenter") {
+    return { ok: false, error: "acme_requires_public_bind" };
+  }
+  return { ok: true, tlsId: null, tlsMode: "acme" };
+}
 
 /** The `service` columns a hosting fan-out needs. */
 type HostingServiceRow = {
@@ -3579,6 +3626,8 @@ async function resolveHttpHostingEntry(
   const hostnames = readHostnames(h.options);
   if (hostnames.length === 0) return { skip: true };
 
+  // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
+  // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
   const resolved = resolveTlsForHosting({
     pinId: h.tlsId,
     hostnames,
@@ -3588,6 +3637,24 @@ async function resolveHttpHostingEntry(
     return {
       error: Response.json(
         { error: tlsPinErrorCode(resolved.error), hostingId: h.id },
+        { status: 400 },
+      ),
+    };
+  }
+
+  const bindScope = resolveHostingBind(parseHostingOptions(h.options));
+  const pinned = resolved.tlsId
+    ? candidates.find((candidate) => candidate.id === resolved.tlsId)
+    : undefined;
+  const tlsWire = hostingTlsWireFromResolved({
+    tlsId: resolved.tlsId,
+    status: pinned?.metadata.status,
+    bindScope,
+  });
+  if (!tlsWire.ok) {
+    return {
+      error: Response.json(
+        { error: tlsWire.error, hostingId: h.id },
         { status: 400 },
       ),
     };
@@ -3620,7 +3687,8 @@ async function resolveHttpHostingEntry(
       hostnames,
       pathPrefix: readPathPrefix(h.options),
       targetPort: readTargetPort(h.options),
-      tlsId: resolved.tlsId,
+      tlsId: tlsWire.tlsId,
+      ...(tlsWire.tlsMode === undefined ? {} : { tlsMode: tlsWire.tlsMode }),
       proxy: readHostingProxyFromOptions(h.options),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
       ...(web === undefined ? {} : { web }),
@@ -3705,6 +3773,7 @@ async function loadOrgTlsCandidates(
   const rows = await db
     .select({
       id: tls.id,
+      source: tls.source,
       status: tls.status,
       notAfter: tls.notAfter,
       fingerprintSha256: tls.fingerprintSha256,
@@ -3731,6 +3800,7 @@ async function loadOrgTlsCandidates(
       id: row.id,
       metadata,
       options: parseTlsOptions(row.options),
+      ...(isTlsSource(row.source) ? { source: row.source } : {}),
       certificatePem: row.certificatePem,
       privateKeyPem: row.privateKeyPem,
     });
@@ -3775,7 +3845,9 @@ async function buildHostingsForService(
     if ("error" in result) return result;
     if ("prepareError" in result) return result;
     hostings.push(result.entry);
-    if (result.entry.tlsId) tlsIds.push(result.entry.tlsId);
+    if (result.entry.tlsId && result.entry.tlsMode !== "acme") {
+      tlsIds.push(result.entry.tlsId);
+    }
   }
   return { hostings, tlsIds };
 }
@@ -3823,6 +3895,8 @@ async function sealTlsMaterialForDaemon(
   organizationId: string,
   tlsIds: string[],
 ): Promise<EnvironmentDeployTlsMaterial[] | Response> {
+  // `managed` / `tlsMode: 'acme'` ids are excluded from `tlsIds` by
+  // `buildHostingsForService` — this set is only PEM-backed pins.
   if (tlsIds.length === 0) return [];
 
   const dataEncryptionSecrets = c.get("dataEncryptionSecrets");

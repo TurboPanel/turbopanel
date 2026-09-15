@@ -1,12 +1,26 @@
 import { and, eq } from 'drizzle-orm'
+import { Hono } from 'hono'
+import type { AppEnv } from '../../app.ts'
 import { getDatabaseUrl } from '../../db-url.ts'
 import { createDenoDb } from '../../db.ts'
 import {
   grant,
+  invitation,
   organization,
+  team,
   workspace,
   user,
 } from '../../lib/db/schema.ts'
+import type { EmailQueue } from '../../lib/email/types.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import {
+  buildSignedCookie,
+  HTTP_SESSION_COOKIE_NAME,
+} from '../authn/crypto.ts'
+import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { createSession } from '../authn/session-store.ts'
+import { registerAccessRoutes } from '../access/routes.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
 import {
   defaultInvitationGrants,
   InvitationGrantValidationError,
@@ -235,6 +249,154 @@ test('invitation grant rejects cross-organization entity target', async () => {
       }
     } finally {
       await db.delete(organization).where(eq(organization.id, otherOrganizationId))
+    }
+  })
+})
+
+async function withInvitationHttpFixtures(
+  permission: 'organization:own' | 'organization:manage',
+  fn: (ctx: {
+    app: Hono<AppEnv>
+    cookie: string
+    organizationId: string
+    teamId: string
+  }) => Promise<void>,
+): Promise<void> {
+  if (!dbUrl) {
+    console.warn('Skipping authz tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const secrets = await deriveSecretsConfig(
+    parseTestSecretsConfig('deno'),
+    'session-signing',
+  )
+  const queue: EmailQueue = {
+    enqueue: () => Promise.resolve(),
+  }
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    c.set('emailQueue', queue)
+    return next()
+  })
+  registerAccessRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
+
+  const [orgRow] = await db
+    .insert(organization)
+    .values({ name: 'Invite Escalation Org' })
+    .returning({ id: organization.id })
+  const organizationId = orgRow!.id
+  const [userRow] = await db
+    .insert(user)
+    .values({
+      email: `invite-escalation-${crypto.randomUUID()}@example.com`,
+      isEmailVerified: true,
+      role: 'user',
+    })
+    .returning({ id: user.id })
+  const userId = userRow!.id
+  const [teamRow] = await db
+    .insert(team)
+    .values({ name: 'Invite Team', organizationId })
+    .returning({ id: team.id })
+  const teamId = teamRow!.id
+
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: userId,
+    permission,
+  })
+
+  const { token } = await createSession(db, userId, {})
+  const cookie = `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
+
+  try {
+    await fn({ app, cookie, organizationId, teamId })
+  } finally {
+    await db.delete(invitation).where(eq(invitation.teamId, teamId))
+    await db.delete(grant).where(eq(grant.actorId, userId))
+    await db.delete(team).where(eq(team.id, teamId))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+}
+
+test('manager passing grants gets 403 grants_require_owner', async () => {
+  await withInvitationHttpFixtures('organization:manage', async ({
+    app,
+    cookie,
+    organizationId,
+    teamId,
+  }) => {
+    const res = await app.request('/invitations', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        teamId,
+        email: `mgr-${crypto.randomUUID()}@example.com`,
+        grants: [
+          {
+            entityType: 'organization',
+            entityId: organizationId,
+            permissionKey: 'organization:own',
+          },
+        ],
+      }),
+    })
+    if (res.status !== 403) {
+      throw new TypeError(`expected 403 grants_require_owner, got ${res.status}`)
+    }
+    const body = await res.json() as { error: string }
+    if (body.error !== 'grants_require_owner') {
+      throw new TypeError(`expected grants_require_owner, got ${body.error}`)
+    }
+  })
+})
+
+test('owner passing grants succeeds', async () => {
+  await withInvitationHttpFixtures('organization:own', async ({
+    app,
+    cookie,
+    organizationId,
+    teamId,
+  }) => {
+    const res = await app.request('/invitations', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        teamId,
+        email: `owner-${crypto.randomUUID()}@example.com`,
+        grants: [
+          {
+            entityType: 'organization',
+            entityId: organizationId,
+            permissionKey: 'organization:manage',
+          },
+        ],
+      }),
+    })
+    if (res.status !== 200) {
+      throw new TypeError(`expected 200 creating owner invitation, got ${res.status}`)
+    }
+    const body = await res.json() as { ok: boolean; id: string }
+    if (!body.ok || !body.id) {
+      throw new TypeError('owner invitation response missing id')
     }
   })
 })

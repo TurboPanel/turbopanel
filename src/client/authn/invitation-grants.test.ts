@@ -63,6 +63,19 @@ test('parseInvitationGrants rejects allowed and allow fields', () => {
   )
 })
 
+test('parseInvitationGrants rejects system:manage as not grantable', () => {
+  assertEquals(
+    parseInvitationGrants([
+      {
+        entityType: 'organization',
+        entityId: organizationId,
+        permissionKey: 'system:manage',
+      },
+    ]),
+    null,
+  )
+})
+
 test('parseInvitationGrants rejects invalid shapes', () => {
   assertEquals(parseInvitationGrants(null), null)
   assertEquals(parseInvitationGrants({}), null)

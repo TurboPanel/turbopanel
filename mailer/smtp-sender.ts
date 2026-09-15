@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer'
 import {
   createEmailOtpEmail,
   createEmailVerificationLinkEmail,
+  createInvitationEmail,
   createServerTierNoticeEmail,
 } from '../src/lib/email/templates.ts'
 import { resolveEmailSettings, type ResolvedEmailSettings } from '../src/lib/settings/email-settings.ts'
@@ -238,6 +239,21 @@ export class MailerSmtpSender {
           validateEmailAddress(from, 'from')
           validateEmailAddress(job.to, 'recipient')
           const { subject, html, text } = createServerTierNoticeEmail(job)
+          const transporter = await this.transporterForCurrentSmtp()
+          await transporter.sendMail({
+            from,
+            to: job.to,
+            subject,
+            html,
+            text: text ?? this.stripHtml(html),
+          })
+          return { success: true }
+        }
+        case 'invitation': {
+          const from = await this.resolveFromAddress()
+          validateEmailAddress(from, 'from')
+          validateEmailAddress(job.to, 'recipient')
+          const { subject, html, text } = createInvitationEmail(job)
           const transporter = await this.transporterForCurrentSmtp()
           await transporter.sendMail({
             from,

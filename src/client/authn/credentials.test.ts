@@ -98,6 +98,7 @@ test('verifyCredentials accepts verified credential users by email', async () =>
     }
     assertEquals(result.userId, userId)
     assertEquals(result.email, email)
+    assertEquals(result.is2FaEnabled, false)
   } finally {
     await db.delete(account).where(eq(account.userId, userId))
     await db.delete(user).where(eq(user.id, userId))
@@ -171,6 +172,7 @@ test('verifyCredentials accepts verified mock db user by email', async () => {
   }
   assertEquals(result.userId, userId)
   assertEquals(result.email, email)
+  assertEquals(result.is2FaEnabled, false)
 })
 
 test('verifyCredentials rejects disabled mock db users', async () => {

@@ -258,14 +258,14 @@ drop. Unused pairing / Better Auth / reserved columns stay **Keep**.
 
 | Column | Read | Write | Evidence |
 | --- | --- | --- | --- |
-| `id` | yes | yes | `client/access/routes.ts` |
-| `created_at` | yes | no | Whole-row accept select; no first-party insert. |
-| `user_id` | yes | no | Present on the accept select; no first-party insert. |
-| `team_id` | yes | no | Present on the accept select; no first-party insert. |
-| `expires_at` | yes | yes | `client/access/routes.ts` |
-| `email` | yes | no | Read on accept (`client/access/routes.ts`). **No first-party `insert(invitation)`**. |
-| `status` | yes | yes | `client/access/routes.ts` |
-| `grants` | yes | no | Read on accept; no first-party insert. |
+| `id` | yes | yes | `client/access/routes.ts` / `invitation-http.ts` (create/list/revoke/accept) |
+| `created_at` | yes | yes | Written by defaultNow on create; listed on GET. |
+| `user_id` | yes | yes | Inviter on create (`invitation-http.ts`); present on accept select. |
+| `team_id` | yes | yes | Written on create; listed and accepted. |
+| `expires_at` | yes | yes | `client/access/invitation-http.ts` (now + 7 days) and accept. |
+| `email` | yes | yes | Written on create; listed; read on accept. |
+| `status` | yes | yes | `pending` on create; `revoked` on DELETE; `accepted` on accept. |
+| `grants` | yes | yes | Optional owner-supplied array on create (null otherwise); read on accept. |
 
 **2. `organization`** (export `organization`)
 
@@ -318,19 +318,21 @@ drop. Unused pairing / Better Auth / reserved columns stay **Keep**.
 
 **5. `passkey`** (export `passkey`)
 
+Forward-looking: the passkey phase will consume this table. `credential_id` is unique (`uniq_passkey_credential_id`); `counter` is bigint. A user may register several passkeys (no unique on `user_id`). No first-party reader/writer yet.
+
 | Column | Read | Write | Evidence |
 | --- | --- | --- | --- |
-| `id` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `created_at` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `user_id` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `aaguid` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `name` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `public_key` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `credential_id` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `counter` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `device_type` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `is_backed_up` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
-| `transports` | no | no | Better Auth–compat reserved table; zero first-party `passkey` imports in `src/`. |
+| `id` | no | no | Reserved for the passkey phase; no first-party reader/writer yet. |
+| `created_at` | no | no | Reserved for the passkey phase; no first-party reader/writer yet. |
+| `user_id` | no | no | Reserved for the passkey phase; no first-party reader/writer yet. |
+| `aaguid` | no | no | Reserved for the passkey phase; no first-party reader/writer yet. |
+| `name` | no | no | Reserved for the passkey phase; no first-party reader/writer yet. |
+| `public_key` | no | no | Reserved for the passkey phase; no first-party reader/writer yet. |
+| `credential_id` | no | no | Reserved for the passkey phase; unique (`uniq_passkey_credential_id`); no first-party reader/writer yet. |
+| `counter` | no | no | Reserved for the passkey phase; bigint signature counter; no first-party reader/writer yet. |
+| `device_type` | no | no | Reserved for the passkey phase; no first-party reader/writer yet. |
+| `is_backed_up` | no | no | Reserved for the passkey phase; no first-party reader/writer yet. |
+| `transports` | no | no | Reserved for the passkey phase; no first-party reader/writer yet. |
 
 **6. `datacenter`** (export `datacenter`)
 
@@ -987,6 +989,8 @@ execution columns (`last_run_at` / result) and no run-history table.
 
 **46. `account`** (export `account`)
 
+Forward-looking: unique `(provider_id, provider_user_id)` (`uniq_account_provider_user`) is consumed by the credential path today and the OAuth phase.
+
 | Column | Read | Write | Evidence |
 | --- | --- | --- | --- |
 | `id` | yes | yes | `client/authn/otp-http.ts` |
@@ -994,13 +998,13 @@ execution columns (`last_run_at` / result) and no run-history table.
 | `updated_at` | no | yes | Postgres `defaultNow()` on account insert. |
 | `user_id` | yes | yes | `client/authn/credentials.ts` (+2) |
 | `provider_id` | yes | yes | `client/authn/credentials.ts` (+1) |
-| `provider_user_id` | no | yes | Written on credential-account insert (`install-state.ts`, `http.ts`); not later selected. |
-| `access_token` | no | no | OAuth leftover; credential accounts only write `password` / `provider_id`. |
-| `refresh_token` | no | no | OAuth leftover; unused. |
-| `id_token` | no | no | OAuth leftover; unused. |
-| `access_token_expires_at` | no | no | OAuth leftover; unused. |
-| `refresh_token_expires_at` | no | no | OAuth leftover; unused. |
-| `scope` | no | no | OAuth leftover; unused. |
+| `provider_user_id` | no | yes | Written on credential-account insert (`install-state.ts`, `http.ts`); not later selected. Unique with `provider_id` (`uniq_account_provider_user`). |
+| `access_token` | no | no | Reserved for the OAuth phase; credential accounts only write `password` / `provider_id`. |
+| `refresh_token` | no | no | Reserved for the OAuth phase. |
+| `id_token` | no | no | Reserved for the OAuth phase. |
+| `access_token_expires_at` | no | no | Reserved for the OAuth phase. |
+| `refresh_token_expires_at` | no | no | Reserved for the OAuth phase. |
+| `scope` | no | no | Reserved for the OAuth phase. |
 | `password` | yes | yes | `client/authn/credentials.ts` |
 
 **47. `teammate`** (export `teammate`)
@@ -1042,14 +1046,16 @@ execution columns (`last_run_at` / result) and no run-history table.
 
 **50. `2fa`** (export `twoFactor`)
 
+Forward-looking: the TOTP phase will consume this table. Unique `user_id` (`uniq_2fa_user_id`) — one enrolment per user. `secret` holds a sealed `tpsecret` envelope, not plaintext. `is_verified` defaults to false and is NOT NULL. No first-party reader/writer yet.
+
 | Column | Read | Write | Evidence |
 | --- | --- | --- | --- |
-| `id` | no | no | Better Auth–compat reserved table; zero first-party `twoFactor` imports in `src/`. |
-| `created_at` | no | no | Better Auth–compat reserved table; zero first-party `twoFactor` imports in `src/`. |
-| `user_id` | no | no | Better Auth–compat reserved table; zero first-party `twoFactor` imports in `src/`. |
-| `secret` | no | no | Better Auth–compat reserved table; zero first-party `twoFactor` imports in `src/`. |
-| `is_verified` | no | no | Better Auth–compat reserved table; zero first-party `twoFactor` imports in `src/`. |
-| `backup_codes` | no | no | Better Auth–compat reserved table; zero first-party `twoFactor` imports in `src/`. |
+| `id` | no | no | Reserved for the TOTP phase; no first-party reader/writer yet. |
+| `created_at` | no | no | Reserved for the TOTP phase; no first-party reader/writer yet. |
+| `user_id` | no | no | Reserved for the TOTP phase; unique (`uniq_2fa_user_id`); no first-party reader/writer yet. |
+| `secret` | no | no | Reserved for the TOTP phase; sealed `tpsecret` envelope, not plaintext; no first-party reader/writer yet. |
+| `is_verified` | no | no | Reserved for the TOTP phase; defaults false, NOT NULL; no first-party reader/writer yet. |
+| `backup_codes` | no | no | Reserved for the TOTP phase; no first-party reader/writer yet. |
 
 **51. `verification`** (export `verification`)
 
@@ -1141,12 +1147,12 @@ those tables.
 | --- | --- | --- | --- |
 | `invitation.id` | column | **Keep** | Primary key; identity for every FK and API id. |
 | `invitation.created_at` | column | **Keep** | Lifecycle timestamp; written by defaultNow even when not selected. |
-| `invitation.user_id` | column | **Keep** | Live column. Present on the accept select; no first-party insert. |
-| `invitation.team_id` | column | **Keep** | Live column. Present on the accept select; no first-party insert. |
-| `invitation.expires_at` | column | **Keep** | Live column. `client/access/routes.ts` |
-| `invitation.email` | column | **Keep** | Live column. Read on accept (`client/access/routes.ts`). **No first-party `insert(invitation)`**. |
-| `invitation.status` | column | **Keep** | Live column. `client/access/routes.ts` |
-| `invitation.grants` | column | **Keep** | Live column. Read on accept; no first-party insert. |
+| `invitation.user_id` | column | **Keep** | Live column. Inviter on create (`invitation-http.ts`); present on accept select. |
+| `invitation.team_id` | column | **Keep** | Live column. Written on create; listed and accepted. |
+| `invitation.expires_at` | column | **Keep** | Live column. `client/access/invitation-http.ts` / accept. |
+| `invitation.email` | column | **Keep** | Live column. Written on create; listed; read on accept. |
+| `invitation.status` | column | **Keep** | Live column. `pending` / `revoked` / `accepted` via `invitation-http.ts` and accept. |
+| `invitation.grants` | column | **Keep** | Live column. Optional owner-supplied array on create; read on accept. |
 | `idx_invitation_email` | index | **Keep** | Unchanged; not in the Step 2 rename list or the DDL delta. |
 | `idx_invitation_user_id` | index | **Keep** | Unchanged; not in the Step 2 rename list or the DDL delta. |
 | `idx_invitation_team_id` | index | **Keep** | Unchanged; not in the Step 2 rename list or the DDL delta. |

@@ -56,6 +56,12 @@ import {
   updateEmailSettings,
 } from "../lib/settings/email-settings.ts";
 import {
+  authProviderSettingsToApiShape,
+  authProviderUpdatesRequireEncryption,
+  resolveAuthProviderSettings,
+  updateAuthProviderSettings,
+} from "../lib/settings/auth-provider-settings.ts";
+import {
   endReencryptSweep,
   reencryptAtRestSecrets,
   tryBeginReencryptSweep,
@@ -333,6 +339,49 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     // (see workers.ts fetch middleware) — no isolate-level queue cache to
     // invalidate after this write.
     return c.json({ settings: emailSettingsToApiShape(resolved) });
+  });
+
+  admin.get("/settings/auth-providers", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+    const resolved = await resolveAuthProviderSettings(
+      db,
+      resolvePlatformEnv(c, opts),
+      dataEncryptionSecrets,
+    );
+    return c.json({ settings: authProviderSettingsToApiShape(resolved) });
+  });
+
+  admin.put("/settings/auth-providers", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const body = await c.req.json().catch(() => null);
+    const updates = parseEmailSettingsUpdates(body);
+    if (!updates) {
+      return c.json({ error: "expected a JSON object of setting keys" }, 400);
+    }
+
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+    if (
+      authProviderUpdatesRequireEncryption(updates) && !dataEncryptionSecrets
+    ) {
+      return c.json(
+        { error: "Encryption unavailable — no encryption key configured" },
+        503,
+      );
+    }
+
+    const env = resolvePlatformEnv(c, opts);
+    const resolved = await updateAuthProviderSettings(
+      db,
+      env,
+      updates,
+      dataEncryptionSecrets,
+    );
+    return c.json({ settings: authProviderSettingsToApiShape(resolved) });
   });
 
   admin.get("/settings/signup", async (c) => {

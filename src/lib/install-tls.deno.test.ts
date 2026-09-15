@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   formatInstanceDlBase,
   installOriginNeedsInsecureTls,
+  resolvePublicInstanceTls,
 } from './install-tls.ts'
 
 /**
@@ -84,6 +85,40 @@ test('installOriginNeedsInsecureTls never flags plaintext HTTP', () => {
   assertEquals(installOriginNeedsInsecureTls('ftp://studio.lan'), false)
   assertEquals(installOriginNeedsInsecureTls(''), false)
   assertEquals(installOriginNeedsInsecureTls('not a url'), false)
+})
+
+test('installOriginNeedsInsecureTls publicOrigin skips the non-443 port check', () => {
+  assertEquals(
+    installOriginNeedsInsecureTls('https://panel.example.com:8443', {
+      publicOrigin: true,
+    }),
+    false,
+  )
+  assertEquals(installOriginNeedsInsecureTls('http://panel.example.com:8443', {
+    publicOrigin: true,
+  }), false)
+})
+
+test('installOriginNeedsInsecureTls still flags private origins without publicOrigin', () => {
+  assertEquals(installOriginNeedsInsecureTls('https://studio.lan:8443'), true)
+  assertEquals(installOriginNeedsInsecureTls('https://box.local'), true)
+  assertEquals(installOriginNeedsInsecureTls('https://localhost'), true)
+  assertEquals(installOriginNeedsInsecureTls('https://192.168.1.10:8443'), true)
+  assertEquals(installOriginNeedsInsecureTls('https://10.0.0.5'), true)
+})
+
+test('resolvePublicInstanceTls accepts 1 and true', () => {
+  assertEquals(resolvePublicInstanceTls({ TURBOPANEL_TLS_PUBLIC: '1' }), true)
+  assertEquals(resolvePublicInstanceTls({ TURBOPANEL_TLS_PUBLIC: 'true' }), true)
+  assertEquals(resolvePublicInstanceTls({ TURBOPANEL_TLS_PUBLIC: 'TRUE' }), true)
+  assertEquals(resolvePublicInstanceTls({ TURBOPANEL_TLS_PUBLIC: ' True ' }), true)
+})
+
+test('resolvePublicInstanceTls rejects empty and 0', () => {
+  assertEquals(resolvePublicInstanceTls({}), false)
+  assertEquals(resolvePublicInstanceTls({ TURBOPANEL_TLS_PUBLIC: '' }), false)
+  assertEquals(resolvePublicInstanceTls({ TURBOPANEL_TLS_PUBLIC: '0' }), false)
+  assertEquals(resolvePublicInstanceTls({ TURBOPANEL_TLS_PUBLIC: 'false' }), false)
 })
 
 test('installOriginNeedsInsecureTls returns false for unparseable HTTPS origins', () => {

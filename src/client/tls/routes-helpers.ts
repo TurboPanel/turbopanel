@@ -293,20 +293,27 @@ export function materialFromLetsEncrypt(
   if (!hostnames) {
     return createFailure("Invalid request");
   }
+  if (hostnames.some((n) => n.startsWith("*."))) {
+    return createFailure("wildcard_unsupported");
+  }
+  if (body.challengeType === "dns-01") {
+    return createFailure("dns_01_unsupported");
+  }
   return {
     certificatePem: null,
     privateKeyPemSealed: null,
     metadata: {
       dnsNames: hostnames,
-      hasWildcard: hostnames.some((n) => n.startsWith("*.")),
+      hasWildcard: false,
       notBefore: new Date(0).toISOString(),
       notAfter: new Date(0).toISOString(),
       fingerprintSha256: "",
       subject: "",
       issuer: "",
-      status: "pending",
+      status: "managed",
       acme: {
-        challengeType: body.challengeType === "dns-01" ? "dns-01" : "http-01",
+        challengeType: "http-01",
+        managedBy: "caddy",
       },
     },
     options: {

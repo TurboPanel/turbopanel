@@ -1,6 +1,6 @@
 import type { Db } from '../../db.ts'
 import { grant } from '../../lib/db/schema.ts'
-import { isPermissionKey, type PermissionKey } from '../authz/catalog.ts'
+import { isGrantablePermissionKey, type PermissionKey } from '../authz/catalog.ts'
 import {
   validateGrantEntityTarget,
   validatePermissionEntityCompatibility,
@@ -43,7 +43,7 @@ function parseGrantTarget(
     typeof record.permissionKey === 'string' ? record.permissionKey : undefined
 
   if (!permissionKey) return null
-  if (!isPermissionKey(permissionKey)) return null
+  if (!isGrantablePermissionKey(permissionKey)) return null
 
   return { permissionKey }
 }

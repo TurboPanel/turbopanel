@@ -3,10 +3,10 @@
  *
  * Re-seals `variable.value` (is_secret), `tls.privateKeyPem`,
  * `principal.password`, `storage.content_envelope`, `secret.secret_envelope`,
- * and email secret keys in the `SYSTEM_EMAIL` setting row onto the current
- * data-encryption key version.
+ * `2fa.secret`, `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in
+ * the `SYSTEM_EMAIL` setting row onto the current data-encryption key version.
  *
- * Per-blob rules (variable / TLS / principal / storage / secret / email secrets):
+ * Per-blob rules (variable / TLS / principal / storage / secret / twofactor / authproviders / email secrets):
  * - Valid daemon-bound `tpdaemon` → skipped (delivery envelopes are not at-rest
  *   material for this sweep; variables/TLS/principals only).
  * - Malformed `tpdaemon` or malformed `tpsecret` → failed.
@@ -14,7 +14,8 @@
  * - Current-version `tpsecret` → skipped.
  * - Older-version `tpsecret` → decrypt + re-seal; decrypt failures → failed.
  *
- * Email secret keys (`MAILGUN_API_KEY` / `SMTP_PASS`) follow the same
+ * Email secret keys (`MAILGUN_API_KEY` / `SMTP_PASS`) and auth-provider secret
+ * keys (`GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET`) follow the same
  * plaintext-is-failed rule as variables/TLS/principals.
  *
  * Sweeps are **bounded**: each call processes at most `limit` blobs (default
@@ -40,17 +41,22 @@ import {
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import type { Db } from "../db.ts";
 import {
-  secret,
   principal,
+  secret,
   setting,
   storage,
   tls,
+  twoFactor,
   variable,
 } from "../lib/db/schema.ts";
 import {
   EMAIL_SECRET_KEYS,
   SYSTEM_EMAIL_DB_KEY,
 } from "../lib/settings/email-settings.ts";
+import {
+  AUTH_PROVIDER_SECRET_KEYS,
+  SYSTEM_AUTH_PROVIDERS_DB_KEY,
+} from "../lib/settings/auth-provider-settings.ts";
 
 export const REENCRYPT_BATCH_SIZE = 200;
 
@@ -75,6 +81,8 @@ export const REENCRYPT_STAGES = [
   "principals",
   "storage",
   "secrets",
+  "twofactor",
+  "authproviders",
   "email",
 ] as const;
 
@@ -556,6 +564,131 @@ async function sweepSecretTableBatch(
   };
 }
 
+async function sweepTwoFactorSecretsBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number,
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({ id: twoFactor.id, secret: twoFactor.secret })
+    .from(twoFactor)
+    .where(
+      afterId === undefined
+        ? isNotNull(twoFactor.secret)
+        : and(isNotNull(twoFactor.secret), gt(twoFactor.id, afterId)),
+    )
+    .orderBy(asc(twoFactor.id))
+    .limit(limit);
+
+  for (const row of rows) {
+    const original = row.secret;
+    await processBlob(
+      summary,
+      secrets,
+      original,
+      async (resealed) => {
+        const updated = await db
+          .update(twoFactor)
+          .set({ secret: resealed })
+          .where(
+            and(
+              eq(twoFactor.id, row.id),
+              eq(twoFactor.secret, original),
+            ),
+          )
+          .returning({ id: twoFactor.id });
+        return updated.length > 0;
+      },
+      { allowDaemonBound: false },
+    );
+  }
+
+  return {
+    pageSize: rows.length,
+    lastId: rows.at(-1)?.id,
+  };
+}
+
+/**
+ * Re-seal `GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET` in the single
+ * `SYSTEM_AUTH_PROVIDERS` settings row. All provider secrets live in one JSON
+ * `setting.value`, so a single compare-and-swap on the whole row persists
+ * every resealed key at once; a concurrent writer that changed the row leaves
+ * the reseals uncounted (skipped).
+ */
+async function sweepAuthProviderSettingSecrets(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+): Promise<void> {
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, SYSTEM_AUTH_PROVIDERS_DB_KEY))
+    .limit(1);
+
+  const original = rows[0]?.value;
+  if (
+    original === undefined ||
+    original === null ||
+    typeof original !== "object" ||
+    Array.isArray(original)
+  ) {
+    return;
+  }
+
+  const originalObj = original as Record<string, unknown>;
+  const nextObj: Record<string, unknown> = { ...originalObj };
+  let resealedCount = 0;
+
+  for (const shortKey of AUTH_PROVIDER_SECRET_KEYS) {
+    const raw = nextObj[shortKey];
+    if (typeof raw !== "string" || raw === "") continue;
+
+    summary.scanned += 1;
+    const parsed = parseSecretEnvelope(raw);
+    if (parsed === null) {
+      // Plaintext, tpdaemon, or malformed — invalid/unsupported for auth providers at rest.
+      summary.failed += 1;
+      continue;
+    }
+    if (parsed.keyVersion === secrets.current.version) {
+      summary.skipped += 1;
+      continue;
+    }
+
+    try {
+      const plaintext = await decryptSecret(secrets, raw);
+      nextObj[shortKey] = await encryptSecret(secrets, plaintext);
+      resealedCount += 1;
+    } catch {
+      summary.failed += 1;
+    }
+  }
+
+  if (resealedCount === 0) return;
+
+  const updated = await db
+    .update(setting)
+    .set({ value: nextObj, updatedAt: nowIso() })
+    .where(
+      and(
+        eq(setting.key, SYSTEM_AUTH_PROVIDERS_DB_KEY),
+        eq(setting.value, original),
+      ),
+    )
+    .returning({ key: setting.key });
+
+  if (updated.length > 0) {
+    summary.reencrypted += resealedCount;
+  } else {
+    // Concurrent writer changed the row; leave the newer values untouched.
+    summary.skipped += resealedCount;
+  }
+}
+
 /**
  * Re-seal `MAILGUN_API_KEY` / `SMTP_PASS` in the single `SYSTEM_EMAIL` settings
  * row. All email secrets live in one JSON `setting.value`, so a single
@@ -630,6 +763,105 @@ async function sweepEmailSettingSecrets(
   }
 }
 
+type TableStage = Exclude<ReencryptStage, "authproviders" | "email">;
+
+async function runTableStageBatch(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  stage: TableStage,
+  afterId: string | undefined,
+  remaining: number,
+): Promise<StageBatchResult> {
+  switch (stage) {
+    case "variables":
+      return sweepSecretVariablesBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+    case "tls":
+      return sweepTlsPrivateKeysBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+    case "principals":
+      return sweepPrincipalPasswordsBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+    case "storage":
+      return sweepStorageContentBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+    case "secrets":
+      return sweepSecretTableBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+    case "twofactor":
+      return sweepTwoFactorSecretsBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+  }
+}
+
+type BatchOutcome =
+  | { kind: "continue"; cursor: ReencryptCursor }
+  | { kind: "done"; result: ReencryptSweepResult };
+
+/** Decide whether the sweep advances to the next stage, stops for now, or completes. */
+function resolveBatchOutcome(
+  summary: ReencryptSweepSummary,
+  cursor: ReencryptCursor,
+  batch: StageBatchResult,
+  requested: number,
+): BatchOutcome {
+  if (batch.pageSize === 0 || batch.pageSize < requested) {
+    // No more rows in this stage — advance to the next (email when table stages end).
+    const following = nextStage(cursor.stage);
+    if (following === null) {
+      return {
+        kind: "done",
+        result: { ...summary, completed: true, cursor: null },
+      };
+    }
+    return { kind: "continue", cursor: { stage: following } };
+  }
+
+  // Full page consumed the remaining budget; more rows may exist.
+  return {
+    kind: "done",
+    result: {
+      ...summary,
+      completed: false,
+      cursor: {
+        stage: cursor.stage,
+        ...(batch.lastId ? { afterId: batch.lastId } : {}),
+      },
+    },
+  };
+}
+
 /**
  * Run one bounded batch of the at-rest re-encryption sweep.
  *
@@ -651,82 +883,32 @@ export async function reencryptAtRestSecrets(
   let remaining = limit;
 
   while (remaining > 0) {
+    if (cursor.stage === "authproviders") {
+      await sweepAuthProviderSettingSecrets(db, dataEncryptionSecrets, summary);
+      cursor = { stage: "email" };
+      continue;
+    }
+
     if (cursor.stage === "email") {
       await sweepEmailSettingSecrets(db, dataEncryptionSecrets, summary);
       return { ...summary, completed: true, cursor: null };
     }
 
-    let batch: StageBatchResult;
-    switch (cursor.stage) {
-      case "variables":
-        batch = await sweepSecretVariablesBatch(
-          db,
-          dataEncryptionSecrets,
-          summary,
-          cursor.afterId,
-          remaining,
-        );
-        break;
-      case "tls":
-        batch = await sweepTlsPrivateKeysBatch(
-          db,
-          dataEncryptionSecrets,
-          summary,
-          cursor.afterId,
-          remaining,
-        );
-        break;
-      case "principals":
-        batch = await sweepPrincipalPasswordsBatch(
-          db,
-          dataEncryptionSecrets,
-          summary,
-          cursor.afterId,
-          remaining,
-        );
-        break;
-      case "storage":
-        batch = await sweepStorageContentBatch(
-          db,
-          dataEncryptionSecrets,
-          summary,
-          cursor.afterId,
-          remaining,
-        );
-        break;
-      case "secrets":
-        batch = await sweepSecretTableBatch(
-          db,
-          dataEncryptionSecrets,
-          summary,
-          cursor.afterId,
-          remaining,
-        );
-        break;
-    }
+    const batch = await runTableStageBatch(
+      db,
+      dataEncryptionSecrets,
+      summary,
+      cursor.stage,
+      cursor.afterId,
+      remaining,
+    );
 
     const requested = remaining;
     remaining -= batch.pageSize;
 
-    if (batch.pageSize === 0 || batch.pageSize < requested) {
-      // No more rows in this stage — advance to the next (email when table stages end).
-      const following = nextStage(cursor.stage);
-      if (following === null) {
-        return { ...summary, completed: true, cursor: null };
-      }
-      cursor = { stage: following };
-      continue;
-    }
-
-    // Full page consumed the remaining budget; more rows may exist.
-    return {
-      ...summary,
-      completed: false,
-      cursor: {
-        stage: cursor.stage,
-        ...(batch.lastId ? { afterId: batch.lastId } : {}),
-      },
-    };
+    const outcome = resolveBatchOutcome(summary, cursor, batch, requested);
+    if (outcome.kind === "done") return outcome.result;
+    cursor = outcome.cursor;
   }
 
   return {

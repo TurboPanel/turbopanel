@@ -85,21 +85,45 @@ test('isOrganizationCaUniqueViolation matches active CA index', () => {
   assertEquals(isOrganizationCaUniqueViolation(null), false)
 })
 
-test('materialFromLetsEncrypt builds pending metadata', () => {
+test('materialFromLetsEncrypt builds managed metadata', () => {
   const material = materialFromLetsEncrypt({
-    hostnames: ['LE.example.com', '*.Example.com'],
-    challengeType: 'dns-01',
+    hostnames: ['LE.example.com'],
     autoRenew: false,
   })
   if (isCreateTlsFailure(material)) {
     throw new TypeError('expected success material')
   }
   assertEquals(material.certificatePem, null)
-  assertEquals(material.metadata.status, 'pending')
-  assertEquals(material.metadata.dnsNames, ['le.example.com', '*.example.com'])
-  assertEquals(material.metadata.hasWildcard, true)
-  assertEquals(material.metadata.acme?.challengeType, 'dns-01')
+  assertEquals(material.privateKeyPemSealed, null)
+  assertEquals(material.metadata.status, 'managed')
+  assertEquals(material.metadata.dnsNames, ['le.example.com'])
+  assertEquals(material.metadata.hasWildcard, false)
+  assertEquals(material.metadata.acme?.challengeType, 'http-01')
+  assertEquals(material.metadata.acme?.managedBy, 'caddy')
   assertEquals(material.options?.autoRenew, false)
+})
+
+test('materialFromLetsEncrypt rejects wildcard hostnames', () => {
+  const material = materialFromLetsEncrypt({
+    hostnames: ['*.example.com'],
+  })
+  assertEquals(isCreateTlsFailure(material), true)
+  if (!isCreateTlsFailure(material)) {
+    throw new TypeError('expected failure material')
+  }
+  assertEquals(material.error, 'wildcard_unsupported')
+})
+
+test('materialFromLetsEncrypt rejects dns-01', () => {
+  const material = materialFromLetsEncrypt({
+    hostnames: ['app.example.com'],
+    challengeType: 'dns-01',
+  })
+  assertEquals(isCreateTlsFailure(material), true)
+  if (!isCreateTlsFailure(material)) {
+    throw new TypeError('expected failure material')
+  }
+  assertEquals(material.error, 'dns_01_unsupported')
 })
 
 test('materialFromLetsEncrypt defaults challengeType and autoRenew', () => {

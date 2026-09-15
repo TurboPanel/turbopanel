@@ -13,6 +13,7 @@ import { deriveSecretsConfig } from '../authn/secrets.ts'
 import {
   environment,
   grant,
+  invitation,
   managed,
   organization,
   project,
@@ -21,6 +22,7 @@ import {
   variable,
   workspace,
 } from '../../lib/db/schema.ts'
+import type { EmailJob, EmailQueue } from '../../lib/email/types.ts'
 import { registerAccessRoutes } from './routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 
@@ -28,12 +30,16 @@ import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 
-async function createAccessTestApp(db: ReturnType<typeof createDenoDb>) {
+async function createAccessTestApp(
+  db: ReturnType<typeof createDenoDb>,
+  opts?: { emailQueue?: EmailQueue },
+) {
   const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
+    if (opts?.emailQueue) c.set('emailQueue', opts.emailQueue)
     return next()
   })
   registerAccessRoutes(app, {
@@ -75,6 +81,7 @@ async function withTestFixtures(
     workspaceId: string
     teamId: string
   }) => Promise<void>,
+  opts?: { emailQueue?: EmailQueue },
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping access route tests: TURBOPANEL_DATABASE_URL not set')
@@ -82,7 +89,7 @@ async function withTestFixtures(
   }
 
   const db = createDenoDb()
-  const { app, secrets } = await createAccessTestApp(db)
+  const { app, secrets } = await createAccessTestApp(db, opts)
 
   const actorEmail = `access-route-actor-${crypto.randomUUID()}@example.com`
   const targetEmail = `access-route-target-${crypto.randomUUID()}@example.com`
@@ -135,6 +142,7 @@ async function withTestFixtures(
       teamId,
     })
   } finally {
+    await db.delete(invitation).where(eq(invitation.teamId, teamId))
     await db.delete(grant).where(eq(grant.entityId, organizationId))
     await db.delete(grant).where(eq(grant.entityId, teamId))
     await db.delete(grant).where(eq(grant.entityId, workspaceId))
@@ -744,5 +752,155 @@ test('POST /access rejects system:manage; system:operate grants remain usable', 
     if (!operateBody.allowed) {
       throw new TypeError('system:operate grant should satisfy access/check for restart flows')
     }
+  })
+})
+
+function createRecordingEmailQueue(): { queue: EmailQueue; jobs: EmailJob[] } {
+  const jobs: EmailJob[] = []
+  return {
+    jobs,
+    queue: {
+      enqueue: (job) => {
+        jobs.push(job)
+        return Promise.resolve()
+      },
+    },
+  }
+}
+
+test('POST /invitations create → list → revoke', async () => {
+  const { queue, jobs } = createRecordingEmailQueue()
+  await withTestFixtures(async ({ db, app, secrets, actorId, organizationId, teamId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId,
+      permission: 'organization:own',
+    })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const inviteEmail = `invitee-${crypto.randomUUID()}@example.com`
+    const created = await app.request('/invitations', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(cookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ teamId, email: inviteEmail }),
+    })
+    if (created.status !== 200) {
+      throw new TypeError(`expected 200 creating invitation, got ${created.status}`)
+    }
+    const createdBody = await created.json() as { ok: true; id: string; expiresAt: string }
+    if (!createdBody.ok || !createdBody.id) {
+      throw new TypeError('create invitation response missing id')
+    }
+    if (jobs.length !== 1 || jobs[0]?.type !== 'invitation') {
+      throw new TypeError('expected one invitation email job')
+    }
+
+    const listed = await app.request('/invitations', {
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
+    if (listed.status !== 200) {
+      throw new TypeError(`expected 200 listing invitations, got ${listed.status}`)
+    }
+    const listBody = await listed.json() as {
+      invitations: Array<{ id: string; email: string }>
+    }
+    if (listBody.invitations.length !== 1) {
+      throw new TypeError(`expected one pending invitation, got ${listBody.invitations.length}`)
+    }
+    if (listBody.invitations[0]?.email !== inviteEmail) {
+      throw new TypeError('listed invitation email mismatch')
+    }
+
+    const revoked = await app.request(`/invitations/${createdBody.id}`, {
+      method: 'DELETE',
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
+    if (revoked.status !== 200) {
+      throw new TypeError(`expected 200 revoking invitation, got ${revoked.status}`)
+    }
+
+    const listedAfter = await app.request('/invitations', {
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
+    const afterBody = await listedAfter.json() as { invitations: unknown[] }
+    if (afterBody.invitations.length !== 0) {
+      throw new TypeError('revoked invitation should not remain pending')
+    }
+  }, { emailQueue: queue })
+})
+
+test('POST /invitations returns 409 invitation_pending for a duplicate', async () => {
+  const { queue } = createRecordingEmailQueue()
+  await withTestFixtures(async ({ db, app, secrets, actorId, organizationId, teamId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId,
+      permission: 'organization:manage',
+    })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const body = JSON.stringify({
+      teamId,
+      email: `dup-${crypto.randomUUID()}@example.com`,
+    })
+    const first = await app.request('/invitations', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(cookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body,
+    })
+    if (first.status !== 200) {
+      throw new TypeError(`expected 200 on first invite, got ${first.status}`)
+    }
+    const second = await app.request('/invitations', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(cookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body,
+    })
+    if (second.status !== 409) {
+      throw new TypeError(`expected 409 on duplicate invite, got ${second.status}`)
+    }
+    assertEquals(await second.json(), { error: 'invitation_pending' })
+  }, { emailQueue: queue })
+})
+
+test('POST /invitations returns 503 email_unavailable when the queue is noop', async () => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, organizationId, teamId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId,
+      permission: 'organization:manage',
+    })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const res = await app.request('/invitations', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(cookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        teamId,
+        email: `noop-${crypto.randomUUID()}@example.com`,
+      }),
+    })
+    if (res.status !== 503) {
+      throw new TypeError(`expected 503 when email is unavailable, got ${res.status}`)
+    }
+    assertEquals(await res.json(), { error: 'email_unavailable' })
   })
 })

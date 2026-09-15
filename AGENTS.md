@@ -309,7 +309,16 @@ guard; `pnpm test:do` alone does not.
 - Local Wrangler secrets come from Ansible-generated
   `/etc/turbopanel/instance/runtime.dev-vars` (`TURBOPANEL_SECRETS`), symlinked
   into the checkout as `.dev.vars` by `scripts/workers-serve.sh`; that path is
-  separate from managed Ansible installs above.
+  separate from managed Ansible installs above. Hosted OAuth sign-in is
+  env-only: bind
+  `TURBOPANEL_AUTH_PROVIDERS__GITHUB_CLIENT_ID` /
+  `TURBOPANEL_AUTH_PROVIDERS__GITHUB_CLIENT_SECRET` /
+  `TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_ID` /
+  `TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_SECRET` as Wrangler secrets
+  (`wrangler secret put`). Env always wins over the `SYSTEM_AUTH_PROVIDERS`
+  `setting` row (same env-wins story as `TURBOPANEL_SYSTEM_EMAIL__*`);
+  superadmin `GET`/`PUT /api/admin/v1/settings/auth-providers` is mounted on
+  both runtimes, but hosted typically leaves the DB row empty.
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for
   full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so
   Docker Caddy (`host.docker.internal`) can reach the dev server; default
@@ -433,9 +442,10 @@ dev user. In **production** it is **`2770 tp:tp`** (setgid) so the
 | `TURBOPANEL_UI_MODE`             | `static`                                | Instance/developer-surface gate (`dev` enables Expo UI unit + developer API on co-located hosts); production Caddy always serves static UI                                                                                                                                                                                                       |
 | `TURBOPANEL_UI_ROOT`             | `/opt/turbopanel/share/ui`              | Directory of `expo export --platform web` output (local manual dev typically sets `../ui/dist`)                                                                                                                                                                                                                                                  |
 | `TURBOPANEL_UI_SERVICE`          | `turbopanel-ui`                         | Name of the Expo systemd unit on managed hosts (injected for orchestration; no instance API surface today)                                                                                                                                                                                                                                       |
-| `CADDY_PORT`                     | `8443`                                  | HTTPS listen port                                                                                                                                                                                                                                                                                                                                |
-| `CADDY_TLS_CERT`                 | `./certs/self-signed.crt`               | Server leaf certificate (signed by the **Platform CA**; stays under the instance `certs/` dir)                                                                                                                                                                                                                                                   |
-| `CADDY_TLS_KEY`                  | `./certs/self-signed.key`               | Server leaf private key                                                                                                                                                                                                                                                                                                                          |
+| `CADDY_PORT`                     | `8443`                                  | HTTPS listen port (default `self_signed` / `upload`; `lets_encrypt` binds `443`)                                                                                                                                                                                                                                                               |
+| `CADDY_TLS_CERT`                 | `./certs/self-signed.crt`               | Server leaf certificate (signed by the **Platform CA**; stays under the instance `certs/` dir). Unused in `lets_encrypt`.                                                                                                                                                                                                                      |
+| `CADDY_TLS_KEY`                  | `./certs/self-signed.key`               | Server leaf private key. Unused in `lets_encrypt`.                                                                                                                                                                                                                                                                                            |
+| `TURBOPANEL_TLS_PUBLIC`          | —                                       | When `1` / `true`, the Deno CA route 404s (daemons use the system trust store) and install commands omit `--insecure-tls` even on a non-443 port. Set by `instance-launch` when `turbopanel_tls_mode=lets_encrypt` or `turbopanel_tls_public` is true. Hosted Workers already 404 without `TURBOPANEL_TLS_CA_PEM_B64`. |
 | `TURBOPANEL_TLS_CA`              | `/var/lib/turbopanel/tls/ca.crt`        | Durable **Platform CA** (override; default is `${TURBOPANEL_STATE_DIR}/tls/ca.crt`)                                                                                                                                                                                                                                                              |
 | `TURBOPANEL_TLS_CA_KEY`          | `/var/lib/turbopanel/tls/ca.key`        | Durable **Platform CA** private key                                                                                                                                                                                                                                                                                                              |
 | `TURBOPANEL_TLS_CA_BUNDLE`       | `/var/lib/turbopanel/tls/ca-bundle.pem` | Current+retired **Platform CA** PEM bundle served at `GET /api/daemon/v1/instance/ca`                                                                                                                                                                                                                                                            |
@@ -901,7 +911,10 @@ Moved to `src/client/openapi/AGENTS.md`.
   `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar;
   `GET/PUT /instance/public-urls` persists `TURBOPANEL_PUBLIC_URLS` in the
   `setting` table; `GET/PUT /settings/signup` toggles public sign-up via
-  `IS_SIGNUP_ENABLED`; superadmin `POST /secrets/reencrypt` runs a bounded
+  `IS_SIGNUP_ENABLED`; `GET/PUT /settings/email` and
+  `GET/PUT /settings/auth-providers` (GitHub/Google OAuth client id/secret;
+  env-wins `TURBOPANEL_AUTH_PROVIDERS__*`) persist system email and OAuth
+  credentials; superadmin `POST /secrets/reencrypt` runs a bounded
   at-rest re-encrypt sweep onto the current data-encryption key version
   (`src/admin/reencrypt-secrets.ts` — resume via `cursor` until `completed`;
   durable `REENCRYPT_SWEEP_LOCK` setting lease across isolates; **409**

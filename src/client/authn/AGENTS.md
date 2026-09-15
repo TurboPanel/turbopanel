@@ -98,7 +98,7 @@ Both runtimes resolve the same root secret via `parseSecretsFromEnv()`:
 
 **First entry signs / all keys verify.** Every key yields a stable `kid`; JWT headers include the active `kid`.
 
-`deriveSecretsConfig()` HKDF-derives HMAC keys for `session-signing` and `daemon-challenge-signing`. `deriveEncryptionSecretsConfig()` derives AES-256-GCM keys for `data-encryption`. The **daemon-facing JWT** uses `deriveDaemonJwtKeyring()` (`src/daemon/authn/daemon-jwt-keyring.ts`: Ed25519, HKDF salt `turbopanel`, info `daemon-jwt-eddsa`) — the legacy HMAC `daemon-jwt-signing` purpose is no longer used for daemon JWTs.
+`deriveSecretsConfig()` HKDF-derives HMAC keys for `session-signing`, `daemon-challenge-signing`, `email-otp-verifier`, `two-factor-challenge`, and `backup-code-verifier`. `deriveEncryptionSecretsConfig()` derives AES-256-GCM keys for `data-encryption`. The **daemon-facing JWT** uses `deriveDaemonJwtKeyring()` (`src/daemon/authn/daemon-jwt-keyring.ts`: Ed25519, HKDF salt `turbopanel`, info `daemon-jwt-eddsa`) — the legacy HMAC `daemon-jwt-signing` purpose is no longer used for daemon JWTs.
 
 **JWKS** (`GET /api/daemon/v1/jwks.json`) publishes all currently-valid **public** Ed25519 verification keys only — never `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS` or any HMAC key material. Old keys stay in JWKS during rotation and are removed once old tokens expire (≤15 min).
 
@@ -147,9 +147,9 @@ Local-Console auth is Deno + developer-surface only; it never applies on Workers
 
 ### Data encryption
 
-`tpsecret` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords, email secrets). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v<version>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded version enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Every TurboPanel-authored serialized secret shares grammar `<scheme>.v<version>.<fields…>`; `src/client/authn/envelope.ts` is the single owner of format/parse (`formatEnvelope` / `parseEnvelope` / `hasEnvelopeScheme`) — no module hand-rolls `split(".")`. Bump the version token when the payload layout changes; the scheme identifies the purpose. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRET` root of trust yields a rollable data-encryption keyring. A credential sealed as `tpsecret` is server-agnostic at rest and can be delivered to any authorized daemon.
+`tpsecret` is the **universal at-rest format** for all persisted secrets (secret variables, TLS private keys, principal passwords, email secrets, OAuth provider secrets, TOTP `2fa.secret`). Shared symmetric encryption is keyed off the same root secret via HKDF (`info: "data-encryption"` → AES-256-GCM). Envelope format: `tpsecret.v<version>.<payloadB64u>` where `payload` = IV (12 bytes) ‖ ciphertext+tag. The embedded version enables direct lookup against `DerivedSecretsConfig.current` / `.fallbacks` during rotation — no trial decryption. Every TurboPanel-authored serialized secret shares grammar `<scheme>.v<version>.<fields…>`; `src/client/authn/envelope.ts` is the single owner of format/parse (`formatEnvelope` / `parseEnvelope` / `hasEnvelopeScheme`) — no module hand-rolls `split(".")`. Bump the version token when the payload layout changes; the scheme identifies the purpose. There are **no per-server at-rest keys**: a single `TURBOPANEL_SECRET` root of trust yields a rollable data-encryption keyring. A credential sealed as `tpsecret` is server-agnostic at rest and can be delivered to any authorized daemon.
 
-**OTP verifiers** use `tpotp.v<n>.<hmacHex>` (HMAC material unchanged): direct-version lookup plus a rotation-safety sweep across remaining keyring entries.
+**OTP verifiers** use `tpotp.v<n>.<hmacHex>` (HMAC material unchanged): direct-version lookup plus a rotation-safety sweep across remaining keyring entries. Backup-code verifiers reuse that envelope under HKDF purpose `backup-code-verifier`. TOTP sign-in challenges are stateless `tp2fa.v<n>.<payloadB64u>.<sigB64u>` envelopes (HKDF purpose `two-factor-challenge`, 5-minute TTL). WebAuthn ceremony challenges are stateless `tpwebauthn.v<n>.<payloadB64u>.<sigB64u>` envelopes (HKDF purpose `webauthn-challenge`, 5-minute TTL). GitHub / Google OAuth start/callback CSRF state is a stateless `tpoauth.v<n>.<payloadB64u>.<sigB64u>` envelope (HKDF purpose `oauth-sign-in-state`, 10-minute TTL).
 
 **Delivery:** at deploy/delivery time the instance decrypts the at-rest `tpsecret` envelope and re-seals it as a recipient-bound `tpdaemon.v<version>.<serverId>.<keyId>.<payloadB64u>` envelope via the shared `resealSecretForDaemon` helper (`src/client/authn/data-encryption.ts`). Daemons decrypt only those recipient-scoped envelopes through `POST /api/daemon/v1/secrets/decrypt` (daemon JWT). Global `tpsecret` blobs are never handed to daemons.
 
@@ -161,8 +161,10 @@ Local-Console auth is Deno + developer-surface only; it never applies on Workers
 
 **Superadmin re-encrypt sweep** (`POST /api/admin/v1/secrets/reencrypt`, `src/admin/reencrypt-secrets.ts`):
 
-- **Bounded batches:** each request scans at most `limit` blobs (default/cap 200) across stages `variables` → `tls` → `principals` → `email`. Response includes per-batch `{ scanned, reencrypted, skipped, failed, completed, cursor }`. When `completed` is false, resume with the returned `cursor` until `completed` is true. A durable `setting`-row lease (`REENCRYPT_SWEEP_LOCK`, owner + expiry) returns **409** `reencrypt_in_progress` if a second sweep overlaps — this works across Workers isolates and Deno processes, not only within one isolate.
+- **Bounded batches:** each request scans at most `limit` blobs (default/cap 200) across stages `variables` → `tls` → `principals` → `storage` → `secrets` → `twofactor` → `authproviders` → `email`. Response includes per-batch `{ scanned, reencrypted, skipped, failed, completed, cursor }`. When `completed` is false, resume with the returned `cursor` until `completed` is true. A durable `setting`-row lease (`REENCRYPT_SWEEP_LOCK`, owner + expiry) returns **409** `reencrypt_in_progress` if a second sweep overlaps — this works across Workers isolates and Deno processes, not only within one isolate.
 - **`variable.value` / `tls.privateKeyPem` / `principal.password`:** re-seal older-version `tpsecret` under the current key; **skip** already-current `tpsecret` and **valid** daemon-bound `tpdaemon`; **fail** plaintext, malformed `tpsecret`/`tpdaemon`, and decrypt errors. Valid `tpdaemon` is left untouched on purpose (delivery envelopes, not at-rest rotation targets).
+- **`2fa.secret`:** re-seal older-version `tpsecret` only (`allowDaemonBound: false`); plaintext / `tpdaemon` material is **failed**.
+- **`SYSTEM_AUTH_PROVIDERS` secret keys** (`GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET`): re-seal older-version `tpsecret` only; plaintext / non-`tpsecret` material is **failed** (not auto-migrated).
 - **`SYSTEM_EMAIL` secret keys** (`MAILGUN_API_KEY` / `SMTP_PASS`): re-seal older-version `tpsecret` only; plaintext / non-`tpsecret` material is **failed** (not auto-migrated).
 - Each write is conditional on the original value still being present (id + secret-column compare-and-swap) so a concurrent update during rotation is left untouched and counted as `skipped`.
 
@@ -172,18 +174,45 @@ Local-Console auth is Deno + developer-surface only; it never applies on Workers
 
 **Live (Worker `instance`):** do **not** commit `TURBOPANEL_IS_SIGNUP_ENABLED` under `env.live.vars` — Wrangler treats committed vars as source of truth and overwrites dashboard edits on every `wrangler deploy`. Live uses top-level `keep_vars: true` so dashboard-only plaintext vars survive deploys. To open production sign-up: Cloudflare dashboard → Worker **`instance`** → Settings → Variables and Secrets → set `TURBOPANEL_IS_SIGNUP_ENABLED` = `1` → **Deploy** (editing alone is not enough; confirm the new version is 100% of production traffic). Verify with `GET https://turbopanel.app/api/client/v1/status` → `isSignupEnabled: true`. Never commit `"1"`/`"true"` on `env.live` (config regression guard). While the env force is set, the DB/panel toggle cannot override it. Testing keeps `"1"` in `env.testing.vars` as a permanent force-enable. Local dev may still set `TURBOPANEL_IS_SIGNUP_ENABLED=1` in the checkout `.dev.vars` (or `/etc/turbopanel/instance/runtime.dev-vars`) as a force-enable for dev.
 
+### Two-factor, passkeys, third-party sign-in
+
+Contracts and gotchas for the three account-security paths. Route table is below — do not restate it here.
+
+**TOTP (`tp2fa`):** the sign-in challenge is a stateless envelope (HKDF purpose `two-factor-challenge`) with a **5-minute TTL**. Five wrong codes (TOTP or backup) kill the challenge; the client signs in again rather than retrying a dead token. Backup-code verifiers reuse the `tpotp` envelope under HKDF purpose `backup-code-verifier` and are **consumed on use** — a code that verifies is removed from the remaining set in the same write.
+
+**WebAuthn:** the relying-party id is the hostname of `resolvePublicBaseUrl` (never the request Host). Ceremonies require **user verification**, discoverable credentials, and `ES256` / `RS256`. An authenticator counter that regresses is rejected. A passkey login is a **full second factor** — it issues a session without a TOTP challenge even when `user.is_2fa_enabled`.
+
+**OAuth:** GitHub and Google share the provider abstraction in `oauth/providers.ts`. Client id/secret resolve env-first (`TURBOPANEL_AUTH_PROVIDERS__*`) over the `SYSTEM_AUTH_PROVIDERS` setting row. The instance persists **identity only** (`account.provider_id` / `provider_user_id`) — never access or refresh tokens — and **does not auto-link by email**. Callback errors are **redirect-only** (`/sign-in?error=` or `/account/security?linked=&error=` in link mode); the callback never returns JSON. Link-mode callback does not trust signed `linkUserId` alone — it re-reads the live session and requires that user.
+
+**Re-auth:** `assertRecentAuthOr403` (`reauth.ts`) is shared by enroll/disable 2FA, passkey add/remove, and provider unlink. Accept a password in the body, or a session younger than 15 minutes; otherwise **403**.
+
 ### Auth routes
 
 Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials by **email** + password, create session (rejects root; use install wizard). Session payload has `userId` / `email` / `role` (no `username`) |
+| `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials by **email** + password. When `user.is_2fa_enabled`, returns `{ ok: true, requires2fa: true, challenge }` (no session). Otherwise create session. Session payload has `userId` / `email` / `role` / `is2faEnabled` (no `username`) |
+| `POST` | `/api/client/v1/auth/sign-in/2fa` | Public; complete sign-in with a TOTP code or backup code against a `tp2fa` challenge. Rate-limited `sign-in-2fa`. Five failures kill the challenge. |
+| `GET` | `/api/client/v1/auth/2fa` | Session: `{ enabled, method, backupCodesRemaining, passkeys, linkedProviders }` — `passkeys` is `{ id, name, createdAt, deviceType, isBackedUp }[]` (same shape as `GET /auth/passkeys`). `linkedProviders` is the OAuth identities on this account (`github` / `google`; the password `credential` row is omitted). There is no separate `GET /auth/oauth`. |
+| `POST` | `/api/client/v1/auth/2fa/totp/enroll` | Session + reauth; returns `{ secret, otpauthUri }`. **409** `two_factor_enabled` while a verified row exists |
+| `POST` | `/api/client/v1/auth/2fa/totp/verify` | Session; flips `is_verified` + `user.is_2fa_enabled`; returns `{ backupCodes }` once |
+| `POST` | `/api/client/v1/auth/2fa/backup-codes/regenerate` | Session + reauth; `{ backupCodes }` |
+| `POST` | `/api/client/v1/auth/2fa/disable` | Session + reauth; deletes the `2fa` row and clears `is_2fa_enabled` |
+| `POST` | `/api/client/v1/auth/passkeys/register/options` | Session + reauth; `{ challenge, options }` (`tpwebauthn` envelope + PublicKeyCredentialCreationOptions). `rpId` from the public base URL hostname |
+| `POST` | `/api/client/v1/auth/passkeys/register/verify` | Session; body `{ challenge, name, credential }`. **409** `passkey_exists` on duplicate `credentialId` |
+| `GET` | `/api/client/v1/auth/passkeys` | Session: `{ passkeys: [{ id, name, createdAt, deviceType, isBackedUp }] }` |
+| `DELETE` | `/api/client/v1/auth/passkeys/:id` | Session + reauth; **404** when not owned |
+| `POST` | `/api/client/v1/auth/passkeys/login/options` | Public; discoverable `{ challenge, options }` (no `allowCredentials`). Rate-limited `passkey-login` |
+| `POST` | `/api/client/v1/auth/passkeys/login/verify` | Public; complete sign-in with a passkey alone (no TOTP challenge even when `user.is_2fa_enabled`). Rate-limited `passkey-login` |
+| `GET` | `/api/client/v1/auth/oauth/:provider/start` | Public; redirect to GitHub or Google authorize URL. Unconfigured provider → **404**. `link=1` requires a session. Rate-limited `oauth-start` |
+| `GET` | `/api/client/v1/auth/oauth/:provider/callback` | Public; provider redirect. Redirect-only (never JSON): session cookie, `/sign-in?challenge=` for 2FA, `/account/security?linked=` when linking, or `/sign-in?error=` (`oauth_state_invalid`, `oauth_exchange_failed`, `account_disabled`, `oauth_signup_disabled`, `account_conflict`, `not_configured`, `database_unavailable`). Link-mode callback re-reads the live session and requires `session.userId === claims.linkUserId`; missing or mismatched session redirects to `/account/security?linked=&error=oauth_unauthenticated`. Other link-mode failures redirect to `/account/security?linked=&error=`. Persists identity only — never provider tokens. Rate-limited `oauth-callback` |
+| `DELETE` | `/api/client/v1/auth/oauth/:provider` | Session + reauth; unlink that provider. One linked identity per `(userId, providerId)`. **409** `last_sign_in_method` when no credential account, other provider account, or passkey would remain |
 | `POST` | `/api/client/v1/auth/sign-out` | Delete session, clear cookie |
 | `POST` | `/api/client/v1/auth/sign-up` | Create a regular user account when signup is enabled (`IS_SIGNUP_ENABLED` DB setting, or `TURBOPANEL_IS_SIGNUP_ENABLED` force override); no session returned — user must sign in. Generates a 24h email verification token and enqueues a `signup-verification` email job (Deno → RabbitMQ → mailer → SMTP/Mailpit; Workers → Mailgun directly). In explicit development mode only, logs a sanitized `verification email queued` event (never the token or verify URL) |
 | `GET` | `/api/client/v1/auth/verify-email?token=<token>` | Consume a 24-hour email verification token; sets `user.isEmailVerified = true` |
 | `GET` | `/api/client/v1/authn/session` | Return current user session or 401 |
-| `GET` | `/api/client/v1/status` | Public: `{ runtime, isSignupEnabled, … }` — `runtime` is `deno` \| `workers` (UI auth chrome: Workers/HA green, Deno/self-hosted blue). Deno also returns `needsInstall` / `isInstallMode` until org + superadmin exist; Workers omits install fields and bootstraps via sign-up |
+| `GET` | `/api/client/v1/status` | Public: `{ runtime, isSignupEnabled, authProviders, … }` — `runtime` is `deno` \| `workers` (UI auth chrome: Workers/HA green, Deno/self-hosted blue). `authProviders` is a presence-only `('github' \| 'google')[]` of configured OAuth providers (no secret decrypt). Deno also returns `needsInstall` / `isInstallMode` until org + superadmin exist; Workers omits install fields and bootstraps via sign-up |
 | `POST` | `/api/install/v1/bootstrap` | Deno: verify host PAM (root or sudo user), no cookies |
 | `POST` | `/api/install/v1/` | Deno: host PAM + superadmin setup → superadmin session only |
 | `GET` | `/api/client/v1/servers` | Session required: servers visible to the user via `listVisible`, with live `connected` / `hostname` from the daemon hub |
@@ -232,6 +261,19 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `src/client/authn/password.ts` | Argon2id hash/verify for credential accounts |
 | `src/client/authn/email-verification.ts` | `createEmailVerificationToken` / `consumeEmailVerificationToken` — token lifecycle against the `verification` table (`identifier` = email, `value` = 64-char hex, `expiresAt` = 24h) |
 | `src/client/authn/http.ts` | `registerAuthRoutes` — sign-in / sign-out / session / verify-email HTTP handlers |
+| `src/client/authn/otp-http.ts` | Email OTP send / verify / sign-in / reset-password |
+| `src/client/authn/totp.ts` | RFC 6238 TOTP + RFC 4648 base32 (Web Crypto HMAC-SHA1) |
+| `src/client/authn/webauthn.ts` | WebAuthn CBOR / authenticator data / assertion verify |
+| `src/client/authn/two-factor.ts` | Enrol / verify / disable / backup codes / `tp2fa` challenge |
+| `src/client/authn/two-factor-http.ts` | `/auth/2fa*` and `POST /auth/sign-in/2fa` |
+| `src/client/authn/passkeys.ts` | Passkey register / list / delete / login; `tpwebauthn` challenge |
+| `src/client/authn/passkeys-http.ts` | `/auth/passkeys*` register, list, delete, and public login |
+| `src/client/authn/oauth/providers.ts` | GitHub / Google OAuth `authorizeUrl` / `tokenUrl` / `fetchIdentity` |
+| `src/client/authn/oauth/oauth-state.ts` | `tpoauth` signed CSRF state (`oauth-sign-in-state`) |
+| `src/client/authn/oauth/oauth-http.ts` | `/auth/oauth*` start, callback, unlink |
+| `src/client/authn/reauth.ts` | `assertRecentAuthOr403` — password reauth, or 15-minute session window |
 | `src/lib/install/routes.ts` | `registerInstallRoutes` — self-hosted install wizard (`/api/install/v1/*`; Deno entry only) |
 | `src/client/authn/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
 | `src/client/authn/middleware.ts` | Session + superadmin middleware helpers |
+
+Future: an instance-wide 2FA-required admin toggle is out of scope for this phase.

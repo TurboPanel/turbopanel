@@ -55,6 +55,67 @@ export const accessSchemas = {
     description:
       'One intended access grant stored on invitation.grants. Materialized into grant rows on invitation accept.',
   },
+  CreateInvitationRequest: {
+    type: 'object',
+    required: ['teamId', 'email'],
+    properties: {
+      teamId: { type: 'string', format: 'uuid' },
+      email: { type: 'string', format: 'email' },
+      grants: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/InvitationGrantSpec' },
+        description:
+          'Optional intended grants. Requires organization:own. Omitted or null stores no grants so accept applies the default organization:manage grant.',
+      },
+    },
+  },
+  CreateInvitationResponse: {
+    type: 'object',
+    required: ['ok', 'id', 'expiresAt'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      id: { type: 'string', format: 'uuid' },
+      expiresAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  InvitationRecord: {
+    type: 'object',
+    required: [
+      'id',
+      'email',
+      'teamId',
+      'teamName',
+      'expiresAt',
+      'createdAt',
+      'invitedBy',
+    ],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      email: { type: 'string' },
+      teamId: { type: 'string', format: 'uuid' },
+      teamName: { type: 'string', nullable: true },
+      expiresAt: { type: 'string', format: 'date-time' },
+      createdAt: { type: 'string', format: 'date-time' },
+      invitedBy: { type: 'string', nullable: true },
+    },
+  },
+  InvitationListResponse: {
+    type: 'object',
+    required: ['invitations'],
+    properties: {
+      invitations: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/InvitationRecord' },
+      },
+    },
+  },
+  RevokeInvitationResponse: {
+    type: 'object',
+    required: ['ok'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+    },
+  },
   InvitationAcceptResponse: {
     type: 'object',
     required: ['ok', 'organizationId'],
@@ -177,6 +238,233 @@ export const accessSchemas = {
 }
 
 export const accessPaths: Record<string, unknown> = {
+  '/api/client/v1/invitations': {
+    post: {
+      tags: ['Authorization'],
+      summary: 'Invite a teammate',
+      description:
+        'Creates a pending invitation for a team in the session organization and emails the accept link. Requires canInviteToTeam. Optional grants require organization:own (403 grants_require_owner). Returns 409 invitation_pending when a pending, unexpired invite already exists for that team and email, and 503 email_unavailable when the email queue is unavailable.',
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateInvitationRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Invitation created',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CreateInvitationResponse' },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden or grants_require_owner',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Team not found in the session organization',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '409': {
+          description: 'A pending invitation already exists for this team and email',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string', example: 'invitation_pending' } },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Database or email unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+    get: {
+      tags: ['Authorization'],
+      summary: 'List pending invitations',
+      description:
+        'Lists pending, unexpired invitations across teams in the session organization. Requires organization:manage.',
+      security: [{ cookieAuth: [] }],
+      responses: {
+        '200': {
+          description: 'Pending invitations',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/InvitationListResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/invitations/{id}': {
+    delete: {
+      tags: ['Authorization'],
+      summary: 'Revoke a pending invitation',
+      description:
+        'Sets status to revoked only while the invitation is still pending. Requires canInviteToTeam on the invitation\'s team.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Invitation revoked',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/RevokeInvitationResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Invitation not found or not pending',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
   '/api/client/v1/invitations/{id}/accept': {
     post: {
       tags: ['Authorization'],

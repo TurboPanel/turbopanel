@@ -8,6 +8,9 @@ import {
   ENVELOPE_SCHEME_OTP,
   ENVELOPE_SCHEME_SECRET,
   ENVELOPE_SCHEME_SESSION,
+  ENVELOPE_SCHEME_TWO_FACTOR,
+  ENVELOPE_SCHEME_WEBAUTHN,
+  ENVELOPE_SCHEME_OAUTH_STATE,
   formatEnvelope,
   hasEnvelopeScheme,
   parseEnvelope,
@@ -67,6 +70,27 @@ describe("parseEnvelope", () => {
     });
     assertEquals(
       parseEnvelope(ENVELOPE_SCHEME_CHALLENGE, "tpchallenge.v1.payload.sig", 2),
+      {
+        version: 1,
+        fields: ["payload", "sig"],
+      },
+    );
+    assertEquals(
+      parseEnvelope(ENVELOPE_SCHEME_TWO_FACTOR, "tp2fa.v1.payload.sig", 2),
+      {
+        version: 1,
+        fields: ["payload", "sig"],
+      },
+    );
+    assertEquals(
+      parseEnvelope(ENVELOPE_SCHEME_WEBAUTHN, "tpwebauthn.v1.payload.sig", 2),
+      {
+        version: 1,
+        fields: ["payload", "sig"],
+      },
+    );
+    assertEquals(
+      parseEnvelope(ENVELOPE_SCHEME_OAUTH_STATE, "tpoauth.v1.payload.sig", 2),
       {
         version: 1,
         fields: ["payload", "sig"],

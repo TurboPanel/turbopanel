@@ -14,11 +14,12 @@ import {
   parseSecretsEnv,
 } from "../client/authn/secrets.ts";
 import {
-  secret,
   principal,
+  secret,
   setting,
   storage,
   tls,
+  twoFactor,
   variable,
 } from "../lib/db/schema.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
@@ -51,6 +52,7 @@ type StageKey =
   | "principals"
   | "storage"
   | "secrets"
+  | "twofactor"
   | "email";
 
 function stageForTable(table: unknown): StageKey | null {
@@ -59,6 +61,7 @@ function stageForTable(table: unknown): StageKey | null {
   if (table === principal) return "principals";
   if (table === storage) return "storage";
   if (table === secret) return "secrets";
+  if (table === twoFactor) return "twofactor";
   if (table === setting) return "email";
   return null;
 }
@@ -93,6 +96,7 @@ function stagedSweepDb(opts: {
     principals: 0,
     storage: 0,
     secrets: 0,
+    twofactor: 0,
     email: 0,
   };
   const updateApplied = opts.updateApplied ?? true;
@@ -137,8 +141,10 @@ function deriveV1Only() {
 }
 
 async function deriveRotated() {
-  const env = parseSecretsEnv(`2:${TEST_ONLY_TURBOPANEL_SECRET_V2},1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+  const env = parseSecretsEnv(
+    `2:${TEST_ONLY_TURBOPANEL_SECRET_V2},1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno",
+  );
   return {
     env,
     secrets: await deriveEncryptionSecretsConfig(env, "data-encryption"),
@@ -539,6 +545,41 @@ test("reencryptAtRestSecrets email fails plaintext and skips CAS miss after rese
   assertEquals(batch.skipped, 1);
 });
 
+test("reencryptAtRestSecrets authproviders reseals then continues to email", async () => {
+  await resetReencryptSweepLockForTests();
+  const v1Only = await deriveV1Only();
+  const { secrets: rotated } = await deriveRotated();
+  const oldGithub = await encryptSecret(v1Only, "github-v1");
+  const oldSmtp = await encryptSecret(v1Only, "smtp-v1");
+  const db = stagedSweepDb({
+    pages: {
+      email: [
+        [{
+          value: {
+            GITHUB_CLIENT_ID: "gh-id",
+            GITHUB_CLIENT_SECRET: oldGithub,
+            GOOGLE_CLIENT_SECRET: "plaintext-google",
+          },
+        }],
+        [{
+          value: { SMTP_PASS: oldSmtp },
+        }],
+      ],
+    },
+  });
+
+  const batch = await reencryptAtRestSecrets(db, rotated, {
+    cursor: { stage: "authproviders" },
+    limit: 10,
+  });
+  assertEquals(batch.completed, true);
+  assertEquals(batch.cursor, null);
+  assertEquals(batch.scanned, 3);
+  assertEquals(batch.reencrypted, 2);
+  assertEquals(batch.failed, 1);
+  assertEquals(batch.skipped, 0);
+});
+
 test("reencryptAtRestSecrets email counts decrypt failures", async () => {
   await resetReencryptSweepLockForTests();
   const v1Only = await deriveV1Only();
@@ -617,6 +658,31 @@ test("reencryptAtRestSecrets sweeps the secret table including daemon-bound enve
 
   const batch = await reencryptAtRestSecrets(db, rotated, {
     cursor: { stage: "secrets" },
+    limit: 50,
+  });
+  assertEquals(batch.reencrypted, 1);
+  assertEquals(batch.scanned, 1);
+  assertEquals(batch.completed, true);
+});
+
+test("reencryptAtRestSecrets sweeps 2fa.secret (tpsecret only)", async () => {
+  await resetReencryptSweepLockForTests();
+  const v1Only = await deriveV1Only();
+  const { secrets: rotated } = await deriveRotated();
+  const oldSecret = await encryptSecret(v1Only, "totp-secret");
+  const db = stagedSweepDb({
+    pages: {
+      twofactor: [[
+        {
+          id: "00000000-0000-4000-8000-0000000000t1",
+          secret: oldSecret,
+        },
+      ]],
+    },
+  });
+
+  const batch = await reencryptAtRestSecrets(db, rotated, {
+    cursor: { stage: "twofactor" },
     limit: 50,
   });
   assertEquals(batch.reencrypted, 1);

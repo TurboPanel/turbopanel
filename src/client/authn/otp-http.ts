@@ -27,6 +27,7 @@ import {
   getSession,
   type SessionData,
 } from './session-store.ts'
+import { issueTwoFactorChallenge } from './two-factor.ts'
 import {
   type AuthBodyValidation,
   type AuthRouteOpts,
@@ -164,9 +165,13 @@ async function resolveOtpSignInUserId(
   db: Db,
   trimmedEmail: string,
   name: string | undefined,
-): Promise<{ userId: string } | { response: Response }> {
+): Promise<{ userId: string; is2FaEnabled: boolean } | { response: Response }> {
   const existingUsers = await db
-    .select({ id: user.id, isDisabled: user.isDisabled })
+    .select({
+      id: user.id,
+      isDisabled: user.isDisabled,
+      is2FaEnabled: user.is2FaEnabled,
+    })
     .from(user)
     .where(eq(user.email, trimmedEmail))
     .limit(1)
@@ -178,7 +183,7 @@ async function resolveOtpSignInUserId(
     }
   }
   if (existingUser) {
-    return { userId: existingUser.id }
+    return { userId: existingUser.id, is2FaEnabled: existingUser.is2FaEnabled === true }
   }
 
   if (opts.runtime === 'deno' && !(await isInstanceInstalled(db))) {
@@ -196,6 +201,7 @@ async function resolveOtpSignInUserId(
       ),
     ))
   ) {
+    // Future: invitation-gated OTP auto-register — not a one-line change at this call site.
     return {
       response: c.json({ ok: false, error: 'Sign-up is not enabled' }, 403),
     }
@@ -216,7 +222,7 @@ async function resolveOtpSignInUserId(
   if (!created) {
     return { response: c.json({ ok: false, error: 'Sign-in failed' }, 500) }
   }
-  return { userId: created.id }
+  return { userId: created.id, is2FaEnabled: false }
 }
 
 /**
@@ -574,6 +580,18 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return resolved.response
     }
     const userId = resolved.userId
+
+    if (resolved.is2FaEnabled) {
+      if (!opts.twoFactorChallengeSecrets) {
+        return c.json({ ok: false, error: 'Not configured' }, 503)
+      }
+      const challenge = await issueTwoFactorChallenge(
+        db,
+        opts.twoFactorChallengeSecrets,
+        userId,
+      )
+      return c.json({ ok: true, requires2fa: true, challenge })
+    }
 
     const secrets = opts.secrets
     if (!secrets) {

@@ -884,11 +884,20 @@ export function registerDaemonApiRoutes<E extends Env>(
      * explicitly.
      */
     runtime?: "workers" | "deno";
+    /**
+     * When true, GET /instance/ca answers 404 (publicly trusted leaf; daemons
+     * use the system trust store). Defaults to false so self-signed installs
+     * keep serving the Platform CA from disk. Passed as a plain boolean so the
+     * route stays testable without env mutation and the Workers graph gains no
+     * import.
+     */
+    tlsPublic?: boolean;
   } = {},
 ) {
   const daemon = new Hono<DaemonApiEnv>();
   const { secrets, challengeSigningSecrets, secretsConfig } = options;
   const runtime = options.runtime ?? "workers";
+  const tlsPublic = options.tlsPublic ?? false;
   const deployment = metricsDeploymentKindForRuntime(runtime);
   const metricsChartCache = createMetricsChartCache(runtime);
   const restLimiter = options.restLimiter ?? createNoopRateLimiter();
@@ -1052,6 +1061,9 @@ export function registerDaemonApiRoutes<E extends Env>(
         const message = err instanceof Error ? err.message : String(err);
         return c.json({ error: message }, 500);
       }
+    }
+    if (tlsPublic) {
+      return c.json({ error: "platform CA not configured" }, 404);
     }
     try {
       const cert = await Deno.readTextFile(resolveInstanceTlsCaServePath());

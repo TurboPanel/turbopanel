@@ -53,6 +53,29 @@ test('parseSignupBody accepts a password that satisfies every rule', () => {
   }
 })
 
+test('parseSignupBody accepts an optional invitationId UUID and rejects a malformed one', () => {
+  const invitationId = '11111111-1111-4111-8111-111111111111'
+  const accepted = parseSignupBody({
+    email,
+    password: 'sup3r-secret!',
+    invitationId,
+  })
+  assertEquals(accepted.ok, true)
+  if (accepted.ok) {
+    assertEquals(accepted.invitationId, invitationId)
+  }
+
+  const rejected = parseSignupBody({
+    email,
+    password: 'sup3r-secret!',
+    invitationId: 'not-a-uuid',
+  })
+  assertEquals(rejected.ok, false)
+  if (!rejected.ok) {
+    assertEquals(rejected.error, 'Invalid request')
+  }
+})
+
 test('parseSignupBody rejects non-objects and missing fields', () => {
   assertEquals(parseSignupBody(null).ok, false)
   assertEquals(parseSignupBody([]).ok, false)

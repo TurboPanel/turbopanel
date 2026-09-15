@@ -117,7 +117,10 @@ it("compile tasks carry no ClickHouse grants", async () => {
 it("instance unit ExecStart drops ClickHouse and grants DuckDB needs", async () => {
   const execStartLines = await readUnitExecStartLines();
   if (execStartLines === null) return; // standalone CI: daemon checkout absent
-  assert(execStartLines.length > 0, "unit template must define ExecStart lines");
+  assert(
+    execStartLines.length > 0,
+    "unit template must define ExecStart lines",
+  );
 
   for (const line of execStartLines) {
     assert(
@@ -157,7 +160,9 @@ it("compiled instance branch vendors libduckdb.so on LD_LIBRARY_PATH", async () 
   if (serviceUnit === null) return; // standalone CI: daemon checkout absent
   const collapsed = serviceUnit.replaceAll(/\{\{\s*([^}]*?)\s*\}\}/g, "{{$1}}");
   assert(
-    collapsed.includes("Environment=LD_LIBRARY_PATH={{turbopanel_duckdb_lib_dir}}"),
+    collapsed.includes(
+      "Environment=LD_LIBRARY_PATH={{turbopanel_duckdb_lib_dir}}",
+    ),
     "compiled branch must put {{ turbopanel_duckdb_lib_dir }} on LD_LIBRARY_PATH",
   );
   assert(
@@ -170,13 +175,20 @@ it("compiled instance branch vendors libduckdb.so on LD_LIBRARY_PATH", async () 
   const defaults = await readDaemonFile(
     "orchestration/roles/instance-launch/defaults/main.yml",
   );
-  assert(defaults !== null, "instance-launch defaults must exist next to the unit template");
   assert(
-    defaults.includes('turbopanel_duckdb_lib_dir: "{{ turbopanel_vendor_dir }}/duckdb/lib"'),
+    defaults !== null,
+    "instance-launch defaults must exist next to the unit template",
+  );
+  assert(
+    defaults.includes(
+      'turbopanel_duckdb_lib_dir: "{{ turbopanel_vendor_dir }}/duckdb/lib"',
+    ),
     "turbopanel_duckdb_lib_dir must default to <vendor>/duckdb/lib",
   );
   assert(
-    defaults.includes('turbopanel_vendor_dir: "{{ turbopanel_install_root }}/vendor"'),
+    defaults.includes(
+      'turbopanel_vendor_dir: "{{ turbopanel_install_root }}/vendor"',
+    ),
     "turbopanel_vendor_dir must default to <install root>/vendor",
   );
   assert(
@@ -193,7 +205,10 @@ it("compiled instance branch vendors libduckdb.so on LD_LIBRARY_PATH", async () 
   const buildTasks = await readDaemonFile(
     "orchestration/roles/instance-build/tasks/main.yml",
   );
-  assert(buildTasks !== null, "instance-build role must exist next to the unit template");
+  assert(
+    buildTasks !== null,
+    "instance-build role must exist next to the unit template",
+  );
   assert(
     buildTasks.includes("{{ turbopanel_duckdb_lib_dir }}/libduckdb.so"),
     "instance-build must stage libduckdb.so into turbopanel_duckdb_lib_dir",
@@ -229,6 +244,28 @@ it("instance --allow-net includes public Git provider APIs", async () => {
   }
 });
 
+it("compile --allow-net includes OAuth provider hosts", async () => {
+  const tasks = await readCompileTasks();
+  const required = [
+    "github.com:443",
+    "accounts.google.com:443",
+    "oauth2.googleapis.com:443",
+    "openidconnect.googleapis.com:443",
+  ];
+
+  for (const [taskName, task] of Object.entries(tasks)) {
+    const allowNet = extractAllowNetFlag(task);
+    assert(allowNet, `${taskName} must include --allow-net`);
+    const hosts = allowNet.split(",");
+    for (const host of required) {
+      assert(
+        hosts.includes(host),
+        `${taskName} --allow-net must include ${host} for OAuth sign-in`,
+      );
+    }
+  }
+});
+
 it("self-hosted compile tasks do not grant Stripe", async () => {
   const tasks = await readCompileTasks();
   for (const [taskName, task] of Object.entries(tasks)) {
@@ -251,7 +288,8 @@ it("self-hosted compile tasks do not grant Stripe", async () => {
 it("production compile excludes developer-only permissions and entry", async () => {
   const { compile: compileTask } = await readCompileTasks();
   assert(
-    compileTask.endsWith(" src/deno.ts") || compileTask.includes(" src/deno.ts "),
+    compileTask.endsWith(" src/deno.ts") ||
+      compileTask.includes(" src/deno.ts "),
     "production compile must target src/deno.ts",
   );
   assert(

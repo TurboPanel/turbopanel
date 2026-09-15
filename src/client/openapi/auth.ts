@@ -7,6 +7,7 @@ const denoClientStatusSchema = {
     "isInstallMode",
     "isSignupEnabled",
     "billingEnabled",
+    "authProviders",
   ],
   description:
     "Public client status on Deno self-hosted. Reflects install wizard and sign-up state.",
@@ -36,12 +37,24 @@ const denoClientStatusSchema = {
       description:
         "Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the console hides the billing area wholesale when false. Never the keys.",
     },
+    authProviders: {
+      type: "array",
+      items: { type: "string", enum: ["github", "google"] },
+      description:
+        "Configured OAuth sign-in providers. Presence only — client ids and secrets are never returned.",
+    },
   },
 } as const;
 
 const workersClientStatusSchema = {
   type: "object",
-  required: ["ok", "runtime", "isSignupEnabled", "billingEnabled"],
+  required: [
+    "ok",
+    "runtime",
+    "isSignupEnabled",
+    "billingEnabled",
+    "authProviders",
+  ],
   description:
     "Public client status on Cloudflare Workers. Install fields are omitted — Workers bootstraps via public sign-up.",
   properties: {
@@ -62,6 +75,12 @@ const workersClientStatusSchema = {
       description:
         "Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the console hides the billing area wholesale when false. Never the keys.",
     },
+    authProviders: {
+      type: "array",
+      items: { type: "string", enum: ["github", "google"] },
+      description:
+        "Configured OAuth sign-in providers. Presence only — client ids and secrets are never returned.",
+    },
   },
 } as const;
 
@@ -73,6 +92,7 @@ const denoSessionResponseSchema = {
     "email",
     "role",
     "needsInstall",
+    "is2faEnabled",
   ],
   properties: {
     ok: { type: "boolean", const: true },
@@ -80,12 +100,13 @@ const denoSessionResponseSchema = {
     email: { type: ["string", "null"] },
     role: { type: ["string", "null"] },
     needsInstall: { type: "boolean" },
+    is2faEnabled: { type: "boolean" },
   },
 } as const;
 
 const workersSessionResponseSchema = {
   type: "object",
-  required: ["ok", "userId", "email", "role"],
+  required: ["ok", "userId", "email", "role", "is2faEnabled"],
   description:
     "Session payload on Workers. needsInstall is omitted — Workers has no install wizard.",
   properties: {
@@ -93,6 +114,7 @@ const workersSessionResponseSchema = {
     userId: { type: ["string", "null"] },
     email: { type: ["string", "null"] },
     role: { type: ["string", "null"] },
+    is2faEnabled: { type: "boolean" },
   },
 } as const;
 
@@ -144,6 +166,133 @@ export function buildAuthSchemas(runtime?: "deno" | "workers") {
     SessionResponse: includeInstall
       ? denoSessionResponseSchema
       : workersSessionResponseSchema,
+    Requires2faResponse: {
+      type: "object",
+      required: ["ok", "requires2fa", "challenge"],
+      properties: {
+        ok: { type: "boolean", const: true },
+        requires2fa: { type: "boolean", const: true },
+        challenge: {
+          type: "string",
+          description:
+            "Stateless `tp2fa` envelope; submit to POST /auth/sign-in/2fa",
+        },
+      },
+    },
+    TwoFactorStatus: {
+      type: "object",
+      required: [
+        "enabled",
+        "method",
+        "backupCodesRemaining",
+        "passkeys",
+        "linkedProviders",
+      ],
+      properties: {
+        enabled: { type: "boolean" },
+        method: { type: ["string", "null"], enum: ["totp", null] },
+        backupCodesRemaining: { type: "integer" },
+        passkeys: {
+          type: "array",
+          items: { $ref: "#/components/schemas/PasskeySummary" },
+        },
+        linkedProviders: {
+          type: "array",
+          items: { type: "string", enum: ["github", "google"] },
+          description:
+            "OAuth providers linked to this account (excludes the password credential)",
+        },
+      },
+    },
+    TotpEnrollResponse: {
+      type: "object",
+      required: ["secret", "otpauthUri"],
+      properties: {
+        secret: { type: "string" },
+        otpauthUri: { type: "string" },
+      },
+    },
+    BackupCodesResponse: {
+      type: "object",
+      required: ["backupCodes"],
+      properties: {
+        backupCodes: {
+          type: "array",
+          items: { type: "string" },
+        },
+      },
+    },
+    SignIn2faRequest: {
+      type: "object",
+      required: ["challenge"],
+      properties: {
+        challenge: { type: "string" },
+        code: { type: "string" },
+        backupCode: { type: "string" },
+      },
+    },
+    PasskeySummary: {
+      type: "object",
+      required: ["id", "name", "createdAt", "deviceType", "isBackedUp"],
+      properties: {
+        id: { type: "string" },
+        name: { type: ["string", "null"] },
+        createdAt: { type: "string" },
+        deviceType: { type: "string" },
+        isBackedUp: { type: "boolean" },
+      },
+    },
+    PasskeyListResponse: {
+      type: "object",
+      required: ["passkeys"],
+      properties: {
+        passkeys: {
+          type: "array",
+          items: { $ref: "#/components/schemas/PasskeySummary" },
+        },
+      },
+    },
+    PasskeyCeremonyResponse: {
+      type: "object",
+      required: ["challenge", "options"],
+      properties: {
+        challenge: {
+          type: "string",
+          description:
+            "Stateless `tpwebauthn` envelope; submit to the matching verify route",
+        },
+        options: {
+          type: "object",
+          description:
+            "PublicKeyCredential options with base64url-encoded binary fields",
+        },
+      },
+    },
+    PasskeyRegisterVerifyRequest: {
+      type: "object",
+      required: ["challenge", "name", "credential"],
+      properties: {
+        challenge: { type: "string" },
+        name: { type: "string" },
+        credential: { type: "object" },
+      },
+    },
+    PasskeyLoginVerifyRequest: {
+      type: "object",
+      required: ["challenge", "credential"],
+      properties: {
+        challenge: { type: "string" },
+        credential: { type: "object" },
+      },
+    },
+    PasskeyCreatedResponse: {
+      type: "object",
+      required: ["ok", "id"],
+      properties: {
+        ok: { type: "boolean", const: true },
+        id: { type: "string" },
+      },
+    },
     SignOutResponse: {
       type: "object",
       required: ["ok"],
@@ -294,16 +443,22 @@ export const authPaths: Record<string, unknown> = {
       },
       responses: {
         "200": {
-          description: "Signed in; session cookie set",
+          description:
+            "Signed in (session cookie set) or TOTP challenge required",
           headers: {
             "Set-Cookie": {
               schema: { type: "string" },
-              description: "Signed session cookie",
+              description: "Signed session cookie (omitted when requires2fa)",
             },
           },
           content: {
             "application/json": {
-              schema: { $ref: "#/components/schemas/SessionResponse" },
+              schema: {
+                oneOf: [
+                  { $ref: "#/components/schemas/SessionResponse" },
+                  { $ref: "#/components/schemas/Requires2faResponse" },
+                ],
+              },
             },
           },
         },
@@ -607,16 +762,22 @@ export const authPaths: Record<string, unknown> = {
       },
       responses: {
         "200": {
-          description: "Signed in; session cookie set",
+          description:
+            "Signed in (session cookie set) or TOTP challenge required",
           headers: {
             "Set-Cookie": {
               schema: { type: "string" },
-              description: "Signed session cookie",
+              description: "Signed session cookie (omitted when requires2fa)",
             },
           },
           content: {
             "application/json": {
-              schema: { $ref: "#/components/schemas/SessionResponse" },
+              schema: {
+                oneOf: [
+                  { $ref: "#/components/schemas/SessionResponse" },
+                  { $ref: "#/components/schemas/Requires2faResponse" },
+                ],
+              },
             },
           },
         },
@@ -807,6 +968,596 @@ export const authPaths: Record<string, unknown> = {
               schema: { $ref: "#/components/schemas/ErrorResponse" },
             },
           },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/2fa": {
+    get: {
+      tags: ["Authentication"],
+      summary: "Current two-factor status",
+      security: [{ cookieAuth: [] }],
+      responses: {
+        "200": {
+          description:
+            "Enrolment status, remaining backup codes, passkeys, and linked OAuth providers",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/TwoFactorStatus" },
+            },
+          },
+        },
+        "401": {
+          description: "Not signed in",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/UnauthorizedResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/2fa/totp/enroll": {
+    post: {
+      tags: ["Authentication"],
+      summary: "Begin TOTP enrolment",
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: { password: { type: "string", format: "password" } },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Authenticator secret (shown once)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/TotpEnrollResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Reauthentication required",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "409": {
+          description: "Two-factor already enabled",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/2fa/totp/verify": {
+    post: {
+      tags: ["Authentication"],
+      summary: "Confirm TOTP enrolment",
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["code"],
+              properties: { code: { type: "string" } },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Backup codes (shown once)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/BackupCodesResponse" },
+            },
+          },
+        },
+        "400": {
+          description: "Invalid code or not enrolled",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/2fa/backup-codes/regenerate": {
+    post: {
+      tags: ["Authentication"],
+      summary: "Replace remaining backup codes",
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: { password: { type: "string", format: "password" } },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "New backup codes (shown once)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/BackupCodesResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Reauthentication required",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/2fa/disable": {
+    post: {
+      tags: ["Authentication"],
+      summary: "Disable two-factor authentication",
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: { password: { type: "string", format: "password" } },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Two-factor disabled",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/OkResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Reauthentication required",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/sign-in/2fa": {
+    post: {
+      tags: ["Authentication"],
+      summary: "Complete sign-in with a TOTP or backup code",
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/SignIn2faRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Signed in; session cookie set",
+          headers: {
+            "Set-Cookie": {
+              schema: { type: "string" },
+              description: "Signed session cookie",
+            },
+          },
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/SessionResponse" },
+            },
+          },
+        },
+        "400": {
+          description: "Invalid code or challenge",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "429": {
+          description: "Too many attempts",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/passkeys/register/options": {
+    post: {
+      tags: ["Authentication"],
+      summary: "Begin passkey registration",
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: { password: { type: "string", format: "password" } },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "WebAuthn creation options and signed challenge",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/PasskeyCeremonyResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Not signed in",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/UnauthorizedResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Reauthentication required",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/passkeys/register/verify": {
+    post: {
+      tags: ["Authentication"],
+      summary: "Finish passkey registration",
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              $ref: "#/components/schemas/PasskeyRegisterVerifyRequest",
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Passkey stored",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/PasskeyCreatedResponse" },
+            },
+          },
+        },
+        "400": {
+          description: "Invalid credential or challenge",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "409": {
+          description: "Credential already registered",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/passkeys": {
+    get: {
+      tags: ["Authentication"],
+      summary: "List registered passkeys",
+      security: [{ cookieAuth: [] }],
+      responses: {
+        "200": {
+          description: "Passkeys for the signed-in user",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/PasskeyListResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Not signed in",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/UnauthorizedResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/passkeys/{id}": {
+    delete: {
+      tags: ["Authentication"],
+      summary: "Delete a registered passkey",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: { password: { type: "string", format: "password" } },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Passkey deleted",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/OkResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Not signed in",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/UnauthorizedResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Reauthentication required",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Passkey not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/passkeys/login/options": {
+    post: {
+      tags: ["Authentication"],
+      summary: "Begin passkey sign-in",
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: { type: "object" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "WebAuthn request options and signed challenge",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/PasskeyCeremonyResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/passkeys/login/verify": {
+    post: {
+      tags: ["Authentication"],
+      summary: "Complete sign-in with a passkey",
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/PasskeyLoginVerifyRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Signed in; session cookie set",
+          headers: {
+            "Set-Cookie": {
+              schema: { type: "string" },
+              description: "Signed session cookie",
+            },
+          },
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/SessionResponse" },
+            },
+          },
+        },
+        "400": {
+          description: "Invalid credential",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/api/client/v1/auth/oauth/{provider}/start": {
+    get: {
+      tags: ["Authentication"],
+      summary: "Begin GitHub or Google OAuth sign-in or account link",
+      description:
+        "Redirects the browser to the provider authorize URL. `link=1` requires an existing session and binds the callback to that user.",
+      parameters: [
+        {
+          name: "provider",
+          in: "path",
+          required: true,
+          schema: { type: "string", enum: ["github", "google"] },
+        },
+        {
+          name: "redirectTo",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            "Same-origin path to return to after sign-in (default `/`).",
+        },
+        {
+          name: "link",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["1"] },
+          description:
+            "When `1`, link this provider to the current session instead of signing in.",
+        },
+      ],
+      responses: {
+        "302": {
+          description:
+            "Redirect to the provider authorize URL (Location header). Unconfigured provider: 404. Rate-limited: 429.",
+        },
+        "404": { description: "Provider is not configured" },
+        "429": { description: "Too many requests" },
+      },
+    },
+  },
+  "/api/client/v1/auth/oauth/{provider}/callback": {
+    get: {
+      tags: ["Authentication"],
+      summary: "Complete GitHub or Google OAuth sign-in or account link",
+      description:
+        "Redirect-only. Success sets the session cookie (or a `tp2fa` challenge) and redirects to `redirectTo` from the signed state. Failures redirect to `/sign-in?error=` with `oauth_state_invalid`, `oauth_exchange_failed`, `account_disabled`, `oauth_signup_disabled`, `account_conflict`, `not_configured`, or `database_unavailable`. Link success redirects to `/account/security?linked=<provider>`; link failures to `/account/security?linked=&error=` (`account_conflict`, `not_configured`, `database_unavailable`). Never returns a JSON body.",
+      parameters: [
+        {
+          name: "provider",
+          in: "path",
+          required: true,
+          schema: { type: "string", enum: ["github", "google"] },
+        },
+        {
+          name: "code",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+        },
+        {
+          name: "state",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Signed `tpoauth` envelope from the start hop",
+        },
+      ],
+      responses: {
+        "302": {
+          description:
+            "Redirect to `redirectTo`, `/sign-in?challenge=`, `/sign-in?error=`, or `/account/security`. Session cookie is set on successful non-2FA sign-in.",
+          headers: {
+            Location: { schema: { type: "string" } },
+            "Set-Cookie": {
+              schema: { type: "string" },
+              description:
+                "Signed session cookie on successful sign-in without 2FA",
+            },
+          },
+        },
+        "429": { description: "Too many requests" },
+      },
+    },
+  },
+  "/api/client/v1/auth/oauth/{provider}": {
+    delete: {
+      tags: ["Authentication"],
+      summary: "Unlink a GitHub or Google account",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: "provider",
+          in: "path",
+          required: true,
+          schema: { type: "string", enum: ["github", "google"] },
+        },
+      ],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: { password: { type: "string", format: "password" } },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Unlinked",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["ok"],
+                properties: { ok: { type: "boolean", const: true } },
+              },
+            },
+          },
+        },
+        "401": { description: "Unauthorized" },
+        "403": { description: "Step-up reauth required" },
+        "404": { description: "No linked account for this provider" },
+        "409": {
+          description:
+            "`last_sign_in_method` — no credential account, other provider account, or passkey would remain",
         },
       },
     },

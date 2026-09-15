@@ -1,6 +1,7 @@
 import {
   createEmailOtpEmail,
   createEmailVerificationLinkEmail,
+  createInvitationEmail,
   createServerTierNoticeEmail,
 } from '../templates.ts'
 import type { EmailJob } from '../types.ts'
@@ -30,6 +31,9 @@ function resolveMailgunTemplate(job: EmailJob) {
   }
   if (job.type === 'server-tier-notice') {
     return createServerTierNoticeEmail(job)
+  }
+  if (job.type === 'invitation') {
+    return createInvitationEmail(job)
   }
   return null
 }

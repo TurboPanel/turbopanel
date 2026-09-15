@@ -33,7 +33,10 @@ import { type Db, getDaemonCellRegistry, getDb } from "../../db.ts";
 import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
 import { isDeveloperSurfaceEnabled } from "../../dev-mode.ts";
 import { buildLicenseInstallCommand } from "../../lib/daemon-install-command.ts";
-import { installOriginNeedsInsecureTls } from "../../lib/install-tls.ts";
+import {
+  installOriginNeedsInsecureTls,
+  resolvePublicInstanceTls,
+} from "../../lib/install-tls.ts";
 import { syncSelfHostedGrant } from "../../lib/tiers/self-hosted-grant-records.ts";
 import {
   parseInstallBaseUrl,
@@ -309,7 +312,17 @@ export function registerLicenseRoutes(
       // Insecure TLS follows the selected origin, not "we are in development":
       // LAN / :8443 platform-CA needs curl -k; a Cloudflare tunnel or other
       // publicly-trusted HTTPS origin must not.
-      const insecureTls = installOriginNeedsInsecureTls(instanceUrl);
+      // TURBOPANEL_TLS_PUBLIC (lets_encrypt, or upload with turbopanel_tls_public)
+      // overrides the non-443 port check so an uploaded public cert on :8443
+      // does not force curl -k.
+      const publicOrigin = resolvePublicInstanceTls(
+        (c.get("platformEnv") as
+          | Record<string, string | undefined>
+          | undefined) ?? {},
+      );
+      const insecureTls = installOriginNeedsInsecureTls(instanceUrl, {
+        publicOrigin,
+      });
       // Instance-host `/run.sh` is served only by the dev overlay Caddyfile.
       // Production / self-hosted Deno installs curl the CDN and pass TURBOPANEL_HOST.
       const installCommand = buildLicenseInstallCommand({

@@ -1,3 +1,4 @@
+import { isSimpleEmailShape } from '../authn/install-state.ts'
 import {
   isPermissionKey,
   isSubjectType,
@@ -122,6 +123,44 @@ export function validateAccessResourceIdQuery(
     }
   }
   return { ok: true, kind, itemId }
+}
+
+export type CreateInvitationInput = {
+  teamId: string
+  email: string
+  grants?: unknown[]
+}
+
+export function parseCreateInvitationBody(
+  body: unknown,
+): CreateInvitationInput | AccessRouteValidationError {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+
+  const record = body as Record<string, unknown>
+  const { teamId, email, grants } = record
+
+  if (typeof teamId !== 'string' || !isUuid(teamId)) {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  if (typeof email !== 'string' || email.trim() === '') {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+
+  const normalizedEmail = email.trim().toLowerCase()
+  if (!isSimpleEmailShape(normalizedEmail)) {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+
+  if (grants !== undefined && !Array.isArray(grants)) {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+
+  if (grants !== undefined) {
+    return { teamId, email: normalizedEmail, grants }
+  }
+  return { teamId, email: normalizedEmail }
 }
 
 export function invitationEmailsMatch(

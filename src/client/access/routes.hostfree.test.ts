@@ -7,7 +7,7 @@ import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { Db } from '../../db.ts'
-import { grant, invitation } from '../../lib/db/schema.ts'
+import { grant, invitation, team } from '../../lib/db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createEmptyMockAuthState,
@@ -55,8 +55,11 @@ async function buildApp(db: Db | undefined): Promise<Hono<AppEnv>> {
 type SessionAppOpts = {
   ownAllowed?: boolean
   email?: string
+  role?: string
   /** Invitation row returned by select-from-invitation. */
   invitationRow?: Record<string, unknown> | null
+  /** Team row returned by select-from-team. */
+  teamRow?: Record<string, unknown> | null
   /** Grant row returned by select-from-grant for revoke. */
   grantRow?: Record<string, unknown> | null
   executeQueue?: unknown[][]
@@ -75,14 +78,14 @@ async function buildSessionApp(
     sessionId: crypto.randomUUID(),
     userId,
     email,
-    role: 'superadmin',
+    role: opts.role ?? 'superadmin',
   })
   seedMockUser(state, {
     id: userId,
     email,
     isDisabled: false,
     isEmailVerified: true,
-    role: 'superadmin',
+    role: opts.role ?? 'superadmin',
   })
   state.organizations.push({ id: organizationId, name: 'Access Org' })
 
@@ -103,6 +106,15 @@ async function buildSessionApp(
     },
     select: (fields?: unknown) => ({
       from: (table: unknown) => {
+        if (table === team) {
+          const row = opts.teamRow
+          return {
+            where: () => ({
+              limit: () =>
+                Promise.resolve(row === undefined ? [] : row === null ? [] : [row]),
+            }),
+          }
+        }
         if (table === invitation) {
           const row = opts.invitationRow
           return {
@@ -145,6 +157,9 @@ async function buildSessionApp(
 test('access routes return 401 without a session cookie', async () => {
   const app = await buildApp({} as Db)
   const paths = [
+    ['POST', '/invitations'],
+    ['GET', '/invitations'],
+    ['DELETE', `/invitations/${invitationId}`],
     ['POST', `/invitations/${invitationId}/accept`],
     ['GET', '/access'],
     ['POST', '/access'],
@@ -262,6 +277,135 @@ test('GET /access/resource-id returns 400 without kind/itemId', async () => {
   assertEquals(await res.json(), {
     error: 'kind and itemId query parameters are required',
   })
+})
+
+test('POST /invitations returns 400 for an invalid body', async () => {
+  const { app, cookie } = await buildSessionApp()
+  const res = await app.request('/invitations', {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ email: 'not-an-email' }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'Invalid request' })
+})
+
+test('POST /invitations returns 404 when the team is in another org', async () => {
+  const otherOrgId = '44444444-4444-4444-8444-444444444444'
+  const teamId = '55555555-5555-4555-8555-555555555555'
+  const { app, cookie } = await buildSessionApp({
+    teamRow: { id: teamId, name: 'Other', organizationId: otherOrgId },
+  })
+  const res = await app.request('/invitations', {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      teamId,
+      email: 'teammate@example.com',
+    }),
+  })
+  assertEquals(res.status, 404)
+  assertEquals(await res.json(), { error: 'Not found' })
+})
+
+test('POST /invitations returns 400 when grants include a non-grantable permission', async () => {
+  const teamId = '55555555-5555-4555-8555-555555555555'
+  const { app, cookie } = await buildSessionApp({
+    teamRow: { id: teamId, name: 'Ops', organizationId },
+  })
+  const res = await app.request('/invitations', {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      teamId,
+      email: 'teammate@example.com',
+      grants: [
+        {
+          entityType: 'organization',
+          entityId: organizationId,
+          permissionKey: 'system:manage',
+        },
+      ],
+    }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'Invalid invitation grants' })
+})
+
+test('POST /invitations returns 400 when a grantable key targets the wrong entity', async () => {
+  const teamId = '55555555-5555-4555-8555-555555555555'
+  const { app, cookie } = await buildSessionApp({
+    teamRow: { id: teamId, name: 'Ops', organizationId },
+  })
+  const res = await app.request('/invitations', {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      teamId,
+      email: 'teammate@example.com',
+      grants: [
+        {
+          entityType: 'organization',
+          entityId: organizationId,
+          permissionKey: 'team:own',
+        },
+      ],
+    }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), {
+    error: 'team:own may only be granted on team entities',
+  })
+})
+
+test('POST /invitations returns 403 grants_require_owner when a non-owner passes grants', async () => {
+  const teamId = '55555555-5555-4555-8555-555555555555'
+  const { app, cookie } = await buildSessionApp({
+    role: 'user',
+    teamRow: { id: teamId, name: 'Ops', organizationId },
+    executeQueue: [
+      [{ allowed: true }],
+      [{ allowed: true }],
+      [{ allowed: false }],
+    ],
+  })
+  const res = await app.request('/invitations', {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      teamId,
+      email: 'teammate@example.com',
+      grants: [
+        {
+          entityType: 'organization',
+          entityId: organizationId,
+          permissionKey: 'organization:own',
+        },
+      ],
+    }),
+  })
+  assertEquals(res.status, 403)
+  assertEquals(await res.json(), { error: 'grants_require_owner' })
 })
 
 test('POST /access returns 400 for invalid JSON', async () => {

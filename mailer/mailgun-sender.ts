@@ -69,7 +69,8 @@ export class MailerMailgunSender {
       if (
         job.type === 'signup-verification' ||
         job.type === 'email-otp' ||
-        job.type === 'server-tier-notice'
+        job.type === 'server-tier-notice' ||
+        job.type === 'invitation'
       ) {
         validateEmailAddress(job.to, 'recipient')
       }

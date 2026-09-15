@@ -43,4 +43,27 @@ describe('parseSignupBody password policy', () => {
       expect(result.password).toBe('sup3r-secret!')
     }
   })
+
+  it('accepts an optional invitationId UUID and rejects a malformed one', () => {
+    const invitationId = '11111111-1111-4111-8111-111111111111'
+    const accepted = parseSignupBody({
+      email,
+      password: 'sup3r-secret!',
+      invitationId,
+    })
+    expect(accepted.ok).toBe(true)
+    if (accepted.ok) {
+      expect(accepted.invitationId).toBe(invitationId)
+    }
+
+    const rejected = parseSignupBody({
+      email,
+      password: 'sup3r-secret!',
+      invitationId: 'not-a-uuid',
+    })
+    expect(rejected.ok).toBe(false)
+    if (!rejected.ok) {
+      expect(rejected.error).toBe('Invalid request')
+    }
+  })
 })

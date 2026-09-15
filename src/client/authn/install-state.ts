@@ -25,6 +25,7 @@ import { hashPassword } from "./password.ts";
 import { SUPERADMIN_ROLE } from "./session-store.ts";
 import { compatLogInfo, compatLogWarn } from "../../log-compat.ts";
 import { resolveEmailActivePresence } from "../../lib/settings/email-settings.ts";
+import { resolveConfiguredProviders } from "../../lib/settings/auth-provider-settings.ts";
 import { deriveMachineKey } from "../../lib/machine-key.ts";
 import {
   ensureSelfHostSystemHierarchy,
@@ -44,7 +45,7 @@ import {
 } from "../../lib/display-name-format.ts";
 
 /** Linear-time check matching `/^[^\s@]+@[^\s@]+\.[^\s@]+$/` without backtracking. */
-function isSimpleEmailShape(email: string): boolean {
+export function isSimpleEmailShape(email: string): boolean {
   const at = email.indexOf("@");
   if (at <= 0 || email.includes("@", at + 1)) return false;
   const domain = email.slice(at + 1);
@@ -226,6 +227,8 @@ export type InstallStatus = {
   isInstallMode: boolean;
   isSignupEnabled: boolean;
   isSignupEmailVerificationEnabled: boolean;
+  /** Presence-only configured OAuth providers (`github` / `google`). */
+  authProviders: string[];
 };
 
 function nowTs(): string {
@@ -485,12 +488,14 @@ export async function getInstallStatus(
     db,
     platformEnv,
   );
+  const authProviders = await resolveConfiguredProviders(db, platformEnv);
   const needsInstall = !installed;
   return {
     needsInstall,
     isInstallMode: needsInstall,
     isSignupEnabled: signupEnabled,
     isSignupEmailVerificationEnabled: emailVerificationEnabled,
+    authProviders,
   };
 }
 
@@ -514,6 +519,8 @@ export type WorkersClientPublicStatus = BillingPresence & {
   runtime: "workers";
   isSignupEnabled: boolean;
   isSignupEmailVerificationEnabled: boolean;
+  /** Presence-only configured OAuth providers (`github` / `google`). */
+  authProviders: string[];
 };
 
 export type ClientPublicStatus =
@@ -543,6 +550,7 @@ export async function getClientPublicStatus(
         db,
         platformEnv,
       ),
+      authProviders: await resolveConfiguredProviders(db, platformEnv),
       billingEnabled,
     };
   }
@@ -1293,68 +1301,81 @@ async function revokeActiveColocatedLicenses(
   }
 }
 
-export async function createOrganizationForUser(
+/**
+ * Insert org + default team + owner grants on an already-open transaction.
+ * Callers that must atomically create a user (OAuth signup) use this instead
+ * of {@link createOrganizationForUser}, which would commit the user first.
+ */
+export async function createOrganizationForUserInTx(
   db: Db,
   userId: string,
   orgName?: string,
 ): Promise<{ organizationId: string; teamId: string }> {
   const displayName = orgName?.trim() || MY_ORGANIZATION_NAME;
 
-  return await db.transaction(async (tx) => {
-    const insertedOrg = await tx
-      .insert(organization)
-      .values({
-        name: displayName,
-      })
-      .returning({ id: organization.id });
+  const insertedOrg = await db
+    .insert(organization)
+    .values({
+      name: displayName,
+    })
+    .returning({ id: organization.id });
 
-    const organizationId = insertedOrg[0]?.id;
-    if (!organizationId) {
-      throw new Error("Organization creation failed");
-    }
+  const organizationId = insertedOrg[0]?.id;
+  if (!organizationId) {
+    throw new Error("Organization creation failed");
+  }
 
-    const insertedTeam = await tx
-      .insert(team)
-      .values({
-        organizationId,
-        name: DEFAULT_TEAM_NAME,
-      })
-      .returning({ id: team.id });
+  const insertedTeam = await db
+    .insert(team)
+    .values({
+      organizationId,
+      name: DEFAULT_TEAM_NAME,
+    })
+    .returning({ id: team.id });
 
-    const teamId = insertedTeam[0]?.id;
-    if (!teamId) {
-      throw new Error("Team creation failed");
-    }
+  const teamId = insertedTeam[0]?.id;
+  if (!teamId) {
+    throw new Error("Team creation failed");
+  }
 
-    await tx.insert(teammate).values({
-      teamId,
-      userId,
+  await db.insert(teammate).values({
+    teamId,
+    userId,
+  });
+
+  await insertOwnerGrants(db, userId, organizationId);
+
+  await db
+    .insert(grant)
+    .values({
+      entityType: "team",
+      entityId: teamId,
+      actorType: "user",
+      actorId: userId,
+      permission: "team:own",
+    })
+    .onConflictDoNothing({
+      target: [
+        grant.entityType,
+        grant.entityId,
+        grant.actorType,
+        grant.actorId,
+        grant.permission,
+      ],
     });
 
-    await insertOwnerGrants(tx, userId, organizationId);
+  await insertDefaultWorkspace(db, organizationId);
 
-    await tx
-      .insert(grant)
-      .values({
-        entityType: "team",
-        entityId: teamId,
-        actorType: "user",
-        actorId: userId,
-        permission: "team:own",
-      })
-      .onConflictDoNothing({
-        target: [
-          grant.entityType,
-          grant.entityId,
-          grant.actorType,
-          grant.actorId,
-          grant.permission,
-        ],
-      });
+  return { organizationId, teamId };
+}
 
-    await insertDefaultWorkspace(tx, organizationId);
-
-    return { organizationId, teamId };
+export async function createOrganizationForUser(
+  db: Db,
+  userId: string,
+  orgName?: string,
+): Promise<{ organizationId: string; teamId: string }> {
+  return await db.transaction(async (tx) => {
+    return await createOrganizationForUserInTx(tx, userId, orgName);
   });
 }
 

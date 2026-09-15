@@ -19,7 +19,7 @@ function bypassHyperdriveQueryCache() {
 
 export type VerifyResult =
   | { ok: true; username: string; isRoot: true }
-  | { ok: true; userId: string; email: string; isRoot: false }
+  | { ok: true; userId: string; email: string; isRoot: false; is2FaEnabled: boolean }
   | { ok: false; reason?: 'email_not_verified' }
 
 async function verifyPamLogin(username: string, password: string): Promise<boolean> {
@@ -133,6 +133,7 @@ async function verifyDbUserCredentials(
       password: account.password,
       isDisabled: user.isDisabled,
       isEmailVerified: user.isEmailVerified,
+      is2FaEnabled: user.is2FaEnabled,
     })
     .from(user)
     .innerJoin(
@@ -166,6 +167,7 @@ async function verifyDbUserCredentials(
     userId: row.userId,
     email: row.email,
     isRoot: false,
+    is2FaEnabled: row.is2FaEnabled === true,
   }
 }
 

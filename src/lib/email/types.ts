@@ -29,6 +29,15 @@ export type EmailJob =
       unwatched: { nics: string[]; drives: string[]; gpus: string[] }
       consoleUrl: string
     }
+  | {
+      type: 'invitation'
+      to: string
+      from: string
+      inviterEmail: string
+      organizationName: string
+      teamName: string
+      acceptUrl: string
+    }
 
 export interface EmailQueue {
   enqueue(job: EmailJob): Promise<void>

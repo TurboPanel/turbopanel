@@ -20,6 +20,7 @@ export type SessionData = {
   userId: string
   email: string
   role: string
+  createdAt?: string
 }
 
 export async function createSession(
@@ -65,6 +66,7 @@ export async function getSession(
       email: user.email,
       role: user.role,
       isDisabled: user.isDisabled,
+      createdAt: session.createdAt,
     })
     .from(session)
     .innerJoin(user, eq(session.userId, user.id))
@@ -91,6 +93,7 @@ export async function getSession(
     userId: row.userId,
     email: row.email,
     role: row.role,
+    createdAt: row.createdAt,
   }
 }
 

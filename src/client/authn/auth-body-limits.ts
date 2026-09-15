@@ -6,34 +6,45 @@
  */
 
 /** Matches `validateSuperadminEmail`'s own ceiling — kept in lockstep here. */
-export const MAX_AUTH_EMAIL_CHARS = 255
+export const MAX_AUTH_EMAIL_CHARS = 255;
 
 /**
  * Well above any password the complexity policy would accept, and far below
  * a size that makes argon2 hashing an attacker-controlled cost.
  */
-export const MAX_AUTH_PASSWORD_CHARS = 256
+export const MAX_AUTH_PASSWORD_CHARS = 256;
 
 /** OTPs are 6 digits (`generateOtp`); this only guards against a hostile oversized field. */
-export const MAX_AUTH_OTP_CHARS = 16
+export const MAX_AUTH_OTP_CHARS = 16;
 
 /** Display name submitted at OTP sign-in auto-registration. */
-export const MAX_AUTH_NAME_CHARS = 200
+export const MAX_AUTH_NAME_CHARS = 200;
 
 /** PAM/host username for the install wizard. */
-export const MAX_AUTH_USERNAME_CHARS = 255
+export const MAX_AUTH_USERNAME_CHARS = 255;
 
 // Per-route body-byte budgets. Every one of these routes carries a handful of
 // short string fields — a few KB is already generous headroom over the JSON
 // encoding of the field caps above, while keeping a hostile body far from
 // buffer-worthy.
-export const AUTH_SIGN_IN_MAX_BODY_BYTES = 4 * 1024
-export const AUTH_SIGN_UP_MAX_BODY_BYTES = 4 * 1024
-export const AUTH_SEND_OTP_MAX_BODY_BYTES = 2 * 1024
-export const AUTH_VERIFY_OTP_MAX_BODY_BYTES = 2 * 1024
-export const AUTH_SIGN_IN_OTP_MAX_BODY_BYTES = 4 * 1024
-export const AUTH_VERIFY_EMAIL_OTP_MAX_BODY_BYTES = 2 * 1024
-export const AUTH_RESET_PASSWORD_REQUEST_MAX_BODY_BYTES = 2 * 1024
-export const AUTH_RESET_PASSWORD_MAX_BODY_BYTES = 4 * 1024
-export const INSTALL_BOOTSTRAP_MAX_BODY_BYTES = 4 * 1024
-export const INSTALL_COMPLETE_MAX_BODY_BYTES = 4 * 1024
+export const AUTH_SIGN_IN_MAX_BODY_BYTES = 4 * 1024;
+export const AUTH_SIGN_UP_MAX_BODY_BYTES = 4 * 1024;
+export const AUTH_SEND_OTP_MAX_BODY_BYTES = 2 * 1024;
+export const AUTH_VERIFY_OTP_MAX_BODY_BYTES = 2 * 1024;
+export const AUTH_SIGN_IN_OTP_MAX_BODY_BYTES = 4 * 1024;
+export const AUTH_VERIFY_EMAIL_OTP_MAX_BODY_BYTES = 2 * 1024;
+export const AUTH_RESET_PASSWORD_REQUEST_MAX_BODY_BYTES = 2 * 1024;
+export const AUTH_RESET_PASSWORD_MAX_BODY_BYTES = 4 * 1024;
+export const AUTH_SIGN_IN_2FA_MAX_BODY_BYTES = 2 * 1024;
+/** Session-authenticated 2FA POSTs (enrol / verify / disable / regenerate). */
+export const AUTH_TWO_FACTOR_MAX_BODY_BYTES = 4 * 1024;
+/** Public passkey login options (empty/tiny body). */
+export const AUTH_PASSKEY_LOGIN_OPTIONS_MAX_BODY_BYTES = 1 * 1024;
+/** Public passkey login verify (attestation/assertion JSON). */
+export const AUTH_PASSKEY_LOGIN_VERIFY_MAX_BODY_BYTES = 8 * 1024;
+/** Session-authenticated passkey register options/verify and DELETE body. */
+export const AUTH_PASSKEY_REGISTER_MAX_BODY_BYTES = 8 * 1024;
+/** Session-authenticated OAuth unlink (`DELETE /oauth/:provider`). */
+export const AUTH_OAUTH_UNLINK_MAX_BODY_BYTES = 2 * 1024;
+export const INSTALL_BOOTSTRAP_MAX_BODY_BYTES = 4 * 1024;
+export const INSTALL_COMPLETE_MAX_BODY_BYTES = 4 * 1024;

@@ -38,6 +38,7 @@ import {
 import { registerAdminRoutes } from './admin/routes.ts'
 import { registerInstallRoutes } from './lib/install/routes.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
+import { resolvePublicInstanceTls } from './lib/install-tls.ts'
 import { registerDaemonWebSocket } from './daemon/deno-ws.ts'
 import {
   parseMetricsRetentionDays,
@@ -68,6 +69,11 @@ import {
 } from './daemon/rate-limit/redis-rate-limiter.ts'
 import { createDurableAuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
+import { WEBAUTHN_CHALLENGE_PURPOSE } from './client/authn/passkeys.ts'
+import {
+  BACKUP_CODE_VERIFIER_PURPOSE,
+  TWO_FACTOR_CHALLENGE_PURPOSE,
+} from './client/authn/two-factor.ts'
 import { isDeveloperSurfaceEnabled } from './dev-mode.ts'
 import {
   createDenoAmqpQueue,
@@ -256,6 +262,18 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   )
   const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE)
+  const twoFactorChallengeSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    TWO_FACTOR_CHALLENGE_PURPOSE,
+  )
+  const backupCodeVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    BACKUP_CODE_VERIFIER_PURPOSE,
+  )
+  const webauthnChallengeSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    WEBAUTHN_CHALLENGE_PURPOSE,
+  )
   const daemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
   const challengeSigningSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -384,6 +402,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     commandQueue,
     secrets: sessionSecrets,
     otpVerifierSecrets,
+    twoFactorChallengeSecrets,
+    backupCodeVerifierSecrets,
+    webauthnChallengeSecrets,
     runtime: 'deno',
     corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
     signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
@@ -421,6 +442,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     restLimiter: daemonRestLimiter,
     metricsLimiter: daemonMetricsLimiter,
     runtime: 'deno',
+    tlsPublic: resolvePublicInstanceTls(Deno.env.toObject()),
   })
   // Unversioned, session-free surface: mounted on the top-level app next to the
   // daemon API rather than under CLIENT_API_PREFIX, and authenticating itself.

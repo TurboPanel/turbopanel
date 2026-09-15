@@ -5,11 +5,13 @@
  * Public HTTPS on port 443 (Cloudflare tunnel, Let's Encrypt, uploaded cert) is
  * trusted via the system store. The platform CA (self-signed Caddy listener) is
  * used for non-443 ports, loopback, private/link-local addresses, and reserved
- * LAN TLDs (.lan / .local / …).
+ * LAN TLDs (.lan / .local / …) unless `opts.publicOrigin` is set — that flag is
+ * how the control plane reports `TURBOPANEL_TLS_PUBLIC` (Let's Encrypt, or
+ * upload when the operator declared a publicly trusted leaf).
  *
- * Let's Encrypt and uploaded certificates are operator opt-in on the origin;
- * this helper only classifies the URL the daemon will dial. It never implies
- * the control plane should obtain a public certificate on its own.
+ * Let's Encrypt and uploaded certificates are control-plane TLS modes
+ * (`turbopanel_tls_mode`); this helper classifies the URL the daemon will dial
+ * and optionally honors that mode via `publicOrigin`.
  */
 
 const LOCAL_TLDS = new Set([
@@ -74,13 +76,29 @@ export function isLoopbackOrPrivateHostname(hostname: string): boolean {
 }
 
 /**
+ * True when `TURBOPANEL_TLS_PUBLIC` is set (`1` / `true`, case-insensitive).
+ * Pure; no module-load I/O (Workers-bundle safe).
+ */
+export function resolvePublicInstanceTls(
+  env: Record<string, string | undefined>,
+): boolean {
+  const raw = env.TURBOPANEL_TLS_PUBLIC?.trim().toLowerCase()
+  return raw === '1' || raw === 'true'
+}
+
+/**
  * True when bootstrap should skip public TLS verification for this origin
  * (platform CA / self-signed). False for plaintext HTTP and for publicly
- * trusted HTTPS (tunnel, LE, uploaded cert on :443).
+ * trusted HTTPS (tunnel, LE, uploaded cert on :443, or any HTTPS origin
+ * when `opts.publicOrigin` is set).
  */
-export function installOriginNeedsInsecureTls(origin: string): boolean {
+export function installOriginNeedsInsecureTls(
+  origin: string,
+  opts?: { publicOrigin?: boolean },
+): boolean {
   const trimmed = origin.trim()
   if (!trimmed.startsWith('https://')) return false
+  if (opts?.publicOrigin) return false
   try {
     const url = new URL(trimmed)
     const port = url.port || '443'

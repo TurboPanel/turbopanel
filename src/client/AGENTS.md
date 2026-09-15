@@ -10,6 +10,9 @@ contract — keep them current when adding or changing routes.
 
 | Method   | Path                                                            | Purpose                                                                                                                                              |
 | -------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/api/client/v1/invitations`                                     | Create a pending invitation (`canInviteToTeam`); optional `grants` require `organization:own`; emails the accept link; **409** `invitation_pending`, **503** `email_unavailable` |
+| `GET`    | `/api/client/v1/invitations`                                     | List pending, unexpired invitations across the org's teams (`organization:manage`); `{ invitations: [{ id, email, teamId, teamName, expiresAt, createdAt, invitedBy }] }` |
+| `DELETE` | `/api/client/v1/invitations/{id}`                                | Revoke a pending invitation (`canInviteToTeam`); atomic `pending` → `revoked`; **404** if missing or not pending |
 | `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; creates a `teammate` row, materializes `invitation.grants` into `grant` rows, updates session `organizationId`          |
 | `GET`    | `/api/client/v1/permissions`                                    | Permission catalog — static, no DB query (any authenticated user)                                                                                    |
 | `GET`    | `/api/client/v1/access?resourceId=<uuid>`                       | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and `permissionKey` |

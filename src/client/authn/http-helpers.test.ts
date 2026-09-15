@@ -34,6 +34,7 @@ import {
   registerAuthnRoutes,
 } from './http.ts'
 import { hashPassword } from './password.ts'
+import { invitation } from '../../lib/db/schema.ts'
 import { deriveSecretsConfig } from './secrets.ts'
 import type { SessionData } from './session-store.ts'
 
@@ -98,12 +99,14 @@ test('buildSessionResponse omits needsInstall when db is unavailable', async () 
   assertEquals(payload.ok, true)
   assertEquals(payload.userId, sessionData.userId)
   assertEquals('needsInstall' in payload, false)
+  assertEquals(payload.is2faEnabled, false)
 })
 
 test('buildSessionResponse omits needsInstall on Workers even with db', async () => {
   const payload = await buildSessionResponse({} as never, 'workers', sessionData)
   assertEquals(payload.ok, true)
   assertEquals('needsInstall' in payload, false)
+  assertEquals(payload.is2faEnabled, false)
 })
 
 test('buildSessionResponse includes needsInstall on Deno before install', async () => {
@@ -111,6 +114,7 @@ test('buildSessionResponse includes needsInstall on Deno before install', async 
   const payload = await buildSessionResponse(db, 'deno', sessionData)
   assertEquals(payload.ok, true)
   assertEquals(payload.needsInstall, true)
+  assertEquals(payload.is2faEnabled, false)
 })
 
 test('buildSessionResponse sets needsInstall false after mock install', async () => {
@@ -120,6 +124,7 @@ test('buildSessionResponse sets needsInstall false after mock install', async ()
   const payload = await buildSessionResponse(db, 'deno', sessionData)
   assertEquals(payload.ok, true)
   assertEquals(payload.needsInstall, false)
+  assertEquals(payload.is2faEnabled, false)
 })
 
 test('isVerificationDevLoggingEnabled stays false on Deno outside development mode', () => {
@@ -386,6 +391,93 @@ test('sign-up returns 403 when signup override disables registration', async () 
     method: 'POST',
     headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.14' },
     body: JSON.stringify({ email: 'new@example.com', password: 'Sup3r-secret!' }),
+  })
+  assertEquals(res.status, 403)
+  const body = await readJsonBody<{ error: string }>(res)
+  assertEquals(body.error, 'Sign-up is not enabled')
+})
+
+function wrapAuthDbWithInvitation(
+  state: ReturnType<typeof createEmptyMockAuthState>,
+  row: {
+    email: string
+    status: string
+    expiresAt: string
+  } | null,
+) {
+  const authDb = createMockAuthDb(state)
+  const origSelect = (
+    authDb as unknown as {
+      select: (fields?: unknown) => { from: (table: unknown) => unknown }
+    }
+  ).select.bind(authDb)
+  return Object.assign(authDb, {
+    select: (fields?: unknown) => ({
+      from: (table: unknown) => {
+        if (table === invitation) {
+          return {
+            where: () => ({
+              limit: () => Promise.resolve(row ? [row] : []),
+            }),
+          }
+        }
+        return origSelect(fields).from(table)
+      },
+    }),
+  })
+}
+
+test('invitation-gated sign-up succeeds while public sign-up is disabled', async () => {
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, false)
+  const invitationId = '11111111-1111-4111-8111-111111111111'
+  const email = 'invited@example.com'
+  const { app } = await buildAuthApp({
+    db: wrapAuthDbWithInvitation(state, {
+      email,
+      status: 'pending',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }),
+    runtime: 'workers',
+    signupEnvOverride: '0',
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.18' },
+    body: JSON.stringify({
+      email,
+      password: 'Sup3r-secret!',
+      invitationId,
+    }),
+  })
+  assertEquals(res.status, 201)
+  const body = await readJsonBody<{ ok: boolean }>(res)
+  assertEquals(body.ok, true)
+})
+
+test('invitation-gated sign-up stays disabled when the invitation does not match', async () => {
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, false)
+  const invitationId = '11111111-1111-4111-8111-111111111111'
+  const { app } = await buildAuthApp({
+    db: wrapAuthDbWithInvitation(state, {
+      email: 'someone-else@example.com',
+      status: 'pending',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }),
+    runtime: 'workers',
+    signupEnvOverride: '0',
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.19' },
+    body: JSON.stringify({
+      email: 'invited@example.com',
+      password: 'Sup3r-secret!',
+      invitationId,
+    }),
   })
   assertEquals(res.status, 403)
   const body = await readJsonBody<{ error: string }>(res)

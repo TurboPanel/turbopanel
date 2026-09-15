@@ -138,11 +138,21 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/middleware.test.ts \
   src/client/authn/otp-reset-password.test.ts \
   src/client/authn/otp-http.hostfree.test.ts \
+  src/client/authn/oauth/oauth-http.hostfree.test.ts \
+  src/client/authn/oauth/oauth-state.test.ts \
+  src/client/authn/oauth/oauth.test.ts \
+  src/client/authn/oauth/providers.test.ts \
+  src/client/authn/passkeys-http.hostfree.test.ts \
+  src/client/authn/passkeys.test.ts \
   src/client/authn/password.deno.test.ts \
   src/client/authn/secrets.deno.test.ts \
   src/client/authn/session-store.test.ts \
   src/client/authn/signup-validation.deno.test.ts \
+  src/client/authn/totp.hostfree.test.ts \
+  src/client/authn/two-factor-http.hostfree.test.ts \
+  src/client/authn/two-factor.test.ts \
   src/client/authn/verification-dev-logging.deno.test.ts \
+  src/client/authn/webauthn.hostfree.test.ts \
   src/client/authn/workers-onboarding.test.ts \
   src/client/authz/ \
   src/client/bindings/materialize.test.ts \
@@ -486,6 +496,7 @@ deno test -A --coverage=coverage/deno-profile \
   mailer/db.test.ts \
   mailer/mailgun-sender.test.ts \
   mailer/mailpit-sender.test.ts \
+  mailer/parse-email-job.test.ts \
   mailer/smtp-sender.test.ts \
   src/lib/geo/server-geo.test.ts \
   src/lib/geo/self-hosted-geo-provider.test.ts \
@@ -526,6 +537,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/server-capacity.test.ts \
   src/lib/service-options-instances.test.ts \
   src/lib/ssh-public-key.test.ts \
+  src/lib/settings/auth-provider-settings.test.ts \
   src/lib/settings/email-settings.deno.test.ts \
   src/lib/settings/resolver.deno.test.ts \
   src/lib/settings/resolver.hostfree.test.ts \

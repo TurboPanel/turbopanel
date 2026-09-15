@@ -17,9 +17,10 @@ import type { MailerSender } from '../src/lib/email/sender-types.ts'
 import { createMailerDb } from './db.ts'
 import { createMailerMailgunSender } from './mailgun-sender.ts'
 import { createMailerMailpitSender } from './mailpit-sender.ts'
+import { parseEmailJob } from './parse-email-job.ts'
 import { RateLimiter } from './rate-limiter.ts'
 import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
-import type { EmailJob, OtpType } from '../src/lib/email/types.ts'
+import type { EmailJob } from '../src/lib/email/types.ts'
 import { logError, logInfo, logWarn } from '../src/logger.ts'
 
 const DEFAULT_AMQP_URL = 'amqp://guest:guest@localhost:19828'
@@ -32,44 +33,6 @@ type AmqpMessage = Parameters<Parameters<AmqpChannel['consume']>[1]>[0]
 let channel: AmqpChannel | null = null
 let connection: AmqpConnection | null = null
 let consumerTag: string | null = null
-
-const VALID_OTP_TYPES = new Set<OtpType>([
-  'sign-in',
-  'email-verification',
-  'forget-password',
-])
-
-function parseEmailJob(raw: unknown): EmailJob | null {
-  if (!raw || typeof raw !== 'object') return null
-  const job = raw as Record<string, unknown>
-  if (typeof job.to !== 'string' || typeof job.from !== 'string') return null
-
-  if (job.type === 'signup-verification') {
-    if (typeof job.verificationUrl !== 'string') return null
-    return {
-      type: 'signup-verification',
-      to: job.to,
-      from: job.from,
-      verificationUrl: job.verificationUrl,
-    }
-  }
-
-  if (job.type === 'email-otp') {
-    if (typeof job.otp !== 'string') return null
-    if (typeof job.otpType !== 'string' || !VALID_OTP_TYPES.has(job.otpType as OtpType)) {
-      return null
-    }
-    return {
-      type: 'email-otp',
-      to: job.to,
-      from: job.from,
-      otp: job.otp,
-      otpType: job.otpType as OtpType,
-    }
-  }
-
-  return null
-}
 
 async function shutdown(): Promise<void> {
   if (channel) await channel.close().catch(() => undefined)

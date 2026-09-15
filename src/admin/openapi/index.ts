@@ -130,6 +130,31 @@ export function getAdminOpenApiSpec(
           type: "object",
           additionalProperties: { type: "string", nullable: true },
         },
+        AuthProviderSettingEntry: {
+          type: "object",
+          required: ["value", "source", "isEnvOverridden"],
+          properties: {
+            value: { type: "string", nullable: true },
+            source: { type: "string", enum: ["env", "db", "default"] },
+            isEnvOverridden: { type: "boolean" },
+          },
+        },
+        AuthProviderSettingsResponse: {
+          type: "object",
+          required: ["settings"],
+          properties: {
+            settings: {
+              type: "object",
+              additionalProperties: {
+                $ref: "#/components/schemas/AuthProviderSettingEntry",
+              },
+            },
+          },
+        },
+        AuthProviderSettingsPutBody: {
+          type: "object",
+          additionalProperties: { type: "string", nullable: true },
+        },
         CellPurgeBatchBody: {
           type: "object",
           required: ["serverIds"],
@@ -216,7 +241,8 @@ export function getAdminOpenApiSpec(
             },
             apiUrl: {
               oneOf: [{ type: "string" }, { type: "null" }],
-              description: "Explicit API origin; derived from baseUrl when null",
+              description:
+                "Explicit API origin; derived from baseUrl when null",
             },
             externalAppId: {
               type: "string",
@@ -235,7 +261,8 @@ export function getAdminOpenApiSpec(
             },
             webhookPath: {
               type: "string",
-              description: "Ingress path this app's deliveries should arrive on",
+              description:
+                "Ingress path this app's deliveries should arrive on",
             },
             webhookUrl: {
               oneOf: [{ type: "string" }, { type: "null" }],
@@ -257,7 +284,10 @@ export function getAdminOpenApiSpec(
           type: "object",
           required: ["apps"],
           properties: {
-            apps: { type: "array", items: { $ref: "#/components/schemas/Forge" } },
+            apps: {
+              type: "array",
+              items: { $ref: "#/components/schemas/Forge" },
+            },
           },
         },
         ForgeResponse: {
@@ -274,7 +304,8 @@ export function getAdminOpenApiSpec(
             externalAppId: { type: "string", minLength: 1 },
             baseUrl: {
               type: "string",
-              description: "Defaults to the provider's public origin when omitted",
+              description:
+                "Defaults to the provider's public origin when omitted",
             },
             apiUrl: { oneOf: [{ type: "string" }, { type: "null" }] },
             appSlug: { oneOf: [{ type: "string" }, { type: "null" }] },
@@ -282,11 +313,13 @@ export function getAdminOpenApiSpec(
             redirectUri: { oneOf: [{ type: "string" }, { type: "null" }] },
             privateKeyPem: {
               oneOf: [{ type: "string" }, { type: "null" }],
-              description: "GitHub App private key. Sealed before persist, never returned.",
+              description:
+                "GitHub App private key. Sealed before persist, never returned.",
             },
             clientSecret: {
               oneOf: [{ type: "string" }, { type: "null" }],
-              description: "GitLab OAuth application secret. Sealed before persist.",
+              description:
+                "GitLab OAuth application secret. Sealed before persist.",
             },
             webhookSecret: {
               oneOf: [{ type: "string" }, { type: "null" }],
@@ -322,7 +355,8 @@ export function getAdminOpenApiSpec(
             name: { type: "string", description: "App name shown on GitHub" },
             baseUrl: {
               type: "string",
-              description: "GitHub Enterprise Server origin; defaults to github.com",
+              description:
+                "GitHub Enterprise Server origin; defaults to github.com",
             },
             organizationLogin: {
               oneOf: [{ type: "string" }, { type: "null" }],
@@ -363,6 +397,8 @@ export function getAdminOpenApiSpec(
                 "principals",
                 "storage",
                 "secrets",
+                "twofactor",
+                "authproviders",
                 "email",
               ],
             },
@@ -657,7 +693,9 @@ export function getAdminOpenApiSpec(
             required: false,
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/GithubManifestStartBody" },
+                schema: {
+                  $ref: "#/components/schemas/GithubManifestStartBody",
+                },
               },
             },
           },
@@ -677,7 +715,8 @@ export function getAdminOpenApiSpec(
               description: "Forbidden — requires admin or superadmin role",
             },
             "503": {
-              description: "No public URL configured, or no root secret to sign the state",
+              description:
+                "No public URL configured, or no root secret to sign the state",
             },
           },
         },
@@ -762,6 +801,66 @@ export function getAdminOpenApiSpec(
                 "application/json": {
                   schema: {
                     $ref: "#/components/schemas/EmailSettingsResponse",
+                  },
+                },
+              },
+            },
+            "400": { description: "Invalid request body" },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "503": { description: "Database unavailable" },
+          },
+        },
+      },
+      [`${ADMIN_API_PREFIX}/settings/auth-providers`]: {
+        get: {
+          tags: ["Settings"],
+          summary: "Read resolved OAuth provider settings",
+          security: [...cookieSecurity],
+          responses: {
+            "200": {
+              description: "Auth provider settings with source metadata",
+              content: {
+                "application/json": {
+                  schema: {
+                    $ref: "#/components/schemas/AuthProviderSettingsResponse",
+                  },
+                },
+              },
+            },
+            "401": { description: "Unauthorized" },
+            "403": {
+              description: "Forbidden — requires admin or superadmin role",
+            },
+            "503": { description: "Database unavailable" },
+          },
+        },
+        put: {
+          tags: ["Settings"],
+          summary: "Persist OAuth provider settings to the database",
+          description:
+            "Env-overridden keys are accepted but ignored. Secret values from env are never returned. " +
+            "Send null for a key to clear a database-backed value and revert to defaults.",
+          security: [...cookieSecurity],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/AuthProviderSettingsPutBody",
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Updated settings",
+              content: {
+                "application/json": {
+                  schema: {
+                    $ref: "#/components/schemas/AuthProviderSettingsResponse",
                   },
                 },
               },

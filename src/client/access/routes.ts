@@ -30,6 +30,11 @@ import { getDb } from '../../db.ts'
 import { grant, invitation, team, teammate } from '../../lib/db/schema.ts'
 import { getOrgId } from '../shared.ts'
 import {
+  handleCreateInvitation,
+  handleListInvitations,
+  handleRevokeInvitation,
+} from './invitation-http.ts'
+import {
   invitationAcceptErrorPayload,
   invitationEmailsMatch,
   organizationResourceIdMismatch,
@@ -103,7 +108,13 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   }
   const secrets = opts.secrets
 
+  router.use('/invitations', createSessionMiddleware(secrets))
+  router.use('/invitations/:id', createSessionMiddleware(secrets))
   router.use('/invitations/:id/accept', createSessionMiddleware(secrets))
+
+  router.post('/invitations', (c) => handleCreateInvitation(c, opts))
+  router.get('/invitations', (c) => handleListInvitations(c))
+  router.delete('/invitations/:id', (c) => handleRevokeInvitation(c))
 
   router.post('/invitations/:id/accept', async (c) => {
     const db = getDb(c)

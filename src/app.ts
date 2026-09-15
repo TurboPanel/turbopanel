@@ -110,6 +110,9 @@ export function createApp({
   secretsConfig,
   authRateLimiter,
   otpVerifierSecrets,
+  twoFactorChallengeSecrets,
+  backupCodeVerifierSecrets,
+  webauthnChallengeSecrets,
   platformEnv,
   getPlatformEnv,
   registerBilling,
@@ -140,6 +143,12 @@ export function createApp({
   authRateLimiter?: AuthRateLimiter;
   /** HMAC keyring for email OTP verifiers — forwarded to client auth routes. */
   otpVerifierSecrets?: DerivedSecretsConfig;
+  /** HMAC keyring for TOTP sign-in challenges — forwarded to client auth routes. */
+  twoFactorChallengeSecrets?: DerivedSecretsConfig;
+  /** HMAC keyring for backup-code verifiers — forwarded to client auth routes. */
+  backupCodeVerifierSecrets?: DerivedSecretsConfig;
+  /** HMAC keyring for WebAuthn ceremony challenges — forwarded to client auth routes. */
+  webauthnChallengeSecrets?: DerivedSecretsConfig;
   /**
    * Process / binding env for `/api/health` revision and settings.
    * Registered before the health route so Deno does not observe `unknown`
@@ -198,6 +207,9 @@ export function createApp({
     registerClientRoutes(app, {
       secrets,
       otpVerifierSecrets,
+      twoFactorChallengeSecrets,
+      backupCodeVerifierSecrets,
+      webauthnChallengeSecrets,
       runtime: resolvedRuntime,
       signupEnvOverride,
       emailFrom,

@@ -5,7 +5,9 @@ server addresses, certs and entrypoint, the daemon TLS trust model, and the
 static UI catch-all. Read before editing `Caddyfile` or
 `scripts/download-caddy.mjs`.
 
-This repo's `Caddyfile` is **production-only**. Caddy terminates TLS and routes:
+This repo's `Caddyfile` is **production-only** (`self_signed` / `upload`).
+`Caddyfile.acme` is the `lets_encrypt` sibling: automatic HTTPS for the instance
+hostname only. Caddy terminates TLS and routes:
 
 - `/api/*`, `/ws/*`, and `/webhook/*` → Deno instance
   (`unix:///run/turbopanel/instance.sock`)
@@ -77,34 +79,53 @@ URL in `resolve-public-base-url.ts`.
 
 ## Certs and entrypoint
 
-Caddy/cert installs are handled by the daemon's `caddy` and `instance-certs`
-Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp` in production.
+Caddy/cert installs are handled by the daemon's `caddy`, `instance-certs`, and
+`instance-launch` Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp`
+in production. Control-plane TLS is selected by `turbopanel_tls_mode`:
 
-- Entrypoint: `https://<host>:8443` (this `Caddyfile`) — binds all interfaces;
-  use `localhost` or the machine's LAN IP.
+| Mode | Caddyfile | Listen | Leaf material | Platform CA minted | `GET /instance/ca` | `--insecure-tls` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `self_signed` (default) | `Caddyfile` | `:8443` | `certs/self-signed.*` | yes, served | 200 | yes |
+| `upload` | `Caddyfile` | `:8443` (or `caddy_port`) | operator pair copied to `certs/` | yes, served unless `turbopanel_tls_public` | 200 / 404 | follows `turbopanel_tls_public` |
+| `lets_encrypt` | `Caddyfile.acme` | `:443` (+ `:80` challenge) | Caddy ACME storage | yes, **not** served | 404 | no |
+
+`lets_encrypt` needs `:80` / `:443` free on the control-plane host — it conflicts
+with a hosting Caddy on the same host. ACME mode is **managed-install only**
+(the co-located dev overlay Caddyfile wins over `turbopanel_caddyfile`).
+`turbopanel_acme_email` is optional: the Caddy unit sets
+`TURBOPANEL_CADDY_ACME_EMAIL_DIRECTIVE=email <addr>` only when the address is
+non-empty, and `Caddyfile.acme` expands that placeholder so an unset contact
+does not render an invalid `email ` directive.
+
+- Entrypoint: `https://<host>:8443` by default (`Caddyfile`) — binds all
+  interfaces; use `localhost` or the machine's LAN IP. `lets_encrypt` binds
+  `:443` via `Caddyfile.acme`.
 - Self-hosted TLS uses a **Platform CA** stored in the durable state tree
   (`/var/lib/turbopanel/tls/ca.crt` + `ca.key`, plus `ca-bundle.pem` for
-  current+retired overlap). The Caddy **leaf** stays under the instance
-  `certs/` dir (`self-signed.crt` + `.key`). **`auto_https off` is mandatory
-  and must never be removed.** Caddy must never auto-provision certs via ACME or
-  on-demand TLS. All cert issuance goes through
-  `scripts/generate-self-signed-cert.mjs` (self-hosted, **Platform CA**) or an
-  explicitly-configured publicly-trusted cert. The `instance-certs-apply.yml`
-  playbook is the runtime **leaf-only** cert-regen path triggered by the admin
-  public-URL apply action — it never passes `TURBOPANEL_TLS_CA_ROTATE`.
-  `ensureCa()` validates readable existing durable **Platform CA** files,
-  rotates when requested, or mints a new durable root — and refuses to mint
-  over an unreadable existing **Platform CA**. Rotation is opt-in
-  (`TURBOPANEL_TLS_CA_ROTATE=1`) and keeps the outgoing **Platform CA** root in
-  the bundle until daemons ack `server.tls.trust.reconcile`. Daemons fetch the
-  bundle from `GET /api/daemon/v1/instance/ca`. Trust the **Platform CA** in
-  browsers/OS to avoid warnings. The **Organization CA** and org TLS library
-  (`/api/client/v1/tls`, `/tls/ca`) are a separate per-organization store for
-  managed-database / ProxySQL / replication leaves and must never write
-  **Platform CA** paths — see `src/lib/tls/AGENTS.md`. **Future:** tenant
-  **hosting** leaves (Caddy-fronted web services) remain operator-pinned library
-  certificates or Caddy `tls internal`. They are never issued by the
-  Organization CA.
+  current+retired overlap). The Caddy **leaf** for `self_signed` / `upload`
+  stays under the instance `certs/` dir (`self-signed.*` or `uploaded.*`).
+  **`auto_https off` is mandatory in `self_signed` and `upload` and must never
+  be removed from `Caddyfile`.** `Caddyfile.acme` is the only file where Caddy
+  issues a certificate, and only for the instance's own hostname. Tenant
+  hosting leaves stay on the per-server hosting Caddy. All other cert issuance
+  goes through `scripts/generate-self-signed-cert.mjs` (self-hosted,
+  **Platform CA**) or an explicitly-configured uploaded pair. The
+  `instance-certs-apply.yml` playbook is the runtime **leaf-only** cert-regen
+  path triggered by the admin public-URL apply action — it never passes
+  `TURBOPANEL_TLS_CA_ROTATE`. `ensureCa()` validates readable existing durable
+  **Platform CA** files, rotates when requested, or mints a new durable root —
+  and refuses to mint over an unreadable existing **Platform CA**. Rotation is
+  opt-in (`TURBOPANEL_TLS_CA_ROTATE=1`) and keeps the outgoing **Platform CA**
+  root in the bundle until daemons ack `server.tls.trust.reconcile`. Daemons
+  fetch the bundle from `GET /api/daemon/v1/instance/ca` unless
+  `TURBOPANEL_TLS_PUBLIC` is set (404 → system trust store). Trust the
+  **Platform CA** in browsers/OS to avoid warnings on the default path. The
+  **Organization CA** and org TLS library (`/api/client/v1/tls`, `/tls/ca`)
+  are a separate per-organization store for managed-database / ProxySQL /
+  replication leaves and must never write **Platform CA** paths — see
+  `src/lib/tls/AGENTS.md`. **Future:** tenant **hosting** leaves (Caddy-fronted
+  web services) remain operator-pinned library certificates or Caddy
+  `tls internal`. They are never issued by the Organization CA.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO`
   for Deno).
 
@@ -119,11 +140,12 @@ runtime (the old `TURBOPANEL_TLS_INSECURE` daemon env was dead and was removed;
 `run.sh --insecure-tls` only affects the bootstrap `curl -k` downloads). Three
 valid configurations:
 
-| Path                          | Platform CA trust                                                                                                  | SAN requirement                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Self-signed (self-hosted)** | Daemon trusts the downloaded **Platform CA** bundle (`TURBOPANEL_INSTANCE_CA` → `/etc/turbopanel/instance-ca.pem`, fetched from `GET /api/daemon/v1/instance/ca`). Instance material lives under `/var/lib/turbopanel/tls/` (`ca.crt` / `ca.key` / `ca-bundle.pem`) — not the replaceable checkout. Distinct from the **Organization CA** (`src/lib/tls/AGENTS.md`). | The leaf cert **must** include the hostname the daemon dials. SANs are derived from the configured public URL(s) — `TURBOPANEL_PUBLIC_URL` / `TURBOPANEL_BASE_URL` / `TURBOPANEL_INSTANCE_URL` and `TURBOPANEL_TLS_EXTRA_SANS` (see `scripts/generate-self-signed-cert.mjs`). Never hardcode the hostname.                                                                                                                    |
-| **Let's Encrypt**             | Publicly-valid → daemon uses the **system trust store** (ship **no** `TURBOPANEL_INSTANCE_CA`)                     | The real cert already covers the public hostname.                                                                                                                                                                                                                                                                                                                                                                             |
-| **Cloudflare tunnel / proxy** | Cloudflare's edge cert is publicly-valid → **system trust**                                                        | Daemon dials the public Cloudflare hostname, which the edge cert already covers. **Caveat:** behind a tunnel the instance cannot auto-discover its own public hostname (cloudflared dials out), so the reachable URL(s) must be **declared by the operator** (admin surface / `TURBOPANEL_PUBLIC_URL`), not auto-detected. The self-signed origin leg (cloudflared → local Caddy) is separate from what the daemon validates. |
+| Path                          | Platform CA trust                                                                                                  | SAN requirement                                                                                                                                                                                                                                                                                                                                                                                                               | `GET /api/daemon/v1/instance/ca` |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| **Self-signed (self-hosted)** | Daemon trusts the downloaded **Platform CA** bundle (`TURBOPANEL_INSTANCE_CA` → `/etc/turbopanel/instance-ca.pem`, fetched from `GET /api/daemon/v1/instance/ca`). Instance material lives under `/var/lib/turbopanel/tls/` (`ca.crt` / `ca.key` / `ca-bundle.pem`) — not the replaceable checkout. Distinct from the **Organization CA** (`src/lib/tls/AGENTS.md`). | The leaf cert **must** include the hostname the daemon dials. SANs are derived from the configured public URL(s) — `TURBOPANEL_PUBLIC_URL` / `TURBOPANEL_BASE_URL` / `TURBOPANEL_INSTANCE_URL` and `TURBOPANEL_TLS_EXTRA_SANS` (see `scripts/generate-self-signed-cert.mjs`). Never hardcode the hostname.                                                                                                                    | 200 PEM |
+| **Uploaded cert**             | Publicly-valid (when `turbopanel_tls_public`) → **system trust**; otherwise the Platform CA is still served          | The uploaded leaf **must** cover the hostname the daemon dials.                                                                                                                                                                                                                                                                                                                                                               | 200 unless `TURBOPANEL_TLS_PUBLIC` |
+| **Let's Encrypt**             | Publicly-valid → daemon uses the **system trust store** (ship **no** `TURBOPANEL_INSTANCE_CA`)                     | The real cert already covers the public hostname.                                                                                                                                                                                                                                                                                                                                                                             | 404 (`TURBOPANEL_TLS_PUBLIC`) |
+| **Cloudflare tunnel / proxy** | Cloudflare's edge cert is publicly-valid → **system trust**                                                        | Daemon dials the public Cloudflare hostname, which the edge cert already covers. **Caveat:** behind a tunnel the instance cannot auto-discover its own public hostname (cloudflared dials out), so the reachable URL(s) must be **declared by the operator** (admin surface / `TURBOPANEL_PUBLIC_URL`), not auto-detected. The self-signed origin leg (cloudflared → local Caddy) is separate from what the daemon validates. | 200 (origin still Platform CA) |
 
 Note: `Deno.createHttpClient({ caCerts })` **adds** to the system roots (does
 not replace them), so configuring the **Platform CA** does not break validation
@@ -139,15 +161,18 @@ not “we are in development”:
 
 - HTTPS on a non-443 port, loopback, RFC1918, or reserved LAN TLDs (`.lan` /
   `.local` / …) → `curl -k` + `TURBOPANEL_INSECURE_TLS=1` (Platform CA)
-- HTTPS on port 443 for a public hostname (Cloudflare/ngrok tunnel, opt-in Let’s
+- HTTPS on port 443 for a public hostname (Cloudflare/ngrok tunnel, Let’s
   Encrypt, uploaded cert) → system trust; **no** `-k`
+- `TURBOPANEL_TLS_PUBLIC=1` (`resolvePublicInstanceTls`) overrides the non-443
+  port check, so an uploaded publicly-trusted cert on `:8443` also omits `-k`
+  and the Deno CA route 404s (unlocking `run.sh`'s system-trust branch)
 - Plaintext `http://` (dev `:8880`) → no TLS flags
 
-Let’s Encrypt and uploaded certificates for the **control-plane origin** are
-operator opt-in. Caddy keeps `auto_https off` — the platform never obtains a
-public certificate unless the operator explicitly requests it. A Cloudflare
-tunnel presents a publicly-trusted cert at the edge; the origin can stay on the
-**Platform CA**.
+Let’s Encrypt (`turbopanel_tls_mode=lets_encrypt`) and uploaded certificates
+(`upload`) for the **control-plane origin** are operator opt-in. `Caddyfile`
+keeps `auto_https off`; only `Caddyfile.acme` obtains a public certificate, and
+only for the instance hostname. A Cloudflare tunnel presents a
+publicly-trusted cert at the edge; the origin can stay on the **Platform CA**.
 
 Dev overlay install commands also set
 `TURBOPANEL_DL_BASE=<origin>/downloads/daemon` so remote servers fetch the

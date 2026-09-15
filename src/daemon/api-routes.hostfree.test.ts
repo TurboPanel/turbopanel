@@ -59,6 +59,19 @@ test("daemon docs and JWKS stay host-free", async () => {
   assertEquals((await reference.text()).includes("html"), true);
 });
 
+test("GET /instance/ca 404s when tlsPublic is set", async () => {
+  const app = daemonApp({ tlsPublic: true });
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
+  assertEquals(response.status, 404);
+  assertEquals(await response.json(), { error: "platform CA not configured" });
+});
+
+test("GET /instance/ca keeps today's disk path unless tlsPublic is set", async () => {
+  const app = daemonApp();
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
+  assertEquals(response.status === 404, false);
+});
+
 test("readiness, enroll, and session fail closed without a database", async () => {
   const app = daemonApp();
   assertEquals((await app.request(`${DAEMON_API_PREFIX}/readiness`)).status, 503);

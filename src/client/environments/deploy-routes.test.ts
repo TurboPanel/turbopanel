@@ -26,9 +26,9 @@ import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
 import type { CommandQueue } from "../../lib/commands/queue.ts";
 import {
   command,
-  dispatch,
   container,
   deployment,
+  dispatch,
   environment,
   fabric,
   grant,
@@ -36,10 +36,11 @@ import {
   network,
   organization,
   project,
-  subnet,
   server,
   service,
   slot,
+  subnet,
+  tls,
   user,
   workspace,
 } from "../../lib/db/schema.ts";
@@ -59,16 +60,16 @@ import {
 import { setFabricConvergenceTimeoutMsForTests } from "../../lib/fabric/enqueue.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import {
+  attachmentServerIds,
+  deployParticipation,
   expandHostingsForComposeInstances,
+  ingressServerIdsForDeploy,
   preferredListenPortsFromHostings,
   readHostingPorts,
   readHostingProtocol,
   readHostnames,
   readPathPrefix,
   readTargetPort,
-  attachmentServerIds,
-  deployParticipation,
-  ingressServerIdsForDeploy,
   registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
   registerEnvironmentLifecycleRoutes,
@@ -77,6 +78,7 @@ import {
 } from "./deploy-routes.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 import { systemHierarchyProvision } from "../system/hierarchy.ts";
+import { registerTlsRoutes } from "../tls/routes.ts";
 
 const dbUrl = getDatabaseUrl();
 
@@ -140,9 +142,12 @@ test("deployParticipation marks previous hosts not in the plan as drained", () =
     attachments,
     previous: [{ serverId: "srv-a" }, { serverId: "srv-old" }],
   });
-  assertEquals([...result.attachmentServers].sort((a, b) => a.localeCompare(b)), [
-    "srv-attach",
-  ]);
+  assertEquals(
+    [...result.attachmentServers].sort((a, b) => a.localeCompare(b)),
+    [
+      "srv-attach",
+    ],
+  );
   assertEquals(
     [...result.participating].sort((a, b) => a.localeCompare(b)),
     ["srv-a", "srv-attach"],
@@ -443,8 +448,10 @@ async function createDeployRoutesTestApp(
     commandQueue: CommandQueue;
   },
 ) {
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+  const secretsConfig = parseSecretsEnv(
+    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno",
+  );
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
@@ -456,6 +463,7 @@ async function createDeployRoutesTestApp(
     c.set("daemonCellRegistry", options.registry);
     c.set("commandQueue", options.commandQueue);
     c.set("dataEncryptionSecrets", dataEncryptionSecrets);
+    c.set("secretsConfig", secretsConfig);
     return next();
   });
   const routeOpts = {
@@ -466,6 +474,7 @@ async function createDeployRoutesTestApp(
   registerEnvironmentDeployPreviewRoutes(app, routeOpts);
   registerEnvironmentDeployRoutes(app, routeOpts);
   registerEnvironmentLifecycleRoutes(app, routeOpts);
+  registerTlsRoutes(app, routeOpts);
   return { app, secrets };
 }
 
@@ -967,6 +976,127 @@ test("POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames", a
     } finally {
       if (hostingServiceId) {
         await db.delete(hosting).where(eq(hosting.serviceId, hostingServiceId));
+      }
+      systemHierarchyProvision.ensure = originalEnsure;
+    }
+  });
+});
+
+test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Encrypt pin", async () => {
+  const traefikServiceId = "00000000-0000-4000-8000-0000000000ab";
+  await withDeployFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    projectId,
+    environmentId,
+    serverId,
+    commandQueue,
+  }) => {
+    const originalEnsure = systemHierarchyProvision.ensure;
+    systemHierarchyProvision.ensure = () =>
+      Promise.resolve({
+        workspaceId: "00000000-0000-4000-8000-0000000000bb",
+        projectId: "00000000-0000-4000-8000-0000000000cc",
+        environmentId: "00000000-0000-4000-8000-0000000000dd",
+        serviceId: traefikServiceId,
+        containerRowId: "00000000-0000-4000-8000-0000000000ee",
+        containerName: `${traefikServiceId}-in`,
+      });
+    let hostingServiceId: string | undefined;
+    let tlsId: string | undefined;
+    try {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          name: "Production",
+          options: { compose: emptyComposeDocument() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId));
+      await db
+        .update(project)
+        .set({
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId));
+
+      const cookie = await sessionCookie(db, secrets, userId);
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "Content-Type": "application/json",
+      };
+
+      const createTls = await app.request("/tls", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "lets_encrypt",
+          name: "Deploy revoke LE",
+          hostnames: ["app.example.com"],
+          challengeType: "http-01",
+        }),
+      });
+      assertEquals(createTls.status, 200);
+      const created = await createTls.json() as { ok: true; id: string };
+      tlsId = created.id;
+
+      const [svc] = await db
+        .insert(service)
+        .values({
+          environmentId,
+          name: "web",
+          composeServiceName: "web",
+        })
+        .returning({ id: service.id });
+      hostingServiceId = svc!.id;
+      await db.insert(hosting).values({
+        serviceId: svc!.id,
+        tlsId: created.id,
+        options: { hostnames: ["app.example.com"] },
+      });
+
+      const revoke = await app.request(`/tls/${created.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ revoke: true }),
+      });
+      assertEquals(revoke.status, 200);
+
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      });
+      assertEquals(res.status, 200);
+      const body = await res.json() as { ok: boolean; commandId: string };
+      assertEquals(body.ok, true);
+      assertEquals(commandQueue.envelopes.length, 1);
+
+      const [row] = await db
+        .select({ payload: dispatch.payload })
+        .from(dispatch)
+        .where(eq(dispatch.commandId, body.commandId))
+        .limit(1);
+      const payload = row?.payload as {
+        hostings: Array<{ tlsId?: string | null; tlsMode?: string }>;
+        tlsMaterial?: unknown[];
+      };
+      assertEquals(payload.hostings.length, 1);
+      assertEquals(payload.hostings[0]?.tlsId ?? null, null);
+      assertEquals(payload.hostings[0]?.tlsMode, undefined);
+      assertEquals(payload.tlsMaterial ?? [], []);
+    } finally {
+      if (hostingServiceId) {
+        await db.delete(hosting).where(eq(hosting.serviceId, hostingServiceId));
+      }
+      if (tlsId) {
+        await db.delete(tls).where(eq(tls.id, tlsId));
       }
       systemHierarchyProvision.ensure = originalEnsure;
     }

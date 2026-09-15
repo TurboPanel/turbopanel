@@ -5,6 +5,7 @@ import {
   encodeLicenseArg,
   formatInstallScriptCurlUrl,
 } from './daemon-install-command.ts'
+import { installOriginNeedsInsecureTls } from './install-tls.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -109,6 +110,22 @@ test('buildLicenseInstallCommand Workers omits host on production URL', () => {
     `curl -fsSL ${CDN_INSTALL_HOST} | TURBOPANEL_LICENSE=${encoded} sh`,
   )
   assertEquals(command.includes('TURBOPANEL_HOST'), false)
+})
+
+test('composed pipeline omits insecure TLS for a public non-443 origin', () => {
+  const instanceUrl = 'https://panel.example.com:8443'
+  const insecureTls = installOriginNeedsInsecureTls(instanceUrl, {
+    publicOrigin: true,
+  })
+  const command = buildLicenseInstallCommand({
+    runtime: 'deno',
+    instanceUrl,
+    licenseId: 'license-id',
+    licenseToken: 'token',
+    insecureTls,
+  })
+  assertEquals(command.includes('curl -fsSLk'), false)
+  assertEquals(command.includes('TURBOPANEL_INSECURE_TLS=1'), false)
 })
 
 test('license arg round-trips through base64url decoding', () => {

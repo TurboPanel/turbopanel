@@ -18,6 +18,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  bigint,
   boolean,
   check,
   foreignKey,
@@ -299,17 +300,14 @@ export const passkey = pgTable(
     aaguid: text(),
     name: varchar({ length: 255 }),
     publicKey: text("public_key").notNull(),
-    credentialId: varchar("credential_id", { length: 255 }).notNull(),
-    counter: integer().default(0).notNull(),
+    credentialId: text("credential_id").notNull(),
+    counter: bigint("counter", { mode: "number" }).default(0).notNull(),
     deviceType: varchar("device_type", { length: 32 }).notNull(),
     isBackedUp: boolean("is_backed_up").notNull(),
     transports: text(),
   },
   (table) => [
-    index("idx_passkey_credential_id").using(
-      "btree",
-      table.credentialId.asc().nullsLast().op("text_ops"),
-    ),
+    unique("uniq_passkey_credential_id").on(table.credentialId),
     index("idx_passkey_user_id").using(
       "btree",
       table.userId.asc().nullsLast().op("uuid_ops"),
@@ -4042,7 +4040,9 @@ export const webhookDelivery = pgTable(
     index("idx_delivery_created_at").using("btree", table.createdAt.asc()),
     index("idx_delivery_stripe_pending")
       .using("btree", table.createdAt.asc())
-      .where(sql`${table.provider} = 'stripe' AND ${table.projectedAt} IS NULL`),
+      .where(
+        sql`${table.provider} = 'stripe' AND ${table.projectedAt} IS NULL`,
+      ),
     // Widened beyond the git kinds when billing landed: the same ledger claims
     // Stripe event ids (`src/webhook/billing/stripe.ts`).
     check(
@@ -4202,6 +4202,10 @@ export const account = pgTable(
       "btree",
       table.userId.asc().nullsLast().op("uuid_ops"),
     ),
+    unique("uniq_account_provider_user").on(
+      table.providerId,
+      table.providerUserId,
+    ),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
@@ -4343,8 +4347,9 @@ export const twoFactor = pgTable(
       .defaultNow()
       .notNull(),
     userId: uuid("user_id").notNull(),
-    secret: varchar({ length: 255 }).notNull(),
-    isVerified: boolean("is_verified").default(true),
+    /** Sealed `tpsecret` envelope — not plaintext. */
+    secret: text().notNull(),
+    isVerified: boolean("is_verified").default(false).notNull(),
     backupCodes: text("backup_codes").notNull(),
   },
   (table) => [
@@ -4352,6 +4357,7 @@ export const twoFactor = pgTable(
       "btree",
       table.userId.asc().nullsLast().op("uuid_ops"),
     ),
+    unique("uniq_2fa_user_id").on(table.userId),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],

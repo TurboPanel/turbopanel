@@ -1613,6 +1613,13 @@ export type EnvironmentDeployHosting = {
   targetPort?: number;
   /** Resolved org TLS id when pinned; null/omit = Caddy `tls internal` (self-signed). */
   tlsId?: string | null;
+  /**
+   * How hosting Caddy should obtain a leaf. Absent = unchanged behavior
+   * (`tls <pair>` when `tlsId` is set, else `tls internal`). `acme` omits
+   * the `tls` directive so Caddy's own ACME client issues on :80/:443.
+   * `acme`-mode hostings carry no `tlsMaterial` entry.
+   */
+  tlsMode?: "internal" | "pinned" | "acme";
   proxy?: EnvironmentDeployHostingProxy;
   /**
    * Resolved Caddy `bind` address for this hosting (public pinned IP, datacenter
@@ -1709,6 +1716,7 @@ function parseDeployHostingProxy(
 }
 
 const DEPLOY_HOSTING_PROTOCOLS = new Set(["http", "tcp", "udp"]);
+const DEPLOY_HOSTING_TLS_MODES = new Set(["internal", "pinned", "acme"]);
 
 function parseDeployHostingProtocol(
   value: unknown,
@@ -1718,6 +1726,16 @@ function parseDeployHostingProtocol(
     throw new Error("Invalid environment.deploy payload");
   }
   return value as EnvironmentDeployHosting["protocol"];
+}
+
+function parseDeployHostingTlsMode(
+  value: unknown,
+): EnvironmentDeployHosting["tlsMode"] | undefined {
+  if (value === undefined) return undefined;
+  if (!isString(value) || !DEPLOY_HOSTING_TLS_MODES.has(value)) {
+    throw new Error("Invalid environment.deploy payload");
+  }
+  return value as EnvironmentDeployHosting["tlsMode"];
 }
 
 function isValidDeployPort(value: unknown): value is number {
@@ -1814,6 +1832,8 @@ function applyOptionalDeployHostingFields(
   } else if (isString(entry.tlsId)) {
     hosting.tlsId = entry.tlsId;
   }
+  const tlsMode = parseDeployHostingTlsMode(entry.tlsMode);
+  if (tlsMode) hosting.tlsMode = tlsMode;
   const proxy = parseDeployHostingProxy(entry.proxy);
   if (proxy) hosting.proxy = proxy;
   if (entry.bindAddress !== undefined) {
