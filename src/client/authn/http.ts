@@ -367,14 +367,17 @@ function resolveVerificationBaseUrl(
   return new URL(c.req.url).origin;
 }
 
-async function resolveVerificationBaseUrlAsync(
+/** Exported for direct unit testing only -- not part of the public route surface. */
+export async function resolveVerificationBaseUrlAsync(
   c: Context,
   opts: AuthRouteOpts,
 ): Promise<string> {
+  // Both runtimes must fall through to resolvePublicBaseUrl when `direct`
+  // resolves to the literal origin string "null" -- new URL(c.req.url).origin
+  // is "null" behind a Unix socket (see resolve-public-base-url.ts's own
+  // warning), which on Deno this used to return unguarded, producing
+  // verification links like "null/verify-email?token=...".
   const direct = resolveVerificationBaseUrl(c, opts).trim();
-  if (opts.runtime === "deno") {
-    return direct.replace(/\/$/, "");
-  }
   if (direct && direct !== "null" && !direct.includes("://null")) {
     return direct.replace(/\/$/, "");
   }

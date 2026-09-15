@@ -32,6 +32,7 @@ import {
   parseSignupBody,
   registerAuthRoutes,
   registerAuthnRoutes,
+  resolveVerificationBaseUrlAsync,
 } from './http.ts'
 import { hashPassword } from './password.ts'
 import { invitation } from '../../lib/db/schema.ts'
@@ -605,6 +606,51 @@ test('Workers sign-up queues verification email when mail is configured', async 
   assertEquals(queued, true)
   assertEquals(state.users.length, 1)
   assertEquals(state.users[0]?.isEmailVerified, false)
+})
+
+test('resolveVerificationBaseUrlAsync falls back off a null Unix-socket origin on Deno', async () => {
+  // Regression for a real bug found via a live end-to-end invite-a-teammate
+  // test against the dev console: new URL(c.req.url).origin is the literal
+  // string "null" for a request whose URL uses a non-special scheme --
+  // exactly what Deno's Unix-socket listener hands the app (see
+  // resolve-public-base-url.ts's own warning: "Behind the Unix socket,
+  // new URL(c.req.url).origin is null"). resolveVerificationBaseUrlAsync
+  // used to return that unguarded on the deno runtime, so the verification
+  // email sent by POST /auth/sign-up literally read
+  // "null/verify-email?token=...". The Workers branch already guarded
+  // against this same "null" origin and fell back to resolvePublicBaseUrl;
+  // the fix applies that guard uniformly instead of only off-Deno.
+  const savedBaseUrl = Deno.env.get('TURBOPANEL_BASE_URL')
+  const savedPublicUrls = Deno.env.get('TURBOPANEL_PUBLIC_URLS')
+  try {
+    Deno.env.delete('TURBOPANEL_BASE_URL')
+    Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+
+    const app = new Hono()
+    let resolved = ''
+    app.get('/probe', async (c) => {
+      resolved = await resolveVerificationBaseUrlAsync(c, {
+        runtime: 'deno',
+        signupEnvOverride: undefined,
+      })
+      return c.text('ok')
+    })
+
+    // A non-special URL scheme reproduces what Deno's Unix-socket listener
+    // hands the app: new URL(this).origin === "null". Passing a real Request
+    // (not a bare path string) so Hono routes on req.url directly instead of
+    // resolving the string against its own http://localhost test base.
+    const req = new Request('unix://socket/probe')
+    const res = await app.request(req)
+    assertEquals(res.status, 200)
+    assertEquals(resolved.startsWith('null'), false)
+    assertEquals(resolved.startsWith('https://'), true)
+  } finally {
+    if (savedBaseUrl === undefined) Deno.env.delete('TURBOPANEL_BASE_URL')
+    else Deno.env.set('TURBOPANEL_BASE_URL', savedBaseUrl)
+    if (savedPublicUrls === undefined) Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+    else Deno.env.set('TURBOPANEL_PUBLIC_URLS', savedPublicUrls)
+  }
 })
 
 test('registerAuthnRoutes session returns 401 without cookie', async () => {
