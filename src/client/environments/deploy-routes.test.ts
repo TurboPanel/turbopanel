@@ -1024,6 +1024,12 @@ test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Enc
           updatedAt: new Date().toISOString(),
         })
         .where(eq(project.id, projectId));
+      // POST /tls source:lets_encrypt requires the org to have opted in to
+      // ACME (organization.options.acmeEnabled, off by default).
+      await db
+        .update(organization)
+        .set({ options: { acmeEnabled: true } })
+        .where(eq(organization.id, organizationId));
 
       const cookie = await sessionCookie(db, secrets, userId);
       const headers = {
