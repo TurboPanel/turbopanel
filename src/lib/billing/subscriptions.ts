@@ -76,6 +76,36 @@ export type ItemMutation =
   | Readonly<{ id: string; deleted: true }>
   | Readonly<{ price: string; quantity: number }>
 
+/** Collapse deltas by tier; throws on a non-integer delta. */
+function sumDeltasByTier(deltas: readonly TierDelta[]): Map<string, number> {
+  const deltaByTier = new Map<string, number>()
+  for (const { tierId, delta } of deltas) {
+    if (!Number.isInteger(delta)) throw new TypeError(`delta for tier ${tierId} is not an integer`)
+    deltaByTier.set(tierId, (deltaByTier.get(tierId) ?? 0) + delta)
+  }
+  return deltaByTier
+}
+
+/** Re-emit one current line at its new quantity, or delete it at zero. */
+function mutationForCurrentLine(line: SeatLine, delta: number): ItemMutation {
+  const next = line.quantity + delta
+  if (next < 0) throw new RangeError(`tier ${line.tierId} would go to ${next} seats`)
+  return next === 0 ? { id: line.providerItemId, deleted: true } : { id: line.providerItemId, quantity: next }
+}
+
+/** Create a line for a tier with no current item, via `price`. `null` if there is nothing to create. */
+function mutationForNewTier(
+  tierId: string,
+  delta: number,
+  priceByTier: ReadonlyMap<string, string>,
+): ItemMutation | null {
+  if (delta === 0) return null
+  if (delta < 0) throw new RangeError(`tier ${tierId} has no seats to remove`)
+  const price = priceByTier.get(tierId)
+  if (!price) throw new TypeError(`tier ${tierId} has no provider price`)
+  return { price, quantity: delta }
+}
+
 /**
  * Apply per-tier deltas to the current seat lines and produce the items
  * array. Every current item is re-emitted with its (possibly unchanged)
@@ -89,29 +119,18 @@ export function buildItemMutation(
   deltas: readonly TierDelta[],
   priceByTier: ReadonlyMap<string, string>,
 ): ItemMutation[] {
-  const deltaByTier = new Map<string, number>()
-  for (const { tierId, delta } of deltas) {
-    if (!Number.isInteger(delta)) throw new TypeError(`delta for tier ${tierId} is not an integer`)
-    deltaByTier.set(tierId, (deltaByTier.get(tierId) ?? 0) + delta)
-  }
+  const deltaByTier = sumDeltasByTier(deltas)
 
   const out: ItemMutation[] = []
   const seen = new Set<string>()
   for (const line of current) {
     seen.add(line.tierId)
-    const next = line.quantity + (deltaByTier.get(line.tierId) ?? 0)
-    if (next < 0) {
-      throw new RangeError(`tier ${line.tierId} would go to ${next} seats`)
-    }
-    if (next === 0) out.push({ id: line.providerItemId, deleted: true })
-    else out.push({ id: line.providerItemId, quantity: next })
+    out.push(mutationForCurrentLine(line, deltaByTier.get(line.tierId) ?? 0))
   }
   for (const [tierId, delta] of deltaByTier) {
-    if (seen.has(tierId) || delta === 0) continue
-    if (delta < 0) throw new RangeError(`tier ${tierId} has no seats to remove`)
-    const price = priceByTier.get(tierId)
-    if (!price) throw new TypeError(`tier ${tierId} has no provider price`)
-    out.push({ price, quantity: delta })
+    if (seen.has(tierId)) continue
+    const mutation = mutationForNewTier(tierId, delta, priceByTier)
+    if (mutation) out.push(mutation)
   }
   return out
 }

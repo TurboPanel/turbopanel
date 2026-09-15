@@ -1482,6 +1482,11 @@ function toFiniteNumber(raw: unknown): number | null {
   return Number.isFinite(num) ? num : null
 }
 
+/** VARCHAR cell as a string; non-strings (including objects) become `''`. */
+function toStringOrEmpty(raw: unknown): string {
+  return typeof raw === 'string' ? raw : ''
+}
+
 // ---------------------------------------------------------------------------
 // v3-compat query helpers (`queryHostSeries`/`queryHostSummary`/
 // `queryFleetHostSnapshot`) — bucket aggregation and row parsing over the v5
@@ -1845,10 +1850,10 @@ function assertNonEmptyFields(metrics: readonly string[]): string[] {
 function parseMetricEventRow(row: DuckDbRow): MetricEvent {
   const atMs = toFiniteNumber(row.at_ms) ?? 0
   const event: MetricEvent = {
-    eventId: String(row.event_id ?? ''),
+    eventId: toStringOrEmpty(row.event_id),
     at: new Date(atMs).toISOString(),
-    kind: String(row.kind ?? '') as MetricEventKind,
-    severity: String(row.severity ?? '') as MetricEventSeverity,
+    kind: toStringOrEmpty(row.kind) as MetricEventKind,
+    severity: toStringOrEmpty(row.severity) as MetricEventSeverity,
   }
   if (typeof row.entity_id === 'string' && row.entity_id.length > 0) {
     event.entityId = row.entity_id

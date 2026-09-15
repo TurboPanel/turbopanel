@@ -22,7 +22,7 @@
     "@turbopanel/email/smtp-sender": "./src/lib/email/smtp/smtp-sender.ts",
     "ioredis": "npm:ioredis@^5.11.1",
     "@duckdb/node-api": "npm:@duckdb/node-api@1.5.5-r.4",
-    "yaml": "npm:yaml@^2.8.0",
+    "yaml": "npm:yaml@^2.9.0",
     "@noble/hashes/argon2.js": "npm:@noble/hashes@1.8.0/argon2.js",
     "@noble/hashes/sha2.js": "npm:@noble/hashes@1.8.0/sha2.js"
   },

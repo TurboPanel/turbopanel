@@ -24,7 +24,6 @@
     "npm:nodemailer@^6.10.1": "6.10.1",
     "npm:postgres@^3.4.7": "3.4.9",
     "npm:vitest@^4.1.0": "4.1.10_@vitest+coverage-istanbul@4.1.10",
-    "npm:yaml@^2.8.0": "2.9.0",
     "npm:yaml@^2.9.0": "2.9.0"
   },
   "jsr": {
@@ -1796,7 +1795,7 @@
       "npm:ioredis@^5.11.1",
       "npm:nodemailer@^6.10.1",
       "npm:postgres@^3.4.7",
-      "npm:yaml@^2.8.0"
+      "npm:yaml@^2.9.0"
     ],
     "packageJson": {
       "dependencies": [
