@@ -21,7 +21,7 @@ import {
   type TlsOptions,
   type TlsSource,
 } from "../../lib/tls/index.ts";
-import { tls } from "../../lib/db/schema.ts";
+import { organization, tls } from "../../lib/db/schema.ts";
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -29,6 +29,10 @@ import {
   parseName,
   parseJsonBody,
 } from "../shared.ts";
+import {
+  parseOrganizationOptions,
+  resolveAcmeEnabled,
+} from "../../lib/organization-options.ts";
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
@@ -864,6 +868,20 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       const existing = await findActiveOrganizationCa(db, organizationId);
       if (existing) {
         return c.json({ error: "organization_ca_exists" }, 409);
+      }
+    }
+
+    if (source === "lets_encrypt") {
+      const [orgRow] = await db
+        .select({ options: organization.options })
+        .from(organization)
+        .where(eq(organization.id, organizationId))
+        .limit(1);
+      const acmeEnabled = resolveAcmeEnabled(
+        parseOrganizationOptions(orgRow?.options),
+      );
+      if (!acmeEnabled) {
+        return c.json({ error: "lets_encrypt_not_enabled" }, 403);
       }
     }
 

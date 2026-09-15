@@ -143,7 +143,10 @@ async function withTlsFixtures(
 
   const [orgRow] = await db
     .insert(organization)
-    .values({ name: "TLS Route Test Org" })
+    .values({
+      name: "TLS Route Test Org",
+      options: { acmeEnabled: true },
+    })
     .returning({ id: organization.id });
   const organizationId = orgRow!.id;
 
@@ -300,6 +303,46 @@ test("POST /tls lets_encrypt managed cert appears in list and detail with empty 
       assertEquals(detailBody.tls.metadata.status, "managed");
       assertEquals(detailBody.tls.metadata.fingerprintSha256, "");
       assertEquals(detailBody.tls.metadata.dnsNames, ["pending.example.com"]);
+    },
+  );
+});
+
+test("POST /tls refuses lets_encrypt when the org has not opted in to ACME", async () => {
+  await withTlsFixtures(
+    async ({ db, app, secrets, userId, organizationId }) => {
+      await db
+        .update(organization)
+        .set({ options: { acmeEnabled: false } })
+        .where(eq(organization.id, organizationId));
+
+      const cookie = await sessionCookie(db, secrets, userId);
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      };
+
+      const res = await app.request("/tls", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "lets_encrypt",
+          hostnames: ["opt-in.example.com"],
+        }),
+      });
+      assertEquals(res.status, 403);
+      assertEquals(await res.json(), { error: "lets_encrypt_not_enabled" });
+
+      // Self-signed is unaffected by the org's ACME opt-in.
+      const selfSigned = await app.request("/tls", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "self_signed",
+          hostnames: ["opt-in.example.com"],
+        }),
+      });
+      assertEquals(selfSigned.status, 200);
     },
   );
 });

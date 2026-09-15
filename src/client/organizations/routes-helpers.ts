@@ -2,6 +2,7 @@ import {
   parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
   parseTemperatureUnitInput,
+  resolveAcmeEnabled,
   type TemperatureUnit,
 } from "../../lib/organization-options.ts";
 import { DISPLAY_NAME_MAX_LENGTH } from "../../lib/display-name-format.ts";
@@ -53,6 +54,10 @@ export type DefaultTimezonePatch = {
 
 export type TemperatureUnitPatch = {
   temperatureUnit: TemperatureUnit;
+};
+
+export type TlsSettingsPatch = {
+  acmeEnabled: boolean;
 };
 
 export type HostDefaultsPatch = {
@@ -339,6 +344,17 @@ export function parseTemperatureUnitPatch(
   return { ok: true, patch: { temperatureUnit: parsed.value } };
 }
 
+export function parseTlsSettingsPatch(
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: TlsSettingsPatch }
+  | OrganizationRouteValidationError {
+  if (typeof body.acmeEnabled !== "boolean") {
+    return { ok: false, error: "Invalid acmeEnabled", status: 400 };
+  }
+  return { ok: true, patch: { acmeEnabled: body.acmeEnabled } };
+}
+
 export function parseHostDefaultsPatch(
   body: Record<string, unknown>,
 ):
@@ -515,6 +531,23 @@ export function temperatureUnitPutResponse(options: {
   return {
     ok: true as const,
     ...temperatureUnitGetResponse(options),
+  };
+}
+
+export function tlsSettingsGetResponse(options: {
+  acmeEnabled?: boolean;
+}) {
+  return {
+    acmeEnabled: resolveAcmeEnabled(options),
+  };
+}
+
+export function tlsSettingsPutResponse(options: {
+  acmeEnabled?: boolean;
+}) {
+  return {
+    ok: true as const,
+    ...tlsSettingsGetResponse(options),
   };
 }
 

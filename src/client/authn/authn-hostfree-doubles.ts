@@ -67,7 +67,9 @@ export type MockAuthState = {
     providerId: string;
     providerUserId: string;
   }>;
-  organizations: Array<{ id: string; name: string | null }>;
+  organizations: Array<
+    { id: string; name: string | null; options?: unknown }
+  >;
   settings: Map<string, string>;
   licenses: Array<{
     id: string;
@@ -295,7 +297,7 @@ function fetchWhereRows(
     return Promise.resolve(
       state.organizations
         .filter((row) => row.name !== null)
-        .map((row) => ({ id: row.id })),
+        .map((row) => ({ id: row.id, options: row.options ?? null })),
     );
   }
   if (table === license) {

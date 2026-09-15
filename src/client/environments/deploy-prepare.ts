@@ -26,6 +26,10 @@ import {
 } from "../../lib/compose/compile-runtime.ts";
 import { sha256HexUtf8 } from "../../lib/compose/desired-hash.ts";
 import {
+  parseOrganizationOptions,
+  resolveAcmeEnabled,
+} from "../../lib/organization-options.ts";
+import {
   type ApplyVariablesError,
   applyVariablesToComposeDocument,
   type DeployVariableEntry,
@@ -3577,19 +3581,29 @@ type OrgTlsCandidate = TlsCandidate & {
 
 export type HostingTlsWire =
   | { ok: true; tlsId: string | null; tlsMode?: "acme" }
-  | { ok: false; error: "acme_requires_public_bind" };
+  | { ok: false; error: "acme_requires_public_bind" }
+  | { ok: false; error: "acme_requires_org_opt_in" };
 
 /**
  * ACME-managed Let's Encrypt pins omit `tlsId` on the wire so older daemons
  * fall back to `tls internal`, and they are excluded from `tlsMaterial`.
+ *
+ * `acmeEnabled` is the org's opt-in gate (`organization.options.acmeEnabled`,
+ * off by default) — checked here as defense in depth even though `POST /tls`
+ * already refuses to create a `lets_encrypt` row while the org is opted out,
+ * because a `managed` row can predate the org later disabling the gate.
  */
 export function hostingTlsWireFromResolved(params: {
   tlsId: string | null;
   status: TlsStatus | undefined;
   bindScope: HostingBindScope;
+  acmeEnabled: boolean;
 }): HostingTlsWire {
   if (params.status !== "managed") {
     return { ok: true, tlsId: params.tlsId };
+  }
+  if (!params.acmeEnabled) {
+    return { ok: false, error: "acme_requires_org_opt_in" };
   }
   if (params.bindScope === "local" || params.bindScope === "datacenter") {
     return { ok: false, error: "acme_requires_public_bind" };
@@ -3617,6 +3631,7 @@ async function resolveHttpHostingEntry(
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
+  acmeEnabled: boolean,
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
@@ -3650,6 +3665,7 @@ async function resolveHttpHostingEntry(
     tlsId: resolved.tlsId,
     status: pinned?.metadata.status,
     bindScope,
+    acmeEnabled,
   });
   if (!tlsWire.ok) {
     return {
@@ -3746,6 +3762,7 @@ function resolveHostingEntry(
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
+  acmeEnabled: boolean,
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
@@ -3761,6 +3778,7 @@ function resolveHostingEntry(
       svc,
       candidates,
       serverId,
+      acmeEnabled,
     );
   }
   return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId);
@@ -3814,6 +3832,7 @@ async function buildHostingsForService(
   svc: HostingServiceRow,
   candidates: OrgTlsCandidate[],
   serverId: string,
+  acmeEnabled: boolean,
 ): Promise<
   | { hostings: DeployHostingPayload[]; tlsIds: string[] }
   | { error: Response }
@@ -3840,6 +3859,7 @@ async function buildHostingsForService(
       { id: svc.id, composeServiceName },
       candidates,
       serverId,
+      acmeEnabled,
     );
     if ("skip" in result) continue;
     if ("error" in result) return result;
@@ -3868,6 +3888,14 @@ async function buildHostingPayload(
     .where(eq(service.environmentId, environmentId));
 
   const candidates = await loadOrgTlsCandidates(db, organizationId);
+  const [orgRow] = await db
+    .select({ options: organization.options })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1);
+  const acmeEnabled = resolveAcmeEnabled(
+    parseOrganizationOptions(orgRow?.options),
+  );
   const hostingPayload: DeployHostingPayload[] = [];
   const resolvedTlsIds = new Set<string>();
 
@@ -3878,6 +3906,7 @@ async function buildHostingPayload(
       svc,
       candidates,
       serverId,
+      acmeEnabled,
     );
     if ("error" in built) return built;
     if ("prepareError" in built) return built;

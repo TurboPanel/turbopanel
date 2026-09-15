@@ -46,8 +46,11 @@ import {
   parseOrganizationPatchDisplayName,
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
+  parseTlsSettingsPatch,
   temperatureUnitGetResponse,
   temperatureUnitPutResponse,
+  tlsSettingsGetResponse,
+  tlsSettingsPutResponse,
   toOrganizationRecord,
   validateManagedDefaults,
 } from "./routes-helpers.ts";
@@ -107,6 +110,10 @@ export function registerOrganizationRoutes(
   );
   router.use(
     "/organizations/:id/docker-networking",
+    createSessionMiddleware(secrets),
+  );
+  router.use(
+    "/organizations/:id/tls-settings",
     createSessionMiddleware(secrets),
   );
   router.use("/timezones", createSessionMiddleware(secrets));
@@ -318,6 +325,66 @@ export function registerOrganizationRoutes(
     const options = parseOrganizationOptions(updated?.options);
 
     return c.json(temperatureUnitPutResponse(options));
+  });
+
+  router.get("/organizations/:id/tls-settings", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    const options = parseOrganizationOptions(orgRow.options);
+    return c.json(tlsSettingsGetResponse(options));
+  });
+
+  router.put("/organizations/:id/tls-settings", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
+
+    const parsedPatch = parseTlsSettingsPatch(body);
+    if (!parsedPatch.ok) {
+      return c.json({ error: parsedPatch.error }, parsedPatch.status);
+    }
+    const patch = parsedPatch.patch;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    await db.update(organization).set({
+      options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+        JSON.stringify(patch)
+      }::jsonb`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id));
+
+    const [updated] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    const options = parseOrganizationOptions(updated?.options);
+
+    return c.json(tlsSettingsPutResponse(options));
   });
 
   router.get("/organizations/:id/host-defaults", async (c) => {

@@ -2349,6 +2349,7 @@ describe("hostingTlsWireFromResolved", () => {
         tlsId: "tls-le",
         status: "managed",
         bindScope: "public",
+        acmeEnabled: true,
       }),
       { ok: true, tlsId: null, tlsMode: "acme" },
     );
@@ -2360,6 +2361,7 @@ describe("hostingTlsWireFromResolved", () => {
         tlsId: "tls-le",
         status: "managed",
         bindScope: "local",
+        acmeEnabled: true,
       }),
       { ok: false, error: "acme_requires_public_bind" },
     );
@@ -2368,17 +2370,43 @@ describe("hostingTlsWireFromResolved", () => {
         tlsId: "tls-le",
         status: "managed",
         bindScope: "datacenter",
+        acmeEnabled: true,
       }),
       { ok: false, error: "acme_requires_public_bind" },
     );
   });
 
-  it("leaves ready pins unchanged so PEM sealing still runs", () => {
+  it("refuses managed ACME when the org has not opted in, even on a public bind", () => {
+    assertEquals(
+      hostingTlsWireFromResolved({
+        tlsId: "tls-le",
+        status: "managed",
+        bindScope: "public",
+        acmeEnabled: false,
+      }),
+      { ok: false, error: "acme_requires_org_opt_in" },
+    );
+  });
+
+  it("checks the org opt-in gate before the bind-scope gate", () => {
+    assertEquals(
+      hostingTlsWireFromResolved({
+        tlsId: "tls-le",
+        status: "managed",
+        bindScope: "local",
+        acmeEnabled: false,
+      }),
+      { ok: false, error: "acme_requires_org_opt_in" },
+    );
+  });
+
+  it("leaves ready pins unchanged so PEM sealing still runs, regardless of the org gate", () => {
     assertEquals(
       hostingTlsWireFromResolved({
         tlsId: "tls-ready",
         status: "ready",
         bindScope: "public",
+        acmeEnabled: false,
       }),
       { ok: true, tlsId: "tls-ready" },
     );

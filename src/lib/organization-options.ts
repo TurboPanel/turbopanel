@@ -101,6 +101,15 @@ export type OrganizationOptions = {
    * join the org CIDR registry (`dockerHostCidrs`).
    */
   docker?: OrganizationDockerNetworking;
+  /**
+   * Opt-in gate for Let's Encrypt / ACME certificate issuance — both the
+   * tenant `tls` library (`POST /tls` with `source: 'lets_encrypt'`) and the
+   * deploy-time `tlsMode: 'acme'` wire the resolved TLS status can produce.
+   * Off by default: some operators do not want Let's Encrypt used against
+   * their servers at all, so a `managed` TLS row is inert until the org
+   * turns this on. Toggling off does not revoke certificates already issued.
+   */
+  acmeEnabled?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -247,6 +256,9 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   }
   assignMetricsCapabilityPlan(options, value);
   assignDocker(options, value);
+  if (typeof value.acmeEnabled === "boolean") {
+    options.acmeEnabled = value.acmeEnabled;
+  }
   return options;
 }
 
@@ -262,6 +274,11 @@ export function resolveTemperatureUnit(
   options: OrganizationOptions,
 ): TemperatureUnit {
   return options.temperatureUnit ?? DEFAULT_TEMPERATURE_UNIT;
+}
+
+/** Effective Let's Encrypt gate: off unless the org has opted in. */
+export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
+  return options.acmeEnabled ?? false;
 }
 
 /**

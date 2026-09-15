@@ -123,9 +123,15 @@ does not render an invalid `email ` directive.
   **Organization CA** and org TLS library (`/api/client/v1/tls`, `/tls/ca`)
   are a separate per-organization store for managed-database / ProxySQL /
   replication leaves and must never write **Platform CA** paths — see
-  `src/lib/tls/AGENTS.md`. **Future:** tenant **hosting** leaves (Caddy-fronted
-  web services) remain operator-pinned library certificates or Caddy
-  `tls internal`. They are never issued by the Organization CA.
+  `src/lib/tls/AGENTS.md`. Tenant **hosting** leaves (Caddy-fronted web
+  services) are operator-pinned library certificates, Caddy `tls internal`,
+  or — only once the organization has opted in
+  (`organization.options.acmeEnabled`, off by default) — a `managed`
+  `lets_encrypt` row (`tlsMode: 'acme'`) that Caddy issues and renews on the
+  serving host. They are never issued by the Organization CA. The opt-in gate
+  is enforced both at `POST /tls` (creation) and at deploy time
+  (`hostingTlsWireFromResolved`), so a `managed` row created before the org
+  opted out still can't wire `tlsMode: 'acme'` once the gate is off.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO`
   for Deno).
 

@@ -149,6 +149,10 @@ type TlsAppOptions = {
   executeRows?: unknown[] | ((phase: number) => unknown[]);
   encryption?: boolean;
   transaction?: (fn: (tx: Db) => Promise<unknown>) => Promise<unknown>;
+  /** Org's `acmeEnabled` opt-in gate. Defaults to `true` so existing
+   * `source: "lets_encrypt"` coverage doesn't have to opt in on every call —
+   * pass `false` to exercise the gate itself. */
+  acmeEnabled?: boolean;
 };
 
 async function buildTlsApp(opts: TlsAppOptions = {}): Promise<{
@@ -177,7 +181,11 @@ async function buildTlsApp(opts: TlsAppOptions = {}): Promise<{
     isEmailVerified: true,
     role: "superadmin",
   });
-  state.organizations.push({ id: ORG_ID, name: "TLS Hostfree Org" });
+  state.organizations.push({
+    id: ORG_ID,
+    name: "TLS Hostfree Org",
+    options: { acmeEnabled: opts.acmeEnabled ?? true },
+  });
 
   const authDb = createMockAuthDb(state);
   const origSelect = (
@@ -638,6 +646,32 @@ test("POST /tls rejects invalid source, name, and missing encryption", async () 
   await expectJson(missing, 503, {
     error: "Encryption unavailable — no encryption key configured",
   });
+});
+
+test("POST /tls refuses lets_encrypt when the org has not opted in to ACME", async () => {
+  const { app, cookie } = await buildTlsApp({ acmeEnabled: false });
+  const json = { "content-type": "application/json" };
+
+  const res = await app.request("/tls", {
+    method: "POST",
+    headers: authHeaders(cookie, json),
+    body: JSON.stringify({
+      source: "lets_encrypt",
+      hostnames: ["app.example.com"],
+    }),
+  });
+  await expectJson(res, 403, { error: "lets_encrypt_not_enabled" });
+
+  // Other sources are unaffected by the org's ACME opt-in.
+  const selfSigned = await app.request("/tls", {
+    method: "POST",
+    headers: authHeaders(cookie, json),
+    body: JSON.stringify({
+      source: "self_signed",
+      hostnames: ["app.example.com"],
+    }),
+  });
+  assertEquals(selfSigned.status !== 403, true);
 });
 
 test("POST /tls returns create-material failures and insert conflicts", async () => {
