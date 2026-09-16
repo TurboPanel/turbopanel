@@ -51,6 +51,17 @@
 	request_header @remote_peer -True-Client-IP
 	request_header @remote_peer -X-Forwarded-For
 
+	# Baseline response headers. HSTS matters most here — this is the only
+	# Caddyfile serving a genuine browser-trusted (Let's Encrypt) certificate,
+	# so a real browser will actually remember and enforce it. This never
+	# applies to tenant hosting sites — those are a separate, per-server Caddy
+	# config the daemon generates, not this file.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+
 	@api path /api/*
 	handle @api {
 		# Defense in depth only — the app itself enforces the real per-route

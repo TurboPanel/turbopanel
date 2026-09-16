@@ -204,6 +204,42 @@ test('verifyCredentials rejects wrong password against mock db user', async () =
   assertEquals(result.ok, false)
 })
 
+test('the not-found branch runs a dummy Argon2id verify — no early return before hashing', async () => {
+  // Regression guard for the sign-in timing side channel: an email with no
+  // credential account must not return near-instantly. Both the not-found
+  // and the wrong-password branches now pay the same Argon2id cost, so
+  // neither duration should be a small fraction of the other. The floor
+  // (5ms) rules out a hashing-skipped fast path; it is far below Argon2id's
+  // actual cost (tens of ms) even on slow CI hardware.
+  const state = createEmptyMockAuthState()
+  const email = 'mock-timing-real@example.com'
+  seedMockCredentialUser(state, {
+    id: crypto.randomUUID(),
+    email,
+    password: await hashPassword('Sup3r-secret!'),
+  })
+  const db = createMockAuthDb(withMockLogin(state, email))
+
+  const wrongPasswordStart = performance.now()
+  await verifyCredentials(email, 'wrong-password', 'workers', db)
+  const wrongPasswordMs = performance.now() - wrongPasswordStart
+
+  const notFoundStart = performance.now()
+  await verifyCredentials(
+    'mock-timing-nonexistent@example.com',
+    'wrong-password',
+    'workers',
+    db,
+  )
+  const notFoundMs = performance.now() - notFoundStart
+
+  if (wrongPasswordMs < 5 || notFoundMs < 5) {
+    throw new TypeError(
+      `expected both branches to pay real Argon2id cost, got wrongPasswordMs=${wrongPasswordMs} notFoundMs=${notFoundMs}`,
+    )
+  }
+})
+
 test('verifyCredentials accepts root on Deno before install in dev group-only mode', async () => {
   const saved = new Map<string, string | undefined>()
   for (const key of [

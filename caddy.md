@@ -138,6 +138,16 @@ does not render an invalid `email ` directive.
 There is **no** plaintext HTTP listener in the production Caddyfile. Co-located
 `:8880` lives only in the dev overlay Caddyfile.
 
+Both `Caddyfile` and `Caddyfile.acme` set a global `header` block
+(`Strict-Transport-Security`, `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`) on the instance site. HSTS applies even on the
+`self_signed` default: a browser that already trusts the leaf (Platform CA
+import, or an uploaded/publicly-trusted cert) should not be silently
+downgraded to plaintext on a later visit. This is **control-plane only** —
+tenant hosting sites are a separate, per-server Caddy config the daemon
+generates (`turbopaneld/src/deploy/ingress.ts`), which does not inherit these
+headers.
+
 ## Daemon TLS trust model (3 paths)
 
 The daemon validates the instance server cert on **every** connect — both chain

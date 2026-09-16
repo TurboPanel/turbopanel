@@ -10,6 +10,18 @@ export const PAM_ROOT_USERNAME = 'root'
 
 const HOST_USERNAME_RE = /^[a-zA-Z0-9._-]+$/
 
+/**
+ * Fixed Argon2id PHC string (baseline OWASP params, no real account behind
+ * it) verified on the not-found branch below so "no such email" costs the
+ * same wall-clock time as "wrong password" — otherwise the row lookup alone
+ * returns near-instantly and a timing side channel leaks which emails have a
+ * local password account. A module-scope literal, not a `hashPassword()`
+ * call: the latter reaches `crypto.getRandomValues` at import time, which
+ * `check:workers-bundle` rejects outside a request handler.
+ */
+const TIMING_SAFE_DUMMY_ARGON2ID_HASH =
+  '$argon2id$v=19$m=19456,t=2,p=1$YhRmrUGYipN2DNXipawzXg$4LBWbfHCDCeMA2i1czRRpclNzQPo01h/0sfSMSOq9Yg'
+
 export type AuthRuntime = 'deno' | 'workers'
 
 /** Hyperdrive caches SELECTs; auth reads after verify must not serve stale rows. */
@@ -150,6 +162,9 @@ async function verifyDbUserCredentials(
 
   const row = rows[0]
   if (!row?.password || row.isDisabled) {
+    // Same Argon2id cost as a real verify below, so this branch's latency
+    // does not disclose whether the email has a local password account.
+    await verifyPassword(password, TIMING_SAFE_DUMMY_ARGON2ID_HASH)
     return { ok: false }
   }
 
