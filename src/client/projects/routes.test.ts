@@ -45,8 +45,10 @@ import { registerStorageRoutes } from '../storage/routes.ts'
 import {
   ensureSelfHostSystemHierarchy,
   ensureSystemHierarchy,
+  SYSTEM_PROJECT_DISPLAY_NAME,
   SYSTEM_PROJECT_METADATA_TYPE,
 } from '../system/hierarchy.ts'
+import { isProjectNameUniqueViolation, mapCreateProjectError } from './routes-helpers.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -1133,6 +1135,134 @@ test('PATCH /projects/:id rejects renaming onto another project name in the org'
     })
     assertEquals(rename.status, 409)
     assertEquals(await rename.json(), { error: 'project_name_in_use' })
+  })
+})
+
+test('uniq_project_organization_name is the lock: a duplicate past the app pre-check is refused by Postgres and maps to 409', async () => {
+  await withProjectFixtures(async ({ db, organizationId, workspaceId }) => {
+    await db
+      .insert(project)
+      .values({ name: 'Race Winner', workspaceId, organizationId })
+    let thrown: unknown = null
+    try {
+      // Straight to the table, the shape of a racer the pre-check missed.
+      await db
+        .insert(project)
+        .values({ name: '  race WINNER ', workspaceId, organizationId })
+    } catch (err) {
+      thrown = err
+    }
+    assertEquals(isProjectNameUniqueViolation(thrown), true)
+    assertEquals(mapCreateProjectError(thrown), { error: 'project_name_in_use', status: 409 })
+    // Per-organization, not instance-wide: the same name in another org is fine.
+    const [otherOrg] = await db
+      .insert(organization)
+      .values({ name: 'Other Org For Project Names' })
+      .returning({ id: organization.id })
+    try {
+      const [otherWs] = await db
+        .insert(workspace)
+        .values({ name: 'Other WS', organizationId: otherOrg!.id })
+        .returning({ id: workspace.id })
+      const [otherProject] = await db
+        .insert(project)
+        .values({ name: 'race winner', workspaceId: otherWs!.id, organizationId: otherOrg!.id })
+        .returning({ id: project.id })
+      assertEquals(typeof otherProject?.id, 'string')
+      await db.delete(project).where(eq(project.id, otherProject!.id))
+      await db.delete(workspace).where(eq(workspace.id, otherWs!.id))
+    } finally {
+      await db.delete(organization).where(eq(organization.id, otherOrg!.id))
+    }
+  })
+})
+
+test('system project names are reserved: POST and PATCH refuse them with project_name_in_use', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+    // Case/whitespace-insensitive, same key as the uniqueness compare.
+    const create = await app.request('/projects', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        type: 'empty',
+        workspaceId,
+        name: `  ${SYSTEM_PROJECT_DISPLAY_NAME.toUpperCase()} `,
+      }),
+    })
+    assertEquals(create.status, 409)
+    assertEquals(await create.json(), { error: 'project_name_in_use' })
+
+    const ok = await app.request('/projects', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ type: 'empty', workspaceId, name: 'Legit App' }),
+    })
+    assertEquals(ok.status, 200)
+    const { id } = await ok.json() as { id: string }
+
+    const rename = await app.request(`/projects/${id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ name: SYSTEM_PROJECT_DISPLAY_NAME }),
+    })
+    assertEquals(rename.status, 409)
+    assertEquals(await rename.json(), { error: 'project_name_in_use' })
+  })
+})
+
+test('the system hierarchy self-heal still converges with user projects in the org', async () => {
+  await withProjectFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    workspaceId,
+    serverId,
+    systemProjectId,
+    selfHostProjectId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const created = await app.request('/projects', {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'empty', workspaceId, name: 'User App' }),
+    })
+    assertEquals(created.status, 200)
+
+    // Drift a system project's name, then re-run the ensure: the rename back
+    // to the constant goes through the org-wide unique index too.
+    await db
+      .update(project)
+      .set({ name: 'Renamed By Hand' })
+      .where(eq(project.id, systemProjectId))
+    const again = await ensureSystemHierarchy(db, { organizationId, serverId })
+    assertEquals(again.projectId, systemProjectId)
+    const selfHostAgain = await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
+    assertEquals(selfHostAgain.projectId, selfHostProjectId)
+    const [row] = await db
+      .select({ name: project.name, organizationId: project.organizationId })
+      .from(project)
+      .where(eq(project.id, systemProjectId))
+    assertEquals(row?.name, SYSTEM_PROJECT_DISPLAY_NAME)
+    assertEquals(row?.organizationId, organizationId)
   })
 })
 

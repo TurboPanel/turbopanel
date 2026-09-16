@@ -121,9 +121,22 @@ async function encryptionFixtures() {
   return { secretsConfig, dataEncryptionSecrets };
 }
 
-function daemonIdentityRow(daemon: ServerDaemonState | null = activeDaemon) {
+/**
+ * Mirrors `getServerDaemonStateByServerId`'s joined select: `key` table
+ * columns flattened onto the row, `daemon` jsonb holds `{ projection? }`
+ * only. A server with no key row is an empty page from `rehydrateDb`, not
+ * this row with null key fields — the join returns zero rows, not a row.
+ */
+function daemonIdentityRow(daemon: ServerDaemonState = activeDaemon) {
   return {
-    daemon,
+    id: daemon.key.id,
+    algorithm: daemon.key.algorithm,
+    publicJwk: daemon.key.publicJwk,
+    fingerprint: daemon.key.fingerprint,
+    createdAt: daemon.key.createdAt,
+    revokedAt: daemon.key.revokedAt ?? null,
+    lastUsedAt: daemon.key.lastUsedAt ?? null,
+    daemon: daemon.projection ? { projection: daemon.projection } : null,
     metadata: null,
     hostname: "host-1",
     machineKey: null,

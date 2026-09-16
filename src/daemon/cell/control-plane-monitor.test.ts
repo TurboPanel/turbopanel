@@ -6,6 +6,7 @@ import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
   parseServerDaemonState,
+  type ServerDaemonProjection,
   type ServerDaemonState,
   type ServerDaemonStatus,
 } from '../authn/daemon-state.ts'
@@ -55,13 +56,22 @@ const baseKey = {
 }
 
 /**
- * Mock row shape mirrors `getServerDaemonStateByServerId`'s select — `daemon`
- * jsonb (`{ key, projection? }`, never `status`) plus stored liveness columns
- * (`connected`, `statusChangedAt` only) and identity columns.
+ * Mock row shape mirrors `getServerDaemonStateByServerId`'s joined select:
+ * `key` table columns flattened alongside `server` columns — `daemon` jsonb
+ * holds `{ projection? }` only now, never `status`, plus stored liveness
+ * columns (`connected`, `statusChangedAt` only) and identity columns.
  */
 type MockRow = {
-  id: string
-  daemon: ServerDaemonState
+  /** `server.id` — the fleet-presence select's own `id` column. */
+  serverId: string
+  keyId: string
+  algorithm: 'Ed25519'
+  publicJwk: JsonWebKey
+  fingerprint: string
+  createdAt: string
+  revokedAt: string | null
+  lastUsedAt: string | null
+  daemon: { projection?: ServerDaemonProjection } | null
   metadata: ServerMetadata | null
   hostname: string | null
   machineKey: string | null
@@ -71,7 +81,7 @@ type MockRow = {
 
 function buildMockRow(
   daemon: ServerDaemonState,
-  statusOverrides: Partial<ServerDaemonStatus> = {},
+  statusOverrides: Partial<Pick<ServerDaemonStatus, 'connected' | 'statusChangedAt'>> = {},
   identity: { hostname?: string | null; machineKey?: string | null } = {
     hostname: 'host-1',
   },
@@ -79,8 +89,15 @@ function buildMockRow(
 ): MockRow {
   const status = { ...buildDefaultDaemonStatus(), ...statusOverrides }
   return {
-    id: serverId,
-    daemon,
+    serverId,
+    keyId: daemon.key.id,
+    algorithm: daemon.key.algorithm,
+    publicJwk: daemon.key.publicJwk,
+    fingerprint: daemon.key.fingerprint,
+    createdAt: daemon.key.createdAt,
+    revokedAt: daemon.key.revokedAt ?? null,
+    lastUsedAt: daemon.key.lastUsedAt ?? null,
+    daemon: daemon.projection ? { projection: daemon.projection } : null,
     metadata,
     hostname: identity.hostname ?? null,
     machineKey: identity.machineKey ?? null,
@@ -111,7 +128,7 @@ function unwrapMetadataSqlPatch(value: unknown): Record<string, unknown> | null 
 /** Apply an `.update(server).set(patch)` call onto the mock row in place. */
 function applyPatchToRow(row: MockRow, patch: Record<string, unknown>): void {
   if (patch.daemon !== undefined) {
-    row.daemon = patch.daemon as ServerDaemonState
+    row.daemon = patch.daemon as { projection?: ServerDaemonProjection } | null
   }
   if ('hostname' in patch) row.hostname = patch.hostname as string | null
   if ('machineKey' in patch) row.machineKey = patch.machineKey as string | null
@@ -135,7 +152,7 @@ function createTrackingDb(
   db: Db
   updateCalls: Array<Record<string, unknown>>
   getSelectCallCount: () => number
-  getDaemon: () => ServerDaemonState
+  getDaemon: () => { projection?: ServerDaemonProjection } | null
   getMetadata: () => ServerMetadata | null
   getStatus: () => ServerDaemonStatus
   getIdentity: () => { hostname: string | null; machineKey: string | null }
@@ -146,13 +163,27 @@ function createTrackingDb(
 
   const db = {
     select: () => ({
-      from: () => ({
-        where: () => {
+      from: () => {
+        // `getServerDaemonStateByServerId` joins `key` in and aliases
+        // `key.id` as `id`; other readers (e.g.
+        // `loadServerRowsForFleetPresence`) select straight off `server`
+        // with no join and alias `server.id` as `id` instead. The mock
+        // ignores the join predicate and picks the right `id` by which
+        // path was taken.
+        const joined = () => {
           selectCalls += 1
-          const rows = Promise.resolve([{ ...row }])
+          const rows = Promise.resolve([{ ...row, id: row.keyId }])
           return Object.assign(rows, { limit: () => rows })
-        },
-      }),
+        }
+        const unjoined = () => {
+          const rows = Promise.resolve([{ ...row, id: row.serverId }])
+          return Object.assign(rows, { limit: () => rows })
+        }
+        return {
+          innerJoin: () => ({ where: joined }),
+          where: unjoined,
+        }
+      },
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
@@ -1042,10 +1073,12 @@ test('onDaemonHeartbeat skips Postgres when the server row is missing', async ()
   const db = {
     select: () => ({
       from: () => ({
-        where: () => {
-          const rows = Promise.resolve([])
-          return Object.assign(rows, { limit: () => rows })
-        },
+        innerJoin: () => ({
+          where: () => {
+            const rows = Promise.resolve([])
+            return Object.assign(rows, { limit: () => rows })
+          },
+        }),
       }),
     }),
     update: () => {

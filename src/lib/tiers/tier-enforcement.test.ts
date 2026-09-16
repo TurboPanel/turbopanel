@@ -7,8 +7,8 @@ import type {
 import {
   license,
   payer,
+  allowance,
   server,
-  setting,
   subscription,
   subscriptionItem,
   tier,
@@ -325,9 +325,9 @@ function enrollmentDb(opts: {
 }): MemoryDb {
   return createMemoryDb([
     [tier, [tierRow(S1, "S1", 1), tierRow(S3, "S3", 3)]],
-    // The self-hosted grant lives in a `setting` row; every entitlement read
-    // looks for one (`src/lib/tiers/self-hosted-grant.ts`).
-    [setting, []],
+    // The self-hosted grant lives in the `self_hosted_grant` table; every
+    // entitlement read looks for a row (`src/lib/tiers/self-hosted-grant.ts`).
+    [allowance, []],
     [payer, [{
       id: PAYER,
       organizationId: ORG,

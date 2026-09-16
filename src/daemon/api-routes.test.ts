@@ -25,6 +25,7 @@ import { createDenoDb, endDbConnection } from "../db.ts";
 import {
   container,
   environment,
+  key as keyTable,
   license,
   organization,
   payer,
@@ -69,10 +70,11 @@ import {
 } from "./cell/stateless-challenge.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
-  parseServerDaemonState,
-  type ServerDaemonState,
-} from "./authn/daemon-state.ts";
-import { revokeDaemonKey } from "./authn/server-identity-db.ts";
+  getServerDaemonStateByServerId,
+  revokeDaemonKey,
+  SERVER_KEY_REVOKED_ERROR,
+  type ServerDaemonStateWithMetadata,
+} from "./authn/server-identity-db.ts";
 import {
   buildAuthPayload,
   buildEnrollmentPayload,
@@ -446,13 +448,8 @@ async function signPayload(
 async function readDaemonState(
   db: ReturnType<typeof createDenoDb>,
   serverId: string,
-): Promise<ServerDaemonState | null> {
-  const [row] = await db
-    .select({ daemon: server.daemon })
-    .from(server)
-    .where(eq(server.id, serverId))
-    .limit(1);
-  return parseServerDaemonState(row?.daemon);
+): Promise<ServerDaemonStateWithMetadata | null> {
+  return getServerDaemonStateByServerId(db, serverId);
 }
 
 async function createTestApp(
@@ -1326,7 +1323,14 @@ test("POST /enroll with a fresh license creates a new server even on the same ho
   );
 });
 
-test("POST /enroll re-enrollment with same key clears revocation", async () => {
+// Revocation is sticky. This used to assert the opposite — that re-enrolling
+// with the same license token cleared `revokedAt` and minted a fresh key —
+// which documented the old whole-jsonb-replace semantics, not a requirement.
+// With an operator-triggered revoke (`POST /servers/:id/daemon-key/revoke`),
+// that behavior would be the exploit: the license token still sits on the
+// compromised host's disk. Recovery is `DELETE /servers/:id`, then a fresh
+// enroll of the rebuilt host.
+test("POST /enroll refuses a revoked server: the license token on disk cannot un-revoke it", async () => {
   await withEnrollFixture(
     async (
       {
@@ -1342,6 +1346,9 @@ test("POST /enroll re-enrollment with same key clears revocation", async () => {
       },
     ) => {
       await revokeDaemonKey(db, serverId);
+      const revoked = await readDaemonState(db, serverId);
+      assertExists(revoked);
+      assertExists(revoked.key.revokedAt);
 
       const challengeResponse = await app.request(
         "/api/daemon/v1/auth/challenge",
@@ -1380,28 +1387,30 @@ test("POST /enroll re-enrollment with same key clears revocation", async () => {
           signature,
         }),
       });
-      assertEquals(enrollResponse.status, 200);
-      const body = (await enrollResponse.json()) as {
-        serverId: string;
-        keyId: string;
-      };
-      assertEquals(body.serverId, serverId);
-      assertEquals(body.keyId !== keyId, true);
+      assertEquals(enrollResponse.status, 403);
+      // Byte-identical to the daemon's permanent-enrollment list, so the
+      // refused host stops rather than looping on enroll.
+      assertEquals(await enrollResponse.json(), {
+        ok: false,
+        error: SERVER_KEY_REVOKED_ERROR,
+      });
 
-      const daemonState = await readDaemonState(db, serverId);
-      assertExists(daemonState);
-      assertEquals(daemonState.key.fingerprint, key.fingerprint);
-      assertEquals(daemonState.key.revokedAt, null);
+      // Nothing about the key changed: same id, still revoked.
+      const after = await readDaemonState(db, serverId);
+      assertExists(after);
+      assertEquals(after.key.id, keyId);
+      assertEquals(after.key.revokedAt, revoked.key.revokedAt);
 
+      // And the revoked key still cannot start a session.
       const authChallengeResponse = await app.request(
         "/api/daemon/v1/auth/challenge",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ serverId, keyId: body.keyId }),
+          body: JSON.stringify({ serverId, keyId }),
         },
       );
-      assertEquals(authChallengeResponse.status, 200);
+      assertEquals(authChallengeResponse.status, 400);
     },
   );
 });
@@ -1582,12 +1591,11 @@ test("POST /auth/session returns a 15-minute JWT", async () => {
       assertEquals(tracking.putSnapshotPatches.length, 0);
 
       const [row] = await db
-        .select({ daemon: server.daemon })
-        .from(server)
-        .where(eq(server.id, serverId))
+        .select({ lastUsedAt: keyTable.lastUsedAt })
+        .from(keyTable)
+        .where(eq(keyTable.serverId, serverId))
         .limit(1);
-      const daemonState = parseServerDaemonState(row?.daemon);
-      assertExists(daemonState?.key.lastUsedAt);
+      assertExists(row?.lastUsedAt);
     },
   );
 });
@@ -1607,12 +1615,11 @@ test("invalidateLicense revokes daemon keys on bound servers", async () => {
       }
 
       const [row] = await db
-        .select({ daemon: server.daemon })
-        .from(server)
-        .where(eq(server.id, serverId))
+        .select({ revokedAt: keyTable.revokedAt })
+        .from(keyTable)
+        .where(eq(keyTable.serverId, serverId))
         .limit(1);
-      const daemonState = parseServerDaemonState(row?.daemon);
-      assertExists(daemonState?.key.revokedAt);
+      assertExists(row?.revokedAt);
     },
   );
 });

@@ -1,0 +1,29 @@
+ALTER TABLE "datacenter" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "datacenter" ALTER COLUMN "description" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "environment" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "environment" ALTER COLUMN "description" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "fabric" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "hosting" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "hosting" ALTER COLUMN "description" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "ip" ALTER COLUMN "description" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "label" ALTER COLUMN "key" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "label" ALTER COLUMN "value" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "label" ALTER COLUMN "value" SET DEFAULT '';--> statement-breakpoint
+ALTER TABLE "license" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "managed" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "organization" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "passkey" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "project" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "project" ALTER COLUMN "description" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "secret" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "server" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "service" ALTER COLUMN "description" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "ssh" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "tag" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "tag" ALTER COLUMN "description" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "task" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "team" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "tls" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "variable" ALTER COLUMN "description" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "workspace" ALTER COLUMN "name" SET DATA TYPE text;--> statement-breakpoint
+ALTER TABLE "workspace" ALTER COLUMN "description" SET DATA TYPE text;

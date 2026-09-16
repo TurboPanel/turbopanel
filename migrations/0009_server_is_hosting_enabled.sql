@@ -1,0 +1,1 @@
+ALTER TABLE "server" ADD COLUMN "is_hosting_enabled" boolean;

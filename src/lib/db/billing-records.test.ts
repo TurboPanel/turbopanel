@@ -151,14 +151,14 @@ test('T15 · the delivery ledger accepts stripe and refuses any other provider',
 test('T15 · one seat row per (subscription, tier), and one per provider item id', async () => {
   await withDb(async (ctx) => {
     const { subscriptionId } = await projectedSubscription(ctx)
-    await ctx.db.insert(subscriptionItem).values({ subscriptionId, tierId: ctx.tierA, providerItemId: `si_${RUN}_1`, quantity: 2 })
+    await ctx.db.insert(subscriptionItem).values({ subscriptionId, tierId: ctx.tierA, providerItemId: `si_${RUN}_1`, providerPriceId: `price_${RUN}_1`, quantity: 2 })
     await expectPgRefusal(
-      ctx.db.insert(subscriptionItem).values({ subscriptionId, tierId: ctx.tierA, providerItemId: `si_${RUN}_2`, quantity: 1 }),
+      ctx.db.insert(subscriptionItem).values({ subscriptionId, tierId: ctx.tierA, providerItemId: `si_${RUN}_2`, providerPriceId: `price_${RUN}_2`, quantity: 1 }),
       UNIQUE_VIOLATION,
       'uniq_seat_subscription_tier',
     )
     await expectPgRefusal(
-      ctx.db.insert(subscriptionItem).values({ subscriptionId, tierId: ctx.tierB, providerItemId: `si_${RUN}_1`, quantity: 1 }),
+      ctx.db.insert(subscriptionItem).values({ subscriptionId, tierId: ctx.tierB, providerItemId: `si_${RUN}_1`, providerPriceId: `price_${RUN}_1`, quantity: 1 }),
       UNIQUE_VIOLATION,
       'uniq_seat_provider_item',
     )
@@ -168,7 +168,7 @@ test('T15 · one seat row per (subscription, tier), and one per provider item id
 test('T15 · the seat replacement really rolls back: a failure after the delete leaves the old rows in place', async () => {
   await withDb(async (ctx) => {
     const { subscriptionId } = await projectedSubscription(ctx)
-    await ctx.db.insert(subscriptionItem).values({ subscriptionId, tierId: ctx.tierA, providerItemId: `si_${RUN}_old`, quantity: 2 })
+    await ctx.db.insert(subscriptionItem).values({ subscriptionId, tierId: ctx.tierA, providerItemId: `si_${RUN}_old`, providerPriceId: `price_${RUN}_old`, quantity: 2 })
 
     let threw = false
     try {

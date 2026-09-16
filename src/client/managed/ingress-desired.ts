@@ -38,8 +38,8 @@ import {
 import {
   container,
   managed,
-  replica,
   principal,
+  replica,
   server,
   service,
 } from "../../lib/db/schema.ts";
@@ -323,7 +323,10 @@ async function buildOrgTlsForServer(
     ipAddresses: string[];
   },
 ): Promise<
-  | { material: ManagedApplyOrgTlsMaterial; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
+  | {
+    material: ManagedApplyOrgTlsMaterial;
+    pendingTlsLeaf: UpsertTlsLeafTrackingParams;
+  }
   | ManagedIngressReconcilePrepareError
 > {
   const daemonState = await getServerDaemonStateByServerId(db, serverId);
@@ -1122,15 +1125,17 @@ export async function runManagedIngressOrphanSweep(
     JOIN container c ON c.service_id = s.id AND c.ordinal = 1
     WHERE w.kind = ${WORKSPACE_KIND_TURBOPANEL}
       AND srv.is_connected = true
-      AND p.metadata->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
+      AND p.component = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
       AND s.name = ${SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME}
       AND c.role = 'ingress'
       AND (c.status = 'running' OR c.container_id IS NOT NULL)
       AND NOT ${managedMembersExists(sql`srv.id`)}
-      AND NOT ${boundManagedConsumersExists(
-        sql`srv.id`,
-        sql`srv.organization_id`,
-      )}
+      AND NOT ${
+    boundManagedConsumersExists(
+      sql`srv.id`,
+      sql`srv.organization_id`,
+    )
+  }
       AND NOT EXISTS (
         SELECT 1
         FROM command cmd

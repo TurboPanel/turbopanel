@@ -32,9 +32,10 @@ import {
 } from "../../lib/billing/pending-changes.ts";
 import {
   BILLING_QUANTITY_LEASE_MS,
-  billingQuantityLockKey,
+  BILLING_QUANTITY_LOCK_NAME,
 } from "../../lib/billing/quantity-lock.ts";
 import {
+  lease,
   license,
   payer,
   server,
@@ -259,6 +260,7 @@ async function buildApp(fx: Fixture = {}) {
         updatedAt: NOW,
       })),
     ],
+    [lease, []],
   ], { fallback: authDb });
 
   const app = new Hono<AppEnv>();
@@ -328,8 +330,8 @@ function revoke(
 }
 
 function lockRow(db: MemoryDb) {
-  return db.rows(setting).find((row) =>
-    row.key === billingQuantityLockKey(ORG)
+  return db.rows(lease).find((row) =>
+    row.name === BILLING_QUANTITY_LOCK_NAME && row.organizationId === ORG
   ) ?? null;
 }
 
@@ -529,12 +531,12 @@ test("T9 · while another holder has the quantity lease the mint is 409 billing_
     seats: [{ tierId: S3, quantity: 2 }],
   });
   // The route reads the real clock, so the foreign lease must be live now.
-  db.rows(setting).push({
-    key: billingQuantityLockKey(ORG),
-    value: {
-      owner: "someone-else",
-      expiresAt: new Date(Date.now() + BILLING_QUANTITY_LEASE_MS).toISOString(),
-    },
+  db.rows(lease).push({
+    id: "lease-foreign",
+    name: BILLING_QUANTITY_LOCK_NAME,
+    organizationId: ORG,
+    owner: "someone-else",
+    expiresAt: new Date(Date.now() + BILLING_QUANTITY_LEASE_MS).toISOString(),
     createdAt: NOW,
     updatedAt: NOW,
   });
@@ -543,10 +545,7 @@ test("T9 · while another holder has the quantity lease the mint is 409 billing_
   assertEquals(await res.json(), { error: "billing_mutation_in_progress" });
   assertEquals(db.rows(license), []);
   // The loser never releases a lease it does not own.
-  assertEquals(lockRow(db)?.value, {
-    owner: "someone-else",
-    expiresAt: (lockRow(db)?.value as { expiresAt: string }).expiresAt,
-  });
+  assertEquals(lockRow(db)?.owner, "someone-else");
 });
 
 test("T9 · with billing off the key is minted with nothing purchased: no lease is taken and no gate runs", async () => {

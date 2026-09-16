@@ -29,7 +29,6 @@ import {
   endReencryptSweep,
   REENCRYPT_BATCH_SIZE,
   REENCRYPT_SWEEP_LEASE_MS,
-  REENCRYPT_SWEEP_LOCK_KEY,
   reencryptAtRestSecrets,
   reencryptAtRestSecretsToCompletion,
   resetReencryptSweepLockForTests,
@@ -172,20 +171,21 @@ type SweepLockValue = {
 };
 
 /**
- * In-memory `setting` row that mimics the durable sweep lease so two callers
- * sharing this Db behave like independent isolates hitting the same Postgres.
+ * In-memory `lease` row that mimics the durable sweep lease so two callers
+ * sharing this Db behave like independent isolates hitting the same
+ * Postgres. Flat `owner` / `expiresAt` columns now, not a jsonb blob.
  */
 function createSweepLockMemoryDb(initial?: SweepLockValue): Db {
   let lock: SweepLockValue | null = initial ?? null;
 
   return {
     insert: () => ({
-      values: (row: { key: string; value: SweepLockValue }) => ({
+      values: (row: { owner: string; expiresAt: string }) => ({
         onConflictDoNothing: () => ({
           returning: () => {
             if (lock !== null) return Promise.resolve([]);
-            lock = row.value;
-            return Promise.resolve([{ key: row.key }]);
+            lock = { owner: row.owner, expiresAt: row.expiresAt };
+            return Promise.resolve([{ id: "lease-1" }]);
           },
         }),
       }),
@@ -193,20 +193,23 @@ function createSweepLockMemoryDb(initial?: SweepLockValue): Db {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve(lock ? [{ value: lock }] : []),
+          limit: () =>
+            Promise.resolve(
+              lock ? [{ owner: lock.owner, expiresAt: lock.expiresAt }] : [],
+            ),
         }),
       }),
     }),
     update: () => ({
-      set: (row: { value: SweepLockValue }) => ({
+      set: (row: { owner: string; expiresAt: string }) => ({
         where: () => ({
           returning: () => {
             if (lock === null) return Promise.resolve([]);
             const expires = Date.parse(lock.expiresAt);
             const expired = !Number.isFinite(expires) || expires <= Date.now();
             if (!expired) return Promise.resolve([]);
-            lock = row.value;
-            return Promise.resolve([{ key: REENCRYPT_SWEEP_LOCK_KEY }]);
+            lock = { owner: row.owner, expiresAt: row.expiresAt };
+            return Promise.resolve([{ id: "lease-1" }]);
           },
         }),
       }),
@@ -770,22 +773,7 @@ test("reencryptAtRestSecrets sweeps 2fa.secret (tpsecret only)", async () => {
   assertEquals(batch.completed, true);
 });
 
-test("tryBeginReencryptSweep treats a malformed lock as held and steals a non-date expiry", async () => {
-  const malformed = createSweepLockMemoryDb({
-    owner: "x",
-    expiresAt: "2020-01-01T00:00:00.000Z",
-  });
-  Object.assign(malformed, {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ value: { expiresAt: "soon" } }]),
-        }),
-      }),
-    }),
-  });
-  assertEquals(await tryBeginReencryptSweep(malformed), null);
-
+test("tryBeginReencryptSweep steals a non-date expiry — malformed defensively, not reachable through a real timestamp column", async () => {
   const invalidExpiry = createSweepLockMemoryDb({
     owner: "stale-owner",
     expiresAt: "not-a-date",

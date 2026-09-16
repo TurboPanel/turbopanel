@@ -139,6 +139,7 @@ async function installIsolatedFixtureSchema(
       id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
       created_at timestamptz(3) DEFAULT now() NOT NULL,
       updated_at timestamptz(3) DEFAULT now() NOT NULL,
+      organization_id uuid NOT NULL,
       kind text NOT NULL,
       provider text NOT NULL,
       username varchar(255) NOT NULL,
@@ -420,6 +421,7 @@ test("reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintex
     const [principalRow] = await scoped
       .insert(principal)
       .values({
+        organizationId,
         kind: "database",
         provider: "postgres",
         username: `reencrypt_${
@@ -435,6 +437,7 @@ test("reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintex
     const [plainPrincipalRow] = await scoped
       .insert(principal)
       .values({
+        organizationId,
         kind: "database",
         provider: "postgres",
         username: `reencrypt_p_${

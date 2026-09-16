@@ -1,52 +1,58 @@
-import type { Context } from 'hono'
-import { eq } from 'drizzle-orm'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
-import { getManagedEngineSpec, isManagedEngineCode } from '../../lib/managed/index.ts'
-import type { ManagedSettings } from '../../lib/managed/settings.ts'
+import type { Context } from "hono";
+import { eq } from "drizzle-orm";
+import type { AppEnv } from "../../app.ts";
+import type { Db } from "../../db.ts";
+import {
+  getManagedEngineSpec,
+  isManagedEngineCode,
+} from "../../lib/managed/index.ts";
+import type { ManagedSettings } from "../../lib/managed/settings.ts";
 import {
   defaultManagedRelease,
   describeManagedImage,
   isSameManagedSeries,
   type ManagedReleaseGate,
   resolveManagedImage,
-} from '../../lib/managed/releases.ts'
-import type { ManagedConnectionRole } from '../../lib/commands/schemas.ts'
+} from "../../lib/managed/releases.ts";
+import type { ManagedConnectionRole } from "../../lib/commands/schemas.ts";
 import {
   managedIngressPortForEngine,
   resolveManagedIngressPorts,
-} from '../../lib/managed/ingress-ports.ts'
-import { type ManagedSslMode, resolveManagedSslMode } from '../../lib/managed/ssl.ts'
+} from "../../lib/managed/ingress-ports.ts";
+import {
+  type ManagedSslMode,
+  resolveManagedSslMode,
+} from "../../lib/managed/ssl.ts";
 import {
   isManagedSqlAccessScope,
   type ManagedSqlAccessScope,
-} from '../../lib/managed/access-scope.ts'
-import { organization, server } from '../../lib/db/schema.ts'
-import { parseOrganizationOptions } from '../../lib/organization-options.ts'
-import { BadRequestError, parseName, requireStringField } from '../shared.ts'
-import { USERNAME_RE } from '../principals/store.ts'
-import { PRINCIPAL_APPLIED_SUFFIX_LENGTH } from '../../lib/naming.ts'
-import { LOOPBACK_BIND, resolveManagedDialHost } from './access-address.ts'
-import { resolveManagedEffectiveExposure } from './host-exposure.ts'
-import type { ManagedContext } from './context.ts'
-import { parseManagedRowOptions, type ManagedRowOptions } from './options.ts'
-import { evaluateManagedPromoteLagGate } from '../../lib/managed/promote-lag.ts'
-import { loadManagedStatusError } from './last-error.ts'
-import { listManagedMembers, type ManagedMemberRow } from './members.ts'
-import type { ManagedResidualMetadata } from './serialize.ts'
+} from "../../lib/managed/access-scope.ts";
+import { organization, server } from "../../lib/db/schema.ts";
+import { parseOrganizationOptions } from "../../lib/organization-options.ts";
+import { BadRequestError, parseName, requireStringField } from "../shared.ts";
+import { USERNAME_RE } from "../principals/store.ts";
+import { PRINCIPAL_APPLIED_SUFFIX_LENGTH } from "../../lib/naming.ts";
+import { LOOPBACK_BIND, resolveManagedDialHost } from "./access-address.ts";
+import { resolveManagedEffectiveExposure } from "./host-exposure.ts";
+import type { ManagedContext } from "./context.ts";
+import { type ManagedRowOptions, parseManagedRowOptions } from "./options.ts";
+import { evaluateManagedPromoteLagGate } from "../../lib/managed/promote-lag.ts";
+import { loadManagedStatusError } from "./last-error.ts";
+import { listManagedMembers, type ManagedMemberRow } from "./members.ts";
+import type { ManagedResidualMetadata } from "./serialize.ts";
 
-export { evaluateManagedPromoteLagGate }
+export { evaluateManagedPromoteLagGate };
 export {
   type ManagedEffectiveExposure,
   resolveManagedEffectiveExposure,
-} from './host-exposure.ts'
+} from "./host-exposure.ts";
 
 /** One reachable client endpoint on the shared ProxySQL frontend. */
 export type ManagedAccessEndpoint = {
-  scope: ManagedSqlAccessScope
-  host: string
-  port: number
-}
+  scope: ManagedSqlAccessScope;
+  host: string;
+  port: number;
+};
 
 /**
  * Scopes a client can actually dial, given what the frontend publishes.
@@ -64,10 +70,10 @@ export type ManagedAccessEndpoint = {
 function dialScopesForPublishedScopes(
   publishedScopes: readonly ManagedSqlAccessScope[],
 ): ManagedSqlAccessScope[] {
-  const widest = publishedScopes[0]
-  if (widest === undefined) return []
-  if (widest !== 'public') return [...publishedScopes]
-  return ['public', 'turbofabric', 'datacenter', 'local']
+  const widest = publishedScopes[0];
+  if (widest === undefined) return [];
+  if (widest !== "public") return [...publishedScopes];
+  return ["public", "turbofabric", "datacenter", "local"];
 }
 
 /**
@@ -80,9 +86,9 @@ function dialScopesForPublishedScopes(
 async function resolveListenerPortForServer(
   db: Db,
   params: Readonly<{
-    serverId: string
-    engineCode: string
-    engineDefaultPort: number
+    serverId: string;
+    engineCode: string;
+    engineDefaultPort: number;
   }>,
 ): Promise<number> {
   const [row] = await db
@@ -90,14 +96,14 @@ async function resolveListenerPortForServer(
     .from(server)
     .innerJoin(organization, eq(server.organizationId, organization.id))
     .where(eq(server.id, params.serverId))
-    .limit(1)
+    .limit(1);
   return managedIngressPortForEngine(
     params.engineCode,
     params.engineDefaultPort,
     resolveManagedIngressPorts(
       parseOrganizationOptions(row?.organizationOptions).managedDatabase?.ports,
     ),
-  )
+  );
 }
 
 /**
@@ -116,29 +122,32 @@ async function resolveListenerPortForServer(
 export async function resolveManagedAccessEndpoints(
   db: Db,
   params: Readonly<{
-    serverId: string
-    engineCode: string
-    engineDefaultPort: number
-    exposure: ManagedSettings['exposure']
+    serverId: string;
+    engineCode: string;
+    engineDefaultPort: number;
+    exposure: ManagedSettings["exposure"];
   }>,
 ): Promise<ManagedAccessEndpoint[]> {
   const effective = await resolveManagedEffectiveExposure(db, {
     serverId: params.serverId,
     exposure: params.exposure,
-  })
-  const scopes = dialScopesForPublishedScopes(effective.scopes)
-  if (scopes.length === 0) return []
+  });
+  const scopes = dialScopesForPublishedScopes(effective.scopes);
+  if (scopes.length === 0) return [];
 
-  const port = await resolveListenerPortForServer(db, params)
-  const endpoints: ManagedAccessEndpoint[] = []
-  const seenHosts = new Set<string>()
+  const port = await resolveListenerPortForServer(db, params);
+  const endpoints: ManagedAccessEndpoint[] = [];
+  const seenHosts = new Set<string>();
   for (const scope of scopes) {
-    const host = await resolveManagedDialHost(db, { serverId: params.serverId, scope })
-    if (host === null || seenHosts.has(host)) continue
-    seenHosts.add(host)
-    endpoints.push({ scope, host, port })
+    const host = await resolveManagedDialHost(db, {
+      serverId: params.serverId,
+      scope,
+    });
+    if (host === null || seenHosts.has(host)) continue;
+    seenHosts.add(host);
+    endpoints.push({ scope, host, port });
   }
-  return endpoints
+  return endpoints;
 }
 
 /**
@@ -155,21 +164,21 @@ export async function resolveManagedAccessEndpoints(
 export async function resolveManagedConnectionListener(
   db: Db,
   params: Readonly<{
-    serverId: string
-    engineCode: string
-    engineDefaultPort: number
-    exposure: ManagedSettings['exposure']
+    serverId: string;
+    engineCode: string;
+    engineDefaultPort: number;
+    exposure: ManagedSettings["exposure"];
   }>,
 ): Promise<{ host: string; port: number } | null> {
-  const endpoints = await resolveManagedAccessEndpoints(db, params)
-  const primary = endpoints[0]
-  if (primary) return { host: primary.host, port: primary.port }
-  if (params.exposure.enabled) return null
+  const endpoints = await resolveManagedAccessEndpoints(db, params);
+  const primary = endpoints[0];
+  if (primary) return { host: primary.host, port: primary.port };
+  if (params.exposure.enabled) return null;
 
   return {
     host: LOOPBACK_BIND,
     port: await resolveListenerPortForServer(db, params),
-  }
+  };
 }
 
 /**
@@ -180,37 +189,37 @@ export async function resolveManagedConnectionListener(
  */
 export function managedStatusListenerParams(
   row: {
-    serverId: string | null
-    engine: string | null
-    options: unknown
+    serverId: string | null;
+    engine: string | null;
+    options: unknown;
   } | null,
 ): {
-  serverId: string
-  engineCode: string
-  engineDefaultPort: number
-  exposure: ManagedSettings['exposure']
+  serverId: string;
+  engineCode: string;
+  engineDefaultPort: number;
+  exposure: ManagedSettings["exposure"];
 } | null {
-  if (!row?.serverId) return null
-  if (!row.engine || !isManagedEngineCode(row.engine)) return null
-  const spec = getManagedEngineSpec(row.engine)
-  if (!spec) return null
-  const parsed = parseManagedRowOptions(spec, row.options)
-  if (!parsed) return null
+  if (!row?.serverId) return null;
+  if (!row.engine || !isManagedEngineCode(row.engine)) return null;
+  const spec = getManagedEngineSpec(row.engine);
+  if (!spec) return null;
+  const parsed = parseManagedRowOptions(spec, row.options);
+  if (!parsed) return null;
   return {
     serverId: row.serverId,
     engineCode: spec.engine,
     engineDefaultPort: spec.defaultPort,
     exposure: parsed.settings.exposure,
-  }
+  };
 }
 
 type ManagedStatusContextRow = {
-  id: string
-  status: string | null
-  serverId: string | null
-  engine: string | null
-  options: unknown
-}
+  id: string;
+  status: string | null;
+  serverId: string | null;
+  engine: string | null;
+  options: unknown;
+};
 
 /** Members, failure text, and listener for GET …/managed/status. */
 export async function loadManagedStatusSnapshot(
@@ -218,56 +227,56 @@ export async function loadManagedStatusSnapshot(
   row: ManagedStatusContextRow | null,
   residual: ManagedResidualMetadata,
 ): Promise<{
-  memberRows: ManagedMemberRow[]
-  lastError: string | null
-  listener: Awaited<ReturnType<typeof resolveManagedConnectionListener>>
+  memberRows: ManagedMemberRow[];
+  lastError: string | null;
+  listener: Awaited<ReturnType<typeof resolveManagedConnectionListener>>;
 }> {
   if (!row) {
-    return { memberRows: [], lastError: null, listener: null }
+    return { memberRows: [], lastError: null, listener: null };
   }
 
-  const memberRows = await listManagedMembers(db, row.id)
+  const memberRows = await listManagedMembers(db, row.id);
   const lastError = await loadManagedStatusError(db, {
     managedId: row.id,
     status: row.status,
     residualError: residual.error ?? null,
     serverIds: [row.serverId, ...memberRows.map((entry) => entry.serverId)],
-  })
-  const listenerParams = managedStatusListenerParams(row)
+  });
+  const listenerParams = managedStatusListenerParams(row);
   const listener = listenerParams
     ? await resolveManagedConnectionListener(db, listenerParams)
-    : null
-  return { memberRows, lastError, listener }
+    : null;
+  return { memberRows, lastError, listener };
 }
 
 export function isPlainObject(
   value: unknown,
 ): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function managedSessionPaths(): string[] {
   return [
-    '/environments/:id/managed',
-    '/environments/:id/managed/apply',
-    '/environments/:id/managed/lifecycle',
-    '/environments/:id/managed/root-password',
-    '/environments/:id/managed/users',
-    '/environments/:id/managed/users/:principalId',
-    '/environments/:id/managed/users/:principalId/password',
-    '/environments/:id/managed/databases',
-    '/environments/:id/managed/databases/:databaseName',
-    '/environments/:id/managed/status',
-    '/environments/:id/managed/logs',
-    '/environments/:id/managed/backups',
-    '/environments/:id/managed/backups/:backupId',
-    '/environments/:id/managed/backups/:backupId/restore',
-    '/environments/:id/managed/members',
-    '/environments/:id/managed/members/:memberId',
-    '/environments/:id/managed/members/:memberId/promote',
-    '/environments/:id/managed/members/:memberId/resync',
-    '/organizations/:id/managed',
-  ]
+    "/environments/:id/managed",
+    "/environments/:id/managed/apply",
+    "/environments/:id/managed/lifecycle",
+    "/environments/:id/managed/root-password",
+    "/environments/:id/managed/users",
+    "/environments/:id/managed/users/:principalId",
+    "/environments/:id/managed/users/:principalId/password",
+    "/environments/:id/managed/databases",
+    "/environments/:id/managed/databases/:databaseName",
+    "/environments/:id/managed/status",
+    "/environments/:id/managed/logs",
+    "/environments/:id/managed/backups",
+    "/environments/:id/managed/backups/:backupId",
+    "/environments/:id/managed/backups/:backupId/restore",
+    "/environments/:id/managed/members",
+    "/environments/:id/managed/members/:memberId",
+    "/environments/:id/managed/members/:memberId/promote",
+    "/environments/:id/managed/members/:memberId/resync",
+    "/organizations/:id/managed",
+  ];
 }
 
 /**
@@ -276,55 +285,55 @@ export function managedSessionPaths(): string[] {
 function parseCreateExposureScope(
   exposureRaw: Record<string, unknown>,
 ): ManagedSqlAccessScope | undefined | null {
-  if (exposureRaw.bind !== undefined) return null
-  if (exposureRaw.scope === undefined) return undefined
-  if (!isManagedSqlAccessScope(exposureRaw.scope)) return null
-  return exposureRaw.scope
+  if (exposureRaw.bind !== undefined) return null;
+  if (exposureRaw.scope === undefined) return undefined;
+  if (!isManagedSqlAccessScope(exposureRaw.scope)) return null;
+  return exposureRaw.scope;
 }
 
 function mergeCreateExposure(
-  base: ManagedSettings['exposure'],
+  base: ManagedSettings["exposure"],
   exposureRaw: unknown,
-): ManagedSettings['exposure'] | null | undefined {
-  if (!isPlainObject(exposureRaw)) return undefined
-  const scope = parseCreateExposureScope(exposureRaw)
-  if (scope === null) return null
-  const next = { ...base }
-  if (typeof exposureRaw.enabled === 'boolean') {
-    next.enabled = exposureRaw.enabled
+): ManagedSettings["exposure"] | null | undefined {
+  if (!isPlainObject(exposureRaw)) return undefined;
+  const scope = parseCreateExposureScope(exposureRaw);
+  if (scope === null) return null;
+  const next = { ...base };
+  if (typeof exposureRaw.enabled === "boolean") {
+    next.enabled = exposureRaw.enabled;
   }
-  if (scope !== undefined) next.scope = scope
-  return next
+  if (scope !== undefined) next.scope = scope;
+  return next;
 }
 
 export function mergeCreateSettings(
   spec: {
-    defaultSettings: ManagedSettings
-    parseSettings: (v: unknown) => ManagedSettings | null
+    defaultSettings: ManagedSettings;
+    parseSettings: (v: unknown) => ManagedSettings | null;
   },
   body: Record<string, unknown>,
   /** Resolved catalog image from {@link parseManagedVersionSelection}. */
   image?: string,
 ): ManagedSettings | null {
-  const base = spec.parseSettings(spec.defaultSettings)
-  if (!base) return null
+  const base = spec.parseSettings(spec.defaultSettings);
+  if (!base) return null;
 
-  const overrides: Record<string, unknown> = {}
-  if (image !== undefined) overrides.image = image
+  const overrides: Record<string, unknown> = {};
+  if (image !== undefined) overrides.image = image;
 
-  const exposure = mergeCreateExposure(base.exposure, body.exposure)
-  if (exposure === null) return null
-  if (exposure !== undefined) overrides.exposure = exposure
+  const exposure = mergeCreateExposure(base.exposure, body.exposure);
+  if (exposure === null) return null;
+  if (exposure !== undefined) overrides.exposure = exposure;
 
-  if (Object.keys(overrides).length === 0) return base
-  return spec.parseSettings({ ...base, ...overrides })
+  if (Object.keys(overrides).length === 0) return base;
+  return spec.parseSettings({ ...base, ...overrides });
 }
 
 /** Requested engine series or image variant is not in the release catalog. */
-export const MANAGED_VERSION_UNSUPPORTED_ERROR = 'managed_version_unsupported'
+export const MANAGED_VERSION_UNSUPPORTED_ERROR = "managed_version_unsupported";
 
 /** A cluster's engine series cannot change after create. */
-export const MANAGED_SERIES_IMMUTABLE_ERROR = 'managed_series_immutable'
+export const MANAGED_SERIES_IMMUTABLE_ERROR = "managed_series_immutable";
 
 /**
  * Resolve create-time `engineSeries` / `imageVariant` to a catalog image.
@@ -347,27 +356,27 @@ export function parseManagedVersionSelection(
 ):
   | { ok: true; image?: string }
   | { ok: false; error: string; status: 400 | 422 } {
-  const seriesRaw = body.engineSeries
-  const variantRaw = body.imageVariant
-  if (seriesRaw === undefined && variantRaw === undefined) return { ok: true }
+  const seriesRaw = body.engineSeries;
+  const variantRaw = body.imageVariant;
+  if (seriesRaw === undefined && variantRaw === undefined) return { ok: true };
 
-  if (seriesRaw !== undefined && typeof seriesRaw !== 'string') {
-    return { ok: false, error: 'Invalid engineSeries', status: 400 }
+  if (seriesRaw !== undefined && typeof seriesRaw !== "string") {
+    return { ok: false, error: "Invalid engineSeries", status: 400 };
   }
-  if (variantRaw !== undefined && typeof variantRaw !== 'string') {
-    return { ok: false, error: 'Invalid imageVariant', status: 400 }
+  if (variantRaw !== undefined && typeof variantRaw !== "string") {
+    return { ok: false, error: "Invalid imageVariant", status: 400 };
   }
 
-  const series = seriesRaw ?? defaultManagedRelease(engine, gate)?.series
+  const series = seriesRaw ?? defaultManagedRelease(engine, gate)?.series;
   if (series === undefined) {
-    return { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 }
+    return { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 };
   }
 
-  const image = resolveManagedImage(engine, series, variantRaw, gate)
+  const image = resolveManagedImage(engine, series, variantRaw, gate);
   if (image === undefined) {
-    return { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 }
+    return { ok: false, error: MANAGED_VERSION_UNSUPPORTED_ERROR, status: 422 };
   }
-  return { ok: true, image }
+  return { ok: true, image };
 }
 
 /**
@@ -386,24 +395,24 @@ export function assertManagedSeriesUnchanged(
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings,
 ): { ok: false; error: string; status: 409 } | null {
-  const current = currentSettings.image ?? spec.defaultImage
-  const next = nextSettings.image ?? spec.defaultImage
-  if (isSameManagedSeries(current, next)) return null
-  return { ok: false, error: MANAGED_SERIES_IMMUTABLE_ERROR, status: 409 }
+  const current = currentSettings.image ?? spec.defaultImage;
+  const next = nextSettings.image ?? spec.defaultImage;
+  if (isSameManagedSeries(current, next)) return null;
+  return { ok: false, error: MANAGED_SERIES_IMMUTABLE_ERROR, status: 409 };
 }
 
 export function readInitialDatabase(spec: {
-  parseSettings: (v: unknown) => ManagedSettings | null
-  defaultSettings: ManagedSettings
+  parseSettings: (v: unknown) => ManagedSettings | null;
+  defaultSettings: ManagedSettings;
 }): string {
-  const parsed = spec.parseSettings(spec.defaultSettings)
-  if (parsed && typeof parsed === 'object' && 'initialDatabase' in parsed) {
-    const initial = (parsed as Record<string, unknown>).initialDatabase
-    if (typeof initial === 'string' && initial.length > 0) {
-      return initial
+  const parsed = spec.parseSettings(spec.defaultSettings);
+  if (parsed && typeof parsed === "object" && "initialDatabase" in parsed) {
+    const initial = (parsed as Record<string, unknown>).initialDatabase;
+    if (typeof initial === "string" && initial.length > 0) {
+      return initial;
     }
   }
-  return 'defaultdb'
+  return "defaultdb";
 }
 
 /**
@@ -414,70 +423,74 @@ export function resolveManagedServerId(
   managedRow: { serverId: string | null },
   fallbackServerId: string | null,
 ): string | null {
-  return managedRow.serverId ?? fallbackServerId
+  return managedRow.serverId ?? fallbackServerId;
 }
 
 export function principalMetadata(metadata: unknown): Record<string, unknown> {
   if (
-    typeof metadata === 'object' && metadata !== null &&
+    typeof metadata === "object" && metadata !== null &&
     !Array.isArray(metadata)
   ) {
-    return metadata as Record<string, unknown>
+    return metadata as Record<string, unknown>;
   }
-  return {}
+  return {};
 }
 
 export function isManagedRootPrincipal(metadata: unknown): boolean {
-  return principalMetadata(metadata).managedRoot === true
+  return principalMetadata(metadata).managedRoot === true;
 }
 
 /** Replication principal is platform-managed — never listed as a client login. */
 export function isManagedReplicationPrincipal(metadata: unknown): boolean {
-  return principalMetadata(metadata).managedReplication === true
+  return principalMetadata(metadata).managedReplication === true;
 }
 
 export function serializeManagedUser(
   row: {
-    id: string
-    username: string
-    appliedUsername: string
-    metadata: unknown
-    createdAt: string
+    id: string;
+    username: string;
+    appliedUsername: string;
+    metadata: unknown;
+    createdAt: string;
   },
 ) {
-  const meta = principalMetadata(row.metadata)
+  const meta = principalMetadata(row.metadata);
   const databases = Array.isArray(meta.databases)
-    ? meta.databases.filter((entry): entry is string => typeof entry === 'string')
-    : []
+    ? meta.databases.filter((entry): entry is string =>
+      typeof entry === "string"
+    )
+    : [];
   const privileges = Array.isArray(meta.privileges)
-    ? meta.privileges.filter((entry): entry is string => typeof entry === 'string')
-    : []
+    ? meta.privileges.filter((entry): entry is string =>
+      typeof entry === "string"
+    )
+    : [];
   return {
     id: row.id,
     username: row.username,
     appliedUsername: row.appliedUsername,
     databases,
     privileges,
-    connectionRole: meta.connectionRole === 'read-only'
-      ? ('read-only' as const)
-      : ('read-write' as const),
+    connectionRole: meta.connectionRole === "read-only"
+      ? ("read-only" as const)
+      : ("read-write" as const),
     createdAt: row.createdAt,
-  }
+  };
 }
 
 export function serializeContainerRow(row: {
-  id: string
-  serviceId: string
-  serverId: string
-  containerId: string | null
-  containerName: string
-  status: string
-  role: string
-  composeServiceName: string
-  metadata: unknown
-  options: unknown
-  createdAt: string
-  updatedAt: string
+  id: string;
+  serviceId: string;
+  serverId: string;
+  containerId: string | null;
+  containerName: string;
+  status: string;
+  role: string;
+  composeServiceName: string;
+  metadata: unknown;
+  options: unknown;
+  createdAt: string;
+  updatedAt: string;
 }) {
   return {
     id: row.id,
@@ -492,7 +505,7 @@ export function serializeContainerRow(row: {
     options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-  }
+  };
 }
 
 /**
@@ -503,11 +516,11 @@ export function serializeContainerRow(row: {
  * principal, so these bare names must never become client logins.
  */
 const RESERVED_MANAGED_USERNAMES = new Set([
-  'postgres',
-  'root',
-  'mysql',
-  'superadmin',
-])
+  "postgres",
+  "root",
+  "mysql",
+  "superadmin",
+]);
 
 export function parseManagedUserCreateFields(
   c: Context<AppEnv>,
@@ -524,20 +537,20 @@ export function parseManagedUserCreateFields(
   randomizeSuffix?: boolean,
 ):
   | {
-    username: string
-    databases: string[]
-    privileges: string[]
-    connectionRole: ManagedConnectionRole
+    username: string;
+    databases: string[];
+    privileges: string[];
+    connectionRole: ManagedConnectionRole;
   }
   | Response {
-  const username = requireStringField(c, body, 'username')
-  if (username instanceof Response) return username
+  const username = requireStringField(c, body, "username");
+  if (username instanceof Response) return username;
 
-  const effectiveRoot = rootUsername ?? ctx.spec.rootUsername
-  const { pattern, maxLength } = ctx.spec.userOperations.identifier
+  const effectiveRoot = rootUsername ?? ctx.spec.rootUsername;
+  const { pattern, maxLength } = ctx.spec.userOperations.identifier;
   const maxShortLength = randomizeSuffix
     ? maxLength - PRINCIPAL_APPLIED_SUFFIX_LENGTH
-    : maxLength
+    : maxLength;
   if (
     !USERNAME_RE.test(username) ||
     !pattern.test(username) ||
@@ -545,53 +558,55 @@ export function parseManagedUserCreateFields(
     username === effectiveRoot ||
     RESERVED_MANAGED_USERNAMES.has(username.toLowerCase())
   ) {
-    return c.json({ error: 'Invalid username' }, 400)
+    return c.json({ error: "Invalid username" }, 400);
   }
 
   if (!Array.isArray(body.databases) || body.databases.length === 0) {
-    return c.json({ error: 'Invalid request' }, 400)
+    return c.json({ error: "Invalid request" }, 400);
   }
   const databases = body.databases.filter(
-    (entry): entry is string => typeof entry === 'string',
-  )
+    (entry): entry is string => typeof entry === "string",
+  );
   if (
     databases.length === 0 ||
     databases.length !== body.databases.length ||
     !databases.every((name) => options.databases.includes(name))
   ) {
-    return c.json({ error: 'Invalid request' }, 400)
+    return c.json({ error: "Invalid request" }, 400);
   }
 
   const privileges = Array.isArray(body.privileges)
-    ? body.privileges.filter((entry): entry is string => typeof entry === 'string')
-    : []
+    ? body.privileges.filter((entry): entry is string =>
+      typeof entry === "string"
+    )
+    : [];
   if (
     Array.isArray(body.privileges) &&
     privileges.length !== body.privileges.length
   ) {
-    return c.json({ error: 'Invalid request' }, 400)
+    return c.json({ error: "Invalid request" }, 400);
   }
-  const allowedPrivileges = new Set<string>(ctx.spec.userOperations.privileges)
+  const allowedPrivileges = new Set<string>(ctx.spec.userOperations.privileges);
   if (!privileges.every((entry) => allowedPrivileges.has(entry))) {
-    return c.json({ error: 'Invalid request' }, 400)
+    return c.json({ error: "Invalid request" }, 400);
   }
 
-  const connectionRole = parseManagedConnectionRole(body.connectionRole)
+  const connectionRole = parseManagedConnectionRole(body.connectionRole);
   if (connectionRole === null) {
-    return c.json({ error: 'Invalid request' }, 400)
+    return c.json({ error: "Invalid request" }, 400);
   }
 
-  return { username, databases, privileges, connectionRole }
+  return { username, databases, privileges, connectionRole };
 }
 
 /** A `read-only` login was requested for a cluster with no read-eligible replica. */
-export const MANAGED_NO_READ_TARGETS_ERROR = 'managed_no_read_targets'
+export const MANAGED_NO_READ_TARGETS_ERROR = "managed_no_read_targets";
 
 export type ManagedReadOnlyLoginGuardError = {
-  ok: false
-  error: typeof MANAGED_NO_READ_TARGETS_ERROR
-  status: 422
-}
+  ok: false;
+  error: typeof MANAGED_NO_READ_TARGETS_ERROR;
+  status: 422;
+};
 
 /**
  * Refuse a `read-only` login when the cluster has no read-eligible replica.
@@ -601,12 +616,12 @@ export function evaluateReadOnlyLoginTargets(
   connectionRole: ManagedConnectionRole,
   members: ReadonlyArray<{ role: string; readEligible: boolean }>,
 ): ManagedReadOnlyLoginGuardError | null {
-  if (connectionRole !== 'read-only') return null
+  if (connectionRole !== "read-only") return null;
   const hasReadTarget = members.some(
-    (member) => member.role === 'replica' && member.readEligible,
-  )
-  if (hasReadTarget) return null
-  return { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
+    (member) => member.role === "replica" && member.readEligible,
+  );
+  if (hasReadTarget) return null;
+  return { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 };
 }
 
 /**
@@ -619,8 +634,8 @@ export async function evaluateReadOnlyLoginTargetsLazy(
     ReadonlyArray<{ role: string; readEligible: boolean }>
   >,
 ): Promise<ManagedReadOnlyLoginGuardError | null> {
-  if (connectionRole !== 'read-only') return null
-  return evaluateReadOnlyLoginTargets(connectionRole, await loadMembers())
+  if (connectionRole !== "read-only") return null;
+  return evaluateReadOnlyLoginTargets(connectionRole, await loadMembers());
 }
 
 /**
@@ -632,29 +647,29 @@ export async function evaluateReadOnlyLoginTargetsLazy(
 export function parseManagedConnectionRole(
   value: unknown,
 ): ManagedConnectionRole | null {
-  if (value === undefined || value === null) return 'read-write'
-  if (value === 'read-write' || value === 'read-only') return value
-  return null
+  if (value === undefined || value === null) return "read-write";
+  if (value === "read-write" || value === "read-only") return value;
+  return null;
 }
 
 export type ManagedRouteValidationError = {
-  ok: false
-  error: string
-  status: 400 | 409 | 422
-}
+  ok: false;
+  error: string;
+  status: 400 | 409 | 422;
+};
 
-export type ManagedLifecycleAction = 'start' | 'stop' | 'restart'
+export type ManagedLifecycleAction = "start" | "stop" | "restart";
 
 export function parseManagedLifecycleAction(
   body: Record<string, unknown>,
 ):
   | { ok: true; action: ManagedLifecycleAction }
   | ManagedRouteValidationError {
-  const action = body.action
-  if (action !== 'start' && action !== 'stop' && action !== 'restart') {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  const action = body.action;
+  if (action !== "start" && action !== "stop" && action !== "restart") {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
-  return { ok: true, action }
+  return { ok: true, action };
 }
 
 /**
@@ -667,12 +682,12 @@ export function parseManagedCreateName(
   | { ok: true; name: string | null }
   | ManagedRouteValidationError {
   try {
-    return { ok: true, name: parseName(body) }
+    return { ok: true, name: parseName(body) };
   } catch (error) {
     if (error instanceof BadRequestError) {
-      return { ok: false, error: 'Invalid request', status: 400 }
+      return { ok: false, error: "Invalid request", status: 400 };
     }
-    throw error
+    throw error;
   }
 }
 
@@ -682,7 +697,7 @@ export function parseManagedCreateName(
  */
 export function mergeManagedPatchSettings(
   spec: {
-    parseSettings: (v: unknown) => ManagedSettings | null
+    parseSettings: (v: unknown) => ManagedSettings | null;
   },
   currentSettings: ManagedSettings,
   body: Record<string, unknown>,
@@ -690,7 +705,7 @@ export function mergeManagedPatchSettings(
   return spec.parseSettings({
     ...currentSettings,
     ...(isPlainObject(body.settings) ? body.settings : {}),
-  })
+  });
 }
 
 export function validateManagedDatabaseCreateName(
@@ -699,18 +714,18 @@ export function validateManagedDatabaseCreateName(
   identifier: { pattern: RegExp; maxLength: number },
 ): ManagedRouteValidationError | null {
   if (!identifier.pattern.test(name) || name.length > identifier.maxLength) {
-    return { ok: false, error: 'Invalid database name', status: 400 }
+    return { ok: false, error: "Invalid database name", status: 400 };
   }
   if (databases.includes(name)) {
-    return { ok: false, error: 'database_exists', status: 409 }
+    return { ok: false, error: "database_exists", status: 409 };
   }
-  return null
+  return null;
 }
 
 /** Narrow the false status union — delete-not-found uses HTTP 404. */
 export type ManagedDatabaseDeleteError =
-  | { ok: false; error: 'Not found'; status: 404 }
-  | { ok: false; error: 'cannot_drop_initial_database'; status: 409 }
+  | { ok: false; error: "Not found"; status: 404 }
+  | { ok: false; error: "cannot_drop_initial_database"; status: 409 };
 
 export function evaluateManagedDatabaseDelete(
   databaseName: string,
@@ -718,103 +733,103 @@ export function evaluateManagedDatabaseDelete(
   initialDatabase: string,
 ): ManagedDatabaseDeleteError | null {
   if (!databases.includes(databaseName)) {
-    return { ok: false, error: 'Not found', status: 404 }
+    return { ok: false, error: "Not found", status: 404 };
   }
   if (databaseName === initialDatabase) {
-    return { ok: false, error: 'cannot_drop_initial_database', status: 409 }
+    return { ok: false, error: "cannot_drop_initial_database", status: 409 };
   }
-  return null
+  return null;
 }
 
 export function nextDatabasesAfterCreate(
   databases: readonly string[],
   name: string,
 ): string[] {
-  return [...databases, name].sort((a, b) => a.localeCompare(b))
+  return [...databases, name].sort((a, b) => a.localeCompare(b));
 }
 
 export function nextDatabasesAfterDelete(
   databases: readonly string[],
   databaseName: string,
 ): string[] {
-  return databases.filter((entry) => entry !== databaseName)
+  return databases.filter((entry) => entry !== databaseName);
 }
 
 export function parsePromoteForce(body: Record<string, unknown>): boolean {
-  return body.force === true
+  return body.force === true;
 }
 
 export function parseDisasterRecoveryPromoteBody(
   body: Record<string, unknown>,
 ):
   | { ok: true; memberId: string }
-  | { ok: false; error: 'Invalid request'; status: 400 } {
+  | { ok: false; error: "Invalid request"; status: 400 } {
   if (body.confirm !== true) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+    return { ok: false, error: "Invalid request", status: 400 };
   }
-  if (typeof body.memberId !== 'string' || body.memberId.length === 0) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  if (typeof body.memberId !== "string" || body.memberId.length === 0) {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
-  return { ok: true, memberId: body.memberId }
+  return { ok: true, memberId: body.memberId };
 }
 
 export function parseMemberReadEligibleCreate(
   body: Record<string, unknown>,
 ): boolean {
-  return body.readEligible === true
+  return body.readEligible === true;
 }
 
 export function parseReplicaClassCreate(
   body: Record<string, unknown>,
 ):
-  | { ok: true; replicaClass: 'failover' | 'read' }
+  | { ok: true; replicaClass: "failover" | "read" }
   | ManagedRouteValidationError {
   if (body.replicaClass === undefined) {
-    return { ok: true, replicaClass: 'failover' }
+    return { ok: true, replicaClass: "failover" };
   }
-  if (body.replicaClass === 'failover' || body.replicaClass === 'read') {
-    return { ok: true, replicaClass: body.replicaClass }
+  if (body.replicaClass === "failover" || body.replicaClass === "read") {
+    return { ok: true, replicaClass: body.replicaClass };
   }
-  return { ok: false, error: 'Invalid request', status: 400 }
+  return { ok: false, error: "Invalid request", status: 400 };
 }
 
 export function parseMemberReadEligiblePatch(
   body: Record<string, unknown>,
 ): { ok: true; readEligible: boolean } | ManagedRouteValidationError {
-  if (typeof body.readEligible !== 'boolean') {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  if (typeof body.readEligible !== "boolean") {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
-  return { ok: true, readEligible: body.readEligible }
+  return { ok: true, readEligible: body.readEligible };
 }
 
 export type MemberPatchFields = {
-  readEligible?: boolean
-  replicaClass?: 'failover' | 'read'
-}
+  readEligible?: boolean;
+  replicaClass?: "failover" | "read";
+};
 
 export function parseMemberPatch(
   body: Record<string, unknown>,
 ): ({ ok: true } & MemberPatchFields) | ManagedRouteValidationError {
-  const hasReadEligible = Object.hasOwn(body, 'readEligible')
-  const hasReplicaClass = Object.hasOwn(body, 'replicaClass')
+  const hasReadEligible = Object.hasOwn(body, "readEligible");
+  const hasReplicaClass = Object.hasOwn(body, "replicaClass");
   if (!hasReadEligible && !hasReplicaClass) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+    return { ok: false, error: "Invalid request", status: 400 };
   }
 
-  const patch: { ok: true } & MemberPatchFields = { ok: true }
+  const patch: { ok: true } & MemberPatchFields = { ok: true };
   if (hasReadEligible) {
-    if (typeof body.readEligible !== 'boolean') {
-      return { ok: false, error: 'Invalid request', status: 400 }
+    if (typeof body.readEligible !== "boolean") {
+      return { ok: false, error: "Invalid request", status: 400 };
     }
-    patch.readEligible = body.readEligible
+    patch.readEligible = body.readEligible;
   }
   if (hasReplicaClass) {
-    if (body.replicaClass !== 'failover' && body.replicaClass !== 'read') {
-      return { ok: false, error: 'Invalid request', status: 400 }
+    if (body.replicaClass !== "failover" && body.replicaClass !== "read") {
+      return { ok: false, error: "Invalid request", status: 400 };
     }
-    patch.replicaClass = body.replicaClass
+    patch.replicaClass = body.replicaClass;
   }
-  return patch
+  return patch;
 }
 
 /**
@@ -826,14 +841,14 @@ export function parseMemberPatch(
 export function canHardDeleteManaged(
   serverId: string | null | undefined,
 ): boolean {
-  return !serverId
+  return !serverId;
 }
 
 export type ReplicaPlacementPrecheckError = {
-  ok: false
-  error: 'managed_member_exists'
-  status: 409
-}
+  ok: false;
+  error: "managed_member_exists";
+  status: 409;
+};
 
 /**
  * Pure prechecks before datacenter / private-endpoint / online probes.
@@ -843,20 +858,20 @@ export function evaluateReplicaPlacementPrechecks(
   serverId: string,
 ): ReplicaPlacementPrecheckError | null {
   if (members.some((m) => m.serverId === serverId)) {
-    return { ok: false, error: 'managed_member_exists', status: 409 }
+    return { ok: false, error: "managed_member_exists", status: 409 };
   }
-  return null
+  return null;
 }
 
 export function replicaEndpointPurpose(
-  replicaClass: 'failover' | 'read',
-): 'failover-replication' | 'read-replication' {
-  return replicaClass === 'read' ? 'read-replication' : 'failover-replication'
+  replicaClass: "failover" | "read",
+): "failover-replication" | "read-replication" {
+  return replicaClass === "read" ? "read-replication" : "failover-replication";
 }
 
 export type FailoverReplicaTransportError = {
-  kind: 'failover_replica_requires_datacenter_transport'
-}
+  kind: "failover_replica_requires_datacenter_transport";
+};
 
 /**
  * Failover replicas may only use local or datacenter transport — never
@@ -867,12 +882,12 @@ export type FailoverReplicaTransportError = {
  * a `datacenter` transport reaching this check is always trusted-derived.
  */
 export function assertFailoverReplicaTransportAllowed(
-  transport: 'local' | 'datacenter' | 'fabric' | 'public',
+  transport: "local" | "datacenter" | "fabric" | "public",
 ): FailoverReplicaTransportError | null {
-  if (transport === 'fabric' || transport === 'public') {
-    return { kind: 'failover_replica_requires_datacenter_transport' }
+  if (transport === "fabric" || transport === "public") {
+    return { kind: "failover_replica_requires_datacenter_transport" };
   }
-  return null
+  return null;
 }
 
 /**
@@ -884,40 +899,40 @@ export function assertFailoverReplicaTransportAllowed(
  * untrusted-only failover pair with `failover_requires_trusted_datacenter`.
  */
 export function replicaPlacementNeedsDatacenter(
-  transport: 'local' | 'datacenter' | 'fabric' | 'public',
-  replicaClass: 'failover' | 'read',
+  transport: "local" | "datacenter" | "fabric" | "public",
+  replicaClass: "failover" | "read",
 ): boolean {
-  if (replicaClass === 'failover') {
-    return true
+  if (replicaClass === "failover") {
+    return true;
   }
-  return transport !== 'fabric' && transport !== 'public'
+  return transport !== "fabric" && transport !== "public";
 }
 
 export function evaluatePromoteMemberRole(
   role: string,
 ): ManagedRouteValidationError | null {
-  if (role !== 'replica') {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  if (role !== "replica") {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
-  return null
+  return null;
 }
 
 export function evaluatePromoteReplicaClass(
   replicaClass: string | null,
-): { ok: false; error: 'managed_replica_not_promotable'; status: 422 } | null {
-  if (replicaClass !== 'failover') {
-    return { ok: false, error: 'managed_replica_not_promotable', status: 422 }
+): { ok: false; error: "managed_replica_not_promotable"; status: 422 } | null {
+  if (replicaClass !== "failover") {
+    return { ok: false, error: "managed_replica_not_promotable", status: 422 };
   }
-  return null
+  return null;
 }
 
 export type ReplicaClassConversionError =
-  | { ok: false; error: 'Invalid request'; status: 400 }
+  | { ok: false; error: "Invalid request"; status: 400 }
   | {
-    ok: false
-    error: 'failover_replica_requires_datacenter_transport'
-    status: 422
-  }
+    ok: false;
+    error: "failover_replica_requires_datacenter_transport";
+    status: 422;
+  };
 
 /**
  * Class conversion: failover → read always allowed; read → failover requires
@@ -925,46 +940,46 @@ export type ReplicaClassConversionError =
  */
 export function evaluateReplicaClassConversion(
   member: Readonly<{ role: string; replicaClass: string | null }>,
-  targetClass: 'failover' | 'read',
+  targetClass: "failover" | "read",
   placementOk: boolean,
 ): ReplicaClassConversionError | null {
-  if (member.role !== 'replica') {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  if (member.role !== "replica") {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
-  if (targetClass === 'read') return null
+  if (targetClass === "read") return null;
   if (!placementOk) {
     return {
       ok: false,
-      error: 'failover_replica_requires_datacenter_transport',
+      error: "failover_replica_requires_datacenter_transport",
       status: 422,
-    }
+    };
   }
-  return null
+  return null;
 }
 
 export type ManagedUserRotateGuardError =
-  | { ok: false; error: 'use_root_password_route'; status: 400 }
-  | { ok: false; error: 'cannot_rotate_replication_user'; status: 400 }
+  | { ok: false; error: "use_root_password_route"; status: 400 }
+  | { ok: false; error: "cannot_rotate_replication_user"; status: 400 };
 
 export function evaluateManagedUserRotateGuard(
   metadata: unknown,
 ): ManagedUserRotateGuardError | null {
   if (isManagedRootPrincipal(metadata)) {
-    return { ok: false, error: 'use_root_password_route', status: 400 }
+    return { ok: false, error: "use_root_password_route", status: 400 };
   }
   if (isManagedReplicationPrincipal(metadata)) {
-    return { ok: false, error: 'cannot_rotate_replication_user', status: 400 }
+    return { ok: false, error: "cannot_rotate_replication_user", status: 400 };
   }
-  return null
+  return null;
 }
 
 export function evaluateManagedUserDropGuard(
   metadata: unknown,
-): { ok: false; error: 'cannot_drop_root_user'; status: 400 } | null {
+): { ok: false; error: "cannot_drop_root_user"; status: 400 } | null {
   if (isManagedRootPrincipal(metadata)) {
-    return { ok: false, error: 'cannot_drop_root_user', status: 400 }
+    return { ok: false, error: "cannot_drop_root_user", status: 400 };
   }
-  return null
+  return null;
 }
 
 /**
@@ -977,17 +992,17 @@ export function evaluatePromoteLagHttpGate(
   nowMs?: number,
 ):
   | null
-  | 'managed_replica_not_streaming'
-  | 'managed_replica_lagging'
-  | 'managed_replica_health_stale' {
-  if (force) return null
-  return evaluateManagedPromoteLagGate(replication, nowMs)
+  | "managed_replica_not_streaming"
+  | "managed_replica_lagging"
+  | "managed_replica_health_stale" {
+  if (force) return null;
+  return evaluateManagedPromoteLagGate(replication, nowMs);
 }
 
 export type QueuedCommandFanoutRow = {
-  commandId?: string
-  serverId?: string
-}
+  commandId?: string;
+  serverId?: string;
+};
 
 /**
  * Prefer the first fan-out row that already has a command id (primary), else
@@ -996,27 +1011,27 @@ export type QueuedCommandFanoutRow = {
 export function pickPrimaryCommandResult<T extends QueuedCommandFanoutRow>(
   enqueued: readonly T[],
 ): T | undefined {
-  return enqueued.find((r) => r.commandId) ?? enqueued[0]
+  return enqueued.find((r) => r.commandId) ?? enqueued[0];
 }
 
 export function buildQueuedFanoutResponse<T extends QueuedCommandFanoutRow>(
   enqueued: readonly T[],
   fallbackServerId: string,
 ): {
-  ok: true
-  results: readonly T[]
-  commandId: string | undefined
-  serverId: string
-  status: 'queued'
+  ok: true;
+  results: readonly T[];
+  commandId: string | undefined;
+  serverId: string;
+  status: "queued";
 } {
-  const primary = pickPrimaryCommandResult(enqueued)
+  const primary = pickPrimaryCommandResult(enqueued);
   return {
     ok: true as const,
     results: enqueued,
     commandId: primary?.commandId,
     serverId: primary?.serverId ?? fallbackServerId,
-    status: 'queued' as const,
-  }
+    status: "queued" as const,
+  };
 }
 
 /**
@@ -1041,7 +1056,7 @@ export function buildEmptyManagedDetailResponse(
     rootUsername: null,
     members: [] as const,
     recovery: null,
-  }
+  };
 }
 
 /**
@@ -1057,21 +1072,21 @@ export function buildManagedSslView(
     configured: configured ?? null,
     effective: resolveManagedSslMode(configured, organizationDefault),
     organizationDefault: organizationDefault ?? null,
-  }
+  };
 }
 
 export type ManagedReleaseView = {
   /** Operator-facing version (`18`, `9.7`, `12.3`). */
-  series: string
-  variantId: string
-  lifecycle: string
+  series: string;
+  variantId: string;
+  lifecycle: string;
   /**
    * False when the running series is catalogued but no longer creatable — the
    * UI surfaces it as unsupported rather than silently showing a normal version.
    */
-  tested: boolean
-  image: string
-}
+  tested: boolean;
+  image: string;
+};
 
 /**
  * Catalog identity of the image this cluster runs, derived rather than stored
@@ -1084,29 +1099,16 @@ export function buildManagedReleaseView(
   spec: { defaultImage: string },
   settings: ManagedSettings,
 ): ManagedReleaseView | null {
-  const image = settings.image ?? spec.defaultImage
-  const descriptor = describeManagedImage(image)
-  if (!descriptor) return null
+  const image = settings.image ?? spec.defaultImage;
+  const descriptor = describeManagedImage(image);
+  if (!descriptor) return null;
   return {
     series: descriptor.series,
     variantId: descriptor.variantId,
     lifecycle: descriptor.lifecycle,
     tested: descriptor.tested,
     image,
-  }
-}
-
-export function sortManagedBackupsDesc<T extends { createdAt: string }>(
-  backups: readonly T[],
-): T[] {
-  return [...backups].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-}
-
-export function findManagedBackupById<T extends { id: string }>(
-  backups: readonly T[],
-  backupId: string,
-): T | undefined {
-  return backups.find((entry) => entry.id === backupId)
+  };
 }
 
 /**
@@ -1115,14 +1117,14 @@ export function findManagedBackupById<T extends { id: string }>(
  * produced a ghost second "primary" with no React key.
  */
 export function buildStatusMemberView(serialized: {
-  id: string
-  serverId: string
-  role: string
-  replicaClass?: string | null
-  status: string | null
-  replicationTransport: string | null
-  privatePort: number | null
-  replication?: unknown
+  id: string;
+  serverId: string;
+  role: string;
+  replicaClass?: string | null;
+  status: string | null;
+  replicationTransport: string | null;
+  privatePort: number | null;
+  replication?: unknown;
 }) {
   return {
     id: serialized.id,
@@ -1132,25 +1134,27 @@ export function buildStatusMemberView(serialized: {
     status: serialized.status,
     replicationTransport: serialized.replicationTransport,
     privatePort: serialized.privatePort,
-    ...(serialized.replication !== undefined ? { replication: serialized.replication } : {}),
-  }
+    ...(serialized.replication !== undefined
+      ? { replication: serialized.replication }
+      : {}),
+  };
 }
 
 export function buildManagedDestroyQueuedResponse(params: {
-  commandId: string
-  serverId: string
+  commandId: string;
+  serverId: string;
 }) {
   return {
     ok: true as const,
     destroyCommandId: params.commandId,
     commandId: params.commandId,
     serverId: params.serverId,
-    status: 'queued' as const,
-  }
+    status: "queued" as const,
+  };
 }
 
 export function buildManagedDeleteHardResponse() {
-  return { ok: true as const, deleted: true as const }
+  return { ok: true as const, deleted: true as const };
 }
 
 export function buildManagedDeleteQueuedResponse<
@@ -1159,54 +1163,54 @@ export function buildManagedDeleteQueuedResponse<
   enqueued: readonly T[],
   fallbackServerId: string,
 ) {
-  const primary = pickPrimaryCommandResult(enqueued)
+  const primary = pickPrimaryCommandResult(enqueued);
   return {
     ok: true as const,
     deleted: false as const,
     commandId: primary?.commandId,
     serverId: primary?.serverId ?? fallbackServerId,
     results: enqueued,
-  }
+  };
 }
 
 export function buildFencePromotePendingResponse(params: {
-  commandId: string
-  serverId: string
+  commandId: string;
+  serverId: string;
 }) {
   return {
     ok: true as const,
     commandId: params.commandId,
     serverId: params.serverId,
-    status: 'queued' as const,
+    status: "queued" as const,
     fenceCommandId: params.commandId,
     promotePending: true as const,
-  }
+  };
 }
 
 export function buildPromoteQueuedResponse(params: {
-  commandId: string
-  serverId: string
+  commandId: string;
+  serverId: string;
 }) {
   return {
     ok: true as const,
     commandId: params.commandId,
-    status: 'queued' as const,
+    status: "queued" as const,
     serverId: params.serverId,
-  }
+  };
 }
 
 export type OperatorPromoteRecoveryInput =
   | { ok: false; error: string; status: 409 | 422 | 503 }
-  | { ok: true; commandId: string; serverId: string; fencePending: boolean }
+  | { ok: true; commandId: string; serverId: string; fencePending: boolean };
 
 export type OperatorPromoteHttpResult =
   | { status: 409 | 422 | 503; body: { error: string } }
   | {
-    status: 200
+    status: 200;
     body:
       | ReturnType<typeof buildFencePromotePendingResponse>
-      | ReturnType<typeof buildPromoteQueuedResponse>
-  }
+      | ReturnType<typeof buildPromoteQueuedResponse>;
+  };
 
 /**
  * Map a switchover enqueue result onto the promote HTTP body. Extracted so
@@ -1217,37 +1221,37 @@ export function operatorPromoteHttpResult(
   recovery: OperatorPromoteRecoveryInput,
 ): OperatorPromoteHttpResult {
   if (!recovery.ok) {
-    return { status: recovery.status, body: { error: recovery.error } }
+    return { status: recovery.status, body: { error: recovery.error } };
   }
   const queued = {
     commandId: recovery.commandId,
     serverId: recovery.serverId,
-  }
+  };
   if (recovery.fencePending) {
-    return { status: 200, body: buildFencePromotePendingResponse(queued) }
+    return { status: 200, body: buildFencePromotePendingResponse(queued) };
   }
-  return { status: 200, body: buildPromoteQueuedResponse(queued) }
+  return { status: 200, body: buildPromoteQueuedResponse(queued) };
 }
 
 export function buildDisasterRecoveryQueuedResponse(params: {
-  commandId: string
-  serverId: string
-  fencePending: boolean
-  lagBytes: number | null
-  sourceMemberId: string
-  sourceServerId: string
-  sourceDatacenterId: string | null
-  targetMemberId: string
-  targetServerId: string
-  targetDatacenterId: string | null
+  commandId: string;
+  serverId: string;
+  fencePending: boolean;
+  lagBytes: number | null;
+  sourceMemberId: string;
+  sourceServerId: string;
+  sourceDatacenterId: string | null;
+  targetMemberId: string;
+  targetServerId: string;
+  targetDatacenterId: string | null;
 }) {
   return {
     ok: true as const,
     commandId: params.commandId,
-    status: 'queued' as const,
+    status: "queued" as const,
     serverId: params.serverId,
     fencePending: params.fencePending,
-    kind: 'disaster-recovery' as const,
+    kind: "disaster-recovery" as const,
     lagBytes: params.lagBytes,
     source: {
       memberId: params.sourceMemberId,
@@ -1259,19 +1263,19 @@ export function buildDisasterRecoveryQueuedResponse(params: {
       serverId: params.targetServerId,
       datacenterId: params.targetDatacenterId,
     },
-  }
+  };
 }
 
 type OrgManagedListEntryExtras = {
-  engineDisplayName: string | null
-  environmentDisplayName: string | null
-  projectId: string
-  projectDisplayName: string | null
-  workspaceId: string
-  workspaceDisplayName: string | null
-  serverDisplayName: string | null
-  members: unknown[]
-}
+  engineDisplayName: string | null;
+  environmentDisplayName: string | null;
+  projectId: string;
+  projectDisplayName: string | null;
+  workspaceId: string;
+  workspaceDisplayName: string | null;
+  serverDisplayName: string | null;
+  members: unknown[];
+};
 
 export function buildOrgManagedListEntry<T extends Record<string, unknown>>(
   params: OrgManagedListEntryExtras & { serializedRow: T },
@@ -1286,5 +1290,5 @@ export function buildOrgManagedListEntry<T extends Record<string, unknown>>(
     workspaceDisplayName: params.workspaceDisplayName,
     serverDisplayName: params.serverDisplayName,
     members: params.members,
-  }
+  };
 }

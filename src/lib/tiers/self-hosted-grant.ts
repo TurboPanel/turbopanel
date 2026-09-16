@@ -19,13 +19,14 @@
  * console never renders it as a tier line. It is simply the quantity the
  * assignment needs in order to be the same code on both runtimes.
  *
- * **Storage is a `setting` row** (`SELF_HOSTED_GRANT:<organizationId>`),
- * the same shape as the pending-change ledger and the quantity lease — no
- * migration, and, decisively, *not* a `seat` row. The Stripe mutation
- * surface builds `items[]` from `state.seats`, so a grant can never leak
- * into a provider call; and `payer` / `subscription` / `seat` stay what
- * `src/lib/billing/AGENTS.md` says they are — a projection of the
- * provider's customer, written only by the webhook ingress.
+ * **Storage is the `self_hosted_grant` table**, one row per organization
+ * (schema-child-tables, Road-to-0.1.x — promoted out of a `setting` row
+ * keyed `SELF_HOSTED_GRANT:<organizationId>`), and, decisively, *not* a
+ * `seat` row. The Stripe mutation surface builds `items[]` from
+ * `state.seats`, so a grant can never leak into a provider call; and
+ * `payer` / `subscription` / `seat` stay what `src/lib/billing/AGENTS.md`
+ * says they are — a projection of the provider's customer, written only by
+ * the webhook ingress.
  *
  * This module is **pure**, so `src/lib/db/billing-records.ts` can read the
  * grant into `OrganizationBillingState` without importing back into the
@@ -34,10 +35,6 @@
 
 import { CUSTOM_TIER_LABEL, ladderEntry } from './ladder.ts'
 
-export const SELF_HOSTED_GRANT_KEY_PREFIX = 'SELF_HOSTED_GRANT:'
-
-export const SELF_HOSTED_GRANT_VERSION = 1
-
 /**
  * What a self-hosted organization is entitled to without buying anything:
  * `quantity` units at the custom tier. The tier id is stored rather than
@@ -45,30 +42,13 @@ export const SELF_HOSTED_GRANT_VERSION = 1
  * the ingest and page-load path and must not add a query.
  */
 export type SelfHostedGrant = Readonly<{
-  version: typeof SELF_HOSTED_GRANT_VERSION
   tierId: string
   quantity: number
 }>
-
-export function selfHostedGrantKey(organizationId: string): string {
-  return `${SELF_HOSTED_GRANT_KEY_PREFIX}${organizationId}`
-}
 
 /** The rank the grant assigns at — `SX`, the top of the ladder. */
 export function selfHostedGrantRank(): number {
   const entry = ladderEntry(CUSTOM_TIER_LABEL)
   if (!entry) throw new Error(`${CUSTOM_TIER_LABEL} is not on the ladder`)
   return entry.rank
-}
-
-/** `null` when the stored value is not a grant this code understands. */
-export function parseSelfHostedGrant(value: unknown): SelfHostedGrant | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-  const record = value as Record<string, unknown>
-  if (record.version !== SELF_HOSTED_GRANT_VERSION) return null
-  if (typeof record.tierId !== 'string' || record.tierId.length === 0) return null
-  if (typeof record.quantity !== 'number' || !Number.isFinite(record.quantity)) return null
-  const quantity = Math.max(0, Math.trunc(record.quantity))
-  if (quantity === 0) return null
-  return { version: SELF_HOSTED_GRANT_VERSION, tierId: record.tierId, quantity }
 }

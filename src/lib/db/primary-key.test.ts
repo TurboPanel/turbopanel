@@ -25,13 +25,20 @@ const test = Deno.test.bind(Deno)
 /**
  * Application tables whose primary key is intentionally a natural key rather
  * than a `DEFAULT uuidv7()` surrogate. Keep this list minimal — every entry
- * needs a reason.
+ * needs a reason. `type` is the one SQL type the entry permits; the guard's
+ * real concern is node-local generation (sequences), and a uuid FK or a
+ * daemon-minted random id are both safe on that count, but nothing else is
+ * admitted without adding a row here.
  *
- * | Table | PK column | Why |
- * | --- | --- | --- |
- * | `dispatch` | `command_id` | 1:1 payload row keyed by the owning `command.id` (itself uuidv7); a second surrogate id would be dead weight |
+ * | Table | PK column | Type | Why |
+ * | --- | --- | --- | --- |
+ * | `dispatch` | `command_id` | `uuid` | 1:1 payload row keyed by the owning `command.id` (itself uuidv7); a second surrogate id would be dead weight |
+ * | `backup` | `id` | `text` | The daemon's own `bk_<hex>` backup id, minted from random bytes on the host and also the on-disk filename; the row indexes what the daemon already named (schema-child-tables, Road-to-0.1.x; decided 2026-09-16) |
  */
-const NATURAL_KEY_PRIMARY_KEYS = new Map<string, string>([['dispatch', 'command_id']])
+const NATURAL_KEY_PRIMARY_KEYS = new Map<string, { column: string; type: string }>([
+  ['dispatch', { column: 'command_id', type: 'uuid' }],
+  ['backup', { column: 'id', type: 'text' }],
+])
 
 const CREATE_TABLE_BLOCK_RE = /CREATE\s+TABLE\s+"([^"]+)"\s*\(([\s\S]*?)\n\);/gi
 
@@ -112,22 +119,28 @@ test('migrations/ primary keys are uuidv7 UUIDs or an allowlisted natural key', 
         )
       }
       const [, column, type] = inline
+      const allowedNaturalKey = NATURAL_KEY_PRIMARY_KEYS.get(name)
+      if (allowedNaturalKey !== undefined) {
+        if (column !== allowedNaturalKey.column) {
+          throw new TypeError(
+            `table "${name}" primary key is "${column}" but the allowlist expects ` +
+              `natural key "${allowedNaturalKey.column}"`,
+          )
+        }
+        if (type?.toLowerCase() !== allowedNaturalKey.type) {
+          throw new TypeError(
+            `table "${name}" natural key "${column}" in ${file} has type "${type}" but the ` +
+              `allowlist permits only "${allowedNaturalKey.type}"`,
+          )
+        }
+        seenNaturalKeyTables.add(name)
+        continue
+      }
       if (type?.toLowerCase() !== 'uuid') {
         throw new TypeError(
           `table "${name}" primary key "${column}" in ${file} has type "${type}" — ` +
             `application primary keys must be uuid`,
         )
-      }
-      const allowedNaturalKey = NATURAL_KEY_PRIMARY_KEYS.get(name)
-      if (allowedNaturalKey !== undefined) {
-        if (column !== allowedNaturalKey) {
-          throw new TypeError(
-            `table "${name}" primary key is "${column}" but the allowlist expects ` +
-              `natural key "${allowedNaturalKey}"`,
-          )
-        }
-        seenNaturalKeyTables.add(name)
-        continue
       }
       if (!/DEFAULT uuidv7\(\)/.test(line)) {
         throw new TypeError(
@@ -139,7 +152,7 @@ test('migrations/ primary keys are uuidv7 UUIDs or an allowlisted natural key', 
   }
 
   // Every allowlisted natural key must still exist (no stale exceptions)
-  for (const [table, column] of [...NATURAL_KEY_PRIMARY_KEYS].sort((a, b) =>
+  for (const [table, { column }] of [...NATURAL_KEY_PRIMARY_KEYS].sort((a, b) =>
     a[0].localeCompare(b[0])
   )) {
     if (!seenNaturalKeyTables.has(table)) {
@@ -210,5 +223,7 @@ test('drizzle-orm migrator bookkeeping DDL matches the documented public.migrati
       )
     }
   }
-  assertEquals(NATURAL_KEY_PRIMARY_KEYS.size, 1)
+  // Pinned so a new natural-key exception forces this audit to be re-read:
+  // `dispatch.command_id` and `backup.id` (2026-09-16), nothing else.
+  assertEquals(NATURAL_KEY_PRIMARY_KEYS.size, 2)
 })

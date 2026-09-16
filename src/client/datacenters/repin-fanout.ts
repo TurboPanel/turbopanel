@@ -5,7 +5,7 @@
  * `touchServerMetadata` write on the daemon presence path
  * (`src/lib/net/repin-apply.ts`). That path cannot enqueue commands — hello
  * and Durable Object handlers must not enqueue (DO cost rule) — so the apply
- * pass only stamps `ip.metadata.repin.pendingFanoutAt`, and this sweep drains
+ * pass only stamps `ip.repin_pending_fanout_at`, and this sweep drains
  * those markers from the shared maintenance tick, which already holds a real
  * command queue and the secrets bundle (`runSystemReconcileSweepTick` in
  * `deno-server.ts`; the `tlsRenewal`-gated block in
@@ -38,7 +38,6 @@ import { eq, sql } from "drizzle-orm";
 import type { Db } from "../../db.ts";
 import type { CommandQueue } from "../../lib/commands/queue.ts";
 import { ip } from "../../lib/db/schema.ts";
-import { clearedPendingFanoutMetadata } from "../../lib/net/repin.ts";
 import { compatLogWarn } from "../../log-compat.ts";
 import type {
   DerivedSecretsConfig,
@@ -61,7 +60,6 @@ type PendingPinRow = {
   organization_id: string;
   datacenter_id: string;
   server_id: string;
-  metadata: unknown;
 };
 
 type PendingGroup = {
@@ -94,13 +92,13 @@ async function loadPendingPins(
   budget: number,
 ): Promise<PendingPinRow[]> {
   const rows = await db.execute<PendingPinRow>(sql`
-    SELECT i.id, i.organization_id, i.datacenter_id, i.server_id, i.metadata
+    SELECT i.id, i.organization_id, i.datacenter_id, i.server_id
     FROM ip i
     WHERE i.scope = 'datacenter'
       AND i.server_id IS NOT NULL
       AND i.datacenter_id IS NOT NULL
-      AND i.metadata->'repin'->>'pendingFanoutAt' IS NOT NULL
-    ORDER BY i.metadata->'repin'->>'pendingFanoutAt', i.id
+      AND i.repin_pending_fanout_at IS NOT NULL
+    ORDER BY i.repin_pending_fanout_at, i.id
     LIMIT ${budget}
   `);
   return [...rows];
@@ -115,7 +113,7 @@ async function clearPendingFanout(
     await db
       .update(ip)
       .set({
-        metadata: clearedPendingFanoutMetadata(pin.metadata),
+        repinPendingFanoutAt: null,
         updatedAt: nowIso,
       })
       .where(eq(ip.id, pin.id));
@@ -154,7 +152,7 @@ async function fanOutGroup(
 }
 
 /**
- * Drain `ip.metadata.repin.pendingFanoutAt` markers: one routing fan-out per
+ * Drain `ip.repin_pending_fanout_at` markers: one routing fan-out per
  * `(organization, datacenter)` group, then clear the markers of that group.
  * Returns the number of pins whose marker was cleared.
  */

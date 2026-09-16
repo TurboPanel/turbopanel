@@ -20,6 +20,9 @@ import {
 import { computeStripeSignature } from '../../lib/billing/webhook-signature.ts'
 import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from '../../lib/billing/customer-subject.ts'
 import {
+  allowance,
+  key,
+  lease,
   license,
   payer,
   server,
@@ -86,6 +89,7 @@ function tableName(table: unknown): string {
   if (table === subscriptionItem) return 'seat'
   if (table === tier) return 'tier'
   if (table === setting) return 'setting'
+  if (table === lease) return 'lease'
   return 'unknown'
 }
 
@@ -135,6 +139,9 @@ function stubDb(
     [license, opts.licenses ?? []],
     [server, []],
     [setting, []],
+    [allowance, []],
+    [key, []],
+    [lease, []],
   ])
   const inserts: { table: string; values: Record<string, unknown> }[] = []
   const origInsert = db.insert.bind(db)
@@ -479,9 +486,9 @@ test('a valid delivery answers 200 immediately, without awaiting the projection'
       'delete:seat',
       'insert:seat',
       'delete:setting',
-      'insert:setting',
+      'insert:lease',
       'delete:setting',
-      'delete:setting',
+      'delete:lease',
       'update:delivery',
     ],
   )
@@ -805,6 +812,9 @@ function projectedDb(): MemoryDb {
     [license, []],
     [server, []],
     [setting, []],
+    [allowance, []],
+    [key, []],
+    [lease, []],
   ])
 }
 

@@ -21,7 +21,7 @@ import {
   RELAY_PREFIX_LENGTH,
 } from '../../lib/fabric/cidr.ts'
 import { PREFERRED_GATEWAY_IDS_MAX, resolveEffectiveAllowRelay } from '../../lib/fabric/policy.ts'
-import { isValidCidr, isValidIpAddress } from '../../lib/ip-address.ts'
+import { alignedNetworkCidr, isValidIpAddress } from '../../lib/ip-address.ts'
 import { isValidWireguardPublicKey } from '../../lib/fabric/wg.ts'
 import type { GatewayRelayReadyError } from '../../lib/net/datacenter-networks.ts'
 
@@ -120,10 +120,14 @@ function parseAdvertisedCidrsField(value: unknown): FieldResult<string[]> {
   }
   const cidrs: string[] = []
   for (const entry of value) {
-    if (typeof entry !== 'string' || !isValidCidr(entry)) {
+    // Aligned (`10.0.0.5/24` → `10.0.0.0/24`): the column is a native
+    // `cidr[]`, which refuses host bits, and the collision checker already
+    // treats these as networks.
+    const aligned = typeof entry === 'string' ? alignedNetworkCidr(entry) : null
+    if (aligned === null) {
       return { ok: false, error: 'Invalid advertisedCidrs' }
     }
-    cidrs.push(entry.trim())
+    cidrs.push(aligned)
   }
   return { ok: true, value: cidrs }
 }

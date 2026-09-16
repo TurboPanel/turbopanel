@@ -44,6 +44,9 @@ function createFakeDb(rowSets: unknown[][]): Db {
   const chain = (rows: unknown[]) => {
     const self = {
       from: () => self,
+      // `getServerDaemonStateByServerId` joins `key` in; the mock ignores
+      // the join predicate and resolves the same queued row set either way.
+      innerJoin: () => self,
       where: () => self,
       limit: () => Promise.resolve(rows),
       then: (
@@ -56,18 +59,21 @@ function createFakeDb(rowSets: unknown[][]): Db {
   return { select: () => chain(queue.shift() ?? []) } as unknown as Db;
 }
 
-/** Row shape `getServerDaemonStateByServerId` expects for an active key. */
+/**
+ * Row shape `getServerDaemonStateByServerId` expects for an active key —
+ * `key` table columns flattened alongside `server` columns, mirroring its
+ * joined select.
+ */
 function activeDaemonKeyRow(): Record<string, unknown> {
   return {
-    daemon: {
-      key: {
-        id: KEY_ID,
-        algorithm: "Ed25519",
-        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
-        fingerprint: "fp-log-seal",
-        createdAt: new Date().toISOString(),
-      },
-    },
+    id: KEY_ID,
+    algorithm: "Ed25519",
+    publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+    fingerprint: "fp-log-seal",
+    createdAt: new Date().toISOString(),
+    revokedAt: null,
+    lastUsedAt: null,
+    daemon: null,
     metadata: null,
     hostname: "host.example",
     machineKey: null,

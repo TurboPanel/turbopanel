@@ -36,6 +36,7 @@ describe('reconcileServicesFromCompose', () => {
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
+      organizationId: orgRow.id,
       name: 'App',
     }).returning({ id: project.id })
     const [envRow] = await db.insert(environment).values({
@@ -96,6 +97,7 @@ describe('reconcileServicesFromCompose', () => {
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
+      organizationId: orgRow.id,
       name: 'App',
       options: {
         compose: {
@@ -151,6 +153,7 @@ describe('reconcileServicesFromCompose', () => {
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
+      organizationId: orgRow.id,
       name: 'App',
       options: {
         compose: {
@@ -205,6 +208,7 @@ describe('reconcileServicesFromCompose', () => {
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
+      organizationId: orgRow.id,
       name: 'App',
     }).returning({ id: project.id })
     const [envRow] = await db.insert(environment).values({
@@ -262,6 +266,7 @@ describe('reconcileServicesFromCompose', () => {
     }).returning({ id: workspace.id })
     const [projectRow] = await db.insert(project).values({
       workspaceId: workspaceRow.id,
+      organizationId: orgRow.id,
       name: 'App',
       options: { compose: 'not-a-document' },
     }).returning({ id: project.id })

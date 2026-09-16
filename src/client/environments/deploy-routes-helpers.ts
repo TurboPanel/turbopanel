@@ -461,6 +461,17 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
             }. Compose can only take over a hosting that serves this one hostname — split the other hostnames onto their own hosting, or drop the declaration and keep editing the route in the panel.`,
         },
       }
+    case 'hosting_hostname_conflict':
+      return {
+        status: 409,
+        body: {
+          error: 'hosting_hostname_conflict',
+          composeServiceName: prepared.composeServiceName,
+          hostname: prepared.hostname,
+          message:
+            `"${prepared.composeServiceName}" declares ${prepared.hostname}, which another hosting in this organization already serves. A hostname can only route to one hosting per organization.`,
+        },
+      }
     case 'binding_endpoint_unavailable':
       return {
         status: 422,

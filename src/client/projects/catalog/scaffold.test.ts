@@ -126,6 +126,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
     .insert(project)
     .values({
       workspaceId: ws!.id,
+      organizationId,
       name: 'Catalog Scaffold Project',
       metadata: { type: 'template' },
       options: { compose: entry.compose },
@@ -252,6 +253,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
     .insert(project)
     .values({
       workspaceId: ws!.id,
+      organizationId: org!.id,
       name: 'Shared Credential Project',
       metadata: { type: 'managed' },
     })

@@ -13,7 +13,6 @@ import {
   LEAF_RENEWAL_BATCH_SIZE,
   LEAF_RENEWAL_REMAINING_MS,
   LEAF_RENEWAL_SWEEP_LEASE_MS,
-  LEAF_RENEWAL_SWEEP_LOCK_KEY,
   leafRenewalDeadlineIso,
   loadDueTlsLeaves,
   runLeafRenewalSweepTick,
@@ -47,24 +46,36 @@ type RecordedDueQuery = {
   orderByCount: number;
 };
 
+/**
+ * Applies a partial column update the way the real `UPDATE lease SET …`
+ * calls do: `saveLeafRenewalSweepCursor` sends `{cursor}` only (owner-scoped,
+ * no staleness check); `endLeafRenewalSweep` sends `{owner: '', expiresAt,
+ * cursor}` (also owner-scoped); the steal branch of
+ * `tryBeginLeafRenewalSweep` sends `{owner, expiresAt}` with a new owner,
+ * which only succeeds when the current lock is stealable.
+ */
 function applySweepLockUpdate(
   lock: { current: SweepLockValue | null },
-  row: { value: SweepLockValue },
-): Promise<{ key: string }[]> {
+  row: { owner?: string; expiresAt?: string; cursor?: LeafRenewalCursor | null },
+): Promise<{ id: string }[]> {
   if (lock.current === null) return Promise.resolve([]);
-  const expires = Date.parse(lock.current.expiresAt);
-  const expired = !Number.isFinite(expires) || expires <= Date.now();
-  const stealable = lock.current.owner.length === 0 || expired;
-  const sameOwner = row.value.owner === lock.current.owner;
-  const releasing = row.value.owner.length === 0;
-  if (!stealable && !sameOwner && !releasing) {
-    return Promise.resolve([]);
+  const isSteal = row.owner !== undefined && row.owner !== "" &&
+    row.owner !== lock.current.owner;
+  if (isSteal) {
+    const expires = Date.parse(lock.current.expiresAt);
+    const expired = !Number.isFinite(expires) || expires <= Date.now();
+    const stealable = lock.current.owner.length === 0 || expired;
+    if (!stealable) return Promise.resolve([]);
   }
-  lock.current = row.value;
-  return Promise.resolve([{ key: LEAF_RENEWAL_SWEEP_LOCK_KEY }]);
+  lock.current = {
+    owner: row.owner ?? lock.current.owner,
+    expiresAt: row.expiresAt ?? lock.current.expiresAt,
+    cursor: "cursor" in row ? (row.cursor ?? null) : lock.current.cursor,
+  };
+  return Promise.resolve([{ id: "lease-1" }]);
 }
 
-function thenableRows(rows: Promise<{ key: string }[]>) {
+function thenableRows(rows: Promise<{ id: string }[]>) {
   return Object.assign(rows, { returning: () => rows });
 }
 
@@ -73,12 +84,12 @@ function createSweepLockMemoryDb(initial?: SweepLockValue): Db {
 
   return {
     insert: () => ({
-      values: (row: { key: string; value: SweepLockValue }) => ({
+      values: (row: { owner: string; expiresAt: string; cursor?: LeafRenewalCursor | null }) => ({
         onConflictDoNothing: () => ({
           returning: () => {
             if (lock.current !== null) return Promise.resolve([]);
-            lock.current = row.value;
-            return Promise.resolve([{ key: row.key }]);
+            lock.current = { owner: row.owner, expiresAt: row.expiresAt, cursor: row.cursor ?? null };
+            return Promise.resolve([{ id: "lease-1" }]);
           },
         }),
       }),
@@ -86,12 +97,21 @@ function createSweepLockMemoryDb(initial?: SweepLockValue): Db {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve(lock.current ? [{ value: lock.current }] : []),
+          limit: () =>
+            Promise.resolve(
+              lock.current
+                ? [{
+                  owner: lock.current.owner,
+                  expiresAt: lock.current.expiresAt,
+                  cursor: lock.current.cursor ?? null,
+                }]
+                : [],
+            ),
         }),
       }),
     }),
     update: () => ({
-      set: (row: { value: SweepLockValue }) => ({
+      set: (row: { owner?: string; expiresAt?: string; cursor?: LeafRenewalCursor | null }) => ({
         where: () => thenableRows(applySweepLockUpdate(lock, row)),
       }),
     }),
@@ -277,12 +297,12 @@ function createResumableSweepMemoryDb(leaves: DueTlsLeafRow[]): {
 
   const db = {
     insert: () => ({
-      values: (row: { key: string; value: SweepLockValue }) => ({
+      values: (row: { owner: string; expiresAt: string; cursor?: LeafRenewalCursor | null }) => ({
         onConflictDoNothing: () => ({
           returning: () => {
             if (lock.current !== null) return Promise.resolve([]);
-            lock.current = row.value;
-            return Promise.resolve([{ key: row.key }]);
+            lock.current = { owner: row.owner, expiresAt: row.expiresAt, cursor: row.cursor ?? null };
+            return Promise.resolve([{ id: "lease-1" }]);
           },
         }),
       }),
@@ -317,14 +337,20 @@ function createResumableSweepMemoryDb(leaves: DueTlsLeafRow[]): {
           where: () => ({
             limit: () =>
               Promise.resolve(
-                lock.current ? [{ value: lock.current }] : [],
+                lock.current
+                  ? [{
+                    owner: lock.current.owner,
+                    expiresAt: lock.current.expiresAt,
+                    cursor: lock.current.cursor ?? null,
+                  }]
+                  : [],
               ),
           }),
         };
       },
     }),
     update: () => ({
-      set: (row: { value: SweepLockValue }) => ({
+      set: (row: { owner?: string; expiresAt?: string; cursor?: LeafRenewalCursor | null }) => ({
         where: () => thenableRows(applySweepLockUpdate(lock, row)),
       }),
     }),

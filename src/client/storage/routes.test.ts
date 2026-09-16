@@ -136,6 +136,7 @@ async function withStorageFixtures(
     .values({
       name: 'Storage Route Project',
       workspaceId,
+      organizationId,
       createdAt: now,
       updatedAt: now,
     })
@@ -470,6 +471,7 @@ test('GET /storage/:id returns 404 for storage in another org', async () => {
       .insert(project)
       .values({
         workspaceId: foreignWs!.id,
+        organizationId: foreignOrg!.id,
         name: 'Foreign Project',
         createdAt: now,
         updatedAt: now,

@@ -10,13 +10,13 @@
  * - `project.metadata.type = 'system'` (`SYSTEM_PROJECT_METADATA_TYPE`) — shared
  *   platform stamp on all four projects; presentation-only, never an
  *   authorization source
- * - `project.metadata.component = 'hosting-ingress'` — shared Traefik project
- * - `project.metadata.component = 'managed-ingress'` — shared ProxySQL project
+ * - `project.component = 'hosting-ingress'` — shared Traefik project
+ * - `project.component = 'managed-ingress'` — shared ProxySQL project
  * - `environment.server_id` under that project — one environment per enrolled
  *   server (identity is `project_id` + `server_id`, never
  *   `environment.metadata.component`)
  * - `service.composeServiceName = 'traefik'` — hosting ingress service
- * - `project.metadata.component = 'managed-ha'` — shared Orchestrator project
+ * - `project.component = 'managed-ha'` — shared Orchestrator project
  * - `service.composeServiceName = 'proxysql'` — managed ingress service
  * - `service.composeServiceName = 'orchestrator'` — managed HA service
  * - hosting container via `ensureServiceIngressContainerAllocation` (`role='ingress'`,
@@ -28,7 +28,7 @@
  *
  * Self-host stack (co-located instance only):
  *
- * - `project.metadata.component = 'turbopanel'` — shared self-host project
+ * - `project.component = 'turbopanel'` — shared self-host project
  * - `environment.server_id` under that project — one environment on the
  *   colocated server
  * - `service.composeServiceName` in `database` / `queue`
@@ -44,8 +44,8 @@
  * workspace/project routes.
  */
 
-import { and, eq, inArray, sql } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
+import { and, eq, inArray, sql } from "drizzle-orm";
+import type { Db } from "../../db.ts";
 import {
   container,
   environment,
@@ -53,86 +53,115 @@ import {
   server,
   service,
   workspace,
-} from '../../lib/db/schema.ts'
-import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
+} from "../../lib/db/schema.ts";
+import { WORKSPACE_KIND_TURBOPANEL } from "../../lib/db/workspace-kind.ts";
+import { normalizeDisplayNameKey } from "../../lib/display-name-format.ts";
 import {
   allocateEnvironmentContainers,
   type ContainerServiceSpec,
   ensureServiceIngressContainerAllocation,
-} from '../environments/allocate-containers.ts'
-import { managedHaContainerNameFromService } from '../../lib/naming.ts'
+} from "../environments/allocate-containers.ts";
+import { managedHaContainerNameFromService } from "../../lib/naming.ts";
 
 /**
  * Platform-owned project metadata type — never accepted by `POST /projects` or
  * `…/configure`; not an authorization source.
  */
-export const SYSTEM_PROJECT_METADATA_TYPE = 'system'
+export const SYSTEM_PROJECT_METADATA_TYPE = "system";
 
-export const SYSTEM_HOSTING_INGRESS_COMPONENT = 'hosting-ingress'
-export const SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME = 'traefik'
-export const SYSTEM_WORKSPACE_DISPLAY_NAME = 'TurboPanel'
-export const SYSTEM_PROJECT_DISPLAY_NAME = 'HTTP/HTTPS Ingress'
+export const SYSTEM_HOSTING_INGRESS_COMPONENT = "hosting-ingress";
+export const SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME = "traefik";
+export const SYSTEM_WORKSPACE_DISPLAY_NAME = "TurboPanel";
+export const SYSTEM_PROJECT_DISPLAY_NAME = "HTTP/HTTPS Ingress";
 
 /** Per-server ProxySQL shared frontend (managed engine ingress). */
-export const SYSTEM_MANAGED_INGRESS_COMPONENT = 'managed-ingress'
-export const SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME = 'proxysql'
-export const SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME = 'Database Ingress'
+export const SYSTEM_MANAGED_INGRESS_COMPONENT = "managed-ingress";
+export const SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME = "proxysql";
+export const SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME = "Database Ingress";
 
 /** Per-org Orchestrator Raft group (managed SQL HA). */
-export const SYSTEM_MANAGED_HA_COMPONENT = 'managed-ha'
-export const SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME = 'orchestrator'
-export const SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME = 'Database High-Availability'
+export const SYSTEM_MANAGED_HA_COMPONENT = "managed-ha";
+export const SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME = "orchestrator";
+export const SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME =
+  "Database High-Availability";
 
 /** Self-host project/environment identity key — not a wire `SystemComponentKey`. */
-export const SYSTEM_SELF_HOST_COMPONENT = 'turbopanel'
-export const SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME = 'Self Hosted TurboPanel Instance'
-export const SYSTEM_SELF_HOST_ENVIRONMENT_DISPLAY_NAME = 'Production'
+export const SYSTEM_SELF_HOST_COMPONENT = "turbopanel";
+export const SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME =
+  "Self Hosted TurboPanel Instance";
+export const SYSTEM_SELF_HOST_ENVIRONMENT_DISPLAY_NAME = "Production";
 
-export const SYSTEM_SELF_HOST_DATABASE_COMPOSE_SERVICE_NAME = 'database'
-export const SYSTEM_SELF_HOST_QUEUE_COMPOSE_SERVICE_NAME = 'queue'
+/**
+ * Project names the system hierarchy claims for itself, as uniqueness keys.
+ * `uniq_project_organization_name` is org-wide, so a user project holding one
+ * of these before the self-heal runs would make that self-heal's insert (and
+ * `normalizeExistingSystemProject`'s rename back to the constant) fail on the
+ * name index. The project write path refuses them up front instead.
+ */
+const SYSTEM_RESERVED_PROJECT_NAME_KEYS: ReadonlySet<string> = new Set(
+  [
+    SYSTEM_PROJECT_DISPLAY_NAME,
+    SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME,
+    SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME,
+    SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME,
+  ].map(normalizeDisplayNameKey),
+);
+
+export function isReservedSystemProjectName(
+  name: string | null | undefined,
+): boolean {
+  if (name == null) return false;
+  const key = normalizeDisplayNameKey(name);
+  return key.length > 0 && SYSTEM_RESERVED_PROJECT_NAME_KEYS.has(key);
+}
+
+export const SYSTEM_SELF_HOST_DATABASE_COMPOSE_SERVICE_NAME = "database";
+export const SYSTEM_SELF_HOST_QUEUE_COMPOSE_SERVICE_NAME = "queue";
 
 /** Ordered so `ensureSelfHostSystemHierarchy` provisions deterministically. */
 export const SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES = [
   SYSTEM_SELF_HOST_DATABASE_COMPOSE_SERVICE_NAME,
   SYSTEM_SELF_HOST_QUEUE_COMPOSE_SERVICE_NAME,
-] as const
+] as const;
 
 export type SystemSelfHostComposeServiceName =
-  (typeof SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES)[number]
+  (typeof SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES)[number];
 
 /** Wire `SystemComponentKey` for a self-host service is its compose service name. */
 export function isSystemSelfHostComposeServiceName(
   value: string,
 ): value is SystemSelfHostComposeServiceName {
-  return (SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES as readonly string[]).includes(value)
+  return (SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES as readonly string[]).includes(
+    value,
+  );
 }
 
 export type SystemHierarchyIds = {
-  workspaceId: string
-  projectId: string
-  environmentId: string
-  serviceId: string
-  containerRowId: string
-  containerName: string
-}
+  workspaceId: string;
+  projectId: string;
+  environmentId: string;
+  serviceId: string;
+  containerRowId: string;
+  containerName: string;
+};
 
 export type SelfHostServiceAllocation = {
-  composeServiceName: SystemSelfHostComposeServiceName
-  serviceId: string
-  containerRowId: string
-  containerName: string
-}
+  composeServiceName: SystemSelfHostComposeServiceName;
+  serviceId: string;
+  containerRowId: string;
+  containerName: string;
+};
 
 export type SelfHostSystemHierarchyIds = {
-  workspaceId: string
-  projectId: string
-  environmentId: string
-  services: SelfHostServiceAllocation[]
-}
+  workspaceId: string;
+  projectId: string;
+  environmentId: string;
+  services: SelfHostServiceAllocation[];
+};
 
 /**
  * Locate a system-workspace environment pinned to this server, if any.
- * Component identity comes from `project.metadata.component` — never from
+ * Component identity comes from `project.component` — never from
  * `environment.metadata.component`.
  *
  * A server can now carry up to three system environments — hosting-ingress
@@ -164,10 +193,10 @@ export async function findSystemEnvironmentForServer(
         JOIN workspace w ON w.id = p.workspace_id
         WHERE e.server_id = ${serverId}::uuid
           AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
-          AND p.metadata->>'component' = ${component}
+          AND p.component = ${component}
         LIMIT 1
-      `))
-  return rows[0]?.id ?? null
+      `));
+  return rows[0]?.id ?? null;
 }
 
 /**
@@ -189,8 +218,8 @@ export async function ensureSystemWorkspace(
     )
     ON CONFLICT (organization_id) WHERE kind = 'turbopanel' DO NOTHING
     RETURNING id
-  `)
-  if (inserted[0]?.id) return inserted[0].id
+  `);
+  if (inserted[0]?.id) return inserted[0].id;
 
   const [existing] = await tx
     .select({ id: workspace.id, name: workspace.name })
@@ -201,12 +230,12 @@ export async function ensureSystemWorkspace(
         eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
       ),
     )
-    .limit(1)
+    .limit(1);
 
   if (!existing) {
     throw new Error(
       `system workspace missing after insert race (organization=${organizationId})`,
-    )
+    );
   }
   if (existing.name !== SYSTEM_WORKSPACE_DISPLAY_NAME) {
     await tx
@@ -215,31 +244,31 @@ export async function ensureSystemWorkspace(
         name: SYSTEM_WORKSPACE_DISPLAY_NAME,
         updatedAt: new Date().toISOString(),
       })
-      .where(eq(workspace.id, existing.id))
+      .where(eq(workspace.id, existing.id));
   }
-  return existing.id
+  return existing.id;
 }
 
 function isMetadataRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function projectMetadataRecord(value: unknown): Record<string, unknown> {
-  return isMetadataRecord(value) ? { ...value } : {}
+  return isMetadataRecord(value) ? { ...value } : {};
 }
 
 type ExistingSystemProjectRow = {
-  id: string
-  name: string | null
-  metadata: unknown
-}
+  id: string;
+  name: string | null;
+  metadata: unknown;
+};
 
 type SystemComponentProjectParams = {
-  workspaceId: string
-  component: string
-  displayName: string
-  missingLabel: string
-}
+  workspaceId: string;
+  component: string;
+  displayName: string;
+  missingLabel: string;
+};
 
 /**
  * Normalize a reused system project: current display name + reserved
@@ -250,25 +279,25 @@ async function normalizeExistingSystemProject(
   existing: ExistingSystemProjectRow,
   displayName: string,
 ): Promise<void> {
-  const metadata = projectMetadataRecord(existing.metadata)
-  const nameStale = existing.name !== displayName
-  const typeStale = metadata.type !== SYSTEM_PROJECT_METADATA_TYPE
-  if (!nameStale && !typeStale) return
+  const metadata = projectMetadataRecord(existing.metadata);
+  const nameStale = existing.name !== displayName;
+  const typeStale = metadata.type !== SYSTEM_PROJECT_METADATA_TYPE;
+  if (!nameStale && !typeStale) return;
 
   const patch: {
-    name?: string
-    metadata?: Record<string, unknown>
-    updatedAt: string
-  } = { updatedAt: new Date().toISOString() }
-  if (nameStale) patch.name = displayName
+    name?: string;
+    metadata?: Record<string, unknown>;
+    updatedAt: string;
+  } = { updatedAt: new Date().toISOString() };
+  if (nameStale) patch.name = displayName;
   if (typeStale) {
-    patch.metadata = { ...metadata, type: SYSTEM_PROJECT_METADATA_TYPE }
+    patch.metadata = { ...metadata, type: SYSTEM_PROJECT_METADATA_TYPE };
   }
 
   await tx
     .update(project)
     .set(patch)
-    .where(eq(project.id, existing.id))
+    .where(eq(project.id, existing.id));
 }
 
 async function reuseExistingSystemProject(
@@ -279,17 +308,17 @@ async function reuseExistingSystemProject(
     SELECT id, name, metadata
     FROM project
     WHERE workspace_id = ${params.workspaceId}::uuid
-      AND metadata->>'component' = ${params.component}
+      AND component = ${params.component}
     LIMIT 1
-  `)
-  const existing = rows[0]
+  `);
+  const existing = rows[0];
   if (!existing) {
     throw new Error(
       `${params.missingLabel} project missing after insert race (workspace=${params.workspaceId})`,
-    )
+    );
   }
-  await normalizeExistingSystemProject(tx, existing, params.displayName)
-  return existing.id
+  await normalizeExistingSystemProject(tx, existing, params.displayName);
+  return existing.id;
 }
 
 async function ensureSystemComponentProject(
@@ -298,24 +327,28 @@ async function ensureSystemComponentProject(
 ): Promise<string> {
   const metadataJson = JSON.stringify({
     type: SYSTEM_PROJECT_METADATA_TYPE,
-    component: params.component,
-  })
+  });
 
+  // `organization_id` is resolved from the workspace row in the same
+  // statement — the denormalization every project insert performs.
   const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO project (workspace_id, name, metadata)
-    VALUES (
-      ${params.workspaceId}::uuid,
+    INSERT INTO project (workspace_id, organization_id, name, metadata, component)
+    SELECT
+      w.id,
+      w.organization_id,
       ${params.displayName},
-      ${metadataJson}::jsonb
-    )
-    ON CONFLICT (workspace_id, (metadata->>'component'))
-      WHERE (metadata->>'component') IS NOT NULL
+      ${metadataJson}::jsonb,
+      ${params.component}
+    FROM workspace w
+    WHERE w.id = ${params.workspaceId}::uuid
+    ON CONFLICT (workspace_id, component)
+      WHERE component IS NOT NULL
     DO NOTHING
     RETURNING id
-  `)
-  if (inserted[0]?.id) return inserted[0].id
+  `);
+  if (inserted[0]?.id) return inserted[0].id;
 
-  return await reuseExistingSystemProject(tx, params)
+  return await reuseExistingSystemProject(tx, params);
 }
 
 /**
@@ -331,8 +364,8 @@ async function ensureHostingIngressProject(
     workspaceId,
     component: SYSTEM_HOSTING_INGRESS_COMPONENT,
     displayName: SYSTEM_PROJECT_DISPLAY_NAME,
-    missingLabel: 'hosting-ingress',
-  })
+    missingLabel: "hosting-ingress",
+  });
 }
 
 /**
@@ -351,7 +384,7 @@ async function ensureServerEnvironment(
   // callers cannot both observe "missing" and insert duplicate envs.
   await tx.execute(sql`
     SELECT id FROM project WHERE id = ${projectId}::uuid FOR UPDATE
-  `)
+  `);
 
   const [existing] = await tx
     .select({ id: environment.id })
@@ -362,8 +395,8 @@ async function ensureServerEnvironment(
         eq(environment.serverId, serverId),
       ),
     )
-    .limit(1)
-  if (existing) return existing.id
+    .limit(1);
+  if (existing) return existing.id;
 
   const [inserted] = await tx
     .insert(environment)
@@ -372,14 +405,14 @@ async function ensureServerEnvironment(
       serverId,
       name: displayName,
     })
-    .returning({ id: environment.id })
+    .returning({ id: environment.id });
 
   if (!inserted) {
     throw new Error(
       `system environment insert failed (project=${projectId} server=${serverId})`,
-    )
+    );
   }
-  return inserted.id
+  return inserted.id;
 }
 
 /**
@@ -402,7 +435,7 @@ async function ensureComposeService(
     })
     .onConflictDoNothing({
       target: [service.environmentId, service.composeServiceName],
-    })
+    });
 
   const [row] = await tx
     .select({ id: service.id })
@@ -413,14 +446,14 @@ async function ensureComposeService(
         eq(service.composeServiceName, composeServiceName),
       ),
     )
-    .limit(1)
+    .limit(1);
 
   if (!row) {
     throw new Error(
       `compose service missing after upsert (environment=${environmentId} composeServiceName=${composeServiceName})`,
-    )
+    );
   }
-  return row.id
+  return row.id;
 }
 
 /**
@@ -439,31 +472,31 @@ async function ensureSystemHierarchyImpl(
   params: { organizationId: string; serverId: string },
 ): Promise<SystemHierarchyIds> {
   return await db.transaction(async (tx) => {
-    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
-    const projectId = await ensureHostingIngressProject(tx, workspaceId)
+    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId);
+    const projectId = await ensureHostingIngressProject(tx, workspaceId);
     const [serverRow] = await tx
       .select({ name: server.name })
       .from(server)
       .where(eq(server.id, params.serverId))
-      .limit(1)
-    const environmentDisplayName =
-      serverRow?.name?.trim() || SYSTEM_PROJECT_DISPLAY_NAME
+      .limit(1);
+    const environmentDisplayName = serverRow?.name?.trim() ||
+      SYSTEM_PROJECT_DISPLAY_NAME;
     const environmentId = await ensureServerEnvironment(
       tx,
       projectId,
       params.serverId,
       environmentDisplayName,
-    )
+    );
     const serviceId = await ensureComposeService(
       tx,
       environmentId,
       SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-    )
+    );
     const allocation = await ensureServiceIngressContainerAllocation(tx, {
       serviceId,
       serverId: params.serverId,
       composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-    })
+    });
 
     return {
       workspaceId,
@@ -472,8 +505,8 @@ async function ensureSystemHierarchyImpl(
       serviceId,
       containerRowId: allocation.containerRowId,
       containerName: allocation.containerName,
-    }
-  })
+    };
+  });
 }
 
 /**
@@ -482,13 +515,13 @@ async function ensureSystemHierarchyImpl(
  */
 export const systemHierarchyProvision = {
   ensure: ensureSystemHierarchyImpl,
-}
+};
 
 export async function ensureSystemHierarchy(
   db: Db,
   params: { organizationId: string; serverId: string },
 ): Promise<SystemHierarchyIds> {
-  return await systemHierarchyProvision.ensure(db, params)
+  return await systemHierarchyProvision.ensure(db, params);
 }
 
 /**
@@ -504,8 +537,8 @@ async function ensureManagedIngressProject(
     workspaceId,
     component: SYSTEM_MANAGED_INGRESS_COMPONENT,
     displayName: SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME,
-    missingLabel: 'managed-ingress',
-  })
+    missingLabel: "managed-ingress",
+  });
 }
 
 /**
@@ -522,32 +555,32 @@ async function ensureManagedIngressHierarchyImpl(
   params: { organizationId: string; serverId: string },
 ): Promise<SystemHierarchyIds> {
   return await db.transaction(async (tx) => {
-    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
-    const projectId = await ensureManagedIngressProject(tx, workspaceId)
+    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId);
+    const projectId = await ensureManagedIngressProject(tx, workspaceId);
     const [serverRow] = await tx
       .select({ name: server.name })
       .from(server)
       .where(eq(server.id, params.serverId))
-      .limit(1)
-    const environmentDisplayName =
-      serverRow?.name?.trim() || SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME
+      .limit(1);
+    const environmentDisplayName = serverRow?.name?.trim() ||
+      SYSTEM_MANAGED_INGRESS_PROJECT_DISPLAY_NAME;
     const environmentId = await ensureServerEnvironment(
       tx,
       projectId,
       params.serverId,
       environmentDisplayName,
-    )
+    );
     const serviceId = await ensureComposeService(
       tx,
       environmentId,
       SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
-    )
+    );
 
     const allocation = await ensureServiceIngressContainerAllocation(tx, {
       serviceId,
       serverId: params.serverId,
       composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
-    })
+    });
 
     return {
       workspaceId,
@@ -556,8 +589,8 @@ async function ensureManagedIngressHierarchyImpl(
       serviceId,
       containerRowId: allocation.containerRowId,
       containerName: allocation.containerName,
-    }
-  })
+    };
+  });
 }
 
 /**
@@ -566,13 +599,13 @@ async function ensureManagedIngressHierarchyImpl(
  */
 export const managedIngressHierarchyProvision = {
   ensure: ensureManagedIngressHierarchyImpl,
-}
+};
 
 export async function ensureManagedIngressHierarchy(
   db: Db,
   params: { organizationId: string; serverId: string },
 ): Promise<SystemHierarchyIds> {
-  return await managedIngressHierarchyProvision.ensure(db, params)
+  return await managedIngressHierarchyProvision.ensure(db, params);
 }
 
 /**
@@ -602,14 +635,14 @@ export async function findManagedIngressHierarchy(
       and(
         eq(environment.serverId, params.serverId),
         eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
-        sql`${project.metadata}->>'component' = ${SYSTEM_MANAGED_INGRESS_COMPONENT}`,
+        eq(project.component, SYSTEM_MANAGED_INGRESS_COMPONENT),
         eq(service.composeServiceName, SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME),
-        eq(container.role, 'ingress'),
+        eq(container.role, "ingress"),
       ),
     )
-    .limit(1)
-  const row = rows[0]
-  if (!row) return null
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
   return {
     workspaceId: row.workspaceId,
     projectId: row.projectId,
@@ -617,7 +650,7 @@ export async function findManagedIngressHierarchy(
     serviceId: row.serviceId,
     containerRowId: row.containerRowId,
     containerName: row.containerName,
-  }
+  };
 }
 
 /**
@@ -633,8 +666,8 @@ async function ensureManagedHaProject(
     workspaceId,
     component: SYSTEM_MANAGED_HA_COMPONENT,
     displayName: SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME,
-    missingLabel: 'managed-ha',
-  })
+    missingLabel: "managed-ha",
+  });
 }
 
 async function ensureManagedHaHierarchyImpl(
@@ -642,26 +675,26 @@ async function ensureManagedHaHierarchyImpl(
   params: { organizationId: string; serverId: string },
 ): Promise<SystemHierarchyIds> {
   return await db.transaction(async (tx) => {
-    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
-    const projectId = await ensureManagedHaProject(tx, workspaceId)
+    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId);
+    const projectId = await ensureManagedHaProject(tx, workspaceId);
     const [serverRow] = await tx
       .select({ name: server.name })
       .from(server)
       .where(eq(server.id, params.serverId))
-      .limit(1)
-    const environmentDisplayName =
-      serverRow?.name?.trim() || SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME
+      .limit(1);
+    const environmentDisplayName = serverRow?.name?.trim() ||
+      SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME;
     const environmentId = await ensureServerEnvironment(
       tx,
       projectId,
       params.serverId,
       environmentDisplayName,
-    )
+    );
     const serviceId = await ensureComposeService(
       tx,
       environmentId,
       SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
-    )
+    );
 
     const allocations = await allocateEnvironmentContainers(tx, {
       environmentId,
@@ -671,18 +704,18 @@ async function ensureManagedHaHierarchyImpl(
           serviceId,
           composeServiceName: SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
           instances: 1,
-          role: 'turbopanel',
+          role: "turbopanel",
           explicitContainerName: managedHaContainerNameFromService(serviceId),
         },
       ],
-      containerNaming: 'uuid',
+      containerNaming: "uuid",
       environmentServiceIds: [serviceId],
-    })
-    const allocation = allocations[0]
+    });
+    const allocation = allocations[0];
     if (!allocation) {
       throw new Error(
         `managed-ha container allocation missing (service=${serviceId})`,
-      )
+      );
     }
 
     return {
@@ -692,19 +725,19 @@ async function ensureManagedHaHierarchyImpl(
       serviceId,
       containerRowId: allocation.containerRowId,
       containerName: allocation.containerName,
-    }
-  })
+    };
+  });
 }
 
 export const managedHaHierarchyProvision = {
   ensure: ensureManagedHaHierarchyImpl,
-}
+};
 
 export async function ensureManagedHaHierarchy(
   db: Db,
   params: { organizationId: string; serverId: string },
 ): Promise<SystemHierarchyIds> {
-  return await managedHaHierarchyProvision.ensure(db, params)
+  return await managedHaHierarchyProvision.ensure(db, params);
 }
 
 /**
@@ -733,13 +766,16 @@ export async function findManagedHaHierarchy(
       and(
         eq(environment.serverId, params.serverId),
         eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
-        sql`${project.metadata}->>'component' = ${SYSTEM_MANAGED_HA_COMPONENT}`,
-        eq(service.composeServiceName, SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME),
+        eq(project.component, SYSTEM_MANAGED_HA_COMPONENT),
+        eq(
+          service.composeServiceName,
+          SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
+        ),
       ),
     )
-    .limit(1)
-  const row = rows[0]
-  if (!row) return null
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
   return {
     workspaceId: row.workspaceId,
     projectId: row.projectId,
@@ -747,14 +783,14 @@ export async function findManagedHaHierarchy(
     serviceId: row.serviceId,
     containerRowId: row.containerRowId,
     containerName: row.containerName,
-  }
+  };
 }
 
 /**
  * Shared self-host (`turbopanel`) project under the system workspace.
  *
  * Race-safe via the same partial unique `uniq_project_workspace_system_component`
- * used by the hosting-ingress project — `metadata.component` discriminates.
+ * used by the hosting-ingress project — `component` discriminates.
  */
 async function ensureSelfHostProject(
   tx: Db,
@@ -764,8 +800,8 @@ async function ensureSelfHostProject(
     workspaceId,
     component: SYSTEM_SELF_HOST_COMPONENT,
     displayName: SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME,
-    missingLabel: 'self-host',
-  })
+    missingLabel: "self-host",
+  });
 }
 
 /**
@@ -783,61 +819,66 @@ async function ensureSelfHostSystemHierarchyImpl(
   params: { organizationId: string; serverId: string },
 ): Promise<SelfHostSystemHierarchyIds> {
   return await db.transaction(async (tx) => {
-    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId)
-    const projectId = await ensureSelfHostProject(tx, workspaceId)
+    const workspaceId = await ensureSystemWorkspace(tx, params.organizationId);
+    const projectId = await ensureSelfHostProject(tx, workspaceId);
     const environmentId = await ensureServerEnvironment(
       tx,
       projectId,
       params.serverId,
       SYSTEM_SELF_HOST_ENVIRONMENT_DISPLAY_NAME,
-    )
+    );
 
-    const composeServiceIds = new Map<SystemSelfHostComposeServiceName, string>()
+    const composeServiceIds = new Map<
+      SystemSelfHostComposeServiceName,
+      string
+    >();
     for (const composeServiceName of SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES) {
       composeServiceIds.set(
         composeServiceName,
         await ensureComposeService(tx, environmentId, composeServiceName),
-      )
+      );
     }
 
-    const containerServices: ContainerServiceSpec[] = SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES
-      .map((composeServiceName) => ({
-        serviceId: composeServiceIds.get(composeServiceName)!,
-        composeServiceName,
-        instances: 1,
-        role: 'turbopanel' as const,
-      }))
+    const containerServices: ContainerServiceSpec[] =
+      SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES
+        .map((composeServiceName) => ({
+          serviceId: composeServiceIds.get(composeServiceName)!,
+          composeServiceName,
+          instances: 1,
+          role: "turbopanel" as const,
+        }));
 
     const allocations = await allocateEnvironmentContainers(tx, {
       environmentId,
       serverId: params.serverId,
       containerServices,
-      containerNaming: 'uuid',
+      containerNaming: "uuid",
       environmentServiceIds: [...composeServiceIds.values()],
-    })
+    });
     const allocationByService = new Map(
       allocations.map((row) => [row.serviceId, row]),
-    )
+    );
 
-    const services: SelfHostServiceAllocation[] = SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES
-      .map((composeServiceName) => {
-        const serviceId = composeServiceIds.get(composeServiceName)!
-        const allocation = allocationByService.get(serviceId)
-        if (!allocation) {
-          throw new Error(
-            `self-host container allocation missing (service=${serviceId})`,
-          )
-        }
-        return {
-          composeServiceName,
-          serviceId,
-          containerRowId: allocation.containerRowId,
-          containerName: allocation.containerName,
-        }
-      })
+    const services: SelfHostServiceAllocation[] =
+      SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES
+        .map((composeServiceName) => {
+          const serviceId = composeServiceIds.get(composeServiceName)!;
+          const allocation = allocationByService.get(serviceId);
+          if (!allocation) {
+            throw new Error(
+              `self-host container allocation missing (service=${serviceId})`,
+            );
+          }
+          return {
+            composeServiceName,
+            serviceId,
+            containerRowId: allocation.containerRowId,
+            containerName: allocation.containerName,
+          };
+        });
 
-    return { workspaceId, projectId, environmentId, services }
-  })
+    return { workspaceId, projectId, environmentId, services };
+  });
 }
 
 /**
@@ -846,13 +887,13 @@ async function ensureSelfHostSystemHierarchyImpl(
  */
 export const selfHostSystemHierarchyProvision = {
   ensure: ensureSelfHostSystemHierarchyImpl,
-}
+};
 
 export async function ensureSelfHostSystemHierarchy(
   db: Db,
   params: { organizationId: string; serverId: string },
 ): Promise<SelfHostSystemHierarchyIds> {
-  return await selfHostSystemHierarchyProvision.ensure(db, params)
+  return await selfHostSystemHierarchyProvision.ensure(db, params);
 }
 
 /**
@@ -868,13 +909,13 @@ export async function deleteSystemEnvironmentSubtree(
   const serviceRows = await tx
     .select({ id: service.id })
     .from(service)
-    .where(eq(service.environmentId, environmentId))
-  const serviceIds = serviceRows.map((row) => row.id)
+    .where(eq(service.environmentId, environmentId));
+  const serviceIds = serviceRows.map((row) => row.id);
 
   if (serviceIds.length > 0) {
-    await tx.delete(container).where(inArray(container.serviceId, serviceIds))
-    await tx.delete(service).where(inArray(service.id, serviceIds))
+    await tx.delete(container).where(inArray(container.serviceId, serviceIds));
+    await tx.delete(service).where(inArray(service.id, serviceIds));
   }
 
-  await tx.delete(environment).where(eq(environment.id, environmentId))
+  await tx.delete(environment).where(eq(environment.id, environmentId));
 }

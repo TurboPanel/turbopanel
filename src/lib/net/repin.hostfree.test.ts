@@ -5,7 +5,6 @@
 
 import { assertEquals } from '@std/assert'
 import {
-  clearedPendingFanoutMetadata,
   clearedStaleMetadata,
   decideRepinActions,
   parseIpPinMetadata,
@@ -207,20 +206,9 @@ test('parseIpPinMetadata round-trips stale and repin markers', () => {
   const repinned = withRepinMetadata(stale, {
     at: '2026-09-02T00:00:00.000Z',
     from: '10.20.0.10',
-    pendingFanoutAt: '2026-09-02T00:00:00.000Z',
   })
   assertEquals(repinned.note, 'keep me')
   assertEquals(parseIpPinMetadata(repinned), {
-    repin: {
-      at: '2026-09-02T00:00:00.000Z',
-      from: '10.20.0.10',
-      pendingFanoutAt: '2026-09-02T00:00:00.000Z',
-    },
-  })
-
-  const drained = clearedPendingFanoutMetadata(repinned)
-  assertEquals(drained.note, 'keep me')
-  assertEquals(parseIpPinMetadata(drained), {
     repin: { at: '2026-09-02T00:00:00.000Z', from: '10.20.0.10' },
   })
 
@@ -249,9 +237,10 @@ test('parseIpPinMetadata ignores invalid or partial markers', () => {
   assertEquals(parseIpPinMetadata({ stale: { since: 'nope', reason: 'address_gone_ambiguous' } }), {})
   assertEquals(parseIpPinMetadata({ stale: { since: '2026-09-01T00:00:00.000Z', reason: 'other' } }), {})
   assertEquals(parseIpPinMetadata({ repin: { at: '2026-09-01T00:00:00.000Z' } }), {})
+  // Unknown keys on a valid marker are dropped, not preserved or rejected.
   assertEquals(
     parseIpPinMetadata({
-      repin: { at: '2026-09-01T00:00:00.000Z', from: '10.0.0.1', pendingFanoutAt: 'bad' },
+      repin: { at: '2026-09-01T00:00:00.000Z', from: '10.0.0.1', extra: 'ignored' },
     }),
     { repin: { at: '2026-09-01T00:00:00.000Z', from: '10.0.0.1' } },
   )

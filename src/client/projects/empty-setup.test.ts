@@ -409,6 +409,7 @@ test('insertEmptyProject inserts project and environment', async () => {
     name: 'App',
     description: 'desc',
     workspaceId: 'ws-1',
+    organizationId: 'org-1',
     serverId: 'srv-1',
   })
   assertEquals(id, 'proj-created')
@@ -420,6 +421,7 @@ test('insertEmptyProject uses custom default environment name', async () => {
     name: null,
     description: null,
     workspaceId: 'ws-1',
+    organizationId: 'org-1',
     serverId: null,
     defaultEnvironmentName: 'Staging',
   })

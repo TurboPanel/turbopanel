@@ -135,6 +135,7 @@ async function withPrincipalFixtures(
     .values({
       name: 'Principal Route Project',
       workspaceId,
+      organizationId,
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id
@@ -849,6 +850,7 @@ test('DELETE /projects/:projectId/principals/:id returns 404 when principal belo
       .values({
         name: 'Other Principal Project',
         workspaceId: workspaceRow[0]!.id,
+        organizationId,
       })
       .returning({ id: project.id })
 
@@ -895,7 +897,7 @@ test('POST /projects/:projectId/principals returns 404 for project in another or
       .returning({ id: workspace.id })
     const [otherProject] = await db
       .insert(project)
-      .values({ name: 'Foreign Project', workspaceId: otherWorkspace!.id })
+      .values({ name: 'Foreign Project', workspaceId: otherWorkspace!.id, organizationId: otherOrg!.id })
       .returning({ id: project.id })
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -934,7 +936,7 @@ test('POST /projects/:projectId/principals rejects mutations on turbopanel works
       .returning({ id: workspace.id })
     const [platformProject] = await db
       .insert(project)
-      .values({ name: 'Platform Project', workspaceId: platformWorkspace!.id })
+      .values({ name: 'Platform Project', workspaceId: platformWorkspace!.id , organizationId })
       .returning({ id: project.id })
 
     const cookie = await sessionCookie(db, secrets, userId)

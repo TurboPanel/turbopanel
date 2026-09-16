@@ -545,7 +545,7 @@ test('GET /access/check returns boolean for variable and managed resource ids', 
   }) => {
     const [insertedProject] = await db
       .insert(project)
-      .values({ name: 'Access Route Project', workspaceId })
+      .values({ name: 'Access Route Project', workspaceId, organizationId })
       .returning({ id: project.id })
 
     const projectId = insertedProject!.id
@@ -559,7 +559,7 @@ test('GET /access/check returns boolean for variable and managed resource ids', 
 
     const [insertedManaged] = await db
       .insert(managed)
-      .values({ environmentId })
+      .values({ environmentId, engine: 'postgres' })
       .returning({ id: managed.id })
 
     const managedId = insertedManaged!.id

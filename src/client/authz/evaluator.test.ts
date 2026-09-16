@@ -330,7 +330,7 @@ test('listVisible returns variable ids for org owner', async () => {
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     const [insertedProject] = await db
       .insert(project)
-      .values({ name: 'Evaluator Variables Project', workspaceId })
+      .values({ name: 'Evaluator Variables Project', workspaceId, organizationId })
       .returning({ id: project.id })
 
     const projectId = insertedProject!.id
@@ -379,7 +379,7 @@ test('organization grant allows can() on managed and variable entities', async (
   await withTestFixtures(async ({ db, userId, organizationId, workspaceId }) => {
     const [insertedProject] = await db
       .insert(project)
-      .values({ name: 'Evaluator Test Project', workspaceId })
+      .values({ name: 'Evaluator Test Project', workspaceId, organizationId })
       .returning({ id: project.id })
 
     const projectId = insertedProject!.id
@@ -393,7 +393,7 @@ test('organization grant allows can() on managed and variable entities', async (
 
     const [insertedManaged] = await db
       .insert(managed)
-      .values({ environmentId })
+      .values({ environmentId, engine: 'postgres' })
       .returning({ id: managed.id })
 
     const managedId = insertedManaged!.id

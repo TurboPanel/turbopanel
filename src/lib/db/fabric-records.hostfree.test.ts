@@ -8,10 +8,10 @@ import type { ComposeDocument } from "../compose/types.ts";
 import {
   ensureFabricRelays,
   FabricAllocationError,
-  materializeSpanningNetworks,
   type FabricRecord,
+  materializeSpanningNetworks,
 } from "./fabric-records.ts";
-import { network, relay, subnet, server } from "./schema.ts";
+import { network, relay, server, subnet } from "./schema.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -40,7 +40,8 @@ function relayUniqueViolation(): Error {
 function thenableRows<T>(rows: T[]) {
   const promise = Promise.resolve(rows);
   return {
-    limit: (n?: number) => Promise.resolve(typeof n === "number" ? rows.slice(0, n) : rows),
+    limit: (n?: number) =>
+      Promise.resolve(typeof n === "number" ? rows.slice(0, n) : rows),
     orderBy: () => thenableRows(rows),
     then: promise.then.bind(promise),
     catch: promise.catch.bind(promise),
@@ -54,6 +55,7 @@ const COLUMN_TO_FIELD: Record<string, string> = {
   network_id: "networkId",
   organization_id: "organizationId",
   environment_id: "environmentId",
+  compose_key: "composeKey",
 };
 
 function extractWhereFilters(condition: unknown): Record<string, unknown> {
@@ -78,7 +80,10 @@ function extractWhereFilters(condition: unknown): Record<string, unknown> {
   return filters;
 }
 
-function matchesWhere(row: Record<string, unknown>, condition: unknown): boolean {
+function matchesWhere(
+  row: Record<string, unknown>,
+  condition: unknown,
+): boolean {
   const filters = extractWhereFilters(condition);
   for (const [column, expected] of Object.entries(filters)) {
     const field = COLUMN_TO_FIELD[column] ?? column;
@@ -117,6 +122,7 @@ type NetworkRow = {
   name: string;
   cidr?: string | null;
   options: Record<string, unknown>;
+  composeKey?: string | null;
 };
 type SegmentRow = {
   id: string;
@@ -194,7 +200,9 @@ function createFabricDb(opts: {
       }),
     }),
     insert: (table: unknown) => ({
-      values: (values: Record<string, unknown> | Array<Record<string, unknown>>) => {
+      values: (
+        values: Record<string, unknown> | Array<Record<string, unknown>>,
+      ) => {
         const rows = Array.isArray(values) ? values : [values];
         if (table === relay) {
           relayInserts += 1;
@@ -240,13 +248,18 @@ function createFabricDb(opts: {
               kind: String(row.kind),
               name: String(row.name ?? ""),
               options: (row.options as Record<string, unknown>) ?? {},
+              composeKey: row.composeKey == null
+                ? null
+                : String(row.composeKey),
             };
             networks.push(record);
             return { id: record.id };
           });
           return {
             returning: () => Promise.resolve(inserted),
-            onConflictDoNothing: () => Promise.resolve(undefined),
+            onConflictDoNothing: () => ({
+              returning: () => Promise.resolve(inserted),
+            }),
             then: (
               resolve: (value: undefined) => unknown,
               reject?: (error: unknown) => unknown,
@@ -577,7 +590,7 @@ test("materializeSpanningNetworks creates compose networks and per-server segmen
 
   assertEquals(spanning.get("frontend")?.startsWith("tpn_"), true);
   assertEquals(db.networks.length, 1);
-  assertEquals(db.networks[0]?.options.composeKey, "frontend");
+  assertEquals(db.networks[0]?.composeKey, "frontend");
   assertEquals(db.segments.length, 2);
   assertEquals(
     db.segments.map((row) => row.serverId).sort(),

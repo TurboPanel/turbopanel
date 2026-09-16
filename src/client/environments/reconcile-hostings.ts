@@ -52,6 +52,10 @@ import {
 } from '../../lib/compose/index.ts'
 import { hosting, ip, service, tls } from '../../lib/db/schema.ts'
 import {
+  isHostnameUniqueViolation,
+  replaceHostingHostnames,
+} from '../../lib/db/hostname-records.ts'
+import {
   HOSTING_COMPOSE_ROUTE_METADATA_KEY,
   isAdoptedComposeHosting,
   isComposeOwnedHosting,
@@ -121,10 +125,23 @@ export type ComposeHostingRouteConflictError = {
   otherHostnames: string[]
 }
 
+/**
+ * A declaration's hostname collides, under `UNIQUE (routing_organization_id,
+ * hostname)`, with a hostname some *other* hosting already serves — possibly
+ * in a different environment or service, which {@link
+ * ComposeHostingRouteConflictError} (same service/route key) cannot catch.
+ */
+export type ComposeHostingHostnameConflictError = {
+  kind: 'hosting_hostname_conflict'
+  composeServiceName: string
+  hostname: string
+}
+
 export type ComposeHostingError =
   | ComposeHostingRefError
   | ComposeHostingTlsModeError
   | ComposeHostingRouteConflictError
+  | ComposeHostingHostnameConflictError
 
 export type ComposeHostingReconcileResult =
   | {
@@ -432,6 +449,8 @@ function readRouteFromMetadata(metadata: unknown): string | null {
 
 /** Everything one declared route needs to be upserted, plus the outcome lists. */
 type RouteReconcileContext = {
+  /** The workspace-ancestry organization this whole reconcile runs for — also `hostname.routing_organization_id` for every row it writes. */
+  organizationId: string
   serviceIdByComposeName: ReadonlyMap<string, string>
   resolveTls: (ref: string) => RefResolution
   resolveIp: (ref: string) => RefResolution
@@ -504,22 +523,39 @@ async function reconcileDeclaredRoute(
   })
 
   if (existing) {
-    await db
-      .update(hosting)
-      .set({
-        name: route.entry.hostname,
-        tlsId: pins.tlsId,
-        ipId: pins.ipId,
-        metadata,
-        options,
-        updatedAt: new Date().toISOString(),
+    const existingId = existing.id
+    try {
+      await db.transaction(async (tx) => {
+        await tx
+          .update(hosting)
+          .set({
+            name: route.entry.hostname,
+            tlsId: pins.tlsId,
+            ipId: pins.ipId,
+            metadata,
+            options,
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(hosting.id, existingId))
+        await replaceHostingHostnames(tx, existingId, ctx.organizationId, [
+          route.entry.hostname,
+        ])
       })
-      .where(eq(hosting.id, existing.id))
-    if (isAdoption) ctx.adopted.push(existing.id)
-    else ctx.updated.push(existing.id)
-    ctx.keptIds.add(existing.id)
+    } catch (err) {
+      if (isHostnameUniqueViolation(err)) {
+        return {
+          kind: 'hosting_hostname_conflict',
+          composeServiceName: route.composeServiceName,
+          hostname: route.entry.hostname,
+        }
+      }
+      throw err
+    }
+    if (isAdoption) ctx.adopted.push(existingId)
+    else ctx.updated.push(existingId)
+    ctx.keptIds.add(existingId)
     ctx.existingByKey.set(existingRowKey(serviceId, route.route), {
-      id: existing.id,
+      id: existingId,
       serviceId,
       metadata,
       options,
@@ -527,21 +563,39 @@ async function reconcileDeclaredRoute(
     return null
   }
 
-  const [inserted] = await db
-    .insert(hosting)
-    .values({
-      name: route.entry.hostname,
-      serviceId,
-      tlsId: pins.tlsId,
-      ipId: pins.ipId,
-      metadata,
-      options,
+  let insertedId: string
+  try {
+    insertedId = await db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(hosting)
+        .values({
+          name: route.entry.hostname,
+          serviceId,
+          tlsId: pins.tlsId,
+          ipId: pins.ipId,
+          metadata,
+          options,
+        })
+        .returning({ id: hosting.id })
+      await replaceHostingHostnames(tx, inserted.id, ctx.organizationId, [
+        route.entry.hostname,
+      ])
+      return inserted.id
     })
-    .returning({ id: hosting.id })
-  ctx.created.push(inserted.id)
-  ctx.keptIds.add(inserted.id)
+  } catch (err) {
+    if (isHostnameUniqueViolation(err)) {
+      return {
+        kind: 'hosting_hostname_conflict',
+        composeServiceName: route.composeServiceName,
+        hostname: route.entry.hostname,
+      }
+    }
+    throw err
+  }
+  ctx.created.push(insertedId)
+  ctx.keptIds.add(insertedId)
   ctx.existingByKey.set(existingRowKey(serviceId, route.route), {
-    id: inserted.id,
+    id: insertedId,
     serviceId,
     metadata,
     options,
@@ -642,6 +696,7 @@ export async function reconcileHostingsFromCompose(
   }
 
   const ctx: RouteReconcileContext = {
+    organizationId: params.organizationId,
     serviceIdByComposeName,
     resolveTls,
     resolveIp,

@@ -95,6 +95,7 @@ async function withManagedAllocationFixtures(
     .values({
       name: 'Managed Allocate Project',
       workspaceId,
+      organizationId,
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id
@@ -181,6 +182,7 @@ async function withManagedApplyPrepareFixtures(
     .values({
       name: 'Managed Apply Prepare Project',
       workspaceId,
+      organizationId,
       metadata: { type: 'managed', code: 'postgres' },
     })
     .returning({ id: project.id })

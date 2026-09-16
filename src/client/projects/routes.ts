@@ -43,6 +43,7 @@ import {
   isProjectDisplayNameTaken,
   PROJECT_NAME_IN_USE_ERROR,
 } from '../display-name-uniqueness.ts'
+import { isReservedSystemProjectName } from '../system/hierarchy.ts'
 import { UUID_RE } from '../repositories/routes-helpers.ts'
 import {
   adoptProjectRepository,
@@ -55,6 +56,7 @@ import {
 import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
+  isProjectNameUniqueViolation,
   mapCreateProjectError,
   normalizeProjectPatchOptions,
   parseConfigureProjectBody,
@@ -122,6 +124,7 @@ function runCreateProjectTransaction(
     name: string | null
     description: string | null
     workspaceId: string
+    organizationId: string
     metadata: Record<string, unknown> | null
     options: Record<string, unknown> | null
     catalogEntry: CatalogEntry | undefined
@@ -136,6 +139,7 @@ function runCreateProjectTransaction(
         name: input.name,
         description: input.description,
         workspaceId: input.workspaceId,
+        organizationId: input.organizationId,
         serverId: input.serverId,
         defaultEnvironmentName: input.defaultEnvironmentName,
       })
@@ -146,6 +150,7 @@ function runCreateProjectTransaction(
         name: input.name,
         description: input.description,
         workspaceId: input.workspaceId,
+        organizationId: input.organizationId,
         metadata: input.metadata,
         options: input.options,
         serverId: input.serverId,
@@ -165,6 +170,7 @@ function runCreateProjectTransaction(
       name: input.name,
       description: input.description,
       workspaceId: input.workspaceId,
+      organizationId: input.organizationId,
       metadata: input.metadata,
       options: input.options,
       entry: input.catalogEntry,
@@ -545,6 +551,7 @@ async function insertDockerComposeProject(
     name: string | null
     description: string | null
     workspaceId: string
+    organizationId: string
     metadata: Record<string, unknown> | null
     options: Record<string, unknown> | null
     serverId: string | null
@@ -561,6 +568,7 @@ async function insertDockerComposeProject(
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
+      organizationId: fields.organizationId,
       metadata: stampCreateProjectMetadata(fields.metadata, {
         type: 'docker-compose',
       }),
@@ -584,6 +592,7 @@ async function insertCatalogProject(
     name: string | null
     description: string | null
     workspaceId: string
+    organizationId: string
     metadata: Record<string, unknown> | null
     options: Record<string, unknown> | null
     entry: CatalogEntry
@@ -601,6 +610,7 @@ async function insertCatalogProject(
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
+      organizationId: fields.organizationId,
       metadata: stampCreateProjectMetadata(fields.metadata, {
         type: fields.projectType,
         ...(isEngine ? { code: fields.entry.code } : {}),
@@ -744,12 +754,15 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const input = await parseCreateProjectInput(c, db, orgResult)
     if (input instanceof Response) return input
 
+    // The friendly 409; `uniq_project_organization_name` is the lock behind
+    // it (a losing racer surfaces as the same 409 via mapCreateProjectError).
     if (
-      await isProjectDisplayNameTaken(
+      isReservedSystemProjectName(input.name) ||
+      (await isProjectDisplayNameTaken(
         db,
         input.organizationId,
         input.name,
-      )
+      ))
     ) {
       return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
     }
@@ -857,12 +870,13 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     if (
       patchFields.name !== undefined &&
-      (await isProjectDisplayNameTaken(
-        db,
-        organizationId,
-        patchFields.name,
-        id,
-      ))
+      (isReservedSystemProjectName(patchFields.name) ||
+        (await isProjectDisplayNameTaken(
+          db,
+          organizationId,
+          patchFields.name,
+          id,
+        )))
     ) {
       return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
     }
@@ -875,10 +889,17 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (defaultServerError) return defaultServerError
 
-    await db
-      .update(project)
-      .set(patchFields)
-      .where(eq(project.id, id))
+    try {
+      await db
+        .update(project)
+        .set(patchFields)
+        .where(eq(project.id, id))
+    } catch (err) {
+      if (isProjectNameUniqueViolation(err)) {
+        return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+      }
+      throw err
+    }
 
     if (patchFields.options !== undefined) {
       await adoptProjectRepository(db, id, patchFields.options, projectRepositoryId)

@@ -20,6 +20,9 @@ import {
 } from "../../lib/billing/customer-subject.ts";
 import { StripeApiError } from "../../lib/billing/errors.ts";
 import {
+  allowance,
+  key,
+  lease,
   license,
   payer,
   server,
@@ -92,6 +95,9 @@ type Obj = Record<string, unknown>;
 function emptyDb(opts: { licenses?: Obj[]; servers?: Obj[] } = {}): MemoryDb {
   return createMemoryDb([
     [setting, []],
+    [allowance, []],
+    [key, []],
+    [lease, []],
     [payer, []],
     [subscription, []],
     [subscriptionItem, []],

@@ -204,7 +204,7 @@ async function seedManagedClusters(
   const workspaceId = workspaceRow!.id;
   const [projectRow] = await db
     .insert(project)
-    .values({ name: "TLS Rotation Project", workspaceId })
+    .values({ name: "TLS Rotation Project", workspaceId, organizationId: params.organizationId })
     .returning({ id: project.id });
   const projectId = projectRow!.id;
   const environmentIds: string[] = [];
@@ -226,6 +226,7 @@ async function seedManagedClusters(
         environmentId,
         serverId: params.serverId,
         name: `Cluster ${i + 1}`,
+        engine: "postgres",
       })
       .returning({ id: managed.id });
     managedIds.push(managedRow!.id);

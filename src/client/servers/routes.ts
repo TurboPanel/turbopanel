@@ -1,236 +1,254 @@
-import { and, eq, inArray, sql } from 'drizzle-orm'
-import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { AuthRouteOpts } from '../authn/http.ts'
-import { createSessionMiddleware } from '../authn/middleware.ts'
-import { isAdminRole } from '../authn/session-store.ts'
-import { can, listVisible } from '../authz/index.ts'
+import { and, eq, inArray, sql } from "drizzle-orm";
+import type { Context, Hono } from "hono";
+import type { AppEnv } from "../../app.ts";
+import type { AuthRouteOpts } from "../authn/http.ts";
+import { createSessionMiddleware } from "../authn/middleware.ts";
+import { isAdminRole } from "../authn/session-store.ts";
+import { can, listVisible } from "../authz/index.ts";
 import {
   assertCanManageOr403,
   assertCanReadOr403,
   getOrgId,
   parseJsonBody,
-} from '../shared.ts'
-import { getDb, getDaemonCellRegistry, type Db } from '../../db.ts'
-import { parseOrganizationOptions } from '../../lib/organization-options.ts'
-import { parseDatacenterOptions } from '../../lib/datacenter-options.ts'
+} from "../shared.ts";
+import { type Db, getDaemonCellRegistry, getDb } from "../../db.ts";
+import { parseOrganizationOptions } from "../../lib/organization-options.ts";
+import { parseDatacenterOptions } from "../../lib/datacenter-options.ts";
 import {
   parseServerOptions,
   redactServerOptions,
   type ServerOptions,
-} from '../../lib/db/server-metadata.ts'
-import { metricsDeploymentKindForRuntime } from '../../daemon/metrics/capability-plan.ts'
-import { loadTierPlacementsForServers } from '../../lib/tiers/tier-enforcement.ts'
-import { loadServerLayoutPaths } from './server-topology-records.ts'
-import { isActiveContainerStatus } from '../../lib/db/project-delete.ts'
-import { cachedServerDetailReadModel } from '../../query-cache/read-models/server-detail.ts'
-import { listServerLabels } from '../../lib/db/label-records.ts'
+} from "../../lib/db/server-metadata.ts";
+import { metricsDeploymentKindForRuntime } from "../../daemon/metrics/capability-plan.ts";
+import { loadTierPlacementsForServers } from "../../lib/tiers/tier-enforcement.ts";
+import { loadServerLayoutPaths } from "./server-topology-records.ts";
+import { isActiveContainerStatus } from "../../lib/db/project-delete.ts";
+import { cachedServerDetailReadModel } from "../../query-cache/read-models/server-detail.ts";
+import { listServerLabels } from "../../lib/db/label-records.ts";
+import { fetchDaemonServerCell } from "../../daemon/cell/server-diagnostics.ts";
+import { resolveFleetPresence } from "../../daemon/cell/fleet-presence.ts";
+import { readProjectionsForServers } from "../../daemon/cell/postgres-projection.ts";
 import {
-  fetchDaemonServerCell,
-} from '../../daemon/cell/server-diagnostics.ts'
-import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
-import { readProjectionsForServers } from '../../daemon/cell/postgres-projection.ts'
-import {
+  onDaemonUpdateExpired,
   onDaemonUpdateQueued,
   onDaemonUpdateReset,
   onDaemonUpdateResult,
-  onDaemonUpdateExpired,
   repairStaleProjectedUpdate,
-} from '../../daemon/cell/control-plane-monitor.ts'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
-import type { UpdateProjection } from '../../daemon/authn/daemon-state.ts'
+} from "../../daemon/cell/control-plane-monitor.ts";
+import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
+import type { UpdateProjection } from "../../daemon/authn/daemon-state.ts";
 import {
+  type DaemonOutboundEnvelope,
   generateDeliveryId,
   generateRequestId,
-  type DaemonOutboundEnvelope,
-} from '../../daemon/cell/protocol.ts'
-import { clearServerDaemonState } from '../../daemon/authn/server-identity-db.ts'
+} from "../../daemon/cell/protocol.ts";
+import {
+  clearServerDaemonState,
+  getServerDaemonStateByServerId,
+  isDaemonKeyActive,
+  revokeDaemonKey,
+} from "../../daemon/authn/server-identity-db.ts";
 import {
   container,
+  datacenter,
+  license,
   organization,
   server,
-  license,
-  datacenter,
   service,
-} from '../../lib/db/schema.ts'
-import { resolveTrunkManifest } from '../../lib/update/manifest.ts'
-import { getServerUpdatePreparer } from '../../lib/update/prepare.ts'
-import { revokeLicense } from '../authn/license.ts'
-import { recomputeOrganizationAssignments } from '../../lib/tiers/assignment-records.ts'
-import { syncSelfHostedGrant } from '../../lib/tiers/self-hosted-grant-records.ts'
-import { compatLogWarn } from '../../log-compat.ts'
+} from "../../lib/db/schema.ts";
+import { resolveTrunkManifest } from "../../lib/update/manifest.ts";
+import { getServerUpdatePreparer } from "../../lib/update/prepare.ts";
+import { revokeLicense } from "../authn/license.ts";
+import { recomputeOrganizationAssignments } from "../../lib/tiers/assignment-records.ts";
+import { syncSelfHostedGrant } from "../../lib/tiers/self-hosted-grant-records.ts";
+import { compatLogWarn } from "../../log-compat.ts";
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
-} from '../hierarchy-delete.ts'
-import * as systemHierarchy from '../system/hierarchy.ts'
-import { enqueueSystemReconcile } from '../system/reconcile.ts'
-import type { SystemReconcileAction } from '../../lib/commands/schemas.ts'
-import { assertDispatchInfrastructure } from './command-dispatch.ts'
-import { deleteServerFabricMembership } from '../../lib/db/fabric-records.ts'
-import { reconcileFabricMembership } from '../../lib/fabric/enqueue.ts'
+} from "../hierarchy-delete.ts";
+import * as systemHierarchy from "../system/hierarchy.ts";
+import { enqueueSystemReconcile } from "../system/reconcile.ts";
+import type { SystemReconcileAction } from "../../lib/commands/schemas.ts";
+import { assertDispatchInfrastructure } from "./command-dispatch.ts";
+import { deleteServerFabricMembership } from "../../lib/db/fabric-records.ts";
+import { reconcileFabricMembership } from "../../lib/fabric/enqueue.ts";
 import {
+  COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
   listServerDeleteBlockers,
   serverDeleteBlockersResponse,
-} from './delete-guards.ts'
+} from "./delete-guards.ts";
 import {
   hasActiveColocatedLicenseBinding,
   resolveColocatedServerIdSet,
-} from './colocated.ts'
+} from "./colocated.ts";
 import {
   colocatedServerUpdateBlockedReason,
   isStaleProjectedUpdating,
   loadServerStatusRecords,
   resolveServerUpdateStatus,
   type ServerUpdateCommit,
-} from './update-status.ts'
-import { UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
-import { registerServerCommandRoutes } from './commands-routes.ts'
-import { registerServerMetricsRoutes } from './metrics-routes.ts'
-import { registerServerLabelRoutes } from './labels-routes.ts'
-import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
+} from "./update-status.ts";
+import { UPDATE_REQUEST_TTL_MS } from "../../lib/update/constants.ts";
+import { registerServerCommandRoutes } from "./commands-routes.ts";
+import { registerServerMetricsRoutes } from "./metrics-routes.ts";
+import { registerServerLabelRoutes } from "./labels-routes.ts";
+import { cachedServersListReadModel } from "../../query-cache/read-models/servers-list.ts";
 import {
-  UPDATE_CHANNEL,
-  STATUS_CACHE_CONTROL,
-  STATUS_CACHE_MAX_AGE_MS,
   buildBatchStatusCoalesceKey,
-  expiredBatchStatusCoalesceKeys,
   currentCommitFromDaemonBuild,
-  parseServerPatchCore,
-  isHostingEnableTransition,
-  isHostingDisableTransition,
-  hostingHierarchyFailedBody,
-  serverDeletedPayload,
-  queueServerUpdateHttpStatus,
-  emptyServersUpdatesPayload,
-  resolveTrunkTargetFields,
-  resolveBatchUpdateEligibility,
-  runPreparedServerUpdate,
-  updateResetErrorStatus,
   distinctNonEmptyIds,
+  emptyServersUpdatesPayload,
   errorMessageFromUnknown,
-  resolveServerTimezoneFields,
+  expiredBatchStatusCoalesceKeys,
+  hostingHierarchyFailedBody,
+  isHostingDisableTransition,
+  isHostingEnableTransition,
+  parseServerPatchCore,
+  queueServerUpdateHttpStatus,
+  repairedUpdateDoneProjection,
+  repairedUpdateIdleProjection,
+  resolveBatchUpdateEligibility,
   resolveServerHostDefaultsFields,
+  resolveServerTimezoneFields,
+  resolveTrunkTargetFields,
+  runPreparedServerUpdate,
+  serverDeletedPayload,
+  type ServerPatchFields,
   shapeServerDatacenters,
   shapeServerPresenceFields,
   shouldSkipProjectedUpdateRepair,
-  repairedUpdateDoneProjection,
-  repairedUpdateIdleProjection,
-  type ServerPatchFields,
-} from './routes-helpers.ts'
+  STATUS_CACHE_CONTROL,
+  STATUS_CACHE_MAX_AGE_MS,
+  UPDATE_CHANNEL,
+  updateResetErrorStatus,
+} from "./routes-helpers.ts";
 import {
   loadDatacenterDisplayNames,
   loadDatacenterMembershipsForServers,
-} from '../../lib/net/datacenter-membership.ts'
+} from "../../lib/net/datacenter-membership.ts";
 
-const UPDATE_REQUEST_TTL_SECONDS = 300
+const UPDATE_REQUEST_TTL_SECONDS = 300;
 
 type BatchStatusPayload = {
-  servers: Awaited<ReturnType<typeof loadServerStatusRecords>>
-}
+  servers: Awaited<ReturnType<typeof loadServerStatusRecords>>;
+};
 
 type BatchStatusCoalesceEntry = {
-  expiresAt: number
-  promise?: Promise<BatchStatusPayload>
-  result?: BatchStatusPayload
-}
+  expiresAt: number;
+  promise?: Promise<BatchStatusPayload>;
+  result?: BatchStatusPayload;
+};
 
-const batchStatusCoalesce = new Map<string, BatchStatusCoalesceEntry>()
+const batchStatusCoalesce = new Map<string, BatchStatusCoalesceEntry>();
 
 function evictExpiredBatchStatusEntries(now = Date.now()): void {
   for (const key of expiredBatchStatusCoalesceKeys(batchStatusCoalesce, now)) {
-    batchStatusCoalesce.delete(key)
+    batchStatusCoalesce.delete(key);
   }
 }
 
 type QueuedUpdateResult = {
-  ok: true
-  queued: true
-  status: 'updating'
-  serverId: string
-  requestId: string
-  channel: typeof UPDATE_CHANNEL
-}
+  ok: true;
+  queued: true;
+  status: "updating";
+  serverId: string;
+  requestId: string;
+  channel: typeof UPDATE_CHANNEL;
+};
 
 type QueueUpdateFailure = {
-  ok: false
-  error: string
-}
+  ok: false;
+  error: string;
+};
 
 async function queueServerUpdate(
   registry: DaemonCellRegistry,
   db: Db,
   serverId: string,
 ): Promise<QueuedUpdateResult | QueueUpdateFailure> {
-  const presence = await resolveFleetPresence(db, registry, [serverId])
-  const live = presence.get(serverId)
+  const presence = await resolveFleetPresence(db, registry, [serverId]);
+  const live = presence.get(serverId);
   if (!live?.connected) {
-    return { ok: false, error: 'Daemon not connected' }
+    return { ok: false, error: "Daemon not connected" };
   }
   // Includes the self-host pin: the "don't remote-update the host you run
   // on" guard must hold on both runtimes, and the transport probes
   // (`__direct__`, the local machine key) only ever fire on the self-hosted
   // one. Against TurboPanel High Availability the co-located daemon connects
   // over HTTPS like any other, so the pin is the only thing that still knows.
-  const colocatedIds = await resolveColocatedServerIdSet(db, registry, [serverId], {
+  const colocatedIds = await resolveColocatedServerIdSet(db, registry, [
+    serverId,
+  ], {
     includeSelfHostPin: true,
-  })
+  });
   if (colocatedIds.has(serverId)) {
-    return { ok: false, error: colocatedServerUpdateBlockedReason() }
+    return { ok: false, error: colocatedServerUpdateBlockedReason() };
   }
 
-  const requestId = generateRequestId()
+  const requestId = generateRequestId();
   const envelope: DaemonOutboundEnvelope = {
-    kind: 'update',
+    kind: "update",
     deliveryId: generateDeliveryId(),
     requestId,
     at: new Date().toISOString(),
     channel: UPDATE_CHANNEL,
-  }
+  };
 
-  const preparer = getServerUpdatePreparer()
+  const preparer = getServerUpdatePreparer();
   if (preparer) {
     // Dev-only: rebuild the local daemon overlay before releasing the
     // envelope. Mark the projection as updating now so the UI polls through
     // the build; the envelope enqueues when the (single-flight) build lands.
-    await onDaemonUpdateQueued(db, serverId, requestId, UPDATE_CHANNEL, envelope.at)
+    await onDaemonUpdateQueued(
+      db,
+      serverId,
+      requestId,
+      UPDATE_CHANNEL,
+      envelope.at,
+    );
     void runPreparedServerUpdate({
       prepare: preparer,
       enqueue: async () => {
         await registry.getCell(serverId).enqueue(envelope, {
           ttlSeconds: UPDATE_REQUEST_TTL_SECONDS,
-        })
+        });
       },
       markQueued: (queuedAt) =>
         onDaemonUpdateQueued(db, serverId, requestId, UPDATE_CHANNEL, queuedAt),
       markFailed: (error, finishedAt) =>
         onDaemonUpdateResult(db, serverId, requestId, false, finishedAt, error),
-    })
+    });
     return {
       ok: true,
       queued: true,
-      status: 'updating',
+      status: "updating",
       serverId,
       requestId,
       channel: UPDATE_CHANNEL,
-    }
+    };
   }
 
   await registry.getCell(serverId).enqueue(envelope, {
     ttlSeconds: UPDATE_REQUEST_TTL_SECONDS,
-  })
+  });
 
-  await onDaemonUpdateQueued(db, serverId, requestId, UPDATE_CHANNEL, envelope.at)
+  await onDaemonUpdateQueued(
+    db,
+    serverId,
+    requestId,
+    UPDATE_CHANNEL,
+    envelope.at,
+  );
 
   return {
     ok: true,
     queued: true,
-    status: 'updating',
+    status: "updating",
     serverId,
     requestId,
     channel: UPDATE_CHANNEL,
-  }
+  };
 }
 
 async function repairProjectedUpdateIfStale(
@@ -241,7 +259,7 @@ async function repairProjectedUpdateIfStale(
   targetCommit?: string,
 ): Promise<UpdateProjection | null | undefined> {
   if (shouldSkipProjectedUpdateRepair(projectedUpdate)) {
-    return projectedUpdate
+    return projectedUpdate;
   }
 
   const repaired = await repairStaleProjectedUpdate(
@@ -253,8 +271,8 @@ async function repairProjectedUpdateIfStale(
       targetCommit,
       updateTtlMs: UPDATE_REQUEST_TTL_MS,
     },
-  )
-  if (!repaired) return projectedUpdate
+  );
+  if (!repaired) return projectedUpdate;
 
   if (targetCommit && current?.commit === targetCommit) {
     return repairedUpdateDoneProjection({
@@ -262,10 +280,38 @@ async function repairProjectedUpdateIfStale(
       channel: projectedUpdate!.channel ?? undefined,
       queuedAt: projectedUpdate!.queuedAt ?? undefined,
       finishedAt: new Date().toISOString(),
-    })
+    });
   }
 
-  return repairedUpdateIdleProjection()
+  return repairedUpdateIdleProjection();
+}
+
+/**
+ * Refuses an action that would sever the control plane from its own host:
+ * the co-located server (self-host pin, probe match, or — until that pin
+ * exists — an active reserved license binding).
+ */
+async function assertServerNotColocatedOr403(
+  c: Context,
+  db: Db,
+  registry: DaemonCellRegistry | undefined,
+  serverId: string,
+  organizationId: string,
+  reason: string,
+): Promise<Response | null> {
+  const colocatedIds = await resolveColocatedServerIdSet(
+    db,
+    registry,
+    [serverId],
+    { includeSelfHostPin: true },
+  );
+  if (colocatedIds.has(serverId)) {
+    return c.json({ error: reason }, 403);
+  }
+  if (await hasActiveColocatedLicenseBinding(db, organizationId, serverId)) {
+    return c.json({ error: reason }, 403);
+  }
+  return null;
 }
 
 async function assertServerDeletable(
@@ -275,27 +321,22 @@ async function assertServerDeletable(
   serverId: string,
   organizationId: string,
 ): Promise<Response | null> {
-  const colocatedIds = await resolveColocatedServerIdSet(
+  const colocated = await assertServerNotColocatedOr403(
+    c,
     db,
     registry,
-    [serverId],
-    { includeSelfHostPin: true },
-  )
-  if (colocatedIds.has(serverId)) {
-    return c.json({ error: colocatedServerDeleteBlockedReason() }, 403)
-  }
+    serverId,
+    organizationId,
+    colocatedServerDeleteBlockedReason(),
+  );
+  if (colocated) return colocated;
 
-  // Fallback until the self-host environment pin exists: active reserved license.
-  if (await hasActiveColocatedLicenseBinding(db, organizationId, serverId)) {
-    return c.json({ error: colocatedServerDeleteBlockedReason() }, 403)
-  }
-
-  const blockers = await listServerDeleteBlockers(db, serverId, organizationId)
+  const blockers = await listServerDeleteBlockers(db, serverId, organizationId);
   if (blockers.length > 0) {
-    return serverDeleteBlockersResponse(c, blockers)
+    return serverDeleteBlockersResponse(c, blockers);
   }
 
-  return null
+  return null;
 }
 
 async function purgeServerDaemonCell(
@@ -303,12 +344,14 @@ async function purgeServerDaemonCell(
   serverId: string,
 ): Promise<string | null> {
   try {
-    await registry.getCell(serverId).purge()
-    return null
+    await registry.getCell(serverId).purge();
+    return null;
   } catch (err) {
-    const message = errorMessageFromUnknown(err)
-    console.error(`Failed to purge daemon cell for server ${serverId}: ${message}`)
-    return message
+    const message = errorMessageFromUnknown(err);
+    console.error(
+      `Failed to purge daemon cell for server ${serverId}: ${message}`,
+    );
+    return message;
   }
 }
 
@@ -323,14 +366,14 @@ async function revokeBoundLicenseOnServerDelete(
   licenseId: string | null,
   organizationId: string,
 ): Promise<void> {
-  if (!licenseId) return
+  if (!licenseId) return;
 
-  const invalidated = await revokeLicense(db, licenseId, organizationId)
+  const invalidated = await revokeLicense(db, licenseId, organizationId);
   if (!invalidated) {
     compatLogWarn(
-      'servers',
+      "servers",
       `server ${serverId} deleted but license ${licenseId} was not invalidated (missing, wrong org, or already revoked)`,
-    )
+    );
   }
 }
 
@@ -338,42 +381,49 @@ async function loadDatacenterOptionsMap(
   db: Db,
   datacenterIds: Array<string | null | undefined>,
 ): Promise<Map<string, ReturnType<typeof parseDatacenterOptions>>> {
-  const distinct = distinctNonEmptyIds(datacenterIds)
-  if (distinct.length === 0) return new Map()
+  const distinct = distinctNonEmptyIds(datacenterIds);
+  if (distinct.length === 0) return new Map();
 
   const rows = await db
     .select({ id: datacenter.id, options: datacenter.options })
     .from(datacenter)
-    .where(inArray(datacenter.id, distinct))
+    .where(inArray(datacenter.id, distinct));
 
-  const map = new Map<string, ReturnType<typeof parseDatacenterOptions>>()
+  const map = new Map<string, ReturnType<typeof parseDatacenterOptions>>();
   for (const row of rows) {
-    map.set(row.id, parseDatacenterOptions(row.options))
+    map.set(row.id, parseDatacenterOptions(row.options));
   }
-  return map
+  return map;
 }
 
 function parseServerPatchBody(
   c: Context,
   body: Record<string, unknown>,
 ): ServerPatchFields | Response {
-  const core = parseServerPatchCore(body)
+  const core = parseServerPatchCore(body);
   if (!core.ok) {
-    return c.json({ error: core.error }, core.status)
+    return c.json({ error: core.error }, core.status);
   }
-  return core.patch
+  return core.patch;
 }
 
-function buildServerUpdateFields(patch: ServerPatchFields): Record<string, unknown> {
-  const update: Record<string, unknown> = { updatedAt: patch.updatedAt }
-  if (patch.name !== undefined) update.name = patch.name
-  if (patch.machineClass !== undefined) update.machineClass = patch.machineClass
+function buildServerUpdateFields(
+  patch: ServerPatchFields,
+): Record<string, unknown> {
+  const update: Record<string, unknown> = { updatedAt: patch.updatedAt };
+  if (patch.name !== undefined) update.name = patch.name;
+  if (patch.machineClass !== undefined) {
+    update.machineClass = patch.machineClass;
+  }
   if (patch.options !== undefined) {
     update.options = sql`COALESCE(${server.options}, '{}'::jsonb) || ${
       JSON.stringify(patch.options)
-    }::jsonb`
+    }::jsonb`;
   }
-  return update
+  if (patch.options?.hosting?.enabled !== undefined) {
+    update.isHostingEnabled = patch.options.hosting.enabled;
+  }
+  return update;
 }
 
 /**
@@ -386,28 +436,28 @@ async function applyServerPatchWithHostingEnable(
   c: Context,
   db: Db,
   params: Readonly<{
-    serverId: string
-    organizationId: string
-    patch: ServerPatchFields
+    serverId: string;
+    organizationId: string;
+    patch: ServerPatchFields;
   }>,
 ): Promise<Response | null> {
-  const update = buildServerUpdateFields(params.patch)
+  const update = buildServerUpdateFields(params.patch);
   try {
     await db.transaction(async (tx) => {
-      await tx.update(server).set(update).where(eq(server.id, params.serverId))
+      await tx.update(server).set(update).where(eq(server.id, params.serverId));
       await systemHierarchy.ensureSystemHierarchy(tx, {
         organizationId: params.organizationId,
         serverId: params.serverId,
-      })
-    })
-    return null
+      });
+    });
+    return null;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = err instanceof Error ? err.message : String(err);
     compatLogWarn(
-      'servers',
+      "servers",
       `ensureSystemHierarchy failed for server ${params.serverId}: ${message}`,
-    )
-    return c.json(hostingHierarchyFailedBody(), 500)
+    );
+    return c.json(hostingHierarchyFailedBody(), 500);
   }
 }
 
@@ -420,10 +470,10 @@ async function applyServerPatchUpdate(
   c: Context,
   db: Db,
   params: Readonly<{
-    serverId: string
-    organizationId: string
-    patch: ServerPatchFields
-    previousOptions: ServerOptions | null
+    serverId: string;
+    organizationId: string;
+    patch: ServerPatchFields;
+    previousOptions: ServerOptions | null;
   }>,
 ): Promise<Response | null> {
   if (isHostingEnableTransition(params.previousOptions, params.patch)) {
@@ -431,13 +481,13 @@ async function applyServerPatchUpdate(
       serverId: params.serverId,
       organizationId: params.organizationId,
       patch: params.patch,
-    })
+    });
   }
   await db
     .update(server)
     .set(buildServerUpdateFields(params.patch))
-    .where(eq(server.id, params.serverId))
-  return null
+    .where(eq(server.id, params.serverId));
+  return null;
 }
 
 /**
@@ -453,35 +503,35 @@ async function enqueueHostingReconcileBestEffort(
   c: Context,
   db: Db,
   params: Readonly<{
-    serverId: string
-    actorId: string
-    action: SystemReconcileAction
-    environmentId?: string
+    serverId: string;
+    actorId: string;
+    action: SystemReconcileAction;
+    environmentId?: string;
   }>,
 ): Promise<void> {
-  const commandQueue = assertDispatchInfrastructure(c)
-  if (commandQueue instanceof Response) return
+  const commandQueue = assertDispatchInfrastructure(c);
+  if (commandQueue instanceof Response) return;
 
   try {
     const enqueued = await enqueueSystemReconcile(db, commandQueue, {
       serverId: params.serverId,
-      actorType: 'user',
+      actorType: "user",
       actorId: params.actorId,
       action: params.action,
       ...(params.environmentId ? { environmentId: params.environmentId } : {}),
-    })
-    if (!enqueued.ok && enqueued.reason !== 'not_provisioned') {
+    });
+    if (!enqueued.ok && enqueued.reason !== "not_provisioned") {
       compatLogWarn(
-        'servers',
+        "servers",
         `system.reconcile enqueue failed for server ${params.serverId}: ${enqueued.reason}`,
-      )
+      );
     }
   } catch (err) {
-    const message = errorMessageFromUnknown(err)
+    const message = errorMessageFromUnknown(err);
     compatLogWarn(
-      'servers',
+      "servers",
       `system.reconcile enqueue failed for server ${params.serverId}: ${message}`,
-    )
+    );
   }
 }
 
@@ -492,15 +542,15 @@ async function systemEnvironmentHasActiveContainers(
   const serviceRows = await db
     .select({ id: service.id })
     .from(service)
-    .where(eq(service.environmentId, systemEnvironmentId))
-  const serviceIds = serviceRows.map((svc) => svc.id)
-  if (serviceIds.length === 0) return false
+    .where(eq(service.environmentId, systemEnvironmentId));
+  const serviceIds = serviceRows.map((svc) => svc.id);
+  if (serviceIds.length === 0) return false;
 
   const containerRows = await db
     .select({ status: container.status })
     .from(container)
-    .where(inArray(container.serviceId, serviceIds))
-  return containerRows.some((row) => isActiveContainerStatus(row.status))
+    .where(inArray(container.serviceId, serviceIds));
+  return containerRows.some((row) => isActiveContainerStatus(row.status));
 }
 
 /**
@@ -512,30 +562,34 @@ async function assertSystemEnvironmentIdleOrBlocked(
   db: Db,
   serverId: string,
 ): Promise<{ systemEnvironmentId: string | null } | Response> {
-  const systemEnvironmentId = await systemHierarchy.findSystemEnvironmentForServer(
-    db,
-    serverId,
-  )
-  if (!systemEnvironmentId) return { systemEnvironmentId: null }
+  const systemEnvironmentId = await systemHierarchy
+    .findSystemEnvironmentForServer(
+      db,
+      serverId,
+    );
+  if (!systemEnvironmentId) return { systemEnvironmentId: null };
 
   if (await systemEnvironmentHasActiveContainers(db, systemEnvironmentId)) {
-    return hierarchyDeleteHasChildrenResponse(c)
+    return hierarchyDeleteHasChildrenResponse(c);
   }
-  return { systemEnvironmentId }
+  return { systemEnvironmentId };
 }
 
 function deleteServerWithSystemSubtree(
   db: Db,
   serverId: string,
   systemEnvironmentId: string | null,
-): Promise<'ok' | 'has_children'> {
+): Promise<"ok" | "has_children"> {
   return runHierarchyDelete(db, async (tx) => {
     if (systemEnvironmentId) {
-      await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
+      await systemHierarchy.deleteSystemEnvironmentSubtree(
+        tx,
+        systemEnvironmentId,
+      );
     }
-    await deleteServerFabricMembership(tx, serverId)
-    await tx.delete(server).where(eq(server.id, serverId))
-  })
+    await deleteServerFabricMembership(tx, serverId);
+    await tx.delete(server).where(eq(server.id, serverId));
+  });
 }
 
 async function reconcileFabricAfterServerDelete(
@@ -544,25 +598,27 @@ async function reconcileFabricAfterServerDelete(
   organizationId: string,
   actorId: string,
 ): Promise<void> {
-  const commandQueue = assertDispatchInfrastructure(c)
-  if (commandQueue instanceof Response) return
+  const commandQueue = assertDispatchInfrastructure(c);
+  if (commandQueue instanceof Response) return;
   try {
-    const secretsConfig = c.get('secretsConfig')
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const secretsConfig = c.get("secretsConfig");
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     await reconcileFabricMembership({
       db,
       commandQueue,
-      actorType: 'user',
+      actorType: "user",
       actorId,
       organizationId,
       ...(secretsConfig ? { secretsConfig } : {}),
       ...(dataEncryptionSecrets ? { dataEncryptionSecrets } : {}),
-    })
+    });
   } catch (err) {
     compatLogWarn(
-      'servers',
-      `reconcileFabricMembership after delete failed for org ${organizationId}: ${errorMessageFromUnknown(err)}`,
-    )
+      "servers",
+      `reconcileFabricMembership after delete failed for org ${organizationId}: ${
+        errorMessageFromUnknown(err)
+      }`,
+    );
   }
 }
 
@@ -571,115 +627,124 @@ function serverDeletedResponse(
   serverId: string,
   purgeError: string | null,
 ): Response {
-  const payload = serverDeletedPayload(serverId, purgeError)
+  const payload = serverDeletedPayload(serverId, purgeError);
   if (payload.ok) {
-    return c.json({ ok: true, serverId: payload.serverId })
+    return c.json({ ok: true, serverId: payload.serverId });
   }
   return c.json({
     ok: false,
     serverId: payload.serverId,
     deleted: true,
     error: payload.error,
-  }, payload.status)
+  }, payload.status);
 }
 
-export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+export function registerServerRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+) {
   if (!opts.secrets) {
-    throw new TypeError('session secrets are required for server routes')
+    throw new TypeError("session secrets are required for server routes");
   }
-  const secrets = opts.secrets
+  const secrets = opts.secrets;
 
-  router.use('/servers', createSessionMiddleware(secrets))
-  router.use('/servers/*', createSessionMiddleware(secrets))
+  router.use("/servers", createSessionMiddleware(secrets));
+  router.use("/servers/*", createSessionMiddleware(secrets));
 
-  router.get('/servers', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.get("/servers", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
 
     const visibleIds = await listVisible(db, {
-      kind: 'server',
+      kind: "server",
       userId: session.userId,
       organizationId,
-    })
+    });
 
     if (visibleIds.length === 0) {
-      return c.json({ servers: [] })
+      return c.json({ servers: [] });
     }
 
-    let display
+    let display;
     try {
       display = await cachedServersListReadModel(c, {
         userId: session.userId,
         organizationId,
         visibleIds,
-      })
+      });
     } catch {
-      return c.json({ error: 'Database unavailable' }, 503)
+      return c.json({ error: "Database unavailable" }, 503);
     }
 
-    const presence = new Map(display.presence.map((live) => [live.serverId, live]))
-    const colocatedIds = new Set(display.colocatedIds)
+    const presence = new Map(
+      display.presence.map((live) => [live.serverId, live]),
+    );
+    const colocatedIds = new Set(display.colocatedIds);
 
     const [orgRow] = await db
       .select({ options: organization.options })
       .from(organization)
       .where(eq(organization.id, organizationId))
-      .limit(1)
-    const orgOptions = parseOrganizationOptions(orgRow?.options)
+      .limit(1);
+    const orgOptions = parseOrganizationOptions(orgRow?.options);
 
-    const serverIds = display.rows.map((row) => row.id)
+    const serverIds = display.rows.map((row) => row.id);
     const membershipsByServer = await loadDatacenterMembershipsForServers(
       db,
       serverIds,
-    )
+    );
     const membershipDcIds = [
       ...membershipsByServer.values(),
-    ].flatMap((pins) => pins.map((pin) => pin.datacenterId))
+    ].flatMap((pins) => pins.map((pin) => pin.datacenterId));
     const datacenterOptionsById = await loadDatacenterOptionsMap(
       db,
       membershipDcIds,
-    )
+    );
     const datacenterDisplayNamesById = await loadDatacenterDisplayNames(
       db,
       distinctNonEmptyIds(membershipDcIds),
-    )
-    const layoutPathsByServer = await loadServerLayoutPaths(db, serverIds)
-    const placementByServer = await loadTierPlacementsForServers(db, serverIds, {
-      deployment: metricsDeploymentKindForRuntime(opts.runtime),
-      orgOptions,
-      unwatched: 'counts',
-    })
+    );
+    const layoutPathsByServer = await loadServerLayoutPaths(db, serverIds);
+    const placementByServer = await loadTierPlacementsForServers(
+      db,
+      serverIds,
+      {
+        deployment: metricsDeploymentKindForRuntime(opts.runtime),
+        orgOptions,
+        unwatched: "counts",
+      },
+    );
 
     return c.json({
       servers: display.rows.map((row) => {
-        const live = presence.get(row.id)
-        const memberships = membershipsByServer.get(row.id) ?? []
+        const live = presence.get(row.id);
+        const memberships = membershipsByServer.get(row.id) ?? [];
         const datacenters = shapeServerDatacenters(
           memberships,
           datacenterDisplayNamesById,
-        )
-        const primaryDcId = datacenters[0]?.id
+        );
+        const primaryDcId = datacenters[0]?.id;
         const dcOptions = primaryDcId
           ? datacenterOptionsById.get(primaryDcId)
-          : undefined
+          : undefined;
         const timezoneFields = resolveServerTimezoneFields(
           row.options,
           orgOptions,
           dcOptions,
           live?.timeSync?.timezone,
-        )
+        );
         const hostDefaultsFields = resolveServerHostDefaultsFields(
           row.options,
           orgOptions,
           dcOptions,
-        )
+        );
         return {
           ...row,
           // Belt to the read model's braces: the loader strips secret-bearing
@@ -698,70 +763,77 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           licenseId: row.licenseId ?? null,
           tierPlacement: placementByServer.get(row.id) ?? null,
           layoutPaths: layoutPathsByServer.get(row.id) ?? null,
-        }
+        };
       }),
-    })
-  })
+    });
+  });
 
-  router.get('/servers/updates', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.get("/servers/updates", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
 
     const visibleIds = await listVisible(db, {
-      kind: 'server',
+      kind: "server",
       userId: session.userId,
       organizationId,
-    })
+    });
 
     if (visibleIds.length === 0) {
-      return c.json(emptyServersUpdatesPayload())
+      return c.json(emptyServersUpdatesPayload());
     }
 
-    const registry = getDaemonCellRegistry(c)
-    const presence = await resolveFleetPresence(db, registry, visibleIds)
-    const projections = await readProjectionsForServers(db, visibleIds)
+    const registry = getDaemonCellRegistry(c);
+    const presence = await resolveFleetPresence(db, registry, visibleIds);
+    const projections = await readProjectionsForServers(db, visibleIds);
     // Self-host pin included — see `queueServerUpdate`.
-    const colocatedIds = await resolveColocatedServerIdSet(db, registry, visibleIds, {
-      includeSelfHostPin: true,
-    })
-    const targetManifest = await resolveTrunkManifest()
+    const colocatedIds = await resolveColocatedServerIdSet(
+      db,
+      registry,
+      visibleIds,
+      {
+        includeSelfHostPin: true,
+      },
+    );
+    const targetManifest = await resolveTrunkManifest();
     const { target, targetStatus, targetError } = resolveTrunkTargetFields(
       targetManifest,
-    )
+    );
 
     const servers = await Promise.all(
       visibleIds.map(async (serverId) => {
-        const current = currentCommitFromDaemonBuild(presence.get(serverId)?.daemonBuild)
-        const projection = projections.get(serverId)
+        const current = currentCommitFromDaemonBuild(
+          presence.get(serverId)?.daemonBuild,
+        );
+        const projection = projections.get(serverId);
         const repairedUpdate = await repairProjectedUpdateIfStale(
           db,
           serverId,
           projection?.update ?? null,
           current,
           targetManifest?.commit,
-        )
+        );
         const resolved = await resolveServerUpdateStatus({
           serverId,
           current,
           targetManifest,
           colocatedWithInstance: colocatedIds.has(serverId),
           projectedUpdate: repairedUpdate ?? null,
-        })
+        });
         return {
           serverId,
           current,
           colocatedWithInstance: colocatedIds.has(serverId),
           ...resolved,
-        }
+        };
       }),
-    )
+    );
 
     return c.json({
       ok: true,
@@ -770,71 +842,80 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       targetStatus,
       targetError,
       servers,
-    })
-  })
+    });
+  });
 
-  router.post('/servers/updates', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.post("/servers/updates", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
 
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+    const registry = getDaemonCellRegistry(c);
+    if (!registry) {
+      return c.json({ error: "Daemon cell registry unavailable" }, 503);
+    }
 
     const visibleIds = await listVisible(db, {
-      kind: 'server',
+      kind: "server",
       userId: session.userId,
       organizationId,
-    })
+    });
 
-    const targetManifest = await resolveTrunkManifest()
-    const presence = await resolveFleetPresence(db, registry, visibleIds)
+    const targetManifest = await resolveTrunkManifest();
+    const presence = await resolveFleetPresence(db, registry, visibleIds);
     // Self-host pin included — see `queueServerUpdate`.
-    const colocatedIds = await resolveColocatedServerIdSet(db, registry, visibleIds, {
-      includeSelfHostPin: true,
-    })
+    const colocatedIds = await resolveColocatedServerIdSet(
+      db,
+      registry,
+      visibleIds,
+      {
+        includeSelfHostPin: true,
+      },
+    );
 
     const results = await Promise.all(
       visibleIds.map(async (serverId) => {
         const manageable = await can(
           db,
           session.userId,
-          'organization:manage',
-          'server',
+          "organization:manage",
+          "server",
           serverId,
-        )
+        );
         if (!manageable) {
           return {
             serverId,
             ok: false,
-            error: 'Forbidden',
-          }
+            error: "Forbidden",
+          };
         }
 
-        const current = currentCommitFromDaemonBuild(presence.get(serverId)?.daemonBuild)
+        const current = currentCommitFromDaemonBuild(
+          presence.get(serverId)?.daemonBuild,
+        );
         const eligibility = resolveBatchUpdateEligibility({
           connected: presence.get(serverId)?.connected ?? false,
           colocated: colocatedIds.has(serverId),
           current,
           targetCommit: targetManifest?.commit ?? null,
-        })
+        });
         if (!eligibility.ok) {
           return {
             serverId,
             ok: false,
             error: eligibility.error,
-          }
+          };
         }
 
-        const queued = await queueServerUpdate(registry, db, serverId)
+        const queued = await queueServerUpdate(registry, db, serverId);
         if (!queued.ok) {
-          return { serverId, ok: false, error: queued.error }
+          return { serverId, ok: false, error: queued.error };
         }
 
         return {
@@ -844,153 +925,164 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           status: queued.status,
           requestId: queued.requestId,
           channel: queued.channel,
-        }
+        };
       }),
-    )
+    );
 
     return c.json({
       ok: results.every((result) => result.ok),
       results,
-    })
-  })
+    });
+  });
 
-  router.get('/servers/status', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.get("/servers/status", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
 
     const visibleIds = await listVisible(db, {
-      kind: 'server',
+      kind: "server",
       userId: session.userId,
       organizationId,
-    })
+    });
 
-    evictExpiredBatchStatusEntries()
+    evictExpiredBatchStatusEntries();
     const coalesceKey = buildBatchStatusCoalesceKey(
       session.userId,
       organizationId,
       visibleIds,
-    )
-    const now = Date.now()
+    );
+    const now = Date.now();
 
-    let entry = batchStatusCoalesce.get(coalesceKey)
+    let entry = batchStatusCoalesce.get(coalesceKey);
     if (entry && entry.expiresAt > now) {
       if (entry.result) {
-        return c.json(entry.result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+        return c.json(entry.result, 200, {
+          "Cache-Control": STATUS_CACHE_CONTROL,
+        });
       }
       if (entry.promise !== undefined) {
-        const result = await entry.promise
-        return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+        const result = await entry.promise;
+        return c.json(result, 200, { "Cache-Control": STATUS_CACHE_CONTROL });
       }
     }
 
     if (batchStatusCoalesce.get(coalesceKey)?.promise === undefined) {
-      const registry = getDaemonCellRegistry(c)
+      const registry = getDaemonCellRegistry(c);
       const promise = loadServerStatusRecords(db, registry, visibleIds)
         .then((servers) => ({ servers }))
         .then((result) => {
-          const current = batchStatusCoalesce.get(coalesceKey)
+          const current = batchStatusCoalesce.get(coalesceKey);
           if (current) {
-            current.result = result
-            current.promise = undefined
-            current.expiresAt = Date.now() + STATUS_CACHE_MAX_AGE_MS
+            current.result = result;
+            current.promise = undefined;
+            current.expiresAt = Date.now() + STATUS_CACHE_MAX_AGE_MS;
           }
-          return result
+          return result;
         })
         .catch((err) => {
-          const current = batchStatusCoalesce.get(coalesceKey)
+          const current = batchStatusCoalesce.get(coalesceKey);
           if (current?.promise === promise) {
-            batchStatusCoalesce.delete(coalesceKey)
+            batchStatusCoalesce.delete(coalesceKey);
           }
-          throw err
-        })
+          throw err;
+        });
 
       batchStatusCoalesce.set(coalesceKey, {
         expiresAt: now + STATUS_CACHE_MAX_AGE_MS,
         promise,
-      })
+      });
     }
 
-    entry = batchStatusCoalesce.get(coalesceKey)!
-    const result = entry.result ?? await entry.promise!
-    return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
-  })
+    entry = batchStatusCoalesce.get(coalesceKey)!;
+    const result = entry.result ?? await entry.promise!;
+    return c.json(result, 200, { "Cache-Control": STATUS_CACHE_CONTROL });
+  });
 
-  router.get('/servers/:id/status', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.get("/servers/:id/status", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const id = c.req.param('id')
-    const denied = await assertCanReadOr403(c, 'server', id)
-    if (denied) return denied
+    const id = c.req.param("id");
+    const denied = await assertCanReadOr403(c, "server", id);
+    if (denied) return denied;
 
-    const registry = getDaemonCellRegistry(c)
-    const records = await loadServerStatusRecords(db, registry, [id])
+    const registry = getDaemonCellRegistry(c);
+    const records = await loadServerStatusRecords(db, registry, [id]);
     if (records.length === 0) {
-      return c.json({ error: 'Not found' }, 404)
+      return c.json({ error: "Not found" }, 404);
     }
 
-    return c.json(records[0], 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
-  })
+    return c.json(records[0], 200, { "Cache-Control": STATUS_CACHE_CONTROL });
+  });
 
   // DEBUG/DIAGNOSTIC ENDPOINT — hits the Durable Object directly via fetchDaemonServerCell.
   // Admin/superadmin only. Must NOT be polled by normal UI — use `/servers/status`
   // for Postgres-backed presence instead.
-  router.get('/servers/:id/cell', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.get("/servers/:id/cell", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
     if (!isAdminRole(session.role)) {
-      return c.json({ error: 'Forbidden' }, 403)
+      return c.json({ error: "Forbidden" }, 403);
     }
 
-    const id = c.req.param('id')
-    const denied = await assertCanReadOr403(c, 'server', id)
-    if (denied) return denied
+    const id = c.req.param("id");
+    const denied = await assertCanReadOr403(c, "server", id);
+    if (denied) return denied;
 
-    const registry = getDaemonCellRegistry(c)
-    const result = await fetchDaemonServerCell(db, registry, id)
+    const registry = getDaemonCellRegistry(c);
+    const result = await fetchDaemonServerCell(db, registry, id);
     if (!result.ok) {
-      return c.json({ error: result.error }, result.status)
+      return c.json({ error: result.error }, result.status);
     }
-    return c.json(result)
-  })
+    return c.json(result);
+  });
 
-  router.post('/servers/:id/update/reset', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.post("/servers/:id/update/reset", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'server', id)
-    if (denied) return denied
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "server", id);
+    if (denied) return denied;
 
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+    const registry = getDaemonCellRegistry(c);
+    if (!registry) {
+      return c.json({ error: "Daemon cell registry unavailable" }, 503);
+    }
 
     try {
-      const presence = await resolveFleetPresence(db, registry, [id])
-      const projections = await readProjectionsForServers(db, [id])
+      const presence = await resolveFleetPresence(db, registry, [id]);
+      const projections = await readProjectionsForServers(db, [id]);
       // Self-host pin included — see `queueServerUpdate`.
-      const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id], {
-        includeSelfHostPin: true,
-      })
-      const current = currentCommitFromDaemonBuild(presence.get(id)?.daemonBuild)
-      const targetManifest = await resolveTrunkManifest()
-      const projectedUpdate = projections.get(id)?.update
+      const colocatedIds = await resolveColocatedServerIdSet(
+        db,
+        registry,
+        [id],
+        {
+          includeSelfHostPin: true,
+        },
+      );
+      const current = currentCommitFromDaemonBuild(
+        presence.get(id)?.daemonBuild,
+      );
+      const targetManifest = await resolveTrunkManifest();
+      const projectedUpdate = projections.get(id)?.update;
       const stale = isStaleProjectedUpdating({
         projectedUpdate,
         currentCommit: current?.commit,
         targetCommit: targetManifest?.commit,
         updateTtlMs: UPDATE_REQUEST_TTL_MS,
-      })
+      });
 
       const { cleared } = await registry.getCell(id).clearUpdateStatus({
         allowStale: stale,
@@ -998,21 +1090,21 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         targetCommit: targetManifest?.commit,
         queuedAt: projectedUpdate?.queuedAt,
         updateTtlMs: UPDATE_REQUEST_TTL_MS,
-      })
+      });
 
-      if (stale && projectedUpdate?.status === 'updating') {
-        const finishedAt = new Date().toISOString()
-        const requestId = projectedUpdate.requestId ?? ''
+      if (stale && projectedUpdate?.status === "updating") {
+        const finishedAt = new Date().toISOString();
+        const requestId = projectedUpdate.requestId ?? "";
         if (
           current?.commit === targetManifest?.commit &&
           targetManifest != null
         ) {
-          await onDaemonUpdateResult(db, id, requestId, true, finishedAt)
+          await onDaemonUpdateResult(db, id, requestId, true, finishedAt);
         } else {
-          await onDaemonUpdateExpired(db, id, requestId, finishedAt)
+          await onDaemonUpdateExpired(db, id, requestId, finishedAt);
         }
       } else {
-        await onDaemonUpdateReset(db, id)
+        await onDaemonUpdateReset(db, id);
       }
 
       const resolved = await resolveServerUpdateStatus({
@@ -1020,8 +1112,8 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         current,
         targetManifest,
         colocatedWithInstance: colocatedIds.has(id),
-        projectedUpdate: { status: 'idle' },
-      })
+        projectedUpdate: { status: "idle" },
+      });
 
       return c.json({
         ok: true,
@@ -1031,37 +1123,40 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         current,
         colocatedWithInstance: colocatedIds.has(id),
         ...resolved,
-      })
+      });
     } catch (err) {
-      const message = errorMessageFromUnknown(err)
-      return c.json({ ok: false, error: message }, updateResetErrorStatus(message))
+      const message = errorMessageFromUnknown(err);
+      return c.json(
+        { ok: false, error: message },
+        updateResetErrorStatus(message),
+      );
     }
-  })
+  });
 
-  router.get('/servers/:id/update', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.get("/servers/:id/update", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const id = c.req.param('id')
-    const denied = await assertCanReadOr403(c, 'server', id)
-    if (denied) return denied
+    const id = c.req.param("id");
+    const denied = await assertCanReadOr403(c, "server", id);
+    if (denied) return denied;
 
-    const registry = getDaemonCellRegistry(c)
-    const presence = await resolveFleetPresence(db, registry, [id])
-    const projections = await readProjectionsForServers(db, [id])
+    const registry = getDaemonCellRegistry(c);
+    const presence = await resolveFleetPresence(db, registry, [id]);
+    const projections = await readProjectionsForServers(db, [id]);
     // Self-host pin included — see `queueServerUpdate`.
     const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id], {
       includeSelfHostPin: true,
-    })
-    const current = currentCommitFromDaemonBuild(presence.get(id)?.daemonBuild)
-    const targetManifest = await resolveTrunkManifest()
+    });
+    const current = currentCommitFromDaemonBuild(presence.get(id)?.daemonBuild);
+    const targetManifest = await resolveTrunkManifest();
     const repairedUpdate = await repairProjectedUpdateIfStale(
       db,
       id,
       projections.get(id)?.update ?? null,
       current,
       targetManifest?.commit,
-    )
+    );
 
     const resolved = await resolveServerUpdateStatus({
       serverId: id,
@@ -1069,7 +1164,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       targetManifest,
       colocatedWithInstance: colocatedIds.has(id),
       projectedUpdate: repairedUpdate ?? null,
-    })
+    });
 
     return c.json({
       ok: true,
@@ -1078,110 +1173,112 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       current,
       colocatedWithInstance: colocatedIds.has(id),
       ...resolved,
-    })
-  })
+    });
+  });
 
-  router.post('/servers/:id/update', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.post("/servers/:id/update", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'server', id)
-    if (denied) return denied
+    const id = c.req.param("id");
+    const denied = await assertCanManageOr403(c, "server", id);
+    if (denied) return denied;
 
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+    const registry = getDaemonCellRegistry(c);
+    if (!registry) {
+      return c.json({ error: "Daemon cell registry unavailable" }, 503);
+    }
 
-    const queued = await queueServerUpdate(registry, db, id)
+    const queued = await queueServerUpdate(registry, db, id);
     if (!queued.ok) {
       return c.json(
         { ok: false, error: queued.error },
         queueServerUpdateHttpStatus(queued.error),
-      )
+      );
     }
 
-    return c.json(queued)
-  })
+    return c.json(queued);
+  });
 
-  router.get('/servers/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.get("/servers/:id", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    const id = c.req.param('id')
-    const denied = await assertCanReadOr403(c, 'server', id)
-    if (denied) return denied
+    const id = c.req.param("id");
+    const denied = await assertCanReadOr403(c, "server", id);
+    if (denied) return denied;
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
 
     const [serverRow] = await db
       .select({ id: server.id })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
-      .limit(1)
-    if (!serverRow) return c.json({ error: 'Not found' }, 404)
+      .limit(1);
+    if (!serverRow) return c.json({ error: "Not found" }, 404);
 
-    let display
+    let display;
     try {
       display = await cachedServerDetailReadModel(c, {
         organizationId,
         serverId: id,
-      })
+      });
     } catch {
-      return c.json({ error: 'Database unavailable' }, 503)
+      return c.json({ error: "Database unavailable" }, 503);
     }
-    if (!display) return c.json({ error: 'Not found' }, 404)
+    if (!display) return c.json({ error: "Not found" }, 404);
 
     const [orgRow] = await db
       .select({ options: organization.options })
       .from(organization)
       .where(eq(organization.id, organizationId))
-      .limit(1)
-    const orgOptions = parseOrganizationOptions(orgRow?.options)
+      .limit(1);
+    const orgOptions = parseOrganizationOptions(orgRow?.options);
     const membershipsByServer = await loadDatacenterMembershipsForServers(db, [
       id,
-    ])
-    const memberships = membershipsByServer.get(id) ?? []
-    const membershipDcIds = memberships.map((pin) => pin.datacenterId)
+    ]);
+    const memberships = membershipsByServer.get(id) ?? [];
+    const membershipDcIds = memberships.map((pin) => pin.datacenterId);
     const datacenterOptionsById = await loadDatacenterOptionsMap(
       db,
       membershipDcIds,
-    )
+    );
     const datacenterDisplayNamesById = await loadDatacenterDisplayNames(
       db,
       distinctNonEmptyIds(membershipDcIds),
-    )
+    );
     const datacenters = shapeServerDatacenters(
       memberships,
       datacenterDisplayNamesById,
-    )
-    const primaryDcId = datacenters[0]?.id
+    );
+    const primaryDcId = datacenters[0]?.id;
     const dcOptions = primaryDcId
       ? datacenterOptionsById.get(primaryDcId)
-      : undefined
-    const labelRows = await listServerLabels(db, id)
-    const live = display.presence
+      : undefined;
+    const labelRows = await listServerLabels(db, id);
+    const live = display.presence;
     const timezoneFields = resolveServerTimezoneFields(
       display.row.options,
       orgOptions,
       dcOptions,
       live?.timeSync?.timezone,
-    )
+    );
     const hostDefaultsFields = resolveServerHostDefaultsFields(
       display.row.options,
       orgOptions,
       dcOptions,
-    )
-    const layoutPathsByServer = await loadServerLayoutPaths(db, [id])
+    );
+    const layoutPathsByServer = await loadServerLayoutPaths(db, [id]);
     const placementByServer = await loadTierPlacementsForServers(db, [id], {
       deployment: metricsDeploymentKindForRuntime(opts.runtime),
       orgOptions,
-      unwatched: 'ids',
-    })
+      unwatched: "ids",
+    });
 
     return c.json({
       ok: true,
@@ -1201,145 +1298,223 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         orgDefaultTimezone: orgOptions.defaultServerTimezone ?? null,
         enforceServerTimezone: orgOptions.enforceServerTimezone ?? false,
         datacenterDefaultTimezone: dcOptions?.defaultServerTimezone ?? null,
-        datacenterEnforceServerTimezone:
-          dcOptions?.enforceServerTimezone ?? false,
+        datacenterEnforceServerTimezone: dcOptions?.enforceServerTimezone ??
+          false,
         licenseId: display.row.licenseId ?? null,
         tierPlacement: placementByServer.get(id) ?? null,
         layoutPaths: layoutPathsByServer.get(id) ?? null,
         labels: labelRows.map((row) => ({ key: row.key, value: row.value })),
       },
-    })
-  })
+    });
+  });
 
-  router.patch('/servers/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.patch("/servers/:id", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    const id = c.req.param('id')
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const id = c.req.param("id");
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
 
     const [existing] = await db
       .select({ id: server.id, options: server.options })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
-      .limit(1)
-    if (!existing) return c.json({ error: 'Not found' }, 404)
+      .limit(1);
+    if (!existing) return c.json({ error: "Not found" }, 404);
 
-    const denied = await assertCanManageOr403(c, 'server', id)
-    if (denied) return denied
+    const denied = await assertCanManageOr403(c, "server", id);
+    if (denied) return denied;
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
 
-    const patch = parseServerPatchBody(c, body)
-    if (patch instanceof Response) return patch
+    const patch = parseServerPatchBody(c, body);
+    if (patch instanceof Response) return patch;
 
-    const previousOptions = parseServerOptions(existing.options)
-    const hostingEnable = isHostingEnableTransition(previousOptions, patch)
-    const hostingDisable = isHostingDisableTransition(previousOptions, patch)
+    const previousOptions = parseServerOptions(existing.options);
+    const hostingEnable = isHostingEnableTransition(previousOptions, patch);
+    const hostingDisable = isHostingDisableTransition(previousOptions, patch);
 
     const failed = await applyServerPatchUpdate(c, db, {
       serverId: id,
       organizationId,
       patch,
       previousOptions,
-    })
-    if (failed) return failed
+    });
+    if (failed) return failed;
 
     if (hostingEnable) {
       await enqueueHostingReconcileBestEffort(c, db, {
         serverId: id,
         actorId: session.userId,
-        action: 'reconcile',
-      })
+        action: "reconcile",
+      });
     } else if (hostingDisable) {
       const hostingEnvironmentId = await systemHierarchy
         .findSystemEnvironmentForServer(
           db,
           id,
           systemHierarchy.SYSTEM_HOSTING_INGRESS_COMPONENT,
-        )
+        );
       await enqueueHostingReconcileBestEffort(c, db, {
         serverId: id,
         actorId: session.userId,
-        action: 'stop',
+        action: "stop",
         ...(hostingEnvironmentId
           ? { environmentId: hostingEnvironmentId }
           : {}),
-      })
+      });
     }
 
-    return c.json({ ok: true as const })
-  })
+    return c.json({ ok: true as const });
+  });
 
-  router.delete('/servers/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  /**
+   * The compromised-host cutoff. Revoke first — durable, and what
+   * `POST /auth/session`, the WebSocket connect check, and (self-hosted)
+   * every inbound frame re-check — then purge the live cell as best effort
+   * so an open socket does not wait for its next frame or JWT expiry to
+   * notice. Registry down means
+   * the revoke still lands and `purged: false` says so; re-calling on an
+   * already-revoked key is idempotent and re-attempts the purge. Sticky:
+   * `POST /enroll` refuses a revoked server, so the license token still on
+   * the host cannot re-enroll it — recovery is `DELETE /servers/:id`.
+   */
+  router.post("/servers/:id/daemon-key/revoke", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-    const id = c.req.param('id')
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const id = c.req.param("id");
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
 
     const [row] = await db
       .select({ id: server.id })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
-      .limit(1)
+      .limit(1);
     if (!row) {
-      return c.json({ error: 'Not found' }, 404)
+      return c.json({ error: "Not found" }, 404);
     }
 
-    const denied = await assertCanManageOr403(c, 'server', id)
-    if (denied) return denied
+    const denied = await assertCanManageOr403(c, "server", id);
+    if (denied) return denied;
+
+    const registry = getDaemonCellRegistry(c);
+    const blocked = await assertServerNotColocatedOr403(
+      c,
+      db,
+      registry,
+      id,
+      organizationId,
+      COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
+    );
+    if (blocked) return blocked;
+
+    const daemonState = await getServerDaemonStateByServerId(db, id);
+    if (!daemonState) {
+      return c.json({ error: "Server is not enrolled" }, 409);
+    }
+
+    if (isDaemonKeyActive(daemonState.key)) {
+      await revokeDaemonKey(db, id);
+    }
+    const purgeError = registry
+      ? await purgeServerDaemonCell(registry, id)
+      : "Daemon cell registry unavailable";
+    const revoked = await getServerDaemonStateByServerId(db, id);
+
+    return c.json({
+      ok: true as const,
+      revokedAt: revoked?.key.revokedAt ?? null,
+      purged: purgeError === null,
+      ...(purgeError !== null ? { purgeError } : {}),
+    });
+  });
+
+  router.delete("/servers/:id", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const session = c.get("session");
+    if (!session) return c.json({ error: "Unauthorized" }, 401);
+
+    const id = c.req.param("id");
+    const orgResult = await getOrgId(c, session.userId);
+    if (orgResult instanceof Response) return orgResult;
+    const organizationId = orgResult;
+
+    const [row] = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
+      .limit(1);
+    if (!row) {
+      return c.json({ error: "Not found" }, 404);
+    }
+
+    const denied = await assertCanManageOr403(c, "server", id);
+    if (denied) return denied;
 
     // Co-located guard before the registry 503 so an unavailable registry can
     // never turn a self-host-pinned (or probe-matched) host into a deletable one.
-    const registry = getDaemonCellRegistry(c)
-    const blocked = await assertServerDeletable(c, db, registry, id, organizationId)
-    if (blocked) return blocked
+    const registry = getDaemonCellRegistry(c);
+    const blocked = await assertServerDeletable(
+      c,
+      db,
+      registry,
+      id,
+      organizationId,
+    );
+    if (blocked) return blocked;
 
     if (!registry) {
-      return c.json({ error: 'Daemon cell registry unavailable' }, 503)
+      return c.json({ error: "Daemon cell registry unavailable" }, 503);
     }
 
     const [boundLicense] = await db
       .select({ id: license.id })
       .from(license)
       .where(eq(license.serverId, id))
-      .limit(1)
+      .limit(1);
 
-    const idleOrBlocked = await assertSystemEnvironmentIdleOrBlocked(c, db, id)
-    if (idleOrBlocked instanceof Response) return idleOrBlocked
+    const idleOrBlocked = await assertSystemEnvironmentIdleOrBlocked(c, db, id);
+    if (idleOrBlocked instanceof Response) return idleOrBlocked;
 
     const result = await deleteServerWithSystemSubtree(
       db,
       id,
       idleOrBlocked.systemEnvironmentId,
-    )
-    if (result === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
+    );
+    if (result === "has_children") {
+      return hierarchyDeleteHasChildrenResponse(c);
     }
 
-    await reconcileFabricAfterServerDelete(c, db, organizationId, session.userId)
+    await reconcileFabricAfterServerDelete(
+      c,
+      db,
+      organizationId,
+      session.userId,
+    );
 
-    await clearServerDaemonState(db, id)
+    await clearServerDaemonState(db, id);
 
-    const purgeError = await purgeServerDaemonCell(registry, id)
+    const purgeError = await purgeServerDaemonCell(registry, id);
     await revokeBoundLicenseOnServerDelete(
       db,
       id,
       boundLicense?.id ?? null,
       organizationId,
-    )
+    );
     // The freed tier may now cover a server that was uncovered, or let a
     // server move down: re-derive the organization's assignment. This runs
     // on both runtimes — self-hosted derives an assignment too, from its
@@ -1348,18 +1523,25 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     // back, and leaving it standing would be a free license on the hosted
     // runtime.
     await syncSelfHostedGrant(db, organizationId, {
-      allowGrow: metricsDeploymentKindForRuntime(opts.runtime) === 'self-hosted',
+      allowGrow:
+        metricsDeploymentKindForRuntime(opts.runtime) === "self-hosted",
     }).catch((err) => {
-      compatLogWarn('servers', `self-hosted grant sync after delete failed: ${String(err)}`)
-    })
+      compatLogWarn(
+        "servers",
+        `self-hosted grant sync after delete failed: ${String(err)}`,
+      );
+    });
     await recomputeOrganizationAssignments(db, organizationId).catch((err) => {
-      compatLogWarn('servers', `tier assignment recompute after delete failed: ${String(err)}`)
-    })
+      compatLogWarn(
+        "servers",
+        `tier assignment recompute after delete failed: ${String(err)}`,
+      );
+    });
 
-    return serverDeletedResponse(c, id, purgeError)
-  })
+    return serverDeletedResponse(c, id, purgeError);
+  });
 
-  registerServerCommandRoutes(router, opts)
-  registerServerMetricsRoutes(router, opts)
-  registerServerLabelRoutes(router, opts)
+  registerServerCommandRoutes(router, opts);
+  registerServerMetricsRoutes(router, opts);
+  registerServerLabelRoutes(router, opts);
 }

@@ -12,14 +12,14 @@ import {
   nextFreeHostAddress,
   stripInetPrefixSuffix,
 } from "../ip-address.ts";
-import { fabric, ip, network, relay, subnet, server } from "./schema.ts";
+import { fabric, ip, network, relay, server, subnet } from "./schema.ts";
 import {
   composeNetworkHostName,
   hostRoute32,
   isRelayAddressUniqueViolation,
   isRelayPrefixUniqueViolation,
-  nextFreeSubnetCidr,
   nextFreeSubnet,
+  nextFreeSubnetCidr,
   nthSubnet,
   parseFabricOptions,
   pickDefaultFabricHostCidr,
@@ -1587,7 +1587,10 @@ export function resolveGatewayNextHop(params: {
     params.self.serverId,
     params.other.serverId,
   ).filter((gateway) => {
-    if (directCandidates(params.self.serverId, gateway, params.caches).length === 0) {
+    if (
+      directCandidates(params.self.serverId, gateway, params.caches).length ===
+        0
+    ) {
       return false;
     }
     if (
@@ -2245,7 +2248,7 @@ export async function ensureComposeNetworkRow(
     composeKey: string;
   },
 ): Promise<{ id: string; hostName: string }> {
-  const existing = await db
+  const [existing] = await db
     .select({ id: network.id, options: network.options })
     .from(network)
     .where(
@@ -2253,36 +2256,55 @@ export async function ensureComposeNetworkRow(
         eq(network.organizationId, params.organizationId),
         eq(network.kind, "compose"),
         eq(network.environmentId, params.environmentId),
+        eq(network.composeKey, params.composeKey),
       ),
-    );
+    )
+    .limit(1);
 
-  for (const row of existing) {
-    const options = isOptionsRecord(row.options) ? row.options : {};
-    if (options.composeKey === params.composeKey) {
-      const hostName = typeof options.dockerNetworkName === "string"
-        ? options.dockerNetworkName
-        : composeNetworkHostName(row.id);
-      return { id: row.id, hostName };
-    }
+  if (existing) {
+    const options = isOptionsRecord(existing.options) ? existing.options : {};
+    const hostName = typeof options.dockerNetworkName === "string"
+      ? options.dockerNetworkName
+      : composeNetworkHostName(existing.id);
+    return { id: existing.id, hostName };
   }
 
-  const [row] = await db
+  const [inserted] = await db
     .insert(network)
     .values({
       organizationId: params.organizationId,
       kind: "compose",
       environmentId: params.environmentId,
       name: params.composeKey,
-      options: { composeKey: params.composeKey },
+      composeKey: params.composeKey,
     })
+    .onConflictDoNothing()
     .returning({ id: network.id });
+
+  let row = inserted;
+  if (!row) {
+    // Lost a race for `(environment_id, compose_key)` against the new
+    // `uniq_network_environment_compose_key` constraint (schema-sql-keys,
+    // Road-to-0.1.x) — the winner's row is what we want, not an error.
+    const [winner] = await db
+      .select({ id: network.id })
+      .from(network)
+      .where(
+        and(
+          eq(network.environmentId, params.environmentId),
+          eq(network.composeKey, params.composeKey),
+        ),
+      )
+      .limit(1);
+    row = winner;
+  }
   if (!row) throw new Error("compose network insert failed");
 
   const hostName = composeNetworkHostName(row.id);
   await db
     .update(network)
     .set({
-      options: { composeKey: params.composeKey, dockerNetworkName: hostName },
+      options: { dockerNetworkName: hostName },
       updatedAt: nowIso(),
     })
     .where(eq(network.id, row.id));

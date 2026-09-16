@@ -578,22 +578,25 @@ type SweepLockValue = {
 
 function applySweepLockUpdate(
   lock: { current: SweepLockValue | null },
-  row: { value: SweepLockValue },
-): Promise<{ key: string }[]> {
+  row: { owner?: string; expiresAt?: string },
+): Promise<{ id: string }[]> {
   if (lock.current === null) return Promise.resolve([]);
   const expires = Date.parse(lock.current.expiresAt);
   const expired = !Number.isFinite(expires) || expires <= Date.now();
   const stealable = lock.current.owner.length === 0 || expired;
-  const sameOwner = row.value.owner === lock.current.owner;
-  const releasing = row.value.owner.length === 0;
+  const sameOwner = row.owner === undefined || row.owner === lock.current.owner;
+  const releasing = row.owner === "";
   if (!stealable && !sameOwner && !releasing) {
     return Promise.resolve([]);
   }
-  lock.current = row.value;
-  return Promise.resolve([{ key: "OFFLINE_SWEEP_LOCK" }]);
+  lock.current = {
+    owner: row.owner ?? lock.current.owner,
+    expiresAt: row.expiresAt ?? lock.current.expiresAt,
+  };
+  return Promise.resolve([{ id: "lease-1" }]);
 }
 
-function thenableRows(rows: Promise<{ key: string }[]>) {
+function thenableRows(rows: Promise<{ id: string }[]>) {
   return Object.assign(rows, { returning: () => rows });
 }
 
@@ -602,12 +605,12 @@ function createOfflineSweepLockMemoryDb(initial?: SweepLockValue): Db {
 
   return {
     insert: () => ({
-      values: (row: { key: string; value: SweepLockValue }) => ({
+      values: (row: { owner: string; expiresAt: string }) => ({
         onConflictDoNothing: () => ({
           returning: () => {
             if (lock.current !== null) return Promise.resolve([]);
-            lock.current = row.value;
-            return Promise.resolve([{ key: row.key }]);
+            lock.current = { owner: row.owner, expiresAt: row.expiresAt };
+            return Promise.resolve([{ id: "lease-1" }]);
           },
         }),
       }),
@@ -616,12 +619,16 @@ function createOfflineSweepLockMemoryDb(initial?: SweepLockValue): Db {
       from: () => ({
         where: () => ({
           limit: () =>
-            Promise.resolve(lock.current ? [{ value: lock.current }] : []),
+            Promise.resolve(
+              lock.current
+                ? [{ owner: lock.current.owner, expiresAt: lock.current.expiresAt }]
+                : [],
+            ),
         }),
       }),
     }),
     update: () => ({
-      set: (row: { value: SweepLockValue }) => ({
+      set: (row: { owner?: string; expiresAt?: string }) => ({
         where: () => thenableRows(applySweepLockUpdate(lock, row)),
       }),
     }),
@@ -1522,6 +1529,9 @@ it("runOfflineSweep logs lease-release-failed and still finishes the tick", asyn
 
 import { createMemoryDb, type MemoryDb } from "../../test-fixtures/memory-db.ts";
 import {
+  allowance,
+  key,
+  lease,
   license,
   organization,
   payer,
@@ -1551,6 +1561,9 @@ const inertSweep = {
 function billingSweepDb(opts: { withSubscription: boolean }): MemoryDb {
   return createMemoryDb([
     [setting, []],
+    [allowance, []],
+    [key, []],
+    [lease, []],
     [organization, []],
     [server, []],
     [license, []],

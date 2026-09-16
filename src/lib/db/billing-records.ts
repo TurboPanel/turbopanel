@@ -28,13 +28,9 @@ import type { BillingProviderId } from '../billing/gateway.ts'
 import type { Db } from '../../db.ts'
 import { logWarn } from '../../logger.ts'
 import type { PayerSubject } from '../billing/customer-subject.ts'
-import { license, payer, setting, subscription, subscriptionItem, tier } from './schema.ts'
+import { license, payer, allowance, subscription, subscriptionItem, tier } from './schema.ts'
 import { mapProviderProductsToTierIds } from './tier-records.ts'
-import {
-  parseSelfHostedGrant,
-  type SelfHostedGrant,
-  selfHostedGrantKey,
-} from '../tiers/self-hosted-grant.ts'
+import type { SelfHostedGrant } from '../tiers/self-hosted-grant.ts'
 
 /**
  * The handle inside `db.transaction(async (tx) => …)`. The projection
@@ -457,11 +453,11 @@ async function readGrantForOrganization(
   organizationId: string,
 ): Promise<SelfHostedGrant | null> {
   const [row] = await db
-    .select({ value: setting.value })
-    .from(setting)
-    .where(eq(setting.key, selfHostedGrantKey(organizationId)))
+    .select({ tierId: allowance.tierId, quantity: allowance.quantity })
+    .from(allowance)
+    .where(eq(allowance.organizationId, organizationId))
     .limit(1)
-  return row ? parseSelfHostedGrant(row.value) : null
+  return row ?? null
 }
 
 /**

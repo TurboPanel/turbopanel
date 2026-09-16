@@ -13,6 +13,7 @@ import {
   ensureFabricRelays,
   FabricAllocationError,
   FabricContainerPoolOverlapError,
+  type FabricRecord,
   listEnvironmentComposeNetworks,
   purgeComposeNetworksCreatedAfter,
   purgeEnvironmentComposeNetworks,
@@ -20,9 +21,8 @@ import {
   stampRelayPublicKey,
   stampRelayReconcileSuccess,
   updateFabricRelay,
-  type FabricRecord,
 } from "./fabric-records.ts";
-import { fabric, network, relay, subnet, server } from "./schema.ts";
+import { fabric, network, relay, server, subnet } from "./schema.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -74,6 +74,7 @@ const COLUMN_TO_FIELD: Record<string, string> = {
   environment_id: "environmentId",
   id: "id",
   kind: "kind",
+  compose_key: "composeKey",
 };
 
 function extractWhereFilters(condition: unknown): Record<string, unknown> {
@@ -123,7 +124,10 @@ function extractWhereFilters(condition: unknown): Record<string, unknown> {
   return filters;
 }
 
-function matchesWhere(row: Record<string, unknown>, condition: unknown): boolean {
+function matchesWhere(
+  row: Record<string, unknown>,
+  condition: unknown,
+): boolean {
   const filters = extractWhereFilters(condition);
   for (const [column, expected] of Object.entries(filters)) {
     const field = COLUMN_TO_FIELD[column] ?? column;
@@ -176,6 +180,7 @@ type NetworkRow = {
   name: string;
   cidr: string | null;
   options: Record<string, unknown>;
+  composeKey?: string | null;
 };
 type SegmentRow = {
   id: string;
@@ -218,8 +223,10 @@ function networkMatchesDelete(row: NetworkRow, condition: unknown): boolean {
     if (Array.isArray(idFilter)) return idFilter.includes(row.id);
     return row.id === idFilter;
   }
-  if (filters.environment_id !== undefined &&
-    row.environmentId !== filters.environment_id) {
+  if (
+    filters.environment_id !== undefined &&
+    row.environmentId !== filters.environment_id
+  ) {
     return false;
   }
   if (filters.kind !== undefined && row.kind !== filters.kind) return false;
@@ -356,7 +363,9 @@ function createLifecycleDb(opts: {
       }),
     }),
     insert: (table: unknown) => ({
-      values: (values: Record<string, unknown> | Array<Record<string, unknown>>) => {
+      values: (
+        values: Record<string, unknown> | Array<Record<string, unknown>>,
+      ) => {
         const rows = Array.isArray(values) ? values : [values];
         if (table === fabric) {
           const inserted = rows.map((row) => {
@@ -430,13 +439,18 @@ function createLifecycleDb(opts: {
               name: String(row.name ?? ""),
               cidr: row.cidr == null ? null : String(row.cidr),
               options: (row.options as Record<string, unknown>) ?? {},
+              composeKey: row.composeKey == null
+                ? null
+                : String(row.composeKey),
             };
             networks.push(record);
             return { id: record.id };
           });
           return {
             returning: () => Promise.resolve(inserted),
-            onConflictDoNothing: () => Promise.resolve(undefined),
+            onConflictDoNothing: () => ({
+              returning: () => Promise.resolve(inserted),
+            }),
             then: (
               resolve: (value: undefined) => unknown,
               reject?: (error: unknown) => unknown,
@@ -492,12 +506,16 @@ function createLifecycleDb(opts: {
       set: (patch: Record<string, unknown>) => ({
         where: (condition?: unknown) => {
           if (table === relay) {
-            const matches = relays.filter((row) => matchesWhere(row, condition));
+            const matches = relays.filter((row) =>
+              matchesWhere(row, condition)
+            );
             for (const row of matches) applyRelayUpdate(row, patch);
             return relayUpdateResult(matches);
           }
           if (table === network) {
-            const matches = networks.filter((row) => matchesWhere(row, condition));
+            const matches = networks.filter((row) =>
+              matchesWhere(row, condition)
+            );
             for (const row of matches) {
               if (patch.options !== undefined) {
                 row.options = {
@@ -509,7 +527,9 @@ function createLifecycleDb(opts: {
             return thenableRows([]);
           }
           if (table === fabric) {
-            const matches = fabrics.filter((row) => matchesWhere(row, condition));
+            const matches = fabrics.filter((row) =>
+              matchesWhere(row, condition)
+            );
             for (const row of matches) {
               if (patch.options !== undefined) row.options = patch.options;
             }
@@ -534,12 +554,16 @@ function createLifecycleDb(opts: {
           fabrics.push(...next);
         }
         if (table === subnet) {
-          const next = segments.filter((row) => !segmentMatchesDelete(row, condition));
+          const next = segments.filter((row) =>
+            !segmentMatchesDelete(row, condition)
+          );
           segments.length = 0;
           segments.push(...next);
         }
         if (table === network) {
-          const next = networks.filter((row) => !networkMatchesDelete(row, condition));
+          const next = networks.filter((row) =>
+            !networkMatchesDelete(row, condition)
+          );
           networks.length = 0;
           networks.push(...next);
         }
@@ -944,8 +968,8 @@ test("ensureComposeNetworkRow reuses existing row by composeKey", async () => {
       kind: "compose",
       name: "frontend",
       cidr: null,
+      composeKey: "frontend",
       options: {
-        composeKey: "frontend",
         dockerNetworkName: "tpn_custom_name",
       },
     }],
@@ -979,7 +1003,7 @@ test("ensureComposeNetworkRow inserts row and stamps dockerNetworkName", async (
 
   assertEquals(db.networks.length, 1);
   assertEquals(row.hostName, composeNetworkHostName(row.id));
-  assertEquals(db.networks[0]?.options.composeKey, "backend");
+  assertEquals(db.networks[0]?.composeKey, "backend");
   assertEquals(db.networks[0]?.options.dockerNetworkName, row.hostName);
 });
 

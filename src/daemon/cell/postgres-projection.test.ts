@@ -14,6 +14,7 @@ import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
   parseServerDaemonState,
+  type ServerDaemonProjection,
   type ServerDaemonState,
   type ServerDaemonStatus,
 } from '../authn/daemon-state.ts'
@@ -48,12 +49,21 @@ const STALE_MACHINE_KEY = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 const RAW_MACHINE_ID = '0123456789abcdef0123456789abcdef'
 
 /**
- * Mock row shape mirrors `getServerDaemonStateByServerId`'s select — `daemon`
- * jsonb (`{ key, projection? }`, never `status`) plus stored fleet-status columns
- * (`connected`, `status_changed_at` only; `daemonStatus` is derived at read time).
+ * Mock row shape mirrors `getServerDaemonStateByServerId`'s joined select:
+ * `key` table columns flattened alongside `server` columns — `daemon` jsonb
+ * (`{ projection? }` only now, never `status`), plus stored fleet-status
+ * columns (`connected`, `status_changed_at` only; `daemonStatus` is derived
+ * at read time).
  */
 type MockRow = {
-  daemon: ServerDaemonState
+  id: string
+  algorithm: 'Ed25519'
+  publicJwk: JsonWebKey
+  fingerprint: string
+  createdAt: string
+  revokedAt: string | null
+  lastUsedAt: string | null
+  daemon: { projection?: ServerDaemonProjection } | null
   metadata: StoredServerMetadata | null
   hostname: string | null
   machineKey: string | null
@@ -69,7 +79,14 @@ function buildMockRow(
 ): MockRow {
   const status = { ...buildDefaultDaemonStatus(), ...statusOverrides }
   return {
-    daemon,
+    id: daemon.key.id,
+    algorithm: daemon.key.algorithm,
+    publicJwk: daemon.key.publicJwk,
+    fingerprint: daemon.key.fingerprint,
+    createdAt: daemon.key.createdAt,
+    revokedAt: daemon.key.revokedAt ?? null,
+    lastUsedAt: daemon.key.lastUsedAt ?? null,
+    daemon: daemon.projection ? { projection: daemon.projection } : null,
     metadata,
     hostname: identity.hostname ?? null,
     machineKey: identity.machineKey ?? null,
@@ -100,7 +117,7 @@ function unwrapMetadataPatch(value: unknown): ServerMetadata | null | undefined 
 
 function applyPatchToRow(row: MockRow, patch: Record<string, unknown>) {
   if ('daemon' in patch) {
-    row.daemon = patch.daemon as ServerDaemonState
+    row.daemon = patch.daemon as { projection?: ServerDaemonProjection } | null
   }
   if ('metadata' in patch) {
     const incoming = unwrapMetadataPatch(patch.metadata)
@@ -143,7 +160,7 @@ function createMockDb(
   db: Db
   updateCalls: Array<Record<string, unknown>>
   getStatus: () => ServerDaemonStatus
-  getDaemon: () => ServerDaemonState
+  getDaemon: () => { projection?: ServerDaemonProjection } | null
   getMetadata: () => StoredServerMetadata | null
   getIdentity: () => { hostname: string | null; machineKey: string | null }
 } {
@@ -153,8 +170,12 @@ function createMockDb(
   const db = {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([row]),
+        // `getServerDaemonStateByServerId` joins `key` in — the mock ignores
+        // the join predicate and always resolves the one row.
+        innerJoin: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([row]),
+          }),
         }),
       }),
     }),
@@ -190,8 +211,10 @@ function createStaleReadMockDb(
   const db = {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ ...row, metadata: staleMetadata }]),
+        innerJoin: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{ ...row, metadata: staleMetadata }]),
+          }),
         }),
       }),
     }),
@@ -663,7 +686,7 @@ test('projectServerDaemon disconnected matches offline status patch', async () =
   assertEquals(status.daemonStatus, 'offline')
   assertEquals(typeof status.statusChangedAt, 'string')
   assert(updateCalls[0]?.daemon != null)
-  assertEquals(getDaemon().projection?.daemonBuild, testDaemonBuild)
+  assertEquals(getDaemon()?.projection?.daemonBuild, testDaemonBuild)
 })
 
 test('projectServerDaemon heartbeat with unchanged daemonBuild writes nothing', async () => {
@@ -716,7 +739,9 @@ test('projectServerDaemon heartbeat with changed daemonBuild updates projection 
   assertEquals(status.statusChangedAt, '2020-01-01T00:00:00.000Z')
 })
 
-test('projectServerDaemon preserves server.daemon.key on write', async () => {
+test('projectServerDaemon never composes key data into the daemon jsonb patch — the race fix', async () => {
+  // The key lives in the `key` table now; a heartbeat write has nothing
+  // key-shaped in its jsonb patch to clobber, by construction.
   const { db, updateCalls } = createMockDb({
     key: baseKey,
     projection: { hostname: 'host-1' },
@@ -732,9 +757,12 @@ test('projectServerDaemon preserves server.daemon.key on write', async () => {
 
   assert(updateCalls.length >= 1)
   const projectionUpdate = updateCalls.find((call) => call.daemon != null)
-  const merged = parseServerDaemonState(projectionUpdate?.daemon)
-  assertEquals(merged?.key?.id, baseKey.id)
-  assertEquals(merged?.key?.fingerprint, baseKey.fingerprint)
+  assert(projectionUpdate !== undefined)
+  assertEquals('id' in (projectionUpdate.daemon as object), false)
+  assertEquals('fingerprint' in (projectionUpdate.daemon as object), false)
+  const merged = parseServerDaemonState(projectionUpdate.daemon)
+  assertEquals(merged && 'key' in merged, false)
+  assertEquals(merged?.projection?.daemonBuild?.commit, 'new-commit')
 })
 
 test('projectServerDaemon daemonBuild trigger updates jsonb only', async () => {
@@ -1470,17 +1498,18 @@ test('loadServerRowsForFleetPresence selects the requested rows', async () => {
   assertEquals(await loadServerRowsForFleetPresence(db, [serverId]), [row])
 })
 
-test('listEnrolledDaemonServerIds returns only servers with daemon keys', async () => {
+test('listEnrolledDaemonServerIds returns every server with a key row', async () => {
+  // Every row in the `key` table is one enrolled server — no jsonb parsing.
   const db = {
     select: () => ({
       from: () =>
         Promise.resolve([
-          { id: 'srv-enrolled', daemon: { key: baseKey } },
-          { id: 'srv-bare', daemon: null },
+          { serverId: 'srv-enrolled-1' },
+          { serverId: 'srv-enrolled-2' },
         ]),
     }),
   } as unknown as Db
 
   const ids = await listEnrolledDaemonServerIds(db)
-  assertEquals(ids, ['srv-enrolled'])
+  assertEquals(ids, ['srv-enrolled-1', 'srv-enrolled-2'])
 })

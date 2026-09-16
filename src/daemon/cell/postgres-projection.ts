@@ -19,7 +19,7 @@ import {
   getServerDaemonStateByServerId,
   type ServerDaemonStateWithMetadata,
 } from '../authn/server-identity-db.ts'
-import { server } from '../../lib/db/schema.ts'
+import { key, server } from '../../lib/db/schema.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import type { ServerMetadata } from '../../lib/db/server-metadata.ts'
 import { geoEquals, parseServerGeo, type ServerGeo } from '../../lib/geo/server-geo.ts'
@@ -286,12 +286,16 @@ export function steadyStateInboundSkipsDbRead(
   })
 }
 
-function buildMergedDaemonState(
-  existing: ServerDaemonState,
+/**
+ * `server.daemon` jsonb now holds `{ projection? }` only — the key lives in
+ * the `key` table (schema-child-tables, Road-to-0.1.x). This composes the
+ * jsonb patch from the projection alone, so a heartbeat write structurally
+ * cannot touch key data anymore — there is nothing key-shaped to clobber.
+ */
+function buildDaemonJsonbPatch(
   nextProjection: ServerDaemonProjection | undefined
-): ServerDaemonState {
+): { projection?: ServerDaemonProjection } {
   return {
-    key: existing.key,
     ...(nextProjection ? { projection: nextProjection } : {}),
   }
 }
@@ -624,10 +628,10 @@ function buildDaemonAndStatusColumnPatch(
   const patch: Record<string, unknown> = {}
 
   if (writeProjection || writeStatus) {
-    // Preserve key; rewrite projection when identity/daemonBuild/update changes.
-    // Status is never stored in jsonb — only dedicated columns.
-    patch.daemon = buildMergedDaemonState(
-      existing,
+    // Rewrite projection when identity/daemonBuild/update changes. The key
+    // is never touched here — it isn't in this jsonb anymore. Status is
+    // never stored in jsonb either — only dedicated columns.
+    patch.daemon = buildDaemonJsonbPatch(
       writeProjection ? nextProjection : existing.projection
     )
   }
@@ -670,8 +674,10 @@ function buildIdentityAndMetadataPatch(
 }
 
 /**
- * Sparse projection into `server.daemon` (`key` + `projection`) and dedicated
- * status / identity columns — never clobbers `server.daemon.key`.
+ * Sparse projection into `server.daemon` (`{ projection? }`) and dedicated
+ * status / identity columns. Structurally cannot touch the daemon key: the
+ * key lives in the `key` table, not this jsonb, so there is nothing
+ * key-shaped in the patch this builds to clobber.
  */
 export async function projectServerDaemon(
   db: Db,
@@ -880,16 +886,8 @@ export function rotateSweepBatch<T extends { id: string }>(
 
 /** All servers with an enrolled daemon key — used to scope Workers maintenance drains. */
 export async function listEnrolledDaemonServerIds(db: Db): Promise<string[]> {
-  const rows = await db.select({ id: server.id, daemon: server.daemon }).from(server)
-
-  const enrolled: string[] = []
-  for (const row of rows) {
-    const state = parseServerDaemonState(row.daemon)
-    if (state?.key) {
-      enrolled.push(row.id)
-    }
-  }
-  return enrolled
+  const rows = await db.select({ serverId: key.serverId }).from(key)
+  return rows.map((row) => row.serverId)
 }
 
 export type ServerFleetPresenceRow = {

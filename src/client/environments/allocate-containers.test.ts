@@ -149,6 +149,7 @@ async function withAllocationFixtures(
     .values({
       name: 'Allocate Containers Project',
       workspaceId,
+      organizationId,
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id

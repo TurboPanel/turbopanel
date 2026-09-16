@@ -7,15 +7,15 @@
  * {@link decideRepinActions} what to do, and writes only `ip.address` /
  * `ip.metadata`:
  *
- * - `repin` → new address + `metadata.repin { at, from, pendingFanoutAt }`
- *   (any `stale` flag dropped);
+ * - `repin` → new address + `metadata.repin { at, from }` plus
+ *   `ip.repin_pending_fanout_at` (any `stale` flag dropped);
  * - `mark_stale` → `metadata.stale { since, reason }`;
  * - `clear_stale` → `stale` removed.
  *
  * Nothing is enqueued here: hello / Durable Object handlers must not enqueue
  * commands, so the routing fan-out is deferred to the maintenance sweep
  * (`src/client/datacenters/repin-fanout.ts`), which selects pins by
- * `metadata.repin.pendingFanoutAt`.
+ * `ip.repin_pending_fanout_at`.
  *
  * The common case — a server with no pins — costs one indexed read. Never
  * throws: a failed write is logged and the rest of the pass continues.
@@ -128,8 +128,8 @@ async function writeRepin(
         metadata: withRepinMetadata(pin.metadata, {
           at: nowIso,
           from: action.from,
-          pendingFanoutAt: nowIso,
         }),
+        repinPendingFanoutAt: nowIso,
         updatedAt: nowIso,
       })
       .where(eq(ip.id, pin.ipId))

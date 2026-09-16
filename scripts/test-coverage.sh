@@ -309,6 +309,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/daemon/authn/daemon-state.test.ts \
   src/daemon/authn/license.hostfree.test.ts \
   src/daemon/authn/server-identity-db.hostfree.test.ts \
+  src/daemon/authn/server-identity-db.test.ts \
   src/daemon/authn/server-key.test.ts \
   src/daemon/api-routes.test.ts \
   src/daemon/api-routes.hostfree.test.ts \

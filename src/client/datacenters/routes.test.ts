@@ -2129,6 +2129,7 @@ async function withManagedPolicyFixtures(
     .values({
       name: "DC Policy Project",
       workspaceId,
+      organizationId,
       metadata: { type: "managed", code: "postgres" },
     })
     .returning({ id: project.id });

@@ -6,7 +6,7 @@
 
 import { assertEquals } from '@std/assert'
 import { isNull } from 'drizzle-orm'
-import { license, payer, server, setting, subscription, subscriptionItem, tier } from '../db/schema.ts'
+import { allowance, key, lease, license, payer, server, setting, subscription, subscriptionItem, tier } from '../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import { syncEntitlementsForOrganization } from './entitlements.ts'
 import {
@@ -66,6 +66,9 @@ function seed(opts: {
     [setting, opts.ledger
       ? [{ id: 'set-1', key: billingPendingChangesKey(ORG), value: opts.ledger, createdAt: NOW, updatedAt: NOW }]
       : []],
+    [allowance, []],
+    [key, []],
+    [lease, []],
   ])
 }
 

@@ -31,7 +31,7 @@
  * rotation is left untouched rather than overwritten with a stale reseal.
  */
 
-import { and, asc, eq, gt, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   decryptSecret,
   encryptSecret,
@@ -45,6 +45,7 @@ import type { Db } from "../db.ts";
 import {
   forge,
   gitConnection,
+  lease,
   principal,
   secret,
   setting,
@@ -64,7 +65,10 @@ import {
 
 export const REENCRYPT_BATCH_SIZE = 200;
 
-/** `setting.key` for the cross-isolate re-encrypt sweep lease. */
+/**
+ * `lease.name` for the cross-isolate re-encrypt sweep lease — globally
+ * scoped (schema-child-tables, Road-to-0.1.x — promoted out of `setting`).
+ */
 export const REENCRYPT_SWEEP_LOCK_KEY = "REENCRYPT_SWEEP_LOCK";
 
 /** Lease TTL so a crashed isolate cannot block sweeps indefinitely. */
@@ -73,11 +77,6 @@ export const REENCRYPT_SWEEP_LEASE_MS = 120_000;
 export type ReencryptSweepLock = Readonly<{
   owner: string;
 }>;
-
-type ReencryptSweepLockValue = {
-  owner: string;
-  expiresAt: string;
-};
 
 export const REENCRYPT_STAGES = [
   "variables",
@@ -146,32 +145,10 @@ function normalizeCursor(
   };
 }
 
-function isSweepLockValue(value: unknown): value is ReencryptSweepLockValue {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return typeof record.owner === "string" &&
-    typeof record.expiresAt === "string";
-}
-
-function sweepLockIsExpired(
-  lock: ReencryptSweepLockValue,
-  nowMs = Date.now(),
-): boolean {
-  const expires = Date.parse(lock.expiresAt);
+function sweepLockIsExpired(expiresAt: string, nowMs = Date.now()): boolean {
+  const expires = Date.parse(expiresAt);
   if (!Number.isFinite(expires)) return true;
   return expires <= nowMs;
-}
-
-function nextSweepLockValue(
-  owner: string,
-  nowMs = Date.now(),
-): ReencryptSweepLockValue {
-  return {
-    owner,
-    expiresAt: new Date(nowMs + REENCRYPT_SWEEP_LEASE_MS).toISOString(),
-  };
 }
 
 /**
@@ -184,39 +161,45 @@ export async function tryBeginReencryptSweep(
   nowMs = Date.now(),
 ): Promise<ReencryptSweepLock | null> {
   const owner = crypto.randomUUID();
-  const lockValue = nextSweepLockValue(owner, nowMs);
+  const expiresAt = new Date(nowMs + REENCRYPT_SWEEP_LEASE_MS).toISOString();
 
   const inserted = await db
-    .insert(setting)
-    .values({ key: REENCRYPT_SWEEP_LOCK_KEY, value: lockValue })
-    .onConflictDoNothing({ target: setting.key })
-    .returning({ key: setting.key });
+    .insert(lease)
+    .values({
+      name: REENCRYPT_SWEEP_LOCK_KEY,
+      organizationId: null,
+      owner,
+      expiresAt,
+    })
+    .onConflictDoNothing({ target: [lease.name, lease.organizationId] })
+    .returning({ id: lease.id });
   if (inserted.length > 0) {
     return { owner };
   }
 
   const [existing] = await db
-    .select({ value: setting.value })
-    .from(setting)
-    .where(eq(setting.key, REENCRYPT_SWEEP_LOCK_KEY))
+    .select({ owner: lease.owner, expiresAt: lease.expiresAt })
+    .from(lease)
+    .where(
+      and(eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY), isNull(lease.organizationId)),
+    )
     .limit(1);
-  if (
-    !existing || !isSweepLockValue(existing.value) ||
-    !sweepLockIsExpired(existing.value, nowMs)
-  ) {
+  if (!existing || !sweepLockIsExpired(existing.expiresAt, nowMs)) {
     return null;
   }
 
   const stolen = await db
-    .update(setting)
-    .set({ value: lockValue, updatedAt: nowIso() })
+    .update(lease)
+    .set({ owner, expiresAt, updatedAt: nowIso() })
     .where(
       and(
-        eq(setting.key, REENCRYPT_SWEEP_LOCK_KEY),
-        eq(setting.value, existing.value),
+        eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY),
+        isNull(lease.organizationId),
+        eq(lease.owner, existing.owner),
+        eq(lease.expiresAt, existing.expiresAt),
       ),
     )
-    .returning({ key: setting.key });
+    .returning({ id: lease.id });
   if (stolen.length > 0) {
     return { owner };
   }
@@ -228,11 +211,12 @@ export async function endReencryptSweep(
   lock: ReencryptSweepLock,
 ): Promise<void> {
   await db
-    .delete(setting)
+    .delete(lease)
     .where(
       and(
-        eq(setting.key, REENCRYPT_SWEEP_LOCK_KEY),
-        sql`${setting.value}->>'owner' = ${lock.owner}`,
+        eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY),
+        isNull(lease.organizationId),
+        eq(lease.owner, lock.owner),
       ),
     );
 }
@@ -240,7 +224,11 @@ export async function endReencryptSweep(
 /** Test-only: drop the durable sweep lock row when `db` is provided. */
 export async function resetReencryptSweepLockForTests(db?: Db): Promise<void> {
   if (!db) return;
-  await db.delete(setting).where(eq(setting.key, REENCRYPT_SWEEP_LOCK_KEY));
+  await db
+    .delete(lease)
+    .where(
+      and(eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY), isNull(lease.organizationId)),
+    );
 }
 
 type ProcessBlobOptions = Readonly<{

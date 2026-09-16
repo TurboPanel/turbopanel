@@ -148,11 +148,6 @@ export type IpPinRepinMetadata = {
   at: string
   /** Address the pin held before the repin. */
   from: string
-  /**
-   * Set by the apply pass and cleared by the maintenance sweep once the
-   * datacenter routing fan-out for this pin has been enqueued.
-   */
-  pendingFanoutAt?: string
 }
 
 export type IpPinMetadata = {
@@ -194,12 +189,7 @@ function parseRepinMarker(value: unknown): IpPinRepinMetadata | undefined {
   if (typeof value.from !== 'string') return undefined
   const from = normalizeAddress(value.from)
   if (!from) return undefined
-  const pendingFanoutAt = parseIsoTimestamp(value.pendingFanoutAt)
-  return {
-    at,
-    from,
-    ...(pendingFanoutAt ? { pendingFanoutAt } : {}),
-  }
+  return { at, from }
 }
 
 /**
@@ -250,19 +240,5 @@ export function withRepinMetadata(
 export function clearedStaleMetadata(existing: unknown): Record<string, unknown> {
   const next = baseMetadata(existing)
   delete next.stale
-  return next
-}
-
-/** Existing metadata with `repin.pendingFanoutAt` removed (`repin.at` / `from` kept). */
-export function clearedPendingFanoutMetadata(
-  existing: unknown,
-): Record<string, unknown> {
-  const next = baseMetadata(existing)
-  const repin = parseRepinMarker(next.repin)
-  if (!repin) {
-    delete next.repin
-    return next
-  }
-  next.repin = { at: repin.at, from: repin.from }
   return next
 }

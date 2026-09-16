@@ -546,7 +546,10 @@ test("resolveFleetPresence withSnapshots but no registry stays on Postgres colum
   assertEquals(presence.get(serverId)?.lastInboundAt, null);
 });
 
-test("resolveFleetPresence prefers projection keyId then falls back to daemon key id", async () => {
+test("resolveFleetPresence reads keyId from the projection only — no fallback to the key table", async () => {
+  // `state?.key.id` was a dead fallback: `server.daemon` no longer carries
+  // `key` at all (it lives in the `key` table now), so presence has nothing
+  // to fall back to when the projection hasn't recorded a keyId yet.
   const withProjectionKey: ServerDaemonState = {
     ...baseDaemon,
     projection: {
@@ -571,7 +574,7 @@ test("resolveFleetPresence prefers projection keyId then falls back to daemon ke
     createThrowingSnapshotRegistry(),
     [serverId],
   );
-  assertEquals(keyOnlyPresence.get(serverId)?.keyId, "key-1");
+  assertEquals(keyOnlyPresence.get(serverId)?.keyId, null);
 });
 
 test("resolveFleetPresence falls back lastInboundAt through lastSeenAt then connectedAt", async () => {

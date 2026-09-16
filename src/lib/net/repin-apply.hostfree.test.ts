@@ -131,7 +131,7 @@ test('applyReportedAddressRepin: unchanged pin → zero writes', async () => {
   assertEquals(writes.length, 0)
 })
 
-test('applyReportedAddressRepin: a repin stamps pendingFanoutAt and clears stale', async () => {
+test('applyReportedAddressRepin: a repin stamps repinPendingFanoutAt and clears stale', async () => {
   const writes: Write[] = []
   const db = createFakeDb({
     pins: [pin({
@@ -159,8 +159,8 @@ test('applyReportedAddressRepin: a repin stamps pendingFanoutAt and clears stale
   const parsed = parseIpPinMetadata(metadata)
   assertEquals(parsed.stale, undefined)
   assertEquals(parsed.repin?.from, '10.20.0.10')
-  assertEquals(typeof parsed.repin?.pendingFanoutAt, 'string')
-  assertEquals(parsed.repin?.pendingFanoutAt, parsed.repin?.at)
+  assertEquals(typeof patch.repinPendingFanoutAt, 'string')
+  assertEquals(patch.repinPendingFanoutAt, parsed.repin?.at)
 })
 
 test('applyReportedAddressRepin: unique violation on repin downgrades to mark_stale', async () => {

@@ -108,6 +108,7 @@ async function withServiceFixtures(
     .values({
       name: 'Service Route Project',
       workspaceId,
+      organizationId,
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id

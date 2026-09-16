@@ -11,7 +11,6 @@ import type {
   DerivedSecretsConfig,
   SecretsConfig,
 } from "../authn/secrets.ts";
-import { parseIpPinMetadata } from "../../lib/net/repin.ts";
 import type { DatacenterRoutingFanoutParams } from "./routing-fanout.ts";
 import {
   DATACENTER_REPIN_FANOUT_SWEEP_CAP,
@@ -37,7 +36,6 @@ type PendingRow = {
   organization_id: string;
   datacenter_id: string;
   server_id: string;
-  metadata: unknown;
 };
 
 function pendingRow(
@@ -50,20 +48,12 @@ function pendingRow(
     organization_id: ORG_A,
     datacenter_id: datacenterId,
     server_id: serverId,
-    metadata: {
-      note: "keep",
-      repin: {
-        at: "2026-09-02T00:00:00.000Z",
-        from: "10.20.0.10",
-        pendingFanoutAt: "2026-09-02T00:00:00.000Z",
-      },
-    },
   };
 }
 
 function createFakeDb(params: {
   pending: PendingRow[];
-  clears: Array<{ metadata: unknown }>;
+  clears: Array<{ repinPendingFanoutAt: unknown }>;
   seenLimit: (limit: number) => void;
 }): Db {
   return {
@@ -76,10 +66,12 @@ function createFakeDb(params: {
     },
     update() {
       return {
-        set(patch: { metadata: unknown }) {
+        set(patch: { repinPendingFanoutAt: unknown }) {
           return {
             where: () => {
-              params.clears.push({ metadata: patch.metadata });
+              params.clears.push({
+                repinPendingFanoutAt: patch.repinPendingFanoutAt,
+              });
               return Promise.resolve(undefined);
             },
           };
@@ -96,7 +88,7 @@ const secrets = {
 };
 
 test("sweep fans out once per (org, datacenter) group and clears markers", async () => {
-  const clears: Array<{ metadata: unknown }> = [];
+  const clears: Array<{ repinPendingFanoutAt: unknown }> = [];
   const fanOuts: DatacenterRoutingFanoutParams[] = [];
   const db = createFakeDb({
     pending: [
@@ -129,18 +121,12 @@ test("sweep fans out once per (org, datacenter) group and clears markers", async
 
   assertEquals(clears.length, 3);
   for (const clear of clears) {
-    const metadata = clear.metadata as Record<string, unknown>;
-    assertEquals(metadata.note, "keep");
-    const parsed = parseIpPinMetadata(metadata);
-    assertEquals(parsed.repin, {
-      at: "2026-09-02T00:00:00.000Z",
-      from: "10.20.0.10",
-    });
+    assertEquals(clear.repinPendingFanoutAt, null);
   }
 });
 
 test("sweep retains markers for a group whose fan-out failed", async () => {
-  const clears: Array<{ metadata: unknown }> = [];
+  const clears: Array<{ repinPendingFanoutAt: unknown }> = [];
   const db = createFakeDb({
     pending: [
       pendingRow("ip-1", DC_A, SERVER_1),

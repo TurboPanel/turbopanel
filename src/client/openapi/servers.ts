@@ -1181,6 +1181,90 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/servers/{id}/daemon-key/revoke': {
+    post: {
+      tags: ['Servers'],
+      summary: 'Revoke the daemon identity key of a compromised server',
+      description:
+        'The compromised-host cutoff. Marks the server\'s daemon key revoked (durable: POST /enroll, POST /auth/session and the daemon WebSocket connect all refuse it from then on), then purges the live daemon cell as best effort so an open socket and an unexpired 15-minute JWT do not outlive the revoke. Revocation is sticky — the license token still on the host cannot re-enroll it (refused atomically at the key row, not just by a pre-check). Recovery is DELETE /servers/{id} and a fresh enroll of the rebuilt host; delete itself requires first moving any environments pinned to this server and clearing its blocker resources (networks, containers, IPs) — intentional for a host you no longer trust, since those are suspect too. Idempotent: calling again re-attempts the purge and returns the original revokedAt. Requires server manage permission, same as DELETE.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Key revoked. purged=false means the live cell could not be reached (purgeError says why). Even unpurged, the revoke bites at the next point the key is re-checked: self-hosted, the socket rejects the daemon\'s next inbound frame (close code key_revoked); hosted, an already-authenticated Durable Object socket is closed by the purge or by the daemon\'s next reconnect, and either runtime refuses the next session mint.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'revokedAt', 'purged'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  revokedAt: { type: ['string', 'null'], format: 'date-time' },
+                  purged: { type: 'boolean' },
+                  purgeError: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden, or the co-located control plane server (revoking its key would sever the control plane from its own host)',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found in this organization',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '409': {
+          description: 'Server is not enrolled — it has no daemon key to revoke',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
   '/api/client/v1/servers/{id}': {
     get: {
       tags: ['Servers'],

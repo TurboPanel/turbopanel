@@ -23,6 +23,10 @@ export function colocatedServerDeleteBlockedReason(): string {
   return COLOCATED_SERVER_DELETE_BLOCKED_REASON
 }
 
+/** Revoking the co-located daemon's key would cut the control plane off from its own host. */
+export const COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON =
+  "The co-located control plane server's daemon key cannot be revoked"
+
 /**
  * Placement and dependency blockers for server delete.
  * Future: extend when service.options carries server/replica placement.

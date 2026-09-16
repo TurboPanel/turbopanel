@@ -4,17 +4,20 @@
  * Scans `leaf` expiry-ordered (org-agnostic, keyset cursor, never OFFSET)
  * and re-enqueues the existing `managed.apply` / `managed.ingress.reconcile`
  * paths so leaves are reminted. Concurrent Workers isolates / Deno ticks
- * share a `setting`-table CAS lease (`LEAF_RENEWAL_SWEEP_LOCK`) that also
- * stores the last processed keyset cursor so a later tick can resume past
- * permanently-failing earliest rows.
+ * share a `lease`-table CAS lease (`LEAF_RENEWAL_SWEEP_LOCK`, promoted out
+ * of `setting` — schema-child-tables, Road-to-0.1.x) that also stores the
+ * last processed keyset cursor so a later tick can resume past
+ * permanently-failing earliest rows. The steal CAS compares `cursor`
+ * alongside `owner` / `expiresAt` — a concurrent cursor save between this
+ * tick's read and its steal attempt must be caught, not silently missed.
  */
-import { and, asc, count, eq, gt, lt, or, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 import type { Context } from "hono";
 import type { AppEnv } from "../../app.ts";
 import type { DerivedSecretsConfig, SecretsConfig } from "../authn/secrets.ts";
 import type { Db } from "../../db.ts";
 import type { CommandQueue } from "../../lib/commands/queue.ts";
-import { leaf, setting, tls } from "../../lib/db/schema.ts";
+import { leaf, lease, tls } from "../../lib/db/schema.ts";
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from "../../lib/tls/self-signed.ts";
 import { enqueueManagedIngressReconcile } from "../managed/ingress-desired.ts";
 import { enqueueApplyForManagedCluster } from "./changeover-fanout.ts";
@@ -45,12 +48,6 @@ export type LeafRenewalSweepLock = Readonly<{
   cursor: LeafRenewalCursor | null;
   expiresAt: string;
 }>;
-
-type LeafRenewalSweepLockValue = {
-  owner: string;
-  expiresAt: string;
-  cursor?: LeafRenewalCursor | null;
-};
 
 export type LeafRenewalCursor = {
   notAfter: string;
@@ -111,12 +108,6 @@ function isLeafRenewalCursor(value: unknown): value is LeafRenewalCursor {
     record.id.length > 0;
 }
 
-function cursorFromLockValue(
-  value: LeafRenewalSweepLockValue,
-): LeafRenewalCursor | null {
-  return isLeafRenewalCursor(value.cursor) ? value.cursor : null;
-}
-
 function persistedCursorFromResult(
   result: LeafRenewalSweepResult,
 ): LeafRenewalCursor | null {
@@ -124,52 +115,34 @@ function persistedCursorFromResult(
   return isLeafRenewalCursor(result.cursor) ? result.cursor : null;
 }
 
-function isSweepLockValue(
-  value: unknown,
-): value is LeafRenewalSweepLockValue {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return typeof record.owner === "string" &&
-    typeof record.expiresAt === "string";
+function cursorFromColumn(value: unknown): LeafRenewalCursor | null {
+  return isLeafRenewalCursor(value) ? value : null;
 }
 
-function sweepLockIsExpired(
-  lock: LeafRenewalSweepLockValue,
-  nowMs = Date.now(),
-): boolean {
-  const expires = Date.parse(lock.expiresAt);
+function sweepLockIsExpired(expiresAt: string, nowMs = Date.now()): boolean {
+  const expires = Date.parse(expiresAt);
   if (!Number.isFinite(expires)) return true;
   return expires <= nowMs;
 }
 
 function sweepLockIsStealable(
-  lock: LeafRenewalSweepLockValue,
+  owner: string,
+  expiresAt: string,
   nowMs = Date.now(),
 ): boolean {
-  if (lock.owner.length === 0) return true;
-  return sweepLockIsExpired(lock, nowMs);
+  if (owner.length === 0) return true;
+  return sweepLockIsExpired(expiresAt, nowMs);
 }
 
-function nextSweepLockValue(
-  owner: string,
-  nowMs = Date.now(),
-  cursor: LeafRenewalCursor | null = null,
-): LeafRenewalSweepLockValue {
-  return {
-    owner,
-    expiresAt: new Date(nowMs + LEAF_RENEWAL_SWEEP_LEASE_MS).toISOString(),
-    cursor,
-  };
-}
-
-function lockFromValue(value: LeafRenewalSweepLockValue): LeafRenewalSweepLock {
-  return {
-    owner: value.owner,
-    expiresAt: value.expiresAt,
-    cursor: cursorFromLockValue(value),
-  };
+/**
+ * The steal CAS predicate — `owner`, `expiresAt`, and `cursor` must all still
+ * match what was read, matching the old `eq(setting.value, existing.value)`
+ * whole-JSON compare exactly. A predicate over `owner` / `expiresAt` alone
+ * would silently miss a concurrent cursor save between the read and the
+ * steal attempt, widening the race this lease exists to close.
+ */
+function leaseCursorCondition(cursor: LeafRenewalCursor | null) {
+  return cursor === null ? isNull(lease.cursor) : eq(lease.cursor, cursor);
 }
 
 /**
@@ -183,46 +156,59 @@ export async function tryBeginLeafRenewalSweep(
   nowMs = Date.now(),
 ): Promise<LeafRenewalSweepLock | null> {
   const owner = crypto.randomUUID();
-  const fresh = nextSweepLockValue(owner, nowMs);
+  const freshExpiresAt = new Date(nowMs + LEAF_RENEWAL_SWEEP_LEASE_MS)
+    .toISOString();
 
   const inserted = await db
-    .insert(setting)
-    .values({ key: LEAF_RENEWAL_SWEEP_LOCK_KEY, value: fresh })
-    .onConflictDoNothing({ target: setting.key })
-    .returning({ key: setting.key });
+    .insert(lease)
+    .values({
+      name: LEAF_RENEWAL_SWEEP_LOCK_KEY,
+      organizationId: null,
+      owner,
+      expiresAt: freshExpiresAt,
+      cursor: null,
+    })
+    .onConflictDoNothing({ target: [lease.name, lease.organizationId] })
+    .returning({ id: lease.id });
   if (inserted.length > 0) {
-    return lockFromValue(fresh);
+    return { owner, expiresAt: freshExpiresAt, cursor: null };
   }
 
   const [existing] = await db
-    .select({ value: setting.value })
-    .from(setting)
-    .where(eq(setting.key, LEAF_RENEWAL_SWEEP_LOCK_KEY))
+    .select({
+      owner: lease.owner,
+      expiresAt: lease.expiresAt,
+      cursor: lease.cursor,
+    })
+    .from(lease)
+    .where(
+      and(eq(lease.name, LEAF_RENEWAL_SWEEP_LOCK_KEY), isNull(lease.organizationId)),
+    )
     .limit(1);
   if (
-    !existing || !isSweepLockValue(existing.value) ||
-    !sweepLockIsStealable(existing.value, nowMs)
+    !existing || !sweepLockIsStealable(existing.owner, existing.expiresAt, nowMs)
   ) {
     return null;
   }
 
-  const stolenValue = nextSweepLockValue(
-    owner,
-    nowMs,
-    cursorFromLockValue(existing.value),
-  );
+  const existingCursor = cursorFromColumn(existing.cursor);
+  const stolenExpiresAt = new Date(nowMs + LEAF_RENEWAL_SWEEP_LEASE_MS)
+    .toISOString();
   const stolen = await db
-    .update(setting)
-    .set({ value: stolenValue, updatedAt: nowIso(nowMs) })
+    .update(lease)
+    .set({ owner, expiresAt: stolenExpiresAt, updatedAt: nowIso(nowMs) })
     .where(
       and(
-        eq(setting.key, LEAF_RENEWAL_SWEEP_LOCK_KEY),
-        eq(setting.value, existing.value),
+        eq(lease.name, LEAF_RENEWAL_SWEEP_LOCK_KEY),
+        isNull(lease.organizationId),
+        eq(lease.owner, existing.owner),
+        eq(lease.expiresAt, existing.expiresAt),
+        leaseCursorCondition(existingCursor),
       ),
     )
-    .returning({ key: setting.key });
+    .returning({ id: lease.id });
   if (stolen.length > 0) {
-    return lockFromValue(stolenValue);
+    return { owner, expiresAt: stolenExpiresAt, cursor: existingCursor };
   }
   return null;
 }
@@ -230,6 +216,8 @@ export async function tryBeginLeafRenewalSweep(
 /**
  * Persist the last processed keyset cursor onto the held lock row. Does not
  * release the lease. `null` resets the cursor (sweep completed or invalid).
+ * Owner-scoped only, matching the original: this write does not re-check
+ * `expiresAt`, since only the holding owner is expected to call it.
  */
 export async function saveLeafRenewalSweepCursor(
   db: Db,
@@ -238,27 +226,21 @@ export async function saveLeafRenewalSweepCursor(
   nowMs = Date.now(),
 ): Promise<void> {
   await db
-    .update(setting)
-    .set({
-      value: {
-        owner: lock.owner,
-        expiresAt: lock.expiresAt,
-        cursor,
-      },
-      updatedAt: nowIso(nowMs),
-    })
+    .update(lease)
+    .set({ cursor, updatedAt: nowIso(nowMs) })
     .where(
       and(
-        eq(setting.key, LEAF_RENEWAL_SWEEP_LOCK_KEY),
-        sql`${setting.value}->>'owner' = ${lock.owner}`,
+        eq(lease.name, LEAF_RENEWAL_SWEEP_LOCK_KEY),
+        isNull(lease.organizationId),
+        eq(lease.owner, lock.owner),
       ),
     );
 }
 
 /**
- * Release the lease without dropping the setting row, so the stored cursor
- * survives until the next tick. Empty owner + expired `expiresAt` makes the
- * row stealable immediately.
+ * Release the lease without dropping the row, so the stored cursor survives
+ * until the next tick. Empty owner + expired `expiresAt` makes the row
+ * stealable immediately.
  */
 export async function endLeafRenewalSweep(
   db: Db,
@@ -266,19 +248,18 @@ export async function endLeafRenewalSweep(
   nowMs = Date.now(),
 ): Promise<void> {
   await db
-    .update(setting)
+    .update(lease)
     .set({
-      value: {
-        owner: "",
-        expiresAt: nowIso(nowMs),
-        cursor: lock.cursor,
-      },
+      owner: "",
+      expiresAt: nowIso(nowMs),
+      cursor: lock.cursor,
       updatedAt: nowIso(nowMs),
     })
     .where(
       and(
-        eq(setting.key, LEAF_RENEWAL_SWEEP_LOCK_KEY),
-        sql`${setting.value}->>'owner' = ${lock.owner}`,
+        eq(lease.name, LEAF_RENEWAL_SWEEP_LOCK_KEY),
+        isNull(lease.organizationId),
+        eq(lease.owner, lock.owner),
       ),
     );
 }
@@ -286,7 +267,11 @@ export async function endLeafRenewalSweep(
 /** Test-only: drop the durable sweep lock row when `db` is provided. */
 export async function resetLeafRenewalSweepLockForTests(db?: Db): Promise<void> {
   if (!db) return;
-  await db.delete(setting).where(eq(setting.key, LEAF_RENEWAL_SWEEP_LOCK_KEY));
+  await db
+    .delete(lease)
+    .where(
+      and(eq(lease.name, LEAF_RENEWAL_SWEEP_LOCK_KEY), isNull(lease.organizationId)),
+    );
 }
 
 function leafRenewalKeysetCondition(cursor: LeafRenewalCursor) {

@@ -6,7 +6,7 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { license, payer, server, setting, subscription, subscriptionItem, tier } from '../db/schema.ts'
+import { license, payer, allowance, server, subscription, subscriptionItem, tier } from '../db/schema.ts'
 import { listSeatsForOrganization } from '../db/billing-records.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
@@ -19,7 +19,6 @@ import {
   tierQuantitiesFromState,
 } from './assignment-records.ts'
 import { CUSTOM_TIER_LABEL } from './ladder.ts'
-import { SELF_HOSTED_GRANT_VERSION, selfHostedGrantKey } from './self-hosted-grant.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -73,16 +72,16 @@ function seed(opts: {
   }
   const grantRows = opts.grantQuantity
     ? [{
-      id: 'setting-grant',
-      key: selfHostedGrantKey(ORG),
-      value: { version: SELF_HOSTED_GRANT_VERSION, tierId: SX, quantity: opts.grantQuantity },
+      organizationId: ORG,
+      tierId: SX,
+      quantity: opts.grantQuantity,
       createdAt: NOW,
       updatedAt: NOW,
     }]
     : []
   return createMemoryDb([
     [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3), tierRow(S5, 'S5', 5), sxRow]],
-    [setting, grantRows],
+    [allowance, grantRows],
     [payer, opts.payer === false ? [] : [{ id: PAYER, organizationId: ORG, userId: null, provider: 'stripe', providerCustomerId: 'cus_1', taxId: null, createdAt: NOW, updatedAt: NOW }]],
     [subscription, [{ id: SUB, payerId: PAYER, providerSubscriptionId: 'sub_1', status: opts.status ?? 'active', currentPeriodEnd: null, scheduleId: null, graceExpiresAt: null, pastDueSince: null, createdAt: NOW, updatedAt: NOW }]],
     [subscriptionItem, (opts.seats ?? []).map((seat, index) => ({

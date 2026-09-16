@@ -8,7 +8,7 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
-import { license, payer, setting, subscription, subscriptionItem, tier } from './schema.ts'
+import { license, payer, allowance, subscription, subscriptionItem, tier } from './schema.ts'
 import {
   BILLING_GRACE_WINDOW_MS,
   getPayerForOrganization,
@@ -353,9 +353,9 @@ function entitlementDb(opts: {
 }) {
   return createMemoryDb([
     [tier, [entTier(TIER_S1, 'S1', 1), entTier(TIER_S2, 'S2', 2, false)]],
-    // The self-hosted grant lives in a `setting` row; every entitlement read
-    // looks for one (`src/lib/tiers/self-hosted-grant.ts`).
-    [setting, []],
+    // The self-hosted grant lives in the `self_hosted_grant` table; every
+    // entitlement read looks for a row (`src/lib/tiers/self-hosted-grant.ts`).
+    [allowance, []],
     [payer, [{ id: PAYER_ROW, organizationId: ORG_ID, userId: null, provider: 'stripe', providerCustomerId: 'cus_1', taxId: null, createdAt: ENT_NOW, updatedAt: ENT_NOW }]],
     [subscription, [{ id: SUB_ROW, payerId: PAYER_ROW, providerSubscriptionId: 'sub_1', status: opts.status ?? 'active', currentPeriodEnd: null, scheduleId: null, graceExpiresAt: null, pastDueSince: null, createdAt: ENT_NOW, updatedAt: ENT_NOW }]],
     [subscriptionItem, opts.seats.map((seat, index) => ({

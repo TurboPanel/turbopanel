@@ -8,7 +8,6 @@
  */
 import { inArray } from "drizzle-orm";
 import type { Db } from "../../db.ts";
-import { parseServerDaemonState } from "../authn/daemon-state.ts";
 import type {
   ServerDockerMetadata,
   ServerHardwareProfile,
@@ -203,7 +202,6 @@ export async function resolveFleetPresence(
       ntpLastSyncedAt: row.ntpLastSyncedAt ?? null,
     }) ?? null;
     const ips = reportedIpsFromServerMetadata(metadata) ?? null;
-    const state = parseServerDaemonState(row.daemon);
     const rawRemote = projection?.remoteAddress ?? null;
     const snapshot = snapshots.get(row.id);
     const connected = snapshot === undefined
@@ -219,7 +217,7 @@ export async function resolveFleetPresence(
       machineKey: row.machineKey ?? null,
       remoteAddress: normalizeRemoteAddress(rawRemote),
       directAttach: rawRemote === "__direct__",
-      keyId: projection?.keyId ?? state?.key.id ?? null,
+      keyId: projection?.keyId ?? null,
       connectedAt: snapshot?.connectedAt ?? projection?.connectedAt ??
         (row.connected ? row.statusChangedAt : null),
       statusChangedAt: row.statusChangedAt ?? null,

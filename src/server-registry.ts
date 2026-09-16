@@ -333,7 +333,7 @@ export async function touchServerMetadata(
   // enqueued here — hello and Durable Object handlers must not enqueue
   // commands (DO cost rule, see `client/system/reconcile.ts`); the routing
   // fan-out for a repin is deferred to the maintenance sweep
-  // (`client/datacenters/repin-fanout.ts`) via `ip.metadata.repin.pendingFanoutAt`.
+  // (`client/datacenters/repin-fanout.ts`) via `ip.repin_pending_fanout_at`.
   if (
     delta.resources?.ips !== undefined &&
     !serverIpsEquals(delta.resources.ips, base?.resources?.ips)

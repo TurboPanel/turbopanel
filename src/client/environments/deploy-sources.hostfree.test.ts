@@ -120,18 +120,20 @@ function baseParams(
   };
 }
 
+/**
+ * `key` table columns flattened alongside `server` columns, mirroring
+ * `getServerDaemonStateByServerId`'s joined select.
+ */
 function daemonStateRow(revokedAt: string | null = null) {
   return {
-    daemon: {
-      key: {
-        id: KEY_ID,
-        algorithm: "Ed25519",
-        publicJwk: { kty: "OKP", crv: "Ed25519", x: "dGVzdGtleQ" },
-        fingerprint: "fp-1",
-        createdAt: "2020-01-01T00:00:00.000Z",
-        revokedAt,
-      },
-    },
+    id: KEY_ID,
+    algorithm: "Ed25519",
+    publicJwk: { kty: "OKP", crv: "Ed25519", x: "dGVzdGtleQ" },
+    fingerprint: "fp-1",
+    createdAt: "2020-01-01T00:00:00.000Z",
+    revokedAt,
+    lastUsedAt: null,
+    daemon: null,
     metadata: {},
     hostname: "host",
     machineKey: "mk",

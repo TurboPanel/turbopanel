@@ -68,6 +68,7 @@ async function withReconcileFixtures(
     .values({
       name: 'Container Reconcile Project',
       workspaceId,
+      organizationId,
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id
@@ -378,6 +379,7 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
     .values({
       name: 'Container Reconcile Project',
       workspaceId,
+      organizationId,
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id

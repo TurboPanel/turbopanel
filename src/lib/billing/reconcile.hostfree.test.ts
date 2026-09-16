@@ -6,7 +6,7 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { license, payer, server, setting, subscription, subscriptionItem, tier } from '../db/schema.ts'
+import { allowance, key, lease, license, payer, server, setting, subscription, subscriptionItem, tier } from '../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import { emptyLedger, newDeferredIntent, withIntent, writePendingChanges } from './pending-changes.ts'
 import {
@@ -61,6 +61,9 @@ function seed(opts: { s3Seats: number; s5Seats: number; licenses: { id: string; 
     // A 12-core box fits S3; a 256-core box needs S7, which nobody bought.
     [server, [serverRow(SERVER_A, 12, '2026-09-01T00:00:00.000Z'), serverRow(SERVER_BIG, 256, '2026-09-02T00:00:00.000Z')]],
     [setting, []],
+    [allowance, []],
+    [key, []],
+    [lease, []],
   ])
 }
 

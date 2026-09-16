@@ -119,9 +119,11 @@ import { issueDaemonJwt, verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import type { ServerDaemonStateWithMetadata } from "./authn/server-identity-db.ts";
 import {
   attachDaemonStateToServer,
+  DaemonKeyRevokedError,
   getServerDaemonStateByFingerprint,
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
+  SERVER_KEY_REVOKED_ERROR,
   touchDaemonKeyLastUsed,
 } from "./authn/server-identity-db.ts";
 import {
@@ -351,7 +353,7 @@ async function finalizeDaemonEnrollment(
   },
 ): Promise<
   | { ok: true; serverId: string; keyId: string }
-  | { ok: false; status: 400 | 409 | 500; error: string }
+  | { ok: false; status: 400 | 403 | 409 | 500; error: string }
 > {
   const {
     serverIdBody,
@@ -383,6 +385,18 @@ async function finalizeDaemonEnrollment(
     };
   }
 
+  // Revocation is sticky: the license token still on a compromised host's
+  // disk must not re-enroll it past an operator's revoke. This pre-check is
+  // the cheap, common-case refusal; the upsert's `setWhere` inside
+  // `attachDaemonStateToServer` is the atomic one, for a revoke that commits
+  // between here and the write. Recovery is `DELETE /servers/:id` (which
+  // clears daemon state and retires the bound license), then enrolling the
+  // rebuilt host fresh.
+  const current = await getServerDaemonStateByServerId(db, serverId);
+  if (current && !isDaemonKeyActive(current.key)) {
+    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR };
+  }
+
   const existing = await getServerDaemonStateByFingerprint(db, fingerprint);
   if (existing && existing.serverId !== serverId) {
     return { ok: false, status: 409, error: "Fingerprint already exists" };
@@ -397,6 +411,9 @@ async function finalizeDaemonEnrollment(
     });
     return { ok: true, serverId, keyId: result.keyId };
   } catch (err) {
+    if (err instanceof DaemonKeyRevokedError) {
+      return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR };
+    }
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, status: 500, error: message };
   }

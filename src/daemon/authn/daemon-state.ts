@@ -41,10 +41,29 @@ export type ServerDaemonStatus = {
   statusChangedAt: string | null;
 };
 
-/** Sparse jsonb blob: `{ key, projection? }` — status lives in columns. */
+/**
+ * The assembled daemon identity: the `key` table row plus the sparse
+ * `server.daemon` jsonb projection. Status lives in dedicated columns.
+ */
 export type ServerDaemonState = {
   key: ServerDaemonKey;
   projection?: ServerDaemonProjection;
+};
+
+/** What `server.daemon` jsonb actually stores now — the key lives in the `key` table. */
+export type ServerDaemonJsonb = {
+  projection?: ServerDaemonProjection;
+};
+
+/** Row shape selected from the `key` table. */
+export type KeyTableRow = {
+  id: string;
+  algorithm: string;
+  publicJwk: unknown;
+  fingerprint: string;
+  createdAt: string;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
 };
 
 /** Column row shape used by {@link mapServerDaemonStatusFromColumns}. */
@@ -55,12 +74,6 @@ export type ServerDaemonStatusColumns = {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function isOptionalTimestamp(
-  value: unknown,
-): value is string | null | undefined {
-  return value === undefined || value === null || isNonEmptyString(value);
 }
 
 function isPublicJwk(value: unknown): value is JsonWebKey {
@@ -157,33 +170,20 @@ function parseServerDaemonProjection(
   return parsed;
 }
 
-function parseServerDaemonKey(raw: unknown): ServerDaemonKey | null {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+/** Validate and narrow a `key` table row into the stable {@link ServerDaemonKey} DTO. */
+export function parseServerDaemonKeyRow(row: KeyTableRow): ServerDaemonKey | null {
+  if (row.algorithm !== "Ed25519" || !isPublicJwk(row.publicJwk)) {
     return null;
   }
-  const key = raw as Record<string, unknown>;
-  if (
-    !isNonEmptyString(key.id) ||
-    key.algorithm !== "Ed25519" ||
-    !isPublicJwk(key.publicJwk) ||
-    !isNonEmptyString(key.fingerprint) ||
-    !isNonEmptyString(key.createdAt) ||
-    !isOptionalTimestamp(key.revokedAt)
-  ) {
-    return null;
-  }
-  const parsed: ServerDaemonKey = {
-    id: key.id,
+  return {
+    id: row.id,
     algorithm: "Ed25519",
-    publicJwk: key.publicJwk,
-    fingerprint: key.fingerprint,
-    createdAt: key.createdAt,
-    revokedAt: key.revokedAt ?? null,
+    publicJwk: row.publicJwk,
+    fingerprint: row.fingerprint,
+    createdAt: row.createdAt,
+    revokedAt: row.revokedAt,
+    lastUsedAt: row.lastUsedAt,
   };
-  if (isOptionalTimestamp(key.lastUsedAt)) {
-    parsed.lastUsedAt = key.lastUsedAt ?? null;
-  }
-  return parsed;
 }
 
 export function buildDefaultDaemonStatus(): ServerDaemonStatus {
@@ -212,24 +212,20 @@ export function mapServerDaemonStatusFromColumns(
 }
 
 /**
- * Parse the sparse `server.daemon` jsonb blob (`key` + optional `projection`).
- * Fleet status is not read from jsonb — use {@link mapServerDaemonStatusFromColumns}.
+ * Parse the sparse `server.daemon` jsonb blob — `{ projection? }` only now;
+ * the daemon key lives in the `key` table. Fleet status is not read from
+ * jsonb — use {@link mapServerDaemonStatusFromColumns}.
  */
-export function parseServerDaemonState(raw: unknown): ServerDaemonState | null {
+export function parseServerDaemonState(raw: unknown): ServerDaemonJsonb | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return null;
   }
   const state = raw as Record<string, unknown>;
-  const parsedKey = parseServerDaemonKey(state.key);
-  if (!parsedKey) {
-    return null;
-  }
   const parsedProjection = state.projection != null
     ? parseServerDaemonProjection(state.projection)
     : undefined;
 
   return {
-    key: parsedKey,
     ...(parsedProjection ? { projection: parsedProjection } : {}),
   };
 }
@@ -238,20 +234,10 @@ export function isDaemonKeyActive(key: ServerDaemonKey): boolean {
   return key.revokedAt === null || key.revokedAt === undefined;
 }
 
-export function buildServerDaemonState(params: {
-  publicJwk: JsonWebKey;
-  fingerprint: string;
-  algorithm?: "Ed25519";
-}): ServerDaemonState {
-  const now = new Date().toISOString();
-  return {
-    key: {
-      id: crypto.randomUUID(),
-      algorithm: params.algorithm ?? "Ed25519",
-      publicJwk: params.publicJwk,
-      fingerprint: params.fingerprint,
-      createdAt: now,
-      revokedAt: null,
-    },
-  };
-}
+/**
+ * `POST /enroll`'s refusal for a server whose key an operator revoked.
+ * Byte-for-byte part of the daemon's `classifyConnectFailure` permanent-
+ * enrollment list (turbopaneld `src/instance/connect-failure.ts`), so a
+ * revoked host stops retrying instead of looping on enroll.
+ */
+export const SERVER_KEY_REVOKED_ERROR = "Server key revoked";

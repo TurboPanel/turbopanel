@@ -143,6 +143,7 @@ async function withContainerFixtures(
     .values({
       name: 'Container Route Project',
       workspaceId,
+      organizationId,
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id
@@ -621,7 +622,7 @@ test('GET /containers?projectId= spans the project environments and stamps envir
     // A different project in the same org — must stay out of the response.
     const [otherProject] = await db
       .insert(project)
-      .values({ name: 'Other Container Route Project', workspaceId })
+      .values({ name: 'Other Container Route Project', workspaceId, organizationId })
       .returning({ id: project.id })
     const otherProjectId = otherProject!.id
     const [otherEnv] = await db

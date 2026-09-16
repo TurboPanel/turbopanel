@@ -485,7 +485,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     }).catch((err) => {
       logWarn('daemon-cell', `managed ingress orphan sweep error: ${String(err)}`)
     })
-    // Automatic membership repins stamp `ip.metadata.repin.pendingFanoutAt`
+    // Automatic membership repins stamp `ip.repin_pending_fanout_at`
     // from the presence path (which must not enqueue); this drains them with
     // the datacenter routing fan-out. Isolated so a failure never affects the
     // other sweeps.

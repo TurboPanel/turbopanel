@@ -4,15 +4,16 @@
  * Modelled on `tryBeginLeafRenewalSweep` / `endLeafRenewalSweep` (insert
  * `onConflictDoNothing`, then a value-compare `UPDATE` to steal an expired
  * lease). No cursor field — this sweep already paginates via
- * `rotateSweepBatch`. Lives in the Postgres `setting` table so a second
+ * `rotateSweepBatch`. Lives in the `lease` table (schema-child-tables,
+ * Road-to-0.1.x — promoted out of the `setting` table) so a second
  * Cloudflare isolate skips instead of doubling DO wakes and Hyperdrive
  * clients; no KV, D1, R2, or DO storage is added.
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../../db.ts";
-import { setting } from "../../lib/db/schema.ts";
+import { lease } from "../../lib/db/schema.ts";
 
-/** `setting.key` for the cross-isolate offline-sweep lease. */
+/** `lease.name` for the cross-isolate offline-sweep lease — globally scoped. */
 export const OFFLINE_SWEEP_LOCK_KEY = "OFFLINE_SWEEP_LOCK";
 
 /**
@@ -45,17 +46,6 @@ type OfflineSweepLockValue = {
 
 function nowIso(nowMs = Date.now()): string {
   return new Date(nowMs).toISOString();
-}
-
-function isSweepLockValue(
-  value: unknown,
-): value is OfflineSweepLockValue {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return typeof record.owner === "string" &&
-    typeof record.expiresAt === "string";
 }
 
 function sweepLockIsExpired(
@@ -115,37 +105,45 @@ export async function tryBeginOfflineSweep(
   const fresh = nextSweepLockValue(owner, nowMs, opts.heldUntilMs);
 
   const inserted = await db
-    .insert(setting)
-    .values({ key: OFFLINE_SWEEP_LOCK_KEY, value: fresh })
-    .onConflictDoNothing({ target: setting.key })
-    .returning({ key: setting.key });
+    .insert(lease)
+    .values({
+      name: OFFLINE_SWEEP_LOCK_KEY,
+      organizationId: null,
+      owner: fresh.owner,
+      expiresAt: fresh.expiresAt,
+    })
+    .onConflictDoNothing({ target: [lease.name, lease.organizationId] })
+    .returning({ id: lease.id });
   if (inserted.length > 0) {
     return lockFromValue(fresh);
   }
 
   const [existing] = await db
-    .select({ value: setting.value })
-    .from(setting)
-    .where(eq(setting.key, OFFLINE_SWEEP_LOCK_KEY))
+    .select({ owner: lease.owner, expiresAt: lease.expiresAt })
+    .from(lease)
+    .where(and(eq(lease.name, OFFLINE_SWEEP_LOCK_KEY), isNull(lease.organizationId)))
     .limit(1);
-  if (
-    !existing || !isSweepLockValue(existing.value) ||
-    !sweepLockIsStealable(existing.value, nowMs)
-  ) {
+  if (!existing || !sweepLockIsStealable(existing, nowMs)) {
     return null;
   }
 
   const stolenValue = nextSweepLockValue(owner, nowMs, opts.heldUntilMs);
   const stolen = await db
-    .update(setting)
-    .set({ value: stolenValue, updatedAt: nowIso(nowMs) })
+    .update(lease)
+    .set({
+      owner: stolenValue.owner,
+      expiresAt: stolenValue.expiresAt,
+      updatedAt: nowIso(nowMs),
+    })
     .where(
       and(
-        eq(setting.key, OFFLINE_SWEEP_LOCK_KEY),
-        eq(setting.value, existing.value),
+        eq(lease.name, OFFLINE_SWEEP_LOCK_KEY),
+        isNull(lease.organizationId),
+        eq(lease.owner, existing.owner),
+        eq(lease.expiresAt, existing.expiresAt),
       ),
     )
-    .returning({ key: setting.key });
+    .returning({ id: lease.id });
   if (stolen.length > 0) {
     return lockFromValue(stolenValue);
   }
@@ -153,9 +151,9 @@ export async function tryBeginOfflineSweep(
 }
 
 /**
- * Release the lease without dropping the setting row, so there is no insert
- * churn on the next tick. Empty owner + expired `expiresAt` makes the row
- * stealable immediately.
+ * Release the lease without dropping the row, so there is no insert churn on
+ * the next tick. Empty owner + expired `expiresAt` makes the row stealable
+ * immediately.
  */
 export async function endOfflineSweep(
   db: Db,
@@ -163,18 +161,17 @@ export async function endOfflineSweep(
   nowMs = Date.now(),
 ): Promise<void> {
   await db
-    .update(setting)
+    .update(lease)
     .set({
-      value: {
-        owner: "",
-        expiresAt: nowIso(nowMs),
-      },
+      owner: "",
+      expiresAt: nowIso(nowMs),
       updatedAt: nowIso(nowMs),
     })
     .where(
       and(
-        eq(setting.key, OFFLINE_SWEEP_LOCK_KEY),
-        sql`${setting.value}->>'owner' = ${lock.owner}`,
+        eq(lease.name, OFFLINE_SWEEP_LOCK_KEY),
+        isNull(lease.organizationId),
+        eq(lease.owner, lock.owner),
       ),
     );
 }

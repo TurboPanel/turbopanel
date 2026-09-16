@@ -3,10 +3,10 @@
  */
 
 import { assertEquals } from '@std/assert'
-import type { Db } from '../../db.ts'
 import type { ComposeDocument } from '../../lib/compose/index.ts'
 import { hostingEntryKey } from '../../lib/compose/index.ts'
-import { hosting, ip, tls } from '../../lib/db/schema.ts'
+import { hostname, hosting, ip, service, tls } from '../../lib/db/schema.ts'
+import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   HOSTING_COMPOSE_ROUTE_METADATA_KEY,
   withHostingComposeOwner,
@@ -21,9 +21,10 @@ import { reconcileHostingsFromCompose } from './reconcile-hostings.ts'
  */
 const test = Deno.test.bind(Deno)
 
-const ORG_ID = 'org-1'
-const ENV_ID = 'env-1'
-const SVC_WEB = 'svc-web'
+const ORG_ID = '11111111-1111-4111-8111-111111111111'
+const ENV_ID = '22222222-2222-4222-8222-222222222222'
+const SVC_WEB = '33333333-3333-4333-8333-333333333333'
+const SVC_OTHER = '44444444-4444-4444-8444-444444444444'
 const HOSTNAME = 'app.example.com'
 const ROUTE = hostingEntryKey({ hostname: HOSTNAME })
 
@@ -32,16 +33,6 @@ type ExistingRow = {
   serviceId: string
   metadata: unknown
   options: unknown
-}
-
-function thenableRows(rows: unknown[]) {
-  const promise = Promise.resolve(rows)
-  return {
-    limit: () => promise,
-    then: promise.then.bind(promise),
-    catch: promise.catch.bind(promise),
-    finally: promise.finally.bind(promise),
-  }
 }
 
 function composeDoc(
@@ -84,65 +75,33 @@ function createReconcileDb(opts: {
   tlsRows?: Array<{ id: string; label: string | null }>
   ipRows?: Array<{ id: string; label: string | null }>
 }) {
-  const inserts: Array<Record<string, unknown>> = []
-  const updates: Array<{ id: unknown; values: Record<string, unknown> }> = []
-  const deletes: unknown[][] = []
-  let insertSeq = 0
+  return createMemoryDb([
+    [hosting, opts.hostingRows ?? []],
+    [service, [
+      { id: SVC_WEB, environmentId: ENV_ID },
+      { id: SVC_OTHER, environmentId: ENV_ID },
+    ]],
+    [tls, (opts.tlsRows ?? []).map((row) => ({
+      id: row.id,
+      name: row.label,
+      organizationId: ORG_ID,
+    }))],
+    [ip, (opts.ipRows ?? []).map((row) => ({
+      id: row.id,
+      address: row.label,
+      organizationId: ORG_ID,
+    }))],
+    [hostname, []],
+  ])
+}
 
-  const db = {
-    select: () => ({
-      from: (table: unknown) => {
-        if (table === hosting) {
-          return {
-            innerJoin: () => ({
-              where: () => thenableRows(opts.hostingRows ?? []),
-            }),
-          }
-        }
-        if (table === tls) {
-          return {
-            where: () => thenableRows(opts.tlsRows ?? []),
-          }
-        }
-        if (table === ip) {
-          return {
-            where: () => thenableRows(opts.ipRows ?? []),
-          }
-        }
-        throw new TypeError('unexpected select table')
-      },
-    }),
-    insert: () => ({
-      values: (values: Record<string, unknown>) => ({
-        returning: () => {
-          insertSeq += 1
-          const id = `new-host-${insertSeq}`
-          inserts.push({ id, ...values })
-          return Promise.resolve([{ id }])
-        },
-      }),
-    }),
-    update: () => ({
-      set: (values: Record<string, unknown>) => ({
-        where: (clause: unknown) => {
-          updates.push({ id: clause, values })
-          return Promise.resolve()
-        },
-      }),
-    }),
-    delete: () => ({
-      where: (clause: unknown) => {
-        deletes.push([clause])
-        return Promise.resolve()
-      },
-    }),
-  } as unknown as Db
-
-  return { db, inserts, updates, deletes }
+/** The one `hosting` row a call created or kept, by id. */
+function hostingRow(db: ReturnType<typeof createReconcileDb>, id: string) {
+  return db.rows(hosting).find((row) => row.id === id)
 }
 
 test('reconcileHostingsFromCompose is a no-op when nothing is declared or owned', async () => {
-  const { db, inserts, deletes } = createReconcileDb({})
+  const db = createReconcileDb({})
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
     environmentId: ENV_ID,
@@ -157,12 +116,11 @@ test('reconcileHostingsFromCompose is a no-op when nothing is declared or owned'
     removed: [],
     released: [],
   })
-  assertEquals(inserts, [])
-  assertEquals(deletes, [])
+  assertEquals(db.rows(hosting), [])
 })
 
 test('reconcileHostingsFromCompose skips non-mapping services and services without hosting', async () => {
-  const { db, inserts } = createReconcileDb({})
+  const db = createReconcileDb({})
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
     environmentId: ENV_ID,
@@ -174,14 +132,15 @@ test('reconcileHostingsFromCompose skips non-mapping services and services witho
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
   if (!result.ok) throw new TypeError('expected create to succeed')
-  assertEquals(result.created, ['new-host-1'])
-  assertEquals(inserts.length, 1)
-  assertEquals(inserts[0]?.name, HOSTNAME)
-  assertEquals(inserts[0]?.serviceId, SVC_WEB)
+  assertEquals(result.created.length, 1)
+  assertEquals(db.rows(hosting).length, 1)
+  const row = hostingRow(db, result.created[0]!)
+  assertEquals(row?.name, HOSTNAME)
+  assertEquals(row?.serviceId, SVC_WEB)
 })
 
-test('reconcileHostingsFromCompose creates a row and pins TLS/IP by id or label', async () => {
-  const { db, inserts } = createReconcileDb({
+test('reconcileHostingsFromCompose creates a row and pins TLS/IP by id or label, and syncs the hostname table', async () => {
+  const db = createReconcileDb({
     tlsRows: [
       { id: 'tls-1', label: 'prod-cert' },
       { id: 'tls-2', label: 'prod-cert' },
@@ -204,18 +163,23 @@ test('reconcileHostingsFromCompose creates a row and pins TLS/IP by id or label'
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
   if (!result.ok) throw new TypeError('expected create with pins to succeed')
-  assertEquals(result.created, ['new-host-1'])
-  assertEquals(inserts[0]?.tlsId, 'tls-1')
-  assertEquals(inserts[0]?.ipId, 'ip-1')
-  const options = inserts[0]?.options as Record<string, unknown>
+  assertEquals(result.created.length, 1)
+  const row = hostingRow(db, result.created[0]!)
+  assertEquals(row?.tlsId, 'tls-1')
+  assertEquals(row?.ipId, 'ip-1')
+  const options = row?.options as Record<string, unknown>
   assertEquals(options.hostnames, [HOSTNAME])
   assertEquals(options.pathPrefix, '/app')
   assertEquals(options.targetPort, 8080)
   assertEquals((options.proxy as { forceHttps?: boolean })?.forceHttps, true)
+  assertEquals(db.rows(hostname).length, 1)
+  assertEquals(db.rows(hostname)[0]?.hostingId, result.created[0])
+  assertEquals(db.rows(hostname)[0]?.routingOrganizationId, ORG_ID)
+  assertEquals(db.rows(hostname)[0]?.hostname, HOSTNAME)
 })
 
 test('reconcileHostingsFromCompose drops targetPort on site services', async () => {
-  const { db, inserts } = createReconcileDb({})
+  const db = createReconcileDb({})
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
     environmentId: ENV_ID,
@@ -228,19 +192,25 @@ test('reconcileHostingsFromCompose drops targetPort on site services', async () 
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
   if (!result.ok) throw new TypeError('expected site create to succeed')
-  const options = inserts[0]?.options as Record<string, unknown>
+  const options = hostingRow(db, result.created[0]!)?.options as Record<string, unknown>
   assertEquals('targetPort' in options, false)
 })
 
-test('reconcileHostingsFromCompose updates an existing compose-owned row', async () => {
+test('reconcileHostingsFromCompose updates an existing compose-owned row and replaces its hostname row', async () => {
   const existingId = 'host-existing'
-  const { db, inserts, updates } = createReconcileDb({
+  const db = createReconcileDb({
     hostingRows: [{
       id: existingId,
       serviceId: SVC_WEB,
       metadata: composeOwnedMetadata('web', ROUTE),
       options: { hostnames: [HOSTNAME], web: { env: { KEEP: '1' } } },
     }],
+  })
+  db.rows(hostname).push({
+    id: 'hn-existing',
+    hostingId: existingId,
+    routingOrganizationId: ORG_ID,
+    hostname: HOSTNAME,
   })
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
@@ -253,18 +223,21 @@ test('reconcileHostingsFromCompose updates an existing compose-owned row', async
   if (!result.ok) throw new TypeError('expected update to succeed')
   assertEquals(result.updated, [existingId])
   assertEquals(result.created, [])
-  assertEquals(inserts, [])
-  assertEquals(updates.length, 1)
-  const options = updates[0]?.values.options as Record<string, unknown>
+  assertEquals(db.rows(hosting).length, 1)
+  const options = hostingRow(db, existingId)?.options as Record<string, unknown>
   assertEquals((options.web as { env?: Record<string, string> })?.env, {
     KEEP: '1',
   })
   assertEquals((options.proxy as { forceHttps?: boolean })?.forceHttps, false)
+  // Replace-whole-array: still one row, same values, not a second row.
+  assertEquals(db.rows(hostname).length, 1)
+  assertEquals(db.rows(hostname)[0]?.hostingId, existingId)
+  assertEquals(db.rows(hostname)[0]?.hostname, HOSTNAME)
 })
 
 test('reconcileHostingsFromCompose adopts a matching panel-authored row', async () => {
   const panelId = 'host-panel'
-  const { db, updates } = createReconcileDb({
+  const db = createReconcileDb({
     hostingRows: [{
       id: panelId,
       serviceId: SVC_WEB,
@@ -283,14 +256,14 @@ test('reconcileHostingsFromCompose adopts a matching panel-authored row', async 
   if (!result.ok) throw new TypeError('expected adopt to succeed')
   assertEquals(result.adopted, [panelId])
   assertEquals(result.updated, [])
-  const metadata = updates[0]?.values.metadata as Record<string, unknown>
+  const metadata = hostingRow(db, panelId)?.metadata as Record<string, unknown>
   assertEquals(metadata.composeOwned, true)
   assertEquals(metadata.composeAdopted, true)
   assertEquals(metadata.note, 'panel')
 })
 
 test('reconcileHostingsFromCompose reports a multi-hostname panel conflict', async () => {
-  const { db } = createReconcileDb({
+  const db = createReconcileDb({
     hostingRows: [{
       id: 'host-multi',
       serviceId: SVC_WEB,
@@ -323,7 +296,7 @@ test('reconcileHostingsFromCompose reports a multi-hostname panel conflict', asy
 })
 
 test('reconcileHostingsFromCompose ignores tcp panel rows and other services', async () => {
-  const { db, inserts } = createReconcileDb({
+  const db = createReconcileDb({
     hostingRows: [
       {
         id: 'host-tcp',
@@ -333,7 +306,7 @@ test('reconcileHostingsFromCompose ignores tcp panel rows and other services', a
       },
       {
         id: 'host-other',
-        serviceId: 'svc-other',
+        serviceId: SVC_OTHER,
         metadata: {},
         options: { hostnames: [HOSTNAME], pathPrefix: '/' },
       },
@@ -354,12 +327,12 @@ test('reconcileHostingsFromCompose ignores tcp panel rows and other services', a
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
   if (!result.ok) throw new TypeError('expected create after ignored panel rows')
-  assertEquals(result.created, ['new-host-1'])
-  assertEquals(inserts.length, 1)
+  assertEquals(result.created.length, 1)
+  assertEquals(db.rows(hosting).length, 4)
 })
 
 test('reconcileHostingsFromCompose refuses automatic TLS mode', async () => {
-  const { db } = createReconcileDb({})
+  const db = createReconcileDb({})
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
     environmentId: ENV_ID,
@@ -382,19 +355,20 @@ test('reconcileHostingsFromCompose refuses automatic TLS mode', async () => {
 })
 
 test('reconcileHostingsFromCompose reports unresolved and ambiguous TLS refs', async () => {
-  const missing = await reconcileHostingsFromCompose(createReconcileDb({
-    tlsRows: [{ id: 'tls-1', label: 'other' }],
-  }).db, {
-    organizationId: ORG_ID,
-    environmentId: ENV_ID,
-    merged: composeDoc({
-      web: hostingService([{
-        hostname: HOSTNAME,
-        tls: { mode: 'certificate', certificateRef: 'missing-cert' },
-      }]),
-    }),
-    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
-  })
+  const missing = await reconcileHostingsFromCompose(
+    createReconcileDb({ tlsRows: [{ id: 'tls-1', label: 'other' }] }),
+    {
+      organizationId: ORG_ID,
+      environmentId: ENV_ID,
+      merged: composeDoc({
+        web: hostingService([{
+          hostname: HOSTNAME,
+          tls: { mode: 'certificate', certificateRef: 'missing-cert' },
+        }]),
+      }),
+      serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+    },
+  )
   assertEquals(missing, {
     ok: false,
     error: {
@@ -406,22 +380,25 @@ test('reconcileHostingsFromCompose reports unresolved and ambiguous TLS refs', a
     },
   })
 
-  const ambiguous = await reconcileHostingsFromCompose(createReconcileDb({
-    tlsRows: [
-      { id: 'tls-a', label: 'shared' },
-      { id: 'tls-b', label: 'shared' },
-    ],
-  }).db, {
-    organizationId: ORG_ID,
-    environmentId: ENV_ID,
-    merged: composeDoc({
-      web: hostingService([{
-        hostname: HOSTNAME,
-        tls: { mode: 'certificate', certificateRef: 'shared' },
-      }]),
+  const ambiguous = await reconcileHostingsFromCompose(
+    createReconcileDb({
+      tlsRows: [
+        { id: 'tls-a', label: 'shared' },
+        { id: 'tls-b', label: 'shared' },
+      ],
     }),
-    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
-  })
+    {
+      organizationId: ORG_ID,
+      environmentId: ENV_ID,
+      merged: composeDoc({
+        web: hostingService([{
+          hostname: HOSTNAME,
+          tls: { mode: 'certificate', certificateRef: 'shared' },
+        }]),
+      }),
+      serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+    },
+  )
   assertEquals(ambiguous.ok, false)
   if (ambiguous.ok) throw new TypeError('expected ambiguous TLS ref')
   assertEquals(ambiguous.error, {
@@ -434,19 +411,20 @@ test('reconcileHostingsFromCompose reports unresolved and ambiguous TLS refs', a
 })
 
 test('reconcileHostingsFromCompose reports unresolved IP refs', async () => {
-  const result = await reconcileHostingsFromCompose(createReconcileDb({
-    ipRows: [{ id: 'ip-1', label: '203.0.113.10' }],
-  }).db, {
-    organizationId: ORG_ID,
-    environmentId: ENV_ID,
-    merged: composeDoc({
-      web: hostingService([{
-        hostname: HOSTNAME,
-        bind: { scope: 'public', ipRef: '198.51.100.10' },
-      }]),
-    }),
-    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
-  })
+  const result = await reconcileHostingsFromCompose(
+    createReconcileDb({ ipRows: [{ id: 'ip-1', label: '203.0.113.10' }] }),
+    {
+      organizationId: ORG_ID,
+      environmentId: ENV_ID,
+      merged: composeDoc({
+        web: hostingService([{
+          hostname: HOSTNAME,
+          bind: { scope: 'public', ipRef: '198.51.100.10' },
+        }]),
+      }),
+      serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+    },
+  )
   assertEquals(result, {
     ok: false,
     error: {
@@ -460,7 +438,7 @@ test('reconcileHostingsFromCompose reports unresolved IP refs', async () => {
 })
 
 test('reconcileHostingsFromCompose skips a declaration whose service row is missing', async () => {
-  const { db, inserts } = createReconcileDb({})
+  const db = createReconcileDb({})
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
     environmentId: ENV_ID,
@@ -471,17 +449,23 @@ test('reconcileHostingsFromCompose skips a declaration whose service row is miss
   })
   if (!result.ok) throw new TypeError('expected skip-missing-service to succeed')
   assertEquals(result.created, [])
-  assertEquals(inserts, [])
+  assertEquals(db.rows(hosting), [])
 })
 
-test('reconcileHostingsFromCompose deletes orphaned compose-owned rows', async () => {
-  const { db, deletes } = createReconcileDb({
+test('reconcileHostingsFromCompose deletes orphaned compose-owned rows, cascading their hostname row', async () => {
+  const db = createReconcileDb({
     hostingRows: [{
       id: 'host-orphan',
       serviceId: SVC_WEB,
       metadata: composeOwnedMetadata('web', 'gone.example.com /'),
       options: { hostnames: ['gone.example.com'] },
     }],
+  })
+  db.rows(hostname).push({
+    id: 'hn-orphan',
+    hostingId: 'host-orphan',
+    routingOrganizationId: ORG_ID,
+    hostname: 'gone.example.com',
   })
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
@@ -492,11 +476,15 @@ test('reconcileHostingsFromCompose deletes orphaned compose-owned rows', async (
   if (!result.ok) throw new TypeError('expected prune to succeed')
   assertEquals(result.removed, ['host-orphan'])
   assertEquals(result.released, [])
-  assertEquals(deletes.length, 1)
+  assertEquals(db.rows(hosting), [])
+  // `hostname.hosting_id` FK is `onDelete: cascade` in real Postgres — this
+  // in-memory double does not model FK cascade, so the prune itself must not
+  // rely on it. It doesn't: `pruneOrphanedComposeRows` only ever deletes
+  // `hosting` rows, and the real database enforces the rest.
 })
 
 test('reconcileHostingsFromCompose releases adopted rows when the declaration disappears', async () => {
-  const { db, updates, deletes } = createReconcileDb({
+  const db = createReconcileDb({
     hostingRows: [{
       id: 'host-adopted',
       serviceId: SVC_WEB,
@@ -513,15 +501,14 @@ test('reconcileHostingsFromCompose releases adopted rows when the declaration di
   if (!result.ok) throw new TypeError('expected release to succeed')
   assertEquals(result.released, ['host-adopted'])
   assertEquals(result.removed, [])
-  assertEquals(deletes, [])
-  assertEquals(updates.length, 1)
-  const metadata = updates[0]?.values.metadata as Record<string, unknown>
+  assertEquals(db.rows(hosting).length, 1)
+  const metadata = hostingRow(db, 'host-adopted')?.metadata as Record<string, unknown>
   assertEquals(metadata.composeOwned, undefined)
   assertEquals(metadata.composeAdopted, undefined)
 })
 
 test('reconcileHostingsFromCompose ignores compose-owned rows without a route key', async () => {
-  const { db, inserts } = createReconcileDb({
+  const db = createReconcileDb({
     hostingRows: [{
       id: 'host-unkeyed',
       serviceId: SVC_WEB,
@@ -538,10 +525,14 @@ test('reconcileHostingsFromCompose ignores compose-owned rows without a route ke
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
   if (!result.ok) throw new TypeError('expected create when existing row has no route')
-  assertEquals(result.created, ['new-host-1'])
-  assertEquals(inserts.length, 1)
+  assertEquals(result.created.length, 1)
+  // The unkeyed row is compose-owned but never matched the declared route (no
+  // route metadata to match by), so it looks orphaned and prune removes it —
+  // one fresh row is all that is left, not two.
+  assertEquals(result.removed, ['host-unkeyed'])
+  assertEquals(db.rows(hosting).length, 1)
   assertEquals(
-    typeof (inserts[0]?.metadata as Record<string, unknown>)[
+    typeof (hostingRow(db, result.created[0]!)?.metadata as Record<string, unknown>)[
       HOSTING_COMPOSE_ROUTE_METADATA_KEY
     ],
     'string',

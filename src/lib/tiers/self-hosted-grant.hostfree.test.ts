@@ -1,21 +1,16 @@
 /**
- * The self-hosted grant: parsing, the `SX` row it points at, and the
+ * The self-hosted grant: the `SX` row it points at, and the
  * grow-on-self-hosted / shrink-only-on-hosted rule that is the whole
  * difference between the two runtimes.
  */
 
 import { assertEquals, assertNotEquals } from '@std/assert'
-import { license, payer, setting, subscription, subscriptionItem, tier } from '../db/schema.ts'
+import { license, payer, allowance, subscription, subscriptionItem, tier } from '../db/schema.ts'
 import { listSeatsForOrganization } from '../db/billing-records.ts'
 import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
 import { tierQuantitiesFromState } from './assignment-records.ts'
 import { CUSTOM_TIER_LABEL } from './ladder.ts'
-import {
-  parseSelfHostedGrant,
-  SELF_HOSTED_GRANT_VERSION,
-  selfHostedGrantKey,
-  selfHostedGrantRank,
-} from './self-hosted-grant.ts'
+import { selfHostedGrantRank } from './self-hosted-grant.ts'
 import {
   ensureCustomTierRow,
   readSelfHostedGrant,
@@ -69,7 +64,7 @@ function licenseRow(id: string, revoked = false) {
 function grantDb(opts: {
   tiers?: ReturnType<typeof tierRow>[]
   licenses?: ReturnType<typeof licenseRow>[]
-  settings?: { key: string; value: unknown }[]
+  grants?: { tierId: string; quantity: number }[]
   /** Provider seats, which the grant target is net of. */
   seats?: { tierId: string; quantity: number }[]
 } = {}): MemoryDb {
@@ -118,10 +113,10 @@ function grantDb(opts: {
       })),
     ],
     [license, opts.licenses ?? []],
-    [setting, (opts.settings ?? []).map((row, index) => ({
-      id: `setting-${index}`,
-      key: row.key,
-      value: row.value,
+    [allowance, (opts.grants ?? []).map((row) => ({
+      organizationId: ORG,
+      tierId: row.tierId,
+      quantity: row.quantity,
       createdAt: NOW,
       updatedAt: NOW,
     }))],
@@ -129,26 +124,8 @@ function grantDb(opts: {
 }
 
 function storedGrant(quantity: number, tierId = TIER_SX) {
-  return {
-    key: selfHostedGrantKey(ORG),
-    value: { version: SELF_HOSTED_GRANT_VERSION, tierId, quantity },
-  }
+  return { tierId, quantity }
 }
-
-test('parseSelfHostedGrant refuses anything that is not this version of a grant', () => {
-  assertEquals(parseSelfHostedGrant(null), null)
-  assertEquals(parseSelfHostedGrant([]), null)
-  assertEquals(parseSelfHostedGrant({ version: 99, tierId: TIER_SX, quantity: 1 }), null)
-  assertEquals(parseSelfHostedGrant({ version: 1, tierId: '', quantity: 1 }), null)
-  assertEquals(parseSelfHostedGrant({ version: 1, tierId: TIER_SX, quantity: 'two' }), null)
-  // A zero quantity is not a grant — `writeSelfHostedGrant` deletes the row.
-  assertEquals(parseSelfHostedGrant({ version: 1, tierId: TIER_SX, quantity: 0 }), null)
-  assertEquals(parseSelfHostedGrant({ version: 1, tierId: TIER_SX, quantity: 2.7 }), {
-    version: 1,
-    tierId: TIER_SX,
-    quantity: 2,
-  })
-})
 
 test('the grant assigns at SX, the top of the ladder', () => {
   assertEquals(selfHostedGrantRank(), 8)
@@ -172,7 +149,6 @@ test('ensureCustomTierRow returns the existing SX row and creates one when the c
 test('self-hosted grants one SX unit per active license, ignoring revoked ones', async () => {
   const db = grantDb({ licenses: [licenseRow('l1'), licenseRow('l2'), licenseRow('l3', true)] })
   assertEquals(await syncSelfHostedGrant(db, ORG, { allowGrow: true }), {
-    version: SELF_HOSTED_GRANT_VERSION,
     tierId: TIER_SX,
     quantity: 2,
   })
@@ -185,14 +161,14 @@ test('the hosted runtime never grows a grant — an unentitled license stays une
   assertEquals(await readSelfHostedGrant(db, ORG), null)
 })
 
-test('an organization with no grant that may not grow one costs a single setting read', async () => {
+test('an organization with no grant that may not grow one costs a single allowance read', async () => {
   const db = grantDb({ licenses: [licenseRow('l1')] })
   assertEquals(await syncSelfHostedGrant(db, ORG, { allowGrow: false }), null)
-  assertEquals(db.ops, ['select:setting'])
+  assertEquals(db.ops, ['select:allowance'])
 })
 
 test('the hosted runtime does shrink a grant, so a revoked license gives its granted unit back', async () => {
-  const db = grantDb({ licenses: [licenseRow('l1')], settings: [storedGrant(3)] })
+  const db = grantDb({ licenses: [licenseRow('l1')], grants: [storedGrant(3)] })
   assertEquals((await syncSelfHostedGrant(db, ORG, { allowGrow: false }))?.quantity, 1)
 })
 
@@ -206,21 +182,21 @@ test('the grant covers only what the provider does not: purchased seats come off
 })
 
 test('a grant whose licenses are all gone is deleted rather than left at zero', async () => {
-  const db = grantDb({ licenses: [licenseRow('l1', true)], settings: [storedGrant(1)] })
+  const db = grantDb({ licenses: [licenseRow('l1', true)], grants: [storedGrant(1)] })
   assertEquals(await syncSelfHostedGrant(db, ORG, { allowGrow: true }), null)
-  assertEquals(db.rows(setting).length, 0)
+  assertEquals(db.rows(allowance).length, 0)
 })
 
 test('syncing an unchanged grant writes nothing', async () => {
-  const db = grantDb({ licenses: [licenseRow('l1')], settings: [storedGrant(1)] })
+  const db = grantDb({ licenses: [licenseRow('l1')], grants: [storedGrant(1)] })
   assertEquals((await syncSelfHostedGrant(db, ORG, { allowGrow: true }))?.quantity, 1)
   assertEquals(db.ops.filter((op) => !op.startsWith('select:')), [])
 })
 
 test('the grant reaches the assignment as an SX quantity that no subscription status can end', async () => {
-  const db = grantDb({ licenses: [licenseRow('l1'), licenseRow('l2')], settings: [storedGrant(2)] })
+  const db = grantDb({ licenses: [licenseRow('l1'), licenseRow('l2')], grants: [storedGrant(2)] })
   const state = await listSeatsForOrganization(db, ORG)
-  assertEquals(state.grant, { version: SELF_HOSTED_GRANT_VERSION, tierId: TIER_SX, quantity: 2 })
+  assertEquals(state.grant, { tierId: TIER_SX, quantity: 2 })
   // No payer, therefore no subscription — the seat side reads as ended, and
   // the grant is still counted.
   assertEquals(tierQuantitiesFromState(state), [
@@ -232,7 +208,7 @@ test('a Deno-minted grant cannot become a free hosted license across a revoke', 
   // Three keys minted while self-hosted, so the grant stands at three.
   const db = grantDb({
     licenses: [licenseRow('l1'), licenseRow('l2'), licenseRow('l3')],
-    settings: [storedGrant(3)],
+    grants: [storedGrant(3)],
   })
   assertEquals((await syncSelfHostedGrant(db, ORG, { allowGrow: true }))?.quantity, 3)
 

@@ -1,9 +1,9 @@
 import { assertEquals } from "@std/assert";
 import {
   buildDefaultDaemonStatus,
-  buildServerDaemonState,
   isDaemonKeyActive,
   mapServerDaemonStatusFromColumns,
+  parseServerDaemonKeyRow,
   parseServerDaemonState,
 } from "./daemon-state.ts";
 
@@ -13,6 +13,8 @@ const baseKey = {
   publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
   fingerprint: "fp-1",
   createdAt: "2020-01-01T00:00:00.000Z",
+  revokedAt: null,
+  lastUsedAt: null,
 };
 
 /**
@@ -23,17 +25,16 @@ const baseKey = {
  */
 const test = Deno.test.bind(Deno)
 
-test("parseServerDaemonState parses key + projection only", () => {
+test("parseServerDaemonState parses the projection — the key lives in the key table, not this jsonb", () => {
   const row = {
-    key: baseKey,
     projection: {
       hostname: "legacy-host",
     },
   };
 
   const parsed = parseServerDaemonState(row);
-  assertEquals(parsed?.key.id, "key-1");
   assertEquals(parsed?.projection?.hostname, "legacy-host");
+  assertEquals(parsed && "key" in parsed, false);
 });
 
 test("parseServerDaemonState ignores an unknown status key on the jsonb blob", () => {
@@ -41,7 +42,6 @@ test("parseServerDaemonState ignores an unknown status key on the jsonb blob", (
   // columns. The parser is allowlist-shaped, so an extra key on the jsonb blob
   // must not surface on the parsed state.
   const row = {
-    key: baseKey,
     projection: {
       hostname: "legacy-host",
     },
@@ -61,11 +61,13 @@ test("parseServerDaemonState ignores an unknown status key on the jsonb blob", (
 });
 
 test("parseServerDaemonState without projection omits the projection field", () => {
-  const row = { key: baseKey };
-
-  const parsed = parseServerDaemonState(row);
+  const parsed = parseServerDaemonState({});
   assertEquals(parsed?.projection, undefined);
-  assertEquals(parsed?.key.id, "key-1");
+});
+
+test("parseServerDaemonState returns null for a null jsonb column", () => {
+  // `server.daemon` is null for an unenrolled server or after clearServerDaemonState.
+  assertEquals(parseServerDaemonState(null), null);
 });
 
 test("buildDefaultDaemonStatus returns unknown/disconnected defaults", () => {
@@ -129,31 +131,18 @@ test("mapServerDaemonStatusFromColumns treats blank statusChangedAt as unknown",
 test("parseServerDaemonState rejects invalid shapes", () => {
   assertEquals(parseServerDaemonState(null), null);
   assertEquals(parseServerDaemonState([]), null);
-  assertEquals(parseServerDaemonState({}), null);
-  assertEquals(parseServerDaemonState({ key: { id: "" } }), null);
-  assertEquals(parseServerDaemonState({
-    key: { ...baseKey, algorithm: "RSA" },
-  }), null);
-  assertEquals(parseServerDaemonState({
-    key: { ...baseKey, publicJwk: { kty: "RSA" } },
-  }), null);
-  assertEquals(parseServerDaemonState({
-    key: { ...baseKey, publicJwk: [] },
-  }), null);
+  assertEquals(parseServerDaemonState("nope"), null);
 });
 
 test("parseServerDaemonState ignores a non-object projection", () => {
   const parsed = parseServerDaemonState({
-    key: baseKey,
     projection: [],
   });
-  assertEquals(parsed?.key.id, "key-1");
   assertEquals(parsed?.projection, undefined);
 });
 
 test("parseServerDaemonState parses daemonBuild and update projection fields", () => {
   const parsed = parseServerDaemonState({
-    key: baseKey,
     projection: {
       hostname: "host-1",
       machineKey: "mk-1",
@@ -184,7 +173,6 @@ test("parseServerDaemonState parses daemonBuild and update projection fields", (
 
 test("parseServerDaemonState drops empty projection objects", () => {
   const parsed = parseServerDaemonState({
-    key: baseKey,
     projection: {
       hostname: "   ",
       daemonBuild: {},
@@ -206,15 +194,23 @@ test("isDaemonKeyActive reflects revokedAt", () => {
   );
 });
 
-test("buildServerDaemonState mints an active Ed25519 key row", () => {
-  const state = buildServerDaemonState({
-    publicJwk: baseKey.publicJwk,
-    fingerprint: "fp-new",
-  });
-  assertEquals(state.key.algorithm, "Ed25519");
-  assertEquals(state.key.fingerprint, "fp-new");
-  assertEquals(state.key.revokedAt, null);
-  assertEquals(state.key.id.length > 0, true);
-  assertEquals(state.key.createdAt.length > 0, true);
-  assertEquals(state.projection, undefined);
+test("parseServerDaemonKeyRow narrows a valid key table row", () => {
+  const parsed = parseServerDaemonKeyRow(baseKey);
+  assertEquals(parsed?.id, "key-1");
+  assertEquals(parsed?.algorithm, "Ed25519");
+  assertEquals(parsed?.fingerprint, "fp-1");
+  assertEquals(parsed?.revokedAt, null);
+  assertEquals(parsed?.lastUsedAt, null);
+});
+
+test("parseServerDaemonKeyRow rejects a non-Ed25519 algorithm", () => {
+  assertEquals(parseServerDaemonKeyRow({ ...baseKey, algorithm: "RSA" }), null);
+});
+
+test("parseServerDaemonKeyRow rejects a malformed publicJwk", () => {
+  assertEquals(
+    parseServerDaemonKeyRow({ ...baseKey, publicJwk: { kty: "RSA" } }),
+    null,
+  );
+  assertEquals(parseServerDaemonKeyRow({ ...baseKey, publicJwk: [] }), null);
 });

@@ -49,6 +49,14 @@ export const invitation = pgTable(
     })
       .defaultNow()
       .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
     userId: uuid("user_id").notNull(),
     teamId: uuid("team_id").notNull(),
     expiresAt: timestamp("expires_at", {
@@ -106,10 +114,11 @@ export const organization = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
-    name: varchar({ length: 255 }),
+    name: text(),
     slug: varchar({ length: 255 }),
   },
   (table) => [unique("organization_slug_unique").on(table.slug)],
@@ -139,11 +148,12 @@ export const tls = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid("organization_id").notNull(),
-    name: varchar({ length: 255 }),
+    name: text(),
     /** `upload` | `lets_encrypt` | `self_signed` | `organization_ca` */
     source: text().notNull(),
     /** Leaf + intermediate chain PEM; null while LE `pending`. */
@@ -240,6 +250,7 @@ export const changeover = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -298,7 +309,7 @@ export const passkey = pgTable(
       .notNull(),
     userId: uuid("user_id").notNull(),
     aaguid: text(),
-    name: varchar({ length: 255 }),
+    name: text(),
     publicKey: text("public_key").notNull(),
     credentialId: text("credential_id").notNull(),
     counter: bigint("counter", { mode: "number" }).default(0).notNull(),
@@ -349,12 +360,13 @@ export const datacenter = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid("organization_id").notNull(),
-    name: varchar({ length: 255 }),
-    description: varchar("description", { length: 255 }),
+    name: text(),
+    description: text("description"),
   },
   (table) => [
     index("idx_datacenter_organization_id").using(
@@ -398,6 +410,7 @@ export const tier = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     /** `"S1"`…`"S7"`, `"SX"` — the key into the in-code ladder; unique. */
     label: text().notNull(),
@@ -437,6 +450,68 @@ export const tier = pgTable(
   ],
 );
 /**
+ * The self-hosted entitlement grant — how a free instance holds licenses,
+ * promoted out of a `setting` row keyed `SELF_HOSTED_GRANT:<orgId>`
+ * (schema-child-tables, Road-to-0.1.x). See `lib/tiers/self-hosted-grant.ts`
+ * for what it is and why; `lib/tiers/self-hosted-grant-records.ts` for the
+ * read/write API, unchanged by this move. Exactly 0-or-1 row per
+ * organization — enforced structurally now via the unique index, where the
+ * old `setting.key` string only enforced it by construction.
+ *
+ * Physical name `allowance`, not `grant` — the `grant` table is the
+ * unrelated ACL access-grant (`client/authz/access-grants.ts`), and the
+ * table-naming guard (`table-naming.test.ts`) requires one lower-case word,
+ * ruling out `self_hosted_grant`.
+ *
+ * `quantity` never sits at 0: `writeSelfHostedGrant` deletes the row
+ * instead, matching the old "quantity 0 means delete the setting key"
+ * behavior exactly.
+ */
+export const allowance = pgTable(
+  "allowance",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    organizationId: uuid("organization_id").notNull(),
+    /** Always the `SX` custom-rung row (`ensureCustomTierRow`), never purchasable. */
+    tierId: uuid("tier_id").notNull(),
+    quantity: integer().notNull(),
+  },
+  (table) => [
+    uniqueIndex("uniq_allowance_organization").on(
+      table.organizationId,
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: "allowance_organization_id_organization_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.tierId],
+      foreignColumns: [tier.id],
+      name: "allowance_tier_id_tier_id_fk",
+    }).onDelete("restrict"),
+    check("allowance_quantity_check", sql`quantity >= 1`),
+  ],
+);
+/**
  * Enrolled host. Membership in datacenters is **not** a home FK here — a
  * server may pin into many sites via `ip` rows (`scope='datacenter'` +
  * `server_id` + `datacenter_id`).
@@ -461,11 +536,12 @@ export const server = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid("organization_id"),
-    name: varchar({ length: 255 }),
+    name: text(),
     hostname: varchar("hostname", { length: 255 }),
     /**
      * Derived HMAC of the host machine-id (not the raw value, not a sealed
@@ -533,8 +609,23 @@ export const server = pgTable(
       withTimezone: true,
       mode: "string",
     }),
-    /** Sparse `{ key, projection? }` — status lives in dedicated columns. */
+    /**
+     * Sparse `{ projection? }` — the daemon key lives in the `key` table
+     * (schema-child-tables, Road-to-0.1.x), not here; status lives in
+     * dedicated columns.
+     */
     daemon: jsonb(),
+    /**
+     * Mirrors validated `options.hosting.enabled` (schema-sql-keys,
+     * Road-to-0.1.x): `system/reconcile.ts` filters ingress/hosting-inventory
+     * decisions on this value, once in raw SQL and once via
+     * `parseServerOptions` on an app-level row. `options.hosting.enabled`
+     * stays the parsed/validated source of truth (written by the one PATCH
+     * route that accepts it); this column exists so both reads can use a
+     * real boolean instead of a jsonb path. NULL reads as "not set" — same
+     * as absent `options.hosting`.
+     */
+    isHostingEnabled: boolean("is_hosting_enabled"),
   },
   (table) => [
     index("idx_server_organization_id").using(
@@ -573,6 +664,73 @@ export const server = pgTable(
   ],
 );
 /**
+ * The server's daemon identity — the Ed25519 keypair a daemon enrolls with,
+ * one row per server (schema-child-tables, Road-to-0.1.x — promoted out of
+ * `server.daemon.key`, formerly read-modify-written by two uncoordinated
+ * jsonb writers: `authn/server-identity-db.ts`'s `updateServerDaemonState`
+ * and `cell/postgres-projection.ts`'s `projectServerDaemon`. A daemon
+ * heartbeat projecting between a revoke's read and write could silently
+ * un-revoke a key that was just revoked — a real lost-update race, not just
+ * staleness. Moving the key to its own table with single-column writers
+ * closes it by construction: `projectServerDaemon` no longer composes key
+ * data into its jsonb patch at all, so it cannot clobber it.
+ *
+ * `UNIQUE(fingerprint)` globally is new enforced behavior the jsonb never
+ * had — safe to add because the invariant is unambiguous: two servers
+ * sharing a daemon key is an authn hole, never a legitimate state.
+ * `UNIQUE(server_id)` matches "replace on re-enroll", the existing
+ * behavior — enrolling again overwrites the prior key outright, no history
+ * kept for MVP.
+ */
+export const key = pgTable(
+  "key",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serverId: uuid("server_id").notNull(),
+    algorithm: text().notNull(),
+    publicJwk: jsonb("public_jwk").notNull(),
+    fingerprint: text().notNull(),
+    revokedAt: timestamp("revoked_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    lastUsedAt: timestamp("last_used_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+  },
+  (table) => [
+    uniqueIndex("uniq_key_server").on(table.serverId),
+    uniqueIndex("uniq_key_fingerprint").on(table.fingerprint),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: "key_server_id_server_id_fk",
+    }).onDelete("cascade"),
+    check("key_algorithm_check", sql`algorithm = 'Ed25519'`),
+  ],
+);
+/**
  * Organization-scoped registration keys. Consumption latches on `server_id`
  * (one license per server). Defined after `server` so the FK can reference it.
  */
@@ -596,11 +754,12 @@ export const license = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     organizationId: uuid("organization_id").notNull(),
     /** Set on first successful enroll — one-shot seat latch. */
     serverId: uuid("server_id"),
-    name: varchar({ length: 255 }),
+    name: text(),
     /** Argon2id PHC hashed token — same format as account.password */
     token: text().notNull(),
     /** Soft-delete */
@@ -667,6 +826,7 @@ export const payer = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     /** Exactly one of `organization_id` / `user_id` — see `payer_subject_check`. */
     organizationId: uuid("organization_id"),
@@ -748,6 +908,7 @@ export const subscription = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     payerId: uuid("payer_id").notNull(),
     /** Provider-side subscription id (Stripe `sub_…`) — the upsert conflict target. */
@@ -818,6 +979,7 @@ export const subscriptionItem = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     subscriptionId: uuid("subscription_id").notNull(),
     tierId: uuid("tier_id").notNull(),
@@ -828,10 +990,13 @@ export const subscriptionItem = pgTable(
      * from the item itself — the price a mutation restates when it rewrites
      * `items[]` or a schedule phase. A tier knows its product, not its
      * price; the price lives here because it is the item's, not the tier's.
-     * Nullable only so the column could be added under existing rows; the
-     * next projection fills it, and a line without one is skipped.
+     * The one write path (`replaceSubscriptionItems`) always provides it —
+     * `ProviderSubscriptionItem.providerPriceId` is non-optional at the type
+     * level. NOT NULL pre-tag (schema-constraints, Road-to-0.1.x): every
+     * database is disposable, so the earlier "nullable for backfill" window
+     * this column was added under no longer needs protecting.
      */
-    providerPriceId: text("provider_price_id"),
+    providerPriceId: text("provider_price_id").notNull(),
     quantity: integer().notNull(),
   },
   (table) => [
@@ -883,6 +1048,7 @@ export const command = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -938,8 +1104,20 @@ export const command = pgTable(
       withTimezone: true,
       mode: "string",
     }),
+    /**
+     * `metadata.managedDestroyGate.gateId`, promoted out of jsonb
+     * (schema-sql-keys, Road-to-0.1.x): `loadManagedDestroyGateCommands`
+     * filters every gated-replica-destroy completion on this value with no
+     * index today. `memberIds` / `followups` stay in `metadata` — only the
+     * filtered scalar moves.
+     */
+    managedDestroyGateId: text("managed_destroy_gate_id"),
   },
   (table) => [
+    index("idx_command_managed_destroy_gate_id").using(
+      "btree",
+      table.managedDestroyGateId.asc().nullsLast().op("text_ops"),
+    ),
     index("idx_command_server_id_created_at").using(
       "btree",
       table.serverId.asc(),
@@ -1043,6 +1221,7 @@ export const network = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -1051,13 +1230,31 @@ export const network = pgTable(
     serverId: uuid("server_id"),
     /**
      * Optional pin for `kind = 'compose'` logical spanning networks
-     * (null = org-shared). No FK here — `environment` is declared later;
-     * compiler writes this id from a live environment row.
+     * (null = org-shared). `AnyPgColumn` breaks the same kind of forward
+     * reference `project.repository_id` already uses below — `environment`
+     * is declared later in this file. `set null` matches
+     * `purgeEnvironmentComposeNetworks`, which the environment-delete route
+     * already calls first; `system/hierarchy.ts`'s delete path does not call
+     * it, so this constraint is also what makes that path leave a graceful
+     * org-shared network row instead of an orphaned reference (schema-
+     * constraints, Road-to-0.1.x).
      */
-    environmentId: uuid("environment_id"),
+    environmentId: uuid("environment_id").references(
+      (): AnyPgColumn => environment.id,
+      { onDelete: "set null" },
+    ),
     kind: text().notNull(),
     cidr: cidr(),
+    /** Stays `varchar(255)` (schema-text-types audit, 2026-09-16): `fabric-records.ts` writes a compose `networks.<key>` straight from the operator's document with no length check — the column is that write's only guard. */
     name: varchar({ length: 255 }),
+    /**
+     * `kind = 'compose'` idempotency key (the Compose network's own key in
+     * the document), promoted out of `options.composeKey` (schema-sql-keys,
+     * Road-to-0.1.x): a real column lets `ensureComposeNetworkRow` filter and
+     * enforce uniqueness in SQL instead of loading every candidate row and
+     * comparing in application code.
+     */
+    composeKey: text("compose_key"),
   },
   (table) => [
     index("idx_network_server_id").using(
@@ -1113,6 +1310,10 @@ export const network = pgTable(
     uniqueIndex("uniq_network_organization_managed")
       .on(table.organizationId)
       .where(sql`${table.kind} = 'managed'`),
+    /** Compose network idempotency: one row per `(environment_id, compose_key)`. */
+    uniqueIndex("uniq_network_environment_compose_key")
+      .on(table.environmentId, table.composeKey)
+      .where(sql`${table.kind} = 'compose'`),
     check(
       "network_name_format_check",
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`,
@@ -1145,13 +1346,14 @@ export const fabric = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid("organization_id").notNull(),
     /** Host fabric subnet for `tp0` addresses (e.g. `10.250.0.0/16`). */
     cidr: cidr().notNull(),
-    name: varchar({ length: 255 }),
+    name: text(),
   },
   (table) => [
     uniqueIndex("uniq_fabric_organization_id").on(table.organizationId),
@@ -1203,6 +1405,7 @@ export const ip = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -1214,7 +1417,19 @@ export const ip = pgTable(
     allocation: text().notNull(),
     scope: text().notNull(),
     /** Optional operator note — IPs are identified by `address`, not a name. */
-    description: varchar("description", { length: 255 }),
+    description: text("description"),
+    /**
+     * Set by the automatic-repin apply pass, cleared by the fan-out sweep
+     * once the datacenter routing fan-out for this pin has been enqueued —
+     * promoted off `metadata.repin.pendingFanoutAt` (schema-network-keys,
+     * Road-to-0.1.x), the same sweep-predicate shape as `delivery.next_
+     * attempt_at`. `repin.at` / `repin.from` stay in metadata.
+     */
+    repinPendingFanoutAt: timestamp("repin_pending_fanout_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
   },
   (table) => [
     index("idx_ip_organization_id").using(
@@ -1239,6 +1454,12 @@ export const ip = pgTable(
       table.serverId.asc().nullsLast().op("uuid_ops"),
       table.datacenterId.asc().nullsLast().op("uuid_ops"),
     ),
+    index("idx_ip_repin_pending_fanout_at")
+      .using(
+        "btree",
+        table.repinPendingFanoutAt.asc().nullsLast().op("timestamptz_ops"),
+      )
+      .where(sql`${table.repinPendingFanoutAt} IS NOT NULL`),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -1321,6 +1542,7 @@ export const relay = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -1339,11 +1561,20 @@ export const relay = pgTable(
     publicKey: text("public_key"),
     /** Container aggregate CIDR forwarded via this relay (e.g. `10.192.0.0/16`). */
     prefix: cidr().notNull(),
-    /** Operator-configured LAN CIDRs advertised by gateway relays. */
-    advertisedCidrs: jsonb("advertised_cidrs")
-      .$type<string[]>()
+    /**
+     * Operator-configured LAN CIDRs advertised by gateway relays. Native
+     * `cidr[]` (schema-text-types, Road-to-0.1.x): Postgres validates and
+     * canonicalizes each element at insert (host bits must be clear —
+     * `parseAdvertisedCidrsField` aligns them first), and the column stays
+     * open to GIN/containment (`<<`, `>>`) queries if it is ever filtered by
+     * network. Was jsonb; not storage-compatible, so this is the one change
+     * in this pass that rewrites the table — free while every database is
+     * disposable.
+     */
+    advertisedCidrs: cidr("advertised_cidrs")
+      .array()
       .notNull()
-      .default(sql`'[]'::jsonb`),
+      .default(sql`'{}'::cidr[]`),
     /** Sealed `tpsecret` envelope — write-only, same handling as `principal.password`. */
     presharedKey: text("preshared_key"),
   },
@@ -1376,7 +1607,7 @@ export const relay = pgTable(
     ),
     check(
       "relay_member_advertised_cidrs_empty_check",
-      sql`${table.role} <> 'member' OR ${table.advertisedCidrs} = '[]'::jsonb`,
+      sql`${table.role} <> 'member' OR cardinality(${table.advertisedCidrs}) = 0`,
     ),
   ],
 );
@@ -1405,6 +1636,7 @@ export const subnet = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -1455,10 +1687,11 @@ export const workspace = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     organizationId: uuid("organization_id").notNull(),
-    name: varchar({ length: 255 }),
-    description: varchar("description", { length: 255 }),
+    name: text(),
+    description: text("description"),
     kind: varchar({ length: 32 }).notNull().default("user"),
   },
   (table) => [
@@ -1501,10 +1734,22 @@ export const project = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     workspaceId: uuid("workspace_id").notNull(),
+    /**
+     * Denormalized `workspace.organization_id` (schema-project-name-scope,
+     * Road-to-0.1.x), resolved at every insert — the same move as
+     * `principal.organization_id`, and the same accepted invariant: nothing
+     * at the database level keeps it in agreement with the workspace's
+     * organization; every write site derives it the same way. It exists so
+     * `uniq_project_organization_name` can be a real constraint: project
+     * names are unique per organization (trimmed, case-insensitive), and the
+     * organization is only reachable through `workspace` otherwise.
+     */
+    organizationId: uuid("organization_id").notNull(),
     /**
      * The one Git repository this project is. Null for a project that is not
      * repository-backed at all (a template, a managed engine, a hand-written
@@ -1541,8 +1786,17 @@ export const project = pgTable(
       (): AnyPgColumn => repository.id,
       { onDelete: "restrict" },
     ),
-    name: varchar({ length: 255 }),
-    description: varchar("description", { length: 255 }),
+    name: text(),
+    description: text("description"),
+    /**
+     * System-hierarchy component discriminator (`hosting-ingress`,
+     * `managed-ingress`, `managed-ha`, `turbopanel`), promoted out of
+     * `metadata.component` (schema-sql-keys, Road-to-0.1.x). NULL for every
+     * user project — `metadata.type = 'system'` still marks a project as
+     * platform-owned. Identity always comes from this column, never from
+     * `environment.metadata.component`.
+     */
+    component: text(),
   },
   (table) => [
     index("idx_project_workspace_id").using(
@@ -1558,13 +1812,32 @@ export const project = pgTable(
       foreignColumns: [workspace.id],
       name: "project_workspace_id_workspace_id_fk",
     }).onDelete("restrict"),
+    index("idx_project_organization_id").using(
+      "btree",
+      table.organizationId.asc().nullsLast().op("uuid_ops"),
+    ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: "project_organization_id_organization_id_fk",
+    }).onDelete("cascade"),
+    /**
+     * Org-wide display-name uniqueness, trimmed and case-insensitive — the
+     * same expression `isProjectDisplayNameTaken` compares with and
+     * `uniq_tag_organization_name` already enforces for tags. Partial: a
+     * project may have no name. The app check stays as the friendly 409;
+     * this is the lock that makes it race-proof.
+     */
+    uniqueIndex("uniq_project_organization_name")
+      .on(table.organizationId, sql`lower(btrim((${table.name})::text))`)
+      .where(sql`name IS NOT NULL`),
     /**
      * One project per system component per workspace (system hierarchy).
-     * Partial — user projects omit `metadata.component`.
+     * Partial — user projects omit `component`.
      */
     uniqueIndex("uniq_project_workspace_system_component")
-      .on(table.workspaceId, sql`(metadata->>'component')`)
-      .where(sql`(metadata->>'component') IS NOT NULL`),
+      .on(table.workspaceId, table.component)
+      .where(sql`component IS NOT NULL`),
   ],
 );
 
@@ -1588,6 +1861,7 @@ export const environment = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -1599,8 +1873,8 @@ export const environment = pgTable(
      * `deployment.desired_generation`.
      */
     generation: integer().default(0).notNull(),
-    name: varchar({ length: 255 }),
-    description: varchar("description", { length: 255 }),
+    name: text(),
+    description: text("description"),
   },
   (table) => [
     index("idx_environment_project_id").using(
@@ -1648,6 +1922,7 @@ export const managed = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -1660,9 +1935,16 @@ export const managed = pgTable(
      * independently of the environment's deploy placement later.
      */
     serverId: uuid("server_id"),
-    name: varchar({ length: 255 }),
-    /** Catalog engine code (e.g. `postgres`, `redis`). */
-    engine: text(),
+    name: text(),
+    /**
+     * Catalog engine code (e.g. `postgres`, `redis`). NOT NULL pre-tag
+     * (schema-constraints, Road-to-0.1.x): the one insert path
+     * (`client/managed/routes.ts`) always sets it from `ManagedEngineSpec`,
+     * a required field at the type level. Several readers still defensively
+     * `?? 'postgres'` for the earlier nullable window; harmless now, not
+     * removed here since they're not wrong, just no longer load-bearing.
+     */
+    engine: text().notNull(),
     /** `provisioning` | `applying` | `ready` | `stopped` | `failed` */
     status: text(),
   },
@@ -1725,6 +2007,7 @@ export const replica = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -1799,6 +2082,62 @@ export const replica = pgTable(
   ],
 );
 /**
+ * A completed managed-engine backup artifact, promoted out of
+ * `managed.options.backups[]` (schema-child-tables, Road-to-0.1.x). The
+ * 200-entry jsonb array was rewritten-and-truncated whole on every
+ * insert/delete with no row lock or partial jsonb write, racing every other
+ * `managed.options` mutator (settings PATCH, database create/delete) on the
+ * same column — a concurrent write could silently revert a just-recorded
+ * backup. No `organization_id`: resolved per-request the same way every
+ * other `managed` child row does (`managed → environment → project →
+ * workspace → organization`), matching `replica`, not denormalized.
+ *
+ * `id` deliberately breaks the uuid-PK house style: it stays the daemon's
+ * `bk_<hex>` token (`generateBackupId` in `client/managed/backups.ts`)
+ * because that exact string becomes the backup artifact's filename on the
+ * host — swapping to a fresh uuid PK would decouple the row's identity from
+ * the file it names.
+ */
+export const backup = pgTable(
+  "backup",
+  {
+    id: text().primaryKey().notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    managedId: uuid("managed_id").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    /** SHA-256 hex digest of the artifact. */
+    checksum: text().notNull(),
+    /** Null for an instance-scope backup; set for a single-database backup. */
+    database: text(),
+    /** Artifact path on the host filesystem. */
+    path: text().notNull(),
+  },
+  (table) => [
+    index("idx_backup_managed_id_created_at").using(
+      "btree",
+      table.managedId.asc(),
+      table.createdAt.desc(),
+    ),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: "backup_managed_id_managed_id_fk",
+    }).onDelete("cascade"),
+    check("backup_id_format_check", sql`id ~ '^[A-Za-z0-9_-]+$'`),
+    check(
+      "backup_checksum_format_check",
+      sql`checksum ~ '^[a-f0-9]{64}$'`,
+    ),
+    check("backup_size_bytes_check", sql`size_bytes >= 0`),
+  ],
+);
+/**
  * Tracking row for Organization-CA-signed managed leaves (ProxySQL frontend
  * and per-replica engine). Re-issuance upserts rather than appending history
  * (partial uniques below). Declared after `replica` / `managed` / `server` so
@@ -1833,6 +2172,14 @@ export const leaf = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
   },
   (table) => [
@@ -1920,6 +2267,7 @@ export const monitor = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     serverId: uuid("server_id").notNull(),
     /** Deterministic `tp_monitor_<serverId prefix>`; engine identifier limits apply. */
@@ -1965,6 +2313,7 @@ export const recovery = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -2034,6 +2383,7 @@ export const variable = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     organizationId: uuid("organization_id"),
     workspaceId: uuid("workspace_id"),
@@ -2055,7 +2405,7 @@ export const variable = pgTable(
     isForBuild: boolean("is_for_build").default(false).notNull(),
     /** API JSON still serializes as `forRuntime`. */
     isForRuntime: boolean("is_for_runtime").default(true).notNull(),
-    description: varchar("description", { length: 255 }),
+    description: text("description"),
   },
   (table) => [
     index("idx_variable_organization_id").using(
@@ -2187,6 +2537,7 @@ export const service = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -2195,8 +2546,9 @@ export const service = pgTable(
      * User-facing label (Postgres column `name`, renamed from `display_name`).
      * Nullable and not unique. Client JSON field is `name`.
      */
+    /** Stays `varchar(255)` (schema-text-types audit, 2026-09-16): `reconcile-services.ts` writes the compose service key straight from the document with no length check — the column is that write's only guard. */
     name: varchar({ length: 255 }),
-    description: varchar("description", { length: 255 }),
+    description: text("description"),
     /**
      * Compose service key — derived from the compose document (project base +
      * environment overlay). Written only by reconcile (`reconcileServicesFromCompose`),
@@ -2259,6 +2611,7 @@ export const deployment = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     /** Last failure message / planner warnings. */
     metadata: jsonb(),
@@ -2350,6 +2703,7 @@ export const slot = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -2423,11 +2777,12 @@ export const task = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     serviceId: uuid("service_id").notNull(),
-    name: varchar({ length: 255 }).notNull(),
+    name: text().notNull(),
     /** Cron expression. */
     schedule: text().notNull(),
     command: text().notNull(),
@@ -2478,10 +2833,11 @@ export const label = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     serverId: uuid("server_id").notNull(),
-    key: varchar({ length: 255 }).notNull(),
-    value: varchar({ length: 255 }).default("").notNull(),
+    key: text().notNull(),
+    value: text().default("").notNull(),
   },
   (table) => [
     unique("uniq_label_server_key").on(table.serverId, table.key),
@@ -2520,6 +2876,7 @@ export const hosting = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -2528,8 +2885,17 @@ export const hosting = pgTable(
     tlsId: uuid("tls_id"),
     /** Optional pin to a managed `ip` row for ingress addressing. */
     ipId: uuid("ip_id"),
-    name: varchar({ length: 255 }),
-    description: varchar("description", { length: 255 }),
+    name: text(),
+    description: text("description"),
+    /**
+     * Mirrors validated `options.protocol` (schema-sql-keys, Road-to-0.1.x):
+     * `system/reconcile.ts` filters ingress-container decisions on this value
+     * in raw SQL three times. `options.protocol` stays the parsed/validated
+     * source of truth for app-code readers (`resolveHostingProtocol`); this
+     * column exists so SQL can filter/constrain it without a jsonb cast.
+     * NULL reads as `'http'`, same default `resolveHostingProtocol` applies.
+     */
+    protocol: text(),
   },
   (table) => [
     index("idx_hosting_service_id").using(
@@ -2559,6 +2925,82 @@ export const hosting = pgTable(
       foreignColumns: [ip.id],
       name: "hosting_ip_id_ip_id_fk",
     }).onDelete("set null"),
+    check(
+      "hosting_protocol_check",
+      sql`protocol IS NULL OR protocol IN ('http', 'tcp', 'udp')`,
+    ),
+  ],
+);
+/**
+ * Uniqueness-enforcement mirror of `hosting.options.hostnames[]`
+ * (schema-child-tables, Road-to-0.1.x) — NOT a promotion. `hosting.options`
+ * stays the read source of truth for the deploy pipeline and the panel API;
+ * this table exists solely so Postgres can enforce
+ * `UNIQUE (routing_organization_id, hostname)`, an invariant a jsonb array
+ * element cannot express across rows. Every write to `options.hostnames`
+ * (panel `POST`/`PATCH /hostings` and compose's `reconcileHostingsFromCompose`)
+ * does a full delete-then-insert replace of this hosting's rows in the same
+ * transaction as the `hosting` write, mirroring `hostnames[]`'s own
+ * replace-whole-array semantics — see `replaceHostingHostnames` in
+ * `lib/db/hostname-records.ts`.
+ *
+ * `routing_organization_id` is named for the future cross-org-hosting feature
+ * (hosting onto another organization's servers), where it would diverge from
+ * the *creating* organization; today the two are always identical, resolved
+ * by whichever write path holds it — the acting organization at the panel
+ * routes, `reconcileHostingsFromCompose`'s deploy-scoped organization at
+ * compose — via the same `service → environment → project → workspace →
+ * organization` ancestry `resolveEntityOrganizationId`'s `'hosting'` case
+ * walks. No `path_prefix` in the unique key: two hostings in one organization
+ * can never share a hostname even on different paths. No `path_prefix` column
+ * at all — `pathPrefix` is one value per `hosting` row (a sibling field on
+ * `options`), not per hostname.
+ */
+export const hostname = pgTable(
+  "hostname",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    hostingId: uuid("hosting_id").notNull(),
+    routingOrganizationId: uuid("routing_organization_id").notNull(),
+    hostname: text().notNull(),
+  },
+  (table) => [
+    index("idx_hostname_hosting_id").using(
+      "btree",
+      table.hostingId.asc().nullsLast().op("uuid_ops"),
+    ),
+    unique("uniq_hostname_routing_organization_id_hostname").on(
+      table.routingOrganizationId,
+      table.hostname,
+    ),
+    foreignKey({
+      columns: [table.hostingId],
+      foreignColumns: [hosting.id],
+      name: "hostname_hosting_id_hosting_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.routingOrganizationId],
+      foreignColumns: [organization.id],
+      name: "hostname_routing_organization_id_organization_id_fk",
+    }).onDelete("cascade"),
   ],
 );
 export const container = pgTable(
@@ -2581,6 +3023,7 @@ export const container = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -2677,6 +3120,7 @@ export const principal = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     /**
      * Holds `home` (`/srv/users/<username>`) plus a mirror of an optional
@@ -2711,12 +3155,28 @@ export const principal = pgTable(
      * for the target daemon.
      */
     password: text(),
+    /**
+     * Owning organization. Set on every insert regardless of scope path —
+     * `projectId` and `managedId` are both optional and a tenancy-only
+     * principal (`store.ts` `createPrincipal`) has neither, so this is the
+     * one column every authz ancestry lookup can rely on. For a managed-engine
+     * principal this is the managed row's *home* org (resolved through
+     * `managed.environment_id → environment → project → workspace`), not the
+     * possibly-plural set of orgs whose servers currently host the cluster's
+     * replicas (`resolveManagedOwningOrganizationIds` — a distinct, genuinely
+     * multi-valued concept used for username-collision checks only).
+     */
+    organizationId: uuid("organization_id").notNull(),
     /** Optional project scope for hosting principals. */
     projectId: uuid("project_id"),
     /** Optional managed-engine scope (cascade-deletes with the managed row). */
     managedId: uuid("managed_id"),
   },
   (table) => [
+    index("idx_principal_organization_id").using(
+      "btree",
+      table.organizationId.asc().nullsLast().op("uuid_ops"),
+    ),
     index("idx_principal_project_id").using(
       "btree",
       table.projectId.asc().nullsLast().op("uuid_ops"),
@@ -2725,6 +3185,11 @@ export const principal = pgTable(
       "btree",
       table.managedId.asc().nullsLast().op("uuid_ops"),
     ),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: "principal_organization_id_organization_id_fk",
+    }).onDelete("cascade"),
     foreignKey({
       columns: [table.projectId],
       foreignColumns: [project.id],
@@ -2794,6 +3259,7 @@ export const entitlement = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     principalId: uuid("principal_id").notNull(),
     runtime: text().notNull(),
@@ -2884,10 +3350,11 @@ export const sshKey = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     principalId: uuid("principal_id").notNull(),
     /** Operator-facing label. Not the key comment — that is `comment`. */
-    name: varchar({ length: 255 }).notNull(),
+    name: text().notNull(),
     keyType: text("key_type").notNull(),
     /** Canonical `<type> <base64>`, re-rendered from the decoded blob. */
     publicKey: text("public_key").notNull(),
@@ -2970,6 +3437,7 @@ export const tenancy = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     principalId: uuid("principal_id").notNull(),
     serviceId: uuid("service_id").notNull(),
@@ -3027,6 +3495,7 @@ export const binding = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -3103,13 +3572,14 @@ export const secret = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid("organization_id").notNull(),
     principalId: uuid("principal_id"),
     provider: text().notNull(),
-    name: varchar({ length: 255 }).notNull(),
+    name: text().notNull(),
     secretEnvelope: text("secret_envelope").notNull(),
   },
   (table) => [
@@ -3126,11 +3596,15 @@ export const secret = pgTable(
       foreignColumns: [organization.id],
       name: "secret_organization_id_organization_id_fk",
     }).onDelete("cascade"),
+    // `set null`, not `restrict` (schema-constraints, Road-to-0.1.x): a
+    // principal delete must not 500 on an org secret that happens to
+    // reference it. The secret is org-scoped primarily — the principal
+    // link is an optional association, not the thing keeping it alive.
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
       name: "secret_principal_id_principal_id_fk",
-    }).onDelete("restrict"),
+    }).onDelete("set null"),
     check(
       "secret_provider_check",
       sql`provider IN ('s3', 's3_compatible', 'nfs', 'cifs', 'sftp', 'ftp', 'webdav',
@@ -3163,6 +3637,7 @@ export const storage = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -3172,6 +3647,7 @@ export const storage = pgTable(
     environmentId: uuid("environment_id"),
     serviceId: uuid("service_id"),
     kind: text().notNull(),
+    /** Stays `varchar(255)` (schema-text-types audit, 2026-09-16): `storage/routes-helpers.ts` writes `body.name` with no length check and `register-compose-volumes.ts` writes the compose volume key — the column is those writes' only guard. */
     name: varchar({ length: 255 }).notNull(),
     accessMode: text("access_mode").default("single_writer").notNull(),
     retention: text().default("retain").notNull(),
@@ -3179,6 +3655,14 @@ export const storage = pgTable(
     principalId: uuid("principal_id"),
     /** Sealed file content (`tpsecret` or `tpdaemon`) for `kind=file` entries. */
     contentEnvelope: text("content_envelope"),
+    /**
+     * `kind = 'volume'` idempotency key (the Compose top-level volume's own
+     * key), promoted out of `metadata.composeVolumeKey` (schema-sql-keys,
+     * Road-to-0.1.x). Was already a real Postgres constraint via an
+     * expression unique index on the jsonb path — this just gives it a
+     * column to sit on.
+     */
+    composeVolumeKey: text("compose_volume_key"),
   },
   (table) => [
     index("idx_storage_organization_id").using(
@@ -3226,11 +3710,17 @@ export const storage = pgTable(
       foreignColumns: [service.id],
       name: "storage_service_id_service_id_fk",
     }).onDelete("set null"),
+    // `set null`, not `restrict` (schema-constraints, Road-to-0.1.x):
+    // every other parent FK on this table (workspace/project/environment/
+    // service, above) already uses `set null` so a `retain`-flagged row
+    // survives its parent's delete — `principal` was the one outlier,
+    // and the outlier is what turns a project delete with a retained
+    // volume into a real fk_violation 500 today.
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
       name: "storage_principal_id_principal_id_fk",
-    }).onDelete("restrict"),
+    }).onDelete("set null"),
     check(
       "storage_kind_check",
       sql`kind IN ('volume', 'directory', 'file', 'object')`,
@@ -3249,18 +3739,14 @@ export const storage = pgTable(
     ),
     /**
      * Compose auto-register idempotency: one `volume` row per
-     * `(environment_id, metadata.composeVolumeKey)` when the key is stamped.
+     * `(environment_id, compose_volume_key)` when the key is stamped.
      */
     uniqueIndex("uniq_storage_environment_compose_volume_key")
-      .using(
-        "btree",
-        table.environmentId.asc().nullsLast().op("uuid_ops"),
-        sql`(${table.metadata} ->> 'composeVolumeKey')`,
-      )
+      .on(table.environmentId, table.composeVolumeKey)
       .where(
         sql`kind = 'volume'
           AND environment_id IS NOT NULL
-          AND COALESCE(metadata->>'composeVolumeKey', '') <> ''`,
+          AND compose_volume_key IS NOT NULL`,
       ),
   ],
 );
@@ -3288,6 +3774,7 @@ export const storageCopy = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -3372,6 +3859,7 @@ export const mount = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -3431,12 +3919,13 @@ export const tag = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid("organization_id").notNull(),
-    name: varchar({ length: 255 }).notNull(),
-    description: varchar("description", { length: 255 }),
+    name: text().notNull(),
+    description: text("description"),
     color: varchar({ length: 32 }),
   },
   (table) => [
@@ -3479,6 +3968,7 @@ export const marker = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     tagId: uuid("tag_id").notNull(),
     serverId: uuid("server_id"),
@@ -3645,12 +4135,14 @@ export const forge = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     /** NULL = instance-wide (any organization may use it); set = owned by that org. */
     organizationId: uuid("organization_id"),
     provider: text().notNull(),
+    /** Stays `varchar(255)` (schema-text-types audit, 2026-09-16): `forges/handlers.ts` writes the GitHub App's name straight from the provider API with no length check — the column is that write's only guard. */
     name: varchar({ length: 255 }).notNull(),
     /** Origin the app lives on; part of the unique key, so never null. */
     baseUrl: text("base_url").notNull(),
@@ -3787,6 +4279,7 @@ export const gitConnection = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -3882,6 +4375,7 @@ export const repository = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
@@ -4016,6 +4510,14 @@ export const webhookDelivery = pgTable(
     })
       .defaultNow()
       .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
     provider: text().notNull(),
     /** Provider-side delivery id (GitHub `X-GitHub-Delivery`; GitLab's event
      * UUID, else a digest of the body — see `src/lib/git/gitlab-webhook.ts`). */
@@ -4107,6 +4609,7 @@ export const session = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     userId: uuid("user_id").notNull(),
     expiresAt: timestamp("expires_at", {
@@ -4114,7 +4617,8 @@ export const session = pgTable(
       withTimezone: true,
       mode: "string",
     }).notNull(),
-    token: varchar({ length: 255 }).notNull(),
+    /** Server-generated, never typed; `text` so a longer token format never needs DDL (schema-text-types). */
+    token: text().notNull(),
     ipAddress: varchar("ip_address", { length: 45 }),
     userAgent: text("user_agent"),
   },
@@ -4151,11 +4655,74 @@ export const setting = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     key: text().notNull(),
     value: jsonb().notNull(),
   },
   (table) => [unique("setting_key_unique").on(table.key)],
+);
+/**
+ * The cross-isolate CAS lease, promoted out of four identical `setting`-row
+ * protocols (schema-child-tables, Road-to-0.1.x): `offline-sweep-lease.ts`,
+ * `leaf-renewal-sweep.ts`, `reencrypt-secrets.ts`, `billing/quantity-lock.ts`.
+ * Each file keeps its own exported functions and release semantics — 2
+ * tombstone the row on release (empty `owner` + expired `expires_at`), 2
+ * hard-delete it — this table only changes where the row lives.
+ *
+ * `organization_id` is null for the 3 globally-scoped leases and set for the
+ * per-organization billing lease; `NULLS NOT DISTINCT` on the unique
+ * constraint is load-bearing here — standard Postgres uniqueness treats two
+ * NULLs as distinct, which would silently allow more than one row for the
+ * same global lease `name`. `cursor` is populated by exactly one caller
+ * (leaf renewal's keyset resume point) and must stay part of every steal's
+ * compare-and-swap alongside `owner` / `expires_at`, matching the old
+ * `eq(setting.value, existing.value)` whole-JSON compare exactly — a
+ * naive owner-and-expiry-only CAS would silently drop a concurrent cursor
+ * change from the comparison and widen the existing steal race.
+ */
+export const lease = pgTable(
+  "lease",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    name: text().notNull(),
+    organizationId: uuid("organization_id"),
+    owner: text().notNull(),
+    expiresAt: timestamp("expires_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }).notNull(),
+    cursor: jsonb(),
+  },
+  (table) => [
+    unique("uniq_lease_name_organization")
+      .on(table.name, table.organizationId)
+      .nullsNotDistinct(),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: "lease_organization_id_organization_id_fk",
+    }).onDelete("cascade"),
+  ],
 );
 export const account = pgTable(
   "account",
@@ -4177,6 +4744,7 @@ export const account = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     userId: uuid("user_id").notNull(),
     providerId: text("provider_id").notNull(),
@@ -4272,11 +4840,12 @@ export const team = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
     organizationId: uuid("organization_id").notNull(),
-    name: varchar({ length: 255 }),
+    name: text(),
   },
   (table) => [
     index("idx_team_organization_id").using(
@@ -4314,9 +4883,11 @@ export const user = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
+    /** Stays `varchar(255)` (schema-text-types audit, 2026-09-16): `oauth-http.ts` writes the OAuth profile name straight from the provider with no length check — the column is that write's only guard. */
     name: varchar({ length: 255 }),
     email: varchar({ length: 255 }).notNull(),
     isEmailVerified: boolean("is_email_verified").default(false).notNull(),
@@ -4385,6 +4956,7 @@ export const verification = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     expiresAt: timestamp("expires_at", {
       precision: 3,

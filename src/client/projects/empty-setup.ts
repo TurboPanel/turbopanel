@@ -89,6 +89,7 @@ export async function insertEmptyProject(
     name: string | null
     description: string | null
     workspaceId: string
+    organizationId: string
     serverId: string | null
     defaultEnvironmentName?: string
   },
@@ -101,6 +102,7 @@ export async function insertEmptyProject(
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
+      organizationId: fields.organizationId,
       metadata: null,
       options: null,
     })

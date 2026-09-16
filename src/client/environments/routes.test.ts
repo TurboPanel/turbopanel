@@ -126,6 +126,7 @@ async function withEnvironmentFixtures(
     .values({
       name: 'Environment Route Project',
       workspaceId,
+      organizationId,
     })
     .returning({ id: project.id })
   const projectId = insertedProject!.id

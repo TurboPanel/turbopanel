@@ -905,7 +905,7 @@ async function runQueuedCronSweeps(
         })
       }
       // Automatic membership repins: the presence path only stamps
-      // `ip.metadata.repin.pendingFanoutAt` (hello / DO must not enqueue);
+      // `ip.repin_pending_fanout_at` (hello / DO must not enqueue);
       // the routing fan-out needs the same secrets bundle as leaf renewal.
       try {
         await runDatacenterRepinFanoutSweep(db, commandQueue, tlsRenewal)

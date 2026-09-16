@@ -1,0 +1,2 @@
+ALTER TABLE "ip" ADD COLUMN "repin_pending_fanout_at" timestamp(3) with time zone;--> statement-breakpoint
+CREATE INDEX "idx_ip_repin_pending_fanout_at" ON "ip" USING btree ("repin_pending_fanout_at" timestamptz_ops) WHERE "ip"."repin_pending_fanout_at" IS NOT NULL;

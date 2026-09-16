@@ -15,7 +15,7 @@
 
 import { and, eq, isNull } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
-import { license, server, setting } from '../db/schema.ts'
+import { license, allowance, server } from '../db/schema.ts'
 import { countActiveLicenses, getTierByLabel, insertTier } from '../db/tier-records.ts'
 import {
   listSeatsForOrganization,
@@ -23,23 +23,18 @@ import {
   seatQuantitiesByTier,
 } from '../db/billing-records.ts'
 import { CUSTOM_TIER_LABEL } from './ladder.ts'
-import {
-  parseSelfHostedGrant,
-  SELF_HOSTED_GRANT_VERSION,
-  type SelfHostedGrant,
-  selfHostedGrantKey,
-} from './self-hosted-grant.ts'
+import type { SelfHostedGrant } from './self-hosted-grant.ts'
 
 export async function readSelfHostedGrant(
   db: Db,
   organizationId: string,
 ): Promise<SelfHostedGrant | null> {
   const [row] = await db
-    .select({ value: setting.value })
-    .from(setting)
-    .where(eq(setting.key, selfHostedGrantKey(organizationId)))
+    .select({ tierId: allowance.tierId, quantity: allowance.quantity })
+    .from(allowance)
+    .where(eq(allowance.organizationId, organizationId))
     .limit(1)
-  return row ? parseSelfHostedGrant(row.value) : null
+  return row ?? null
 }
 
 /** Upsert the grant row. A quantity of zero deletes it. */
@@ -49,17 +44,26 @@ export async function writeSelfHostedGrant(
   grant: SelfHostedGrant,
   nowMs = Date.now(),
 ): Promise<void> {
-  const key = selfHostedGrantKey(organizationId)
   if (grant.quantity <= 0) {
-    await db.delete(setting).where(eq(setting.key, key))
+    await db.delete(allowance).where(
+      eq(allowance.organizationId, organizationId),
+    )
     return
   }
   const now = new Date(nowMs).toISOString()
-  const value = { ...grant }
   await db
-    .insert(setting)
-    .values({ key, value, createdAt: now, updatedAt: now })
-    .onConflictDoUpdate({ target: setting.key, set: { value, updatedAt: now } })
+    .insert(allowance)
+    .values({
+      organizationId,
+      tierId: grant.tierId,
+      quantity: grant.quantity,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: allowance.organizationId,
+      set: { tierId: grant.tierId, quantity: grant.quantity, updatedAt: now },
+    })
 }
 
 /**
@@ -148,7 +152,7 @@ export async function syncSelfHostedGrant(
   if (current?.quantity === quantity) return current
 
   const tierId = current?.tierId ?? await ensureCustomTierRow(db)
-  const next: SelfHostedGrant = { version: SELF_HOSTED_GRANT_VERSION, tierId, quantity }
+  const next: SelfHostedGrant = { tierId, quantity }
   await writeSelfHostedGrant(db, organizationId, next, opts.nowMs)
   return next
 }

@@ -27,10 +27,10 @@ import {
   leaf,
   managed,
   network,
-  replica,
   organization,
   principal,
   project,
+  replica,
   server,
   service,
   slot,
@@ -71,8 +71,10 @@ function exposureSettings(exposure: ExposureInput): ManagedSettings {
 }
 
 async function testEncryptionContext() {
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+  const secretsConfig = parseSecretsEnv(
+    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno",
+  );
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
     "data-encryption",
@@ -151,6 +153,7 @@ async function withSingleClusterIngressFixture(
     .values({
       name: "Ingress Desired Project",
       workspaceId,
+      organizationId,
       metadata: { type: "managed", code: "postgres" },
     })
     .returning({ id: project.id });
@@ -750,6 +753,7 @@ test("exposure enabled + scope datacenter without a pinned IP is a typed prepare
 async function insertBoundConsumer(
   db: ReturnType<typeof createDenoDb>,
   params: {
+    organizationId: string;
     workspaceId: string;
     projectName: string;
     defaultServerId: string;
@@ -770,6 +774,7 @@ async function insertBoundConsumer(
     .values({
       name: params.projectName,
       workspaceId: params.workspaceId,
+      organizationId: params.organizationId,
       options: { defaultServerId: params.defaultServerId },
     })
     .returning({ id: project.id });
@@ -801,6 +806,7 @@ async function insertBoundConsumer(
   const [principalRow] = await db
     .insert(principal)
     .values({
+      organizationId: params.organizationId,
       kind: "database",
       provider: "postgres",
       username: params.username,
@@ -882,6 +888,7 @@ test("loadBoundManagedIdsForServer does not scan unpinned environments that defa
     for (let index = 0; index < 8; index += 1) {
       created.push(
         await insertBoundConsumer(db, {
+          organizationId,
           workspaceId,
           projectName: `Noise Project ${index}`,
           defaultServerId: otherServerId,
@@ -893,6 +900,7 @@ test("loadBoundManagedIdsForServer does not scan unpinned environments that defa
       );
     }
     const pinned = await insertBoundConsumer(db, {
+      organizationId,
       workspaceId,
       projectName: "Pinned Env Project",
       defaultServerId: otherServerId,
@@ -902,6 +910,7 @@ test("loadBoundManagedIdsForServer does not scan unpinned environments that defa
       keyPrefix: "PINNED",
     });
     const matchingDefault = await insertBoundConsumer(db, {
+      organizationId,
       workspaceId,
       projectName: "Matching Default Project",
       defaultServerId: currentServerId,
@@ -911,6 +920,7 @@ test("loadBoundManagedIdsForServer does not scan unpinned environments that defa
       keyPrefix: "DEFAULT",
     });
     const taskPinned = await insertBoundConsumer(db, {
+      organizationId,
       workspaceId,
       projectName: "Task Pin Project",
       defaultServerId: otherServerId,

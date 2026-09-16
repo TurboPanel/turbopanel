@@ -36,7 +36,7 @@ import {
 } from '../../lib/billing/pending-changes.ts'
 import { billingSeatIncreaseKey, parseSeatIncreaseRecord } from '../../lib/billing/seat-increase.ts'
 import { verifyStripeProduct } from '../../lib/billing/stripe-products.ts'
-import { license, organization, payer, server, setting, subscription, subscriptionItem, tier } from '../../lib/db/schema.ts'
+import { allowance, key, license, organization, payer, server, setting, subscription, subscriptionItem, tier } from '../../lib/db/schema.ts'
 import type { TierRow } from '../../lib/db/tier-records.ts'
 import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
 import { createStripeClientDouble, formOf, type StripeCall } from '../../test-fixtures/stripe-client.ts'
@@ -160,6 +160,8 @@ function orgDb(seed: OrgSeed = {}): MemoryDb {
   }))
   return createMemoryDb([
     [setting, []],
+    [allowance, []],
+    [key, []],
     [organization, [{ id: ORG, name: 'Billing Org', slug: null, metadata: null, options: null, createdAt: NOW, updatedAt: NOW }]],
     [payer, [{ id: 'payer-1', provider: 'stripe', providerCustomerId: 'cus_1', organizationId: ORG, userId: null, taxId: null, createdAt: NOW, updatedAt: NOW }]],
     [subscription, seed.subscription === false ? [] : [{

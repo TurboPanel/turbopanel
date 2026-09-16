@@ -1,10 +1,13 @@
-import { desc, eq, inArray, sql } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { commandContextFromPayload } from '../commands/context.ts'
-import { nowIso } from '../commands/ids.ts'
-import { type CommandStatus, TERMINAL_COMMAND_STATUSES } from '../commands/types.ts'
-import { command, dispatch } from './schema.ts'
-import { sealExecutionLogOnTerminal } from '../execution-logs/seal-on-terminal.ts'
+import { desc, eq, inArray, sql } from "drizzle-orm";
+import type { Db } from "../../db.ts";
+import { commandContextFromPayload } from "../commands/context.ts";
+import { nowIso } from "../commands/ids.ts";
+import {
+  type CommandStatus,
+  TERMINAL_COMMAND_STATUSES,
+} from "../commands/types.ts";
+import { command, dispatch } from "./schema.ts";
+import { sealExecutionLogOnTerminal } from "../execution-logs/seal-on-terminal.ts";
 
 /**
  * Explicit `command` select list. The daemon execution payload lives in
@@ -33,114 +36,116 @@ const COMMAND_COLUMNS = {
   startedAt: command.startedAt,
   finishedAt: command.finishedAt,
   expiresAt: command.expiresAt,
-} as const
+} as const;
 
 type CommandDbRow = {
-  [K in keyof typeof COMMAND_COLUMNS]: (typeof command.$inferSelect)[K]
-}
+  [K in keyof typeof COMMAND_COLUMNS]: (typeof command.$inferSelect)[K];
+};
 
 export type CommandRecord = {
-  id: string
-  serverId: string
-  actorEntityType: string
-  actorEntityId: string
-  type: string
-  status: CommandStatus
+  id: string;
+  serverId: string;
+  actorEntityType: string;
+  actorEntityId: string;
+  type: string;
+  status: CommandStatus;
   /** Small non-secret identifier bag captured at enqueue time. */
-  context: unknown
-  result: unknown
-  errorCode: string | null
+  context: unknown;
+  result: unknown;
+  errorCode: string | null;
   /** Canonical human-readable error for terminal failures. */
-  errorMessage: string | null
+  errorMessage: string | null;
   /** @deprecated Legacy alias for {@link CommandRecord.errorMessage}. */
-  error: string | null
-  attempts: number
-  createdAt: string
-  updatedAt: string
-  queuedAt: string | null
-  dispatchStartedAt: string | null
-  sentAt: string | null
-  ackedAt: string | null
-  startedAt: string | null
-  finishedAt: string | null
-  expiresAt: string | null
-}
+  error: string | null;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+  queuedAt: string | null;
+  dispatchStartedAt: string | null;
+  sentAt: string | null;
+  ackedAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  expiresAt: string | null;
+};
 
 type CreateCommandRecordParams = {
-  serverId: string
-  actorType: string
-  actorId: string
-  type: string
+  serverId: string;
+  actorType: string;
+  actorId: string;
+  type: string;
   /** Daemon execution payload — stored in `dispatch`, not on `command`. */
-  payload: unknown
+  payload: unknown;
   /**
    * Small non-secret identifiers only (no secrets, compose YAML, or TLS
    * material). Defaults to the allowlisted identifiers extracted from
    * `payload` by {@link commandContextFromPayload}, so every enqueue site gets a
    * consistent context bag without hand-copying fields.
    */
-  context?: unknown
-  expiresAt?: string
+  context?: unknown;
+  expiresAt?: string;
   /** Additional metadata keys merged into the command row (follow-up chains). */
-  metadata?: Record<string, unknown>
-}
+  metadata?: Record<string, unknown>;
+};
 
 type ListServerCommandsParams = {
-  serverId: string
-  limit?: number
-}
+  serverId: string;
+  limit?: number;
+};
 
 type CommandTransitionPatch = {
-  status: CommandStatus
-  result?: unknown
-  error?: string
-  errorCode?: string
-  attempts?: number
-  queuedAt?: string
-  dispatchStartedAt?: string
-  sentAt?: string
-  ackedAt?: string
-  startedAt?: string
-  finishedAt?: string
-}
+  status: CommandStatus;
+  result?: unknown;
+  error?: string;
+  errorCode?: string;
+  attempts?: number;
+  queuedAt?: string;
+  dispatchStartedAt?: string;
+  sentAt?: string;
+  ackedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
 
 const STATUS_TIMESTAMP_FIELD: Partial<
   Record<CommandStatus, LifecycleTimestampField>
 > = {
-  queued: 'queuedAt',
-  dispatching: 'dispatchStartedAt',
-  sent: 'sentAt',
-  acked: 'ackedAt',
-  running: 'startedAt',
-  succeeded: 'finishedAt',
-  failed: 'finishedAt',
-  timed_out: 'finishedAt',
-  cancelled: 'finishedAt',
-}
+  queued: "queuedAt",
+  dispatching: "dispatchStartedAt",
+  sent: "sentAt",
+  acked: "ackedAt",
+  running: "startedAt",
+  succeeded: "finishedAt",
+  failed: "finishedAt",
+  timed_out: "finishedAt",
+  cancelled: "finishedAt",
+};
 
 const LIFECYCLE_TIMESTAMP_FIELDS = [
-  'queuedAt',
-  'dispatchStartedAt',
-  'sentAt',
-  'ackedAt',
-  'startedAt',
-  'finishedAt',
-] as const
+  "queuedAt",
+  "dispatchStartedAt",
+  "sentAt",
+  "ackedAt",
+  "startedAt",
+  "finishedAt",
+] as const;
 
-type LifecycleTimestampField = (typeof LIFECYCLE_TIMESTAMP_FIELDS)[number]
+type LifecycleTimestampField = (typeof LIFECYCLE_TIMESTAMP_FIELDS)[number];
 
 /**
  * postgres.js `mode: 'string'` timestamptz values arrive as Postgres text
  * (`YYYY-MM-DD HH:mm:ss.ss+00`), not ISO-8601. {@link CommandRecord} timestamps
  * are a public API contract (same shape as {@link nowIso}).
  */
-function toIsoTimestamp(value: string | Date | null | undefined): string | null {
-  if (value == null) return null
-  const parsed = value instanceof Date ? value : new Date(value)
+function toIsoTimestamp(
+  value: string | Date | null | undefined,
+): string | null {
+  if (value == null) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(parsed.getTime())) {
-    return typeof value === 'string' ? value : null
+    return typeof value === "string" ? value : null;
   }
-  return parsed.toISOString()
+  return parsed.toISOString();
 }
 
 export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
@@ -150,7 +155,7 @@ export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
     actorEntityType: row.actorType,
     actorEntityId: row.actorId,
     type: row.name,
-    status: (row.status ?? 'queued') as CommandStatus,
+    status: (row.status ?? "queued") as CommandStatus,
     context: row.context ?? null,
     result: row.resultSummary ?? null,
     errorCode: row.errorCode ?? null,
@@ -166,7 +171,24 @@ export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
     startedAt: toIsoTimestamp(row.startedAt),
     finishedAt: toIsoTimestamp(row.finishedAt),
     expiresAt: toIsoTimestamp(row.expiresAt),
-  }
+  };
+}
+
+/**
+ * `command.metadata.managedDestroyGate.gateId`, mirrored onto the real
+ * `managed_destroy_gate_id` column (schema-sql-keys, Road-to-0.1.x) so
+ * `loadManagedDestroyGateCommands` can filter on a real column instead of
+ * an unindexed jsonb path. The key string is duplicated from
+ * `client/managed/destroy-gate.ts`'s `MANAGED_DESTROY_GATE_METADATA_KEY`
+ * rather than imported — `lib/db` does not depend on `client/`.
+ */
+function managedDestroyGateIdFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  const gate = metadata?.managedDestroyGate;
+  if (typeof gate !== "object" || gate === null) return undefined;
+  const gateId = (gate as Record<string, unknown>).gateId;
+  return typeof gateId === "string" && gateId.length > 0 ? gateId : undefined;
 }
 
 /**
@@ -177,8 +199,11 @@ export async function createCommandRecord(
   db: Db,
   params: CreateCommandRecordParams,
 ): Promise<CommandRecord> {
-  const now = nowIso()
-  const context = params.context ?? commandContextFromPayload(params.payload)
+  const now = nowIso();
+  const context = params.context ?? commandContextFromPayload(params.payload);
+  const managedDestroyGateId = managedDestroyGateIdFromMetadata(
+    params.metadata,
+  );
 
   const row = await db.transaction(async (tx) => {
     const rows = await tx
@@ -188,29 +213,32 @@ export async function createCommandRecord(
         actorType: params.actorType,
         actorId: params.actorId,
         name: params.type,
-        status: 'queued',
+        status: "queued",
         attempts: 0,
         queuedAt: now,
         ...(context === undefined ? {} : { context }),
-        ...(params.expiresAt === undefined ? {} : { expiresAt: params.expiresAt }),
+        ...(params.expiresAt === undefined
+          ? {}
+          : { expiresAt: params.expiresAt }),
         ...(params.metadata === undefined ? {} : { metadata: params.metadata }),
+        ...(managedDestroyGateId === undefined ? {} : { managedDestroyGateId }),
       })
-      .returning(COMMAND_COLUMNS)
+      .returning(COMMAND_COLUMNS);
 
-    const inserted = rows[0]
+    const inserted = rows[0];
     if (!inserted) {
-      throw new Error('Failed to create command record')
+      throw new Error("Failed to create command record");
     }
 
     await tx.insert(dispatch).values({
       commandId: inserted.id,
       payload: params.payload,
-    })
+    });
 
-    return inserted
-  })
+    return inserted;
+  });
 
-  return serializeCommandRecord(row)
+  return serializeCommandRecord(row);
 }
 
 /**
@@ -225,12 +253,12 @@ export async function getCommandMetadata(
     .select({ metadata: command.metadata })
     .from(command)
     .where(eq(command.id, commandId))
-    .limit(1)
-  const meta = rows[0]?.metadata
-  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) {
-    return null
+    .limit(1);
+  const meta = rows[0]?.metadata;
+  if (typeof meta !== "object" || meta === null || Array.isArray(meta)) {
+    return null;
   }
-  return meta as Record<string, unknown>
+  return meta as Record<string, unknown>;
 }
 
 /**
@@ -254,15 +282,16 @@ export async function claimCommandMetadataFlag(
   const claimed = await db
     .update(command)
     .set({
-      metadata: sql`COALESCE(${command.metadata}, '{}'::jsonb) || jsonb_build_object(${flag}::text, ${nowIso()}::text)`,
+      metadata:
+        sql`COALESCE(${command.metadata}, '{}'::jsonb) || jsonb_build_object(${flag}::text, ${nowIso()}::text)`,
     })
     .where(
       // `jsonb_exists(...)` rather than the `?` operator: `?` is a placeholder
       // token in several drivers and does not survive every SQL-building path.
       sql`${command.id} = ${commandId} AND NOT jsonb_exists(COALESCE(${command.metadata}, '{}'::jsonb), ${flag})`,
     )
-    .returning({ id: command.id })
-  return claimed.length > 0
+    .returning({ id: command.id });
+  return claimed.length > 0;
 }
 
 /**
@@ -277,9 +306,9 @@ export async function getCommandDispatchPayload(
     .select({ payload: dispatch.payload })
     .from(dispatch)
     .where(eq(dispatch.commandId, commandId))
-    .limit(1)
-  const row = rows[0]
-  return row ? row.payload : null
+    .limit(1);
+  const row = rows[0];
+  return row ? row.payload : null;
 }
 
 /** Idempotent — a no-op when the dispatch row is already gone. */
@@ -287,7 +316,7 @@ export async function deleteCommandDispatch(
   db: Db,
   commandId: string,
 ): Promise<void> {
-  await db.delete(dispatch).where(eq(dispatch.commandId, commandId))
+  await db.delete(dispatch).where(eq(dispatch.commandId, commandId));
 }
 
 /**
@@ -302,17 +331,17 @@ export async function retainCommandDispatch(
   await db
     .update(dispatch)
     .set({ expiresAt })
-    .where(eq(dispatch.commandId, commandId))
+    .where(eq(dispatch.commandId, commandId));
 }
 
 /**
  * How long a terminal-failure dispatch payload is retained for debugging before
  * the shared maintenance sweep deletes it. Success drops it immediately.
  */
-export const COMMAND_DISPATCH_FAILURE_RETENTION_MS = 24 * 60 * 60 * 1000
+export const COMMAND_DISPATCH_FAILURE_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 /** Bounded per maintenance tick — cleanup must never dominate the sweep. */
-export const COMMAND_DISPATCH_SWEEP_LIMIT = 200
+export const COMMAND_DISPATCH_SWEEP_LIMIT = 200;
 
 /**
  * Bounded delete of dispatch payloads whose retention window elapsed. Returns
@@ -322,8 +351,8 @@ export async function sweepExpiredCommandDispatch(
   db: Db,
   opts: { limit: number; now?: string },
 ): Promise<number> {
-  const limit = Math.min(Math.max(Math.trunc(opts.limit), 1), 1000)
-  const now = opts.now ?? nowIso()
+  const limit = Math.min(Math.max(Math.trunc(opts.limit), 1), 1000);
+  const now = opts.now ?? nowIso();
 
   // Bounded per tick: pick the oldest expired ids in a subquery, delete those.
   const deleted = await db
@@ -336,9 +365,9 @@ export async function sweepExpiredCommandDispatch(
         limit ${limit}
       )`,
     )
-    .returning({ commandId: dispatch.commandId })
+    .returning({ commandId: dispatch.commandId });
 
-  return deleted.length
+  return deleted.length;
 }
 
 export async function getCommandRecord(
@@ -350,29 +379,29 @@ export async function getCommandRecord(
     .select(COMMAND_COLUMNS)
     .from(command)
     .where(eq(command.id, commandId))
-    .limit(1)
-  const row = rows[0]
-  return row ? serializeCommandRecord(row) : null
+    .limit(1);
+  const row = rows[0];
+  return row ? serializeCommandRecord(row) : null;
 }
 
 export async function listCommandRecordsByIds(
   db: Db,
   ids: readonly string[],
 ): Promise<CommandRecord[]> {
-  if (ids.length === 0) return []
+  if (ids.length === 0) return [];
   // Explicit column list — see COMMAND_COLUMNS; never joins `dispatch`.
   const rows = await db
     .select(COMMAND_COLUMNS)
     .from(command)
-    .where(inArray(command.id, [...ids]))
-  return rows.map(serializeCommandRecord)
+    .where(inArray(command.id, [...ids]));
+  return rows.map(serializeCommandRecord);
 }
 
 export async function listServerCommands(
   db: Db,
   params: ListServerCommandsParams,
 ): Promise<CommandRecord[]> {
-  const limit = Math.min(Math.max(params.limit ?? 20, 1), 100)
+  const limit = Math.min(Math.max(params.limit ?? 20, 1), 100);
 
   // Explicit column list — see COMMAND_COLUMNS; never joins `dispatch`.
   const rows = await db
@@ -382,9 +411,9 @@ export async function listServerCommands(
     // Break ties when two commands share a `created_at` instant (common in tests
     // and burst enqueue). UUIDv7 ids are time-ordered so `id DESC` is newest-first.
     .orderBy(desc(command.createdAt), desc(command.id))
-    .limit(limit)
+    .limit(limit);
 
-  return rows.map(serializeCommandRecord)
+  return rows.map(serializeCommandRecord);
 }
 
 /**
@@ -392,7 +421,7 @@ export async function listServerCommands(
  * fails: the payload becomes sweep-eligible almost at once instead of lingering
  * forever with a null `expires_at`.
  */
-export const COMMAND_DISPATCH_CLEANUP_FALLBACK_MS = 60 * 1000
+export const COMMAND_DISPATCH_CLEANUP_FALLBACK_MS = 60 * 1000;
 
 /**
  * Terminal cleanup for the dispatch payload, tied to the command's terminal
@@ -408,18 +437,17 @@ async function finalizeCommandDispatch(
   commandId: string,
   status: CommandStatus,
 ): Promise<void> {
-  if (!TERMINAL_COMMAND_STATUSES.has(status)) return
+  if (!TERMINAL_COMMAND_STATUSES.has(status)) return;
 
-  const retentionMs =
-    status === 'succeeded'
-      ? COMMAND_DISPATCH_CLEANUP_FALLBACK_MS
-      : COMMAND_DISPATCH_FAILURE_RETENTION_MS
-  const expiresAt = new Date(Date.now() + retentionMs).toISOString()
+  const retentionMs = status === "succeeded"
+    ? COMMAND_DISPATCH_CLEANUP_FALLBACK_MS
+    : COMMAND_DISPATCH_FAILURE_RETENTION_MS;
+  const expiresAt = new Date(Date.now() + retentionMs).toISOString();
 
-  if (status === 'succeeded') {
+  if (status === "succeeded") {
     try {
-      await deleteCommandDispatch(db, commandId)
-      return
+      await deleteCommandDispatch(db, commandId);
+      return;
     } catch {
       // Fall through: stamp a near-term `expires_at` so the sweep still reaches
       // the payload rather than leaving it behind with `expires_at` null.
@@ -427,14 +455,14 @@ async function finalizeCommandDispatch(
   }
 
   try {
-    await retainCommandDispatch(db, commandId, expiresAt)
-    return
+    await retainCommandDispatch(db, commandId, expiresAt);
+    return;
   } catch {
     // Retry once — a single hiccup must not strand a secret-bearing row.
   }
 
   try {
-    await retainCommandDispatch(db, commandId, expiresAt)
+    await retainCommandDispatch(db, commandId, expiresAt);
   } catch {
     // Leftovers are swept later; a cleanup hiccup must not fail the transition.
   }
@@ -445,19 +473,19 @@ export async function transitionCommand(
   commandId: string,
   patch: CommandTransitionPatch,
 ): Promise<CommandRecord | null> {
-  const now = nowIso()
-  const timestamps: Partial<Record<LifecycleTimestampField, string>> = {}
+  const now = nowIso();
+  const timestamps: Partial<Record<LifecycleTimestampField, string>> = {};
 
   for (const field of LIFECYCLE_TIMESTAMP_FIELDS) {
-    const value = patch[field]
+    const value = patch[field];
     if (value !== undefined) {
-      timestamps[field] = value
+      timestamps[field] = value;
     }
   }
 
-  const statusField = STATUS_TIMESTAMP_FIELD[patch.status]
+  const statusField = STATUS_TIMESTAMP_FIELD[patch.status];
   if (statusField && timestamps[statusField] === undefined) {
-    timestamps[statusField] = now
+    timestamps[statusField] = now;
   }
 
   const rows = await db
@@ -472,18 +500,18 @@ export async function transitionCommand(
       ...timestamps,
     })
     .where(eq(command.id, commandId))
-    .returning(COMMAND_COLUMNS)
+    .returning(COMMAND_COLUMNS);
 
-  const row = rows[0]
-  if (!row) return null
+  const row = rows[0];
+  if (!row) return null;
 
-  await finalizeCommandDispatch(db, commandId, patch.status)
+  await finalizeCommandDispatch(db, commandId, patch.status);
   // Compact the command transcript on the same terminal transition that
   // finalizes the dispatch payload. Best effort and sink-based (no store is
   // threaded through Postgres helpers) — see
   // `src/lib/execution-logs/seal-on-terminal.ts`.
   if (TERMINAL_COMMAND_STATUSES.has(patch.status)) {
-    await sealExecutionLogOnTerminal(commandId)
+    await sealExecutionLogOnTerminal(commandId);
   }
-  return serializeCommandRecord(row)
+  return serializeCommandRecord(row);
 }

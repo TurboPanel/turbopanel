@@ -564,6 +564,7 @@ async function withDeployFixtures(
     .values({
       name: "Deploy Route Project",
       workspaceId,
+      organizationId,
       options: { compose: emptyComposeDocument() },
     })
     .returning({ id: project.id });
@@ -1717,6 +1718,7 @@ test("POST /environments/:id/lifecycle returns 404 for cross-org environment", a
       .values({
         name: "Foreign Project",
         workspaceId: foreignWorkspace!.id,
+        organizationId: foreignOrgId,
         options: { compose: emptyComposeDocument() },
       })
       .returning({ id: project.id });

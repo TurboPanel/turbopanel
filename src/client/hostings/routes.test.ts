@@ -57,8 +57,10 @@ test("PATCH /hostings rejects public bind with non-public ip scope", async () =>
   }
 
   const db = createDenoDb();
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+  const secretsConfig = parseSecretsEnv(
+    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno",
+  );
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -101,7 +103,7 @@ test("PATCH /hostings rejects public bind with non-public ip scope", async () =>
     .returning({ id: workspace.id });
   const [proj] = await db
     .insert(project)
-    .values({ workspaceId: ws!.id, name: "P", createdAt: now, updatedAt: now })
+    .values({ workspaceId: ws!.id, organizationId, name: "P", createdAt: now, updatedAt: now })
     .returning({ id: project.id });
   const [env] = await db
     .insert(environment)
@@ -209,8 +211,10 @@ test("PATCH /hostings returns 404 when ipId belongs to another org", async () =>
   if (!dbUrl) return;
 
   const db = createDenoDb();
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+  const secretsConfig = parseSecretsEnv(
+    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno",
+  );
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -261,7 +265,7 @@ test("PATCH /hostings returns 404 when ipId belongs to another org", async () =>
     .returning({ id: workspace.id });
   const [proj] = await db
     .insert(project)
-    .values({ workspaceId: ws!.id, name: "P", createdAt: now, updatedAt: now })
+    .values({ workspaceId: ws!.id, organizationId: orgA!.id, name: "P", createdAt: now, updatedAt: now })
     .returning({ id: project.id });
   const [env] = await db
     .insert(environment)
@@ -326,8 +330,10 @@ test("PATCH /hostings returns 404 when ipId belongs to another org", async () =>
 });
 
 async function createHostingTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+  const secretsConfig = parseSecretsEnv(
+    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno",
+  );
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -388,7 +394,7 @@ async function withHostingFixtures(
     .returning({ id: workspace.id });
   const [proj] = await db
     .insert(project)
-    .values({ workspaceId: ws!.id, name: "P", createdAt: now, updatedAt: now })
+    .values({ workspaceId: ws!.id, organizationId, name: "P", createdAt: now, updatedAt: now })
     .returning({ id: project.id });
   const [env] = await db
     .insert(environment)
@@ -590,6 +596,52 @@ test("POST /hostings accepts tcp protocol with port mappings", async () => {
   });
 });
 
+test("POST /hostings strips client-supplied compose-ownership markers", async () => {
+  await withHostingFixtures(async ({
+    app,
+    secrets,
+    db,
+    userId,
+    organizationId,
+    serviceId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request("/hostings", {
+      method: "POST",
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        serviceId,
+        name: "Forged Compose Owner",
+        metadata: {
+          composeOwned: true,
+          composeServiceName: "web",
+          composeRoute: "forged/route",
+          note: "kept",
+        },
+      }),
+    });
+    assertEquals(res.status, 200);
+    const { id } = await res.json() as { ok: true; id: string };
+
+    const [row] = await db
+      .select({ metadata: hosting.metadata })
+      .from(hosting)
+      .where(eq(hosting.id, id))
+      .limit(1);
+    const metadata = row?.metadata as Record<string, unknown> | null;
+    assertEquals(metadata?.composeOwned, undefined);
+    assertEquals(metadata?.composeServiceName, undefined);
+    assertEquals(metadata?.composeRoute, undefined);
+    assertEquals(metadata?.note, "kept");
+
+    await db.delete(hosting).where(eq(hosting.id, id));
+  });
+});
+
 test("POST /hostings returns 400 without serviceId", async () => {
   await withHostingFixtures(async ({
     app,
@@ -638,6 +690,7 @@ test("POST /hostings returns 404 when service belongs to another org", async () 
       .insert(project)
       .values({
         workspaceId: foreignWs!.id,
+        organizationId: foreignOrg!.id,
         name: "FP",
         createdAt: now,
         updatedAt: now,
@@ -714,6 +767,7 @@ test("GET /hostings/:id returns 404 for a hosting in another org", async () => {
       .insert(project)
       .values({
         workspaceId: foreignWs!.id,
+        organizationId: foreignOrg!.id,
         name: "FP",
         createdAt: now,
         updatedAt: now,

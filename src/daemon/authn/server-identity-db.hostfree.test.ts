@@ -1,10 +1,17 @@
 /**
  * Host-free coverage for server daemon identity DB helpers (no Postgres).
+ *
+ * The daemon key lives in the `key` table now (schema-child-tables,
+ * Road-to-0.1.x) — `getServerDaemonStateByServerId` / `ByFingerprint` join
+ * `server` and `key`; `attachDaemonStateToServer` upserts the key row and
+ * the server row inside one transaction; `touchDaemonKeyLastUsed` /
+ * `revokeDaemonKey` are targeted single-column writes on `key`;
+ * `clearServerDaemonState` deletes the `key` row explicitly.
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db.ts'
-import type { ServerDaemonState } from './daemon-state.ts'
+import type { ServerDaemonKey } from './daemon-state.ts'
 import {
   attachDaemonStateToServer,
   clearServerDaemonState,
@@ -24,112 +31,157 @@ const test = Deno.test.bind(Deno)
 
 const SERVER_ID = '00000000-0000-4000-8000-0000000000b1'
 
-const activeState: ServerDaemonState = {
-  key: {
-    id: 'key-1',
-    algorithm: 'Ed25519',
-    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-    fingerprint: 'fp-test',
-    createdAt: '2020-01-01T00:00:00.000Z',
-    revokedAt: null,
-  },
+const activeKey: ServerDaemonKey = {
+  id: 'key-1',
+  algorithm: 'Ed25519',
+  publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+  fingerprint: 'fp-test',
+  createdAt: '2020-01-01T00:00:00.000Z',
+  revokedAt: null,
+  lastUsedAt: null,
 }
 
-function queryResult<T>(rows: T[]) {
-  const promise = Promise.resolve(rows)
-  return Object.assign(promise, {
-    limit: (_n: number) => Promise.resolve(rows),
-  })
+function limitResult<T>(rows: T[]) {
+  return { limit: () => Promise.resolve(rows) }
+}
+
+type ServerRow = {
+  daemon: { projection?: Record<string, unknown> } | null
+  hostname: string | null
+  machineKey: string | null
+  connected: boolean
+  statusChangedAt: string | null
 }
 
 type IdentityFake = {
   db: Db
-  getDaemon: () => ServerDaemonState | null
+  getKey: () => ServerDaemonKey | null
+  getServerRow: () => ServerRow
   getUpdates: () => Array<Record<string, unknown>>
+  getDeletes: () => number
 }
 
+/** `null` simulates a server with no key row (not enrolled). */
 function createIdentityFakeDb(
-  initial: ServerDaemonState | null = activeState,
+  initialKey: ServerDaemonKey | null = activeKey,
 ): IdentityFake {
-  let daemon: ServerDaemonState | null = initial
-    ? structuredClone(initial)
+  let key: ServerDaemonKey | null = initialKey
+    ? structuredClone(initialKey)
     : null
-  let connected = false
-  let statusChangedAt: string | null = null
+  const serverRow: ServerRow = {
+    daemon: null,
+    hostname: 'host-1',
+    machineKey: null,
+    connected: false,
+    statusChangedAt: null,
+  }
   const updates: Array<Record<string, unknown>> = []
+  let deletes = 0
+
+  function joinedRow() {
+    if (!key) return []
+    return [{
+      id: key.id,
+      algorithm: key.algorithm,
+      publicJwk: key.publicJwk,
+      fingerprint: key.fingerprint,
+      createdAt: key.createdAt,
+      revokedAt: key.revokedAt ?? null,
+      lastUsedAt: key.lastUsedAt ?? null,
+      serverId: SERVER_ID,
+      ...serverRow,
+    }]
+  }
 
   const db = {
     select: () => ({
       from: () => ({
-        where: () =>
-          queryResult(
-            daemon
-              ? [{
-                serverId: SERVER_ID,
-                daemon,
-                metadata: null,
-                hostname: 'host-1',
-                machineKey: null,
-                connected,
-                statusChangedAt,
-              }]
-              : [],
-          ),
+        innerJoin: () => ({
+          where: () => limitResult(joinedRow()),
+        }),
+      }),
+    }),
+    insert: () => ({
+      values: (values: Record<string, unknown>) => ({
+        onConflictDoUpdate: (opts: { set: Record<string, unknown> }) => ({
+          returning: () => {
+            // The real `set.id` is a `sql\`uuidv7()\`` fragment, always
+            // present — re-enrollment always mints a new id, never an edit
+            // of the old row.
+            const createdAt = typeof opts.set.createdAt === 'string'
+              ? opts.set.createdAt
+              : key?.createdAt ?? '2020-01-01T00:00:00.000Z'
+            key = {
+              id: `key-${crypto.randomUUID()}`,
+              algorithm: (opts.set.algorithm ?? values.algorithm) as 'Ed25519',
+              publicJwk: (opts.set.publicJwk ?? values.publicJwk) as JsonWebKey,
+              fingerprint: (opts.set.fingerprint ?? values.fingerprint) as string,
+              createdAt,
+              revokedAt: (opts.set.revokedAt as string | null | undefined) ?? null,
+              lastUsedAt: (opts.set.lastUsedAt as string | null | undefined) ?? null,
+            }
+            return Promise.resolve([{ id: key.id }])
+          },
+        }),
       }),
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
         updates.push(patch)
-        if ('daemon' in patch) {
-          daemon = patch.daemon as ServerDaemonState | null
+        if ('lastUsedAt' in patch || 'revokedAt' in patch) {
+          // A `key` table patch — touchDaemonKeyLastUsed / revokeDaemonKey.
+          if (key) {
+            if ('lastUsedAt' in patch) key.lastUsedAt = patch.lastUsedAt as string | null
+            if ('revokedAt' in patch) key.revokedAt = patch.revokedAt as string | null
+          }
+          return { where: () => Promise.resolve(undefined) }
         }
-        if ('isConnected' in patch) {
-          connected = Boolean(patch.isConnected)
-        }
+        // A `server` table patch — attach / clear.
+        if ('daemon' in patch) serverRow.daemon = patch.daemon as ServerRow['daemon']
+        if ('hostname' in patch) serverRow.hostname = patch.hostname as string | null
+        if ('machineKey' in patch) serverRow.machineKey = patch.machineKey as string | null
+        if ('isConnected' in patch) serverRow.connected = Boolean(patch.isConnected)
         if ('statusChangedAt' in patch) {
-          statusChangedAt = patch.statusChangedAt as string | null
+          serverRow.statusChangedAt = patch.statusChangedAt as string | null
         }
         return {
           where: () => ({
-            returning: () =>
-              Promise.resolve(daemon ? [{ id: SERVER_ID }] : []),
+            returning: () => Promise.resolve([{ id: SERVER_ID }]),
           }),
         }
       },
     }),
+    delete: () => ({
+      where: () => {
+        deletes += 1
+        key = null
+        return Promise.resolve(undefined)
+      },
+    }),
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db as unknown as Db),
   } as unknown as Db
 
   return {
     db,
-    getDaemon: () => daemon,
+    getKey: () => key,
+    getServerRow: () => serverRow,
     getUpdates: () => updates,
+    getDeletes: () => deletes,
   }
 }
 
-test('getServerDaemonStateByServerId returns null when missing or unparsable', async () => {
+test('getServerDaemonStateByServerId returns null when there is no key row', async () => {
   const empty = createIdentityFakeDb(null)
   assertEquals(await getServerDaemonStateByServerId(empty.db, SERVER_ID), null)
+})
 
-  const broken = {
-    select: () => ({
-      from: () => ({
-        where: () =>
-          queryResult([{
-            daemon: { not: 'a-key' },
-            metadata: null,
-            hostname: null,
-            machineKey: null,
-            connected: false,
-            statusChangedAt: null,
-          }]),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await getServerDaemonStateByServerId(broken, SERVER_ID), null)
+test('getServerDaemonStateByServerId returns null for a malformed key row', async () => {
+  const broken = createIdentityFakeDb({ ...activeKey, algorithm: 'RSA' as 'Ed25519' })
+  assertEquals(await getServerDaemonStateByServerId(broken.db, SERVER_ID), null)
 })
 
 test('getServerDaemonStateByServerId maps status columns and identity', async () => {
-  const fake = createIdentityFakeDb(activeState)
+  const fake = createIdentityFakeDb(activeKey)
   const row = await getServerDaemonStateByServerId(fake.db, SERVER_ID)
   if (!row) throw new TypeError('expected daemon state')
   assertEquals(row.key.fingerprint, 'fp-test')
@@ -138,46 +190,60 @@ test('getServerDaemonStateByServerId maps status columns and identity', async ()
 })
 
 test('getServerDaemonStateByFingerprint returns serverId when present', async () => {
-  const fake = createIdentityFakeDb(activeState)
+  const fake = createIdentityFakeDb(activeKey)
   const row = await getServerDaemonStateByFingerprint(fake.db, 'fp-test')
   if (!row) throw new TypeError('expected fingerprint hit')
   assertEquals(row.serverId, SERVER_ID)
   assertEquals(row.key.id, 'key-1')
 })
 
-test('attachDaemonStateToServer writes daemon + default status columns', async () => {
-  const fake = createIdentityFakeDb(null)
-  // Attach requires returning a row — seed an empty server via returning path.
-  const db = {
-    select: fake.db.select,
-    update: () => ({
-      set: (patch: Record<string, unknown>) => {
-        fake.getUpdates().push(patch)
-        return {
-          where: () => ({
-            returning: () => Promise.resolve([{ id: SERVER_ID }]),
-          }),
-        }
-      },
-    }),
-  } as unknown as Db
+test('getServerDaemonStateByFingerprint returns null with no matching key row', async () => {
+  const empty = createIdentityFakeDb(null)
+  assertEquals(await getServerDaemonStateByFingerprint(empty.db, 'fp-test'), null)
+})
 
-  const result = await attachDaemonStateToServer(db, SERVER_ID, {
+test('attachDaemonStateToServer inserts the key row and writes default status columns', async () => {
+  const fake = createIdentityFakeDb(null)
+  const result = await attachDaemonStateToServer(fake.db, SERVER_ID, {
     publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'xyz' },
     fingerprint: 'fp-new',
     hostname: 'edge-1',
     machineKey: 'a'.repeat(64),
   })
   assertEquals(typeof result.keyId, 'string')
-  assertEquals(fake.getUpdates().length, 1)
-  const patch = fake.getUpdates()[0]!
-  assertEquals(typeof patch.daemon, 'object')
-  assertEquals(patch.hostname, 'edge-1')
-  assertEquals(patch.isConnected, false)
+  assertEquals(fake.getKey()?.fingerprint, 'fp-new')
+  assertEquals(fake.getKey()?.revokedAt, null)
+  assertEquals(fake.getServerRow().hostname, 'edge-1')
+  assertEquals(fake.getServerRow().connected, false)
+  // Re-enrollment always clears projection too — a full replace, not a merge.
+  assertEquals(fake.getServerRow().daemon, null)
+})
+
+test('attachDaemonStateToServer mints a new key id and clears revocation on re-enroll', async () => {
+  const fake = createIdentityFakeDb({
+    ...activeKey,
+    revokedAt: '2020-06-01T00:00:00.000Z',
+  })
+  const originalId = fake.getKey()?.id
+  const result = await attachDaemonStateToServer(fake.db, SERVER_ID, {
+    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'new' },
+    fingerprint: 'fp-replaced',
+  })
+  // A re-enroll is a new key, not an edit of the old row.
+  assertEquals(result.keyId !== originalId, true)
+  assertEquals(fake.getKey()?.fingerprint, 'fp-replaced')
+  assertEquals(fake.getKey()?.revokedAt, null)
 })
 
 test('attachDaemonStateToServer throws when the server row is missing', async () => {
   const db = {
+    insert: () => ({
+      values: () => ({
+        onConflictDoUpdate: () => ({
+          returning: () => Promise.resolve([{ id: 'key-1' }]),
+        }),
+      }),
+    }),
     update: () => ({
       set: () => ({
         where: () => ({
@@ -185,6 +251,7 @@ test('attachDaemonStateToServer throws when the server row is missing', async ()
         }),
       }),
     }),
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db as unknown as Db),
   } as unknown as Db
   await assertRejects(
     () =>
@@ -197,29 +264,25 @@ test('attachDaemonStateToServer throws when the server row is missing', async ()
   )
 })
 
-test('touchDaemonKeyLastUsed and revokeDaemonKey update key timestamps', async () => {
-  const fake = createIdentityFakeDb(activeState)
+test('touchDaemonKeyLastUsed and revokeDaemonKey are targeted single-column writes', async () => {
+  const fake = createIdentityFakeDb(activeKey)
   await touchDaemonKeyLastUsed(fake.db, SERVER_ID, '2020-02-01T00:00:00.000Z')
-  assertEquals(
-    fake.getDaemon()?.key.lastUsedAt,
-    '2020-02-01T00:00:00.000Z',
-  )
+  assertEquals(fake.getKey()?.lastUsedAt, '2020-02-01T00:00:00.000Z')
 
   await revokeDaemonKey(fake.db, SERVER_ID)
-  assertEquals(typeof fake.getDaemon()?.key.revokedAt, 'string')
+  assertEquals(typeof fake.getKey()?.revokedAt, 'string')
+
+  // Neither write ever touches server-shaped patch fields.
+  for (const patch of fake.getUpdates()) {
+    assertEquals('daemon' in patch, false)
+  }
 })
 
-test('touchDaemonKeyLastUsed is a no-op when the server has no daemon state', async () => {
-  const fake = createIdentityFakeDb(null)
-  await touchDaemonKeyLastUsed(fake.db, SERVER_ID)
-  assertEquals(fake.getUpdates().length, 0)
-})
-
-test('clearServerDaemonState nulls daemon and resets status columns', async () => {
-  const fake = createIdentityFakeDb(activeState)
+test('clearServerDaemonState deletes the key row and resets server status columns', async () => {
+  const fake = createIdentityFakeDb(activeKey)
   await clearServerDaemonState(fake.db, SERVER_ID)
-  assertEquals(fake.getDaemon(), null)
-  const patch = fake.getUpdates().at(-1)
-  assertEquals(patch?.daemon, null)
-  assertEquals(patch?.isConnected, false)
+  assertEquals(fake.getDeletes(), 1)
+  assertEquals(fake.getKey(), null)
+  assertEquals(fake.getServerRow().daemon, null)
+  assertEquals(fake.getServerRow().connected, false)
 })

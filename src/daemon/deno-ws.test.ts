@@ -14,6 +14,7 @@ import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
   parseServerDaemonState,
+  type ServerDaemonProjection,
   type ServerDaemonState,
   type ServerDaemonStatus,
   type ServerDaemonStatusColumns,
@@ -95,7 +96,9 @@ function createDaemonJwtSecrets() {
 function createSelectChain<T>(getRows: () => T[]) {
   const limit = () => Promise.resolve(getRows());
   const where = () => ({ limit });
-  const from = () => ({ where });
+  // `getServerDaemonStateByServerId` joins `key` in — the mock ignores the
+  // join predicate and always resolves the same rows.
+  const from = () => ({ where, innerJoin: () => ({ where }) });
   return { from };
 }
 
@@ -104,9 +107,11 @@ function createMockDb(keyId = "key-test"): Db {
     select: () =>
       createSelectChain(() => [
         {
-          daemon: {
-            key: { ...baseDaemonKey, id: keyId },
-          },
+          ...baseDaemonKey,
+          id: keyId,
+          revokedAt: null,
+          lastUsedAt: null,
+          daemon: null,
           metadata: null,
           hostname: null,
           machineKey: null,
@@ -135,18 +140,25 @@ const baseDaemonKey = {
  * fleet status/identity live on dedicated `server` columns, never on the
  * sparse `daemon` jsonb (`{ key, projection? }`).
  */
+/**
+ * Mirrors `getServerDaemonStateByServerId`'s joined select: `key` columns
+ * flattened onto the row, never touched by a write (`key` is fixed for the
+ * mock's lifetime — writes only ever land on the `{ projection? }` jsonb).
+ */
 function createProjectionTrackingDb(
   _serverId: string,
   initialDaemon: ServerDaemonState,
   statusOverrides: Partial<ServerDaemonStatus> = {},
 ): {
   db: Db;
-  getDaemon: () => ServerDaemonState;
+  getDaemon: () => { projection?: ServerDaemonProjection } | null;
   getStatus: () => ServerDaemonStatus;
   getUpdateCallCount: () => number;
   getPatches: () => Record<string, unknown>[];
 } {
-  let daemon: ServerDaemonState = { ...initialDaemon };
+  const key = initialDaemon.key;
+  let daemonJsonb: { projection?: ServerDaemonProjection } | null =
+    initialDaemon.projection ? { projection: initialDaemon.projection } : null;
   const defaults = buildDefaultDaemonStatus();
   const columns: ServerDaemonStatusColumns = {
     connected: statusOverrides.connected ?? defaults.connected,
@@ -160,7 +172,14 @@ function createProjectionTrackingDb(
     select: () =>
       createSelectChain(() => [
         {
-          daemon,
+          id: key.id,
+          algorithm: key.algorithm,
+          publicJwk: key.publicJwk,
+          fingerprint: key.fingerprint,
+          createdAt: key.createdAt,
+          revokedAt: key.revokedAt ?? null,
+          lastUsedAt: key.lastUsedAt ?? null,
+          daemon: daemonJsonb,
           metadata: null,
           hostname: null,
           machineKey: null,
@@ -173,7 +192,7 @@ function createProjectionTrackingDb(
         updateCalls += 1;
         patches.push(patch);
         if (patch.daemon !== undefined) {
-          daemon = patch.daemon as ServerDaemonState;
+          daemonJsonb = patch.daemon as { projection?: ServerDaemonProjection } | null;
         }
         if ("isConnected" in patch) {
           columns.connected = patch.isConnected as boolean;
@@ -190,7 +209,7 @@ function createProjectionTrackingDb(
 
   return {
     db,
-    getDaemon: () => daemon,
+    getDaemon: () => daemonJsonb,
     getStatus: () => mapServerDaemonStatusFromColumns(columns),
     getUpdateCallCount: () => updateCalls,
     getPatches: () => patches,
@@ -1818,34 +1837,40 @@ async function openLiveDaemonWs(params: {
 }
 
 function createRecordedPlanDb(serverId: string): Db {
+  const whereResult = {
+    limit: () =>
+      Promise.resolve([
+        {
+          ...baseDaemonKey,
+          id: "key-test",
+          revokedAt: null,
+          lastUsedAt: null,
+          daemon: null,
+          metadata: null,
+          hostname: null,
+          machineKey: null,
+          connected: true,
+          statusChangedAt: "2020-01-01T00:00:00.000Z",
+        },
+      ]),
+    orderBy: () => ({
+      limit: () =>
+        Promise.resolve([
+          {
+            generation: 5,
+            planHash: "hash",
+            plan: PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
+            appliedAt: "2026-01-01T00:00:00.000Z",
+            serverId,
+          },
+        ]),
+    }),
+  }
   return {
     select: () => ({
       from: () => ({
-        where: () => ({
-          limit: () =>
-            Promise.resolve([
-              {
-                daemon: { key: { ...baseDaemonKey, id: "key-test" } },
-                metadata: null,
-                hostname: null,
-                machineKey: null,
-                connected: true,
-                statusChangedAt: "2020-01-01T00:00:00.000Z",
-              },
-            ]),
-          orderBy: () => ({
-            limit: () =>
-              Promise.resolve([
-                {
-                  generation: 5,
-                  planHash: "hash",
-                  plan: PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
-                  appliedAt: "2026-01-01T00:00:00.000Z",
-                  serverId,
-                },
-              ]),
-          }),
-        }),
+        innerJoin: () => ({ where: () => whereResult }),
+        where: () => whereResult,
       }),
     }),
     update: () => ({

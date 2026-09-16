@@ -34,6 +34,7 @@ import {
 import * as hierarchyDelete from '../hierarchy-delete.ts'
 import * as systemHierarchy from '../system/hierarchy.ts'
 import {
+  COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
   SERVER_HAS_BLOCKERS_CODE,
   SERVER_HAS_BLOCKERS_ERROR,
@@ -41,8 +42,10 @@ import {
 import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import { createLicense } from '../authn/license.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { buildServerDaemonState } from '../../daemon/authn/daemon-state.ts'
-import { attachDaemonStateToServer } from '../../daemon/authn/server-identity-db.ts'
+import {
+  attachDaemonStateToServer,
+  getServerDaemonStateByServerId,
+} from '../../daemon/authn/server-identity-db.ts'
 import { registerServerRoutes } from './routes.ts'
 import type { ServerStatusRecord } from './update-status.ts'
 import type { QueryCache } from '../../query-cache/contracts.ts'
@@ -743,6 +746,210 @@ test('DELETE /servers/:id returns 403 for the co-located control plane server', 
       await cleanupOrgSystemSubtree(db, organizationId)
     }
   })
+})
+
+async function enrollFixtureServer(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+): Promise<string> {
+  const { keyId } = await attachDaemonStateToServer(db, serverId, {
+    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'revoke-route-test' },
+    fingerprint: `fp-revoke-${crypto.randomUUID().slice(0, 8)}`,
+  })
+  return keyId
+}
+
+test('POST /servers/:id/daemon-key/revoke revokes the key, purges the cell, and is idempotent', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    const keyId = await enrollFixtureServer(db, serverId)
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { Cookie: cookie, [ORG_ID_HEADER]: organizationId }
+
+    const first = await app.request(`/servers/${serverId}/daemon-key/revoke`, {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(first.status, 200)
+    const body = await readJson<{ ok: boolean; revokedAt: string | null; purged: boolean }>(first)
+    assertEquals(body.ok, true)
+    assertEquals(body.purged, true)
+    assertEquals(typeof body.revokedAt, 'string')
+    assertEquals(registry.purgedIds, [serverId])
+
+    // Durable: the key row itself is revoked, same id — nothing minted.
+    const state = await getServerDaemonStateByServerId(db, serverId)
+    assertEquals(state?.key.id, keyId)
+    assertEquals(state?.key.revokedAt, body.revokedAt)
+
+    // Re-calling keeps the original revokedAt and re-attempts the purge.
+    const second = await app.request(`/servers/${serverId}/daemon-key/revoke`, {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(second.status, 200)
+    const again = await readJson<{ revokedAt: string | null; purged: boolean }>(second)
+    assertEquals(again.revokedAt, body.revokedAt)
+    assertEquals(again.purged, true)
+    assertEquals(registry.purgedIds, [serverId, serverId])
+  })
+})
+
+test('POST /servers/:id/daemon-key/revoke returns 409 for a server that was never enrolled', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}/daemon-key/revoke`, {
+      method: 'POST',
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    assertEquals(res.status, 409)
+    const body = await readJson<ErrorJson>(res)
+    assertEquals(body.error, 'Server is not enrolled')
+    assertEquals(registry.purgedIds.length, 0)
+  })
+})
+
+test('POST /servers/:id/daemon-key/revoke returns 403 when acting in an organization the user is not in', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    serverId,
+    registry,
+  }) => {
+    await enrollFixtureServer(db, serverId)
+    const [otherOrg] = await db
+      .insert(organization)
+      .values({ name: 'Other Org For Revoke' })
+      .returning({ id: organization.id })
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/daemon-key/revoke`, {
+        method: 'POST',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: otherOrg!.id },
+      })
+      // The org-context check refuses before the row is ever looked up.
+      assertEquals(res.status, 403)
+      const body = await readJson<ErrorJson>(res)
+      assertEquals(body.error, 'Forbidden')
+      assertEquals(registry.purgedIds.length, 0)
+      const state = await getServerDaemonStateByServerId(db, serverId)
+      assertEquals(state?.key.revokedAt, null)
+    } finally {
+      await db.delete(organization).where(eq(organization.id, otherOrg!.id))
+    }
+  })
+})
+
+test('POST /servers/:id/daemon-key/revoke returns 403 for the co-located control plane server', async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+    registry,
+  }) => {
+    await enrollFixtureServer(db, serverId)
+    await systemHierarchy.ensureSelfHostSystemHierarchy(db, {
+      organizationId,
+      serverId,
+    })
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/daemon-key/revoke`, {
+        method: 'POST',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(res.status, 403)
+      const body = await readJson<ErrorJson>(res)
+      assertEquals(body.error, COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON)
+      assertEquals(registry.purgedIds.length, 0)
+      const state = await getServerDaemonStateByServerId(db, serverId)
+      assertEquals(state?.key.revokedAt, null)
+    } finally {
+      await cleanupOrgSystemSubtree(db, organizationId)
+    }
+  })
+})
+
+test('POST /servers/:id/daemon-key/revoke still revokes when the daemon cell registry is unavailable', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+
+  const db = createDenoDb()
+  const { app, secrets } = await createServerRoutesTestApp(db)
+
+  const email = `server-revoke-no-registry-${crypto.randomUUID()}@example.com`
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ name: 'Server Revoke No Registry Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
+  const [insertedUser] = await db
+    .insert(user)
+    .values({ email, isEmailVerified: true, role: 'user' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
+  await db.insert(grant).values({
+    entityType: 'organization',
+    entityId: organizationId,
+    actorType: 'user',
+    actorId: userId,
+    permission: 'organization:manage',
+  })
+  const now = new Date().toISOString()
+  const [insertedServer] = await db
+    .insert(server)
+    .values({ createdAt: now, updatedAt: now, organizationId, name: 'Registry Missing' })
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
+
+  try {
+    await enrollFixtureServer(db, serverId)
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/servers/${serverId}/daemon-key/revoke`, {
+      method: 'POST',
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    // A compromise cutoff fails the other way from delete: the durable
+    // revoke lands and the response says the live purge did not.
+    assertEquals(res.status, 200)
+    const body = await readJson<{ ok: boolean; purged: boolean; purgeError?: string }>(res)
+    assertEquals(body.ok, true)
+    assertEquals(body.purged, false)
+    assertEquals(body.purgeError, 'Daemon cell registry unavailable')
+    const state = await getServerDaemonStateByServerId(db, serverId)
+    assertEquals(typeof state?.key.revokedAt, 'string')
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(grant).where(and(
+      eq(grant.actorId, userId),
+      eq(grant.entityId, organizationId),
+    ))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+    await endDbConnection(db)
+  }
 })
 
 async function cleanupOrgSystemSubtree(
@@ -1449,16 +1656,13 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
       publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
       fingerprint: 'fp-test',
     })
-    const daemonState = buildServerDaemonState({
-      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-      fingerprint: 'fp-test',
-    })
-    daemonState.projection = {
-      daemonBuild: { commit: 'aaa', buildId: 'b1' },
-      update: { status: 'updating', requestId: 'req-1', channel: 'trunk' },
-    }
     await db.update(server).set({
-      daemon: daemonState,
+      daemon: {
+        projection: {
+          daemonBuild: { commit: 'aaa', buildId: 'b1' },
+          update: { status: 'updating', requestId: 'req-1', channel: 'trunk' },
+        },
+      },
       updatedAt: new Date().toISOString(),
     }).where(eq(server.id, serverId))
 
