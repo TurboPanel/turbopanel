@@ -3,10 +3,12 @@
  *
  * Re-seals `variable.value` (is_secret), `tls.privateKeyPem`,
  * `principal.password`, `storage.content_envelope`, `secret.secret_envelope`,
- * `2fa.secret`, `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in
- * the `SYSTEM_EMAIL` setting row onto the current data-encryption key version.
+ * `forge.envelopes` (private key / client secret / webhook secret),
+ * `connection.oauth_envelope` (GitLab access/refresh token pair), `2fa.secret`,
+ * `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in the
+ * `SYSTEM_EMAIL` setting row onto the current data-encryption key version.
  *
- * Per-blob rules (variable / TLS / principal / storage / secret / twofactor / authproviders / email secrets):
+ * Per-blob rules (variable / TLS / principal / storage / secret / forge / gitConnection / twofactor / authproviders / email secrets):
  * - Valid daemon-bound `tpdaemon` → skipped (delivery envelopes are not at-rest
  *   material for this sweep; variables/TLS/principals only).
  * - Malformed `tpdaemon` or malformed `tpsecret` → failed.
@@ -41,6 +43,8 @@ import {
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import type { Db } from "../db.ts";
 import {
+  forge,
+  gitConnection,
   principal,
   secret,
   setting,
@@ -81,6 +85,8 @@ export const REENCRYPT_STAGES = [
   "principals",
   "storage",
   "secrets",
+  "forge",
+  "gitconnection",
   "twofactor",
   "authproviders",
   "email",
@@ -564,6 +570,173 @@ async function sweepSecretTableBatch(
   };
 }
 
+/** `forge.envelopes` keys holding `tpsecret` material (see schema.ts). */
+const FORGE_ENVELOPE_KEYS = [
+  "privateKeyEnvelope",
+  "clientSecretEnvelope",
+  "webhookSecretEnvelope",
+] as const;
+
+/** `connection.oauth_envelope` keys holding `tpsecret` material (GitLab only). */
+const GITCONNECTION_ENVELOPE_KEYS = [
+  "accessTokenEnvelope",
+  "refreshTokenEnvelope",
+] as const;
+
+/**
+ * Re-seal the `tpsecret` values at `keys` inside a single row's jsonb
+ * envelope object. Same per-key rules and single-row compare-and-swap as
+ * {@link sweepAuthProviderSettingSecrets} / {@link sweepEmailSettingSecrets},
+ * generalized to any row (not just a `setting` row) via `update`.
+ */
+async function resealJsonbEnvelopeRow(
+  summary: ReencryptSweepSummary,
+  secrets: DerivedSecretsConfig,
+  original: unknown,
+  keys: readonly string[],
+  update: (next: Record<string, unknown>) => Promise<boolean>,
+): Promise<void> {
+  if (
+    original === undefined ||
+    original === null ||
+    typeof original !== "object" ||
+    Array.isArray(original)
+  ) {
+    return;
+  }
+
+  const originalObj = original as Record<string, unknown>;
+  const nextObj: Record<string, unknown> = { ...originalObj };
+  let resealedCount = 0;
+
+  for (const key of keys) {
+    const raw = nextObj[key];
+    if (typeof raw !== "string" || raw === "") continue;
+
+    summary.scanned += 1;
+    const parsed = parseSecretEnvelope(raw);
+    if (parsed === null) {
+      // Plaintext or malformed — invalid/unsupported for these envelopes at rest.
+      summary.failed += 1;
+      continue;
+    }
+    if (parsed.keyVersion === secrets.current.version) {
+      summary.skipped += 1;
+      continue;
+    }
+
+    try {
+      const plaintext = await decryptSecret(secrets, raw);
+      nextObj[key] = await encryptSecret(secrets, plaintext);
+      resealedCount += 1;
+    } catch {
+      summary.failed += 1;
+    }
+  }
+
+  if (resealedCount === 0) return;
+
+  const applied = await update(nextObj);
+  if (applied) {
+    summary.reencrypted += resealedCount;
+  } else {
+    // Concurrent writer changed the row; leave the newer values untouched.
+    summary.skipped += resealedCount;
+  }
+}
+
+async function sweepForgeEnvelopesBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number,
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({ id: forge.id, envelopes: forge.envelopes })
+    .from(forge)
+    .where(afterId === undefined ? sql`true` : gt(forge.id, afterId))
+    .orderBy(asc(forge.id))
+    .limit(limit);
+
+  for (const row of rows) {
+    const original = row.envelopes;
+    await resealJsonbEnvelopeRow(
+      summary,
+      secrets,
+      original,
+      FORGE_ENVELOPE_KEYS,
+      async (resealed) => {
+        const updated = await db
+          .update(forge)
+          .set({ envelopes: resealed, updatedAt: nowIso() })
+          .where(and(eq(forge.id, row.id), eq(forge.envelopes, original)))
+          .returning({ id: forge.id });
+        return updated.length > 0;
+      },
+    );
+  }
+
+  return {
+    pageSize: rows.length,
+    lastId: rows.at(-1)?.id,
+  };
+}
+
+async function sweepGitConnectionEnvelopesBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number,
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({
+      id: gitConnection.id,
+      oauthEnvelope: gitConnection.oauthEnvelope,
+    })
+    .from(gitConnection)
+    .where(
+      afterId === undefined ? isNotNull(gitConnection.oauthEnvelope) : and(
+        isNotNull(gitConnection.oauthEnvelope),
+        gt(gitConnection.id, afterId),
+      ),
+    )
+    .orderBy(asc(gitConnection.id))
+    .limit(limit);
+
+  for (const row of rows) {
+    if (row.oauthEnvelope === null) {
+      continue;
+    }
+    const original = row.oauthEnvelope;
+    await resealJsonbEnvelopeRow(
+      summary,
+      secrets,
+      original,
+      GITCONNECTION_ENVELOPE_KEYS,
+      async (resealed) => {
+        const updated = await db
+          .update(gitConnection)
+          .set({ oauthEnvelope: resealed, updatedAt: nowIso() })
+          .where(
+            and(
+              eq(gitConnection.id, row.id),
+              eq(gitConnection.oauthEnvelope, original),
+            ),
+          )
+          .returning({ id: gitConnection.id });
+        return updated.length > 0;
+      },
+    );
+  }
+
+  return {
+    pageSize: rows.length,
+    lastId: rows.at(-1)?.id,
+  };
+}
+
 async function sweepTwoFactorSecretsBatch(
   db: Db,
   secrets: DerivedSecretsConfig,
@@ -808,6 +981,22 @@ async function runTableStageBatch(
       );
     case "secrets":
       return sweepSecretTableBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+    case "forge":
+      return sweepForgeEnvelopesBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+    case "gitconnection":
+      return sweepGitConnectionEnvelopesBatch(
         db,
         dataEncryptionSecrets,
         summary,

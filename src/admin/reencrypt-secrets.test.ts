@@ -13,6 +13,8 @@ import {
 import { getDatabaseUrl } from "../db-url.ts";
 import { createDenoDb, type Db } from "../db.ts";
 import {
+  forge,
+  gitConnection,
   organization,
   principal,
   setting,
@@ -181,6 +183,49 @@ async function installIsolatedFixtureSchema(
       secret text NOT NULL,
       is_verified boolean DEFAULT false NOT NULL,
       backup_codes text NOT NULL
+    )
+  `));
+  await tx.execute(sql.raw(`
+    CREATE TABLE forge (
+      id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+      created_at timestamptz(3) DEFAULT now() NOT NULL,
+      updated_at timestamptz(3) DEFAULT now() NOT NULL,
+      metadata jsonb,
+      options jsonb,
+      organization_id uuid,
+      provider text NOT NULL,
+      name varchar(255) NOT NULL,
+      base_url text NOT NULL,
+      api_url text,
+      external_app_id text NOT NULL,
+      app_slug varchar(255),
+      client_id text,
+      redirect_uri text,
+      webhook_origin text,
+      is_public boolean DEFAULT false NOT NULL,
+      custom_git_user varchar(64),
+      custom_git_port integer,
+      synced_at timestamptz(3),
+      envelopes jsonb NOT NULL,
+      webhook_ref varchar(64) NOT NULL,
+      webhook_token_hash text
+    )
+  `));
+  await tx.execute(sql.raw(`
+    CREATE TABLE connection (
+      id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+      created_at timestamptz(3) DEFAULT now() NOT NULL,
+      updated_at timestamptz(3) DEFAULT now() NOT NULL,
+      metadata jsonb,
+      options jsonb,
+      organization_id uuid NOT NULL,
+      forge_id uuid NOT NULL,
+      provider text NOT NULL,
+      external_installation_id text NOT NULL,
+      account_login varchar(255),
+      account_type text,
+      suspended_at timestamptz(3),
+      oauth_envelope jsonb
     )
   `));
 }
@@ -720,6 +765,121 @@ test("reencryptAtRestSecrets reseals 2fa.secret onto the current key version", a
       .where(eq(twoFactor.id, row!.id));
     assertEquals(parseSecretEnvelope(updated!.secret), { keyVersion: 2 });
     assertEquals(await decryptSecret(rotated, updated!.secret), totpPlain);
+  });
+});
+
+test("reencryptAtRestSecrets reseals forge envelopes and gitConnection oauthEnvelope", async () => {
+  const v1Only = await createV1OnlySecrets();
+  const rotated = await createRotatedSecrets();
+  const v1PrivateKeyPlain = "forge-v1-private-key";
+  const v1ClientSecretPlain = "forge-v1-client-secret";
+  const v1AccessTokenPlain = "gitlab-v1-access-token";
+  const v1RefreshTokenPlain = "gitlab-v1-refresh-token";
+
+  const v1PrivateKeyEnvelope = await encryptSecret(v1Only, v1PrivateKeyPlain);
+  const v1ClientSecretEnvelope = await encryptSecret(
+    v1Only,
+    v1ClientSecretPlain,
+  );
+  const v1AccessTokenEnvelope = await encryptSecret(
+    v1Only,
+    v1AccessTokenPlain,
+  );
+  const v1RefreshTokenEnvelope = await encryptSecret(
+    v1Only,
+    v1RefreshTokenPlain,
+  );
+
+  await withIsolatedFixture("reencrypt_forge", async (scoped) => {
+    const [org] = await scoped
+      .insert(organization)
+      .values({ name: "Reencrypt Forge Org" })
+      .returning({ id: organization.id });
+
+    const [forgeRow] = await scoped
+      .insert(forge)
+      .values({
+        organizationId: org!.id,
+        provider: "github",
+        name: "Reencrypt Forge App",
+        baseUrl: "https://github.example.test",
+        externalAppId: "12345",
+        webhookRef: crypto.randomUUID().replaceAll("-", ""),
+        envelopes: {
+          privateKeyEnvelope: v1PrivateKeyEnvelope,
+          clientSecretEnvelope: v1ClientSecretEnvelope,
+        },
+      })
+      .returning({ id: forge.id });
+
+    const [connRow] = await scoped
+      .insert(gitConnection)
+      .values({
+        organizationId: org!.id,
+        forgeId: forgeRow!.id,
+        provider: "gitlab",
+        externalInstallationId: "67890",
+        oauthEnvelope: {
+          accessTokenEnvelope: v1AccessTokenEnvelope,
+          refreshTokenEnvelope: v1RefreshTokenEnvelope,
+          expiresAt: "2030-01-01T00:00:00.000Z",
+          scope: "api",
+        },
+      })
+      .returning({ id: gitConnection.id });
+
+    const summary = await reencryptAtRestSecrets(scoped, rotated, {
+      cursor: { stage: "forge" },
+    });
+
+    assertEquals(summary.scanned, 4);
+    assertEquals(summary.reencrypted, 4);
+    assertEquals(summary.skipped, 0);
+    assertEquals(summary.failed, 0);
+    assertEquals(summary.completed, true);
+    assertEquals(summary.cursor, null);
+
+    const [updatedForge] = await scoped
+      .select({ envelopes: forge.envelopes })
+      .from(forge)
+      .where(eq(forge.id, forgeRow!.id));
+    const forgeEnvelopes = updatedForge!.envelopes as Record<string, string>;
+    assertEquals(parseSecretEnvelope(forgeEnvelopes.privateKeyEnvelope), {
+      keyVersion: 2,
+    });
+    assertEquals(
+      await decryptSecret(rotated, forgeEnvelopes.privateKeyEnvelope),
+      v1PrivateKeyPlain,
+    );
+    assertEquals(parseSecretEnvelope(forgeEnvelopes.clientSecretEnvelope), {
+      keyVersion: 2,
+    });
+    assertEquals(
+      await decryptSecret(rotated, forgeEnvelopes.clientSecretEnvelope),
+      v1ClientSecretPlain,
+    );
+
+    const [updatedConn] = await scoped
+      .select({ oauthEnvelope: gitConnection.oauthEnvelope })
+      .from(gitConnection)
+      .where(eq(gitConnection.id, connRow!.id));
+    const connEnvelope = updatedConn!.oauthEnvelope as Record<string, string>;
+    assertEquals(parseSecretEnvelope(connEnvelope.accessTokenEnvelope), {
+      keyVersion: 2,
+    });
+    assertEquals(
+      await decryptSecret(rotated, connEnvelope.accessTokenEnvelope),
+      v1AccessTokenPlain,
+    );
+    assertEquals(parseSecretEnvelope(connEnvelope.refreshTokenEnvelope), {
+      keyVersion: 2,
+    });
+    assertEquals(
+      await decryptSecret(rotated, connEnvelope.refreshTokenEnvelope),
+      v1RefreshTokenPlain,
+    );
+    assertEquals(connEnvelope.expiresAt, "2030-01-01T00:00:00.000Z");
+    assertEquals(connEnvelope.scope, "api");
   });
 });
 

@@ -14,6 +14,8 @@ import {
   parseSecretsEnv,
 } from "../client/authn/secrets.ts";
 import {
+  forge,
+  gitConnection,
   principal,
   secret,
   setting,
@@ -52,6 +54,8 @@ type StageKey =
   | "principals"
   | "storage"
   | "secrets"
+  | "forge"
+  | "gitconnection"
   | "twofactor"
   | "email";
 
@@ -61,6 +65,8 @@ function stageForTable(table: unknown): StageKey | null {
   if (table === principal) return "principals";
   if (table === storage) return "storage";
   if (table === secret) return "secrets";
+  if (table === forge) return "forge";
+  if (table === gitConnection) return "gitconnection";
   if (table === twoFactor) return "twofactor";
   if (table === setting) return "email";
   return null;
@@ -96,6 +102,8 @@ function stagedSweepDb(opts: {
     principals: 0,
     storage: 0,
     secrets: 0,
+    forge: 0,
+    gitconnection: 0,
     twofactor: 0,
     email: 0,
   };
@@ -662,6 +670,78 @@ test("reencryptAtRestSecrets sweeps the secret table including daemon-bound enve
   });
   assertEquals(batch.reencrypted, 1);
   assertEquals(batch.scanned, 1);
+  assertEquals(batch.completed, true);
+});
+
+test("reencryptAtRestSecrets sweeps forge.envelopes, reseals multiple keys and fails a malformed one", async () => {
+  await resetReencryptSweepLockForTests();
+  const v1Only = await deriveV1Only();
+  const { secrets: rotated } = await deriveRotated();
+  const oldPrivateKey = await encryptSecret(v1Only, "forge-private-key");
+  const oldClientSecret = await encryptSecret(v1Only, "forge-client-secret");
+  const currentWebhookSecret = await encryptSecret(rotated, "forge-webhook");
+  const db = stagedSweepDb({
+    pages: {
+      forge: [[
+        {
+          id: "00000000-0000-4000-8000-0000000000f1",
+          envelopes: {
+            privateKeyEnvelope: oldPrivateKey,
+            clientSecretEnvelope: oldClientSecret,
+            webhookSecretEnvelope: currentWebhookSecret,
+          },
+        },
+        {
+          id: "00000000-0000-4000-8000-0000000000f2",
+          envelopes: { privateKeyEnvelope: "plaintext-private-key" },
+        },
+      ]],
+    },
+  });
+
+  const batch = await reencryptAtRestSecrets(db, rotated, {
+    cursor: { stage: "forge" },
+    limit: 50,
+  });
+  assertEquals(batch.scanned, 4);
+  assertEquals(batch.reencrypted, 2);
+  assertEquals(batch.skipped, 1);
+  assertEquals(batch.failed, 1);
+  assertEquals(batch.completed, true);
+});
+
+test("reencryptAtRestSecrets sweeps gitConnection.oauthEnvelope including a null skip", async () => {
+  await resetReencryptSweepLockForTests();
+  const v1Only = await deriveV1Only();
+  const { secrets: rotated } = await deriveRotated();
+  const oldAccessToken = await encryptSecret(v1Only, "gitlab-access-token");
+  const oldRefreshToken = await encryptSecret(v1Only, "gitlab-refresh-token");
+  const db = stagedSweepDb({
+    pages: {
+      gitconnection: [[
+        {
+          id: "00000000-0000-4000-8000-0000000000g0",
+          oauthEnvelope: null,
+        },
+        {
+          id: "00000000-0000-4000-8000-0000000000g1",
+          oauthEnvelope: {
+            accessTokenEnvelope: oldAccessToken,
+            refreshTokenEnvelope: oldRefreshToken,
+            expiresAt: "2030-01-01T00:00:00.000Z",
+            scope: "api",
+          },
+        },
+      ]],
+    },
+  });
+
+  const batch = await reencryptAtRestSecrets(db, rotated, {
+    cursor: { stage: "gitconnection" },
+    limit: 50,
+  });
+  assertEquals(batch.scanned, 2);
+  assertEquals(batch.reencrypted, 2);
   assertEquals(batch.completed, true);
 });
 
