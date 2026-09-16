@@ -1759,6 +1759,80 @@ it("validateDaemonInboundFrame rejects topology-report field shapes", () => {
   );
 });
 
+it("validateDaemonInboundFrame accepts an acme-issuance-event", () => {
+  const ok = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "acme-issuance-event",
+      at: VALID_AT,
+      hostname: "app.example.com",
+      ok: true,
+    }),
+  );
+  assertEquals(ok.ok, true);
+
+  const failed = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "acme-issuance-event",
+      at: VALID_AT,
+      hostname: "app.example.com",
+      ok: false,
+      errorMessage: "received fatal alert: InternalError",
+    }),
+  );
+  assertEquals(failed.ok, true);
+});
+
+it("validateDaemonInboundFrame rejects acme-issuance-event field shapes", () => {
+  const base = {
+    type: "acme-issuance-event",
+    at: VALID_AT,
+    hostname: "app.example.com",
+    ok: false,
+  };
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({ ...base, at: "not-a-timestamp" }),
+    ).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({ ...base, hostname: "" })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({ ...base, hostname: 12 })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        ...base,
+        hostname: "x".repeat(MAX_DAEMON_WS_HOST_FIELD_CHARS + 1),
+      }),
+    ).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({ ...base, ok: "no" })).ok,
+    false,
+  );
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        ...base,
+        errorMessage: "x".repeat(MAX_DAEMON_WS_ERROR_CHARS + 1),
+      }),
+    ).ok,
+    false,
+  );
+  assertEquals(
+    (DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has(
+      "acme-issuance-event",
+    ),
+    true,
+  );
+});
+
 it("validateDaemonInboundFrame rejects remaining result-envelope edges", () => {
   assertEquals(
     validateDaemonInboundFrame(

@@ -617,6 +617,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/tls/changeover-lease.hostfree.test.ts \
   src/client/tls/leaf-tracking.hostfree.test.ts \
   src/client/tls/leaf-renewal-sweep.hostfree.test.ts \
+  src/client/tls/acme-issuance-event.hostfree.test.ts \
   src/client/variables/routes.test.ts \
   src/client/workspaces/routes.test.ts \
   src/client/workspaces/routes-helpers.hostfree.test.ts

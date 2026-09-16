@@ -190,6 +190,37 @@ test("resolveTlsForHosting accepts a managed lets_encrypt pin without PEM dates"
   );
 });
 
+test("resolveTlsForHosting still deploys a managed pin with a recorded acme.lastError", () => {
+  // Regression guard for AcmeIssuanceObserver / handleAcmeIssuanceEvent: a
+  // visibility feature recording a failed-probe note must never itself
+  // become a second, accidental deploy gate. Only the `status` column
+  // drives isReadyCandidate() for a `managed` row — metadata.acme.lastError
+  // is not consulted here at all.
+  const pinned: TlsCandidate = {
+    id: "tls-le",
+    source: "lets_encrypt",
+    metadata: readyMeta(["app.example.com"], {
+      status: "managed",
+      notBefore: "1970-01-01T00:00:00.000Z",
+      notAfter: "1970-01-01T00:00:00.000Z",
+      acme: {
+        managedBy: "caddy",
+        lastError: "received fatal alert: InternalError",
+      },
+    }),
+    options: null,
+  };
+  assertEquals(
+    resolveTlsForHosting({
+      pinId: "tls-le",
+      hostnames: ["app.example.com"],
+      candidates: [pinned],
+      now: NOW,
+    }),
+    { ok: true, tlsId: "tls-le", reason: "pin" },
+  );
+});
+
 test("resolveTlsForHosting rejects managed pins that are not lets_encrypt", () => {
   assertEquals(
     resolveTlsForHosting({

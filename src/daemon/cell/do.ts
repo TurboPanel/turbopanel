@@ -22,6 +22,7 @@ import {
 } from "../../lib/db/server-metadata.ts";
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
 import { handleManagedHaEvent } from "../../client/managed/ha-event.ts";
+import { handleAcmeIssuanceEvent } from "../../client/tls/acme-issuance-event.ts";
 import { enqueueLatestRecordedCapabilityPlan } from "../../client/servers/capability-plan-push.ts";
 import { recordTopologyGeneration } from "../../client/servers/server-topology-records.ts";
 import { touchServerMetadata } from "../../server-registry.ts";
@@ -1826,6 +1827,29 @@ export class DaemonCellObject {
               bootGeneration: parsed.bootGeneration,
               snapshot: parsed.snapshot,
               appliedAt: parsed.at,
+            });
+          },
+        );
+        return;
+      }
+
+      if (parsed.type === "acme-issuance-event") {
+        this.#recordInbound(
+          attachment.serverId,
+          parsed.at,
+          undefined,
+          attachment.connectionId,
+        );
+        await this.#withProjectionDb(
+          "acme-issuance-event",
+          attachment.serverId,
+          async (db) => {
+            await handleAcmeIssuanceEvent(db, {
+              hostname: parsed.hostname,
+              ok: parsed.ok,
+              ...(parsed.errorMessage
+                ? { errorMessage: parsed.errorMessage }
+                : {}),
             });
           },
         );

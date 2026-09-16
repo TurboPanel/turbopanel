@@ -287,6 +287,22 @@ export type DaemonMessage =
     at: string;
   }
   | {
+    /**
+     * Daemon-initiated, fire-and-forget (no correlated request/result, same
+     * shape as `managed-ha-event`): `AcmeIssuanceObserver`'s live TLS-probe
+     * verdict for one `tlsMode: 'acme'` hostname on this server, sent only on
+     * a state change — a failure after a short debounce, or a recovery.
+     * Merge-patched onto `tls.metadata.acme.lastError`; never writes
+     * `tls.status`, so it cannot itself flip a `managed` row's
+     * deploy-readiness (see `handleAcmeIssuanceEvent`).
+     */
+    type: "acme-issuance-event";
+    hostname: string;
+    ok: boolean;
+    errorMessage?: string;
+    at: string;
+  }
+  | {
     type: "fabric-paths-request";
     id: string;
     fabricId: string;
@@ -404,6 +420,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "repo-default-branch-result",
     "managed-ha-event",
     "topology-report",
+    "acme-issuance-event",
     "fabric-paths-result",
     "dev-sync-result",
     "tunnel-token-result",
@@ -706,6 +723,21 @@ function validateTopologyReportFields(
   return validateTopologyReportSnapshot(record.snapshot);
 }
 
+function validateAcmeIssuanceEventFields(
+  record: Record<string, unknown>,
+): string | null {
+  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
+  if (
+    typeof record.hostname !== "string" ||
+    record.hostname.length === 0 ||
+    record.hostname.length > MAX_DAEMON_WS_HOST_FIELD_CHARS
+  ) {
+    return "invalid hostname";
+  }
+  if (typeof record.ok !== "boolean") return "invalid ok";
+  return validateOptionalError(record.errorMessage);
+}
+
 function isFabricPeerHealth(value: unknown): value is FabricPathPeerHealth {
   return typeof value === "string" && FABRIC_PEER_HEALTH.has(value);
 }
@@ -866,6 +898,8 @@ function validateInboundMessageFields(
       return validateManagedHaEventFields(record);
     case "topology-report":
       return validateTopologyReportFields(record);
+    case "acme-issuance-event":
+      return validateAcmeIssuanceEventFields(record);
     case "fabric-paths-result":
       return validateFabricPathsResultFields(record);
     case "dev-sync-result":

@@ -19,9 +19,21 @@ turning the gate off — defense in depth, not just a creation-time check.
 Turning the gate off never revokes certificates already issued. `PATCH
 /tls/:id` `{ revoke: true }` on a `lets_encrypt` row is the operator escape
 hatch: deploy-prepare treats that pin as Caddy `tls internal` instead of
-`tls_pin_not_ready`. Deleted or hostname-mismatched pins still fail. **Future:**
+`tls_pin_not_ready`. Deleted or hostname-mismatched pins still fail.
+
+**Issuance-failure visibility (built).** The daemon's `AcmeIssuanceObserver`
+(`turbopaneld/src/instance/acme-observe.ts`) live-probes every deployed
+`tlsMode: 'acme'` hostname every 60s and reports a state change as
+`acme-issuance-event` (`src/daemon/cell/protocol.ts`). This control plane's
+`handleAcmeIssuanceEvent` (`../../client/tls/acme-issuance-event.ts`)
+merge-patches the matching `managed` row's `metadata.acme.lastError` — it
+never writes `status`, so a recorded failure cannot itself flip
+`isReadyCandidate()`/`resolveTlsForHosting()` into refusing a deploy (see the
+regression test on that exact claim in `match.test.ts`). **Future:**
 certificate read-back (daemon reading Caddy's cert file under
-`$XDG_DATA_HOME/caddy/certificates/…` for `notAfter`).
+`$XDG_DATA_HOME/caddy/certificates/…` for `notAfter`) and surfacing
+`lastError` in the TLS library UI screen — today it is written but not yet
+displayed anywhere.
 
 Root context: `../../../AGENTS.md` (Caddy + TLS). Client TLS / SSL mode:
 `../managed/AGENTS.md`. Command payload comments: `../commands/AGENTS.md`. Org
