@@ -240,13 +240,23 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
           };
         }
         if (table === server) {
+          // `verifyServerInOrg` selects only `{ id }`; the colocation probes
+          // in `../servers/colocated.ts` (`readProjectionsForServers`,
+          // `addLocalMachineKeyIds`) select wider shapes (`daemon`/`machineKey`)
+          // and must see no match here — this fixture's server never has a
+          // direct-projection daemon or a matching local machine key.
+          const isOrgMembershipCheck = fields !== undefined &&
+            typeof fields === "object" &&
+            Object.keys(fields as Record<string, unknown>).length === 1 &&
+            "id" in (fields as Record<string, unknown>);
+          const rows = isOrgMembershipCheck && opts.serverInOrg
+            ? [{ id: serverId }]
+            : [];
           return {
-            where: () => ({
-              limit: () =>
-                Promise.resolve(
-                  opts.serverInOrg ? [{ id: serverId }] : [],
-                ),
-            }),
+            where: () =>
+              Object.assign(Promise.resolve(rows), {
+                limit: () => Promise.resolve(rows),
+              }),
           };
         }
         return origSelect(fields).from(table);

@@ -5,12 +5,17 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db.ts'
+import { getDaemonCellRegistry, getDb, type Db } from '../../db.ts'
 import { environment, managed } from '../../lib/db/schema.ts'
 import { MANAGED_RUNTIME_PRESENT_ERROR } from '../../lib/db/project-delete.ts'
 import { applyStorageRetentionOnParentDelete } from '../../lib/db/storage-records.ts'
 import { purgeEnvironmentComposeNetworks } from '../../lib/db/fabric-records.ts'
 import { verifyServerInOrg } from './deploy-prepare.ts'
+import {
+  hasActiveColocatedLicenseBinding,
+  isColocatedWithInstance,
+  resolveColocatedServerIdSet,
+} from '../servers/colocated.ts'
 import { loadRepinNeedsRedeployForEnvironment } from './repin-needs-redeploy.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
 import {
@@ -130,6 +135,17 @@ function applyEnvironmentOptionsPatch(
   patchFields.options = optionsResult.options
 }
 
+/**
+ * A tenant environment may never pin to the co-located control plane server:
+ * a deploy there would land arbitrary compose on the same host that carries
+ * `TURBOPANEL_SECRETS`, and `assertNotSystemOwnedOr403` already keeps the
+ * self-host system environment's own pin (`ensureServerEnvironment` in
+ * `system/hierarchy.ts`) from ever reaching this function, so the check
+ * below applies unconditionally.
+ */
+export const COLOCATED_SERVER_DEPLOY_TARGET_BLOCKED_REASON =
+  'The co-located control plane server cannot be a tenant deploy target'
+
 async function parseOptionalServerId(
   c: Context<AppEnv>,
   db: Db,
@@ -144,6 +160,23 @@ async function parseOptionalServerId(
   if (parsed.serverId === null) return null
   if (!(await verifyServerInOrg(db, parsed.serverId, organizationId))) {
     return c.json({ error: 'Not found' }, 404)
+  }
+  const colocatedIds = await resolveColocatedServerIdSet(
+    db,
+    getDaemonCellRegistry(c),
+    [parsed.serverId],
+    // `verifyServerInOrg` above already confirms this server belongs to
+    // `organizationId`, so the canonical unassigned-host heuristics
+    // (hostname / machine-key / single-unassigned-row) can never match it —
+    // skip them and rely on the direct probes plus the self-host pin.
+    { orgScoped: true, includeSelfHostPin: true },
+  )
+  if (isColocatedWithInstance(parsed.serverId, colocatedIds)) {
+    return c.json({ error: COLOCATED_SERVER_DEPLOY_TARGET_BLOCKED_REASON }, 403)
+  }
+  // Fallback until the self-host environment pin exists: active reserved license.
+  if (await hasActiveColocatedLicenseBinding(db, organizationId, parsed.serverId)) {
+    return c.json({ error: COLOCATED_SERVER_DEPLOY_TARGET_BLOCKED_REASON }, 403)
   }
   return parsed.serverId
 }
