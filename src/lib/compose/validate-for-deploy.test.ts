@@ -169,3 +169,70 @@ test('deploy.mode: global still deploys', () => {
   )
   assertEquals(validateComposeForDeploy(merged), null)
 })
+
+test('privileged is refused for an org that has not opted in — the default', () => {
+  const merged = merge(
+    { services: { web: { image: 'nginx:alpine' } } },
+    { services: { web: { privileged: true } } },
+  )
+  // No opts at all is the same as an explicit false — deny-by-default, not
+  // deny-only-when-asked.
+  assertEquals(
+    validateComposeForDeploy(merged)?.kind,
+    'compose_field_requires_org_opt_in',
+  )
+  assertEquals(
+    validateComposeForDeploy(merged, { composeGatedFieldsEnabled: false })
+      ?.kind,
+    'compose_field_requires_org_opt_in',
+  )
+})
+
+test('privileged deploys once the organization opts in', () => {
+  const merged = merge(
+    { services: { web: { image: 'nginx:alpine' } } },
+    { services: { web: { privileged: true } } },
+  )
+  assertEquals(
+    validateComposeForDeploy(merged, { composeGatedFieldsEnabled: true }),
+    null,
+  )
+})
+
+test('every gated field is refused by name, not just the first one found', () => {
+  const merged = merge(
+    { services: { web: { image: 'nginx:alpine' } } },
+    {
+      services: {
+        web: {
+          cap_add: ['SYS_ADMIN'],
+          network_mode: 'host',
+          privileged: true,
+        },
+      },
+    },
+  )
+  const error = validateComposeForDeploy(merged)
+  assertEquals(error?.kind, 'compose_field_requires_org_opt_in')
+  assertEquals(
+    error?.issues.map((issue) => issue.path).sort(),
+    [
+      'services.web.cap_add',
+      'services.web.network_mode',
+      'services.web.privileged',
+    ],
+  )
+})
+
+test('a gated field never masquerades as compose_field_unsupported', () => {
+  // TurboPanel does implement privileged — unlike deploy.endpoint_mode above,
+  // the fix is an org-owner opt-in, not removing the field.
+  const merged = merge(
+    { services: { web: { image: 'nginx:alpine' } } },
+    { services: { web: { privileged: true } } },
+  )
+  assertEquals(
+    validateComposeForDeploy(merged)?.kind !== 'compose_field_unsupported',
+    true,
+  )
+})

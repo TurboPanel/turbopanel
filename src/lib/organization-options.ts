@@ -110,6 +110,18 @@ export type OrganizationOptions = {
    * turns this on. Toggling off does not revoke certificates already issued.
    */
   acmeEnabled?: boolean;
+  /**
+   * Opt-in gate for the namespace/capability-escaping Compose fields
+   * (`privileged`, `cap_add`, `devices`, `network_mode`, `pid`, `ipc`,
+   * `userns_mode`, `security_opt`, `cgroup_parent`, `sysctls` — see
+   * `lib/compose/field-policy.ts`'s `GATED_SERVICE_FIELD_KEYS`). Off by
+   * default: any of these on a tenant compose service is root-equivalent
+   * access to the shared daemon host, compromising every co-hosted tenant —
+   * see the 2026-09-15 security audit's `sec-compose-privileged-gate`
+   * finding. An org that has a real need for one of these (rare) has to turn
+   * this on explicitly; it is not a per-field allowlist.
+   */
+  composeGatedFieldsEnabled?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -259,6 +271,9 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.acmeEnabled === "boolean") {
     options.acmeEnabled = value.acmeEnabled;
   }
+  if (typeof value.composeGatedFieldsEnabled === "boolean") {
+    options.composeGatedFieldsEnabled = value.composeGatedFieldsEnabled;
+  }
   return options;
 }
 
@@ -279,6 +294,13 @@ export function resolveTemperatureUnit(
 /** Effective Let's Encrypt gate: off unless the org has opted in. */
 export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
   return options.acmeEnabled ?? false;
+}
+
+/** Effective gated-Compose-fields posture: off (deny) unless the org opted in. */
+export function resolveComposeGatedFieldsEnabled(
+  options: OrganizationOptions,
+): boolean {
+  return options.composeGatedFieldsEnabled ?? false;
 }
 
 /**

@@ -27,6 +27,8 @@ import { findDockerBridgePoolOverlap } from "../../lib/docker-address-pools.ts";
 import { cidrCollisionResponse } from "../networks/network-scope.ts";
 import {
   applyManagedDefaultsPatch,
+  composeGatedFieldsGetResponse,
+  composeGatedFieldsPutResponse,
   defaultEnvironmentGetResponse,
   dockerNetworkingGetResponse,
   dockerNetworkingPutResponse,
@@ -37,6 +39,7 @@ import {
   hostDefaultsPutResponse,
   managedDefaultsGetResponse,
   managedDefaultsPutResponse,
+  parseComposeGatedFieldsPatch,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
   parseDockerNetworkingPatch,
@@ -114,6 +117,10 @@ export function registerOrganizationRoutes(
   );
   router.use(
     "/organizations/:id/tls-settings",
+    createSessionMiddleware(secrets),
+  );
+  router.use(
+    "/organizations/:id/compose-privileged-fields",
     createSessionMiddleware(secrets),
   );
   router.use("/timezones", createSessionMiddleware(secrets));
@@ -385,6 +392,72 @@ export function registerOrganizationRoutes(
     const options = parseOrganizationOptions(updated?.options);
 
     return c.json(tlsSettingsPutResponse(options));
+  });
+
+  // Org-owner, not just organization:manage — this gates namespace/
+  // capability-escaping Compose fields (privileged, cap_add, network_mode,
+  // …) that grant root-equivalent access to the shared daemon host,
+  // compromising every co-hosted tenant. See `sec-compose-privileged-gate`
+  // (2026-09-15 security audit) and `lib/compose/field-policy.ts`'s
+  // `GATED_SERVICE_FIELD_KEYS`.
+  router.get("/organizations/:id/compose-privileged-fields", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertOrgOwnerOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    const options = parseOrganizationOptions(orgRow.options);
+    return c.json(composeGatedFieldsGetResponse(options));
+  });
+
+  router.put("/organizations/:id/compose-privileged-fields", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertOrgOwnerOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
+
+    const parsedPatch = parseComposeGatedFieldsPatch(body);
+    if (!parsedPatch.ok) {
+      return c.json({ error: parsedPatch.error }, parsedPatch.status);
+    }
+    const patch = parsedPatch.patch;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    await db.update(organization).set({
+      options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+        JSON.stringify(patch)
+      }::jsonb`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id));
+
+    const [updated] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    const options = parseOrganizationOptions(updated?.options);
+
+    return c.json(composeGatedFieldsPutResponse(options));
   });
 
   router.get("/organizations/:id/host-defaults", async (c) => {

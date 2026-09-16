@@ -93,10 +93,29 @@ export type ComposeMergedInvalidError = {
   issues: ComposeValidationIssue[]
 }
 
+/**
+ * A merged document sets a field TurboPanel supports only for an
+ * organization that has opted in (`field-policy.ts`'s `gated` state —
+ * `privileged`, `cap_add`, `devices`, `network_mode`, `pid`, `ipc`,
+ * `userns_mode`, `security_opt`, `cgroup_parent`, `sysctls`), and this
+ * organization has not.
+ *
+ * Distinct from `compose_field_unsupported` on purpose, for the same reason
+ * that one is distinct from `compose_merged_invalid`: TurboPanel *does*
+ * implement this field, so "not supported" would be the wrong sentence — the
+ * fix is an org-owner opt-in (`PUT /organizations/:id/compose-privileged-fields`),
+ * not removing the field or deploying elsewhere.
+ */
+export type ComposeGatedFieldError = {
+  kind: 'compose_field_requires_org_opt_in'
+  issues: ComposeValidationIssue[]
+}
+
 /** Everything {@link validateComposeForDeploy} can refuse a deploy with. */
 export type ComposeDeployValidationError =
   | ComposeMergedInvalidError
   | ComposeUnsupportedFieldError
+  | ComposeGatedFieldError
 
 function toValidationIssue(issue: ComposeLintIssue): ComposeValidationIssue {
   return {
@@ -108,13 +127,25 @@ function toValidationIssue(issue: ComposeLintIssue): ComposeValidationIssue {
 }
 
 /**
- * Run stages 1–4 over a merged effective document.
+ * Run stages 1–5 over a merged effective document.
  *
  * Returns `null` when the document is structurally valid, semantically
- * coherent, and sets only fields TurboPanel handles.
+ * coherent, sets only fields TurboPanel handles, and sets no org-gated field
+ * this organization has not opted into.
  */
 export function validateComposeForDeploy(
   document: ComposeDocument,
+  opts?: {
+    /**
+     * The deploying organization's `resolveComposeGatedFieldsEnabled`
+     * result. This module stays org-blind by design (see the header doc) —
+     * the caller resolves this from `organization.options` and passes the
+     * boolean in, the same seam `hostingTlsWireFromResolved` uses for the
+     * ACME org gate. Omitted (e.g. a caller with no org context yet)
+     * defaults to `false` — the safe, deny-by-default reading.
+     */
+    composeGatedFieldsEnabled?: boolean
+  },
 ): ComposeDeployValidationError | null {
   // Stages 1–3. `validateComposeDocument` runs the vendored Compose schema, the
   // `x-turbopanel` extension schema and the semantic linter in that order, and
@@ -137,14 +168,36 @@ export function validateComposeForDeploy(
   // Stage 4 — the deploy-time-only posture. Filtered to the field-policy code
   // rather than taken wholesale, because `strict: true` changes the severity of
   // exactly those diagnostics and nothing else; every other rule already had
-  // its say above, at the severity it means.
-  const unsupported = lintComposeYaml(composeDocumentToYaml(document), {
+  // its say above, at the severity it means. One lint pass produces both this
+  // stage's and stage 5's diagnostics — `strict: true` only affects the
+  // *severity* the linter itself assigns, not which codes it emits, so a
+  // second call would just repeat the same walk.
+  const lintIssues = lintComposeYaml(composeDocumentToYaml(document), {
     strict: true,
-  }).filter((issue) => issue.code === 'field_unsupported')
+  })
 
-  if (unsupported.length === 0) return null
-  return {
-    kind: 'compose_field_unsupported',
-    issues: unsupported.map(toValidationIssue),
+  const unsupported = lintIssues.filter((issue) => issue.code === 'field_unsupported')
+  if (unsupported.length > 0) {
+    return {
+      kind: 'compose_field_unsupported',
+      issues: unsupported.map(toValidationIssue),
+    }
   }
+
+  // Stage 5 — org-gated fields. The linter itself never blocks on this code
+  // (see `lintServiceField` — it is org-blind), so the enforcement decision
+  // is made here, with the caller-supplied opt-in flag.
+  if (!opts?.composeGatedFieldsEnabled) {
+    const gated = lintIssues.filter((issue) =>
+      issue.code === 'field_requires_org_opt_in'
+    )
+    if (gated.length > 0) {
+      return {
+        kind: 'compose_field_requires_org_opt_in',
+        issues: gated.map(toValidationIssue),
+      }
+    }
+  }
+
+  return null
 }

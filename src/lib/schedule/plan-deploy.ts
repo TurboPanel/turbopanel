@@ -8,7 +8,7 @@ import {
   resolveComposeLayerChain,
 } from '../compose/layer-chain.ts'
 import type { Db } from '../../db.ts'
-import { environment, fabric, storageCopy, mount, project, server, service, storage } from '../db/schema.ts'
+import { environment, fabric, organization, storageCopy, mount, project, server, service, storage } from '../db/schema.ts'
 import { listServerLabelsForServers } from '../db/label-records.ts'
 import { listEnvironmentSlots } from '../db/slot-records.ts'
 import {
@@ -18,6 +18,10 @@ import {
   validateComposeForDeploy,
 } from '../compose/index.ts'
 import { parseProjectOptions } from '../project-options.ts'
+import {
+  parseOrganizationOptions,
+  resolveComposeGatedFieldsEnabled,
+} from '../organization-options.ts'
 import { parseServiceOptions, resolveServiceInstances } from '../service-options.ts'
 import { environmentComposeFilename } from '../../client/environments/deploy-layers.ts'
 import { interpretServiceSchedule } from './interpret.ts'
@@ -259,13 +263,22 @@ export async function planEnvironmentDeploy(
   const merged = resolveMergedCompose(projectRow.options, envRow.options, filename)
   if ('kind' in merged) return merged
 
+  const [orgRow] = await db
+    .select({ options: organization.options })
+    .from(organization)
+    .where(eq(organization.id, params.organizationId))
+    .limit(1)
+  const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(
+    parseOrganizationOptions(orgRow?.options),
+  )
+
   // Before anything is written. `reconcile` below creates and retires `service`
   // rows, and `registerVolumes` / `registerMounts` further down create `storage`
   // and `mount` rows — all from a document that, if it is going to be refused,
   // must not have shaped the control plane on its way to being refused. Planning
   // used to run first and the refusal came later, per server, which left rows
   // behind for a deploy that never happened.
-  const rejected = validateComposeForDeploy(merged)
+  const rejected = validateComposeForDeploy(merged, { composeGatedFieldsEnabled })
   if (rejected) return { kind: 'compose_rejected', error: rejected }
 
   await reconcile(db, params.environmentId, merged)

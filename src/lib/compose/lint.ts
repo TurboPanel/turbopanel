@@ -58,7 +58,10 @@ export type ComposeLintLevel = 'error' | 'warning'
  * save-time advice. Matching on message text would make the diagnostic wording
  * load-bearing.
  */
-export type ComposeLintCode = 'field_unsupported' | 'turbofabric_required'
+export type ComposeLintCode =
+  | 'field_unsupported'
+  | 'turbofabric_required'
+  | 'field_requires_org_opt_in'
 
 export type ComposeLintIssue = {
   level: ComposeLintLevel
@@ -693,7 +696,8 @@ function lintServiceField(
   const hasImage = key === 'image' && !isEmptyImageValue(valueNode)
   const hasBuild = key === 'build'
 
-  if (classifyServiceKey(key) === undefined && !isExtensionKey(key)) {
+  const servicePolicy = classifyServiceKey(key)
+  if (servicePolicy === undefined && !isExtensionKey(key)) {
     issues.push({
       level: 'warning',
       message: unknownKeyMessage(key, 'service', SERVICE_FIELD_KEYS),
@@ -703,6 +707,24 @@ function lintServiceField(
   } else {
     // Nested advisories (e.g. healthcheck.test tagged).
     walkTaggedAdvisories(valueNode, fieldPath, layer, lineCounter, issues)
+  }
+
+  // Always advisory, at both save and deploy time: whether this specific
+  // organization has opted in is not something this org-blind linter can
+  // know (see `field-policy.ts`'s `gated` state doc). The actual deploy-time
+  // refusal for an org that has not opted in is a separate check, run where
+  // org context exists (`validateComposeForDeploy`'s caller).
+  if (servicePolicy?.state === 'gated') {
+    issues.push({
+      level: 'warning',
+      code: 'field_requires_org_opt_in',
+      message: `${key} is not supported unless the organization has opted in${
+        servicePolicy.reason ? ` — ${servicePolicy.reason}` : ''
+      }`,
+      path: fieldPath,
+      line: nodeLine(keyNode, lineCounter),
+      blocking: false,
+    })
   }
 
   if (key === 'environment') {

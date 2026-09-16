@@ -108,15 +108,21 @@ Ordering is load-bearing — each stage assumes the ones before it passed, and
    for each stored *layer*, but a deploy runs the merge of several, and no save
    ever saw that. An overlay `!reset` that removes the base `image`, or the root
    `x-turbopanel.principals` map a base alias depends on, is two valid saves
-   whose sum is not runnable. Two error kinds reach `deploy-prepare.ts`:
+   whose sum is not runnable. Three error kinds reach `deploy-prepare.ts`:
    `{ kind: "compose_merged_invalid" }` → **422**
    `{ error: "compose_merged_invalid", issues }` for a stage-1–3 failure of the
-   merge, and `{ kind: "compose_field_unsupported" }` → **422**
-   `{ error: "compose_field_unsupported", issues }` for this stage. Distinct on
-   purpose: the first means “these layers do not merge into a document we can
-   run”, the second means “valid Compose naming something this platform does not
-   implement”, and an operator sent after the wrong one looks for a mistake that
-   is not there.
+   merge, `{ kind: "compose_field_unsupported" }` → **422**
+   `{ error: "compose_field_unsupported", issues }` for a field this platform
+   does not implement, and `{ kind: "compose_field_requires_org_opt_in" }` →
+   **403** `{ error: "compose_field_requires_org_opt_in", issues }` for a field
+   this platform *does* implement but this organization is not authorized to
+   set (see "Gated fields", below). Three distinct kinds because the operator's
+   next move differs each time: the first means "these layers do not merge into
+   a document we can run", the second "valid Compose naming something this
+   platform does not implement, remove it", the third "valid Compose naming a
+   real feature, an org owner has to opt in" — and an operator sent after the
+   wrong one looks for a mistake that is not there, or tries to fix something
+   that isn't broken.
 
    The gate runs in `planEnvironmentDeploy` (`lib/schedule/plan-deploy.ts`)
    **before** `reconcileServicesFromCompose` / `registerComposeVolumes` /
@@ -138,10 +144,54 @@ and `compile-runtime.ts`'s `SCHEDULER_ONLY_DEPLOY_KEYS` (which **silently
 deleted** `update_config`, `rollback_config`, `endpoint_mode` and `placement`
 from `deploy:` with no diagnostic anywhere).
 
-Four states: `passthrough` (copied as authored), `interpreted` (TurboPanel reads
+Five states: `passthrough` (copied as authored), `interpreted` (TurboPanel reads
 it and acts), `runtime-generated` (TurboPanel writes it; an authored value is
 not the source of truth), `unsupported` (no behavior — reported, never dropped
-in silence, and carrying a `reason` the diagnostic quotes).
+in silence, and carrying a `reason` the diagnostic quotes), and `gated` (see
+below).
+
+**Gated fields.** Ten service-level keys — `privileged`, `cap_add`, `devices`,
+`network_mode`, `pid`, `ipc`, `userns_mode`, `security_opt`, `cgroup_parent`,
+`sysctls` (`GATED_SERVICE_FIELD_KEYS`) — grant root-equivalent access to the
+shared daemon host, compromising every other tenant co-hosted on that server.
+Flagged by the 2026-09-15 security audit (`sec-compose-privileged-gate`):
+already denylisted three times for the *managed*-engine `dockerOptions` path
+(`lib/managed/settings.ts`'s `MANAGED_DOCKER_OPTION_DENYLIST`,
+`turbopaneld/src/instance/commands/contracts.ts`), never for general
+(non-managed) app compose until now. `cap_drop`, `volumes`, `ports` and `user`
+are deliberately *not* gated — those are not namespace-escaping, and tenants
+need them for ordinary deploys.
+
+Unlike `unsupported`, TurboPanel *does* implement these fields — the fix for
+an ungated org is an opt-in, not removing the field, so `gated` carries its
+own lint code (`field_requires_org_opt_in`) and its own deploy-error kind
+(`compose_field_requires_org_opt_in`, above), never `field_unsupported`.
+
+This registry stays org-blind by design ("no database, no network" in the
+module header), so `lint.ts` can only make the structural claim "this field
+needs an opt-in" — it emits `field_requires_org_opt_in` as an always-advisory,
+never-blocking warning at **both** save and strict-deploy severity, unlike
+`unsupported`'s save-advice/deploy-refusal split. The actual per-org
+enforcement runs one layer up, in `validateComposeForDeploy`'s two callers
+(`lib/schedule/plan-deploy.ts`'s `planEnvironmentDeploy`,
+`client/environments/deploy-prepare.ts`'s `loadDeployComposeContext`), which
+resolve `organization.options.composeGatedFieldsEnabled`
+(`resolveComposeGatedFieldsEnabled` in `../organization-options.ts`) and pass
+it to `validateComposeForDeploy(merged, { composeGatedFieldsEnabled })` — the
+same seam `hostingTlsWireFromResolved` uses for the ACME org gate. Default
+`false`: deny-by-default, since the DB this protects holds every
+organization's secrets and TLS keys. An org owner (not just
+`organization:manage`) opts in per-org via
+`PUT /organizations/:id/compose-privileged-fields` — deliberately a higher bar
+than the ACME toggle's `assertCanManageOr403`, matching the audit's own
+"gated behind an explicit, audited org-owner opt-in" language. The "audited"
+half is not built — TurboPanel has no audit-log table yet (see the schema
+freeze's roadmap-restructures bucket) — so this is authorization only, not
+yet a logged one.
+
+`ui/src/lib/compose/field-policy.ts` mirrors `gated` and the ten keys
+byte-for-byte; the editor has no org context either, so it emits the same
+always-advisory note and nothing more.
 
 A second, orthogonal axis, `runtime: "keep" | "strip"`, decides whether a
 `deploy:` key survives into compiled runtime YAML;

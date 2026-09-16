@@ -3,6 +3,7 @@ import {
   parseMaxServersInput,
   parseTemperatureUnitInput,
   resolveAcmeEnabled,
+  resolveComposeGatedFieldsEnabled,
   type TemperatureUnit,
 } from "../../lib/organization-options.ts";
 import { DISPLAY_NAME_MAX_LENGTH } from "../../lib/display-name-format.ts";
@@ -58,6 +59,10 @@ export type TemperatureUnitPatch = {
 
 export type TlsSettingsPatch = {
   acmeEnabled: boolean;
+};
+
+export type ComposeGatedFieldsPatch = {
+  composeGatedFieldsEnabled: boolean;
 };
 
 export type HostDefaultsPatch = {
@@ -355,6 +360,24 @@ export function parseTlsSettingsPatch(
   return { ok: true, patch: { acmeEnabled: body.acmeEnabled } };
 }
 
+export function parseComposeGatedFieldsPatch(
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: ComposeGatedFieldsPatch }
+  | OrganizationRouteValidationError {
+  if (typeof body.composeGatedFieldsEnabled !== "boolean") {
+    return {
+      ok: false,
+      error: "Invalid composeGatedFieldsEnabled",
+      status: 400,
+    };
+  }
+  return {
+    ok: true,
+    patch: { composeGatedFieldsEnabled: body.composeGatedFieldsEnabled },
+  };
+}
+
 export function parseHostDefaultsPatch(
   body: Record<string, unknown>,
 ):
@@ -548,6 +571,23 @@ export function tlsSettingsPutResponse(options: {
   return {
     ok: true as const,
     ...tlsSettingsGetResponse(options),
+  };
+}
+
+export function composeGatedFieldsGetResponse(options: {
+  composeGatedFieldsEnabled?: boolean;
+}) {
+  return {
+    composeGatedFieldsEnabled: resolveComposeGatedFieldsEnabled(options),
+  };
+}
+
+export function composeGatedFieldsPutResponse(options: {
+  composeGatedFieldsEnabled?: boolean;
+}) {
+  return {
+    ok: true as const,
+    ...composeGatedFieldsGetResponse(options),
   };
 }
 

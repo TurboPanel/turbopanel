@@ -28,6 +28,7 @@ import { sha256HexUtf8 } from "../../lib/compose/desired-hash.ts";
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
+  resolveComposeGatedFieldsEnabled,
 } from "../../lib/organization-options.ts";
 import {
   type ApplyVariablesError,
@@ -2688,7 +2689,12 @@ async function loadDeployComposeContext(
   // which is entitled to assume every `deploy:` key it still sees is one the
   // registry says we handle, and before the reconciles below write rows.
   if (!params.composeValidated) {
-    const rejected = validateComposeForDeploy(merged);
+    const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(
+      parseOrganizationOptions(orgRow?.options),
+    );
+    const rejected = validateComposeForDeploy(merged, {
+      composeGatedFieldsEnabled,
+    });
     if (rejected) return { ok: false, failure: rejected };
   }
 

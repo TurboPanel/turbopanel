@@ -286,6 +286,26 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
           } in place would deploy something different from what the document says.`,
         },
       }
+    // TurboPanel *does* implement this field — unlike compose_field_unsupported
+    // above, the fix is an org-owner opt-in
+    // (PUT /organizations/:id/compose-privileged-fields), not removing the
+    // field. 403, not 422: the document is valid and the field is real, this
+    // organization is simply not authorized to deploy it.
+    case 'compose_field_requires_org_opt_in':
+      return {
+        status: 403,
+        body: {
+          error: 'compose_field_requires_org_opt_in',
+          issues: prepared.issues,
+          message: `This compose document sets ${
+            prepared.issues.length === 1 ? 'a field' : 'fields'
+          } that grant root-equivalent access to the shared daemon host: ${
+            prepared.issues.map((issue) => issue.path).join(', ')
+          }. An organization owner has to opt in under Organization settings → Compose before a deploy that sets ${
+            prepared.issues.length === 1 ? 'it' : 'them'
+          } will run.`,
+        },
+      }
     case 'datacenter_ip_required':
       return {
         status: 422,

@@ -7,6 +7,7 @@ import {
   classifyTopLevelKey,
   DEPLOY_FIELD_KEYS,
   DEPLOY_KEYS_STRIPPED_FROM_RUNTIME,
+  GATED_SERVICE_FIELD_KEYS,
   NETWORK_FIELD_KEYS,
   SPANNING_NETWORK_DRIVER,
   unsupportedDeployReason,
@@ -117,6 +118,72 @@ test('every network key the registry knows has an answer at both drivers', () =>
     assertEquals(typeof classifyNetworkKey(key)?.state, 'string')
     assertEquals(typeof classifyNetworkKey(key, 'overlay')?.state, 'string')
   }
+})
+
+test('GATED_SERVICE_FIELD_KEYS is exactly the ten namespace/capability-escaping keys', () => {
+  assertEquals(
+    [...GATED_SERVICE_FIELD_KEYS].sort(),
+    [
+      'cap_add',
+      'cgroup_parent',
+      'devices',
+      'ipc',
+      'network_mode',
+      'pid',
+      'privileged',
+      'security_opt',
+      'sysctls',
+      'userns_mode',
+    ],
+  )
+})
+
+test('every gated service key carries a reason the diagnostic can quote', () => {
+  for (const key of GATED_SERVICE_FIELD_KEYS) {
+    const policy = classifyServiceKey(key)
+    assertEquals(policy?.state, 'gated')
+    assertEquals(typeof policy?.reason, 'string')
+    assertEquals((policy?.reason ?? '').length > 20, true)
+  }
+})
+
+test('cap_drop, ports and user stay passthrough — not namespace-escaping', () => {
+  // The finding this gate implements names ten fields, not these; a tenant
+  // needs a published port, cap_drop, or a non-root user for ordinary
+  // deploys. volumes is `interpreted` (named volumes become storage rows) —
+  // not gated, but also not this plain-passthrough set, so asserted apart.
+  for (const key of ['cap_drop', 'ports', 'user']) {
+    assertEquals(classifyServiceKey(key)?.state, 'passthrough')
+  }
+  assertEquals(classifyServiceKey('volumes')?.state, 'interpreted')
+})
+
+test('a gated service key is advisory (non-blocking) at both save and deploy severity', () => {
+  const permissive = lintComposeYaml(
+    'services:\n  web:\n    image: nginx:alpine\n    privileged: true\n',
+  )
+  const found = permissive.find((issue) => issue.path === 'services.web.privileged')
+  assertEquals(found?.level, 'warning')
+  assertEquals(found?.code, 'field_requires_org_opt_in')
+  assertEquals(
+    blockingComposeLintIssues(permissive).some((issue) =>
+      issue.path === 'services.web.privileged'
+    ),
+    false,
+  )
+
+  const strict = lintComposeYaml(
+    'services:\n  web:\n    image: nginx:alpine\n    privileged: true\n',
+    { strict: true },
+  )
+  const foundStrict = strict.find((issue) =>
+    issue.path === 'services.web.privileged'
+  )
+  // Unlike field_unsupported, strict never escalates this to an error — the
+  // linter is org-blind, so the actual refusal happens one layer up, in
+  // validateComposeForDeploy's caller, which has org context.
+  assertEquals(foundStrict?.level, 'warning')
+  assertEquals(foundStrict?.blocking, false)
 })
 
 test('the registry answers for top-level and service keys', () => {

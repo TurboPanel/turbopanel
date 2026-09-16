@@ -5,6 +5,8 @@
 import { assertEquals } from "@std/assert";
 import {
   applyManagedDefaultsPatch,
+  composeGatedFieldsGetResponse,
+  composeGatedFieldsPutResponse,
   defaultEnvironmentGetResponse,
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
@@ -13,6 +15,7 @@ import {
   hostDefaultsPutResponse,
   managedDefaultsGetResponse,
   managedDefaultsPutResponse,
+  parseComposeGatedFieldsPatch,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
   parseHostDefaultsPatch,
@@ -35,6 +38,44 @@ import type { ManagedOrganizationDefaults } from "../../lib/managed/org-defaults
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno);
+
+test("parseComposeGatedFieldsPatch requires a boolean, no reset sentinel", () => {
+  assertEquals(
+    parseComposeGatedFieldsPatch({ composeGatedFieldsEnabled: true }),
+    { ok: true, patch: { composeGatedFieldsEnabled: true } },
+  );
+  assertEquals(
+    parseComposeGatedFieldsPatch({ composeGatedFieldsEnabled: false }),
+    { ok: true, patch: { composeGatedFieldsEnabled: false } },
+  );
+  assertEquals(parseComposeGatedFieldsPatch({}).ok, false);
+  assertEquals(
+    parseComposeGatedFieldsPatch({ composeGatedFieldsEnabled: null }),
+    {
+      ok: false,
+      error: "Invalid composeGatedFieldsEnabled",
+      status: 400,
+    },
+  );
+  assertEquals(
+    parseComposeGatedFieldsPatch({ composeGatedFieldsEnabled: "true" }).ok,
+    false,
+  );
+});
+
+test("composeGatedFields responses default to false — deny-by-default, not just at deploy time", () => {
+  assertEquals(composeGatedFieldsGetResponse({}), {
+    composeGatedFieldsEnabled: false,
+  });
+  assertEquals(
+    composeGatedFieldsGetResponse({ composeGatedFieldsEnabled: true }),
+    { composeGatedFieldsEnabled: true },
+  );
+  assertEquals(
+    composeGatedFieldsPutResponse({ composeGatedFieldsEnabled: true }),
+    { ok: true, composeGatedFieldsEnabled: true },
+  );
+});
 
 test("parseManagedDefaultsPatch accepts a mode or an explicit clear", () => {
   assertEquals(
