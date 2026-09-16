@@ -31,10 +31,10 @@
     "@duckdb/node-api": "1.5.5-r.4",
     "@noble/hashes": "1.8.0",
     "amqplib": "^2.0.1",
-    "drizzle-orm": "^0.43.1",
-    "hono": "4.12.23",
+    "drizzle-orm": "^0.45.2",
+    "hono": "4.13.5",
     "ioredis": "^5.11.1",
-    "nodemailer": "^6.10.1",
+    "nodemailer": "^9.1.1",
     "postgres": "^3.4.7",
     "yaml": "^2.9.0"
   },
@@ -42,9 +42,9 @@
     "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^5.20260818.1",
     "@types/node": "^26.2.0",
-    "@vitest/coverage-istanbul": "^4.1.0",
+    "@vitest/coverage-istanbul": "^4.1.11",
     "drizzle-kit": "^0.31.1",
-    "vitest": "^4.1.0",
+    "vitest": "^4.1.11",
     "wrangler": "^4.124.0"
   },
   "packageManager": "pnpm@12.3.4+sha512.961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610eabd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457"
