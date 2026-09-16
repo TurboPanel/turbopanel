@@ -534,6 +534,31 @@ Setting `prepare: true` is **required** for Hyperdrive to cache parameterized
 Hyperdrive sends every query as a simple (unprepared) query and marks all
 parameterized reads as uncacheable.
 
+#### `scripts/test-coverage.sh` is all-or-nothing without a local Postgres
+
+The script runs under `set -eu`: if the Vitest workers-pool step fails to
+even *start* (no `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`
+configured — `@cloudflare/vitest-pool-workers` refuses to boot the pool at
+all, not just skip the tests that need it), the **Deno suites never run
+either** — `pnpm test:coverage` exits non-zero having run nothing. Read
+"test:coverage failed" literally: it does not mean the tests failed, it means
+they never started. To get real Deno-suite results in an environment without
+a configured Hyperdrive target, run the `deno task test:*` buckets directly
+(see the `"tasks"` key in `deno.json`) instead of the combined script.
+
+To actually run the Workers-pool suite (`pnpm test:do`, or the Vitest half of
+`test:coverage`) with real Postgres instead of skipping it: point both
+`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` and
+`..._HYPERDRIVE_CACHED` at a real, migrated Postgres connection string (`pnpm
+migrate` against it first). Verified 2026-09-16 against a throwaway database —
+all 18 Workers-pool files/337 tests passed, including a real (non-mocked)
+`Db` end-to-end proof of the daemon → control-plane WebSocket dispatch path
+in `src/daemon/acme-issuance-event.workers-e2e.test.ts`. Use a **dedicated
+throwaway database**, not a shared one — several tests insert real rows and
+none of them clean up after themselves (by design: they're meant to run
+against disposable databases per this project's "every database is
+disposable" pre-MVP convention, not against anything long-lived).
+
 #### ⛔ HARD RULE: one Hyperdrive/postgres.js client per request — NEVER cache a DB client across requests
 
 > **This rule is non-negotiable. Violating it took production down** (redeploy

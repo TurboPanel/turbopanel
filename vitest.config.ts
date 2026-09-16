@@ -40,6 +40,7 @@ export default defineConfig({
       'src/daemon/workers-ws.test.ts',
       'src/daemon/cell/do-registry.test.ts',
       'src/daemon/durable-object.test.ts',
+      'src/daemon/acme-issuance-event.workers-e2e.test.ts',
       'src/developer/routes-core.test.ts',
       'src/developer/dev-sync-archive.test.ts',
       'src/admin/public-urls.test.ts',
