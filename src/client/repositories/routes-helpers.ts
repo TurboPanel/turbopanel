@@ -462,9 +462,7 @@ export const COMPOSE_SOURCE_JSONPATH =
   ' ? (@ == $sid)'
 
 /**
- * `repository.metadata` as a mutable record — provider-observed facts the
- * instance refreshes (`detectedDefaultBranch`, `defaultBranchCheckedAt`,
- * `lastInspectedAt`, `lastInspectedCommitSha`). Anything non-object resets to
+ * `repository.metadata` as a mutable record. Anything non-object resets to
  * `{}` rather than throwing: metadata is bookkeeping, never load-bearing.
  */
 export function readSourceMetadata(value: unknown): Record<string, unknown> {
@@ -487,6 +485,17 @@ export type SourceRowLike = {
   options: unknown
   createdAt: string
   updatedAt: string
+  /**
+   * Dedicated columns (`schema-repo-columns`, Road-to-0.1.x) — the storage
+   * of record for provider-observed branch/inspect facts.
+   * {@link serializeSourceRow} folds them back into the response's
+   * `metadata` field for wire compatibility with existing clients, which
+   * still read them from there.
+   */
+  detectedDefaultBranch: string | null
+  defaultBranchCheckedAt: string | null
+  lastInspectedAt: string | null
+  lastInspectedCommitSha: string | null
 }
 
 /**
@@ -517,7 +526,16 @@ export function serializeSourceRow(row: SourceRowLike, webhook?: SourceWebhookIn
     defaultBranch: row.defaultBranch,
     subdirectory: row.subdirectory,
     autoDeploy: row.autoDeploy,
-    metadata: row.metadata ?? null,
+    // Storage of record for these four is the dedicated columns
+    // (`schema-repo-columns`), not `metadata` — folded back in here so
+    // existing clients reading them off `metadata` keep working.
+    metadata: {
+      ...readSourceMetadata(row.metadata),
+      detectedDefaultBranch: row.detectedDefaultBranch,
+      defaultBranchCheckedAt: row.defaultBranchCheckedAt,
+      lastInspectedAt: row.lastInspectedAt,
+      lastInspectedCommitSha: row.lastInspectedCommitSha,
+    },
     options: row.options ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

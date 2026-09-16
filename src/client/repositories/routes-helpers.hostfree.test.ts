@@ -382,8 +382,30 @@ test('serializeSourceRow and serializeConnectionRow fold optional facts', () => 
     options: undefined,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-02T00:00:00.000Z',
+    detectedDefaultBranch: null,
+    defaultBranchCheckedAt: null,
+    lastInspectedAt: null,
+    lastInspectedCommitSha: null,
   }
-  assertEquals(serializeSourceRow(row).metadata, null)
+  // Storage of record for these four is the dedicated columns, not
+  // `metadata` (`schema-repo-columns`) — folded back into the response's
+  // `metadata` field regardless, for wire compatibility.
+  assertEquals(serializeSourceRow(row).metadata, {
+    detectedDefaultBranch: null,
+    defaultBranchCheckedAt: null,
+    lastInspectedAt: null,
+    lastInspectedCommitSha: null,
+  })
+  assertEquals(
+    serializeSourceRow({ ...row, detectedDefaultBranch: 'trunk', defaultBranchCheckedAt: '2026-01-04T00:00:00.000Z' })
+      .metadata,
+    {
+      detectedDefaultBranch: 'trunk',
+      defaultBranchCheckedAt: '2026-01-04T00:00:00.000Z',
+      lastInspectedAt: null,
+      lastInspectedCommitSha: null,
+    },
+  )
   assertEquals(serializeSourceRow(row).options, null)
   assertEquals(
     serializeSourceRow(row, {

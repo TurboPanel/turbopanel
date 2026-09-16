@@ -1436,11 +1436,12 @@ test('create resolves an anonymous clone URL default branch through a connected 
 
   const written = insertValues[0] as {
     defaultBranch?: unknown
-    metadata?: { detectedDefaultBranch?: unknown; defaultBranchCheckedAt?: unknown }
+    detectedDefaultBranch?: unknown
+    defaultBranchCheckedAt?: unknown
   }
   assertEquals(written.defaultBranch, 'trunk')
-  assertEquals(written.metadata?.detectedDefaultBranch, 'trunk')
-  assertEquals(typeof written.metadata?.defaultBranchCheckedAt, 'string')
+  assertEquals(written.detectedDefaultBranch, 'trunk')
+  assertEquals(typeof written.defaultBranchCheckedAt, 'string')
 })
 
 test('create resolves a public github.com default branch via anonymous REST', async () => {
@@ -1483,10 +1484,10 @@ test('create resolves a public github.com default branch via anonymous REST', as
 
   const written = insertValues[0] as {
     defaultBranch?: unknown
-    metadata?: { detectedDefaultBranch?: unknown }
+    detectedDefaultBranch?: unknown
   }
   assertEquals(written.defaultBranch, 'trunk')
-  assertEquals(written.metadata?.detectedDefaultBranch, 'trunk')
+  assertEquals(written.detectedDefaultBranch, 'trunk')
 })
 
 test('create still resolves a keyed github.com default branch via anonymous REST', async () => {
@@ -1535,11 +1536,11 @@ test('create still resolves a keyed github.com default branch via anonymous REST
   const written = insertValues[0] as {
     defaultBranch?: unknown
     secretId?: unknown
-    metadata?: { detectedDefaultBranch?: unknown }
+    detectedDefaultBranch?: unknown
   }
   assertEquals(written.secretId, CREDENTIAL_ID)
   assertEquals(written.defaultBranch, 'trunk')
-  assertEquals(written.metadata?.detectedDefaultBranch, 'trunk')
+  assertEquals(written.detectedDefaultBranch, 'trunk')
 })
 
 test('create never attempts branch detection for a provider-connected row', async () => {

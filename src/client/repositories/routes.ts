@@ -105,7 +105,6 @@ import {
   GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
   parseSourceCreateBody,
   parseSourcePatchBody,
-  readSourceMetadata,
   serializeConnectionRow,
   serializeSourceRow,
   type SourceWebhookInfo,
@@ -131,6 +130,10 @@ const SOURCE_SELECT = {
   options: repository.options,
   createdAt: repository.createdAt,
   updatedAt: repository.updatedAt,
+  detectedDefaultBranch: repository.detectedDefaultBranch,
+  defaultBranchCheckedAt: repository.defaultBranchCheckedAt,
+  lastInspectedAt: repository.lastInspectedAt,
+  lastInspectedCommitSha: repository.lastInspectedCommitSha,
 }
 
 const CONNECTION_SELECT = {
@@ -428,32 +431,22 @@ function listingMatchForSource(
   return listing.find((entry) => entry.id === repositoryExternalId)
 }
 
-function detectedBranchFromMetadata(
-  metadata: Record<string, unknown>,
-): string | null {
-  return typeof metadata.detectedDefaultBranch === 'string'
-    ? metadata.detectedDefaultBranch
-    : null
-}
-
 /** Provider facts to persist on refresh — branch tracking + renamed clone URL. */
 function buildRefreshPatch(
   row: {
     defaultBranch: string | null
     repositoryUrl: string
-    metadata: unknown
+    detectedDefaultBranch: string | null
   },
   match: RepositorySummary,
 ): Record<string, unknown> {
-  const metadata = readSourceMetadata(row.metadata)
-  const previouslyDetected = detectedBranchFromMetadata(metadata)
-  metadata.detectedDefaultBranch = match.defaultBranch
-  metadata.defaultBranchCheckedAt = new Date().toISOString()
+  const previouslyDetected = row.detectedDefaultBranch
 
   const tracksProvider = row.defaultBranch === null ||
     row.defaultBranch === previouslyDetected
   const patch: Record<string, unknown> = {
-    metadata,
+    detectedDefaultBranch: match.defaultBranch,
+    defaultBranchCheckedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }
   if (tracksProvider && match.defaultBranch) {
@@ -488,7 +481,6 @@ type InspectSourceRow = {
   id: string
   repositoryUrl: string
   defaultBranch: string | null
-  metadata: unknown
 }
 
 /**
@@ -508,14 +500,12 @@ async function resolveInspectRef(
   if (!detected) return ''
 
   try {
-    const metadata = readSourceMetadata(row.metadata)
-    metadata.detectedDefaultBranch = detected
-    metadata.defaultBranchCheckedAt = new Date().toISOString()
     await db
       .update(repository)
       .set({
         defaultBranch: detected,
-        metadata,
+        detectedDefaultBranch: detected,
+        defaultBranchCheckedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(repository.id, row.id))
@@ -528,16 +518,17 @@ async function resolveInspectRef(
 /** Remember a successful inspect; never fail the read if the write fails. */
 async function recordInspectBookkeeping(
   db: Db,
-  row: InspectSourceRow,
+  row: Pick<InspectSourceRow, 'id'>,
   commitSha: string,
 ): Promise<void> {
   try {
-    const metadata = readSourceMetadata(row.metadata)
-    metadata.lastInspectedAt = new Date().toISOString()
-    metadata.lastInspectedCommitSha = commitSha
     await db
       .update(repository)
-      .set({ metadata, updatedAt: new Date().toISOString() })
+      .set({
+        lastInspectedAt: new Date().toISOString(),
+        lastInspectedCommitSha: commitSha,
+        updatedAt: new Date().toISOString(),
+      })
       .where(eq(repository.id, row.id))
   } catch (error) {
     logWarn('repository inspect metadata update failed', { error })
@@ -1608,11 +1599,8 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
           ...(detected
             ? {
               defaultBranch: detected.defaultBranch,
-              metadata: {
-                ...fields.metadata,
-                detectedDefaultBranch: detected.defaultBranch,
-                defaultBranchCheckedAt: detected.detectedAt,
-              },
+              detectedDefaultBranch: detected.defaultBranch,
+              defaultBranchCheckedAt: detected.detectedAt,
             }
             : {}),
         })
@@ -1712,8 +1700,8 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
    * `default_branch` is written once at attach time and the upstream value can
    * change afterwards; a deploy that omits a branch and a webhook filter that
    * names one would then quietly track the wrong ref. The refresh reads the
-   * provider's current listing and records what it saw in `metadata`
-   * (`detectedDefaultBranch`, `defaultBranchCheckedAt`).
+   * provider's current listing and records what it saw in the dedicated
+   * `detected_default_branch` / `default_branch_checked_at` columns.
    *
    * The `default_branch` **column** is updated only while it still tracks the
    * provider: when it is null, or equals the previously detected value. An
