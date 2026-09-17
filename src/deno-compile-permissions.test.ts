@@ -215,9 +215,19 @@ it("compiled instance branch vendors libduckdb.so on LD_LIBRARY_PATH", async () 
   );
 });
 
-it("instance --allow-net includes public Git provider APIs", async () => {
+it("instance --allow-net includes public Git provider APIs and the GitHub Releases update rail", async () => {
   const tasks = await readCompileTasks();
-  const required = ["api.github.com:443", "gitlab.com:443"];
+  // Git provider APIs, plus the hosts a rc/release channel manifest fetch
+  // touches: github.com answers releases/…/download/manifest.json with a
+  // redirect to a *.githubusercontent.com asset host (see
+  // src/lib/update/channel.ts). A missing host is a silent "target unknown".
+  const required = [
+    "api.github.com:443",
+    "gitlab.com:443",
+    "github.com:443",
+    "release-assets.githubusercontent.com:443",
+    "objects.githubusercontent.com:443",
+  ];
 
   for (const [taskName, task] of Object.entries(tasks)) {
     const allowNet = extractAllowNetFlag(task);

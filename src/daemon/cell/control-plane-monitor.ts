@@ -18,7 +18,11 @@ import {
   steadyStateInboundSkipsDbRead,
   type ProjectionDaemonBuild,
 } from "./postgres-projection.ts";
-import { resolveTrunkManifest } from "../../lib/update/manifest.ts";
+import { resolveUpdateManifest } from "../../lib/update/manifest.ts";
+import {
+  DEFAULT_UPDATE_CHANNEL,
+  type UpdateChannel,
+} from "../../lib/update/channel.ts";
 import { isStaleProjectedUpdating } from "../../client/servers/update-status.ts";
 import { UPDATE_REQUEST_TTL_MS } from "../../lib/update/constants.ts";
 import type { RedisDaemonCell } from "./redis/cell.ts";
@@ -246,12 +250,13 @@ export async function repairStaleProjectedUpdate(
   return true;
 }
 
-/** Self-heal when a reconnecting daemon already reports the trunk target commit. */
+/** Self-heal when a reconnecting daemon already reports the channel's target commit. */
 export async function maybeRepairUpdateFromDaemonBuildHello(
   db: Db,
   serverId: string,
   daemonBuild?: ProjectionDaemonBuild,
   targetCommit?: string,
+  channel: UpdateChannel = DEFAULT_UPDATE_CHANNEL,
 ): Promise<void> {
   if (!daemonBuild?.commit || !daemonBuild?.buildId) return;
 
@@ -260,7 +265,7 @@ export async function maybeRepairUpdateFromDaemonBuildHello(
   if (update?.status !== "updating") return;
 
   const manifestCommit = targetCommit ??
-    (await resolveTrunkManifest())?.commit;
+    (await resolveUpdateManifest(channel))?.commit;
   if (!manifestCommit || daemonBuild.commit !== manifestCommit) return;
 
   await projectServerDaemon(db, serverId, {

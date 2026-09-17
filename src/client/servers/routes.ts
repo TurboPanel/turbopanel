@@ -56,7 +56,11 @@ import {
   server,
   service,
 } from "../../lib/db/schema.ts";
-import { resolveTrunkManifest } from "../../lib/update/manifest.ts";
+import { resolveUpdateManifest } from "../../lib/update/manifest.ts";
+import {
+  resolveInstanceUpdateChannel,
+  type UpdateChannel,
+} from "../../lib/update/channel.ts";
 import { getServerUpdatePreparer } from "../../lib/update/prepare.ts";
 import { revokeLicense } from "../authn/license.ts";
 import { recomputeOrganizationAssignments } from "../../lib/tiers/assignment-records.ts";
@@ -120,7 +124,6 @@ import {
   shouldSkipProjectedUpdateRepair,
   STATUS_CACHE_CONTROL,
   STATUS_CACHE_MAX_AGE_MS,
-  UPDATE_CHANNEL,
   updateResetErrorStatus,
 } from "./routes-helpers.ts";
 import {
@@ -154,7 +157,7 @@ type QueuedUpdateResult = {
   status: "updating";
   serverId: string;
   requestId: string;
-  channel: typeof UPDATE_CHANNEL;
+  channel: UpdateChannel;
 };
 
 type QueueUpdateFailure = {
@@ -162,10 +165,16 @@ type QueueUpdateFailure = {
   error: string;
 };
 
+/** The channel this instance follows — the one every queued update targets. */
+function instanceUpdateChannel(c: Context<AppEnv>): UpdateChannel {
+  return resolveInstanceUpdateChannel(c.get("platformEnv"));
+}
+
 async function queueServerUpdate(
   registry: DaemonCellRegistry,
   db: Db,
   serverId: string,
+  channel: UpdateChannel,
 ): Promise<QueuedUpdateResult | QueueUpdateFailure> {
   const presence = await resolveFleetPresence(db, registry, [serverId]);
   const live = presence.get(serverId);
@@ -192,7 +201,7 @@ async function queueServerUpdate(
     deliveryId: generateDeliveryId(),
     requestId,
     at: new Date().toISOString(),
-    channel: UPDATE_CHANNEL,
+    channel: channel,
   };
 
   const preparer = getServerUpdatePreparer();
@@ -204,7 +213,7 @@ async function queueServerUpdate(
       db,
       serverId,
       requestId,
-      UPDATE_CHANNEL,
+      channel,
       envelope.at,
     );
     void runPreparedServerUpdate({
@@ -215,7 +224,7 @@ async function queueServerUpdate(
         });
       },
       markQueued: (queuedAt) =>
-        onDaemonUpdateQueued(db, serverId, requestId, UPDATE_CHANNEL, queuedAt),
+        onDaemonUpdateQueued(db, serverId, requestId, channel, queuedAt),
       markFailed: (error, finishedAt) =>
         onDaemonUpdateResult(db, serverId, requestId, false, finishedAt, error),
     });
@@ -225,7 +234,7 @@ async function queueServerUpdate(
       status: "updating",
       serverId,
       requestId,
-      channel: UPDATE_CHANNEL,
+      channel: channel,
     };
   }
 
@@ -237,7 +246,7 @@ async function queueServerUpdate(
     db,
     serverId,
     requestId,
-    UPDATE_CHANNEL,
+    channel,
     envelope.at,
   );
 
@@ -247,7 +256,7 @@ async function queueServerUpdate(
     status: "updating",
     serverId,
     requestId,
-    channel: UPDATE_CHANNEL,
+    channel: channel,
   };
 }
 
@@ -786,7 +795,7 @@ export function registerServerRoutes(
     });
 
     if (visibleIds.length === 0) {
-      return c.json(emptyServersUpdatesPayload());
+      return c.json(emptyServersUpdatesPayload(instanceUpdateChannel(c)));
     }
 
     const registry = getDaemonCellRegistry(c);
@@ -801,9 +810,11 @@ export function registerServerRoutes(
         includeSelfHostPin: true,
       },
     );
-    const targetManifest = await resolveTrunkManifest();
+    const channel = instanceUpdateChannel(c);
+    const targetManifest = await resolveUpdateManifest(channel);
     const { target, targetStatus, targetError } = resolveTrunkTargetFields(
       targetManifest,
+      channel,
     );
 
     const servers = await Promise.all(
@@ -822,6 +833,7 @@ export function registerServerRoutes(
         const resolved = await resolveServerUpdateStatus({
           serverId,
           current,
+          channel,
           targetManifest,
           colocatedWithInstance: colocatedIds.has(serverId),
           projectedUpdate: repairedUpdate ?? null,
@@ -837,7 +849,7 @@ export function registerServerRoutes(
 
     return c.json({
       ok: true,
-      channel: UPDATE_CHANNEL,
+      channel,
       target,
       targetStatus,
       targetError,
@@ -867,7 +879,8 @@ export function registerServerRoutes(
       organizationId,
     });
 
-    const targetManifest = await resolveTrunkManifest();
+    const channel = instanceUpdateChannel(c);
+    const targetManifest = await resolveUpdateManifest(channel);
     const presence = await resolveFleetPresence(db, registry, visibleIds);
     // Self-host pin included — see `queueServerUpdate`.
     const colocatedIds = await resolveColocatedServerIdSet(
@@ -913,7 +926,12 @@ export function registerServerRoutes(
           };
         }
 
-        const queued = await queueServerUpdate(registry, db, serverId);
+        const queued = await queueServerUpdate(
+          registry,
+          db,
+          serverId,
+          channel,
+        );
         if (!queued.ok) {
           return { serverId, ok: false, error: queued.error };
         }
@@ -1075,7 +1093,8 @@ export function registerServerRoutes(
       const current = currentCommitFromDaemonBuild(
         presence.get(id)?.daemonBuild,
       );
-      const targetManifest = await resolveTrunkManifest();
+      const channel = instanceUpdateChannel(c);
+      const targetManifest = await resolveUpdateManifest(channel);
       const projectedUpdate = projections.get(id)?.update;
       const stale = isStaleProjectedUpdating({
         projectedUpdate,
@@ -1110,6 +1129,7 @@ export function registerServerRoutes(
       const resolved = await resolveServerUpdateStatus({
         serverId: id,
         current,
+        channel,
         targetManifest,
         colocatedWithInstance: colocatedIds.has(id),
         projectedUpdate: { status: "idle" },
@@ -1119,7 +1139,7 @@ export function registerServerRoutes(
         ok: true,
         serverId: id,
         cleared,
-        channel: UPDATE_CHANNEL,
+        channel,
         current,
         colocatedWithInstance: colocatedIds.has(id),
         ...resolved,
@@ -1149,7 +1169,8 @@ export function registerServerRoutes(
       includeSelfHostPin: true,
     });
     const current = currentCommitFromDaemonBuild(presence.get(id)?.daemonBuild);
-    const targetManifest = await resolveTrunkManifest();
+    const channel = instanceUpdateChannel(c);
+    const targetManifest = await resolveUpdateManifest(channel);
     const repairedUpdate = await repairProjectedUpdateIfStale(
       db,
       id,
@@ -1161,6 +1182,7 @@ export function registerServerRoutes(
     const resolved = await resolveServerUpdateStatus({
       serverId: id,
       current,
+      channel,
       targetManifest,
       colocatedWithInstance: colocatedIds.has(id),
       projectedUpdate: repairedUpdate ?? null,
@@ -1169,7 +1191,7 @@ export function registerServerRoutes(
     return c.json({
       ok: true,
       serverId: id,
-      channel: UPDATE_CHANNEL,
+      channel,
       current,
       colocatedWithInstance: colocatedIds.has(id),
       ...resolved,
@@ -1189,7 +1211,12 @@ export function registerServerRoutes(
       return c.json({ error: "Daemon cell registry unavailable" }, 503);
     }
 
-    const queued = await queueServerUpdate(registry, db, id);
+    const queued = await queueServerUpdate(
+      registry,
+      db,
+      id,
+      instanceUpdateChannel(c),
+    );
     if (!queued.ok) {
       return c.json(
         { ok: false, error: queued.error },

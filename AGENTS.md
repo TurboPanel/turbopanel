@@ -678,7 +678,11 @@ on `--allow-net` — Deno 2.9+ treats Unix-socket connect as net, not read. TCP
 dev Postgres adds `--allow-net=127.0.0.1:5432`. Public Git provider APIs
 (`api.github.com:443`, `gitlab.com:443`) must stay on that list — the GitHub App
 manifest callback and GitLab token/API calls fetch them from this process, and a
-missing host surfaces as HTTP 502 (`NotCapable`). A GitHub Enterprise or
+missing host surfaces as HTTP 502 (`NotCapable`). So must the daemon update
+rail's hosts (`github.com:443`, `release-assets.githubusercontent.com:443`,
+`objects.githubusercontent.com:443`): a `rc` / `release` channel manifest is a
+GitHub Release asset behind a redirect, and a missing host there surfaces only
+as "target unknown" on the servers page (`src/lib/update/channel.ts`). A GitHub Enterprise or
 self-managed GitLab origin is not pre-allowed; add that host to the unit when
 one is configured.
 

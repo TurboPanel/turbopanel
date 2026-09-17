@@ -7,7 +7,6 @@ import {
   SERVER_UUID_RE,
   STATUS_CACHE_CONTROL,
   STATUS_CACHE_MAX_AGE_MS,
-  UPDATE_CHANNEL,
   isServerUuid,
   buildBatchStatusCoalesceKey,
   expiredBatchStatusCoalesceKeys,
@@ -231,22 +230,28 @@ test('queueServerUpdateHttpStatus maps colocated vs other errors', () => {
 })
 
 test('emptyServersUpdatesPayload and resolveTrunkTargetFields', () => {
-  assertEquals(emptyServersUpdatesPayload().channel, UPDATE_CHANNEL)
-  assertEquals(emptyServersUpdatesPayload().targetStatus, 'unknown')
-  assertEquals(emptyServersUpdatesPayload().servers, [])
+  assertEquals(emptyServersUpdatesPayload('trunk').channel, 'trunk')
+  assertEquals(emptyServersUpdatesPayload('release').channel, 'release')
+  assertEquals(emptyServersUpdatesPayload('trunk').targetStatus, 'unknown')
+  assertEquals(emptyServersUpdatesPayload('trunk').servers, [])
+  assertEquals(
+    emptyServersUpdatesPayload('release').targetError,
+    'Could not resolve release channel manifest',
+  )
 
-  assertEquals(resolveTrunkTargetFields(null), {
+  assertEquals(resolveTrunkTargetFields(null, 'trunk'), {
     target: null,
     targetStatus: 'unknown',
     targetError: 'Could not resolve trunk channel manifest',
   })
+  assertEquals(resolveTrunkTargetFields(null, 'rc').targetError, 'Could not resolve rc channel manifest')
   const manifest = {
     commit: 'c1',
     buildId: 'b1',
     builtAt: '2020-01-01T00:00:00.000Z',
     manifestUrl: 'https://example.test/manifest',
   }
-  assertEquals(resolveTrunkTargetFields(manifest), {
+  assertEquals(resolveTrunkTargetFields(manifest, 'trunk'), {
     target: manifest,
     targetStatus: 'ok',
     targetError: undefined,

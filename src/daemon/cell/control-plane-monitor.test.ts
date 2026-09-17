@@ -27,8 +27,8 @@ import {
 import type { RedisDaemonCellRegistry } from './redis/registry.ts'
 import { resolveFleetPresence } from './fleet-presence.ts'
 import {
-  resetTrunkManifestCacheForTests,
-  seedTrunkManifestCacheForTests,
+  resetUpdateManifestCacheForTests,
+  seedUpdateManifestCacheForTests,
 } from '../../lib/update/manifest.ts'
 import type { ServerStatusEvent } from '../metrics/types.ts'
 import {
@@ -577,8 +577,8 @@ test('onDaemonInbound projects new daemonBuild before steady-state skip', async 
 })
 
 test('onDaemonInbound repairs stale updating on steady-state hello when daemonBuild matches trunk', async () => {
-  resetTrunkManifestCacheForTests()
-  seedTrunkManifestCacheForTests({
+  resetUpdateManifestCacheForTests()
+  seedUpdateManifestCacheForTests({
     commit: 'target-commit',
     buildId: 'b2',
     builtAt: '2020-01-01T00:00:00.000Z',
@@ -1014,8 +1014,8 @@ test('repairStaleProjectedUpdate expires when the daemon commit does not match t
 })
 
 test('maybeRepairUpdateFromDaemonBuildHello uses the trunk manifest when targetCommit is omitted', async () => {
-  resetTrunkManifestCacheForTests()
-  seedTrunkManifestCacheForTests({
+  resetUpdateManifestCacheForTests()
+  seedUpdateManifestCacheForTests({
     commit: 'manifest-commit',
     buildId: 'b-manifest',
     builtAt: '2020-01-01T00:00:00.000Z',
@@ -1043,7 +1043,7 @@ test('maybeRepairUpdateFromDaemonBuildHello uses the trunk manifest when targetC
 
   const update = parseServerDaemonState(getDaemon())?.projection?.update
   assertEquals(update?.status, 'done')
-  resetTrunkManifestCacheForTests()
+  resetUpdateManifestCacheForTests()
 })
 
 test('maybeRepairUpdateFromDaemonBuildHello no-ops without a commit or idle update', async () => {

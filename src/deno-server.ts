@@ -10,6 +10,10 @@ import {
 import { type AppEnv, createApp } from './app.ts'
 import { createDenoDb, type Db, endDbConnection } from './db.ts'
 import { logInfo, logWarn } from './logger.ts'
+import {
+  assertValidUpdateChannelEnv,
+  resolveInstanceUpdateChannel,
+} from './lib/update/channel.ts'
 import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from './daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from './daemon/cell/deno-maintenance.ts'
@@ -247,6 +251,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   const emailQueue = await resolveEmailQueue(db)
   const commandQueue = await resolveCommandQueue()
   const runtimeEnv = Deno.env.toObject()
+  // Same rule as the daemon: a misspelt channel is a startup error, not a
+  // silent fleet left on trunk.
+  assertValidUpdateChannelEnv(runtimeEnv)
+  logInfo(
+    'update',
+    `Daemon update channel: ${resolveInstanceUpdateChannel(runtimeEnv)}`,
+  )
   configureArgon2idWorkFactor({
     memoryKib: Deno.env.get('TURBOPANEL_ARGON2ID_MEMORY_KIB') ?? null,
     timeCost: Deno.env.get('TURBOPANEL_ARGON2ID_TIME_COST') ?? null,

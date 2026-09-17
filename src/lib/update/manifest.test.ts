@@ -1,9 +1,9 @@
 import { assertEquals } from "@std/assert";
 import {
-  resetTrunkManifestCacheForTests,
-  resolveTrunkManifest,
-  seedTrunkManifestCacheForTests,
-  setTrunkManifestProvider,
+  resetUpdateManifestCacheForTests,
+  resolveUpdateManifest,
+  seedUpdateManifestCacheForTests,
+  setUpdateManifestProvider,
 } from "./manifest.ts";
 
 /**
@@ -14,277 +14,209 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test("resolveTrunkManifest coalesces concurrent lookups", async () => {
-  resetTrunkManifestCacheForTests();
-  let fetchCount = 0;
+const TRUNK_MANIFEST_URL = "https://dl.trbp.nl/channels/trunk/manifest.json";
+const RC_MANIFEST_URL =
+  "https://github.com/TurboPanel/turbopaneld/releases/download/rc/manifest.json";
+const RELEASE_MANIFEST_URL =
+  "https://github.com/TurboPanel/turbopaneld/releases/latest/download/manifest.json";
+
+function manifestBody(channel: string, commit = "abc123") {
+  return JSON.stringify({
+    commit,
+    buildId: `build-${commit}`,
+    builtAt: "2020-01-01T00:00:00.000Z",
+    channel,
+  });
+}
+
+/** Install a fetch stub and return the URLs it was asked for. */
+function stubFetch(
+  handler: (url: string) => Response | Promise<Response>,
+): { calls: string[]; restore: () => void } {
+  const calls: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = ((input: RequestInfo | URL) => {
-    fetchCount += 1;
     const url = String(input);
-    if (url.endsWith("/channels.json")) {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            channels: {
-              trunk: {
-                manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-              },
-            },
-          }),
-          { status: 200 },
-        ),
-      );
-    }
-    if (url.endsWith("/channels/trunk/manifest.json")) {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            commit: "abc123",
-            buildId: "build-1",
-            builtAt: "2020-01-01T00:00:00.000Z",
-            channel: "trunk",
-          }),
-          { status: 200 },
-        ),
-      );
-    }
-    return originalFetch(input);
+    calls.push(url);
+    return Promise.resolve(handler(url));
   }) as typeof fetch;
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = originalFetch;
+    },
+  };
+}
 
+test("resolveUpdateManifest reads the built-in rail with one fetch — no channels.json hop", async () => {
+  resetUpdateManifestCacheForTests();
+  const stub = stubFetch((url) =>
+    url === TRUNK_MANIFEST_URL
+      ? new Response(manifestBody("trunk"), { status: 200 })
+      : new Response("missing", { status: 404 })
+  );
   try {
-    const [first, second] = await Promise.all([
-      resolveTrunkManifest(),
-      resolveTrunkManifest(),
+    const manifest = await resolveUpdateManifest("trunk");
+    assertEquals(manifest, {
+      commit: "abc123",
+      buildId: "build-abc123",
+      builtAt: "2020-01-01T00:00:00.000Z",
+      channel: "trunk",
+      manifestUrl: TRUNK_MANIFEST_URL,
+    });
+    assertEquals(stub.calls, [TRUNK_MANIFEST_URL]);
+  } finally {
+    stub.restore();
+    resetUpdateManifestCacheForTests();
+  }
+});
+
+test("resolveUpdateManifest follows rc and release to GitHub Releases", async () => {
+  resetUpdateManifestCacheForTests();
+  const stub = stubFetch((url) => {
+    if (url === RC_MANIFEST_URL) {
+      return new Response(manifestBody("rc", "rc1"), { status: 200 });
+    }
+    if (url === RELEASE_MANIFEST_URL) {
+      return new Response(manifestBody("release", "rel1"), { status: 200 });
+    }
+    return new Response("missing", { status: 404 });
+  });
+  try {
+    assertEquals((await resolveUpdateManifest("rc"))?.commit, "rc1");
+    assertEquals((await resolveUpdateManifest("release"))?.commit, "rel1");
+    assertEquals(
+      (await resolveUpdateManifest("release"))?.manifestUrl,
+      RELEASE_MANIFEST_URL,
+    );
+    assertEquals(stub.calls, [RC_MANIFEST_URL, RELEASE_MANIFEST_URL]);
+  } finally {
+    stub.restore();
+    resetUpdateManifestCacheForTests();
+  }
+});
+
+test("resolveUpdateManifest is null for reserved channels without fetching", async () => {
+  resetUpdateManifestCacheForTests();
+  const stub = stubFetch(() => {
+    throw new TypeError("must not fetch");
+  });
+  try {
+    assertEquals(await resolveUpdateManifest("edge"), null);
+    assertEquals(await resolveUpdateManifest("canary"), null);
+    assertEquals(stub.calls, []);
+  } finally {
+    stub.restore();
+    resetUpdateManifestCacheForTests();
+  }
+});
+
+test("resolveUpdateManifest coalesces concurrent lookups per channel", async () => {
+  resetUpdateManifestCacheForTests();
+  const stub = stubFetch((url) =>
+    new Response(manifestBody(url === RC_MANIFEST_URL ? "rc" : "trunk"), {
+      status: 200,
+    })
+  );
+  try {
+    const [first, second, rc] = await Promise.all([
+      resolveUpdateManifest("trunk"),
+      resolveUpdateManifest("trunk"),
+      resolveUpdateManifest("rc"),
     ]);
     assertEquals(first?.commit, "abc123");
     assertEquals(second?.commit, "abc123");
-    assertEquals(fetchCount, 2);
+    assertEquals(rc?.channel, "rc");
+    assertEquals(stub.calls, [TRUNK_MANIFEST_URL, RC_MANIFEST_URL]);
   } finally {
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
+    stub.restore();
+    resetUpdateManifestCacheForTests();
   }
 });
 
-test("resolveTrunkManifest reuses cached manifest within TTL", async () => {
-  resetTrunkManifestCacheForTests();
-  let fetchCount = 0;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = ((input: RequestInfo | URL) => {
-    fetchCount += 1;
-    const url = String(input);
-    if (url.endsWith("/channels.json")) {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            channels: {
-              trunk: {
-                manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-              },
-            },
-          }),
-          { status: 200 },
-        ),
-      );
-    }
-    if (url.endsWith("/channels/trunk/manifest.json")) {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            commit: "cached-commit",
-            buildId: "build-1",
-            builtAt: "2020-01-01T00:00:00.000Z",
-            channel: "trunk",
-          }),
-          { status: 200 },
-        ),
-      );
-    }
-    return originalFetch(input);
-  }) as typeof fetch;
-
+test("resolveUpdateManifest reuses the cached manifest within the TTL, per channel", async () => {
+  resetUpdateManifestCacheForTests();
+  const stub = stubFetch(() =>
+    new Response(manifestBody("trunk"), { status: 200 })
+  );
   try {
-    const first = await resolveTrunkManifest();
-    const second = await resolveTrunkManifest();
-    assertEquals(first?.commit, "cached-commit");
-    assertEquals(second?.commit, "cached-commit");
-    assertEquals(fetchCount, 2);
+    await resolveUpdateManifest("trunk");
+    await resolveUpdateManifest("trunk");
+    assertEquals(stub.calls.length, 1);
+    await resolveUpdateManifest("release");
+    assertEquals(stub.calls.length, 2);
   } finally {
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
+    stub.restore();
+    resetUpdateManifestCacheForTests();
   }
 });
 
-test("resolveTrunkManifest returns null when channels.json is unavailable", async () => {
-  resetTrunkManifestCacheForTests();
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (() =>
-    Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch;
+test("resolveUpdateManifest returns null when the manifest is unavailable", async () => {
+  resetUpdateManifestCacheForTests();
+  const stub = stubFetch(() => new Response("nope", { status: 500 }));
   try {
-    assertEquals(await resolveTrunkManifest(), null);
+    assertEquals(await resolveUpdateManifest("trunk"), null);
+    // A release that does not exist yet (404 until the first promotion) is
+    // the same "unknown" the page already degrades to.
+    assertEquals(await resolveUpdateManifest("release"), null);
   } finally {
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
+    stub.restore();
+    resetUpdateManifestCacheForTests();
   }
 });
 
-test("resolveTrunkManifest rejects http or missing trunk manifestUrl", async () => {
-  resetTrunkManifestCacheForTests();
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = ((input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.endsWith("/channels.json")) {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            channels: {
-              trunk: { manifestUrl: "http://insecure.example/manifest.json" },
-            },
-          }),
-          { status: 200 },
-        ),
-      );
-    }
-    return originalFetch(input);
-  }) as typeof fetch;
+test("resolveUpdateManifest returns null for incomplete manifest fields", async () => {
+  resetUpdateManifestCacheForTests();
+  const stub = stubFetch(() =>
+    new Response(JSON.stringify({ commit: "only" }), { status: 200 })
+  );
   try {
-    assertEquals(await resolveTrunkManifest(), null);
+    assertEquals(await resolveUpdateManifest("trunk"), null);
   } finally {
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
+    stub.restore();
+    resetUpdateManifestCacheForTests();
   }
 });
 
-test("resolveTrunkManifest returns null for incomplete manifest fields", async () => {
-  resetTrunkManifestCacheForTests();
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = ((input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.endsWith("/channels.json")) {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            channels: {
-              trunk: {
-                manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-              },
-            },
-          }),
-          { status: 200 },
-        ),
-      );
-    }
-    if (url.endsWith("/channels/trunk/manifest.json")) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ commit: "only" }), { status: 200 }),
-      );
-    }
-    return originalFetch(input);
-  }) as typeof fetch;
+test("resolveUpdateManifest returns null when fetch throws", async () => {
+  resetUpdateManifestCacheForTests();
+  const stub = stubFetch(() => {
+    throw new TypeError("network down");
+  });
   try {
-    assertEquals(await resolveTrunkManifest(), null);
+    assertEquals(await resolveUpdateManifest("trunk"), null);
   } finally {
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
+    stub.restore();
+    resetUpdateManifestCacheForTests();
   }
 });
 
-test("seedTrunkManifestCacheForTests short-circuits the fetch path", async () => {
-  resetTrunkManifestCacheForTests();
-  seedTrunkManifestCacheForTests({
+test("seedUpdateManifestCacheForTests short-circuits the fetch path for its channel only", async () => {
+  resetUpdateManifestCacheForTests();
+  seedUpdateManifestCacheForTests({
     commit: "seeded",
     buildId: "b",
     builtAt: "2020-01-01T00:00:00.000Z",
     channel: "trunk",
     manifestUrl: "https://dl.trbp.nl/m.json",
   });
-  let fetchCount = 0;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (() => {
-    fetchCount += 1;
-    return Promise.reject(new Error("should not fetch"));
-  }) as typeof fetch;
+  const stub = stubFetch(() => new Response("missing", { status: 404 }));
   try {
-    const manifest = await resolveTrunkManifest();
-    assertEquals(manifest?.commit, "seeded");
-    assertEquals(fetchCount, 0);
+    assertEquals((await resolveUpdateManifest("trunk"))?.commit, "seeded");
+    assertEquals(stub.calls, []);
+    assertEquals(await resolveUpdateManifest("rc"), null);
+    assertEquals(stub.calls, [RC_MANIFEST_URL]);
   } finally {
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
+    stub.restore();
+    resetUpdateManifestCacheForTests();
   }
 });
 
-test("resolveTrunkManifest returns null when trunk manifestUrl is missing", async () => {
-  resetTrunkManifestCacheForTests();
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = ((input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.endsWith("/channels.json")) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ channels: { trunk: {} } }), { status: 200 }),
-      );
-    }
-    return originalFetch(input);
-  }) as typeof fetch;
-  try {
-    assertEquals(await resolveTrunkManifest(), null);
-  } finally {
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
-  }
-});
-
-test("resolveTrunkManifest returns null when manifest fetch fails", async () => {
-  resetTrunkManifestCacheForTests();
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = ((input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.endsWith("/channels.json")) {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            channels: {
-              trunk: {
-                manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-              },
-            },
-          }),
-          { status: 200 },
-        ),
-      );
-    }
-    if (url.endsWith("/channels/trunk/manifest.json")) {
-      return Promise.resolve(new Response("missing", { status: 404 }));
-    }
-    return originalFetch(input);
-  }) as typeof fetch;
-  try {
-    assertEquals(await resolveTrunkManifest(), null);
-  } finally {
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
-  }
-});
-
-test("resolveTrunkManifest returns null when fetch throws", async () => {
-  resetTrunkManifestCacheForTests();
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (() => {
-    throw new TypeError("network down");
-  }) as typeof fetch;
-  try {
-    assertEquals(await resolveTrunkManifest(), null);
-  } finally {
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
-  }
-});
-
-test("resolveTrunkManifest defers to a registered provider", async () => {
-  resetTrunkManifestCacheForTests();
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (() => {
-    throw new TypeError("provider must bypass the CDN fetch");
-  }) as typeof fetch;
+test("resolveUpdateManifest defers to a registered provider for every channel", async () => {
+  resetUpdateManifestCacheForTests();
+  const stub = stubFetch(() => {
+    throw new TypeError("provider must bypass the rail fetch");
+  });
   const target = {
     commit: "abc+1",
     buildId: "dev-abc+1",
@@ -293,11 +225,13 @@ test("resolveTrunkManifest defers to a registered provider", async () => {
     manifestUrl: "/repo/dist/manifest.json",
   };
   try {
-    setTrunkManifestProvider(() => Promise.resolve(target));
-    assertEquals(await resolveTrunkManifest(), target);
+    setUpdateManifestProvider(() => Promise.resolve(target));
+    assertEquals(await resolveUpdateManifest("trunk"), target);
+    assertEquals(await resolveUpdateManifest("release"), target);
+    assertEquals(stub.calls, []);
   } finally {
-    setTrunkManifestProvider(null);
-    globalThis.fetch = originalFetch;
-    resetTrunkManifestCacheForTests();
+    setUpdateManifestProvider(null);
+    stub.restore();
+    resetUpdateManifestCacheForTests();
   }
 });

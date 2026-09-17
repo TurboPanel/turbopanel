@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
   TERMINAL_UPDATE_RETENTION_MS,
-  TRUNK_MANIFEST_CACHE_MS,
+  MANIFEST_CACHE_MS,
   UPDATE_PENDING_MS,
   UPDATE_REQUEST_TTL_MS,
 } from './constants.ts'
@@ -18,5 +18,5 @@ test('update timing constants stay positive and retention matches pending window
   assertEquals(UPDATE_PENDING_MS > 0, true)
   assertEquals(UPDATE_REQUEST_TTL_MS > UPDATE_PENDING_MS, true)
   assertEquals(TERMINAL_UPDATE_RETENTION_MS, UPDATE_PENDING_MS)
-  assertEquals(TRUNK_MANIFEST_CACHE_MS > 0, true)
+  assertEquals(MANIFEST_CACHE_MS > 0, true)
 })

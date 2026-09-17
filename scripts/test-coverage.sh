@@ -549,6 +549,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/tls/ \
   src/lib/tiers/ \
   src/lib/update/manifest.test.ts \
+  src/lib/update/channel.test.ts \
   src/lib/update/constants.test.ts \
   src/lib/update/prepare.test.ts \
   src/log-compat.test.ts \

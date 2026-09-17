@@ -26,6 +26,7 @@ function request(
 
 it("resolveServerUpdateStatus marks manifest resolution failure as unknown target", async () => {
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
     listUpdateRequests: async () => [],
@@ -40,6 +41,7 @@ it("resolveServerUpdateStatus marks manifest resolution failure as unknown targe
 
 it("resolveServerUpdateStatus returns updating for in-flight update request", async () => {
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
     listUpdateRequests: async () => [request({ status: "sent" })],
@@ -52,6 +54,7 @@ it("resolveServerUpdateStatus returns updating after successful ack until commit
   const finishedAt = new Date().toISOString();
   const current = { commit: "aaa", buildId: "b1" };
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current,
     targetManifest: {
@@ -71,6 +74,7 @@ it("resolveServerUpdateStatus returns updating after successful ack until commit
 
 it("resolveServerUpdateStatus uses shared target manifest without refetching", async () => {
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
     targetManifest: {
@@ -91,6 +95,7 @@ it("resolveServerUpdateStatus uses shared target manifest without refetching", a
 it("resolveServerUpdateStatus returns idle after pending window expires", async () => {
   const finishedAt = new Date(Date.now() - 121_000).toISOString();
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
     targetManifest: {
@@ -111,6 +116,7 @@ it("resolveServerUpdateStatus returns idle after pending window expires", async 
 
 it("resolveServerUpdateStatus surfaces last error but stays idle when update still available", async () => {
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "51e32ad", buildId: "b1" },
     targetManifest: {
@@ -133,6 +139,7 @@ it("resolveServerUpdateStatus surfaces last error but stays idle when update sti
 it("resolveServerUpdateStatus returns error for failed update when already on trunk", async () => {
   const commit = "51e32ad";
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit, buildId: "b1" },
     targetManifest: {
@@ -155,6 +162,7 @@ it("resolveServerUpdateStatus returns error for failed update when already on tr
 it("resolveServerUpdateStatus ignores stale failed request when daemon matches trunk", async () => {
   const commit = "51e32ad";
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit, buildId: "b1" },
     targetManifest: {
@@ -184,6 +192,7 @@ it("resolveServerUpdateStatus ignores stale failed request when daemon matches t
 
 it("resolveServerUpdateStatus blocks remote updates for co-located daemons", async () => {
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
     colocatedWithInstance: true,
@@ -207,6 +216,7 @@ it("resolveServerUpdateStatus blocks remote updates for co-located daemons", asy
 
 it("resolveServerUpdateStatus does not offer update when running commit is unknown", async () => {
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: null,
     targetManifest: {
@@ -226,6 +236,7 @@ it("resolveServerUpdateStatus does not offer update when running commit is unkno
 it("resolveServerUpdateStatus computes updateAvailable only with known target", async () => {
   const current = { commit: "aaa", buildId: "b1" };
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current,
     listUpdateRequests: async () => [],
@@ -240,6 +251,7 @@ it("resolveServerUpdateStatus computes updateAvailable only with known target", 
 
 it("resolveServerUpdateStatus returns updating from projected update summary", async () => {
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
     projectedUpdate: { status: "updating" },
@@ -251,6 +263,7 @@ it("resolveServerUpdateStatus returns updating from projected update summary", a
 it("resolveServerUpdateStatus returns updating from projected done with commit drift", async () => {
   const finishedAt = new Date().toISOString();
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
     targetManifest: {
@@ -268,6 +281,7 @@ it("resolveServerUpdateStatus returns updating from projected done with commit d
 
 it("resolveServerUpdateStatus surfaces last error from projected failed update", async () => {
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "51e32ad", buildId: "b1" },
     targetManifest: {
@@ -286,6 +300,7 @@ it("resolveServerUpdateStatus surfaces last error from projected failed update",
 
 it("resolveServerUpdateStatus returns idle from projected idle summary", async () => {
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit: "aaa", buildId: "b1" },
     projectedUpdate: { status: "idle" },
@@ -297,6 +312,7 @@ it("resolveServerUpdateStatus returns idle from projected idle summary", async (
 it("resolveServerUpdateStatus ignores stale projected updating when daemon matches trunk", async () => {
   const commit = "51e32ad";
   const resolved = await resolveServerUpdateStatus({
+    channel: "trunk",
     serverId: "srv-1",
     current: { commit, buildId: "b1" },
     targetManifest: {

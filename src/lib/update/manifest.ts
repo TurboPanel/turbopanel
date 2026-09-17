@@ -1,8 +1,9 @@
-import { TRUNK_MANIFEST_CACHE_MS } from './constants.ts'
+import { MANIFEST_CACHE_MS } from './constants.ts'
+import { builtinChannelManifestUrl, type UpdateChannel } from './channel.ts'
 
-export const DL_BASE_URL = 'https://dl.trbp.nl'
+export { DL_BASE_URL } from './channel.ts'
 
-export type TrunkManifestTarget = {
+export type UpdateManifestTarget = {
   commit: string
   buildId: string
   builtAt: string
@@ -18,23 +19,19 @@ function requireHttpsUrl(url: string): boolean {
   }
 }
 
-async function fetchTrunkManifestUncached(): Promise<TrunkManifestTarget | null> {
+/**
+ * One fetch, straight to the channel's built-in manifest location — no
+ * catalog hop. `rc` / `release` resolve through GitHub's own redirects, which
+ * is why the compile allow-net lists the release-asset hosts alongside
+ * github.com. A reserved channel with no location resolves to null, the same
+ * "target unknown" the routes already render for an unreachable manifest.
+ */
+async function fetchManifestUncached(
+  channel: UpdateChannel,
+): Promise<UpdateManifestTarget | null> {
   try {
-    if (!requireHttpsUrl(`${DL_BASE_URL}/channels.json`)) {
-      return null
-    }
-
-    const channelsRes = await fetch(`${DL_BASE_URL}/channels.json`, {
-      signal: AbortSignal.timeout(8000),
-    })
-    if (!channelsRes.ok) return null
-
-    const channelsJson = JSON.parse(await channelsRes.text()) as {
-      channels?: { trunk?: { manifestUrl?: unknown } }
-    }
-    const manifestUrl = channelsJson.channels?.trunk?.manifestUrl
-    if (typeof manifestUrl !== 'string' || !manifestUrl) return null
-    if (!requireHttpsUrl(manifestUrl)) return null
+    const manifestUrl = builtinChannelManifestUrl(channel)
+    if (manifestUrl === null || !requireHttpsUrl(manifestUrl)) return null
 
     const manifestRes = await fetch(manifestUrl, {
       signal: AbortSignal.timeout(8000),
@@ -48,86 +45,98 @@ async function fetchTrunkManifestUncached(): Promise<TrunkManifestTarget | null>
       channel?: unknown
     }
 
-    const { commit, buildId, builtAt, channel } = manifestJson
+    const { commit, buildId, builtAt, channel: manifestChannel } = manifestJson
     if (
       typeof commit !== 'string' || !commit ||
       typeof buildId !== 'string' || !buildId ||
       typeof builtAt !== 'string' || !builtAt ||
-      typeof channel !== 'string' || !channel
+      typeof manifestChannel !== 'string' || !manifestChannel
     ) {
       return null
     }
 
-    return { commit, buildId, builtAt, channel, manifestUrl }
+    return { commit, buildId, builtAt, channel: manifestChannel, manifestUrl }
   } catch {
     return null
   }
 }
 
 /**
- * Alternate source for the trunk update target. The dev instance points this
- * at the local daemon checkout's overlay catalog (see
- * src/developer/dev-update-overlay.ts) so "update available" tracks local
- * daemon changes instead of the public CDN. Never set in production; the
- * provider does its own caching.
+ * Alternate source for the update target, whatever channel the instance is
+ * configured to follow. The dev instance points this at the local daemon
+ * checkout's overlay catalog (see src/developer/dev-update-overlay.ts) so
+ * "update available" tracks local daemon changes instead of the public rail.
+ * Never set in production; the provider does its own caching.
  */
-export type TrunkManifestProvider = () => Promise<TrunkManifestTarget | null>
+export type UpdateManifestProvider = () => Promise<UpdateManifestTarget | null>
 
-let trunkManifestProvider: TrunkManifestProvider | null = null
+let updateManifestProvider: UpdateManifestProvider | null = null
 
-export function setTrunkManifestProvider(
-  provider: TrunkManifestProvider | null,
+export function setUpdateManifestProvider(
+  provider: UpdateManifestProvider | null,
 ): void {
-  trunkManifestProvider = provider
+  updateManifestProvider = provider
 }
 
-let cachedManifest: TrunkManifestTarget | null | undefined
-let cacheExpiresAt = 0
-let inflightManifest: Promise<TrunkManifestTarget | null> | null = null
+type CacheEntry = {
+  manifest: UpdateManifestTarget | null
+  expiresAt: number
+}
+
+const cache = new Map<UpdateChannel, CacheEntry>()
+const inflight = new Map<UpdateChannel, Promise<UpdateManifestTarget | null>>()
 
 /** Reset manifest cache — for tests only. */
-export function resetTrunkManifestCacheForTests(): void {
-  cachedManifest = undefined
-  cacheExpiresAt = 0
-  inflightManifest = null
+export function resetUpdateManifestCacheForTests(): void {
+  cache.clear()
+  inflight.clear()
 }
 
 /** Seed manifest cache — for tests only. */
-export function seedTrunkManifestCacheForTests(
-  manifest: TrunkManifestTarget | null,
+export function seedUpdateManifestCacheForTests(
+  manifest: UpdateManifestTarget | null,
+  channel: UpdateChannel = 'trunk',
 ): void {
-  cachedManifest = manifest
-  cacheExpiresAt = Date.now() + TRUNK_MANIFEST_CACHE_MS
-  inflightManifest = null
+  cache.set(channel, { manifest, expiresAt: Date.now() + MANIFEST_CACHE_MS })
+  inflight.delete(channel)
 }
 
-export async function resolveTrunkManifest(): Promise<TrunkManifestTarget | null> {
-  if (trunkManifestProvider) {
-    return await trunkManifestProvider()
+export async function resolveUpdateManifest(
+  channel: UpdateChannel,
+): Promise<UpdateManifestTarget | null> {
+  if (updateManifestProvider) {
+    return await updateManifestProvider()
   }
 
   const now = Date.now()
-  if (cachedManifest !== undefined && now < cacheExpiresAt) {
-    return cachedManifest
+  const cached = cache.get(channel)
+  if (cached && now < cached.expiresAt) {
+    return cached.manifest
   }
 
-  if (inflightManifest) {
-    return inflightManifest
+  const pending = inflight.get(channel)
+  if (pending) {
+    return pending
   }
 
-  inflightManifest = fetchTrunkManifestUncached()
+  const lookup = fetchManifestUncached(channel)
     .then((manifest) => {
-      cachedManifest = manifest
-      cacheExpiresAt = Date.now() + TRUNK_MANIFEST_CACHE_MS
-      inflightManifest = null
+      cache.set(channel, {
+        manifest,
+        expiresAt: Date.now() + MANIFEST_CACHE_MS,
+      })
+      inflight.delete(channel)
       return manifest
     })
     .catch(() => {
-      inflightManifest = null
-      cachedManifest = null
-      cacheExpiresAt = Date.now() + TRUNK_MANIFEST_CACHE_MS
+      inflight.delete(channel)
+      cache.set(channel, {
+        manifest: null,
+        expiresAt: Date.now() + MANIFEST_CACHE_MS,
+      })
       return null
     })
+  inflight.set(channel, lookup)
 
-  return inflightManifest
+  return lookup
 }

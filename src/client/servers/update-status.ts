@@ -18,9 +18,10 @@ import { server } from '../../lib/db/schema.ts'
 import { resolveColocatedServerIdSet } from './colocated.ts'
 import { UPDATE_PENDING_MS, UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
 import {
-  resolveTrunkManifest,
-  type TrunkManifestTarget,
+  resolveUpdateManifest,
+  type UpdateManifestTarget,
 } from '../../lib/update/manifest.ts'
+import type { UpdateChannel } from '../../lib/update/channel.ts'
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   'done',
@@ -149,10 +150,16 @@ type ResolvedUpdateTarget = {
   updateAvailable: boolean
 }
 
+/** The wording the servers page shows when the channel's manifest can't be read. */
+export function unresolvedTargetError(channel: UpdateChannel): string {
+  return `Could not resolve ${channel} channel manifest`
+}
+
 function resolveUpdateTarget(params: {
   current: ServerUpdateCommit | null
   colocatedWithInstance?: boolean
-  manifest: TrunkManifestTarget | null
+  channel: UpdateChannel
+  manifest: UpdateManifestTarget | null
 }): ResolvedUpdateTarget {
   const target = params.manifest
     ? {
@@ -166,7 +173,7 @@ function resolveUpdateTarget(params: {
   const targetStatus = target ? 'ok' as const : 'unknown' as const
   const targetError = target
     ? undefined
-    : 'Could not resolve trunk channel manifest'
+    : unresolvedTargetError(params.channel)
 
   const commitDrift = target && params.current?.commit
     ? params.current.commit !== target.commit
@@ -268,9 +275,11 @@ export async function resolveServerUpdateStatus(params: {
   current: ServerUpdateCommit | null
   listUpdateRequests?: () => Promise<PendingRequestRecord[]>
   projectedUpdate?: UpdateProjection | null
+  /** The channel this instance follows — what the target is resolved on. */
+  channel: UpdateChannel
   /** When batching status checks, pass a shared manifest lookup result. */
-  targetManifest?: TrunkManifestTarget | null
-  /** Co-located daemon on this control plane host — remote trunk updates blocked. */
+  targetManifest?: UpdateManifestTarget | null
+  /** Co-located daemon on this control plane host — remote updates blocked. */
   colocatedWithInstance?: boolean
 }): Promise<
   Pick<
@@ -289,7 +298,7 @@ export async function resolveServerUpdateStatus(params: {
 > {
   const manifest = params.targetManifest !== undefined
     ? params.targetManifest
-    : await resolveTrunkManifest()
+    : await resolveUpdateManifest(params.channel)
 
   const {
     target,
@@ -300,6 +309,7 @@ export async function resolveServerUpdateStatus(params: {
   } = resolveUpdateTarget({
     current: params.current,
     colocatedWithInstance: params.colocatedWithInstance,
+    channel: params.channel,
     manifest,
   })
 

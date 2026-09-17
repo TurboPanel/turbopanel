@@ -5,9 +5,9 @@
  * Registered from `deno-dev.ts` when the instance host has a daemon source
  * checkout. Two seams are installed:
  *
- * - `setTrunkManifestProvider`: "update available" compares each daemon's
+ * - `setUpdateManifestProvider`: "update available" compares each daemon's
  *   running commit against the local overlay catalog (`dist/manifest.json`)
- *   instead of the public CDN. When the checkout changed since the overlay was
+ *   instead of the public rail, whatever channel the instance is set to. When the checkout changed since the overlay was
  *   built (fingerprint drift), a pending pseudo-target is reported so every
  *   remote daemon shows an available update.
  * - `setServerUpdatePreparer`: triggering an update first rebuilds the overlay
@@ -22,8 +22,8 @@ import { join } from "@std/path";
 import { encodeHex } from "@std/encoding/hex";
 import { getDaemonRepoPath } from "../daemon/version.ts";
 import {
-  setTrunkManifestProvider,
-  type TrunkManifestTarget,
+  setUpdateManifestProvider,
+  type UpdateManifestTarget,
 } from "../lib/update/manifest.ts";
 import { setServerUpdatePreparer } from "../lib/update/prepare.ts";
 import { logError, logInfo, logWarn } from "../logger.ts";
@@ -186,9 +186,9 @@ export async function readDevOverlayIdentity(
 }
 
 let cachedTarget:
-  | { value: TrunkManifestTarget | null; expiresAt: number }
+  | { value: UpdateManifestTarget | null; expiresAt: number }
   | null = null;
-let inflightTarget: Promise<TrunkManifestTarget | null> | null = null;
+let inflightTarget: Promise<UpdateManifestTarget | null> | null = null;
 
 export function resetDevOverlayCacheForTests(): void {
   cachedTarget = null;
@@ -197,7 +197,7 @@ export function resetDevOverlayCacheForTests(): void {
 
 async function resolveDevTrunkManifestUncached(
   hooks: DevOverlayHooks,
-): Promise<TrunkManifestTarget | null> {
+): Promise<UpdateManifestTarget | null> {
   const repo = (hooks.repoPath ?? getDaemonRepoPath)();
   const manifestUrl = join(repo, "dist", "manifest.json");
   try {
@@ -243,7 +243,7 @@ async function resolveDevTrunkManifestUncached(
 /** Trunk target from the local daemon checkout; briefly cached + coalesced. */
 export function resolveDevTrunkManifest(
   hooks: DevOverlayHooks = {},
-): Promise<TrunkManifestTarget | null> {
+): Promise<UpdateManifestTarget | null> {
   const now = Date.now();
   if (cachedTarget && now < cachedTarget.expiresAt) {
     return Promise.resolve(cachedTarget.value);
@@ -324,7 +324,7 @@ export function registerDevUpdateOverlay(): boolean {
     );
     return false;
   }
-  setTrunkManifestProvider(() => resolveDevTrunkManifest());
+  setUpdateManifestProvider(() => resolveDevTrunkManifest());
   setServerUpdatePreparer(() => ensureDevOverlayCurrent());
   logInfo(
     LOG_COMPONENT,

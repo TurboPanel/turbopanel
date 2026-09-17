@@ -59,8 +59,8 @@ import {
   DEVELOPER_WS_PATH,
 } from "../surfaces.ts";
 import {
-  resetTrunkManifestCacheForTests,
-  seedTrunkManifestCacheForTests,
+  resetUpdateManifestCacheForTests,
+  seedUpdateManifestCacheForTests,
 } from "../lib/update/manifest.ts";
 import {
   buildSignedCookie,
@@ -1246,8 +1246,8 @@ it("update-result over WS projects update summary to Postgres", async () => {
 });
 
 it("hello over WS clears stale updating when daemonBuild matches trunk", async () => {
-  resetTrunkManifestCacheForTests();
-  seedTrunkManifestCacheForTests({
+  resetUpdateManifestCacheForTests();
+  seedUpdateManifestCacheForTests({
     commit: "target-commit",
     buildId: "b2",
     builtAt: "2020-01-01T00:00:00.000Z",
@@ -1338,7 +1338,7 @@ it("hello over WS clears stale updating when daemonBuild matches trunk", async (
   const update = parseServerDaemonState(getDaemon())?.projection?.update;
   assertEquals(update?.status, "done");
   assertEquals(update?.requestId, "req-update-1");
-  resetTrunkManifestCacheForTests();
+  resetUpdateManifestCacheForTests();
   ws.close(1000, "done");
 });
 

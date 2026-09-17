@@ -684,7 +684,12 @@ export const serverSchemas = {
     properties: {
       ok: { type: 'boolean', const: true },
       serverId: { type: 'string' },
-      channel: { type: 'string' },
+      channel: {
+        type: 'string',
+        enum: ['trunk', 'edge', 'canary', 'rc', 'release'],
+        description:
+          "The update channel this instance follows (TURBOPANEL_UPDATE_CHANNEL; default trunk) — the one every queued update targets. rc and release resolve from the daemon's GitHub Releases.",
+      },
       current: {
         oneOf: [
           { $ref: '#/components/schemas/ServerUpdateCurrent' },
@@ -957,7 +962,7 @@ export const serverPaths: Record<string, unknown> = {
       ],
       responses: {
         '200': {
-          description: 'Current daemon build vs trunk manifest target',
+          description: "Current daemon build vs the instance's channel manifest target",
           content: {
             'application/json': {
               schema: {
@@ -1006,7 +1011,7 @@ export const serverPaths: Record<string, unknown> = {
     },
     post: {
       tags: ['Servers'],
-      summary: 'Trigger a trunk daemon update on a connected server',
+      summary: "Trigger a daemon update on a connected server, on the instance's channel",
       security: [{ cookieAuth: [] }],
       parameters: [
         {

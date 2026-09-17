@@ -41,13 +41,14 @@ import {
   resolveServerAddress,
 } from '../../lib/peer-address.ts'
 import { parseServerIps } from '../../server-addresses.ts'
+import type { UpdateChannel } from '../../lib/update/channel.ts'
+import { unresolvedTargetError } from './update-status.ts'
 
 export const SERVER_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export const STATUS_CACHE_CONTROL = 'private, max-age=5'
 export const STATUS_CACHE_MAX_AGE_MS = 5_000
-export const UPDATE_CHANNEL = 'trunk' as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -289,9 +290,9 @@ export function queueServerUpdateHttpStatus(error: string): 403 | 404 {
   return error === colocatedServerUpdateBlockedReason() ? 403 : 404
 }
 
-export function emptyServersUpdatesPayload(): {
+export function emptyServersUpdatesPayload(channel: UpdateChannel): {
   ok: true
-  channel: typeof UPDATE_CHANNEL
+  channel: UpdateChannel
   target: null
   targetStatus: 'unknown'
   targetError: string
@@ -299,10 +300,10 @@ export function emptyServersUpdatesPayload(): {
 } {
   return {
     ok: true,
-    channel: UPDATE_CHANNEL,
+    channel,
     target: null,
     targetStatus: 'unknown',
-    targetError: 'Could not resolve trunk channel manifest',
+    targetError: unresolvedTargetError(channel),
     servers: [],
   }
 }
@@ -325,6 +326,7 @@ export function resolveTrunkTargetFields(
     builtAt: string
     manifestUrl: string
   } | null,
+  channel: UpdateChannel,
 ): TrunkTargetFields {
   const target = targetManifest
     ? {
@@ -337,7 +339,7 @@ export function resolveTrunkTargetFields(
   return {
     target,
     targetStatus: target ? 'ok' : 'unknown',
-    targetError: target ? undefined : 'Could not resolve trunk channel manifest',
+    targetError: target ? undefined : unresolvedTargetError(channel),
   }
 }
 

@@ -8,7 +8,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { DaemonCell, DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import type { Db } from '../../db.ts'
-import { seedTrunkManifestCacheForTests } from '../../lib/update/manifest.ts'
+import { seedUpdateManifestCacheForTests } from '../../lib/update/manifest.ts'
 import { server } from '../../lib/db/schema.ts'
 import type { QueryCache } from '../../query-cache/contracts.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -82,6 +82,8 @@ type SessionAppOpts = {
   serverOptions?: Record<string, unknown>
   registry?: DaemonCellRegistry
   queryCache?: { getReadModel: (opts: CachedReadModelOpts) => Promise<unknown> }
+  /** The instance's platform env — where TURBOPANEL_UPDATE_CHANNEL is read. */
+  platformEnv?: Record<string, string | undefined>
 }
 
 function stubRegistry(): DaemonCellRegistry {
@@ -241,6 +243,7 @@ async function buildSessionApp(
     if (opts.queryCache) {
       c.set('queryCache', opts.queryCache as unknown as QueryCache)
     }
+    if (opts.platformEnv) c.set('platformEnv', opts.platformEnv)
     return next()
   })
   registerServerRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
@@ -398,11 +401,27 @@ test('GET /servers/updates returns the empty payload when nothing is visible', a
   const res = await app.request('/servers/updates', {
     headers: sessionHeaders(cookie),
   })
-  await expectJson(res, 200, emptyServersUpdatesPayload())
+  await expectJson(res, 200, emptyServersUpdatesPayload('trunk'))
+})
+
+test('GET /servers/updates reports the channel the instance follows, not a trunk literal', async () => {
+  seedUpdateManifestCacheForTests(null, 'release')
+  const { app, cookie } = await buildSessionApp({
+    executeQueue: [[]],
+    platformEnv: { TURBOPANEL_UPDATE_CHANNEL: 'release' },
+  })
+  const res = await app.request('/servers/updates', {
+    headers: sessionHeaders(cookie),
+  })
+  await expectJson(res, 200, emptyServersUpdatesPayload('release'))
+  assertEquals(
+    emptyServersUpdatesPayload('release').targetError,
+    'Could not resolve release channel manifest',
+  )
 })
 
 test('GET /servers/updates returns idle rows for visible offline servers', async () => {
-  seedTrunkManifestCacheForTests(null)
+  seedUpdateManifestCacheForTests(null)
   const { app, cookie } = await buildSessionApp({
     executeQueue: [[{ item_id: SERVER_ID }]],
     registry: stubRegistry(),
@@ -430,7 +449,7 @@ test('POST /servers/updates returns 503 when the daemon cell registry is missing
 })
 
 test('POST /servers/updates reports Forbidden when manage is denied', async () => {
-  seedTrunkManifestCacheForTests(null)
+  seedUpdateManifestCacheForTests(null)
   const { app, cookie } = await buildSessionApp({
     registry: stubRegistry(),
     // listVisible, then the self-host environment pin (no rows: this server
@@ -449,7 +468,7 @@ test('POST /servers/updates reports Forbidden when manage is denied', async () =
 })
 
 test('POST /servers/updates reports Daemon not connected when the host is offline', async () => {
-  seedTrunkManifestCacheForTests(null)
+  seedUpdateManifestCacheForTests(null)
   const { app, cookie } = await buildSessionApp({
     registry: stubRegistry(),
     // listVisible, self-host pin (no rows), then the per-server manage check.
@@ -492,7 +511,7 @@ test('GET /servers/status coalesces a second request onto the cached payload', a
 })
 
 test('GET /servers/:id/update returns idle status without a live daemon', async () => {
-  seedTrunkManifestCacheForTests(null)
+  seedUpdateManifestCacheForTests(null)
   const { app, cookie } = await buildSessionApp({
     defaultAllowed: true,
     registry: stubRegistry(),
@@ -579,7 +598,7 @@ test('POST /servers/:id/update returns 503 when the registry is missing', async 
 })
 
 test('POST /servers/:id/update returns 404 when the daemon is offline', async () => {
-  seedTrunkManifestCacheForTests(null)
+  seedUpdateManifestCacheForTests(null)
   const { app, cookie } = await buildSessionApp({
     defaultAllowed: true,
     registry: stubRegistry(),
@@ -610,7 +629,7 @@ test('POST /servers/:id/update/reset returns 503 when the registry is missing', 
 })
 
 test('POST /servers/:id/update/reset maps update-in-progress to 409', async () => {
-  seedTrunkManifestCacheForTests(null)
+  seedUpdateManifestCacheForTests(null)
   const { app, cookie } = await buildSessionApp({
     defaultAllowed: true,
     registry: stubRegistry(),
