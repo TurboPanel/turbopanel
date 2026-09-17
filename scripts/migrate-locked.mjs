@@ -29,6 +29,13 @@ import postgres from 'postgres'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
 import { resolvePostgresParts } from './resolve-postgres-url.mjs'
+import { assertMigrateTargetMatchesEnv } from './check-deploy-env.mjs'
+import {
+  compareSchemaState,
+  describeSchemaState,
+  readAppliedMigrationHashes,
+  readShippedMigrationHashes,
+} from './schema-state.mjs'
 
 // Arbitrary fixed two-int4 advisory-lock key, scoped to this repo's
 // migration runner specifically (not shared with any other lock use).
@@ -45,6 +52,14 @@ function fail(message) {
 const url = process.env.TURBOPANEL_DATABASE_URL?.trim()
 if (!url) {
   fail('TURBOPANEL_DATABASE_URL is required')
+}
+
+// Under `pnpm deploy` (CLOUDFLARE_ENV set): refuse a URL that is not this
+// env's Hyperdrive origin. See scripts/check-deploy-env.mjs.
+try {
+  console.log(`migrate-locked: ${await assertMigrateTargetMatchesEnv()}`)
+} catch (err) {
+  fail(err instanceof Error ? err.message : String(err))
 }
 const parts = resolvePostgresParts(url)
 if (!parts) {
@@ -67,6 +82,17 @@ const db = drizzle(client)
 try {
   console.log('migrate-locked: waiting for the migration advisory lock…')
   await client`select pg_advisory_lock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
+  // Refuse a database whose history this checkout does not ship (a newer
+  // release, or the pre-freeze baseline) — see scripts/schema-state.mjs.
+  // Read under the lock so a concurrent migrate cannot change the answer.
+  const state = compareSchemaState(
+    await readAppliedMigrationHashes(client),
+    readShippedMigrationHashes('./migrations'),
+  )
+  if (state.status === 'ahead' || state.status === 'diverged') {
+    throw new Error(describeSchemaState(state))
+  }
+  console.log(`migrate-locked: ${describeSchemaState(state)}`)
   console.log('migrate-locked: lock acquired, applying migrations…')
   await migrate(db, {
     migrationsFolder: './migrations',
@@ -74,6 +100,9 @@ try {
     migrationsSchema: 'public',
   })
   console.log('migrate-locked: migrations applied successfully')
+} catch (err) {
+  console.error(`migrate-locked: ${err instanceof Error ? err.message : String(err)}`)
+  process.exitCode = 1
 } finally {
   await client`select pg_advisory_unlock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
   await client.end()

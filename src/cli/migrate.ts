@@ -7,13 +7,18 @@
  *   1. scripts/check-postgres-compat.mjs — refuse a server without
  *      `uuidv7()` (PostgreSQL 18+), since the schema defaults primary keys to
  *      it and the first migration would fail half-way with a worse message.
- *   2. scripts/migrate-locked.mjs — a blocking `pg_advisory_lock` taken on
+ *   2. src/lib/db/schema-state.ts — refuse a database migrated by files this
+ *      build does not ship (a newer release, or the pre-freeze baseline):
+ *      drizzle would apply our files on top of that history and fail
+ *      mid-DDL. Read under the lock below.
+ *   3. scripts/migrate-locked.mjs — a blocking `pg_advisory_lock` taken on
  *      the *same connection* the programmatic drizzle migrator runs on, so a
  *      second concurrent caller waits its turn instead of racing mid-DDL.
  *      The lock key and the bookkeeping table (`public.migration`, the one
  *      drizzle-kit and this repo's baseline use — not drizzle's default
  *      `drizzle.__drizzle_migrations`) are the same constants as that script;
- *      migrate.test.ts pins the four against it.
+ *      migrate.test.ts pins the four against it (and schema-state.test.ts
+ *      pins the state messages against scripts/schema-state.mjs).
  *
  * The migration files come from `migrations/` next to `src/` in a checkout,
  * and from the copy `deno task compile` embeds (`--include migrations`) in
@@ -24,8 +29,15 @@
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { dirname, fromFileUrl, join } from "@std/path";
 import { resolvePostgresConnection } from "../db-url.ts";
+import {
+  compareSchemaState,
+  describeSchemaState,
+  MIGRATIONS_FOLDER,
+  readShippedMigrationHashes,
+} from "../lib/db/schema-state.ts";
+
+export { MIGRATIONS_FOLDER };
 
 /** Stable two-int4 advisory-lock key ('TBPC', 'MIGR') — scripts/migrate-locked.mjs. */
 export const MIGRATION_LOCK_KEY_1 = 0x54425043;
@@ -35,11 +47,6 @@ export const MIGRATIONS_TABLE = "migration";
 export const MIGRATIONS_SCHEMA = "public";
 /** scripts/check-postgres-compat.mjs. */
 export const MINIMUM_POSTGRES_MAJOR = 18;
-
-export const MIGRATIONS_FOLDER = join(
-  dirname(dirname(dirname(fromFileUrl(import.meta.url)))),
-  "migrations",
-);
 
 export type MigrateIo = {
   env?: Record<string, string | undefined>;
@@ -107,7 +114,33 @@ export async function assertPostgresCompatible(
   }
 }
 
-/** Gate 2 + the migrator — the same shape as scripts/migrate-locked.mjs. */
+/**
+ * Gate 2: refuse a database whose history this build does not ship
+ * (src/lib/db/schema-state.ts — `ahead` / `diverged`). drizzle keys replay
+ * on the journal `when`, so it would otherwise apply our files on top of a
+ * foreign history and fail mid-DDL. Read under the lock so a concurrent
+ * migrate cannot change the answer between the check and the apply.
+ */
+export async function assertSchemaMigratable(
+  sql: SqlClient,
+  log: (line: string) => void,
+  migrationsFolder: string = MIGRATIONS_FOLDER,
+): Promise<void> {
+  const [present] = await sql<
+    { present: boolean }[]
+  >`select to_regclass('public.migration') is not null as present`;
+  const applied = present?.present
+    ? (await sql<{ hash: string }[]>`select hash from public.migration order by created_at, id`)
+      .map((row) => row.hash)
+    : [];
+  const state = compareSchemaState(applied, await readShippedMigrationHashes(migrationsFolder));
+  if (state.status === "ahead" || state.status === "diverged") {
+    throw new MigrateError(describeSchemaState(state));
+  }
+  log(describeSchemaState(state));
+}
+
+/** Gate 3 + the migrator — the same shape as scripts/migrate-locked.mjs. */
 export async function runLockedMigration(
   sql: SqlClient,
   log: (line: string) => void,
@@ -117,6 +150,7 @@ export async function runLockedMigration(
   log("waiting for the migration advisory lock…");
   await sql`select pg_advisory_lock(${MIGRATION_LOCK_KEY_1}, ${MIGRATION_LOCK_KEY_2})`;
   try {
+    await assertSchemaMigratable(sql, log, migrationsFolder);
     log("lock acquired, applying migrations…");
     await migrate(db, {
       migrationsFolder,

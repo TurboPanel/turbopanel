@@ -9,7 +9,8 @@ import {
 } from './client/authn/secrets.ts'
 import { type AppEnv, createApp } from './app.ts'
 import { createDenoDb, type Db, endDbConnection } from './db.ts'
-import { logInfo, logWarn } from './logger.ts'
+import { assertSchemaCurrent, SchemaStateError } from './lib/db/schema-state.ts'
+import { logError, logInfo, logWarn } from './logger.ts'
 import {
   assertValidUpdateChannelEnv,
   resolveInstanceUpdateChannel,
@@ -248,6 +249,19 @@ async function sweepStaleCommandsPhase(db: Db): Promise<void> {
 export async function startDenoServer(options: StartDenoServerOptions = {}): Promise<void> {
   const developerSurface = Boolean(options.registerDeveloperSurface) && isDeveloperSurfaceEnabled()
   const db = createDenoDb()
+  // The instance never migrates on boot (the installer and instance-launch
+  // do); it refuses to serve a schema that is not the one it was built for.
+  // A database that is not reachable yet is a different failure — it
+  // propagates as-is and systemd's restart loop retries.
+  try {
+    const schemaState = await assertSchemaCurrent(db)
+    logInfo('db', `schema check: ${schemaState.applied} migrations applied, current`)
+  } catch (err) {
+    if (err instanceof SchemaStateError) {
+      logError('db', `refusing to start: ${err.message}`)
+    }
+    throw err
+  }
   const emailQueue = await resolveEmailQueue(db)
   const commandQueue = await resolveCommandQueue()
   const runtimeEnv = Deno.env.toObject()
