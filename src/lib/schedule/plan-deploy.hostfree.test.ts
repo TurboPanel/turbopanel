@@ -15,7 +15,6 @@ import {
   service,
 } from '../db/schema.ts'
 import {
-  COLOCATED_ONLY_SERVER_MESSAGE,
   computeStoragePinsFromMountRows,
   extractComposeFromOptions,
   planEnvironmentDeploy,
@@ -134,7 +133,6 @@ function noopDeps(overrides: PlanEnvironmentDeployDeps = {}): PlanEnvironmentDep
     registerComposeMounts: async () => undefined,
     listEnvironmentSlots: async () => [],
     listServerLabelsForServers: async () => new Map(),
-    listColocatedServerIds: async () => new Set(),
     ...overrides,
   }
 }
@@ -503,91 +501,6 @@ test('planEnvironmentDeploy uses project defaultServerId for register when env h
   assertEquals(result.defaultServerId, SERVER_B)
 })
 
-test('planEnvironmentDeploy keeps the co-located control-plane host out of the unpinned pool', async () => {
-  // The environment PATCH refuses the co-located server as a tenant pin; the
-  // unpinned scheduler must not route around that guard. SERVER_A is the
-  // control-plane host, SERVER_B an ordinary daemon: with no pin the plan
-  // lands on B, and with A alone in the org there is no eligible server.
-  const compose = composeWithWeb()
-  const colocatedCalls: string[][] = []
-  const deps = noopDeps({
-    listColocatedServerIds: async (_db, organizationId, serverIds) => {
-      assertEquals(organizationId, ORG_ID)
-      colocatedCalls.push([...serverIds].sort((a, b) => a.localeCompare(b)))
-      return new Set([SERVER_A])
-    },
-  })
-  const env = {
-    id: ENV_ID,
-    projectId: PROJECT_ID,
-    serverId: null,
-    options: {},
-    name: 'production',
-  }
-  const services = [
-    { id: SERVICE_WEB, composeServiceName: 'web', options: null },
-  ]
-
-  const spread = await planEnvironmentDeploy(
-    createPlanDeployDb({
-      env,
-      project: { id: PROJECT_ID, options: { compose } },
-      services,
-      servers: [
-        { id: SERVER_A, connected: true },
-        { id: SERVER_B, connected: true },
-      ],
-    }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
-    deps,
-  )
-  assertEquals('kind' in spread, false)
-  if ('kind' in spread) return
-  assertEquals(colocatedCalls, [[SERVER_A, SERVER_B]])
-  assertEquals(spread.plan.ok, true)
-  if (!spread.plan.ok) return
-  assertEquals(spread.plan.serverIds, [SERVER_B])
-
-  const alone = await planEnvironmentDeploy(
-    createPlanDeployDb({
-      env,
-      project: {
-        id: PROJECT_ID,
-        // A project default is a preference, not a pin — it does not bring
-        // the control-plane host back into the pool.
-        options: { compose, defaultServerId: SERVER_A },
-      },
-      services,
-      servers: [{ id: SERVER_A, connected: true }],
-    }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
-    deps,
-  )
-  assertEquals('kind' in alone, false)
-  if ('kind' in alone) return
-  assertEquals(alone.plan.ok, false)
-  if (alone.plan.ok) return
-  assertEquals(alone.plan.error, 'no_eligible_server')
-  assertEquals(alone.plan.message, COLOCATED_ONLY_SERVER_MESSAGE)
-
-  // The self-host system environment is the one legitimate pin to that host.
-  const pinned = await planEnvironmentDeploy(
-    createPlanDeployDb({
-      env: { ...env, serverId: SERVER_A },
-      project: { id: PROJECT_ID, options: { compose } },
-      services,
-      servers: [{ id: SERVER_A, connected: true }],
-    }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
-    deps,
-  )
-  assertEquals('kind' in pinned, false)
-  if ('kind' in pinned) return
-  assertEquals(pinned.plan.ok, true)
-  if (!pinned.plan.ok) return
-  assertEquals(pinned.plan.serverIds, [SERVER_A])
-})
-
 test('planEnvironmentDeploy refuses a rejected merge before it writes a row', async () => {
   // The base declares an image; the environment overlay resets it. Each layer
   // saves cleanly, their merge is a service with nothing to run, and the deploy
@@ -665,4 +578,57 @@ test('planEnvironmentDeploy stamps the plan with the validation it already ran',
   assertEquals('kind' in planned, false)
   if ('kind' in planned) return
   assertEquals(planned.composeValidated, true)
+})
+
+test('planEnvironmentDeploy treats a single-server install as a full deploy target', async () => {
+  // Decided 2026-09-17 (user): nothing keeps tenant projects off the host that
+  // runs the control plane. One box runs the panel and the operator's
+  // projects; the only thing it gives up is multi-node placement. The
+  // planner takes no co-located dependency at all — with the control-plane
+  // host as the org's only server, an unpinned deploy lands on it, and an
+  // explicit pin to it is honoured like any other pin.
+  const compose = composeWithWeb()
+  const services = [{ id: SERVICE_WEB, composeServiceName: 'web', options: null }]
+  const env = {
+    id: ENV_ID,
+    projectId: PROJECT_ID,
+    serverId: null,
+    options: {},
+    name: 'production',
+  }
+
+  const unpinned = await planEnvironmentDeploy(
+    createPlanDeployDb({
+      env,
+      project: { id: PROJECT_ID, options: { compose } },
+      services,
+      servers: [{ id: SERVER_A, connected: true }],
+    }),
+    { environmentId: ENV_ID, organizationId: ORG_ID },
+    noopDeps(),
+  )
+  assertEquals('kind' in unpinned, false)
+  if ('kind' in unpinned) return
+  assertEquals(unpinned.plan.ok, true)
+  if (!unpinned.plan.ok) return
+  assertEquals(unpinned.plan.serverIds, [SERVER_A])
+
+  const pinned = await planEnvironmentDeploy(
+    createPlanDeployDb({
+      env: { ...env, serverId: SERVER_A },
+      project: { id: PROJECT_ID, options: { compose } },
+      services,
+      servers: [
+        { id: SERVER_A, connected: true },
+        { id: SERVER_B, connected: true },
+      ],
+    }),
+    { environmentId: ENV_ID, organizationId: ORG_ID },
+    noopDeps(),
+  )
+  assertEquals('kind' in pinned, false)
+  if ('kind' in pinned) return
+  assertEquals(pinned.plan.ok, true)
+  if (!pinned.plan.ok) return
+  assertEquals(pinned.plan.serverIds, [SERVER_A])
 })

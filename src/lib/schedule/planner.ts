@@ -73,15 +73,9 @@ export type ScheduleErrorCode =
    */
   | 'max_replicas_per_node_exceeded'
 
-/**
- * A stable qualifier the deploy route forwards beside `server_placement_required`
- * so clients can name the fix without parsing `message`.
- */
-export type ScheduleFailReason = 'colocated_only'
-
 export type SchedulePlan =
   | { ok: true; slots: DesiredSlotInput[]; serverIds: string[] }
-  | { ok: false; error: ScheduleErrorCode; message: string; reason?: ScheduleFailReason }
+  | { ok: false; error: ScheduleErrorCode; message: string }
 
 export type PlanEnvironmentInput = {
   pinServerId: string | null

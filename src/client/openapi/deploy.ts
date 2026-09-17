@@ -435,7 +435,7 @@ export const deployPaths = {
         },
         409: {
           description:
-            'Health-check, resource-limit, no eligible server (`server_placement_required`; with `reason: colocated_only` + `message` when the only connected daemon is the co-located control-plane host, which never runs tenant deploys), or TurboFabric still converging (`fabric_reconcile_pending`)',
+            'Health-check, resource-limit, no eligible server (`server_placement_required`), or TurboFabric still converging (`fabric_reconcile_pending`)',
           content: {
             'application/json': {
               schema: {
@@ -553,8 +553,7 @@ export const deployPaths = {
           },
         },
         409: {
-          description:
-            'No eligible server (`server_placement_required`, optionally `reason: colocated_only` + `message`)',
+          description: 'No eligible server (`server_placement_required`)',
         },
         422: {
           description:

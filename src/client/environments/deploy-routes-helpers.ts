@@ -16,7 +16,7 @@ import {
   validateDeployStorageMaterialList,
 } from '../../lib/commands/deploy-validation.ts'
 import type { FabricGateOutcome } from '../../lib/fabric/gate.ts'
-import type { ScheduleErrorCode, ScheduleFailReason } from '../../lib/schedule/index.ts'
+import type { ScheduleErrorCode } from '../../lib/schedule/index.ts'
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -134,18 +134,9 @@ export function fabricGateErrorResponse(
 export function scheduleErrorResponse(
   error: ScheduleErrorCode,
   message: string,
-  reason?: ScheduleFailReason,
 ): PrepareErrorResponse {
   if (error === 'no_eligible_server') {
-    // A qualified refusal (`colocated_only`: the only daemon is the
-    // control-plane host) carries the stable reason and the sentence that
-    // names the fix; the plain case stays the bare code the picker gates on.
-    return {
-      status: 409,
-      body: reason
-        ? { error: 'server_placement_required', reason, message }
-        : { error: 'server_placement_required' },
-    }
+    return { status: 409, body: { error: 'server_placement_required' } }
   }
   return { status: 422, body: { error, message } }
 }

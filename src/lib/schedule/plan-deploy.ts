@@ -29,14 +29,9 @@ import { reconcileServicesFromCompose } from '../../client/environments/reconcil
 import { registerComposeVolumes } from '../../client/environments/register-compose-volumes.ts'
 import { registerComposeMounts } from '../../client/environments/register-compose-mounts.ts'
 import {
-  listActiveColocatedLicenseBindings,
-  resolveColocatedServerIdSet,
-} from '../../client/servers/colocated.ts'
-import {
   planEnvironmentSchedule,
   type FleetServer,
   type PlannedService,
-  type ScheduleFailReason,
   type SchedulePlan,
 } from './planner.ts'
 
@@ -90,35 +85,6 @@ export type PlanEnvironmentDeployDeps = {
   registerComposeMounts?: typeof registerComposeMounts
   listEnvironmentSlots?: typeof listEnvironmentSlots
   listServerLabelsForServers?: typeof listServerLabelsForServers
-  /** Which of these org servers are co-located with the control plane. */
-  listColocatedServerIds?: typeof listColocatedServerIds
-}
-
-/**
- * The co-located control-plane host is not a tenant deploy target: the
- * environment PATCH refuses it as a pin
- * (`COLOCATED_SERVER_DEPLOY_TARGET_BLOCKED_REASON`), and the unpinned pool
- * must refuse it the same way, or "deploy with no pin" lands arbitrary compose
- * on the host that carries `TURBOPANEL_SECRETS` (found in the 0.1.x install
- * rehearsal). Same probes as the PATCH guard, plus the self-host pin.
- */
-async function listColocatedServerIds(
-  db: Db,
-  organizationId: string,
-  serverIds: string[],
-): Promise<Set<string>> {
-  const colocated = await resolveColocatedServerIdSet(db, undefined, serverIds, {
-    orgScoped: true,
-    includeSelfHostPin: true,
-  })
-  // The guard's fallback before the self-host pin exists: an active
-  // `this server` license bound to the row.
-  for (
-    const id of await listActiveColocatedLicenseBindings(db, organizationId, serverIds)
-  ) {
-    colocated.add(id)
-  }
-  return colocated
 }
 
 /** Host-free: pull `options.compose` (or null) from project/environment options. */
@@ -185,42 +151,24 @@ export function computeStoragePinsFromMountRows(
   return pins
 }
 
-/**
- * The org's servers as scheduling candidates, minus the co-located
- * control-plane host — unless the environment is pinned to it, which only the
- * self-host system environment legitimately is (tenant pins are refused at
- * the PATCH). A project `defaultServerId` never brings it back: that is a
- * preference the pool resolves, not an operator pin.
- */
-async function loadTenantFleet(
+async function loadFleet(
   db: Db,
   organizationId: string,
-  deps: {
-    listLabels: typeof listServerLabelsForServers
-    listColocated: typeof listColocatedServerIds
-    pinServerId: string | null
-  },
-): Promise<{ fleet: FleetServer[]; excludedColocated: number }> {
-  const allRows = await db
+  listLabels: typeof listServerLabelsForServers,
+): Promise<FleetServer[]> {
+  const rows = await db
     .select({
       id: server.id,
       connected: server.isConnected,
     })
     .from(server)
     .where(eq(server.organizationId, organizationId))
-  const colocated = allRows.length > 0
-    ? await deps.listColocated(db, organizationId, allRows.map((row) => row.id))
-    : new Set<string>()
-  const rows = allRows.filter((row) =>
-    !colocated.has(row.id) || row.id === deps.pinServerId
-  )
-  const excludedColocated = allRows.length - rows.length
 
-  const labelsByServer = await deps.listLabels(
+  const labelsByServer = await listLabels(
     db,
     rows.map((row) => row.id),
   )
-  const fleet = rows.map((row) => {
+  return rows.map((row) => {
     const labels: Record<string, string> = {}
     for (const label of labelsByServer.get(row.id) ?? []) {
       labels[label.key] = label.value
@@ -231,16 +179,7 @@ async function loadTenantFleet(
       labels,
     }
   })
-  return { fleet, excludedColocated }
 }
-
-/**
- * What a single-host self-hosted install hears instead of "No connected
- * servers are available" when its only daemon is the control-plane host.
- */
-export const COLOCATED_ONLY_SERVER_REASON: ScheduleFailReason = 'colocated_only'
-export const COLOCATED_ONLY_SERVER_MESSAGE =
-  'The only connected server is the co-located control-plane host, which does not run tenant deploys — enrol another server first'
 
 async function loadStoragePins(
   db: Db,
@@ -293,7 +232,6 @@ export async function planEnvironmentDeploy(
   const registerMounts = deps.registerComposeMounts ?? registerComposeMounts
   const listTasks = deps.listEnvironmentSlots ?? listEnvironmentSlots
   const listLabels = deps.listServerLabelsForServers ?? listServerLabelsForServers
-  const listColocated = deps.listColocatedServerIds ?? listColocatedServerIds
 
   const [envRow] = await db
     .select({
@@ -373,13 +311,9 @@ export async function planEnvironmentDeploy(
     .limit(1)
 
   const existingTasks = await listTasks(db, params.environmentId)
+  const fleet = await loadFleet(db, params.organizationId, listLabels)
   const projectOptions = parseProjectOptions(projectRow.options)
   const pinServerId = envRow.serverId
-  const { fleet, excludedColocated } = await loadTenantFleet(
-    db,
-    params.organizationId,
-    { listLabels, listColocated, pinServerId },
-  )
   const defaultServerId = projectOptions.defaultServerId ?? null
   const registerServerId = pinServerId ?? defaultServerId
   if (registerServerId) {
@@ -396,7 +330,7 @@ export async function planEnvironmentDeploy(
   }
   const storagePins = await loadStoragePins(db, params.environmentId)
 
-  const scheduled = planEnvironmentSchedule({
+  const plan = planEnvironmentSchedule({
     pinServerId,
     defaultServerId,
     fabricEnabled: Boolean(fabricRow),
@@ -412,15 +346,6 @@ export async function planEnvironmentDeploy(
     })),
     storagePins,
   })
-  const plan: SchedulePlan = !scheduled.ok &&
-      scheduled.error === 'no_eligible_server' &&
-      fleet.length === 0 && excludedColocated > 0
-    ? {
-      ...scheduled,
-      message: COLOCATED_ONLY_SERVER_MESSAGE,
-      reason: COLOCATED_ONLY_SERVER_REASON,
-    }
-    : scheduled
 
   return {
     plan,

@@ -187,31 +187,3 @@ export async function hasActiveColocatedLicenseBinding(
     .limit(1);
   return rows.length > 0;
 }
-
-/**
- * Set form of {@link hasActiveColocatedLicenseBinding} for a fleet: which of
- * `serverIds` hold an active `this server` license. The scheduler unions it
- * with {@link resolveColocatedServerIdSet} so the unpinned pool and the
- * environment PATCH guard agree even before the self-host pin exists.
- */
-export async function listActiveColocatedLicenseBindings(
-  db: Db,
-  organizationId: string,
-  serverIds: readonly string[],
-): Promise<Set<string>> {
-  if (serverIds.length === 0) return new Set();
-  const rows = await db
-    .select({ serverId: license.serverId })
-    .from(license)
-    .where(and(
-      eq(license.organizationId, organizationId),
-      inArray(license.serverId, [...serverIds]),
-      eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
-      isNull(license.revokedAt),
-    ));
-  const bound = new Set<string>();
-  for (const row of rows) {
-    if (row.serverId) bound.add(row.serverId);
-  }
-  return bound;
-}

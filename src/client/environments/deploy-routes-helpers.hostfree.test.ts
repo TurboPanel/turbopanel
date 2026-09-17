@@ -490,17 +490,6 @@ test('scheduleErrorResponse maps placement and other schedule failures', () => {
     body: { error: 'server_placement_required' },
   })
   assertEquals(
-    scheduleErrorResponse('no_eligible_server', 'only the control plane', 'colocated_only'),
-    {
-      status: 409,
-      body: {
-        error: 'server_placement_required',
-        reason: 'colocated_only',
-        message: 'only the control plane',
-      },
-    },
-  )
-  assertEquals(
     scheduleErrorResponse('host_port_conflict', 'port 80 taken'),
     {
       status: 422,
