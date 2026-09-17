@@ -92,6 +92,15 @@ jobs:
       - name: Check vocabulary (no daemon-as-agent phrasing)
         run: pnpm run check:vocabulary
 
+      # Shipped migrations are immutable once the freeze manifest is frozen:
+      # the working tree must match migrations/meta/manifest.json (the Deno
+      # suite proves that) and, against the base ref, migrations/ may only
+      # gain files. See scripts/check-migration-freeze.mjs (header).
+      - name: Check migration freeze (manifest + additions only)
+        run: |
+          pnpm run check:migration-freeze
+          pnpm run check:migration-additions -- "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+
       # Fails when a *.test.ts is claimed by no runner -- such a suite never
       # executes and never reaches coverage/lcov.info, so it reads as tested
       # in review while contributing nothing.

@@ -61,6 +61,10 @@ pnpm run check:workers-bundle
 echo "==> Check vocabulary"
 pnpm run check:vocabulary
 
+echo "==> Check migration freeze (manifest + additions only vs origin/trunk)"
+pnpm run check:migration-freeze
+pnpm run check:migration-additions
+
 echo "==> Check test inventory (every suite runs somewhere)"
 pnpm run check:test-inventory
 
