@@ -8,6 +8,7 @@ import { createLicense } from '../authn/license.ts'
 import { license, organization, server } from '../../lib/db/schema.ts'
 import {
   hasActiveColocatedLicenseBinding,
+  listActiveColocatedLicenseBindings,
   isColocatedWithInstance,
   uncolocatedCandidates,
 } from './colocated.ts'
@@ -76,6 +77,12 @@ it('hasActiveColocatedLicenseBinding detects the reserved install license', asyn
     await hasActiveColocatedLicenseBinding(db, organizationId, serverId),
     true,
   )
+  // The fleet-shaped twin the scheduler uses agrees, and stays scoped to the ids asked for.
+  assertEquals(
+    await listActiveColocatedLicenseBindings(db, organizationId, [serverId, '00000000-0000-7000-8000-000000000000']),
+    new Set([serverId]),
+  )
+  assertEquals(await listActiveColocatedLicenseBindings(db, organizationId, []), new Set())
 
   await db
     .update(license)
@@ -85,6 +92,10 @@ it('hasActiveColocatedLicenseBinding detects the reserved install license', asyn
   assertEquals(
     await hasActiveColocatedLicenseBinding(db, organizationId, serverId),
     false,
+  )
+  assertEquals(
+    await listActiveColocatedLicenseBindings(db, organizationId, [serverId]),
+    new Set(),
   )
 
   await db.delete(license).where(eq(license.id, licenseId))

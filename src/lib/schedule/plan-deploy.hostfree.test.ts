@@ -511,7 +511,8 @@ test('planEnvironmentDeploy keeps the co-located control-plane host out of the u
   const compose = composeWithWeb()
   const colocatedCalls: string[][] = []
   const deps = noopDeps({
-    listColocatedServerIds: async (_db, serverIds) => {
+    listColocatedServerIds: async (_db, organizationId, serverIds) => {
+      assertEquals(organizationId, ORG_ID)
       colocatedCalls.push([...serverIds].sort((a, b) => a.localeCompare(b)))
       return new Set([SERVER_A])
     },

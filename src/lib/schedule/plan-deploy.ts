@@ -28,7 +28,10 @@ import { interpretServiceSchedule } from './interpret.ts'
 import { reconcileServicesFromCompose } from '../../client/environments/reconcile-services.ts'
 import { registerComposeVolumes } from '../../client/environments/register-compose-volumes.ts'
 import { registerComposeMounts } from '../../client/environments/register-compose-mounts.ts'
-import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
+import {
+  listActiveColocatedLicenseBindings,
+  resolveColocatedServerIdSet,
+} from '../../client/servers/colocated.ts'
 import {
   planEnvironmentSchedule,
   type FleetServer,
@@ -101,12 +104,21 @@ export type PlanEnvironmentDeployDeps = {
  */
 async function listColocatedServerIds(
   db: Db,
+  organizationId: string,
   serverIds: string[],
 ): Promise<Set<string>> {
-  return await resolveColocatedServerIdSet(db, undefined, serverIds, {
+  const colocated = await resolveColocatedServerIdSet(db, undefined, serverIds, {
     orgScoped: true,
     includeSelfHostPin: true,
   })
+  // The guard's fallback before the self-host pin exists: an active
+  // `this server` license bound to the row.
+  for (
+    const id of await listActiveColocatedLicenseBindings(db, organizationId, serverIds)
+  ) {
+    colocated.add(id)
+  }
+  return colocated
 }
 
 /** Host-free: pull `options.compose` (or null) from project/environment options. */
@@ -197,7 +209,7 @@ async function loadTenantFleet(
     .from(server)
     .where(eq(server.organizationId, organizationId))
   const colocated = allRows.length > 0
-    ? await deps.listColocated(db, allRows.map((row) => row.id))
+    ? await deps.listColocated(db, organizationId, allRows.map((row) => row.id))
     : new Set<string>()
   const rows = allRows.filter((row) =>
     !colocated.has(row.id) || row.id === deps.pinServerId
