@@ -1,14 +1,14 @@
-import { and, eq, sql } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { account, user } from '../../lib/db/schema.ts'
-import { isExplicitDevelopmentMode } from '../../dev-mode.ts'
-import { isInstanceInstalled } from './install-state.ts'
-import { verifyPassword } from './password.ts'
-import { compatLogWarn } from '../../log-compat.ts'
+import { and, eq, sql } from "drizzle-orm";
+import type { Db } from "../../db.ts";
+import { account, user } from "../../lib/db/schema.ts";
+import { isExplicitDevelopmentMode } from "../../dev-mode.ts";
+import { isInstanceInstalled } from "./install-state.ts";
+import { verifyPassword } from "./password.ts";
+import { compatLogWarn } from "../../log-compat.ts";
 
-export const PAM_ROOT_USERNAME = 'root'
+export const PAM_ROOT_USERNAME = "root";
 
-const HOST_USERNAME_RE = /^[a-zA-Z0-9._-]+$/
+const HOST_USERNAME_RE = /^[a-zA-Z0-9._-]+$/;
 
 /**
  * Fixed Argon2id PHC string (baseline OWASP params, no real account behind
@@ -20,65 +20,118 @@ const HOST_USERNAME_RE = /^[a-zA-Z0-9._-]+$/
  * `check:workers-bundle` rejects outside a request handler.
  */
 const TIMING_SAFE_DUMMY_ARGON2ID_HASH =
-  '$argon2id$v=19$m=19456,t=2,p=1$YhRmrUGYipN2DNXipawzXg$4LBWbfHCDCeMA2i1czRRpclNzQPo01h/0sfSMSOq9Yg'
+  "$argon2id$v=19$m=19456,t=2,p=1$YhRmrUGYipN2DNXipawzXg$4LBWbfHCDCeMA2i1czRRpclNzQPo01h/0sfSMSOq9Yg";
 
-export type AuthRuntime = 'deno' | 'workers'
+export type AuthRuntime = "deno" | "workers";
 
 /** Hyperdrive caches SELECTs; auth reads after verify must not serve stale rows. */
 function bypassHyperdriveQueryCache() {
-  return sql`random() >= 0`
+  return sql`random() >= 0`;
 }
 
 export type VerifyResult =
   | { ok: true; username: string; isRoot: true }
-  | { ok: true; userId: string; email: string; isRoot: false; is2FaEnabled: boolean }
-  | { ok: false; reason?: 'email_not_verified' }
+  | {
+    ok: true;
+    userId: string;
+    email: string;
+    isRoot: false;
+    is2FaEnabled: boolean;
+  }
+  | { ok: false; reason?: "email_not_verified" };
 
-async function verifyPamLogin(username: string, password: string): Promise<boolean> {
-  if (!HOST_USERNAME_RE.test(username)) return false
+/**
+ * Dynamic-loader variables Deno refuses to pass to a child under a restricted
+ * `--allow-run` (it throws NotCapable "spawn subprocess with LD_LIBRARY_PATH
+ * environment variable"). The compiled instance unit sets LD_LIBRARY_PATH for
+ * the vendored libduckdb.so, which made every spawn here fail on a managed
+ * install — the wizard rejected every host credential (install-rehearsal,
+ * Road to 0.1.x). The children (sudo, pamtester, sh) need none of them.
+ */
+const LOADER_ENV_VARS = [
+  "LD_LIBRARY_PATH",
+  "LD_PRELOAD",
+  "LD_AUDIT",
+  "DYLD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+];
+
+export function spawnEnvWithoutLoaderVars(
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  const env = { ...Deno.env.toObject(), ...extra };
+  for (const key of LOADER_ENV_VARS) delete env[key];
+  return env;
+}
+
+async function verifyPamLogin(
+  username: string,
+  password: string,
+): Promise<boolean> {
+  if (!HOST_USERNAME_RE.test(username)) return false;
 
   try {
     // Pipe the password on stdin — never put it in the child environment
     // or invoke a shell pipeline.
-    const child = new Deno.Command('sudo', {
-      args: ['-n', '/usr/bin/pamtester', 'login', username, 'authenticate'],
-      stdin: 'piped',
-      stdout: 'null',
-      stderr: 'null',
-      // Do not spread Deno.env or inject the password into the child environment.
-    }).spawn()
+    const child = new Deno.Command("sudo", {
+      args: ["-n", "/usr/bin/pamtester", "login", username, "authenticate"],
+      // Inherit the environment minus the dynamic-loader variables — never
+      // inject the password into it.
+      clearEnv: true,
+      env: spawnEnvWithoutLoaderVars(),
+      stdin: "piped",
+      stdout: "null",
+      stderr: "null",
+    }).spawn();
 
-    const writer = child.stdin.getWriter()
+    const writer = child.stdin.getWriter();
     try {
-      await writer.write(new TextEncoder().encode(`${password}\n`))
+      await writer.write(new TextEncoder().encode(`${password}\n`));
     } finally {
-      await writer.close()
+      await writer.close();
     }
 
-    const status = await child.status
-    return status.success
-  } catch {
-    return false
+    const status = await child.status;
+    return status.success;
+  } catch (err) {
+    // Never silent: on a compiled instance a spawn refusal (NotCapable,
+    // EACCES on the working directory, a missing pamtester) is
+    // indistinguishable from a wrong password without this line.
+    compatLogWarn(
+      "auth",
+      `install host-credential check could not run pamtester: ${
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+      }`,
+    );
+    return false;
   }
 }
 
 async function userHasInstallSudo(username: string): Promise<boolean> {
-  if (!HOST_USERNAME_RE.test(username)) return false
+  if (!HOST_USERNAME_RE.test(username)) return false;
 
   try {
-    const result = await new Deno.Command('/bin/sh', {
+    const result = await new Deno.Command("/bin/sh", {
       args: [
-        '-c',
-        String.raw`groups=$(id -nG "$TP_PAM_USERNAME" 2>/dev/null) || exit 1; for g in sudo wheel admin; do echo "$groups" | tr " " "\n" | grep -qx "$g" && exit 0; done; exit 1`,
+        "-c",
+        String
+          .raw`groups=$(id -nG "$TP_PAM_USERNAME" 2>/dev/null) || exit 1; for g in sudo wheel admin; do echo "$groups" | tr " " "\n" | grep -qx "$g" && exit 0; done; exit 1`,
       ],
-      env: { ...Deno.env.toObject(), TP_PAM_USERNAME: username },
-      stdout: 'null',
-      stderr: 'null',
-    }).output()
+      clearEnv: true,
+      env: spawnEnvWithoutLoaderVars({ TP_PAM_USERNAME: username }),
+      stdout: "null",
+      stderr: "null",
+    }).output();
 
-    return result.success
-  } catch {
-    return false
+    return result.success;
+  } catch (err) {
+    compatLogWarn(
+      "auth",
+      `install host-credential check could not read group membership: ${
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+      }`,
+    );
+    return false;
   }
 }
 
@@ -90,15 +143,15 @@ async function userHasInstallSudo(username: string): Promise<boolean> {
  * if it is set outside explicit development mode it is ignored with a warning.
  */
 export function isDevHostAuthMode(): boolean {
-  if (Deno.env.get('TURBOPANEL_DEV_HOST_AUTH') !== 'group-only') return false
+  if (Deno.env.get("TURBOPANEL_DEV_HOST_AUTH") !== "group-only") return false;
   if (!isExplicitDevelopmentMode()) {
     compatLogWarn(
-      'auth',
-      'TURBOPANEL_DEV_HOST_AUTH=group-only is ignored outside explicit development mode',
-    )
-    return false
+      "auth",
+      "TURBOPANEL_DEV_HOST_AUTH=group-only is ignored outside explicit development mode",
+    );
+    return false;
   }
-  return true
+  return true;
 }
 
 /** PAM root or a sudo-capable host user — install wizard only, never issues a session. */
@@ -108,27 +161,27 @@ export async function verifyInstallHostCredentials(
   runtime: AuthRuntime,
   db?: Db,
 ): Promise<boolean> {
-  if (runtime !== 'deno') return false
-  if (db && await isInstanceInstalled(db)) return false
+  if (runtime !== "deno") return false;
+  if (db && await isInstanceInstalled(db)) return false;
 
-  const trimmed = username.trim()
-  if (!HOST_USERNAME_RE.test(trimmed) || !password) return false
+  const trimmed = username.trim();
+  if (!HOST_USERNAME_RE.test(trimmed) || !password) return false;
 
   if (isDevHostAuthMode()) {
     compatLogWarn(
-      'dev',
-      'TURBOPANEL_DEV_HOST_AUTH=group-only — PAM password verification is disabled; verifying group membership only',
-    )
-    if (trimmed === PAM_ROOT_USERNAME) return true
-    return await userHasInstallSudo(trimmed)
+      "dev",
+      "TURBOPANEL_DEV_HOST_AUTH=group-only — PAM password verification is disabled; verifying group membership only",
+    );
+    if (trimmed === PAM_ROOT_USERNAME) return true;
+    return await userHasInstallSudo(trimmed);
   }
 
-  const pamOk = await verifyPamLogin(trimmed, password)
-  if (!pamOk) return false
+  const pamOk = await verifyPamLogin(trimmed, password);
+  if (!pamOk) return false;
 
-  if (trimmed === PAM_ROOT_USERNAME) return true
+  if (trimmed === PAM_ROOT_USERNAME) return true;
 
-  return await userHasInstallSudo(trimmed)
+  return await userHasInstallSudo(trimmed);
 }
 
 async function verifyDbUserCredentials(
@@ -136,7 +189,7 @@ async function verifyDbUserCredentials(
   email: string,
   password: string,
 ): Promise<VerifyResult> {
-  const trimmed = email.trim().toLowerCase()
+  const trimmed = email.trim().toLowerCase();
 
   const rows = await db
     .select({
@@ -150,7 +203,7 @@ async function verifyDbUserCredentials(
     .from(user)
     .innerJoin(
       account,
-      and(eq(account.userId, user.id), eq(account.providerId, 'credential')),
+      and(eq(account.userId, user.id), eq(account.providerId, "credential")),
     )
     .where(
       and(
@@ -158,23 +211,23 @@ async function verifyDbUserCredentials(
         bypassHyperdriveQueryCache(),
       ),
     )
-    .limit(1)
+    .limit(1);
 
-  const row = rows[0]
+  const row = rows[0];
   if (!row?.password || row.isDisabled) {
     // Same Argon2id cost as a real verify below, so this branch's latency
     // does not disclose whether the email has a local password account.
-    await verifyPassword(password, TIMING_SAFE_DUMMY_ARGON2ID_HASH)
-    return { ok: false }
+    await verifyPassword(password, TIMING_SAFE_DUMMY_ARGON2ID_HASH);
+    return { ok: false };
   }
 
-  const valid = await verifyPassword(password, row.password)
+  const valid = await verifyPassword(password, row.password);
   if (!valid) {
-    return { ok: false }
+    return { ok: false };
   }
 
   if (!row.isEmailVerified) {
-    return { ok: false, reason: 'email_not_verified' }
+    return { ok: false, reason: "email_not_verified" };
   }
 
   return {
@@ -183,7 +236,7 @@ async function verifyDbUserCredentials(
     email: row.email,
     isRoot: false,
     is2FaEnabled: row.is2FaEnabled === true,
-  }
+  };
 }
 
 export async function verifyCredentials(
@@ -192,29 +245,29 @@ export async function verifyCredentials(
   runtime: AuthRuntime,
   db?: Db,
 ): Promise<VerifyResult> {
-  if (runtime === 'deno' && login === PAM_ROOT_USERNAME) {
+  if (runtime === "deno" && login === PAM_ROOT_USERNAME) {
     if (db && await isInstanceInstalled(db)) {
-      return { ok: false }
+      return { ok: false };
     }
     const ok = await verifyInstallHostCredentials(
       PAM_ROOT_USERNAME,
       password,
       runtime,
       db,
-    )
+    );
     if (ok) {
       return {
         ok: true,
         username: PAM_ROOT_USERNAME,
         isRoot: true,
-      }
+      };
     }
-    return { ok: false }
+    return { ok: false };
   }
 
   if (db === undefined) {
-    return { ok: false }
+    return { ok: false };
   }
 
-  return await verifyDbUserCredentials(db, login, password)
+  return await verifyDbUserCredentials(db, login, password);
 }

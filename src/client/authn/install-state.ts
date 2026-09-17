@@ -1060,16 +1060,22 @@ export async function persistColocatedLicenseCredentials(
     // Write server.id before license credentials so a racing enroll always sees
     // the pre-provisioned seat (fresh license + missing serverId would be
     // rejected as already consumed).
+    // 0640: the daemon (group tp) reads these; nobody else on the host may.
+    // On a managed install the state directory is tp:tp with the setgid bit
+    // (instance-install.yml), so the instance user's files land in group tp.
     if (serverId) {
       await Deno.writeTextFile(`${stateDir}/server.id`, `${serverId}\n`, {
         create: true,
+        mode: 0o640,
       });
     }
     await Deno.writeTextFile(`${stateDir}/license.id`, licenseId, {
       create: true,
+      mode: 0o640,
     });
     await Deno.writeTextFile(`${stateDir}/license.token`, licenseToken, {
       create: true,
+      mode: 0o640,
     });
     return true;
   } catch (err) {
