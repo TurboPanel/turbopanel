@@ -824,6 +824,45 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
   binary that ships. **Run it inside the Vagrant guest on both linux-x64 and
   linux-arm64** (`../dev/AGENTS.md` → Testing), never on the host.
 
+## The compiled instance without a checkout (`instance-runtime-packaging`)
+
+The release package (`.github/workflows/release.yml`,
+`turbopanel-instance-<version>-<arch>.tar.zst`) is `bin/turbopanel-instance`,
+`bin/turbopanel-mailer` and `lib/libduckdb.so`. Everything the installer used
+to reach into a source checkout for is now a verb of the instance binary,
+routed by `src/deno.ts` and imported lazily so the server path (which loads
+the DuckDB addon at module evaluation and so needs the vendored `.so` on
+`LD_LIBRARY_PATH`) is never touched by an install-time run:
+
+- `migrate` (`src/cli/migrate.ts`) — the same two gates as `pnpm migrate`:
+  refuse a server without `uuidv7()` (PostgreSQL 18+), then apply the
+  migrations under a blocking `pg_advisory_lock` on the same connection the
+  drizzle migrator uses, into `public.migration`. The lock key, table, schema
+  and version floor are pinned against `scripts/migrate-locked.mjs` /
+  `check-postgres-compat.mjs` by `src/cli/migrate.test.ts`. The compile tasks
+  `--include migrations`, so the files come out of the binary
+  (`import.meta.url`-relative, never the cwd; the embedded VFS is readable
+  regardless of the `--allow-read` pins). **After `pnpm generate`, nothing else
+  is needed — the next compile embeds the new files.**
+- `generate-secret` (`src/cli/generate-secret.ts`) — one
+  `TURBOPANEL_SECRET`-shaped value, from `scripts/generate-secret.mjs`.
+- `generate-self-signed-cert` (`src/cli/generate-self-signed-cert.ts`) — runs
+  `scripts/generate-self-signed-cert.mjs` inside the binary; needs
+  `/usr/bin/openssl` and `/usr/bin/hostname` on `--allow-run`, and with no
+  `TURBOPANEL_TLS_CERTS_DIR` puts the leaf at `<state dir>/tls/certs` (inside
+  `--allow-write`) instead of beside a repo root the binary does not have.
+- The mailer is its own binary (`deno task compile:mailer` →
+  `dist/turbopanel-mailer`). It bakes an unrestricted outbound `--allow-net`:
+  a dedicated process that talks to operator-configured SMTP relays and
+  Mailgun is the one place that is honest, and the instance binary's pins are
+  unchanged. Reads `/run/turbopanel`, `/etc/turbopanel`, `/var/lib/turbopanel`,
+  `/var/run/turbopanel`; writes only `/var/run/turbopanel` (postgres.js needs
+  it to connect over the socket).
+
+`src/deno-compile-permissions.test.ts` pins all of the above. `deno compile`
+with BYONM copies the whole `node_modules` tree into each binary, which is why
+they are ~700 MB uncompressed; the release job compresses with `zstd -19`.
+
 ## Subsystem docs (nested `AGENTS.md`)
 
 Large subsystems live in focused `AGENTS.md` files next to their code — Cursor

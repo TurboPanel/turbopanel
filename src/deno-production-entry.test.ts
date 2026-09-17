@@ -18,7 +18,9 @@ it("production Deno entry does not import developer modules", async () => {
 });
 
 it("development Deno entry registers the developer surface", async () => {
-  const entry = await Deno.readTextFile(new URL("./deno-dev.ts", import.meta.url));
+  const entry = await Deno.readTextFile(
+    new URL("./deno-dev.ts", import.meta.url),
+  );
   assert(entry.includes("registerDeveloperRoutes"));
   assert(entry.includes("registerVersionRoute"));
   assert(entry.includes("registerDevSyncRoutes"));
@@ -74,6 +76,9 @@ async function walkValueImportGraph(entry: URL): Promise<string[]> {
     }
     for (const specifier of specifiers) {
       if (!specifier.startsWith(".")) continue;
+      // A JSON module (src/version.ts imports ../deno.json for the version)
+      // is data: it imports nothing and its text is not code.
+      if (specifier.endsWith(".json")) continue;
       queue.push(new URL(specifier, href).href);
     }
   }

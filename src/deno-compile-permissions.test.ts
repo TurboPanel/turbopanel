@@ -331,3 +331,72 @@ it("production compile excludes developer-only permissions and entry", async () 
     );
   }
 });
+
+it("compile tasks embed the migrations and can run openssl for the install-time verbs", async () => {
+  // instance-runtime-packaging (Road to 0.1.x): `turbopanel-instance migrate`
+  // reads the shipped migrations out of the binary, and
+  // `generate-self-signed-cert` shells out to /usr/bin/openssl and
+  // /usr/bin/hostname exactly as scripts/generate-self-signed-cert.mjs does.
+  const tasks = await readCompileTasks();
+  for (const [taskName, task] of Object.entries(tasks)) {
+    assert(
+      /(^|\s)--include migrations(\s|$)/.test(task),
+      `${taskName} must --include migrations so the migrate subcommand works without a checkout`,
+    );
+    const allowRun = (/--allow-run=([^\s]+)/.exec(task)?.[1] ?? "").split(",");
+    for (const bin of ["openssl", "/usr/bin/openssl", "/usr/bin/hostname"]) {
+      assert(
+        allowRun.includes(bin),
+        `${taskName} --allow-run must include ${bin}`,
+      );
+    }
+  }
+});
+
+it("the mailer compiles as its own binary with outbound network and the socket tree only", async () => {
+  // A compiled mailer bakes its permission set. Unlike the instance, it talks
+  // to operator-configured SMTP relays and Mailgun — the one place a broad
+  // --allow-net is honest — and touches only the runtime/config trees and the
+  // Postgres socket directory (postgres.js needs write there to connect).
+  const denoJson = JSON.parse(
+    await Deno.readTextFile(new URL("../deno.json", import.meta.url)),
+  );
+  const task: unknown = denoJson.tasks?.["compile:mailer"];
+  assert(
+    typeof task === "string",
+    "deno.json must define tasks.compile:mailer",
+  );
+  assert(
+    task.endsWith(" mailer/main.ts"),
+    "compile:mailer must target mailer/main.ts",
+  );
+  assert(
+    task.includes(" -o dist/turbopanel-mailer "),
+    "compile:mailer must emit dist/turbopanel-mailer",
+  );
+  assert(
+    /(^|\s)--allow-net(\s|$)/.test(task),
+    "compile:mailer grants unrestricted outbound --allow-net",
+  );
+  const allowRead = (/--allow-read=([^\s]+)/.exec(task)?.[1] ?? "").split(",");
+  for (
+    const dir of ["/run/turbopanel", "/etc/turbopanel", "/var/run/turbopanel"]
+  ) {
+    assert(
+      allowRead.includes(dir),
+      `compile:mailer --allow-read must include ${dir}`,
+    );
+  }
+  const allowWrite = (/--allow-write=([^\s]+)/.exec(task)?.[1] ?? "").split(
+    ",",
+  );
+  assert(
+    allowWrite.includes("/var/run/turbopanel"),
+    "compile:mailer --allow-write must cover the Postgres socket tree",
+  );
+  assert(
+    !task.includes("--allow-run"),
+    "compile:mailer must not --allow-run anything",
+  );
+  assert(!task.includes("--allow-ffi"), "compile:mailer must not --allow-ffi");
+});
