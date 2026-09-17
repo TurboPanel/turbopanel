@@ -187,7 +187,7 @@ async function loadTenantFleet(
     listColocated: typeof listColocatedServerIds
     pinServerId: string | null
   },
-): Promise<FleetServer[]> {
+): Promise<{ fleet: FleetServer[]; excludedColocated: number }> {
   const allRows = await db
     .select({
       id: server.id,
@@ -201,12 +201,13 @@ async function loadTenantFleet(
   const rows = allRows.filter((row) =>
     !colocated.has(row.id) || row.id === deps.pinServerId
   )
+  const excludedColocated = allRows.length - rows.length
 
   const labelsByServer = await deps.listLabels(
     db,
     rows.map((row) => row.id),
   )
-  return rows.map((row) => {
+  const fleet = rows.map((row) => {
     const labels: Record<string, string> = {}
     for (const label of labelsByServer.get(row.id) ?? []) {
       labels[label.key] = label.value
@@ -217,7 +218,15 @@ async function loadTenantFleet(
       labels,
     }
   })
+  return { fleet, excludedColocated }
 }
+
+/**
+ * What a single-host self-hosted install hears instead of "No connected
+ * servers are available" when its only daemon is the control-plane host.
+ */
+export const COLOCATED_ONLY_SERVER_MESSAGE =
+  'The only connected server is the co-located control-plane host, which does not run tenant deploys — enrol another server first'
 
 async function loadStoragePins(
   db: Db,
@@ -352,11 +361,11 @@ export async function planEnvironmentDeploy(
   const existingTasks = await listTasks(db, params.environmentId)
   const projectOptions = parseProjectOptions(projectRow.options)
   const pinServerId = envRow.serverId
-  const fleet = await loadTenantFleet(db, params.organizationId, {
-    listLabels,
-    listColocated,
-    pinServerId,
-  })
+  const { fleet, excludedColocated } = await loadTenantFleet(
+    db,
+    params.organizationId,
+    { listLabels, listColocated, pinServerId },
+  )
   const defaultServerId = projectOptions.defaultServerId ?? null
   const registerServerId = pinServerId ?? defaultServerId
   if (registerServerId) {
@@ -373,7 +382,7 @@ export async function planEnvironmentDeploy(
   }
   const storagePins = await loadStoragePins(db, params.environmentId)
 
-  const plan = planEnvironmentSchedule({
+  const scheduled = planEnvironmentSchedule({
     pinServerId,
     defaultServerId,
     fabricEnabled: Boolean(fabricRow),
@@ -389,6 +398,10 @@ export async function planEnvironmentDeploy(
     })),
     storagePins,
   })
+  const plan = !scheduled.ok && scheduled.error === 'no_eligible_server' &&
+      fleet.length === 0 && excludedColocated > 0
+    ? { ...scheduled, message: COLOCATED_ONLY_SERVER_MESSAGE }
+    : scheduled
 
   return {
     plan,

@@ -15,6 +15,7 @@ import {
   service,
 } from '../db/schema.ts'
 import {
+  COLOCATED_ONLY_SERVER_MESSAGE,
   computeStoragePinsFromMountRows,
   extractComposeFromOptions,
   planEnvironmentDeploy,
@@ -564,6 +565,9 @@ test('planEnvironmentDeploy keeps the co-located control-plane host out of the u
   assertEquals('kind' in alone, false)
   if ('kind' in alone) return
   assertEquals(alone.plan.ok, false)
+  if (alone.plan.ok) return
+  assertEquals(alone.plan.error, 'no_eligible_server')
+  assertEquals(alone.plan.message, COLOCATED_ONLY_SERVER_MESSAGE)
 
   // The self-host system environment is the one legitimate pin to that host.
   const pinned = await planEnvironmentDeploy(
