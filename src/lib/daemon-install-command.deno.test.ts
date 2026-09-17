@@ -1,11 +1,11 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals } from "@std/assert";
 import {
   buildLicenseInstallCommand,
   CDN_INSTALL_HOST,
   encodeLicenseArg,
   formatInstallScriptCurlUrl,
-} from './daemon-install-command.ts'
-import { installOriginNeedsInsecureTls } from './install-tls.ts'
+} from "./daemon-install-command.ts";
+import { installOriginNeedsInsecureTls } from "./install-tls.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -13,134 +13,185 @@ import { installOriginNeedsInsecureTls } from './install-tls.ts'
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
 function extractLicenseArg(command: string): string {
-  const match = /TURBOPANEL_LICENSE=([^\s]+)/.exec(command)
-  if (!match) throw new TypeError('no TURBOPANEL_LICENSE in command')
-  return match[1]
+  const match = /TURBOPANEL_LICENSE=([^\s]+)/.exec(command);
+  if (!match) throw new TypeError("no TURBOPANEL_LICENSE in command");
+  return match[1];
 }
 
-test('formatInstallScriptCurlUrl keeps bare CDN host and appends /run.sh elsewhere', () => {
-  assertEquals(formatInstallScriptCurlUrl('https://turbopanel.sh'), CDN_INSTALL_HOST)
-  assertEquals(formatInstallScriptCurlUrl(CDN_INSTALL_HOST), CDN_INSTALL_HOST)
+test("formatInstallScriptCurlUrl keeps bare CDN host and appends /run.sh elsewhere", () => {
   assertEquals(
-    formatInstallScriptCurlUrl('https://huey.lan:8443'),
-    'https://huey.lan:8443/run.sh',
-  )
+    formatInstallScriptCurlUrl("https://turbopanel.sh"),
+    CDN_INSTALL_HOST,
+  );
+  assertEquals(formatInstallScriptCurlUrl(CDN_INSTALL_HOST), CDN_INSTALL_HOST);
   assertEquals(
-    formatInstallScriptCurlUrl('http://huey.lan:8880'),
-    'http://huey.lan:8880/run.sh',
-  )
-})
+    formatInstallScriptCurlUrl("https://huey.lan:8443"),
+    "https://huey.lan:8443/run.sh",
+  );
+  assertEquals(
+    formatInstallScriptCurlUrl("http://huey.lan:8880"),
+    "http://huey.lan:8880/run.sh",
+  );
+});
 
-test('encodeLicenseArg emits base64url without padding', () => {
-  const encoded = encodeLicenseArg('license-id', 'token')
-  assertEquals(encoded.includes('='), false)
-  assertEquals(encoded.includes('+'), false)
-  assertEquals(encoded.includes('/'), false)
-})
+test("encodeLicenseArg emits base64url without padding", () => {
+  const encoded = encodeLicenseArg("license-id", "token");
+  assertEquals(encoded.includes("="), false);
+  assertEquals(encoded.includes("+"), false);
+  assertEquals(encoded.includes("/"), false);
+});
 
-test('buildLicenseInstallCommand uses dev /run.sh with insecure TLS', () => {
+test("buildLicenseInstallCommand uses dev /run.sh with insecure TLS", () => {
   const command = buildLicenseInstallCommand({
-    runtime: 'deno',
-    instanceUrl: 'https://huey.turbopanel.dev:8443',
-    licenseId: 'license-id',
-    licenseToken: 'token',
+    runtime: "deno",
+    instanceUrl: "https://huey.turbopanel.dev:8443",
+    licenseId: "license-id",
+    licenseToken: "token",
     insecureTls: true,
     useInstanceRunScript: true,
-  })
-  const encoded = encodeLicenseArg('license-id', 'token')
+  });
+  const encoded = encodeLicenseArg("license-id", "token");
 
-  assertEquals(command.includes('curl -fsSLk https://huey.turbopanel.dev:8443/run.sh'), true)
-  assertEquals(command.includes(`TURBOPANEL_LICENSE=${encoded}`), true)
-  assertEquals(command.includes('TURBOPANEL_HOST=https://huey.turbopanel.dev:8443'), true)
-  assertEquals(command.includes('TURBOPANEL_INSECURE_TLS=1'), true)
+  assertEquals(
+    command.includes("curl -fsSLk https://huey.turbopanel.dev:8443/run.sh"),
+    true,
+  );
+  assertEquals(command.includes(`TURBOPANEL_LICENSE=${encoded}`), true);
+  assertEquals(
+    command.includes("TURBOPANEL_HOST=https://huey.turbopanel.dev:8443"),
+    true,
+  );
+  assertEquals(command.includes("TURBOPANEL_INSECURE_TLS=1"), true);
   assertEquals(
     command.includes(
-      'TURBOPANEL_DL_BASE=https://huey.turbopanel.dev:8443/downloads/daemon',
+      "TURBOPANEL_DL_BASE=https://huey.turbopanel.dev:8443/downloads/daemon",
     ),
     true,
-  )
-})
+  );
+});
 
-test('buildLicenseInstallCommand omits insecure TLS for public overlay HTTPS', () => {
+test("buildLicenseInstallCommand omits insecure TLS for public overlay HTTPS", () => {
   const command = buildLicenseInstallCommand({
-    runtime: 'deno',
-    instanceUrl: 'https://turbopanel.dev',
-    licenseId: 'license-id',
-    licenseToken: 'token',
+    runtime: "deno",
+    instanceUrl: "https://turbopanel.dev",
+    licenseId: "license-id",
+    licenseToken: "token",
     insecureTls: false,
     useInstanceRunScript: true,
-  })
-  assertEquals(command.includes('curl -fsSL https://turbopanel.dev/run.sh'), true)
-  assertEquals(command.includes('curl -fsSLk'), false)
-  assertEquals(command.includes('TURBOPANEL_INSECURE_TLS'), false)
+  });
   assertEquals(
-    command.includes('TURBOPANEL_DL_BASE=https://turbopanel.dev/downloads/daemon'),
+    command.includes("curl -fsSL https://turbopanel.dev/run.sh"),
     true,
-  )
-})
+  );
+  assertEquals(command.includes("curl -fsSLk"), false);
+  assertEquals(command.includes("TURBOPANEL_INSECURE_TLS"), false);
+  assertEquals(
+    command.includes(
+      "TURBOPANEL_DL_BASE=https://turbopanel.dev/downloads/daemon",
+    ),
+    true,
+  );
+});
 
-test('buildLicenseInstallCommand self-hosted Deno curls CDN with TURBOPANEL_HOST', () => {
+test("buildLicenseInstallCommand self-hosted Deno curls CDN with TURBOPANEL_HOST", () => {
   const command = buildLicenseInstallCommand({
-    runtime: 'deno',
-    instanceUrl: 'https://panel.example.com',
-    licenseId: 'license-id',
-    licenseToken: 'token',
-  })
+    runtime: "deno",
+    instanceUrl: "https://panel.example.com",
+    licenseId: "license-id",
+    licenseToken: "token",
+  });
 
-  assertEquals(command.includes(`curl -fsSL ${CDN_INSTALL_HOST}`), true)
-  assertEquals(command.includes('/run.sh'), false)
-  assertEquals(command.includes('TURBOPANEL_HOST=https://panel.example.com'), true)
-  assertEquals(command.includes('TURBOPANEL_INSECURE_TLS'), false)
-})
+  assertEquals(command.includes(`curl -fsSL ${CDN_INSTALL_HOST}`), true);
+  assertEquals(command.includes("/run.sh"), false);
+  assertEquals(
+    command.includes("TURBOPANEL_HOST=https://panel.example.com"),
+    true,
+  );
+  assertEquals(command.includes("TURBOPANEL_INSECURE_TLS"), false);
+});
 
-test('buildLicenseInstallCommand Workers omits host on production URL', () => {
-  const encoded = encodeLicenseArg('license-id', 'token')
+test("buildLicenseInstallCommand Workers omits host on production URL", () => {
+  const encoded = encodeLicenseArg("license-id", "token");
   const command = buildLicenseInstallCommand({
-    runtime: 'workers',
-    instanceUrl: 'https://turbopanel.app',
-    licenseId: 'license-id',
-    licenseToken: 'token',
-  })
+    runtime: "workers",
+    instanceUrl: "https://turbopanel.app",
+    licenseId: "license-id",
+    licenseToken: "token",
+  });
 
   assertEquals(
     command,
     `curl -fsSL ${CDN_INSTALL_HOST} | TURBOPANEL_LICENSE=${encoded} sh`,
-  )
-  assertEquals(command.includes('TURBOPANEL_HOST'), false)
-})
+  );
+  assertEquals(command.includes("TURBOPANEL_HOST"), false);
+});
 
-test('composed pipeline omits insecure TLS for a public non-443 origin', () => {
-  const instanceUrl = 'https://panel.example.com:8443'
+test("composed pipeline omits insecure TLS for a public non-443 origin", () => {
+  const instanceUrl = "https://panel.example.com:8443";
   const insecureTls = installOriginNeedsInsecureTls(instanceUrl, {
     publicOrigin: true,
-  })
+  });
   const command = buildLicenseInstallCommand({
-    runtime: 'deno',
+    runtime: "deno",
     instanceUrl,
-    licenseId: 'license-id',
-    licenseToken: 'token',
+    licenseId: "license-id",
+    licenseToken: "token",
     insecureTls,
-  })
-  assertEquals(command.includes('curl -fsSLk'), false)
-  assertEquals(command.includes('TURBOPANEL_INSECURE_TLS=1'), false)
-})
+  });
+  assertEquals(command.includes("curl -fsSLk"), false);
+  assertEquals(command.includes("TURBOPANEL_INSECURE_TLS=1"), false);
+});
 
-test('license arg round-trips through base64url decoding', () => {
-  const licenseId = 'license-id'
-  const licenseToken = 'token'
+test("license arg round-trips through base64url decoding", () => {
+  const licenseId = "license-id";
+  const licenseToken = "token";
   const command = buildLicenseInstallCommand({
-    runtime: 'deno',
-    instanceUrl: 'https://example.com:8443',
+    runtime: "deno",
+    instanceUrl: "https://example.com:8443",
     licenseId,
     licenseToken,
-  })
+  });
 
-  const value = extractLicenseArg(command)
-  const standard = value.replaceAll('-', '+').replaceAll('_', '/')
-  const padLen = (4 - (standard.length % 4)) % 4
-  const padded = standard + '='.repeat(padLen)
-  assertEquals(atob(padded), `${licenseId}:${licenseToken}`)
-})
+  const value = extractLicenseArg(command);
+  const standard = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padLen = (4 - (standard.length % 4)) % 4;
+  const padded = standard + "=".repeat(padLen);
+  assertEquals(atob(padded), `${licenseId}:${licenseToken}`);
+});
+
+test("buildLicenseInstallCommand carries the instance channel so enrolled daemons follow it, trunk implicit", () => {
+  const base = {
+    runtime: "deno" as const,
+    instanceUrl: "https://panel.example",
+    licenseId: "lic",
+    licenseToken: "tok",
+  };
+  const release = buildLicenseInstallCommand({
+    ...base,
+    updateChannel: "release",
+  });
+  assertEquals(release.includes(" TURBOPANEL_UPDATE_CHANNEL=release sh"), true);
+  const rc = buildLicenseInstallCommand({ ...base, updateChannel: "rc" });
+  assertEquals(rc.includes("TURBOPANEL_UPDATE_CHANNEL=rc"), true);
+  // run.sh already defaults to trunk; the command stays as short as it was.
+  assertEquals(
+    buildLicenseInstallCommand({ ...base, updateChannel: "trunk" }).includes(
+      "UPDATE_CHANNEL",
+    ),
+    false,
+  );
+  assertEquals(
+    buildLicenseInstallCommand(base).includes("UPDATE_CHANNEL"),
+    false,
+  );
+  // Workers too.
+  const hosted = buildLicenseInstallCommand({
+    ...base,
+    runtime: "workers",
+    updateChannel: "release",
+  });
+  assertEquals(hosted.includes("TURBOPANEL_UPDATE_CHANNEL=release"), true);
+});

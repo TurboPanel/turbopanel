@@ -48,6 +48,7 @@ import {
   SERVER_CAPACITY_EXCEEDED_ERROR,
 } from "../../lib/server-capacity.ts";
 import { getOrgId } from "../shared.ts";
+import { resolveInstanceUpdateChannel } from "../../lib/update/channel.ts";
 import {
   installBaseUrlValidationError,
   isInvalidInstallBaseUrl,
@@ -332,6 +333,7 @@ export function registerLicenseRoutes(
         licenseToken,
         insecureTls,
         useInstanceRunScript: Boolean(devSurface),
+        updateChannel: resolveInstanceUpdateChannel(c.get("platformEnv")),
       });
 
       compatLogInfo(
