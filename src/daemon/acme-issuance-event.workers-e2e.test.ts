@@ -9,7 +9,9 @@ import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
 import { setDaemonCellProjectionDbFactoryForTests } from './cell/do.ts'
 import { createWorkersDb, endDbConnection } from '../db.ts'
-import { organization, tls } from '../lib/db/schema.ts'
+import { organization, server, tls } from '../lib/db/schema.ts'
+
+const CELL_HEADER = 'X-Turbopanel-Cell-Server-Id'
 
 // Isolated on purpose, in its own file: the one piece
 // `sec-acme-failure-visibility` (Road-to-0.1.x artifact) was left unticked
@@ -35,7 +37,11 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
     const realDb = createWorkersDb(env.HYPERDRIVE)
     try {
       const [org] = await realDb.insert(organization).values({}).returning({ id: organization.id })
-      const hostname = 'acme-e2e-test.example.com'
+      // Unique per run: the handler patches the first `managed` row covering
+      // the hostname, and this file never deletes its rows (throwaway-database
+      // convention), so a fixed hostname would match a previous run's row on
+      // the second run against the same database.
+      const hostname = `acme-e2e-${crypto.randomUUID().slice(0, 8)}.example.com`
       const [row] = await realDb
         .insert(tls)
         .values({
@@ -46,9 +52,14 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
         })
         .returning({ id: tls.id })
 
-      // `server.id` is a `uuid` column — the connect projection this WS
-      // open triggers writes there for real in this test.
-      const serverId = crypto.randomUUID()
+      // A real `server` row, so the DO's connect/disconnect projections this
+      // WS open triggers have a row to write — and so the drain below can
+      // observe the disconnect landing on `is_connected`.
+      const [srv] = await realDb
+        .insert(server)
+        .values({ organizationId: org!.id, name: 'acme-e2e' })
+        .returning({ id: server.id })
+      const serverId = srv!.id
       const keyId = crypto.randomUUID()
       const secrets = await deriveDaemonJwtKeyring(
         parseSecretsFromEnv(
@@ -101,6 +112,36 @@ describe('acme-issuance-event real-Postgres end-to-end', () => {
       if (!matched) throw lastError
 
       ws.close(1000, 'test done')
+
+      // Drain the Durable Object before this file's isolate goes away. The
+      // DO's connect/inbound/disconnect projections each open and close a
+      // real postgres.js socket inside `ctx.waitUntil`, and its alarms open
+      // more later. Returning while any of that is in flight lets the pool
+      // tear the isolate down under an open socket -- workerd cancels the
+      // stream ("Stream was cancelled"), which surfaces as an unhandled
+      // rejection here and, on the CI runner, as a Vitest process that never
+      // exits (Road to 0.1.x, `ci-turbopanel-build-hang`). So: wait for the
+      // disconnect projection to land on the real row, then purge the cell
+      // (closes sockets, deletes the alarm), then give the last `end()` a tick.
+      const disconnectDeadline = Date.now() + 10_000
+      let disconnected = false
+      while (Date.now() < disconnectDeadline && !disconnected) {
+        const [after] = await realDb
+          .select({ isConnected: server.isConnected })
+          .from(server)
+          .where(eq(server.id, serverId))
+        disconnected = after?.isConnected === false
+        if (!disconnected) await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      expect(disconnected).toBe(true)
+
+      const purge = await stub.fetch('https://do.internal/rpc/purge-cell', {
+        method: 'POST',
+        headers: { [CELL_HEADER]: serverId, 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      expect(purge.status).toBe(200)
+      await new Promise((resolve) => setTimeout(resolve, 250))
     } finally {
       await endDbConnection(realDb)
       setDaemonCellProjectionDbFactoryForTests(null)

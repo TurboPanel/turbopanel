@@ -51,7 +51,10 @@ describe('compose-privileged-fields real-Postgres end-to-end', () => {
         .returning({ id: organization.id })
       const [owner] = await realDb
         .insert(user)
-        .values({ email: 'owner@compose-gate-e2e.example.com', role: 'user' })
+        // Unique per run: this file never deletes its rows (throwaway-database
+        // convention), and `user.email` is unique, so a fixed address fails on
+        // the second run against the same database.
+        .values({ email: `owner-${crypto.randomUUID().slice(0, 8)}@compose-gate-e2e.example.com`, role: 'user' })
         .returning({ id: user.id })
 
       const token = crypto.randomUUID()

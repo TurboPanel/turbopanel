@@ -17,6 +17,10 @@ jobs:
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
+    # The seven green runs before 2026-09-16 took 17-34 minutes end to end. A
+    # Vitest process that never exits (Road to 0.1.x, ci-turbopanel-build-hang)
+    # otherwise sits for GitHub's 6-hour default and is cancelled silently.
+    timeout-minutes: 45
     concurrency:
       group: instance-sonar-${{ github.event_name }}-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -130,6 +134,7 @@ jobs:
   # cannot see PRs made here.
   metrics-legacy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     concurrency:
       group: instance-metrics-legacy-${{ github.event_name }}-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}

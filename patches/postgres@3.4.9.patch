@@ -1,0 +1,20 @@
+diff --git a/cf/polyfills.js b/cf/polyfills.js
+index 53c5203dd5b057d741d14d708ba83b27751b527c..5d240cd6f48e04db37fa54c4ad05e1d45fae15f0 100644
+--- a/cf/polyfills.js
++++ b/cf/polyfills.js
+@@ -211,7 +211,14 @@ function Socket() {
+   }
+ 
+   function error(err) {
+-    tcp.emit('error', err)
++    // TurboPanel patch: postgres.js calls `socket.removeAllListeners()` in
++    // `closed()` (cf/src/connection.js) while the polyfill's `read()` loop can
++    // still be awaiting `reader.read()`. When the raw socket then closes, that
++    // read rejects ("Stream was cancelled."), lands here, and `emit('error')`
++    // on an emitter with no listeners throws -- turning every client close
++    // under workerd into an unhandled rejection (Durable Object projections,
++    // Vitest workers pool). Emit only when someone is listening.
++    if (tcp.listenerCount('error') > 0) tcp.emit('error', err)
+     tcp.emit('close')
+   }
+ }
