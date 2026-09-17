@@ -571,6 +571,8 @@ deno test -A --coverage=coverage/deno-profile \
   src/server-registry.test.ts \
   src/server-registry.hostfree.test.ts \
   src/surfaces.test.ts \
+  src/cli/generate-secret.test.ts \
+  src/cli/generate-self-signed-cert.test.ts \
   src/cli/migrate.test.ts \
   src/client/access/routes.test.ts \
   src/client/access/routes-helpers.test.ts \

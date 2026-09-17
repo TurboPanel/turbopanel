@@ -79,3 +79,32 @@ test("runMigrateCommand reports an unreachable server as a refusal, not a crash"
   assertEquals(code, 1);
   assertMatch(errors[0] ?? "", /cannot reach the target PostgreSQL server/);
 });
+
+// The gates and the migrator against a real server: CI (build.yml) sets
+// TURBOPANEL_DATABASE_URL and has already run `pnpm migrate`, so this is a
+// second, no-op pass that still takes the lock and walks the journal; locally
+// it skips without a URL, the same way the command-consumer suites do.
+test("runMigrateCommand passes both gates and is a no-op on an already-migrated database", async () => {
+  const url = Deno.env.get("TURBOPANEL_DATABASE_URL")?.trim();
+  if (!url) {
+    console.warn(
+      "Skipping runMigrateCommand integration test: TURBOPANEL_DATABASE_URL not set",
+    );
+    return;
+  }
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const code = await runMigrateCommand({
+    env: { TURBOPANEL_DATABASE_URL: url },
+    log: (line) => logs.push(line),
+    error: (line) => errors.push(line),
+  });
+  assertEquals(errors, []);
+  assertEquals(code, 0);
+  assertMatch(logs[0] ?? "", /^PostgreSQL .* with uuidv7\(\) — ok$/);
+  assertEquals(logs.slice(1), [
+    "waiting for the migration advisory lock…",
+    "lock acquired, applying migrations…",
+    "migrations applied successfully",
+  ]);
+});
