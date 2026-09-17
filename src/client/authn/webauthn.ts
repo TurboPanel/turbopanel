@@ -392,10 +392,16 @@ export function derToRawEcdsaSignature(
   return raw;
 }
 
-function ecdsaSignatureForVerify(signature: Uint8Array): Uint8Array {
-  if (
-    signature.length === ECDSA_P256_COMPONENT_LEN * 2 && signature[0] !== 0x30
-  ) {
+/**
+ * Normalize an ES256 assertion signature to the raw r‖s form WebCrypto
+ * verifies. Authenticators send DER (SEQUENCE of two INTEGERs, ≥ 70 bytes for
+ * P-256 once the sign-bit padding is counted); test doubles and some libraries
+ * send raw r‖s. Length is the only reliable discriminator — one raw signature
+ * in 256 starts with 0x30 (the SEQUENCE tag), and treating that as DER made
+ * the login verify fail once in a while.
+ */
+export function ecdsaSignatureForVerify(signature: Uint8Array): Uint8Array {
+  if (signature.length === ECDSA_P256_COMPONENT_LEN * 2) {
     return signature;
   }
   return derToRawEcdsaSignature(signature);

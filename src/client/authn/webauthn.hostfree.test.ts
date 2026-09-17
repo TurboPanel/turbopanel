@@ -9,6 +9,7 @@ import {
   coseKeyToJwk,
   decodeCbor,
   derToRawEcdsaSignature,
+  ecdsaSignatureForVerify,
   parseAttestationObject,
   parseAuthenticatorData,
   verifyAssertion,
@@ -259,6 +260,12 @@ test("verifyAssertion accepts ES256 raw and DER signatures and rejects tampering
 
   const der = rawToDerEcdsa(rawSig);
   assertEquals(derToRawEcdsaSignature(der).length, 64);
+  assertEquals(ecdsaSignatureForVerify(der), derToRawEcdsaSignature(der));
+  // A raw r‖s whose r starts with the DER SEQUENCE tag is still raw — the
+  // 64-byte length decides, not the first byte (this was a 1-in-256 CI flake).
+  const rawWithSequenceTag = new Uint8Array(rawSig);
+  rawWithSequenceTag[0] = 0x30;
+  assertEquals(ecdsaSignatureForVerify(rawWithSequenceTag), rawWithSequenceTag);
   assertEquals(
     await verifyAssertion({
       jwk: coseJwk,
