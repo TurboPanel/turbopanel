@@ -41,6 +41,11 @@ import {
   GithubManifestError,
 } from '../../lib/git/github-manifest.ts'
 import { githubApiBaseFor } from '../../lib/git/github-app-token.ts'
+import {
+  type ForgeUrlField,
+  resolveForgeHostScope,
+  validateForgeUrl,
+} from '../../lib/git/forge-url.ts'
 import { fetchGithubAppMetadata } from '../../lib/git/github-app-metadata.ts'
 import {
   getPublicUrls,
@@ -162,6 +167,26 @@ export async function getForgeHandler(
   })
 }
 
+/**
+ * Refuse a forge address this instance must never dial (see `forge-url.ts`):
+ * not https, credentials embedded, a reserved name, or an address that is
+ * loopback / link-local / private — by literal, or, where a resolver exists,
+ * by what the name resolves to. Runs on every write that can carry one, so a
+ * forge row never holds a URL the fetch-time guard would refuse anyway.
+ */
+async function rejectUnsafeForgeUrls(
+  c: Context<AppEnv>,
+  urls: Partial<Record<ForgeUrlField, string | null | undefined>>,
+): Promise<Response | null> {
+  for (const field of ['baseUrl', 'apiUrl', 'webhookOrigin'] as const) {
+    const value = urls[field]
+    if (typeof value !== 'string') continue
+    const reason = validateForgeUrl(value) ?? (await resolveForgeHostScope(value))
+    if (reason) return c.json({ error: 'forge_url_rejected', field, reason }, 400)
+  }
+  return null
+}
+
 export async function createForgeHandler(
   c: Context<AppEnv>,
   db: Db,
@@ -181,6 +206,8 @@ export async function createForgeHandler(
         'clientId?, redirectUri?, privateKeyPem?, clientSecret?, webhookSecret? }',
     }, 400)
   }
+  const unsafe = await rejectUnsafeForgeUrls(c, input)
+  if (unsafe) return unsafe
 
   try {
     const app = await createForge(db, dataEncryptionSecrets, input)
@@ -221,6 +248,8 @@ export async function patchForgeHandler(
   const body = await c.req.json().catch(() => null)
   const updates = parseForgePatchBody(body)
   if (!updates) return c.json({ error: 'Invalid request' }, 400)
+  const unsafe = await rejectUnsafeForgeUrls(c, updates)
+  if (unsafe) return unsafe
 
   try {
     const app = await updateForge(db, dataEncryptionSecrets, id, updates)
@@ -368,6 +397,8 @@ export async function startGithubManifestHandler(
   if (!wizard) return c.json({ error: 'invalid_manifest_request' }, 400)
 
   const { name, baseUrl, organizationLogin, apiUrl, pullRequestAccess } = wizard
+  const unsafe = await rejectUnsafeForgeUrls(c, { baseUrl, apiUrl })
+  if (unsafe) return unsafe
 
   // The operator picks which published URL the App delivers to, because an
   // instance may have several and GitHub stores exactly one. It has to be one

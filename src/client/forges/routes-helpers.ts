@@ -104,6 +104,11 @@ export const PROVIDER_INSTALL_RETURN_ERRORS = [
   'not_configured',
   'claimed',
   'provider_failed',
+  /** GitHub sent no `code`: the App is not requesting user authorization during installation. */
+  'install_authorization_required',
+  /** The GitHub user who came back cannot see the installation they named. */
+  'install_not_authorized',
+  'rate_limited',
 ] as const
 
 export type ProviderInstallReturnError =

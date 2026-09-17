@@ -16,6 +16,7 @@ import {
   mintGithubInstallationToken,
   privateKeyPemToPkcs8Der,
   signGithubAppJwt,
+  verifyInstallationAuthorizedByUser,
 } from './github-app-token.ts'
 
 /**
@@ -512,4 +513,175 @@ test('mintGithubInstallationToken rejects a suspended installation', async () =>
     throw new TypeError('expected GithubAppTokenError')
   }
   assertEquals(error.status, 409)
+})
+
+/**
+ * Stub GitHub for the install-authorization proof: the OAuth token endpoint
+ * on the App's base URL and `GET /user/installations` on the API base.
+ */
+function stubGithubUserAuthorization(opts: {
+  tokenStatus?: number
+  tokenBody?: unknown
+  installations?: number[]
+  installationsStatus?: number
+  seen: string[]
+}): () => void {
+  const original = globalThis.fetch
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input)
+    opts.seen.push(`${init?.method ?? 'GET'} ${url}`)
+    if (url.endsWith('/login/oauth/access_token')) {
+      const body = opts.tokenBody ?? { access_token: 'ghu_user', token_type: 'bearer' }
+      return Promise.resolve(
+        new Response(JSON.stringify(body), { status: opts.tokenStatus ?? 200 }),
+      )
+    }
+    if (url.includes('/user/installations')) {
+      const ids = opts.installations ?? []
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ total_count: ids.length, installations: ids.map((id) => ({ id })) }),
+          { status: opts.installationsStatus ?? 200 },
+        ),
+      )
+    }
+    return Promise.resolve(new Response('', { status: 500 }))
+  }) as typeof fetch
+  return () => {
+    globalThis.fetch = original
+  }
+}
+
+const OAUTH_APP = {
+  baseUrl: 'https://github.com',
+  apiUrl: null,
+  clientId: 'Iv1.client',
+  clientSecret: 'client-secret',
+}
+
+test('verifyInstallationAuthorizedByUser accepts an installation the authorizing user can see', async () => {
+  const seen: string[] = []
+  const restore = stubGithubUserAuthorization({ installations: [41, 84213], seen })
+  try {
+    const verdict = await verifyInstallationAuthorizedByUser(OAUTH_APP, {
+      code: 'one-shot',
+      externalInstallationId: '84213',
+    })
+    assertEquals(verdict, 'authorized')
+    assertEquals(seen, [
+      'POST https://github.com/login/oauth/access_token',
+      'GET https://api.github.com/user/installations?per_page=100',
+    ])
+  } finally {
+    restore()
+  }
+})
+
+test('verifyInstallationAuthorizedByUser refuses an installation the user cannot see', async () => {
+  const seen: string[] = []
+  const restore = stubGithubUserAuthorization({ installations: [41], seen })
+  try {
+    // The retyped-id attack: a valid code for the attacker's own GitHub user,
+    // naming somebody else's installation.
+    assertEquals(
+      await verifyInstallationAuthorizedByUser(OAUTH_APP, {
+        code: 'one-shot',
+        externalInstallationId: '84213',
+      }),
+      'not_authorized',
+    )
+  } finally {
+    restore()
+  }
+})
+
+test('verifyInstallationAuthorizedByUser treats a spent or foreign code as a refusal, not an outage', async () => {
+  const seen: string[] = []
+  // GitHub answers 200 with an error body for a bad code.
+  const restore = stubGithubUserAuthorization({
+    tokenBody: { error: 'bad_verification_code' },
+    installations: [84213],
+    seen,
+  })
+  try {
+    assertEquals(
+      await verifyInstallationAuthorizedByUser(OAUTH_APP, {
+        code: 'spent',
+        externalInstallationId: '84213',
+      }),
+      'not_authorized',
+    )
+    // Never got as far as the installations read.
+    assertEquals(seen.length, 1)
+  } finally {
+    restore()
+  }
+})
+
+test('verifyInstallationAuthorizedByUser surfaces a failing installations read as a provider error', async () => {
+  const seen: string[] = []
+  const restore = stubGithubUserAuthorization({ installationsStatus: 502, seen })
+  try {
+    await assertRejects(
+      () =>
+        verifyInstallationAuthorizedByUser(OAUTH_APP, {
+          code: 'one-shot',
+          externalInstallationId: '84213',
+        }),
+      GithubAppTokenError,
+      'user installations lookup failed (502)',
+    )
+  } finally {
+    restore()
+  }
+})
+
+test('verifyInstallationAuthorizedByUser needs OAuth client credentials and a safe base URL', async () => {
+  await assertRejects(
+    () =>
+      verifyInstallationAuthorizedByUser(
+        { ...OAUTH_APP, clientSecret: null },
+        { code: 'c', externalInstallationId: '1' },
+      ),
+    GithubAppTokenError,
+    'no OAuth client credentials',
+  )
+  const seen: string[] = []
+  const restore = stubGithubUserAuthorization({ installations: [1], seen })
+  try {
+    // A GitHub Enterprise base URL pointing back inside the box is refused
+    // before any request is made (forge-url.ts, fetch-time half).
+    await assertRejects(
+      () =>
+        verifyInstallationAuthorizedByUser(
+          { ...OAUTH_APP, baseUrl: 'https://127.0.0.1:8443' },
+          { code: 'c', externalInstallationId: '1' },
+        ),
+      GithubAppTokenError,
+      'refused: address_not_public',
+    )
+    assertEquals(seen, [])
+  } finally {
+    restore()
+  }
+})
+
+test('verifyInstallationAuthorizedByUser uses the Enterprise host for both the token and the API', async () => {
+  const seen: string[] = []
+  const restore = stubGithubUserAuthorization({ installations: [7], seen })
+  try {
+    assertEquals(
+      await verifyInstallationAuthorizedByUser(
+        { ...OAUTH_APP, baseUrl: 'https://ghe.corp.example.com/' },
+        { code: 'c', externalInstallationId: '7' },
+      ),
+      'authorized',
+    )
+    assertEquals(seen, [
+      'POST https://ghe.corp.example.com/login/oauth/access_token',
+      'GET https://ghe.corp.example.com/api/v3/user/installations?per_page=100',
+    ])
+  } finally {
+    restore()
+  }
 })

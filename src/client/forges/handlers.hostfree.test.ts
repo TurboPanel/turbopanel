@@ -356,6 +356,42 @@ test('create requires encryption and a well-formed body', async () => {
   assertEquals(invalid.status, 400)
 })
 
+test('create and patch refuse a forge address this instance must never dial', async () => {
+  const cases: Array<[Record<string, string>, string, string]> = [
+    [{ baseUrl: 'http://gitlab.example.com' }, 'baseUrl', 'scheme_not_https'],
+    [{ baseUrl: 'https://127.0.0.1:5432' }, 'baseUrl', 'address_not_public'],
+    [{ baseUrl: 'https://[::ffff:127.0.0.1]' }, 'baseUrl', 'address_not_public'],
+    [{ baseUrl: 'https://169.254.169.254' }, 'baseUrl', 'address_not_public'],
+    [{ baseUrl: 'https://gitlab.example.com', apiUrl: 'https://10.0.0.5/api/v4' }, 'apiUrl', 'address_not_public'],
+    [{ baseUrl: 'https://postgres' }, 'baseUrl', 'reserved_host'],
+    [{ baseUrl: 'https://metadata.google.internal' }, 'baseUrl', 'reserved_host'],
+    [{ baseUrl: 'https://user:pw@gitlab.example.com' }, 'baseUrl', 'credentials_in_url'],
+  ]
+  for (const [urls, field, reason] of cases) {
+    const created = await invoke(
+      (c) => createForgeHandler(c, fakeDb(), ORG),
+      { method: 'POST', body: { provider: 'gitlab', name: 'Acme', externalAppId: '99', ...urls } },
+    )
+    assertEquals(created.status, 400, JSON.stringify(urls))
+    assertEquals(await jsonOf(created), { error: 'forge_url_rejected', field, reason })
+  }
+
+  // A public, https forge is still accepted — the guard is not a github.com allowlist.
+  const ok = await invoke(
+    (c) => createForgeHandler(c, fakeDb(), ORG),
+    {
+      method: 'POST',
+      body: {
+        provider: 'gitlab',
+        name: 'Acme',
+        externalAppId: '99',
+        baseUrl: 'https://gitlab.example.com:8443',
+      },
+    },
+  )
+  assertEquals(ok.status, 201)
+})
+
 test('create maps conflict, validation, and unexpected write failures', async () => {
   const body = { provider: 'github', name: 'Acme', externalAppId: '99' }
 
@@ -837,7 +873,7 @@ test('start manifest pins the org in callback URLs and keeps the app private', a
     `https://panel.example.com/api/client/v1/forges/github/manifest/callback?organizationId=${ORG_ID}`,
   )
   assertEquals(
-    fields.setup_url,
+    (fields.callback_urls as string[])[0],
     `https://panel.example.com/api/client/v1/repositories/github/callback`,
   )
   const hooks = fields.hook_attributes
@@ -871,7 +907,7 @@ test('start manifest for the admin surface is public and uses the admin callback
     'https://panel.example.com/api/admin/v1/forges/github/manifest/callback',
   )
   assertEquals(
-    manifest.setup_url,
+    (manifest.callback_urls as string[])[0],
     'https://panel.example.com/api/client/v1/repositories/github/callback',
   )
 })

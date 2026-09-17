@@ -21,6 +21,7 @@ import { gitConnection } from '../db/schema.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import { type Forge, loadForgeForConnection } from './forge-records.ts'
 import { stripTrailingSlashes } from './origin.ts'
+import { assertForgeUrlAllowed, ForgeUrlError } from './forge-url.ts'
 
 const textEncoder = new TextEncoder()
 
@@ -73,10 +74,21 @@ export type GithubInstallationToken = GithubApiAuth & {
  * `<host>/api/v3` form.
  */
 export function githubApiBaseFor(app: Pick<Forge, 'apiUrl' | 'baseUrl'>): string {
-  if (app.apiUrl) return stripTrailingSlashes(app.apiUrl)
-  const baseUrl = stripTrailingSlashes(app.baseUrl)
-  if (baseUrl === 'https://github.com') return GITHUB_API_BASE
-  return `${baseUrl}/api/v3`
+  // Fetch-time half of the forge SSRF guard (see `forge-url.ts`): a stored
+  // address that points inside the box is refused here, before the App's
+  // credentials are attached to a request, whatever wrote the row. Surfaced
+  // as the error every caller of this module already maps.
+  try {
+    if (app.apiUrl) return stripTrailingSlashes(assertForgeUrlAllowed('apiUrl', app.apiUrl))
+    const baseUrl = stripTrailingSlashes(assertForgeUrlAllowed('baseUrl', app.baseUrl))
+    if (baseUrl === 'https://github.com') return GITHUB_API_BASE
+    return `${baseUrl}/api/v3`
+  } catch (error) {
+    if (error instanceof ForgeUrlError) {
+      throw new GithubAppTokenError(`github app ${error.field} refused: ${error.reason}`)
+    }
+    throw error
+  }
 }
 
 function base64urlEncode(bytes: Uint8Array): string {
@@ -340,4 +352,87 @@ export async function mintGithubInstallationToken(
     appJwt,
     row.externalInstallationId,
   )
+}
+
+/**
+ * Prove the operator finishing an install actually approved the installation
+ * they are naming.
+ *
+ * GitHub's post-install redirect carries `installation_id` as a plain query
+ * parameter the caller can retype, and the signed `state` only proves which
+ * organization *started* the flow — nothing GitHub sends binds the two. With
+ * **Request user authorization (OAuth) during installation** on, the redirect
+ * also carries a one-shot `code` for the GitHub user who clicked Install.
+ * Exchanging it and asking `GET /user/installations` which installations that
+ * user can see is the only proof-of-approval GitHub offers: an installation
+ * the user cannot see is one they did not just approve.
+ *
+ * The user token is used for exactly that one read and discarded — the
+ * control plane persists provider identity only, never a user token.
+ */
+export async function verifyInstallationAuthorizedByUser(
+  app: Pick<Forge, 'baseUrl' | 'apiUrl' | 'clientId' | 'clientSecret'>,
+  params: { code: string; externalInstallationId: string; redirectUri?: string },
+): Promise<'authorized' | 'not_authorized'> {
+  if (!app.clientId || !app.clientSecret) {
+    throw new GithubAppTokenError('github app has no OAuth client credentials configured')
+  }
+  const apiBase = githubApiBaseFor(app)
+  const tokenEndpoint = `${stripTrailingSlashes(assertForgeUrlAllowed('baseUrl', app.baseUrl))}/login/oauth/access_token`
+  const form = new URLSearchParams({
+    client_id: app.clientId,
+    client_secret: app.clientSecret,
+    code: params.code,
+  })
+  if (params.redirectUri) form.set('redirect_uri', params.redirectUri)
+
+  let tokenResponse: Response
+  try {
+    tokenResponse = await fetch(tokenEndpoint, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    })
+  } catch (error) {
+    throw new GithubAppTokenError(
+      `github user authorization exchange failed: ${
+        error instanceof Error ? error.message : 'network error'
+      }`,
+    )
+  }
+  const tokenPayload = (await tokenResponse.json().catch(() => null)) as
+    | { access_token?: unknown; error?: unknown }
+    | null
+  const userToken = typeof tokenPayload?.access_token === 'string' ? tokenPayload.access_token : ''
+  if (!tokenResponse.ok || userToken.length === 0) {
+    // A spent or foreign `code` is a refusal, not an outage: GitHub answers
+    // 200 with `{ error: "bad_verification_code" }`.
+    return 'not_authorized'
+  }
+
+  let response: Response
+  try {
+    response = await fetch(`${apiBase}/user/installations?per_page=100`, {
+      headers: githubApiHeaders(userToken, 'Bearer'),
+    })
+  } catch (error) {
+    throw new GithubAppTokenError(
+      `github user installations lookup failed: ${
+        error instanceof Error ? error.message : 'network error'
+      }`,
+    )
+  }
+  if (!response.ok) {
+    throw new GithubAppTokenError(
+      `github user installations lookup failed (${response.status})`,
+      response.status,
+    )
+  }
+  const payload = (await response.json().catch(() => null)) as
+    | { installations?: Array<{ id?: unknown }> }
+    | null
+  const visible = (payload?.installations ?? []).some(
+    (entry) => entry && String(entry.id) === params.externalInstallationId,
+  )
+  return visible ? 'authorized' : 'not_authorized'
 }

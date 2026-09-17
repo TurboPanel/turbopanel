@@ -424,3 +424,30 @@ changes.
   Nothing is emitted under `x-turbopanel`: the importer speaks plain Compose,
   per rule 1 of the frozen contract in `../lib/compose/AGENTS.md`. Parser and
   option registry: `../lib/docker-run/AGENTS.md`.
+- **Forge addresses and the GitHub install callback (client surface):** a
+  forge's `baseUrl` / `apiUrl` / `webhookOrigin` is validated on every write
+  (`POST`/`PATCH /forges`, the manifest wizard) by `../lib/git/forge-url.ts` —
+  https only, no embedded credentials, no reserved names (`localhost`, `.local`,
+  `.internal`, `.arpa`, single-label), no loopback / link-local / private /
+  CGNAT literal, and on the Deno instance the name is resolved and every answer
+  must be public — refused as `400 forge_url_rejected { field, reason }`. The
+  same check re-runs at the fetch-time choke points (`githubApiBaseFor`,
+  `gitlabApiBase`, the GitLab token grant), surfaced as the provider error
+  those callers already map, so a row written by anything else is still never
+  dialed with credentials attached. `GET /repositories/github/callback` is the
+  App's **callback URL** (the manifest requests user authorization during
+  installation, which disables GitHub's Setup URL): it is per-user rate-limited
+  (`forge-connect`, strict), requires the one-shot `code` GitHub sends beside
+  `installation_id` (`install_authorization_required` otherwise), exchanges it,
+  and refuses an installation the authorizing GitHub user cannot see on
+  `GET /user/installations` (`install_not_authorized`) — the only proof GitHub
+  offers that the operator approved the installation they are naming, since the
+  id itself is a retypable integer. The user token is read once and discarded.
+  One GitHub installation belongs to one organization per App instance-wide:
+  `uniq_connection_forge_external_github` (partial, `provider = 'github'`) makes
+  a cross-organization claim that races past `assertConnectionUnclaimed` a
+  `23505` the callback maps to `claimed`. **Apps registered before this rule
+  need two manual settings changes on GitHub** — enable *Request user
+  authorization (OAuth) during installation* and set the *Callback URL* to
+  `<origin>/api/client/v1/repositories/github/callback` — or every install ends
+  in `install_authorization_required`.

@@ -20,6 +20,7 @@
  */
 
 import type { RepositorySummary, ResolvedSourceCommit } from './git-provider.ts'
+import { assertForgeUrlAllowed, ForgeUrlError } from './forge-url.ts'
 import {
   commitSubject,
   COMMIT_AUTHOR_MAX_CHARS,
@@ -43,7 +44,16 @@ const PROJECT_PAGE_SIZE = 100
 const PROJECT_MAX_PAGES = 10
 
 export function gitlabApiBase(baseUrl: string): string {
-  return `${baseUrl.replace(/(?<!\/)\/+$/, '')}/api/v4`
+  // Fetch-time half of the forge SSRF guard (see `forge-url.ts`), surfaced as
+  // the error every caller already maps.
+  try {
+    return `${assertForgeUrlAllowed('baseUrl', baseUrl).replace(/(?<!\/)\/+$/, '')}/api/v4`
+  } catch (error) {
+    if (error instanceof ForgeUrlError) {
+      throw new GitlabApiError(`gitlab base url refused: ${error.reason}`)
+    }
+    throw error
+  }
 }
 
 export function gitlabApiHeaders(token: string): HeadersInit {

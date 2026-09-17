@@ -18,6 +18,7 @@ import {
 import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
 import type { Db } from '../../db.ts'
 import { GithubAppTokenError } from '../../lib/git/github-app-token.ts'
+import { createAuthRateLimiter } from '../authn/auth-rate-limit.ts'
 import { GitlabApiError } from '../../lib/git/gitlab-api.ts'
 import { GitlabOauthTokenError } from '../../lib/git/gitlab-oauth-token.ts'
 import { CLIENT_API_PREFIX } from '../../surfaces.ts'
@@ -36,6 +37,7 @@ import {
   assertSecretInOrganization,
   assertConnectionInOrganization,
   assertConnectionUnclaimed,
+  isInstallationClaimViolation,
   composeReferencesRepository,
   fetchInstallationAccount,
   findAttachedSource,
@@ -641,7 +643,7 @@ const SOURCE_PATHS = [
 
 async function buildSourceApp(
   db?: Db,
-  opts?: { registry?: DaemonCellRegistry },
+  opts?: { registry?: DaemonCellRegistry; connectLimit?: number },
 ): Promise<{
   app: Hono<AppEnv>
   cookie: string
@@ -653,12 +655,18 @@ async function buildSourceApp(
     'data-encryption',
   )
   const app = new Hono<AppEnv>()
+  // Each app gets its own limiter so the provider callbacks' per-user
+  // `forge-connect` ceiling never leaks between tests sharing one session.
+  const authRateLimiter = createAuthRateLimiter({
+    policies: { 'forge-connect': { limit: opts?.connectLimit ?? 1000, windowMs: 60_000 } },
+  })
   app.use('*', (c, next) => {
     if (db) c.set('db', db)
     c.set('runtime', 'deno')
     c.set('secretsConfig', secretsConfig)
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     if (opts?.registry) c.set('daemonCellRegistry', opts.registry)
+    c.set('authRateLimiter', authRateLimiter)
     return next()
   })
   registerRepositoryRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
@@ -1167,7 +1175,7 @@ test('github and gitlab callbacks reject bad or foreign state', async () => {
   const secretsConfig = parseTestSecretsConfig('deno')
 
   const invalidGithub = await app.request(
-    '/repositories/github/callback?state=not-signed&installation_id=1',
+    '/repositories/github/callback?state=not-signed&installation_id=1&code=c',
     { headers },
   )
   assertEquals(invalidGithub.status, 302)
@@ -1181,7 +1189,7 @@ test('github and gitlab callbacks reject bad or foreign state', async () => {
     forgeId: APP_ID,
   })
   const foreign = await app.request(
-    `/repositories/github/callback?state=${encodeURIComponent(foreignState)}&installation_id=1`,
+    `/repositories/github/callback?state=${encodeURIComponent(foreignState)}&installation_id=1&code=c`,
     { headers },
   )
   assertEquals(foreign.status, 302)
@@ -1213,6 +1221,68 @@ test('github and gitlab callbacks reject bad or foreign state', async () => {
     gitlab.headers.get('Location'),
     providerInstallUiReturnPath(OTHER_ORG, APP_ID, { error: 'not_configured' }),
   )
+})
+
+test('github callback refuses an install that carries no user-authorization code', async () => {
+  const { app, cookie } = await buildSourceApp(sourceHttpDb())
+  const secretsConfig = parseTestSecretsConfig('deno')
+  const state = await signGithubInstallState(secretsConfig, {
+    organizationId: ORG_ID,
+    forgeId: APP_ID,
+  })
+  // A well-formed state and installation id, but no `code`: the App is not
+  // requesting user authorization during installation, so nothing ties the
+  // person who came back to the installation they are naming. Refused before
+  // the App is even loaded.
+  const res = await app.request(
+    `/repositories/github/callback?state=${encodeURIComponent(state)}&installation_id=84213`,
+    { headers: { Cookie: cookie } },
+  )
+  assertEquals(res.status, 302)
+  assertEquals(
+    res.headers.get('Location'),
+    providerInstallUiReturnPath(null, null, { error: 'install_authorization_required' }),
+  )
+})
+
+test('provider callbacks are rate-limited per user', async () => {
+  const { app, cookie } = await buildSourceApp(sourceHttpDb(), { connectLimit: 2 })
+  const headers = { Cookie: cookie }
+  const first = await app.request(
+    '/repositories/github/callback?state=not-signed&installation_id=1&code=c',
+    { headers },
+  )
+  assertEquals(first.headers.get('Location'), providerInstallUiReturnPath(null, null, { error: 'state_invalid' }))
+  const second = await app.request(
+    '/repositories/gitlab/oauth/callback?state=not-signed&code=abc',
+    { headers },
+  )
+  assertEquals(second.headers.get('Location'), providerInstallUiReturnPath(null, null, { error: 'state_invalid' }))
+  // Third attempt in the window — whichever provider — is refused before any
+  // state or installation id is looked at.
+  const third = await app.request(
+    '/repositories/github/callback?state=not-signed&installation_id=2&code=c',
+    { headers },
+  )
+  assertEquals(third.status, 302)
+  assertEquals(third.headers.get('Location'), providerInstallUiReturnPath(null, null, { error: 'rate_limited' }))
+})
+
+test('isInstallationClaimViolation recognizes the cross-organization index by name, at either nesting', () => {
+  const direct = Object.assign(new Error('duplicate key value violates unique constraint "uniq_connection_forge_external_github"'), { code: '23505' })
+  assertEquals(isInstallationClaimViolation(direct), true)
+  // drizzle-orm ≥ 0.45: a DrizzleQueryError with no `code` of its own, the
+  // driver error (code + constraint name) on `.cause`.
+  const nested = new Error('Failed query: insert into "connection" …', {
+    cause: Object.assign(
+      new Error('duplicate key value violates unique constraint "uniq_connection_forge_external_github"'),
+      { code: '23505' },
+    ),
+  })
+  assertEquals(isInstallationClaimViolation(nested), true)
+  const other = Object.assign(new Error('duplicate key value violates unique constraint "uniq_connection_organization_forge_external"'), { code: '23505' })
+  assertEquals(isInstallationClaimViolation(other), false)
+  assertEquals(isInstallationClaimViolation(new Error('network')), false)
 })
 
 test('nested source routes answer 503 when encryption secrets are missing', async () => {
@@ -1256,7 +1326,7 @@ test('nested source routes answer 503 when encryption secrets are missing', asyn
     forgeId: APP_ID,
   })
   const callback = await app.request(
-    `/repositories/github/callback?state=${encodeURIComponent(state)}&installation_id=1`,
+    `/repositories/github/callback?state=${encodeURIComponent(state)}&installation_id=1&code=c`,
     { headers },
   )
   assertEquals(callback.status, 302)
@@ -1759,7 +1829,7 @@ test('list and installations return visible rows; connect callbacks fail closed 
     forgeId: APP_ID,
   })
   const github = await connect.app.request(
-    `/repositories/github/callback?state=${encodeURIComponent(githubState)}&installation_id=1`,
+    `/repositories/github/callback?state=${encodeURIComponent(githubState)}&installation_id=1&code=c`,
     { headers: connectHeaders },
   )
   assertEquals(github.status, 302)

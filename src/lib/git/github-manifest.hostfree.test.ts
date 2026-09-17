@@ -40,18 +40,20 @@ test('visibility tracks the instance-wide toggle', () => {
   assertEquals(buildGithubAppManifest({ ...base, publicApp: false }).public, false)
 })
 
-test('the setup url is distinct from the redirect url', () => {
+test('the install callback is the App callback URL, with user authorization requested', () => {
   const manifest = buildGithubAppManifest({ ...base, publicApp: false })
-  // `redirect_url` only covers the one-shot manifest conversion. Without a
-  // separate `setup_url` an install finishes on GitHub with no redirect, the
-  // source callback never fires, and no installation row is ever written — the
-  // App would be installed while the console showed no connected account.
-  assertEquals(manifest.setup_url, base.setupUrl)
+  // `redirect_url` only covers the one-shot manifest conversion. The
+  // post-install redirect goes to the App's Callback URL — GitHub disables the
+  // Setup URL once user authorization is requested during installation — and
+  // that redirect is the only way a connection row is ever written.
+  assertEquals(manifest.callback_urls, [base.setupUrl])
   assertEquals(manifest.redirect_url, base.redirectUrl)
-  assertEquals(manifest.setup_url === manifest.redirect_url, false)
-  // And it has to re-fire when the repository selection changes, since that is
-  // the only signal that new repositories became reachable.
-  assertEquals(manifest.setup_on_update, true)
+  assertEquals(manifest.callback_urls.includes(manifest.redirect_url), false)
+  // The `code` on that redirect is what lets the callback prove the operator
+  // approved the installation they are naming — never off.
+  assertEquals(manifest.request_oauth_on_install, true)
+  assertEquals('setup_url' in manifest, false)
+  assertEquals('setup_on_update' in manifest, false)
 })
 
 test('pull-request access is read-only unless asked for', () => {

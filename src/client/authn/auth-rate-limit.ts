@@ -32,7 +32,8 @@ export type AuthRateLimitPurpose =
   | "install-bootstrap"
   | "install-complete"
   | "oauth-start"
-  | "oauth-callback";
+  | "oauth-callback"
+  | "forge-connect";
 
 export type AuthRateLimitResult = {
   allowed: boolean;
@@ -90,6 +91,9 @@ const SHARED_POLICIES: Partial<
   "install-complete": { limit: 10, windowMs: 60_000 },
   "oauth-start": { limit: 20, windowMs: 60_000 },
   "oauth-callback": { limit: 20, windowMs: 60_000 },
+  // The forge connect callbacks take a provider-side installation id as a
+  // plain query parameter; a low ceiling per user keeps guessing them slow.
+  "forge-connect": { limit: 5, windowMs: 60_000 },
 };
 
 /**
@@ -124,6 +128,7 @@ export const AUTH_RATE_LIMIT_PURPOSE_TIERS: Record<
   "install-complete": "default",
   "oauth-start": "default",
   "oauth-callback": "default",
+  "forge-connect": "strict",
 };
 
 function tierForPurpose(purpose: AuthRateLimitPurpose): AuthRateLimitTier {

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "uniq_connection_forge_external_github" ON "connection" USING btree ("forge_id","external_installation_id") WHERE "connection"."provider" = 'github';

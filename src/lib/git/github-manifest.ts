@@ -103,19 +103,29 @@ export type GithubAppManifest = {
   hook_attributes: { url: string; active: boolean }
   redirect_url: string
   /**
-   * Where GitHub sends the operator after they *install* the App.
+   * Where GitHub sends the operator after they *install* the App — with a
+   * one-shot user-authorization `code` beside `installation_id`.
    *
    * Distinct from `redirect_url`, which only covers the one-shot manifest
-   * conversion. Without a setup URL an install finishes on GitHub with no
-   * redirect, `/repositories/github/callback` never fires, and no `installation` row
-   * is ever written — the App would exist and be installed while TurboPanel
-   * showed no connected account, with nothing to recover from (the
-   * `installation` webhook only updates rows that already exist).
+   * conversion. This is the App's **Callback URL**, not its Setup URL: with
+   * `request_oauth_on_install` on, GitHub disables the Setup URL and sends the
+   * post-install redirect here instead ("Users will instead be redirected to
+   * the Callback URL as part of the authorization flow" — GitHub, *Registering
+   * a GitHub App*). Without it an install finishes on GitHub with no redirect,
+   * `/repositories/github/callback` never fires, and no `connection` row is
+   * ever written — the App would exist and be installed while TurboPanel
+   * showed no connected account (the `installation` webhook only updates rows
+   * that already exist).
    */
-  setup_url: string
-  /** Re-run the setup redirect when an installation's repositories change. */
+  callback_urls: string[]
+  /**
+   * Ask the installing GitHub user to authorize the App as part of the
+   * install, so the callback can prove they approved the installation they
+   * came back with (`verifyInstallationAuthorizedByUser`). Without this the
+   * `installation_id` on the redirect is a bare, retypable integer. Always
+   * `true`; the field is kept explicit because GitHub's default is `false`.
+   */
   request_oauth_on_install: boolean
-  setup_on_update: boolean
   public: boolean
   default_permissions: Record<string, string>
   default_events: string[]
@@ -136,6 +146,7 @@ export function buildGithubAppManifest(params: {
   publicUrl: string
   webhookUrl: string
   redirectUrl: string
+  /** The App's callback URL: `/repositories/github/callback`, see `callback_urls`. */
   setupUrl: string
   /**
    * Installable by GitHub accounts other than the one that creates it.
@@ -155,12 +166,13 @@ export function buildGithubAppManifest(params: {
     url: params.publicUrl,
     hook_attributes: { url: params.webhookUrl, active: true },
     redirect_url: params.redirectUrl,
-    setup_url: params.setupUrl,
-    // The install redirect is the only way an `installation` row gets written,
-    // so it has to fire on a repository-selection change too, not just on the
-    // first install.
-    setup_on_update: true,
-    request_oauth_on_install: false,
+    // The post-install redirect is the only way a `connection` row gets
+    // written. Repository-selection changes after that arrive on the
+    // `installation_repositories` webhook (`webhook/git/github.ts`), which is
+    // why the old `setup_on_update` re-run is not needed — and could not be
+    // kept anyway, since requesting OAuth on install disables the Setup URL.
+    callback_urls: [params.setupUrl],
+    request_oauth_on_install: true,
     public: params.publicApp,
     default_permissions: {
       ...GITHUB_MANIFEST_PERMISSIONS,

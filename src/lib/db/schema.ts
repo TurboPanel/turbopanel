@@ -4330,6 +4330,21 @@ export const gitConnection = pgTable(
       table.forgeId,
       table.externalInstallationId,
     ),
+    /**
+     * A GitHub App installation belongs to one organization per App — across
+     * the whole instance, not per organization. The App's private key mints
+     * tokens for an installation regardless of which organization asked, so a
+     * second organization recording the same installation on a shared
+     * (instance-wide) App would read the first one's repositories. The
+     * org-scoped unique above still lets a reconnect from the owning
+     * organization be an update; this one makes a cross-organization claim a
+     * `23505` the callback maps to `claimed`. GitHub only: a GitLab
+     * `external_installation_id` is the GitLab user, whose OAuth grant is
+     * per-organization by construction.
+     */
+    uniqueIndex("uniq_connection_forge_external_github")
+      .on(table.forgeId, table.externalInstallationId)
+      .where(sql`${table.provider} = 'github'`),
   ],
 );
 /**

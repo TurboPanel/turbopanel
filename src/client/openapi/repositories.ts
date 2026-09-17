@@ -327,7 +327,11 @@ export const repositoryPaths = {
       description:
         'Registers an existing GitHub App or GitLab OAuth application. Several ' +
         'may coexist per provider. Secrets are sealed before persist and never ' +
-        'returned.',
+        'returned. `baseUrl` / `apiUrl` must be https, carry no credentials, and ' +
+        'name a public host — a loopback, link-local, private or reserved address ' +
+        '(by literal, or by what the name resolves to on the self-hosted instance) ' +
+        'is refused with `400 { error: "forge_url_rejected", field, reason }`. The ' +
+        'same rule applies on PATCH and to the GitHub App manifest wizard.',
       security,
       requestBody: {
         required: true,
@@ -774,11 +778,19 @@ export const repositoryPaths = {
       tags: ['Repositories'],
       summary: 'GitHub App installation callback',
       description:
-        'Verifies the signed `state`, then upserts the installation row for the organization.',
+        'The App\'s callback URL. Verifies the signed `state`, exchanges the one-shot user-authorization `code` ' +
+        'GitHub sends when the App requests user authorization during installation, confirms the authorizing ' +
+        'GitHub user can see `installation_id` (`GET /user/installations`), then upserts the connection row for ' +
+        'the organization. An installation already held by another organization on the same App is refused ' +
+        '(`claimed`). Per-user rate limit (`forge-connect`). Always answers with a redirect into the console; ' +
+        'failures carry `?error=` from the provider-install error set, including `install_authorization_required` ' +
+        '(no `code` — the App is not requesting user authorization during installation) and ' +
+        '`install_not_authorized` (the user cannot see that installation).',
       security,
       parameters: [
         { name: 'installation_id', in: 'query', required: true, schema: { type: 'string' } },
         { name: 'state', in: 'query', required: true, schema: { type: 'string' } },
+        { name: 'code', in: 'query', required: true, schema: { type: 'string' } },
         { name: 'setup_action', in: 'query', required: false, schema: { type: 'string' } },
       ],
       responses: {

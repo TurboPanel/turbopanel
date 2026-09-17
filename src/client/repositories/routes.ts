@@ -63,7 +63,10 @@ import {
   githubApiHeaders,
   GithubAppTokenError,
   signGithubAppJwt,
+  verifyInstallationAuthorizedByUser,
 } from '../../lib/git/github-app-token.ts'
+import { enforceAuthRateLimit } from '../authn/http.ts'
+import { isPostgresUniqueViolation, isUniqueViolationOn } from '../../lib/db/unique-violation.ts'
 import {
   resolveGitProvider,
   type RepositorySummary,
@@ -415,12 +418,9 @@ export async function resolveConnectApp(
 }
 
 /** Postgres `unique_violation`; see the attach route's race note. */
+/** SQLSTATE 23505 on the error or any `.cause` beneath it (drizzle-orm ≥ 0.45 wraps). */
 export function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: unknown }).code === '23505'
-  )
+  return isPostgresUniqueViolation(error)
 }
 
 function listingMatchForSource(
@@ -640,6 +640,18 @@ export async function assertConnectionUnclaimed(
     return c.json({ error: 'installation_claimed_by_another_organization' }, 409)
   }
   return null
+}
+
+/**
+ * The database's answer to a cross-organization claim that raced past
+ * {@link assertConnectionUnclaimed}: the partial unique
+ * `uniq_connection_forge_external_github` (one installation, one organization
+ * per App, instance-wide). The org-scoped triple stays the `ON CONFLICT`
+ * target so a reconnect from the owning organization is still an update; this
+ * index is what makes a second organization's insert raise instead.
+ */
+export function isInstallationClaimViolation(err: unknown): boolean {
+  return isUniqueViolationOn(err, 'uniq_connection_forge_external_github')
 }
 
 /**
@@ -917,9 +929,19 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
 
     if (!secretsConfig) return fail(null, 'unavailable')
 
+    // `installation_id` is a caller-typed integer; a per-user ceiling keeps
+    // guessing someone else's slow even before the proof below refuses it.
+    const limited = await enforceAuthRateLimit(c, 'forge-connect', userId, opts.runtime)
+    if (limited) return fail(null, 'rate_limited')
+
     const state = c.req.query('state')
     const externalInstallationId = c.req.query('installation_id')
     if (!state || !externalInstallationId) return fail(null, 'invalid_request')
+    // Present only when the App requests user authorization during
+    // installation — the one thing GitHub sends that ties the person who
+    // clicked Install to the installation id they came back with.
+    const code = c.req.query('code')
+    if (!code) return fail(null, 'install_authorization_required')
 
     const claims = await verifyGithubInstallState(secretsConfig, state)
     if (!claims) return fail(null, 'state_invalid')
@@ -950,6 +972,30 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     })
     if (claimed) return fail(organizationId, 'claimed', app.id)
 
+    // Proof of approval, before the App's key is used for anything: the
+    // GitHub user who came back must be able to see this installation.
+    try {
+      const verdict = await verifyInstallationAuthorizedByUser(app, {
+        code,
+        externalInstallationId,
+      })
+      if (verdict === 'not_authorized') {
+        logWarn(
+          'git-sources',
+          `github installation ${externalInstallationId} refused: not visible to the authorizing user (org ${organizationId})`,
+        )
+        return fail(organizationId, 'install_not_authorized', app.id)
+      }
+    } catch (error) {
+      logWarn(
+        'git-sources',
+        `github install authorization check failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      )
+      return fail(organizationId, 'provider_failed', app.id)
+    }
+
     let account: { accountLogin: string | null; accountType: string | null }
     try {
       const appJwt = await signGithubAppJwt(app.externalAppId, app.privateKeyPem)
@@ -968,30 +1014,38 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       return fail(organizationId, 'provider_failed', app.id)
     }
 
-    const [row] = await db
-      .insert(gitConnection)
-      .values({
-        organizationId,
-        forgeId: app.id,
-        provider: 'github',
-        externalInstallationId,
-        accountLogin: account.accountLogin,
-        accountType: account.accountType,
-      })
-      .onConflictDoUpdate({
-        target: [
-          gitConnection.organizationId,
-          gitConnection.forgeId,
-          gitConnection.externalInstallationId,
-        ],
-        set: {
+    let row: { id: string } | undefined
+    try {
+      ;[row] = await db
+        .insert(gitConnection)
+        .values({
+          organizationId,
+          forgeId: app.id,
+          provider: 'github',
+          externalInstallationId,
           accountLogin: account.accountLogin,
           accountType: account.accountType,
-          suspendedAt: null,
-          updatedAt: new Date().toISOString(),
-        },
-      })
-      .returning({ id: gitConnection.id })
+        })
+        .onConflictDoUpdate({
+          target: [
+            gitConnection.organizationId,
+            gitConnection.forgeId,
+            gitConnection.externalInstallationId,
+          ],
+          set: {
+            accountLogin: account.accountLogin,
+            accountType: account.accountType,
+            suspendedAt: null,
+            updatedAt: new Date().toISOString(),
+          },
+        })
+        .returning({ id: gitConnection.id })
+    } catch (error) {
+      // Another organization landed the same installation between the
+      // pre-check and this write — the index is the lock, this is its 409.
+      if (isInstallationClaimViolation(error)) return fail(organizationId, 'claimed', app.id)
+      throw error
+    }
 
     return redirectToForgeUi(c, organizationId, app.id, {
       installed: row?.id ?? 'ok',
@@ -1078,6 +1132,9 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     ) => redirectToForgeUi(c, organizationId, forgeId, { error })
 
     if (!secretsConfig) return fail(null, 'unavailable')
+
+    const limited = await enforceAuthRateLimit(c, 'forge-connect', userId, opts.runtime)
+    if (limited) return fail(null, 'rate_limited')
 
     const state = c.req.query('state')
     const code = c.req.query('code')

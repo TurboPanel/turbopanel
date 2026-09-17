@@ -380,6 +380,8 @@ export function nextFreeHostAddress(
 }
 
 const IPV4_MAPPED_PREFIX_RE = /^(?:::ffff:|::ffff:0:)/i
+/** Hex-group spelling of an IPv4-mapped address, after the prefix is stripped: `7f00:1`. */
+const IPV4_MAPPED_HEX_RE = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i
 
 /**
  * Canonicalize an address as it arrives off the wire.
@@ -401,6 +403,16 @@ export function normalizeIpAddress(value: unknown): string | null {
   if (zone > 0) candidate = candidate.slice(0, zone)
   const mapped = candidate.replace(IPV4_MAPPED_PREFIX_RE, '')
   if (mapped !== candidate && IPV4_ADDRESS_RE.test(mapped)) return mapped
+  // The same mapped address in hex groups (`::ffff:7f00:1`) — what the WHATWG
+  // URL parser turns `[::ffff:127.0.0.1]` into, so a host literal typed one way
+  // arrives here the other way. Without this, `::ffff:7f00:1` classifies as a
+  // public IPv6 address rather than the loopback it is.
+  const hexMapped = IPV4_MAPPED_HEX_RE.exec(mapped !== candidate ? mapped : candidate)
+  if (hexMapped) {
+    const hi = Number.parseInt(hexMapped[1]!, 16)
+    const lo = Number.parseInt(hexMapped[2]!, 16)
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`
+  }
   return isValidIpAddress(candidate) ? candidate : null
 }
 

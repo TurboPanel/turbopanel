@@ -134,6 +134,13 @@
       "when": 1789589866333,
       "tag": "0018_text_types_widen_validated_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789612690309,
+      "tag": "0019_connection_installation_unique_per_forge",
+      "breakpoints": true
     }
   ]
 }

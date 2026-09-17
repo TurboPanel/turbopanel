@@ -231,6 +231,11 @@ test("normalizeIpAddress canonicalizes the forms proxies actually emit", () => {
   assertEquals(normalizeIpAddress("  203.0.113.9  "), "203.0.113.9");
   assertEquals(normalizeIpAddress("203.0.113.9/32"), "203.0.113.9");
   assertEquals(normalizeIpAddress("::ffff:203.0.113.9"), "203.0.113.9");
+  // The WHATWG URL parser rewrites `[::ffff:127.0.0.1]` to the hex-group form;
+  // it is the same loopback address and must classify as one (forge-url SSRF guard).
+  assertEquals(normalizeIpAddress("::ffff:7f00:1"), "127.0.0.1");
+  assertEquals(normalizeIpAddress("[::ffff:7f00:1]"), "127.0.0.1");
+  assertEquals(normalizeIpAddress("::ffff:cb00:710a"), "203.0.113.10");
   assertEquals(normalizeIpAddress("[2001:db8::5]"), "2001:db8::5");
   assertEquals(normalizeIpAddress("fe80::1%eth0"), "fe80::1");
   assertEquals(normalizeIpAddress("not-an-ip"), null);
