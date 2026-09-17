@@ -256,6 +256,11 @@ test('emptyServersUpdatesPayload and resolveTrunkTargetFields', () => {
     targetStatus: 'ok',
     targetError: undefined,
   })
+  // A release manifest's version rides along so the UI can name the target.
+  assertEquals(
+    resolveTrunkTargetFields({ ...manifest, version: '0.1.1' }, 'release').target,
+    { ...manifest, version: '0.1.1' },
+  )
 })
 
 test('resolveBatchUpdateEligibility covers each rejection path', () => {

@@ -693,7 +693,13 @@ export const serverSchemas = {
     properties: {
       commit: { type: 'string' },
       buildId: { type: 'string' },
+      builtAt: { type: 'string' },
       manifestUrl: { type: 'string' },
+      version: {
+        type: 'string',
+        description:
+          'The release version the channel manifest names (rc/release); absent for trunk drops.',
+      },
     },
   },
   ServerUpdateStatusResponse: {

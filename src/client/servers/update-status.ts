@@ -176,6 +176,7 @@ function resolveUpdateTarget(params: {
       buildId: params.manifest.buildId,
       builtAt: params.manifest.builtAt,
       manifestUrl: params.manifest.manifestUrl,
+      ...(params.manifest.version ? { version: params.manifest.version } : {}),
     }
     : null
 

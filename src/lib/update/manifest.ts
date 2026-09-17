@@ -9,6 +9,8 @@ export type UpdateManifestTarget = {
   builtAt: string
   channel: string
   manifestUrl: string
+  /** The release version the manifest names (rc/release manifests carry one; trunk drops do not). */
+  version?: string
 }
 
 function requireHttpsUrl(url: string): boolean {
@@ -43,9 +45,13 @@ async function fetchManifestUncached(
       buildId?: unknown
       builtAt?: unknown
       channel?: unknown
+      version?: unknown
     }
 
     const { commit, buildId, builtAt, channel: manifestChannel } = manifestJson
+    const version = typeof manifestJson.version === 'string' && manifestJson.version.trim()
+      ? manifestJson.version.trim()
+      : undefined
     if (
       typeof commit !== 'string' || !commit ||
       typeof buildId !== 'string' || !buildId ||
@@ -55,7 +61,14 @@ async function fetchManifestUncached(
       return null
     }
 
-    return { commit, buildId, builtAt, channel: manifestChannel, manifestUrl }
+    return {
+      commit,
+      buildId,
+      builtAt,
+      channel: manifestChannel,
+      manifestUrl,
+      ...(version ? { version } : {}),
+    }
   } catch {
     return null
   }

@@ -20,12 +20,13 @@ const RC_MANIFEST_URL =
 const RELEASE_MANIFEST_URL =
   "https://github.com/TurboPanel/turbopaneld/releases/latest/download/manifest.json";
 
-function manifestBody(channel: string, commit = "abc123") {
+function manifestBody(channel: string, commit = "abc123", version?: string) {
   return JSON.stringify({
     commit,
     buildId: `build-${commit}`,
     builtAt: "2020-01-01T00:00:00.000Z",
     channel,
+    ...(version ? { version } : {}),
   });
 }
 
@@ -78,13 +79,19 @@ test("resolveUpdateManifest follows rc and release to GitHub Releases", async ()
       return new Response(manifestBody("rc", "rc1"), { status: 200 });
     }
     if (url === RELEASE_MANIFEST_URL) {
-      return new Response(manifestBody("release", "rel1"), { status: 200 });
+      return new Response(manifestBody("release", "rel1", "0.1.1"), {
+        status: 200,
+      });
     }
     return new Response("missing", { status: 404 });
   });
   try {
-    assertEquals((await resolveUpdateManifest("rc"))?.commit, "rc1");
+    const rc = await resolveUpdateManifest("rc");
+    assertEquals(rc?.commit, "rc1");
+    // Trunk-shaped manifests carry no version; release manifests name one.
+    assertEquals("version" in (rc ?? {}), false);
     assertEquals((await resolveUpdateManifest("release"))?.commit, "rel1");
+    assertEquals((await resolveUpdateManifest("release"))?.version, "0.1.1");
     assertEquals(
       (await resolveUpdateManifest("release"))?.manifestUrl,
       RELEASE_MANIFEST_URL,

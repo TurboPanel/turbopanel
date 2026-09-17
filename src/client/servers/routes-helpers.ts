@@ -315,6 +315,7 @@ export type TrunkTargetFields = {
     buildId: string
     builtAt: string
     manifestUrl: string
+    version?: string
   } | null
   targetStatus: 'ok' | 'unknown'
   targetError: string | undefined
@@ -326,6 +327,7 @@ export function resolveTrunkTargetFields(
     buildId: string
     builtAt: string
     manifestUrl: string
+    version?: string
   } | null,
   channel: UpdateChannel,
 ): TrunkTargetFields {
@@ -335,6 +337,7 @@ export function resolveTrunkTargetFields(
       buildId: targetManifest.buildId,
       builtAt: targetManifest.builtAt,
       manifestUrl: targetManifest.manifestUrl,
+      ...(targetManifest.version ? { version: targetManifest.version } : {}),
     }
     : null
   return {
