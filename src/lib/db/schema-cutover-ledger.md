@@ -277,7 +277,7 @@ drop. Unused pairing / Better Auth / reserved columns stay **Keep**.
 | `metadata` | no | no | Pairing column; unused today. |
 | `options` | yes | yes | `client/bindings/materialize.ts` (+3) |
 | `name` | yes | yes | `client/authn/install-state.ts` (+3) |
-| `slug` | yes | no | Selected in `developer/routes-core.ts`; install never populates it. |
+| `slug` | — | — | **Dropped 2026-09-17 (migration 0020).** Was reserved and never written; the developer listing stopped selecting it the same day. |
 
 **3. `tls`** (export `tls`)
 
@@ -1132,7 +1132,7 @@ so cutover does not re-open `schema.ts` to guess.
 | `segment.metadata` / `segment.options` (→ `subnet`) | **Keep** | Same pairing convention. |
 | `location.provider` CHECK (`block`/`nfs`/`cifs`/`s3`/`s3_compatible`/`sftp`/`ftp`/`webdav` plus live `docker`/`path`) | **Keep** all values | `docker`/`path` are exercised today; the remainder mirror `credential.provider`'s CHECK and are pre-provisioned for the storage-provider roadmap in the `location`/`storage` doc comments — not dead, just unimplemented. |
 | `credential.provider` CHECK (→ `secret.provider`) | **Keep** all values | Same forward-provisioning reason; `git_deploy_key` is already live. |
-| `organization.slug` | **Keep** column + `organization_slug_unique` | Documented always-NULL / reserved for a future feature. Writes never populate it; the unique is defensive. |
+| `organization.slug` | **Dropped** (2026-09-17, migration 0020) | Superseded: decided 2026-09-13 to drop rather than build a feature on it; column and `organization_slug_unique` gone. |
 | `credential.expires_at` (would have become `secret.expires_at`) | **Drop** | Step 1 grep found no reader — no credential-rotation or expiry-sweep path references `credential.expiresAt` / `credential.expires_at`. |
 
 #### Complete keep / rename / drop catalog
@@ -1169,8 +1169,8 @@ those tables.
 | `organization.metadata` | column | **Keep** | metadata/options pairing rule; unused today. |
 | `organization.options` | column | **Keep** | Live jsonb; `client/bindings/materialize.ts` (+3) |
 | `organization.name` | column | **Keep** | Live column. `client/authn/install-state.ts` (+3) |
-| `organization.slug` | column | **Keep** | Always-NULL reserved slug + `organization_slug_unique`; developer status echoes it. |
-| `organization_slug_unique` | unique | **Keep** | Unchanged; not in the Step 2 rename list or the DDL delta. |
+| `organization.slug` | column | **Dropped 2026-09-17** | Migration 0020; nothing selected or wrote it by then. |
+| `organization_slug_unique` | unique | **Dropped 2026-09-17** | Went with the column (migration 0020). |
 
 **3. `tls`** (export `tls` unchanged)
 

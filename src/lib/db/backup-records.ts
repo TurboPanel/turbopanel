@@ -24,7 +24,7 @@ export type ManagedBackupRecord = {
 
 function toRecord(row: typeof backup.$inferSelect): ManagedBackupRecord {
   return {
-    id: row.id,
+    id: row.backupId,
     createdAt: row.createdAt,
     managedId: row.managedId,
     sizeBytes: row.sizeBytes,
@@ -59,7 +59,7 @@ export async function insertManagedBackup(
   const [row] = await db
     .insert(backup)
     .values({
-      id: params.id,
+      backupId: params.id,
       managedId: params.managedId,
       sizeBytes: params.sizeBytes,
       checksum: params.checksum,
@@ -69,16 +69,18 @@ export async function insertManagedBackup(
         ? { createdAt: params.createdAt }
         : {}),
     })
-    .onConflictDoNothing()
+    .onConflictDoNothing({ target: [backup.managedId, backup.backupId] })
     .returning();
   if (row) return toRecord(row);
 
   // Idempotent retry of a completed create (e.g. a redelivered command) lands
-  // on the same id — return the existing row rather than erroring.
+  // on the same (engine, id) — return the existing row rather than erroring.
+  // Scoped by engine on purpose: another organization's engine reporting the
+  // same string is a different row, never this one.
   const [existing] = await db
     .select()
     .from(backup)
-    .where(eq(backup.id, params.id))
+    .where(and(eq(backup.managedId, params.managedId), eq(backup.backupId, params.id)))
     .limit(1);
   if (!existing) throw new Error(`backup insert failed (id=${params.id})`);
   return toRecord(existing);
@@ -105,7 +107,7 @@ export async function findManagedBackupById(
   const [row] = await db
     .select()
     .from(backup)
-    .where(and(eq(backup.managedId, managedId), eq(backup.id, backupId)))
+    .where(and(eq(backup.managedId, managedId), eq(backup.backupId, backupId)))
     .limit(1);
   return row ? toRecord(row) : undefined;
 }
@@ -117,5 +119,5 @@ export async function deleteManagedBackup(
 ): Promise<void> {
   await db
     .delete(backup)
-    .where(and(eq(backup.managedId, managedId), eq(backup.id, backupId)));
+    .where(and(eq(backup.managedId, managedId), eq(backup.backupId, backupId)));
 }

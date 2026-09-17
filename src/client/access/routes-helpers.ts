@@ -7,6 +7,11 @@ import {
   type SubjectType,
 } from '../authz/catalog.ts'
 
+/** `invitation.status` vocabulary — mirrored by `invitation_status_check` (enum-checks.test.ts). */
+export const INVITATION_STATUSES = ['pending', 'accepted', 'revoked'] as const
+
+export type InvitationStatus = (typeof INVITATION_STATUSES)[number]
+
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

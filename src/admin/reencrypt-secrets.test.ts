@@ -180,6 +180,7 @@ async function installIsolatedFixtureSchema(
     CREATE TABLE "2fa" (
       id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
       created_at timestamptz(3) DEFAULT now() NOT NULL,
+      updated_at timestamptz(3) DEFAULT now() NOT NULL,
       user_id uuid NOT NULL,
       secret text NOT NULL,
       is_verified boolean DEFAULT false NOT NULL,

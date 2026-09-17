@@ -293,6 +293,7 @@ test('read helpers return the row or null', async () => {
     payerId: 'p1',
     providerSubscriptionId: 'sub_1',
     status: 'active',
+    providerStatus: 'active',
     currentPeriodEnd: null,
     scheduleId: null,
     graceExpiresAt: null,

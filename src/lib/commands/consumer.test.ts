@@ -2887,7 +2887,7 @@ test("processCommandEnvelope appends managed.backup metadata on create success",
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId));
 
     const rows = await db
-      .select({ id: backup.id, managedId: backup.managedId })
+      .select({ id: backup.backupId, managedId: backup.managedId })
       .from(backup)
       .where(eq(backup.managedId, managedId));
     assertEquals(rows.length, 1);
@@ -3370,7 +3370,7 @@ test("processCommandEnvelope removes backup metadata on managed.backup delete su
       })
       .where(eq(managed.id, managedId));
     await db.insert(backup).values({
-      id: "bk_1700000000000",
+      backupId: "bk_1700000000000",
       managedId,
       createdAt: "2020-01-01T00:00:00.000Z",
       sizeBytes: 1024,

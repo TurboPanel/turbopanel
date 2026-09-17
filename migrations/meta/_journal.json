@@ -141,6 +141,13 @@
       "when": 1789612690309,
       "tag": "0019_connection_installation_unique_per_forge",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789627406365,
+      "tag": "0020_pre_fold_checks_drops_indexes",
+      "breakpoints": true
     }
   ]
 }

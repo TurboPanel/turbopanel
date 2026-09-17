@@ -33,7 +33,7 @@ const test = Deno.test.bind(Deno)
  * | Table | PK column | Type | Why |
  * | --- | --- | --- | --- |
  * | `dispatch` | `command_id` | `uuid` | 1:1 payload row keyed by the owning `command.id` (itself uuidv7); a second surrogate id would be dead weight |
- * | `backup` | `id` | `text` | The daemon's own `bk_<hex>` backup id, minted from random bytes on the host and also the on-disk filename; the row indexes what the daemon already named (schema-child-tables, Road-to-0.1.x; decided 2026-09-16) |
+ * | `backup` | `id` | `text` | **Historical only.** Migration 0011 created it this way (the daemon's own `bk_<hex>` id as the key); 0020 (2026-09-17) moved the table to a uuidv7 primary key with the daemon id as `backup_id`, unique per managed engine. This guard reads every migration file, so the entry stays until the pre-tag fold regenerates `0000_init.sql` without 0011 — delete it then. |
  */
 const NATURAL_KEY_PRIMARY_KEYS = new Map<string, { column: string; type: string }>([
   ['dispatch', { column: 'command_id', type: 'uuid' }],
@@ -224,6 +224,7 @@ test('drizzle-orm migrator bookkeeping DDL matches the documented public.migrati
     }
   }
   // Pinned so a new natural-key exception forces this audit to be re-read:
-  // `dispatch.command_id` and `backup.id` (2026-09-16), nothing else.
+  // `dispatch.command_id` and the historical `backup.id` (2026-09-16; superseded
+  // by 0020 on 2026-09-17, entry removable at the fold), nothing else.
   assertEquals(NATURAL_KEY_PRIMARY_KEYS.size, 2)
 })

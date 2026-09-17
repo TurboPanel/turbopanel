@@ -1,4 +1,13 @@
 import { buildResourceCrudPaths } from './shared.ts'
+import { CONTAINER_STATUSES } from '../../lib/db/container-records.ts'
+
+const containerStatusSchema = {
+  type: 'string',
+  enum: [...CONTAINER_STATUSES],
+  description:
+    '`pending` until the daemon reports; then Docker Engine\'s container state verbatim, ' +
+    'or `unknown` for a state this version does not know. Any other value is refused (400).',
+} as const
 
 export const containerSchemas = {
   ContainerRow: {
@@ -32,7 +41,7 @@ export const containerSchemas = {
           'Docker container id; null between pre-allocation and the daemon report.',
       },
       containerName: { type: 'string' },
-      status: { type: 'string' },
+      status: containerStatusSchema,
       role: {
         type: 'string',
         enum: ['service', 'ingress', 'turbopanel'],
@@ -95,7 +104,7 @@ export const containerSchemas = {
       serverId: { type: 'string' },
       containerId: { type: 'string' },
       containerName: { type: 'string' },
-      status: { type: 'string' },
+      status: containerStatusSchema,
       composeServiceName: { type: 'string' },
       ordinal: {
         type: 'integer',
@@ -113,7 +122,7 @@ export const containerSchemas = {
     properties: {
       containerId: { type: 'string' },
       containerName: { type: 'string' },
-      status: { type: 'string' },
+      status: containerStatusSchema,
       composeServiceName: { type: 'string' },
       metadata: { type: 'object', nullable: true, additionalProperties: true },
       options: { type: 'object', nullable: true },

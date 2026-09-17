@@ -1804,7 +1804,7 @@ test("processCommandEnvelope managed.backup create inserts a real backup row", a
   );
   assertEquals(created.transitions.some((t) => t.status === "succeeded"), true);
   assertEquals(
-    created.inserts.some((row) => row.id === "bk_1700000000000"),
+    created.inserts.some((row) => row.backupId === "bk_1700000000000"),
     true,
   );
 });

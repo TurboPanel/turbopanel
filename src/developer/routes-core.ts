@@ -361,7 +361,6 @@ export function buildDeveloperRouter(
       .select({
         id: organization.id,
         displayName: organization.name,
-        slug: organization.slug,
       })
       .from(organization)
       .orderBy(organization.name)

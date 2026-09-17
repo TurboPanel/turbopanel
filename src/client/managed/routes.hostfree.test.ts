@@ -125,7 +125,10 @@ function validOptions() {
 
 function backupRow(overrides: Record<string, unknown> = {}) {
   return {
-    id: BACKUP_ID,
+    // A `backup` row: uuid primary key, the daemon's `bk_…` id in `backup_id`
+    // (unique per managed engine, surfaced to the API as `id`).
+    id: "00000000-0000-7000-8000-0000000000b1",
+    backupId: BACKUP_ID,
     managedId: MANAGED_ID,
     createdAt: NOW,
     sizeBytes: 1024,

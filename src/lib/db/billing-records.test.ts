@@ -96,7 +96,7 @@ async function projectedSubscription(ctx: Ctx): Promise<{ payerId: string; subsc
     .returning({ id: payer.id })
   const [s] = await ctx.db
     .insert(subscription)
-    .values({ payerId: p!.id, providerSubscriptionId: `sub_${RUN}`, status: 'active' })
+    .values({ payerId: p!.id, providerSubscriptionId: `sub_${RUN}`, status: 'active', providerStatus: 'active' })
     .returning({ id: subscription.id })
   return { payerId: p!.id, subscriptionId: s!.id }
 }
@@ -219,7 +219,13 @@ test('T15 · tier uniqueness: one row per label, per rank and per (provider, pro
     // The product index is partial: two rows with no product (custom tiers) may coexist.
     await ctx.db.insert(tier).values({ ...fresh(8, 'SX'), providerProductId: null, priceCents: null, currency: null, isCustom: true })
     await ctx.db.insert(tier).values({ ...fresh(9, 'SY'), providerProductId: null, priceCents: null, currency: null, isCustom: true })
-    // …and the same product id on another provider is another catalogue, not a duplicate.
-    await ctx.db.insert(tier).values({ ...fresh(10, 'S1A'), provider: 'apple', providerProductId: `prod_${RUN}_S1` })
+    // `apple` was the reserved second provider until 2026-09-17; both provider
+    // CHECKs now admit `stripe` only, so the same product id under another
+    // provider is refused by the CHECK before uniqueness is even consulted.
+    await expectPgRefusal(
+      ctx.db.insert(tier).values({ ...fresh(10, 'S1A'), provider: 'apple', providerProductId: `prod_${RUN}_S1` }),
+      CHECK_VIOLATION,
+      'tier_provider_check',
+    )
   })
 })

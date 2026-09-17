@@ -29,18 +29,22 @@ import type { TierLabel } from "../tiers/ladder.ts";
 import type { StripeClient } from "./client.ts";
 import { createStripeGateway } from "./stripe-products.ts";
 
-/** Matches `payer_provider_check` and `tier_provider_check`. */
-export type BillingProviderId = "stripe" | "apple";
+/**
+ * Matches `payer_provider_check` and `tier_provider_check` (pinned by
+ * `src/lib/db/enum-checks.test.ts`). Stripe only: `apple` was reserved here
+ * and in both CHECKs until 2026-09-17, then dropped before the first tag
+ * (decided 2026-09-12 — "way down the line, and we are only doing Stripe").
+ * A second gateway is added here, in the two CHECKs, and behind
+ * `BillingGateway` together.
+ */
+export const BILLING_PROVIDER_IDS = ["stripe"] as const;
 
-export const BILLING_PROVIDER_IDS: readonly BillingProviderId[] = [
-  "stripe",
-  "apple",
-];
+export type BillingProviderId = (typeof BILLING_PROVIDER_IDS)[number];
 
 export function isBillingProviderId(
   value: unknown,
 ): value is BillingProviderId {
-  return value === "stripe" || value === "apple";
+  return (BILLING_PROVIDER_IDS as readonly string[]).includes(value as string);
 }
 
 /** The price a product bills at, as much as a tier needs to know. */

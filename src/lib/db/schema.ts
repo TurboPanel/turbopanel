@@ -65,7 +65,8 @@ export const invitation = pgTable(
       mode: "string",
     }).notNull(),
     email: varchar({ length: 255 }).notNull(),
-    status: varchar({ length: 255 }).notNull(),
+    /** `pending` → `accepted` | `revoked`; expiry is `expires_at`, compared at read. */
+    status: text().notNull(),
     /** Intended access grants materialized on accept — see `InvitationGrantSpec`. */
     grants: jsonb(),
   },
@@ -92,6 +93,10 @@ export const invitation = pgTable(
       foreignColumns: [team.id],
       name: "invitation_team_id_team_id_fk",
     }).onDelete("cascade"),
+    check(
+      "invitation_status_check",
+      sql`status IN ('pending', 'accepted', 'revoked')`,
+    ),
   ],
 );
 export const organization = pgTable(
@@ -119,9 +124,7 @@ export const organization = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     name: text(),
-    slug: varchar({ length: 255 }),
   },
-  (table) => [unique("organization_slug_unique").on(table.slug)],
 );
 /**
  * Organization TLS certificate library (upload / Let's Encrypt / self-signed).
@@ -224,6 +227,11 @@ export const tls = pgTable(
     check(
       "tls_ca_generation_required_check",
       sql`ca_state IS NULL OR ca_state = 'revoked' OR ca_generation IS NOT NULL`,
+    ),
+    // Mirrors `TlsStatus` (src/lib/tls/types.ts) — pinned by enum-checks.test.ts.
+    check(
+      "tls_status_check",
+      sql`status IN ('ready', 'pending', 'expired', 'failed', 'revoked', 'managed')`,
     ),
   ],
 );
@@ -416,7 +424,7 @@ export const tier = pgTable(
     label: text().notNull(),
     /** Copied from the ladder on insert, never from a request; orders tiers and decides upgrade vs downgrade. */
     rank: integer().notNull(),
-    /** `stripe` today; `apple` reserved — matches `payer_provider_check`. */
+    /** `stripe` only — Apple was dropped before the first tag (2026-09-12). Matches `payer_provider_check`. */
     provider: text().default("stripe").notNull(),
     /**
      * The provider's Product this tier bills against, chosen from the
@@ -446,7 +454,7 @@ export const tier = pgTable(
     uniqueIndex("uniq_tier_provider_product")
       .on(table.provider, table.providerProductId)
       .where(sql`${table.providerProductId} IS NOT NULL`),
-    check("tier_provider_check", sql`provider IN ('stripe', 'apple')`),
+    check("tier_provider_check", sql`provider IN ('stripe')`),
   ],
 );
 /**
@@ -856,7 +864,7 @@ export const payer = pgTable(
     ),
     // `provider_*` columns, never `stripe_*`; this is the list of providers a
     // row may name, not a second integration.
-    check("payer_provider_check", sql`provider IN ('stripe', 'apple')`),
+    check("payer_provider_check", sql`provider IN ('stripe')`),
     // The webhook upsert conflict target: one row per provider customer.
     uniqueIndex("uniq_payer_provider_customer").on(
       table.provider,
@@ -913,8 +921,16 @@ export const subscription = pgTable(
     payerId: uuid("payer_id").notNull(),
     /** Provider-side subscription id (Stripe `sub_…`) — the upsert conflict target. */
     providerSubscriptionId: text("provider_subscription_id").notNull(),
-    /** Provider status verbatim (`active`, `past_due`, `canceled`, …). */
+    /**
+     * TurboPanel's own status vocabulary — Stripe's eight, plus `unknown`
+     * for any value the projection has never seen. Checked. The raw provider
+     * value is beside it in `provider_status`, so a Stripe vocabulary change
+     * lands as `unknown` + the verbatim string rather than a refused webhook.
+     * Mirrors `KNOWN_SUBSCRIPTION_STATUSES` (src/lib/db/billing-records.ts).
+     */
     status: text().notNull(),
+    /** Provider status verbatim, never interpreted (`active`, `past_due`, …). */
+    providerStatus: text("provider_status").notNull(),
     currentPeriodEnd: timestamp("current_period_end", {
       precision: 3,
       withTimezone: true,
@@ -948,6 +964,10 @@ export const subscription = pgTable(
       foreignColumns: [payer.id],
       name: "subscription_payer_id_payer_id_fk",
     }).onDelete("cascade"),
+    check(
+      "subscription_status_check",
+      sql`status IN ('incomplete', 'incomplete_expired', 'trialing', 'active', 'past_due', 'canceled', 'unpaid', 'paused', 'unknown')`,
+    ),
   ],
 );
 /**
@@ -1145,6 +1165,13 @@ export const command = pgTable(
       foreignColumns: [server.id],
       name: "command_server_id_server_id_fk",
     }).onDelete("cascade"),
+    // Mirror `COMMAND_STATUSES` / `COMMAND_ACTOR_TYPES` (src/lib/commands/types.ts) —
+    // pinned by enum-checks.test.ts.
+    check(
+      "command_status_check",
+      sql`status IN ('queued', 'dispatching', 'sent', 'acked', 'running', 'succeeded', 'failed', 'timed_out', 'cancelled')`,
+    ),
+    check("command_actor_type_check", sql`actor_type IN ('user', 'system')`),
   ],
 );
 /**
@@ -1164,6 +1191,14 @@ export const dispatch = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     payload: jsonb().notNull(),
     expiresAt: timestamp("expires_at", {
@@ -2101,7 +2136,10 @@ export const replica = pgTable(
 export const backup = pgTable(
   "backup",
   {
-    id: text().primaryKey().notNull(),
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
     createdAt: timestamp("created_at", {
       precision: 3,
       withTimezone: true,
@@ -2110,6 +2148,14 @@ export const backup = pgTable(
       .defaultNow()
       .notNull(),
     managedId: uuid("managed_id").notNull(),
+    /**
+     * The daemon's own `bk_<hex>` id — minted from random bytes on the host
+     * and also the on-disk filename. Unique **per managed engine**, not
+     * globally: the daemon that reports it belongs to one organization, and
+     * a global key would let one host's report shadow another organization's
+     * record of the same string (a hostile daemon, or a plain collision).
+     */
+    backupId: text("backup_id").notNull(),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
     /** SHA-256 hex digest of the artifact. */
     checksum: text().notNull(),
@@ -2129,7 +2175,8 @@ export const backup = pgTable(
       foreignColumns: [managed.id],
       name: "backup_managed_id_managed_id_fk",
     }).onDelete("cascade"),
-    check("backup_id_format_check", sql`id ~ '^[A-Za-z0-9_-]+$'`),
+    uniqueIndex("uniq_backup_managed_backup_id").on(table.managedId, table.backupId),
+    check("backup_id_format_check", sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
     check(
       "backup_checksum_format_check",
       sql`checksum ~ '^[a-f0-9]{64}$'`,
@@ -2190,6 +2237,20 @@ export const leaf = pgTable(
     index("idx_leaf_organization_id").using(
       "btree",
       table.organizationId.asc().nullsLast().op("uuid_ops"),
+    ),
+    // FK columns the renewal sweep and the per-server/per-engine lookups
+    // filter on; the two partial uniques below cover only one kind each.
+    index("idx_leaf_ca_id").using(
+      "btree",
+      table.caId.asc().nullsLast().op("uuid_ops"),
+    ),
+    index("idx_leaf_managed_id").using(
+      "btree",
+      table.managedId.asc().nullsLast().op("uuid_ops"),
+    ),
+    index("idx_leaf_server_id").using(
+      "btree",
+      table.serverId.asc().nullsLast().op("uuid_ops"),
     ),
     uniqueIndex("uniq_leaf_ingress_server")
       .on(table.serverId)
@@ -3035,6 +3096,12 @@ export const container = pgTable(
      */
     containerId: text("container_id"),
     containerName: text("container_name").notNull(),
+    /**
+     * `pending` until the daemon reports, then Docker Engine's container
+     * state verbatim (`created` … `dead`), or `unknown` when the daemon
+     * reports a state this list does not know — see `CONTAINER_STATUSES`
+     * in src/lib/db/container-records.ts; pinned by enum-checks.test.ts.
+     */
     status: text("status").default("pending").notNull(),
     /**
      * `role='ingress'` rows always use `ordinal = 1` and are named
@@ -3080,6 +3147,10 @@ export const container = pgTable(
     check(
       "container_role_check",
       sql`role IN ('service', 'ingress', 'turbopanel')`,
+    ),
+    check(
+      "container_status_check",
+      sql`status IN ('pending', 'created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead', 'unknown')`,
     ),
     foreignKey({
       columns: [table.serviceId],
@@ -3376,6 +3447,10 @@ export const sshKey = pgTable(
     index("idx_ssh_fingerprint").using(
       "btree",
       table.fingerprint.asc().nullsLast().op("text_ops"),
+    ),
+    index("idx_ssh_user_id").using(
+      "btree",
+      table.userId.asc().nullsLast().op("uuid_ops"),
     ),
     foreignKey({
       columns: [table.principalId],
@@ -3684,6 +3759,10 @@ export const storage = pgTable(
     index("idx_storage_service_id").using(
       "btree",
       table.serviceId.asc().nullsLast().op("uuid_ops"),
+    ),
+    index("idx_storage_principal_id").using(
+      "btree",
+      table.principalId.asc().nullsLast().op("uuid_ops"),
     ),
     foreignKey({
       columns: [table.organizationId],
@@ -4602,6 +4681,13 @@ export const grant = pgTable(
     ),
     index("idx_grant_entity").on(table.entityType, table.entityId),
     index("idx_grant_actor").on(table.actorType, table.actorId),
+    // Mirror `SUBJECT_TYPES` / `GRANT_ENTITY_TYPES` (src/client/authz/catalog.ts) —
+    // pinned by enum-checks.test.ts.
+    check("grant_actor_type_check", sql`actor_type IN ('user', 'team', 'organization')`),
+    check(
+      "grant_entity_type_check",
+      sql`entity_type IN ('organization', 'workspace', 'environment', 'project', 'service', 'server', 'hosting', 'variable', 'managed', 'container', 'tls', 'team')`,
+    ),
   ],
 );
 export const session = pgTable(
@@ -4916,6 +5002,8 @@ export const user = pgTable(
       "user_name_format_check",
       sql`(name IS NULL) OR ((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255))`,
     ),
+    // Mirrors the role constants in src/client/authn/session-store.ts — pinned by enum-checks.test.ts.
+    check("user_role_check", sql`role IN ('user', 'admin', 'superadmin')`),
   ],
 );
 export const twoFactor = pgTable(
@@ -4931,6 +5019,14 @@ export const twoFactor = pgTable(
       mode: "string",
     })
       .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
       .notNull(),
     userId: uuid("user_id").notNull(),
     /** Sealed `tpsecret` envelope — not plaintext. */

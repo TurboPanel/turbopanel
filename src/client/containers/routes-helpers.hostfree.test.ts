@@ -78,11 +78,35 @@ test('parseCreateContainerFields requires core identity fields', () => {
 test('parsePatchContainerFields strips promoted metadata keys', () => {
   const parsed = parsePatchContainerFields({
     metadata: { containerId: 'docker-id', note: 'keep' },
-    status: 'stopped',
+    status: 'exited',
   })
   if (!parsed.ok) throw new TypeError('expected valid patch fields')
   assertEquals(parsed.patch.metadata?.containerId, undefined)
-  assertEquals(parsed.patch.status, 'stopped')
+  assertEquals(parsed.patch.status, 'exited')
+})
+
+test('container status is confined to the checked vocabulary on create and patch', () => {
+  // `stopped` is not a Docker Engine state and nothing in the product ever
+  // wrote it; `container_status_check` refuses it, so the route does first.
+  const patched = parsePatchContainerFields({ status: 'stopped' })
+  assertEquals(patched.ok, false)
+  if (!patched.ok) assertEquals(patched.field, 'status')
+
+  const created = parseCreateContainerFields({
+    serviceId: validUuid,
+    serverId: validUuid,
+    containerId: 'docker-id',
+    containerName: 'c1',
+    status: 'stopped',
+    composeServiceName: 'web',
+  })
+  assertEquals(created.ok, false)
+  if (!created.ok) assertEquals(created.field, 'status')
+
+  // `unknown` is a legitimate member: it is what the daemon's report becomes
+  // for an Engine state this version does not know.
+  const unknown = parsePatchContainerFields({ status: 'unknown' })
+  assertEquals(unknown.ok, true)
 })
 
 test('parseCreateContainerFields rejects invalid jsonb and missing identity fields', () => {

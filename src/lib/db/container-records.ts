@@ -10,6 +10,36 @@ import { container, service } from './schema.ts'
 /** Matches compose service-key charset used when minting from daemon reports. */
 const SERVICE_NAME_RE = /^[A-Za-z0-9._-]+$/
 
+/**
+ * `container.status` vocabulary (`container_status_check`): `pending` until
+ * the daemon first reports, then Docker Engine's container state verbatim
+ * (`docker compose ps` `.State`), or `unknown` for a state Docker adds
+ * later — recorded rather than refused, so a new Engine state can never make
+ * a deploy report fail at the database.
+ */
+export const CONTAINER_STATUSES = [
+  'pending',
+  'created',
+  'running',
+  'paused',
+  'restarting',
+  'removing',
+  'exited',
+  'dead',
+  'unknown',
+] as const
+
+export type ContainerStatus = (typeof CONTAINER_STATUSES)[number]
+
+export function isContainerStatus(value: unknown): value is ContainerStatus {
+  return typeof value === 'string' && (CONTAINER_STATUSES as readonly string[]).includes(value)
+}
+
+/** A daemon-reported state, narrowed to the checked vocabulary (`unknown` otherwise). */
+export function normalizeContainerStatus(reported: string): ContainerStatus {
+  return isContainerStatus(reported) ? reported : 'unknown'
+}
+
 type ServiceRow = {
   id: string
   composeServiceName: string
@@ -410,7 +440,7 @@ async function upsertReportedContainers(
           .update(container)
           .set({
             containerId: reported.containerId,
-            status: reported.status,
+            status: normalizeContainerStatus(reported.status),
             containerName: reported.containerName,
             composeServiceName: reported.composeServiceName,
           })
@@ -432,7 +462,7 @@ async function upsertReportedContainers(
           serverId: params.serverId,
           containerId: reported.containerId,
           containerName: reported.containerName,
-          status: reported.status,
+          status: normalizeContainerStatus(reported.status),
           role,
           composeServiceName: reported.composeServiceName,
           ordinal,

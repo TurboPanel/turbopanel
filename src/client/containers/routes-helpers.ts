@@ -1,4 +1,5 @@
 import { buildPatchUpdateFields, stripPromotedMetadataKeys } from '../shared.ts'
+import { isContainerStatus } from '../../lib/db/container-records.ts'
 
 /** Identity/status/compose keys live on real columns — never persist into metadata. */
 export const CONTAINER_PROMOTED_METADATA_KEYS = [
@@ -128,6 +129,9 @@ export function parseCreateContainerFields(
 
   const status = requireStringFieldValue(body, 'status')
   if (typeof status !== 'string') return status
+  if (!isContainerStatus(status)) {
+    return { ok: false, error: 'Invalid request', status: 400, field: 'status' }
+  }
 
   const composeServiceName = requireStringFieldValue(body, 'composeServiceName')
   if (typeof composeServiceName !== 'string') return composeServiceName
@@ -193,7 +197,12 @@ export function parsePatchContainerFields(
   const nextComposeServiceName = readOptionalTopLevelString(body, 'composeServiceName')
   if (nextContainerId) patch.containerId = nextContainerId
   if (nextContainerName) patch.containerName = nextContainerName
-  if (nextStatus) patch.status = nextStatus
+  if (nextStatus) {
+    if (!isContainerStatus(nextStatus)) {
+      return { ok: false, error: 'Invalid request', status: 400, field: 'status' }
+    }
+    patch.status = nextStatus
+  }
   if (nextComposeServiceName) patch.composeServiceName = nextComposeServiceName
 
   const metadataResult = parseJsonbField(body, 'metadata')

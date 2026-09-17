@@ -38,6 +38,11 @@ export const COMMAND_STATUSES = [
 
 export type CommandStatus = (typeof COMMAND_STATUSES)[number]
 
+/** Who asked for a command: an operator, or the control plane's own reconcilers/sweeps. */
+export const COMMAND_ACTOR_TYPES = ['user', 'system'] as const
+
+export type CommandActorType = (typeof COMMAND_ACTOR_TYPES)[number]
+
 export const TERMINAL_COMMAND_STATUSES: ReadonlySet<CommandStatus> = new Set([
   'succeeded',
   'failed',

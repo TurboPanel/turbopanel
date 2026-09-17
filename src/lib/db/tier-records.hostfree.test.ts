@@ -162,11 +162,13 @@ test('mapProviderProductsToTierIds keys on (provider, product), dedupes, drops b
     tierRow(),
     tierRow({ id: S5, label: 'S5', rank: 5, providerProductId: 'prod_s5' }),
     // Same product id on another provider: a different catalogue, not a match.
-    tierRow({ id: SX, label: 'S1', rank: 1, provider: 'apple', providerProductId: 'prod_s3' }),
+    // A second provider does not exist today (`BILLING_PROVIDER_IDS` is Stripe only); the
+    // in-memory double has no CHECK, so this row only exercises the provider filter.
+    tierRow({ id: SX, label: 'S1', rank: 1, provider: 'other', providerProductId: 'prod_s3' }),
   ]]])
   const map = await mapProviderProductsToTierIds(db, 'stripe', ['prod_s3', 'prod_s3', '', 'prod_nope', 'prod_s5'])
   assertEquals([...map.entries()].sort(), [['prod_s3', S3], ['prod_s5', S5]])
-  assertEquals(await mapProviderProductsToTierIds(db, 'apple', ['prod_s3']), new Map([['prod_s3', SX]]))
+  assertEquals(await mapProviderProductsToTierIds(db, 'other' as never, ['prod_s3']), new Map([['prod_s3', SX]]))
   assertEquals(await mapProviderProductsToTierIds(db, 'stripe', []), new Map())
   // No read at all for an empty list.
   assertEquals(db.ops.filter((op) => op === 'select:tier').length, 2)

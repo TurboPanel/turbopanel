@@ -1282,7 +1282,7 @@ test("GET backups returns stored metadata newest first, and delete/restore enque
     );
     await db.insert(backup).values([
       {
-        id: "bk_older",
+        backupId: "bk_older",
         managedId: created.managed.id,
         createdAt: "2024-01-01T00:00:00.000Z",
         sizeBytes: 100,
@@ -1291,7 +1291,7 @@ test("GET backups returns stored metadata newest first, and delete/restore enque
         path: "/var/lib/turbopanel/managed/x/backups/bk_older.dump",
       },
       {
-        id: "bk_newer",
+        backupId: "bk_newer",
         managedId: created.managed.id,
         createdAt: "2024-06-01T00:00:00.000Z",
         sizeBytes: 200,
@@ -1433,7 +1433,7 @@ test("backup create/delete/restore target managed.server_id when environment pla
         eq(managed.id, created.managed.id),
       );
       await db.insert(backup).values({
-        id: "bk_drift",
+        backupId: "bk_drift",
         managedId: created.managed.id,
         createdAt: "2024-01-01T00:00:00.000Z",
         sizeBytes: 100,

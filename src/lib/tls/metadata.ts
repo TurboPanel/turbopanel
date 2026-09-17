@@ -12,14 +12,17 @@ export type TlsStatusColumns = {
   fingerprintSha256: string | null | undefined
 }
 
-const TLS_STATUSES = new Set<TlsStatus>([
+/** Every `TlsStatus`, as an array — mirrored by `tls_status_check` (enum-checks.test.ts). */
+export const TLS_STATUS_VALUES = [
   'ready',
   'pending',
   'expired',
   'failed',
   'revoked',
   'managed',
-])
+] as const satisfies readonly TlsStatus[]
+
+const TLS_STATUSES = new Set<TlsStatus>(TLS_STATUS_VALUES)
 
 function isTlsStatus(value: unknown): value is TlsStatus {
   return typeof value === 'string' && TLS_STATUSES.has(value as TlsStatus)

@@ -138,6 +138,7 @@ function stateWith(
       id: "s",
       payerId: "p",
       providerSubscriptionId: "sub_1",
+      providerStatus: "active",
       status,
       currentPeriodEnd: PERIOD_END,
       scheduleId: null,

@@ -215,6 +215,7 @@ async function purchaseTier(
         payerId: payerRow!.id,
         providerSubscriptionId: `sub_test_${crypto.randomUUID()}`,
         status: "active",
+        providerStatus: "active",
         createdAt: now,
         updatedAt: now,
       })

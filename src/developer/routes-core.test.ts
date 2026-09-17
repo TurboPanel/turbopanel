@@ -70,7 +70,7 @@ function queryResult<T>(rows: T[]) {
 }
 
 function createRoutesCoreMockDb(opts: {
-  organizations?: Array<{ id: string; name: string; slug: string }>;
+  organizations?: Array<{ id: string; name: string }>;
   servers?: MockServerRow[];
   executeRows?: unknown[];
   executeThrows?: Error;
@@ -82,7 +82,9 @@ function createRoutesCoreMockDb(opts: {
 
   return {
     select: (fields: Record<string, unknown>) => {
-      const isOrg = "slug" in fields;
+      // The organization listing selects only `id` + `displayName`; the server
+      // listing selects `displayName` too, but with `organizationId` beside it.
+      const isOrg = "displayName" in fields && !("organizationId" in fields);
       const isProjection = "daemon" in fields && !("metadata" in fields);
       const isIdOnly = Object.keys(fields).length === 1 && "id" in fields;
       const rows = isOrg
@@ -90,7 +92,6 @@ function createRoutesCoreMockDb(opts: {
           id: org.id,
           displayName: org.name,
           name: org.name,
-          slug: org.slug,
         }))
         : isProjection
         ? servers.map((row) => ({
@@ -873,7 +874,7 @@ describe("developer address routes", () => {
 describe("developer organization and server routes", () => {
   it("lists organizations and handles missing db", async () => {
     const db = createRoutesCoreMockDb({
-      organizations: [{ id: ORG_ID, name: "Dev Org", slug: "dev-org" }],
+      organizations: [{ id: ORG_ID, name: "Dev Org" }],
     });
     const { app } = await createTestApp({ db });
     const missing = await createTestApp({ db: null });
@@ -936,7 +937,7 @@ describe("developer organization and server routes", () => {
         createdAt: "2026-01-01T00:00:00.000Z",
         connected: true,
       }],
-      organizations: [{ id: ORG_ID, name: "Dev Org", slug: "dev-org" }],
+      organizations: [{ id: ORG_ID, name: "Dev Org" }],
       insertServerId: "00000000-0000-4000-8000-0000000000aa",
       updateReturns: [{ id: SERVER_ID, organizationId: ORG_ID }],
     });

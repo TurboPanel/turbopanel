@@ -47,9 +47,13 @@ export type BillingWriteDb = Db | BillingDbTx
 export type BillingProvider = BillingProviderId
 
 /**
- * Provider statuses this projection acts on. Anything else is stored
- * verbatim (`subscription.status` has no CHECK on purpose) and narrowed at
- * read time by `parseSubscriptionStatus`.
+ * Provider statuses this projection acts on — TurboPanel's own checked
+ * vocabulary (`subscription_status_check`). Anything else lands as
+ * `unknown` in `subscription.status`, with the verbatim provider value kept
+ * beside it in `subscription.provider_status` — so a Stripe vocabulary
+ * change is an `unknown` row to notice, never a refused webhook. (Until
+ * 2026-09-17 the raw value was stored in `status` with no CHECK; the split
+ * is the 2026-09-11 enum-CHECK decision applied to a provider-owned list.)
  */
 export const KNOWN_SUBSCRIPTION_STATUSES = [
   'incomplete',
@@ -175,7 +179,8 @@ export async function upsertSubscriptionFromProvider(
     .values({
       payerId: input.payerId,
       providerSubscriptionId: input.providerSubscriptionId,
-      status: input.status,
+      status: parseSubscriptionStatus(input.status),
+      providerStatus: input.status,
       currentPeriodEnd: input.currentPeriodEnd,
       scheduleId: input.scheduleId,
       pastDueSince: pastDue ? now : null,
@@ -189,7 +194,8 @@ export async function upsertSubscriptionFromProvider(
       target: subscription.providerSubscriptionId,
       set: {
         payerId: input.payerId,
-        status: input.status,
+        status: parseSubscriptionStatus(input.status),
+        providerStatus: input.status,
         currentPeriodEnd: input.currentPeriodEnd,
         scheduleId: input.scheduleId,
         pastDueSince: pastDue
