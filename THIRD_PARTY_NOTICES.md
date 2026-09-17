@@ -21,11 +21,6 @@ pnpm-lock.yaml sha256:2de418f0c9b9739c74e5e55d7957ccf9c6602b3081ddcd7fbaa9702011
 - License: MIT
 - Homepage: https://github.com/duckdb/duckdb-node-neo#readme
 
-### @hono/hono@4.13.7
-
-- License: MIT
-- Source: deno.lock (jsr)
-
 ### @ioredis/commands@1.10.0
 
 - License: MIT
@@ -38,27 +33,7 @@ pnpm-lock.yaml sha256:2de418f0c9b9739c74e5e55d7957ccf9c6602b3081ddcd7fbaa9702011
 - Copyright: Paul Miller
 - Homepage: https://paulmillr.com/noble/
 
-### @std/assert@1.0.19
-
-- License: MIT
-- Source: deno.lock (jsr)
-
-### @std/crypto@1.1.0
-
-- License: MIT
-- Source: deno.lock (jsr)
-
-### @std/encoding@1.0.10
-
-- License: MIT
-- Source: deno.lock (jsr)
-
 ### @std/internal@1.0.14
-
-- License: MIT
-- Source: deno.lock (jsr)
-
-### @std/path@1.1.5
 
 - License: MIT
 - Source: deno.lock (jsr)
@@ -312,6 +287,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/evanw/esbuild#readme
 
+### @hono/hono@4.13.7
+
+- License: MIT
+- Source: deno.lock (jsr)
+
 ### @img/colour@1.1.0
 
 - License: MIT
@@ -412,6 +392,26 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Copyright: Colin McDonnell
 - Homepage: https://standardschema.dev
+
+### @std/assert@1.0.19
+
+- License: MIT
+- Source: deno.lock (jsr)
+
+### @std/crypto@1.1.0
+
+- License: MIT
+- Source: deno.lock (jsr)
+
+### @std/encoding@1.0.10
+
+- License: MIT
+- Source: deno.lock (jsr)
+
+### @std/path@1.1.5
+
+- License: MIT
+- Source: deno.lock (jsr)
 
 ### @std/testing@1.0.20
 
