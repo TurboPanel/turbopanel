@@ -3,6 +3,7 @@ import type { Db } from '../../db.ts'
 import { nowIso } from '../commands/ids.ts'
 import { isValidDisplayName, normalizeDisplayName } from '../display-name-format.ts'
 import { task } from './schema.ts'
+import { uniqueViolationMessage } from './unique-violation.ts'
 
 export const TASK_CONCURRENCY_POLICIES = ['allow', 'forbid', 'replace'] as const
 
@@ -94,14 +95,9 @@ export function sortTaskRecords(records: TaskRecord[]): TaskRecord[] {
   return [...records].sort((a, b) => a.name.localeCompare(b.name))
 }
 
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null &&
-    'code' in err && (err as { code: string }).code === '23505'
-}
-
 export function isTaskUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false
-  const message = err instanceof Error ? err.message : String(err)
+  const message = uniqueViolationMessage(err)
+  if (message === null) return false
   return message.includes(TASK_UNIQUE_INDEX)
 }
 

@@ -23,6 +23,7 @@ import {
 } from './catalog/index.ts'
 import { isConfiguredProjectType } from './empty-setup.ts'
 import { PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
+import { isUniqueViolationOn } from '../../lib/db/unique-violation.ts'
 
 export type ProjectRouteValidationError = {
   ok: false
@@ -75,25 +76,9 @@ export function resolveCatalogEntryForCreate(
   return catalogEntry
 }
 
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && 'code' in err &&
-    (err as { code: unknown }).code === '23505'
-}
-
-/**
- * The org-wide project-name lock (`uniq_project_organization_name`) firing
- * under a racer the pre-check missed. drizzle/postgres.js nest the real
- * Postgres error under `.cause` — same shape as `isHostnameUniqueViolation`.
- */
+/** The org-wide project-name lock (`uniq_project_organization_name`) firing under a racer the pre-check missed. */
 export function isProjectNameUniqueViolation(err: unknown): boolean {
-  const cause = err instanceof Error && err.cause instanceof Error ? err.cause : null
-  if (!isPostgresUniqueViolation(cause ?? err)) return false
-  const message = cause instanceof Error
-    ? cause.message
-    : err instanceof Error
-    ? err.message
-    : String(err)
-  return message.includes('uniq_project_organization_name')
+  return isUniqueViolationOn(err, 'uniq_project_organization_name')
 }
 
 export function mapCreateProjectError(err: unknown): {

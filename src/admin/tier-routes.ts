@@ -59,6 +59,7 @@ import {
   serializeProduct,
   type TierPatchFields,
 } from "./tier-routes-helpers.ts";
+import { isPostgresUniqueViolation } from "../lib/db/unique-violation.ts";
 
 export const BILLING_NOT_CONFIGURED_ERROR = "billing_not_configured";
 
@@ -187,6 +188,8 @@ async function verify(
 }
 
 function isUniqueViolation(err: unknown): boolean {
+  if (isPostgresUniqueViolation(err)) return true;
+  // Pre-wrapping fallback for mocked drivers that throw a bare Error.
   const message = err instanceof Error ? err.message : String(err);
   return /unique|duplicate/i.test(message);
 }

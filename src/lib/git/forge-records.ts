@@ -31,6 +31,7 @@ import {
 } from '../../client/authn/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import { normalizeOrigin } from './origin.ts'
+import { isPostgresUniqueViolation as isUniqueViolation } from '../db/unique-violation.ts'
 
 /** Providers that have a registerable application. `git` (generic SSH) has none. */
 export const FORGE_PROVIDERS = ['github', 'gitlab'] as const
@@ -83,15 +84,6 @@ export class ForgeConflictError extends Error {
 }
 
 /** Postgres `unique_violation`. */
-const PG_UNIQUE_VIOLATION = '23505'
-
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: unknown }).code === PG_UNIQUE_VIOLATION
-  )
-}
 
 /** Run a write, mapping a unique violation to the opaque conflict above. */
 async function withConflictMapped<T>(run: () => Promise<T>): Promise<T> {

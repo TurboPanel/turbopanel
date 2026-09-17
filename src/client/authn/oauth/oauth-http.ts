@@ -57,6 +57,7 @@ import {
   resolveOAuthProvider,
 } from "./providers.ts";
 import type { OAuthStateClaims } from "./oauth-state.ts";
+import { isPostgresUniqueViolation } from "../../../lib/db/unique-violation.ts";
 
 const DEFAULT_REDIRECT_TO = "/";
 
@@ -130,16 +131,6 @@ async function readOptionalJsonObject(
       response: c.json({ ok: false, error: "Invalid request" }, 400),
     };
   }
-}
-
-function isPostgresUniqueViolation(err: unknown): boolean {
-  let current: unknown = err;
-  for (let depth = 0; depth < 4; depth += 1) {
-    if (typeof current !== "object" || current === null) return false;
-    if ((current as { code?: unknown }).code === "23505") return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
 }
 
 function signInErrorRedirect(c: Context<AppEnv>, code: string): Response {

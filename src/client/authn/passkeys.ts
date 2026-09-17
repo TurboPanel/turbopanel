@@ -23,6 +23,7 @@ import {
   verifyAssertion,
   verifyRpIdHash,
 } from "./webauthn.ts";
+import { isPostgresUniqueViolation } from "../../lib/db/unique-violation.ts";
 
 export const WEBAUTHN_CHALLENGE_PURPOSE = "webauthn-challenge";
 export const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000;
@@ -273,11 +274,6 @@ function parseClientDataJson(encoded: string): ClientData {
 function challengesEqual(left: string, right: string): boolean {
   const strip = (value: string) => value.replaceAll("=", "");
   return strip(left) === strip(right);
-}
-
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null &&
-    "code" in err && (err as { code: string }).code === "23505";
 }
 
 export type PasskeyCredentialAttestation = {

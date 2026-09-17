@@ -65,6 +65,7 @@ import {
   AUTH_SIGN_UP_MAX_BODY_BYTES,
   MAX_AUTH_PASSWORD_CHARS,
 } from "./auth-body-limits.ts";
+import { isUniqueViolationOn } from "../../lib/db/unique-violation.ts";
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig;
@@ -310,29 +311,8 @@ function nowTs(): string {
   return new Date().toISOString();
 }
 
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null &&
-    "code" in err && (err as { code: string }).code === "23505";
-}
-
 function isUserEmailUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false;
-
-  const candidates: unknown[] = [err];
-  if (typeof err === "object" && err !== null && "cause" in err) {
-    candidates.push((err as { cause: unknown }).cause);
-  }
-
-  for (const candidate of candidates) {
-    if (typeof candidate !== "object" || candidate === null) continue;
-    const constraint = "constraint_name" in candidate
-      ? (candidate as { constraint_name?: unknown }).constraint_name
-      : undefined;
-    if (constraint === "user_email_unique") return true;
-  }
-
-  const message = err instanceof Error ? err.message : String(err);
-  return message.includes("user_email_unique");
+  return isUniqueViolationOn(err, "user_email_unique");
 }
 
 /**

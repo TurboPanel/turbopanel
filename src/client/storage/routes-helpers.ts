@@ -2,6 +2,10 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app.ts'
 import type { storage } from '../../lib/db/schema.ts'
 import { parseJsonbObject, requireStringField } from '../shared.ts'
+import {
+  isPostgresUniqueViolation,
+  uniqueViolationMessage as uniqueViolationLayerMessage,
+} from '../../lib/db/unique-violation.ts'
 
 export const MAX_STORAGE_CONTENT_BYTES = 256 * 1024
 
@@ -225,14 +229,7 @@ function parseOptionalBoolean(
   return c.json({ error: 'Invalid request' }, 400)
 }
 
-export function isPostgresUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code: string }).code === '23505'
-  )
-}
+export { isPostgresUniqueViolation }
 
 export const COPY_PRIMARY_EXISTS_ERROR = 'copy_primary_exists'
 export const COPY_SERVER_PROVIDER_EXISTS_ERROR = 'copy_server_provider_exists'
@@ -240,12 +237,7 @@ export const MOUNT_DESTINATION_IN_USE_ERROR = 'mount_destination_in_use'
 export const SCRATCH_COPY_NOT_MOUNTABLE_ERROR = 'scratch_copy_not_mountable'
 
 function uniqueViolationMessage(err: unknown): string {
-  if (err instanceof Error) return err.message
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    const message = (err as { message: unknown }).message
-    if (typeof message === 'string') return message
-  }
-  return String(err)
+  return uniqueViolationLayerMessage(err) ?? ''
 }
 
 export function mapStorageUniqueViolation(

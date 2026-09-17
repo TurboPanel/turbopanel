@@ -3,6 +3,7 @@ import type { Db } from '../../db.ts'
 import { nowIso } from '../commands/ids.ts'
 import { isValidDisplayName, normalizeDisplayName } from '../display-name-format.ts'
 import { marker, tag } from './schema.ts'
+import { uniqueViolationMessage } from './unique-violation.ts'
 
 export const TAGGABLE_PARENTS = [
   { bodyKey: 'serverId', column: 'serverId', entityKind: 'server' },
@@ -110,14 +111,9 @@ function sortTagRecords(records: TagRecord[]): TagRecord[] {
   return [...records].sort((a, b) => a.name.localeCompare(b.name))
 }
 
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null &&
-    'code' in err && (err as { code: string }).code === '23505'
-}
-
 export function isTagUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false
-  const message = err instanceof Error ? err.message : String(err)
+  const message = uniqueViolationMessage(err)
+  if (message === null) return false
   return message.includes(TAG_UNIQUE_INDEX)
 }
 

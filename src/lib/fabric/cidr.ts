@@ -17,6 +17,7 @@ import {
   isValidIpAddress,
   stripInetPrefixSuffix,
 } from '../ip-address.ts'
+import { uniqueViolationMessage } from '../db/unique-violation.ts'
 
 export const DEFAULT_FABRIC_HOST_CIDR = '10.250.0.0/16' // NOSONAR typescript:S1313 — RFC1918 TurboFabric tp0 default, not a reachable host
 export const DEFAULT_FABRIC_CONTAINER_POOL = '10.192.0.0/12' // NOSONAR typescript:S1313 — RFC1918 container-pool default, not a reachable host
@@ -174,22 +175,17 @@ export function composeNetworkHostName(networkId: string): string {
   return `tpn_${networkId}`
 }
 
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null &&
-    'code' in err && (err as { code: string }).code === '23505'
-}
-
 /** True when the unique violation is on `relay(fabric_id, address)`. */
 export function isRelayAddressUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false
-  const message = err instanceof Error ? err.message : String(err)
+  const message = uniqueViolationMessage(err)
+  if (message === null) return false
   return message.includes('uniq_relay_fabric_address')
 }
 
 /** True when the unique violation is on `relay(fabric_id, prefix)`. */
 export function isRelayPrefixUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false
-  const message = err instanceof Error ? err.message : String(err)
+  const message = uniqueViolationMessage(err)
+  if (message === null) return false
   return message.includes('uniq_relay_fabric_prefix')
 }
 

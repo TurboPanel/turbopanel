@@ -13,10 +13,14 @@ import {
 } from "./protocol.ts";
 
 function createNoopProjectionDb(): Db {
+  // The daemon-state read is `server ⋈ key`; an empty join is "not enrolled",
+  // which is what a no-op projection wants.
+  const empty = () => ({ where: () => ({ limit: () => Promise.resolve([]) }) });
   const db = {
     select: () => ({
       from: () => ({
-        where: () => ({ limit: () => Promise.resolve([]) }),
+        ...empty(),
+        innerJoin: empty,
       }),
     }),
     update: () => ({
@@ -362,15 +366,17 @@ describe("createDurableObjectDaemonCellRegistry", () => {
 
   it("uses location hints when resolving stubs", async () => {
     const serverId = "test-srv-registry-location";
+    const hintRows = () => ({
+      limit: () => Promise.resolve([{
+        metadata: {},
+        options: { cellLocationHint: "wnam" },
+      }]),
+    });
     const db = {
       select: () => ({
         from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([{
-              metadata: {},
-              options: { cellLocationHint: "wnam" },
-            }]),
-          }),
+          where: hintRows,
+          innerJoin: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
         }),
       }),
     } as unknown as Db;

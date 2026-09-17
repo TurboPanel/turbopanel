@@ -129,6 +129,7 @@ import type {
   DerivedSecretsConfig,
   SecretsConfig,
 } from "../../client/authn/secrets.ts";
+import { isPostgresUniqueViolation } from "../db/unique-violation.ts";
 
 /** Secrets used to reseal command payloads onto a target daemon key. */
 export type CommandResealDeps = {
@@ -554,14 +555,7 @@ async function applyTimeSyncSideEffect(
   }
 }
 
-export function isPostgresUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    (err as { code: string }).code === "23505"
-  );
-}
+export { isPostgresUniqueViolation };
 
 function consumerFabricSecretFields(deps?: CommandConsumerDeps): {
   secretsConfig?: SecretsConfig;

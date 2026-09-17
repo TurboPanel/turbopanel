@@ -19,6 +19,7 @@ import {
   type TlsOptions,
   type TlsSource,
 } from "../../lib/tls/index.ts";
+import { isPostgresUniqueViolation, isUniqueViolationOn } from "../../lib/db/unique-violation.ts";
 
 export const TLS_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -259,21 +260,14 @@ export function isCreateTlsFailure(
   return "status" in result;
 }
 
-export function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null &&
-    "code" in err && (err as { code: string }).code === "23505";
-}
+export { isPostgresUniqueViolation };
 
 export function isTlsFingerprintUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false;
-  const message = err instanceof Error ? err.message : String(err);
-  return message.includes("uniq_tls_organization_fingerprint_sha256");
+  return isUniqueViolationOn(err, "uniq_tls_organization_fingerprint_sha256");
 }
 
 export function isOrganizationCaUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false;
-  const message = err instanceof Error ? err.message : String(err);
-  return message.includes("uniq_tls_organization_active_ca");
+  return isUniqueViolationOn(err, "uniq_tls_organization_active_ca");
 }
 
 export function createFailure(

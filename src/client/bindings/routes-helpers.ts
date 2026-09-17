@@ -12,6 +12,10 @@ import { parseManagedRowOptions } from '../managed/options.ts'
 import { isManagedReplicationPrincipal, isManagedRootPrincipal } from '../managed/routes-helpers.ts'
 import { listBindingEmittedKeys } from './materialize.ts'
 import { isBindingEndpointError, resolveBindingEndpoint } from './resolve-endpoint.ts'
+import {
+  isPostgresUniqueViolation,
+  uniqueViolationMessage as uniqueViolationLayerMessage,
+} from '../../lib/db/unique-violation.ts'
 
 export { assertSafeBindingKeyPrefix, DEFAULT_BINDING_KEY_PREFIX }
 
@@ -31,14 +35,7 @@ export type BindingRow = {
   updatedAt: string
 }
 
-export function isPostgresUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code: string }).code === '23505'
-  )
-}
+export { isPostgresUniqueViolation }
 
 /**
  * Map a materialize failure onto the HTTP status + body the bindings API
@@ -557,12 +554,7 @@ export function bindingDatabaseTargetHttpStatus(
 }
 
 function uniqueViolationMessage(err: unknown): string {
-  if (err instanceof Error) return err.message
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    const message = (err as { message: unknown }).message
-    if (typeof message === 'string') return message
-  }
-  return ''
+  return uniqueViolationLayerMessage(err) ?? ''
 }
 
 export function mapBindingUniqueViolation(

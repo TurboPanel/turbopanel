@@ -34,6 +34,7 @@ import type { CommandQueue } from './lib/commands/queue.ts'
 import { isNoopCommandQueue } from './lib/commands/noop-command-queue.ts'
 import { reconcileFabricMembership } from './lib/fabric/enqueue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from './client/authn/secrets.ts'
+import { isPostgresUniqueViolation as isUniqueViolation } from './lib/db/unique-violation.ts'
 
 export type FabricMembershipDeps = {
   commandQueue: CommandQueue
@@ -196,11 +197,6 @@ export function mergeServerMetadataIdentity(
 
 function defaultDisplayName(_identity: ServerHelloIdentity): string | null {
   return null
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null &&
-    'code' in err && (err as { code: string }).code === '23505'
 }
 
 function nowTs(): string {

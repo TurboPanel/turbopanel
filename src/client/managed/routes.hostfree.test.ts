@@ -200,7 +200,18 @@ function presenceServer(
 }
 
 function applyReadyServer(connected = true) {
-  return presenceServer(connected, { daemon: ACTIVE_DAEMON });
+  // `getServerDaemonStateByServerId` is `server ⋈ key` with the key row's
+  // columns flattened onto the result (the jsonb `daemon` is projection-only
+  // now). This fake answers every `server` query with the same rows, so the
+  // key's own `id` is not spelled here — `id` stays the server id the
+  // presence reads need; the daemon-state parse only carries it through.
+  const { id: _keyId, ...keyColumns } = ACTIVE_DAEMON.key;
+  return presenceServer(connected, {
+    daemon: null,
+    ...keyColumns,
+    revokedAt: null,
+    lastUsedAt: null,
+  });
 }
 
 function engineServiceRow() {

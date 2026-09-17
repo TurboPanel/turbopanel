@@ -6,6 +6,7 @@ import {
 } from "../../lib/ip-address.ts";
 import { parseJsonbObject } from "../shared.ts";
 import { parseIpPinMetadata } from "../../lib/net/repin.ts";
+import { isUniqueViolationOn } from "../../lib/db/unique-violation.ts";
 
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -53,15 +54,8 @@ export type IpRow = {
   updatedAt: string;
 };
 
-function isPostgresUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null &&
-    "code" in err && (err as { code: string }).code === "23505";
-}
-
 export function isIpAddressUniqueViolation(err: unknown): boolean {
-  if (!isPostgresUniqueViolation(err)) return false;
-  const message = err instanceof Error ? err.message : String(err);
-  return message.includes("uniq_ip_org_address");
+  return isUniqueViolationOn(err, "uniq_ip_org_address");
 }
 
 export function parseCreateIpAddress(

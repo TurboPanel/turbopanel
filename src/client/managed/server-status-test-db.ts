@@ -69,21 +69,30 @@ export function createPreflightDb(options: PreflightDbOptions): Db {
     ? activeDaemon
     : options.daemonState
 
+  // `getServerDaemonStateByServerId` is `server ⋈ key` with the key row's
+  // columns flattened beside the projection-only `daemon` jsonb; no key row
+  // (daemonState null) is the inner join finding nothing — "not enrolled".
+  const daemonRows = () => {
+    if (!daemonState) return queryResult([])
+    return queryResult([{
+      daemon: { projection: daemonState.projection },
+      metadata: null,
+      hostname: 'host-1',
+      machineKey: null,
+      connected: true,
+      statusChangedAt: '2024-01-01T00:00:00.000Z',
+      ...daemonState.key,
+      revokedAt: daemonState.key.revokedAt ?? null,
+      lastUsedAt: daemonState.key.lastUsedAt ?? null,
+    }])
+  }
+
   return {
     select: (fields: Record<string, unknown>) => ({
       from: () => ({
+        innerJoin: () => ({ where: daemonRows }),
         where: () => {
-          if ('daemon' in fields) {
-            if (!daemonState) return queryResult([])
-            return queryResult([{
-              daemon: daemonState,
-              metadata: null,
-              hostname: 'host-1',
-              machineKey: null,
-              connected: true,
-              statusChangedAt: '2024-01-01T00:00:00.000Z',
-            }])
-          }
+          if ('daemon' in fields) return daemonRows()
           if ('address' in fields) {
             if (options.datacenterAddress) {
               return queryResult([{ address: options.datacenterAddress }])
