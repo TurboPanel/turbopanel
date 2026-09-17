@@ -63,4 +63,21 @@ test('registerCorsMiddleware advertises read-only methods on allowed preflight',
   assertEquals(methods.includes('OPTIONS'), true)
   assertEquals(methods.includes('POST'), false)
   assertEquals(preflight.headers.get('Access-Control-Max-Age'), '86400')
+  // The version wire: the client's header may be sent, the instance's may be read.
+  const allowHeaders = preflight.headers.get('Access-Control-Allow-Headers') ?? ''
+  assertEquals(allowHeaders.includes('x-turbopanel-client-version'), true)
+})
+
+test('registerCorsMiddleware exposes the instance version header to allowed origins', async () => {
+  const app = new Hono()
+  registerCorsMiddleware(app, 'https://docs.example.com')
+  app.get('/api/health', (c) => c.json({ ok: true }))
+  const res = await app.request('http://localhost/api/health', {
+    headers: { Origin: 'https://docs.example.com' },
+  })
+  assertEquals(res.headers.get('Access-Control-Expose-Headers'), 'x-turbopanel-version')
+  const denied = await app.request('http://localhost/api/health', {
+    headers: { Origin: 'https://evil.example' },
+  })
+  assertEquals(denied.headers.get('Access-Control-Expose-Headers'), null)
 })

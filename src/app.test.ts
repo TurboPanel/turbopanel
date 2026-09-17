@@ -1,4 +1,5 @@
 import { assertEquals } from '@std/assert'
+import { INSTANCE_VERSION } from './version.ts'
 import type { Context } from 'hono'
 import { type AppEnv, createApp } from './app.ts'
 import { HEALTH_PATH } from './surfaces.ts'
@@ -42,12 +43,18 @@ test('createApp serves root text and health JSON', async () => {
   const body = (await health.json()) as {
     ok: boolean
     license: string
+    version: string
     revision: { commit: string; sourceUrl: string }
   }
   assertEquals(body.ok, true)
   assertEquals(body.license, 'AGPL-3.0-only')
+  assertEquals(body.version, INSTANCE_VERSION)
   assertEquals(typeof body.revision.commit, 'string')
   assertEquals(typeof body.revision.sourceUrl, 'string')
+  // The instance's version rides every response — root text included — so
+  // a store app can hold the instance against its floor without /api/health.
+  assertEquals(health.headers.get('x-turbopanel-version'), INSTANCE_VERSION)
+  assertEquals(root.headers.get('x-turbopanel-version'), INSTANCE_VERSION)
 })
 
 test('createApp injects runtime and optional dependencies into context', async () => {

@@ -1,4 +1,5 @@
 import type { Env, Hono } from 'hono'
+import { CLIENT_VERSION_HEADER, INSTANCE_VERSION_HEADER } from './lib/version-wire.ts'
 
 /**
  * Docs / Scalar CORS is read-oriented. Cookie-authenticated writes must go
@@ -7,7 +8,11 @@ import type { Env, Hono } from 'hono'
  * writes from configured website origins must not pass preflight.
  */
 const CORS_METHODS = 'GET, HEAD, OPTIONS'
-const CORS_HEADERS = 'Content-Type, Authorization, Cookie, Accept'
+// The app ↔ instance version wire rides both directions of a cross-origin
+// read: the client's version is a request header (preflight must allow it),
+// the instance's is a response header (the browser hides it unless exposed).
+const CORS_HEADERS = `Content-Type, Authorization, Cookie, Accept, ${CLIENT_VERSION_HEADER}`
+const CORS_EXPOSE_HEADERS = INSTANCE_VERSION_HEADER
 
 function parseCorsOrigins(raw: string | undefined): string[] {
   if (raw === undefined || raw.trim().length === 0) return []
@@ -55,6 +60,7 @@ export function registerCorsMiddleware<E extends Env>(
     if (allowOrigin !== undefined) {
       c.header('Access-Control-Allow-Origin', allowOrigin)
       c.header('Access-Control-Allow-Credentials', 'true')
+      c.header('Access-Control-Expose-Headers', CORS_EXPOSE_HEADERS)
     }
 
     if (c.req.method === 'OPTIONS') {
