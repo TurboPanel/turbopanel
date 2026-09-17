@@ -179,7 +179,10 @@ jobs:
           deno task duckdb:smoke --bin=dist/turbopanel-instance
 
       - name: Report the binary's shape
-        run: file dist/turbopanel-instance
+        # `file` exits 1 on a deno-compiled binary (the eszip trailer confuses
+        # its ELF parser) while still printing the architecture line — the
+        # line is what we want, the exit code is noise.
+        run: file dist/turbopanel-instance || true
 
       - name: Package the release asset
         run: |
