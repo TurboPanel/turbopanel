@@ -499,6 +499,7 @@ deno test -A --coverage=coverage/deno-profile \
   mailer/db.test.ts \
   mailer/mailgun-sender.test.ts \
   mailer/mailpit-sender.test.ts \
+  mailer/redact-url.test.ts \
   mailer/parse-email-job.test.ts \
   mailer/smtp-sender.test.ts \
   src/lib/geo/server-geo.test.ts \

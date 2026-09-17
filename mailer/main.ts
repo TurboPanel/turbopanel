@@ -19,6 +19,7 @@ import { createMailerMailgunSender } from './mailgun-sender.ts'
 import { createMailerMailpitSender } from './mailpit-sender.ts'
 import { parseEmailJob } from './parse-email-job.ts'
 import { RateLimiter } from './rate-limiter.ts'
+import { redactUrlCredentials } from './redact-url.ts'
 import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
 import type { EmailJob } from '../src/lib/email/types.ts'
 import { logError, logInfo, logWarn } from '../src/logger.ts'
@@ -191,7 +192,7 @@ const initialPrefetch = getPrefetch(initialSettings)
 lastAppliedPrefetch = initialPrefetch
 await channel.prefetch(initialPrefetch)
 
-logInfo('mailer', `consuming from ${QUEUE} at ${amqpUrl} (prefetch=${initialPrefetch})`)
+logInfo('mailer', `consuming from ${QUEUE} at ${redactUrlCredentials(amqpUrl)} (prefetch=${initialPrefetch})`)
 
 async function handleMessage(msg: AmqpMessage): Promise<void> {
   if (!msg) {
