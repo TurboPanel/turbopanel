@@ -33,6 +33,7 @@ import {
   planEnvironmentSchedule,
   type FleetServer,
   type PlannedService,
+  type ScheduleFailReason,
   type SchedulePlan,
 } from './planner.ts'
 
@@ -225,6 +226,7 @@ async function loadTenantFleet(
  * What a single-host self-hosted install hears instead of "No connected
  * servers are available" when its only daemon is the control-plane host.
  */
+export const COLOCATED_ONLY_SERVER_REASON: ScheduleFailReason = 'colocated_only'
 export const COLOCATED_ONLY_SERVER_MESSAGE =
   'The only connected server is the co-located control-plane host, which does not run tenant deploys — enrol another server first'
 
@@ -398,9 +400,14 @@ export async function planEnvironmentDeploy(
     })),
     storagePins,
   })
-  const plan = !scheduled.ok && scheduled.error === 'no_eligible_server' &&
+  const plan: SchedulePlan = !scheduled.ok &&
+      scheduled.error === 'no_eligible_server' &&
       fleet.length === 0 && excludedColocated > 0
-    ? { ...scheduled, message: COLOCATED_ONLY_SERVER_MESSAGE }
+    ? {
+      ...scheduled,
+      message: COLOCATED_ONLY_SERVER_MESSAGE,
+      reason: COLOCATED_ONLY_SERVER_REASON,
+    }
     : scheduled
 
   return {

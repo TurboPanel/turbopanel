@@ -137,8 +137,9 @@ function responseForScheduleError(
   c: Context<AppEnv>,
   error: Parameters<typeof scheduleErrorResponse>[0],
   message: string,
+  reason?: Parameters<typeof scheduleErrorResponse>[2],
 ): Response {
-  const mapped = scheduleErrorResponse(error, message);
+  const mapped = scheduleErrorResponse(error, message, reason);
   return c.json(mapped.body, { status: mapped.status as 409 | 422 });
 }
 
@@ -1226,7 +1227,7 @@ async function resolveSuccessfulPlan(
   }
   const { plan } = planned;
   if (!plan.ok) {
-    return responseForScheduleError(c, plan.error, plan.message);
+    return responseForScheduleError(c, plan.error, plan.message, plan.reason);
   }
   return { ...planned, plan };
 }

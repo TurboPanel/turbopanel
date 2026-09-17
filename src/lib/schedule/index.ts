@@ -15,6 +15,7 @@ export {
   type PlanEnvironmentInput,
   type PlannedService,
   type ScheduleErrorCode,
+  type ScheduleFailReason,
   type SchedulePlan,
 } from './planner.ts'
 export {
