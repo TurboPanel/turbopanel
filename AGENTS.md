@@ -871,8 +871,9 @@ Moved to `src/client/openapi/AGENTS.md`.
 - `src/deno-dev.ts` — development Deno entry; registers install routes,
   developer surface, `/api/daemon/v1/version`, daemon WS, and the dev update
   overlay (`src/developer/dev-update-overlay.ts` — client update UI resolves
-  trunk from the local daemon checkout's `dist/manifest.json` and rebuilds the
-  overlay before enqueueing updates, instead of comparing against `dl.trbp.nl`)
+  the target from the local daemon checkout's `dist/manifest.json`, whatever
+  channel the instance follows, and rebuilds the overlay before enqueueing
+  updates, instead of reading the public rail)
 - `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers
   `developer/routes-core` once per isolate
 - `scripts/check-workers-bundle.mjs` — Wrangler dry-run of the deploy entrypoint
@@ -937,8 +938,12 @@ Moved to `src/client/openapi/AGENTS.md`.
   `src/lib/db/AGENTS.md`); connection factories stay in `src/db.ts`
 - `src/lib/install/routes.ts` — self-hosted install wizard (`/api/install/v1/*`;
   Deno-only registration)
-- `src/lib/update/manifest.ts` — Workers-safe trunk manifest resolver
-  (`fetch`-only; returns `null` on any failure)
+- `src/lib/update/manifest.ts` — Workers-safe channel manifest resolver
+  (`fetch`-only, one fetch straight to the channel's built-in location from
+  `src/lib/update/channel.ts` — trunk on the CDN drop, rc/release on the
+  daemon's GitHub Releases; per-channel cache; returns `null` on any failure).
+  The instance follows `TURBOPANEL_UPDATE_CHANNEL` (default `trunk`; invalid
+  is a Deno startup error) and every queued daemon update carries that channel
 - `src/lib/email/` — shared queue types/templates; `smtp/` (Deno/AMQP) and
   `mailgun/` (Workers) backends
 - `src/developer/` — developer surface (Deno-only routes + Workers-safe
