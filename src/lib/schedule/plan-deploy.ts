@@ -28,6 +28,7 @@ import { interpretServiceSchedule } from './interpret.ts'
 import { reconcileServicesFromCompose } from '../../client/environments/reconcile-services.ts'
 import { registerComposeVolumes } from '../../client/environments/register-compose-volumes.ts'
 import { registerComposeMounts } from '../../client/environments/register-compose-mounts.ts'
+import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
 import {
   planEnvironmentSchedule,
   type FleetServer,
@@ -85,6 +86,26 @@ export type PlanEnvironmentDeployDeps = {
   registerComposeMounts?: typeof registerComposeMounts
   listEnvironmentSlots?: typeof listEnvironmentSlots
   listServerLabelsForServers?: typeof listServerLabelsForServers
+  /** Which of these org servers are co-located with the control plane. */
+  listColocatedServerIds?: typeof listColocatedServerIds
+}
+
+/**
+ * The co-located control-plane host is not a tenant deploy target: the
+ * environment PATCH refuses it as a pin
+ * (`COLOCATED_SERVER_DEPLOY_TARGET_BLOCKED_REASON`), and the unpinned pool
+ * must refuse it the same way, or "deploy with no pin" lands arbitrary compose
+ * on the host that carries `TURBOPANEL_SECRETS` (found in the 0.1.x install
+ * rehearsal). Same probes as the PATCH guard, plus the self-host pin.
+ */
+async function listColocatedServerIds(
+  db: Db,
+  serverIds: string[],
+): Promise<Set<string>> {
+  return await resolveColocatedServerIdSet(db, undefined, serverIds, {
+    orgScoped: true,
+    includeSelfHostPin: true,
+  })
 }
 
 /** Host-free: pull `options.compose` (or null) from project/environment options. */
@@ -151,20 +172,37 @@ export function computeStoragePinsFromMountRows(
   return pins
 }
 
-async function loadFleet(
+/**
+ * The org's servers as scheduling candidates, minus the co-located
+ * control-plane host — unless the environment is pinned to it, which only the
+ * self-host system environment legitimately is (tenant pins are refused at
+ * the PATCH). A project `defaultServerId` never brings it back: that is a
+ * preference the pool resolves, not an operator pin.
+ */
+async function loadTenantFleet(
   db: Db,
   organizationId: string,
-  listLabels: typeof listServerLabelsForServers,
+  deps: {
+    listLabels: typeof listServerLabelsForServers
+    listColocated: typeof listColocatedServerIds
+    pinServerId: string | null
+  },
 ): Promise<FleetServer[]> {
-  const rows = await db
+  const allRows = await db
     .select({
       id: server.id,
       connected: server.isConnected,
     })
     .from(server)
     .where(eq(server.organizationId, organizationId))
+  const colocated = allRows.length > 0
+    ? await deps.listColocated(db, allRows.map((row) => row.id))
+    : new Set<string>()
+  const rows = allRows.filter((row) =>
+    !colocated.has(row.id) || row.id === deps.pinServerId
+  )
 
-  const labelsByServer = await listLabels(
+  const labelsByServer = await deps.listLabels(
     db,
     rows.map((row) => row.id),
   )
@@ -232,6 +270,7 @@ export async function planEnvironmentDeploy(
   const registerMounts = deps.registerComposeMounts ?? registerComposeMounts
   const listTasks = deps.listEnvironmentSlots ?? listEnvironmentSlots
   const listLabels = deps.listServerLabelsForServers ?? listServerLabelsForServers
+  const listColocated = deps.listColocatedServerIds ?? listColocatedServerIds
 
   const [envRow] = await db
     .select({
@@ -311,9 +350,13 @@ export async function planEnvironmentDeploy(
     .limit(1)
 
   const existingTasks = await listTasks(db, params.environmentId)
-  const fleet = await loadFleet(db, params.organizationId, listLabels)
   const projectOptions = parseProjectOptions(projectRow.options)
   const pinServerId = envRow.serverId
+  const fleet = await loadTenantFleet(db, params.organizationId, {
+    listLabels,
+    listColocated,
+    pinServerId,
+  })
   const defaultServerId = projectOptions.defaultServerId ?? null
   const registerServerId = pinServerId ?? defaultServerId
   if (registerServerId) {
