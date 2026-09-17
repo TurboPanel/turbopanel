@@ -47,6 +47,15 @@ jobs:
           fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
 
       - name: Require SONAR_TOKEN
+        # Fork PRs and Dependabot PRs cannot receive repository secrets — GitHub
+        # withholds them from the dependabot[bot] actor even on same-repo
+        # branches — so the require is skipped there and the rest of the chain
+        # still gates; the scan below then skips on the empty token. Every other
+        # trigger (trunk pushes, same-repo PRs, workflow_call) must have it.
+        if: >-
+          github.actor != 'dependabot[bot]'
+          && (github.event_name != 'pull_request'
+              || github.event.pull_request.head.repo.full_name == github.repository)
         run: |
           if [ -z "$SONAR_TOKEN" ]; then
             echo "::error::SONAR_TOKEN is missing — add the secret on TurboPanel/turbopanel (or org)."
@@ -120,6 +129,8 @@ jobs:
           retention-days: 7
 
       - name: SonarQube Scan
+        # Skipped only when SONAR_TOKEN is empty (fork or Dependabot PR).
+        if: env.SONAR_TOKEN != ''
         uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
