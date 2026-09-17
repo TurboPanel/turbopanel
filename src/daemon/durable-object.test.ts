@@ -6,12 +6,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseSecretsFromEnv } from '../client/authn/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import type { Db } from '../db.ts'
+import { key } from '../lib/db/schema.ts'
 import type { ServerGeo } from '../lib/geo/server-geo.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
-  type ServerDaemonState,
+  type ServerDaemonJsonb,
   type ServerDaemonStatus,
 } from './authn/daemon-state.ts'
 import {
@@ -185,14 +186,19 @@ function createProjectionRecordingDb(
   let selectCalls = 0
   let endCalls = 0
   let metadata = { ...(initialMetadata ?? DEFAULT_PROJECTION_TEST_METADATA) }
-  let daemon: ServerDaemonState = {
-    key: {
-      id: 'key-1',
-      algorithm: 'Ed25519',
-      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-      fingerprint: 'fp-1',
-      createdAt: '2020-01-01T00:00:00.000Z',
-    },
+  // The key lives in its own table now; `daemon` is the projection-only
+  // jsonb the DO rewrites. Kept apart so a projection write cannot lose it —
+  // which is the exact lost-update the key table exists to prevent.
+  const daemonKey = {
+    id: 'key-1',
+    algorithm: 'Ed25519',
+    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+    fingerprint: 'fp-1',
+    createdAt: '2020-01-01T00:00:00.000Z',
+    revokedAt: null,
+    lastUsedAt: null,
+  }
+  let daemon: ServerDaemonJsonb = {
     projection: { hostname: 'host-1' },
   }
   let hostname: string | null = null
@@ -201,6 +207,9 @@ function createProjectionRecordingDb(
 
   const selectLimit = () => {
     selectCalls += 1
+    // The daemon-state read (`getServerDaemonStateByServerId`) is now
+    // `server ⋈ key`, with the key row's columns flattened onto the result;
+    // `daemon` is projection-only jsonb, so the key fields come from here.
     return Promise.resolve([
       {
         daemon,
@@ -209,6 +218,7 @@ function createProjectionRecordingDb(
         machineKey,
         connected: columns.connected,
         statusChangedAt: columns.statusChangedAt,
+        ...daemonKey,
       },
     ])
   }
@@ -222,13 +232,16 @@ function createProjectionRecordingDb(
             limit: () => Promise.resolve(capabilityPlanRows),
           }),
         }),
-        // Presence-ack cache warm (server ⋈ organization) — do not count
-        // toward getSelectCallCount(); that tracks daemon-status reads.
-        innerJoin: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([{ options: {} }]),
-          }),
-        }),
+        innerJoin: (joined: unknown) =>
+          joined === key
+            ? // Daemon-state read: counts toward getSelectCallCount().
+              { where: () => ({ limit: selectLimit }) }
+            : // Presence-ack cache warm (server ⋈ organization) — does not.
+              {
+                where: () => ({
+                  limit: () => Promise.resolve([{ options: {} }]),
+                }),
+              },
       }),
     }),
     update: () => ({
@@ -240,7 +253,7 @@ function createProjectionRecordingDb(
         }
         updateCalls.push(recorded)
         if (patch.daemon !== undefined) {
-          daemon = patch.daemon as ServerDaemonState
+          daemon = patch.daemon as ServerDaemonJsonb
         }
         if ('hostname' in patch) hostname = patch.hostname as string | null
         if ('machineKey' in patch) {
