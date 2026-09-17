@@ -1,0 +1,269 @@
+# Cuts a GitHub Release on a v* tag: the compiled self-hosted instance,
+# built natively on each architecture (no cross-compiling the DuckDB addon)
+# and packaged once in CI as turbopanel-instance-<version>-<arch>.tar.zst —
+# bin/turbopanel-instance plus lib/libduckdb.so, the two files the daemon's
+# instance-build role produces on the host today and instance-launch's
+# compiled branch expects (the .so on LD_LIBRARY_PATH) — plus a
+# manifest.json with the sha256 and size of each asset. Road to 0.1.x,
+# `artifacts-cp-ui`; what still needs a source checkout beside this package
+# (the mailer, secret/certificate generation, migrations) is
+# `instance-runtime-packaging`, and consuming the package is
+# `self-hosted-installer`.
+#
+# Build (the Postgres-backed test suite and Sonar, ~25 min) is not re-run
+# here: the tag must sit on a commit whose Build already went green — the
+# prepare job checks that and refuses otherwise. Dry runs (workflow_dispatch
+# with a throwaway version) skip the tag ↔ deno.json check but still require
+# a green Build on the commit they build.
+#
+# Each binary is smoke-tested before it is packaged: the `duckdb-smoke`
+# subcommand opens embedded DuckDB with the permission shape the binary
+# ships, against the vendored .so — the same gate `deno task duckdb:smoke`
+# runs in the dev guest.
+
+name: Release
+
+on:
+  push:
+    # v[0-9]* (not v*) so a dry-run dispatch's own tag (e.g. vtest-workflow-0,
+    # created by gh release create with no matching pre-existing tag) can't
+    # re-trigger this same workflow via the tag-push path.
+    tags:
+      - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release without a leading v (e.g. test-workflow-0 for a dry run -- avoid a leading digit so the tag doesn't match v[0-9]* and re-trigger this workflow)
+        required: true
+        type: string
+      channel:
+        description: Channel label for this release
+        required: true
+        type: string
+        default: rc
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      channel: ${{ steps.resolve.outputs.channel }}
+    steps:
+      - name: Resolve version and channel
+        id: resolve
+        run: |
+          set -eu
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "channel=${{ inputs.channel }}" >> "$GITHUB_OUTPUT"
+          else
+            _ref="${{ github.ref_name }}"
+            echo "version=${_ref#v}" >> "$GITHUB_OUTPUT"
+            echo "channel=release" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require the tag to match deno.json's version
+        # The number the binary reports (src/version.ts reads deno.json) and
+        # the number on the release must be the same number — a tag cut
+        # before the bump is a release that lies about itself. Dry runs skip
+        # this.
+        if: inputs.version == ''
+        run: |
+          set -eu
+          _tag_version="${{ steps.resolve.outputs.version }}"
+          _pkg_version="$(python3 -c 'import json; print(json.load(open("deno.json"))["version"])')"
+          if [ "$_tag_version" != "$_pkg_version" ]; then
+            echo "::error::tag v${_tag_version} does not match deno.json version ${_pkg_version} — bump deno.json (and package.json, sonar.projectVersion) first"
+            exit 1
+          fi
+
+      - name: Require a green Build on this commit
+        # Tag after green, encoded: the test suite and Sonar are not re-run
+        # here, so the commit must already carry a successful Build.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          _ok="$(gh run list --repo "${{ github.repository }}" --workflow Build --commit "${{ github.sha }}" --status success --json databaseId --jq 'length')"
+          if [ "${_ok:-0}" -lt 1 ]; then
+            echo "::error::no successful Build run found for ${{ github.sha }} — tag a commit whose Build is green"
+            exit 1
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Native runners, one per architecture: `deno compile` bundles the
+          # host's duckdb.node and scripts/duckdb-native-lib.ts locates the
+          # host's libduckdb.so, so each package is built where it runs.
+          - arch: linux-amd64
+            runner: ubuntu-24.04
+          - arch: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TP_ARCH: ${{ matrix.arch }}
+      TP_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Keep in step with build.yml.
+          node-version: "26.7.0"
+          cache: pnpm
+
+      - name: Install Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          # Keep in step with build.yml / TP_DENO_VERSION (2.9.6).
+          deno-version: "2.9.6"
+          cache: true
+
+      - name: Install zstd
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+
+      - name: Install dependencies
+        # BYONM: `deno task compile` bundles duckdb.node from the pnpm-managed
+        # node_modules, and duckdb-native-lib.ts locates libduckdb.so there.
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Stamp the build identity
+        # The version already comes from deno.json (src/version.ts); only the
+        # commit is empty in source (BUILD_INFO in src/build-info.ts) — it is
+        # what /api/health reports as the Corresponding Source revision when
+        # no TURBOPANEL_REVISION env is set. Transient in this checkout only.
+        run: |
+          set -eu
+          grep -q "commit: ''," src/build-info.ts
+          sed -i "s/commit: '',/commit: '${GITHUB_SHA}',/" src/build-info.ts
+          grep -q "commit: '${GITHUB_SHA}'," src/build-info.ts
+
+      - name: Compile the instance
+        run: deno task compile
+
+      - name: Locate libduckdb.so
+        id: duckdb
+        run: |
+          set -eu
+          _dir="$(deno run --allow-env --allow-read --allow-run scripts/duckdb-native-lib.ts)"
+          test -f "${_dir}/libduckdb.so"
+          echo "dir=${_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test the compiled binary against embedded DuckDB
+        # The binary's --allow-write is baked to /var/lib/turbopanel/metrics,
+        # so the scratch store has to live there even on a runner.
+        run: |
+          set -eu
+          sudo mkdir -p /var/lib/turbopanel/metrics
+          sudo chown -R "$(id -u):$(id -g)" /var/lib/turbopanel
+          deno task duckdb:smoke --bin=dist/turbopanel-instance
+
+      - name: Report the binary's shape
+        run: file dist/turbopanel-instance
+
+      - name: Package the release asset
+        run: |
+          set -eu
+          _stage="$(mktemp -d)"
+          mkdir -p "${_stage}/bin" "${_stage}/lib" release-assets
+          install -m 0755 dist/turbopanel-instance "${_stage}/bin/turbopanel-instance"
+          install -m 0644 "${{ steps.duckdb.outputs.dir }}/libduckdb.so" "${_stage}/lib/libduckdb.so"
+          _name="turbopanel-instance-${TP_VERSION}-${TP_ARCH}.tar.zst"
+          tar -C "${_stage}" -cf - bin lib | zstd -19 -T0 -q -o "release-assets/${_name}"
+          rm -rf "${_stage}"
+          ls -l release-assets
+
+      - name: Upload the release asset
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: turbopanel-instance-${{ matrix.arch }}
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 7
+
+  manifest:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download both architectures
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: turbopanel-instance-linux-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Write the manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          # Tag-pinned, not releases/latest — a promotion landing between a
+          # consumer's manifest fetch and its asset fetch must not 404 it.
+          ARTIFACT_BASE_URL: https://github.com/${{ github.repository }}/releases/download/v${{ needs.prepare.outputs.version }}
+        run: |
+          set -eu
+          ls -l release-assets
+          python3 <<'PY'
+          import hashlib, json, os, time
+          version = os.environ["VERSION"]
+          commit = os.environ["GITHUB_SHA"]
+          artifacts = {}
+          for arch in ("linux-amd64", "linux-arm64"):
+              name = f"turbopanel-instance-{version}-{arch}.tar.zst"
+              with open(os.path.join("release-assets", name), "rb") as f:
+                  data = f.read()
+              if not data:
+                  raise SystemExit(f"empty release asset: {name}")
+              artifacts[f"instance-{arch}"] = {
+                  "url": f"{os.environ['ARTIFACT_BASE_URL']}/{name}",
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              }
+          now = time.gmtime()
+          manifest = {
+              "schema": 1,
+              "channel": os.environ["CHANNEL"],
+              "version": version,
+              "commit": commit,
+              "buildId": f"{time.strftime('%Y%m%d-%H%M%S', now)}-{commit[:7]}",
+              "builtAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", now),
+              "artifacts": artifacts,
+          }
+          with open("release-assets/manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: turbopanel-instance-release-assets
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [prepare, manifest]
+    uses: TurboPanel/dev/.github/workflows/gh-release.yml@trunk
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      channel: ${{ needs.prepare.outputs.channel }}
+      assets-artifact-name: turbopanel-instance-release-assets
+      manifest-filename: manifest.json
+      release-notes: "See https://github.com/${{ github.repository }}/commits/v${{ needs.prepare.outputs.version }} for changes."
