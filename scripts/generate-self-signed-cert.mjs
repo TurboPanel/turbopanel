@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -252,9 +252,13 @@ function normalizeTlsKeyPermissions() {
   }
 }
 
+// A real open, not accessSync(R_OK): under the compiled instance binary
+// (Deno's node compat) accessSync needs --allow-sys=uid to compare owners,
+// which the binary deliberately does not grant — it made every existing CA
+// look "unreadable" on the second run (install-rehearsal, Road to 0.1.x).
 function inspectReadable(filePath) {
   try {
-    accessSync(filePath, constants.R_OK)
+    closeSync(openSync(filePath, 'r'))
     return 'ok'
   } catch (err) {
     if (err?.code === 'ENOENT') return 'absent'
