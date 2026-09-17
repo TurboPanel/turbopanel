@@ -688,7 +688,11 @@ The instance Deno process runs with scoped permissions (see the
 `--allow-env --allow-sys=networkInterfaces --allow-read=/run/turbopanel,<daemon dir>,<instance dir> --allow-write=/run/turbopanel --allow-run=git,systemctl,tar`
 (`tar` is needed for the dev-sync tarball). TCP listeners and Unix-domain
 connects (Postgres `.s.PGSQL.5432`, Redis `redis.sock`, instance listen sock) go
-on `--allow-net` — Deno 2.9+ treats Unix-socket connect as net, not read. TCP
+on `--allow-net` — Deno 2.9+ treats Unix-socket connect as net, not read — but a
+`node:net` connect (postgres.js) additionally needs `--allow-read` **and**
+`--allow-write` on the socket path, so `/var/run/turbopanel` sits on both lists
+in the compile tasks and the unit (`postgres_socket_dir`); without it the
+compiled binary's first `migrate` on a clean host fails `NotCapable`. TCP
 dev Postgres adds `--allow-net=127.0.0.1:5432`. Public Git provider APIs
 (`api.github.com:443`, `gitlab.com:443`) must stay on that list — the GitHub App
 manifest callback and GitLab token/API calls fetch them from this process, and a

@@ -400,3 +400,36 @@ it("the mailer compiles as its own binary with outbound network and the socket t
   );
   assert(!task.includes("--allow-ffi"), "compile:mailer must not --allow-ffi");
 });
+
+it("compile tasks can read and write the Postgres socket directory the unit names", async () => {
+  // install-rehearsal (Road to 0.1.x): postgres.js connects over
+  // /var/run/turbopanel/postgres/.s.PGSQL.5432 through node:net, which under
+  // Deno needs --allow-read and --allow-write on that path in addition to
+  // the unix: --allow-net entry — the source-mode unit grants both
+  // (postgres_socket_dir); the compiled binary was refused with NotCapable
+  // on its first `migrate` on a clean host until the compile tasks did too.
+  const tasks = await readCompileTasks();
+  for (const [taskName, task] of Object.entries(tasks)) {
+    const allowRead = (/--allow-read=([^\s]+)/.exec(task)?.[1] ?? "").split(
+      ",",
+    );
+    const allowWrite = (/--allow-write=([^\s]+)/.exec(task)?.[1] ?? "").split(
+      ",",
+    );
+    assert(
+      allowRead.includes("/var/run/turbopanel"),
+      `${taskName} --allow-read must include /var/run/turbopanel`,
+    );
+    assert(
+      allowWrite.includes("/var/run/turbopanel"),
+      `${taskName} --allow-write must include /var/run/turbopanel`,
+    );
+    const allowNet = extractAllowNetFlag(task) ?? "";
+    assert(
+      allowNet.split(",").includes(
+        "unix:/var/run/turbopanel/postgres/.s.PGSQL.5432",
+      ),
+      `${taskName} --allow-net must keep the Postgres socket entry`,
+    );
+  }
+});
