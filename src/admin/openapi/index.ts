@@ -1,3 +1,4 @@
+import { INSTANCE_VERSION } from "../../version.ts";
 import { resolveSessionCookieNameFromUrl } from "../../client/authn/crypto.ts";
 import { ADMIN_API_PREFIX } from "../../surfaces.ts";
 
@@ -14,7 +15,7 @@ export function getAdminOpenApiSpec(
     openapi: "3.1.0",
     info: {
       title: "TurboPanel Admin API",
-      version: "0.1.0",
+      version: INSTANCE_VERSION,
     },
     servers: [{ url: serverUrl }],
     tags: [

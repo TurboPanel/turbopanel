@@ -22,6 +22,7 @@ import {
   type UpdateManifestTarget,
 } from '../../lib/update/manifest.ts'
 import type { UpdateChannel } from '../../lib/update/channel.ts'
+import { type DaemonSupport, resolveDaemonSupport } from '../../lib/version-wire.ts'
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   'done',
@@ -85,6 +86,8 @@ export type ServerUpdateCommit = {
   commit: string
   buildId: string
   builtAt?: string
+  /** The daemon's semver, when it reports one (builds from 0.1.0 on). */
+  version?: string
 }
 
 export const COLOCATED_SERVER_UPDATE_BLOCKED_REASON =
@@ -140,6 +143,12 @@ export type ServerUpdateGetResponse = {
   queuedAt?: string
   /** True when operators may clear a stale non-terminal update projection. */
   canResetUpdateStatus?: boolean
+  /**
+   * The daemon's reported version held against the control plane's floor
+   * (lib/version-wire.ts). `unsupported` daemons stay connected but get no
+   * commands until updated; `unknown` is a build that reports no version.
+   */
+  daemonSupport: DaemonSupport
 }
 
 type ResolvedUpdateTarget = {
@@ -294,6 +303,7 @@ export async function resolveServerUpdateStatus(params: {
     | 'lastUpdateError'
     | 'queuedAt'
     | 'canResetUpdateStatus'
+    | 'daemonSupport'
   >
 > {
   const manifest = params.targetManifest !== undefined
@@ -349,6 +359,7 @@ export async function resolveServerUpdateStatus(params: {
     ...(lastUpdateError ? { lastUpdateError } : {}),
     ...(queuedAt ? { queuedAt } : {}),
     ...(canResetUpdateStatus ? { canResetUpdateStatus: true } : {}),
+    daemonSupport: resolveDaemonSupport(params.current?.version),
   }
 }
 

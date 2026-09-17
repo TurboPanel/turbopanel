@@ -19,6 +19,8 @@ import type { QueryCache } from "./query-cache/contracts.ts";
 import type { BillingConfig } from "./lib/billing/config.ts";
 import { HEALTH_PATH } from "./surfaces.ts";
 import { healthPayload } from "./build-info.ts";
+import { INSTANCE_VERSION } from "./version.ts";
+import { INSTANCE_VERSION_HEADER } from "./lib/version-wire.ts";
 
 export type AppEnv = {
   Variables: {
@@ -201,6 +203,15 @@ export function createApp({
       return next();
     });
   }
+  // The instance's version on every response, so a client that is not the
+  // bundled web export (the store apps update on their own clock) can hold
+  // the instance it reached against its supported range without a second
+  // request. The client's own version arrives on the matching request
+  // header; the instance only reads it (see lib/version-wire.ts).
+  app.use("*", async (c, next) => {
+    await next();
+    c.header(INSTANCE_VERSION_HEADER, INSTANCE_VERSION);
+  });
   app.get("/", (c) => c.text("TurboPanel"));
   app.get(HEALTH_PATH, (c) => c.json(healthPayload(c.get("platformEnv"))));
   if (secrets) {

@@ -1,3 +1,4 @@
+import { INSTANCE_VERSION } from "../../version.ts";
 import { authPaths, authSchemas } from "./auth.ts";
 import { caPaths } from "./ca.ts";
 import { executionLogPaths, executionLogSchemas } from "./execution-logs.ts";
@@ -13,7 +14,7 @@ export function getDaemonOpenApiSpec(serverUrl: string): object {
     openapi: "3.1.0",
     info: {
       title: "TurboPanel Daemon API",
-      version: "0.1.0",
+      version: INSTANCE_VERSION,
     },
     servers: [{ url: serverUrl }],
     tags: [

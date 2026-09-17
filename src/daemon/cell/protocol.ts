@@ -17,6 +17,8 @@ export type DaemonBuildInfo = {
   buildId: string;
   builtAt?: string;
   channel?: string;
+  /** The daemon's semver (turbopaneld src/version.ts); absent from builds before 0.1.0. */
+  version?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -39,6 +41,7 @@ export function parseDaemonBuildInfo(
   };
   if (isString(value.builtAt)) daemonBuild.builtAt = value.builtAt;
   if (isString(value.channel)) daemonBuild.channel = value.channel;
+  if (isString(value.version)) daemonBuild.version = value.version;
   return daemonBuild;
 }
 

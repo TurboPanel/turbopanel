@@ -523,6 +523,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/naming.test.ts \
   src/lib/notices.test.ts \
   src/build-info.test.ts \
+  src/version.test.ts \
   scripts/generate-notices.test.ts \
   src/lib/display-name-format.test.ts \
   src/lib/organization-options.test.ts \
@@ -552,6 +553,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/update/channel.test.ts \
   src/lib/update/constants.test.ts \
   src/lib/update/prepare.test.ts \
+  src/lib/version-wire.test.ts \
   src/log-compat.test.ts \
   src/node-path.test.ts \
   src/query-cache/cached-query.test.ts \

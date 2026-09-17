@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import { projectServerDaemon } from "../../daemon/cell/postgres-projection.ts";
 import { eq, inArray } from "drizzle-orm";
 import { getDatabaseUrl } from "../../db-url.ts";
 import { createDenoDb, endDbConnection } from "../../db.ts";
@@ -330,6 +331,56 @@ test("processCommandEnvelope does not persist timezone option when daemon is off
       .where(eq(server.id, serverId))
       .limit(1);
     assertEquals((row?.options as { timezone?: string }).timezone, "UTC");
+  });
+});
+
+test("processCommandEnvelope refuses a connected daemon below the supported floor, and passes one that reports no version", async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId);
+    await projectServerDaemon(db, serverId, {
+      kind: "daemon-build",
+      daemonBuild: { commit: "abc1234", buildId: "b-old", version: "0.0.9" },
+    });
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: "daemon.ping",
+      payload: {},
+    });
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    });
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId));
+
+    const updated = await getCommandRecord(db, record.id);
+    assertEquals(updated?.status, "failed");
+    assertEquals(updated?.errorCode, "daemon_unsupported");
+    assertEquals(
+      updated?.error,
+      "Daemon version 0.0.9 is below the supported minimum 0.1.0 — update the daemon",
+    );
+    // Never reached the cell: the update envelope is the only thing such a
+    // daemon should get, and that is not a command.
+    assertEquals(registry.enqueueCalled, false);
+
+    // A build that reports no version (every build before 0.1.0) still gets
+    // its commands — unknown is a flag, not a refusal.
+    await projectServerDaemon(db, serverId, {
+      kind: "daemon-build",
+      daemonBuild: { commit: "abc1234", buildId: "b-unversioned" },
+    });
+    const second = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: "daemon.ping",
+      payload: {},
+    });
+    const registry2 = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    });
+    await processCommandEnvelope(db, registry2, buildEnvelope(second, serverId));
+    assertEquals(registry2.enqueueCalled, true);
   });
 });
 

@@ -1,4 +1,5 @@
 import { assertEquals } from '@std/assert'
+import { INSTANCE_VERSION } from './version.ts'
 import {
   BUILD_INFO,
   healthPayload,
@@ -36,6 +37,7 @@ test('healthPayload always reports AGPL and a revision', () => {
   const payload = healthPayload({ TURBOPANEL_REVISION: 'deadbeef' })
   assertEquals(payload.ok, true)
   assertEquals(payload.license, INSTANCE_LICENSE)
+  assertEquals(payload.version, INSTANCE_VERSION)
   assertEquals(payload.revision.commit, 'deadbeef')
   assertEquals(BUILD_INFO.commit, '')
 })

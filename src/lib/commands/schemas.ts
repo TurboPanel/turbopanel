@@ -184,6 +184,7 @@ export type PingCommandResult = {
     buildId?: string;
     builtAt?: string;
     channel?: string;
+    version?: string;
   };
 };
 
@@ -503,6 +504,7 @@ function parseDaemonBuild(value: unknown): PingCommandResult["daemonBuild"] {
   if (isString(value.buildId)) build.buildId = value.buildId;
   if (isString(value.builtAt)) build.builtAt = value.builtAt;
   if (isString(value.channel)) build.channel = value.channel;
+  if (isString(value.version)) build.version = value.version;
   return Object.keys(build).length > 0 ? build : undefined;
 }
 

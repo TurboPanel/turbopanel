@@ -40,6 +40,8 @@ export type ProjectionDaemonBuild = {
   buildId: string
   builtAt?: string
   channel?: string
+  /** The daemon's semver (turbopaneld src/version.ts); absent from builds before 0.1.0. */
+  version?: string
 }
 
 export type ProjectionTrigger =
@@ -60,6 +62,7 @@ export type ProjectionTrigger =
         buildId: string
         builtAt?: string
         channel?: string
+        version?: string
       }
     }
   | {
@@ -141,6 +144,9 @@ export function daemonBuildChanged(
   if (daemonBuild.channel !== undefined && daemonBuild.channel !== existing?.channel) {
     return true
   }
+  if (daemonBuild.version !== undefined && daemonBuild.version !== existing?.version) {
+    return true
+  }
   return false
 }
 
@@ -157,6 +163,9 @@ export function mergeDaemonBuildPreserving(
       buildId: incoming.buildId,
       builtAt: incoming.builtAt ?? existing.builtAt,
       channel: incoming.channel ?? existing.channel,
+      ...(incoming.version ?? existing.version
+        ? { version: incoming.version ?? existing.version }
+        : {}),
     }
   }
   return incoming

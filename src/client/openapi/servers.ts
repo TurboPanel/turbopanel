@@ -668,6 +668,24 @@ export const serverSchemas = {
       commit: { type: 'string' },
       buildId: { type: 'string' },
       builtAt: { type: 'string' },
+      version: {
+        type: 'string',
+        description: "The daemon's semver, when it reports one (builds from 0.1.0 on).",
+      },
+    },
+  },
+  DaemonSupport: {
+    type: 'object',
+    required: ['status', 'version', 'minVersion'],
+    properties: {
+      status: {
+        type: 'string',
+        enum: ['supported', 'unsupported', 'unknown'],
+        description:
+          "The daemon's reported version held against this control plane's supported minimum. An unsupported daemon stays connected but receives no commands until it is updated; unknown is a build that reports no version.",
+      },
+      version: { type: ['string', 'null'] },
+      minVersion: { type: 'string' },
     },
   },
   ServerUpdateTarget: {
@@ -724,6 +742,7 @@ export const serverSchemas = {
           'Error from the most recent terminal update attempt, when present.',
       },
       status: { type: 'string' },
+      daemonSupport: { $ref: '#/components/schemas/DaemonSupport' },
     },
   },
   TriggerServerUpdateResponse: {

@@ -6,6 +6,8 @@
  * `BUILD_INFO.commit` is stamped at compile/deploy time when present.
  */
 
+import { INSTANCE_VERSION } from './version.ts'
+
 export type InstanceRevision = Readonly<{
   commit: string
   sourceUrl: string
@@ -41,10 +43,17 @@ export function resolveInstanceRevision(
 
 export function healthPayload(
   env: Readonly<Record<string, string | undefined>> | undefined,
-): { ok: true; license: string; revision: InstanceRevision } {
+): {
+  ok: true
+  license: string
+  /** The instance's semver — what the app holds against its supported range. */
+  version: string
+  revision: InstanceRevision
+} {
   return {
     ok: true,
     license: INSTANCE_LICENSE,
+    version: INSTANCE_VERSION,
     revision: resolveInstanceRevision(env),
   }
 }

@@ -130,6 +130,10 @@ import type {
   SecretsConfig,
 } from "../../client/authn/secrets.ts";
 import { isPostgresUniqueViolation } from "../db/unique-violation.ts";
+import {
+  daemonUnsupportedReason,
+  resolveDaemonSupport,
+} from "../version-wire.ts";
 
 /** Secrets used to reseal command payloads onto a target daemon key. */
 export type CommandResealDeps = {
@@ -389,6 +393,26 @@ async function ensureServerAndDaemonOnline(
     await transitionCommand(db, record.id, {
       status: "failed",
       error: "Daemon not connected",
+    });
+    return false;
+  }
+
+  // A daemon below the supported floor keeps its connection — that is how it
+  // gets updated (the update envelope is not a command) — but gets no
+  // commands until it is. Builds that report no version are `unknown` and
+  // pass; see lib/version-wire.ts.
+  const support = resolveDaemonSupport(presence.daemonBuild?.version);
+  if (support.status === "unsupported") {
+    commandConsumerTrace("dispatch-failed", {
+      commandId: record.id,
+      commandType: record.type,
+      serverId: envelope.serverId,
+      reason: "daemon_unsupported",
+    });
+    await transitionCommand(db, record.id, {
+      status: "failed",
+      errorCode: "daemon_unsupported",
+      error: daemonUnsupportedReason(support),
     });
     return false;
   }

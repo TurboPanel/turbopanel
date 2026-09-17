@@ -87,7 +87,7 @@ export function expiredBatchStatusCoalesceKeys(
 
 export function currentCommitFromDaemonBuild(
   daemonBuild:
-    | { commit?: string; buildId?: string; builtAt?: string }
+    | { commit?: string; buildId?: string; builtAt?: string; version?: string }
     | undefined,
 ): ServerUpdateCommit | null {
   return daemonBuild?.commit
@@ -95,6 +95,7 @@ export function currentCommitFromDaemonBuild(
       commit: daemonBuild.commit,
       buildId: daemonBuild.buildId ?? '',
       builtAt: daemonBuild.builtAt ?? '',
+      ...(daemonBuild.version ? { version: daemonBuild.version } : {}),
     }
     : null
 }

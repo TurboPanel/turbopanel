@@ -294,7 +294,8 @@ function daemonBuildIdentityEqual(
   return a.commit === b.commit &&
     a.buildId === b.buildId &&
     (a.builtAt ?? "") === (b.builtAt ?? "") &&
-    (a.channel ?? "") === (b.channel ?? "");
+    (a.channel ?? "") === (b.channel ?? "") &&
+    (a.version ?? "") === (b.version ?? "");
 }
 
 function isLeaseOpSuccess(result: unknown): boolean {

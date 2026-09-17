@@ -928,6 +928,21 @@ test('mergeDaemonBuildPreserving backfills optional fields for unchanged build',
       channel: 'trunk',
     }
   )
+  // The daemon's semver rides along the same way, and is kept once seen.
+  assertEquals(
+    mergeDaemonBuildPreserving(
+      { daemonBuild: { commit: 'abc123', buildId: 'build-1', version: '0.1.0' } },
+      { commit: 'abc123', buildId: 'build-1', channel: 'trunk' },
+    )?.version,
+    '0.1.0',
+  )
+  assertEquals(
+    daemonBuildChanged(
+      { daemonBuild: { commit: 'abc123', buildId: 'build-1', version: '0.1.0' } },
+      { commit: 'abc123', buildId: 'build-1', version: '0.1.1' },
+    ),
+    true,
+  )
 })
 
 test('readProjectionsForServers derives connectedAt from statusChangedAt when connected', async () => {

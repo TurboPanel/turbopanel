@@ -29,6 +29,7 @@ export type ServerDaemonProjection = {
     buildId?: string;
     builtAt?: string;
     channel?: string;
+    version?: string;
   };
   update?: UpdateProjection;
 };
@@ -127,6 +128,7 @@ function parseProjectionDaemonBuild(
   if (isNonEmptyString(daemonBuild.buildId)) result.buildId = daemonBuild.buildId;
   if (isNonEmptyString(daemonBuild.builtAt)) result.builtAt = daemonBuild.builtAt;
   if (isNonEmptyString(daemonBuild.channel)) result.channel = daemonBuild.channel;
+  if (isNonEmptyString(daemonBuild.version)) result.version = daemonBuild.version;
   if (Object.keys(result).length === 0) return undefined;
   return result;
 }

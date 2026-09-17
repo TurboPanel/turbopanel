@@ -56,6 +56,7 @@ export type ServerFleetPresence = {
     buildId?: string;
     builtAt?: string;
     channel?: string;
+    version?: string;
   };
   geo: ServerGeo | null;
   /** From `server.os_*` columns (daemon hello). */

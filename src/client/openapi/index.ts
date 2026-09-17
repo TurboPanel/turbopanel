@@ -1,3 +1,4 @@
+import { INSTANCE_VERSION } from '../../version.ts'
 import { resolveSessionCookieNameFromUrl } from '../authn/crypto.ts'
 import { sharedSchemas } from './shared.ts'
 import { accessPaths, accessSchemas } from './access.ts'
@@ -49,7 +50,7 @@ export function getClientOpenApiSpec(
     openapi: '3.1.0',
     info: {
       title: 'TurboPanel Client API',
-      version: '0.1.0',
+      version: INSTANCE_VERSION,
     },
     servers: [{ url: serverUrl }],
     tags: [

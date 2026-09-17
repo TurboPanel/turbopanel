@@ -257,7 +257,8 @@ function daemonBuildIdentityEqual(
     a.commit === b.commit &&
     a.buildId === b.buildId &&
     a.builtAt === b.builtAt &&
-    a.channel === b.channel
+    a.channel === b.channel &&
+    a.version === b.version
   );
 }
 
@@ -2391,6 +2392,9 @@ export class DaemonCellObject {
             : {}),
           ...(projectionDaemonBuild.channel
             ? { channel: projectionDaemonBuild.channel }
+            : {}),
+          ...(projectionDaemonBuild.version
+            ? { version: projectionDaemonBuild.version }
             : {}),
         };
       }

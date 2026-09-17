@@ -333,8 +333,22 @@ guard; `pnpm test:do` alone does not.
   Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a
   SHA. Self-hosted instance-launch writes it into `runtime.env` /
   `runtime.dev-vars` from `git rev-parse HEAD` in the instance checkout.
-  `GET /api/health` reports `{ license, revision: { commit, sourceUrl } }` so a
-  network user can identify Corresponding Source.
+  `GET /api/health` reports `{ license, version, revision: { commit, sourceUrl } }`
+  so a network user can identify Corresponding Source.
+- **Versions on the wires** (`src/version.ts`, `src/lib/version-wire.ts`) —
+  `INSTANCE_VERSION` is a JSON import of `deno.json`'s `version`, the one place
+  the number is typed (`package.json` and `sonar.projectVersion` mirror it;
+  `src/version.test.ts` pins all three). It feeds the three OpenAPI
+  `info.version`s, `/api/health`, and the `x-turbopanel-version` response header
+  `createApp()` stamps on every response; a client that is not the bundled web
+  export sends `x-turbopanel-client-version`, which the instance reads and does
+  not enforce. Daemons report `daemonBuild.version` (turbopaneld
+  `src/version.ts`); `resolveDaemonSupport` holds it against
+  `MIN_SUPPORTED_DAEMON_VERSION`. An **unsupported** daemon keeps its
+  connection (that is the update path) but the command consumer fails its
+  commands with `daemon_unsupported`; a build reporting no version is
+  **unknown** and passes — flag, not refusal, until the fleet is re-enrolled
+  on tagged builds. Both wires are expand-only by convention.
 - **`pnpm notices:generate` / `notices:check`** — `THIRD_PARTY_NOTICES.md` from
   `pnpm-lock.yaml` plus the JSR/npm graph in `deno.lock`. Wired into `test:hook`
   and CI `build.yml`.
