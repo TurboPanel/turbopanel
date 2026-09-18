@@ -64,11 +64,14 @@ import { runLeafRenewalSweepTick } from "../../client/tls/leaf-renewal-sweep.ts"
 import { compatLogWarn } from "../../log-compat.ts";
 import {
   type AlertSender,
-  createWebhookAlertSender,
   NOOP_ALERT_SENDER,
 } from "../../lib/alerts/alert-sender.ts";
-import { getAlertWebhookUrl } from "../../lib/alerts/alert-webhook-settings.ts";
-import { validateOutboundUrl } from "../../lib/http/outbound-url.ts";
+import { resolveAlertSender } from "../../lib/alerts/resolve-alert-sender.ts";
+import {
+  isMassDisconnect,
+  massDisconnectText,
+  serverOfflineText,
+} from "./mass-disconnect.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
@@ -260,33 +263,21 @@ function notifyServerWentOffline(
   sweepTrace("notify-offline", { serverId });
   return alertSender({
     kind: "server.offline",
-    text: `Server ${serverId} stopped answering and has been marked offline`,
+    text: serverOfflineText(serverId),
     detail: { serverId },
   });
 }
 
-/**
- * Hosts lost in one sweep before it stops looking like N unrelated failures.
- *
- * A bad daemon release, a WebSocket ingress break or a Durable Object
- * regional outage takes hosts down together, and the per-server notices above
- * report that as noise — one line per host, no signal that they share a
- * cause. Either bound crossing is enough: the ratio catches a small fleet
- * going dark at once, the absolute count catches a large one losing a chunk.
- */
-export const MASS_DISCONNECT_MIN_SERVERS = 3;
-export const MASS_DISCONNECT_RATIO = 0.5;
-export const MASS_DISCONNECT_ABSOLUTE = 10;
-
-export function isMassDisconnect(
-  staleCount: number,
-  connectedBefore: number,
-): boolean {
-  if (staleCount < MASS_DISCONNECT_MIN_SERVERS) return false;
-  if (staleCount >= MASS_DISCONNECT_ABSOLUTE) return true;
-  return connectedBefore > 0 &&
-    staleCount / connectedBefore >= MASS_DISCONNECT_RATIO;
-}
+// The predicate and the two message strings live in ./mass-disconnect.ts:
+// the self-hosted Deno sweep needs them too, and it cannot import this
+// Workers-typed module to get them. Re-exported so existing importers of
+// this module keep working.
+export {
+  isMassDisconnect,
+  MASS_DISCONNECT_ABSOLUTE,
+  MASS_DISCONNECT_MIN_SERVERS,
+  MASS_DISCONNECT_RATIO,
+} from "./mass-disconnect.ts";
 
 /**
  * One aggregate line when a sweep loses enough hosts at once to suspect a
@@ -305,8 +296,7 @@ function notifyMassDisconnect(
       ? Math.round((staleCount / connectedBefore) * 100) / 100
       : null,
   });
-  const text =
-    `Mass disconnect: ${staleCount} of ${connectedBefore} connected servers went offline in one sweep — suspect a shared cause (daemon release, ingress, or cell outage) rather than ${staleCount} unrelated hosts`;
+  const text = massDisconnectText(staleCount, connectedBefore);
   compatLogWarn("daemon-cell", text);
   return alertSender({
     kind: "fleet.mass_disconnect",
@@ -1045,46 +1035,6 @@ function sweepErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Resolve where this tick's alerts go: the instance's configured webhook, or
- * nowhere.
- *
- * Read per tick rather than cached, so an operator who configures a webhook
- * mid-incident gets the next sweep's alerts without a redeploy — the same
- * rule every other `setting`-backed value in this codebase follows. Bounded
- * and swallowed: the sweep's job is to demote stale servers, and it must run
- * whether or not anyone can be told about it.
- */
-async function resolveAlertSender(
-  db: Db,
-  tlsRenewal: CronTlsRenewal | null | undefined,
-): Promise<AlertSender> {
-  try {
-    const url = await runWithDbTimeout(
-      db,
-      (settingDb) =>
-        getAlertWebhookUrl(settingDb, tlsRenewal?.dataEncryptionSecrets),
-    );
-    if (!url) return NOOP_ALERT_SENDER;
-    // Re-validated here, not only at write time: this is the choke point
-    // where the URL becomes an outbound fetch, and the stored value may
-    // predate the gate (an unsealed legacy row) or have been written by
-    // something other than the settings route. Same two-layer shape
-    // `git/forge-url.ts` uses.
-    const rejection = validateOutboundUrl(url);
-    if (rejection) {
-      sweepTrace("alert-webhook-refused", { reason: rejection });
-      return NOOP_ALERT_SENDER;
-    }
-    return createWebhookAlertSender(url);
-  } catch (err) {
-    sweepTrace("alert-sender-resolve-failed", {
-      error: sweepErrorMessage(err),
-    });
-    return NOOP_ALERT_SENDER;
-  }
-}
-
 async function sweepOnceSafely(
   env: CloudflareBindings,
   db: Db,
@@ -1613,7 +1563,11 @@ export async function runOfflineSweep(
           stats = await sweepOnceSafely(env, db, {
             ...opts.sweepOnceDeps,
             alertSender: opts.sweepOnceDeps?.alertSender ??
-              await resolveAlertSender(db, tlsRenewal),
+              await resolveAlertSender(
+                db,
+                tlsRenewal?.dataEncryptionSecrets,
+                sweepTrace,
+              ),
             nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
             deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,
           });

@@ -12,6 +12,15 @@ import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
 import type { UpdateProjection } from "../authn/daemon-state.ts";
 import type { DaemonCell } from "./contracts.ts";
 import {
+  type AlertSender,
+  NOOP_ALERT_SENDER,
+} from "../../lib/alerts/alert-sender.ts";
+import {
+  isMassDisconnect,
+  massDisconnectText,
+  serverOfflineText,
+} from "./mass-disconnect.ts";
+import {
   daemonBuildChanged,
   identityFromSnapshot,
   projectServerDaemon,
@@ -301,18 +310,50 @@ export async function onDaemonHeartbeat(
   await projectServerDaemon(db, serverId, { kind: "heartbeat", daemonBuild });
 }
 
+/**
+ * The self-hosted demotion path — the Deno/Redis equivalent of the Workers
+ * cron's `offline-sweep.ts`, and the one a self-hosted operator actually runs.
+ *
+ * It carries the same two alerts for the same reason: alerting that only
+ * exists on the hosted runtime is alerting most instances do not have. The
+ * aggregate goes out first, then one line per host, and the whole thing
+ * happens *after* the demotions rather than interleaved with them — a webhook
+ * must never be able to delay marking a host offline.
+ */
 export async function sweepStalePresence(
   db: Db,
   registry: RedisDaemonCellRegistry,
+  alertSender: AlertSender = NOOP_ALERT_SENDER,
 ): Promise<void> {
   const onlineServerIds = await registry.listOnlineServerIds();
+  const connectedBefore = onlineServerIds.length;
+  const demotedIds: string[] = [];
+
   await Promise.all(
     onlineServerIds.map(async (serverId) => {
       const cell = registry.getCell(serverId) as RedisDaemonCell;
       const demoted = await cell.reconcileStalePresence();
       if (demoted) {
         await onDaemonDisconnected(db, serverId, cell, "sweep_stale");
+        demotedIds.push(serverId);
       }
     }),
   );
+
+  if (demotedIds.length === 0) return;
+
+  if (isMassDisconnect(demotedIds.length, connectedBefore)) {
+    await alertSender({
+      kind: "fleet.mass_disconnect",
+      text: massDisconnectText(demotedIds.length, connectedBefore),
+      detail: { staleCount: demotedIds.length, connectedBefore },
+    });
+  }
+  for (const serverId of demotedIds) {
+    await alertSender({
+      kind: "server.offline",
+      text: serverOfflineText(serverId),
+      detail: { serverId },
+    });
+  }
 }
