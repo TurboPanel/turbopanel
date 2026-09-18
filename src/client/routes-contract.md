@@ -135,11 +135,14 @@ on detail). License endpoints (`GET`/`POST` `/licenses`, `DELETE`
 `/licenses/{id}`) require org ownership (`organization:own`). `DELETE /licenses/{id}`
 returns **409** `license_has_attached_server` (bound server id + name) while a
 live server is attached; delete the server first. Already-revoked seats are **404**.
-When billing is configured, `POST /licenses` requires `tierId` (**400**
-`tier_required` / `tier_not_purchasable`) and answers **409** `no_free_seat` when
-the active licenses at that tier already fill its seats; `DELETE /licenses/{id}`
-then records a deferred `release-seat` (the seat drops at the period boundary)
-and answers **409** `billing_mutation_in_progress` while the org's quantity
-lease is held.
+`POST /licenses` takes no tier — a license carries none; the tier a server
+sits on is derived from its hardware against the purchased quantities
+(`src/lib/billing/AGENTS.md`, _Who chooses a tier: nobody_). When customer
+billing is operational it answers **409** `no_license_available` (with
+`purchased` / `releasing` / `held` / `available`) when every purchased license
+is held or releasing, and **409** `billing_mutation_in_progress` while the org's
+quantity lease is held. `DELETE /licenses/{id}` never touches the provider:
+revoking gives the unit back locally, and the purchased quantity is reduced from
+the billing page (`/billing/seats`), not here.
 
 
