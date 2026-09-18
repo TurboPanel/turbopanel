@@ -1,9 +1,10 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals } from "@std/assert";
 import {
+  daemonEverHadCommand,
   isStaleCommand,
   STALE_COMMAND_GRACE_MS,
   type StaleCommandCandidate,
-} from './stale-sweep.ts'
+} from "./stale-sweep.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -11,14 +12,16 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
-const T0 = Date.parse('2026-08-29T00:00:00.000Z')
+const T0 = Date.parse("2026-08-29T00:00:00.000Z");
 
-function candidate(overrides: Partial<StaleCommandCandidate>): StaleCommandCandidate {
+function candidate(
+  overrides: Partial<StaleCommandCandidate>,
+): StaleCommandCandidate {
   return {
-    id: '01a04c10-a436-7c38-b64e-e070b3b158fa',
-    name: 'managed.apply',
+    id: "01a04c10-a436-7c38-b64e-e070b3b158fa",
+    name: "managed.apply",
     createdAt: new Date(T0).toISOString(),
     queuedAt: null,
     dispatchStartedAt: null,
@@ -26,46 +29,46 @@ function candidate(overrides: Partial<StaleCommandCandidate>): StaleCommandCandi
     ackedAt: null,
     startedAt: null,
     ...overrides,
-  }
+  };
 }
 
-test('isStaleCommand keeps a running command within its budget', () => {
-  const row = candidate({ startedAt: new Date(T0).toISOString() })
+test("isStaleCommand keeps a running command within its budget", () => {
+  const row = candidate({ startedAt: new Date(T0).toISOString() });
   // managed.apply budget is 600s; still inside budget + grace.
-  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS - 1_000
-  assertEquals(isStaleCommand(row, now), false)
-})
+  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS - 1_000;
+  assertEquals(isStaleCommand(row, now), false);
+});
 
-test('isStaleCommand times out a running command past budget + grace', () => {
-  const row = candidate({ startedAt: new Date(T0).toISOString() })
-  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000
-  assertEquals(isStaleCommand(row, now), true)
-})
+test("isStaleCommand times out a running command past budget + grace", () => {
+  const row = candidate({ startedAt: new Date(T0).toISOString() });
+  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000;
+  assertEquals(isStaleCommand(row, now), true);
+});
 
-test('isStaleCommand measures from the most recent lifecycle timestamp', () => {
+test("isStaleCommand measures from the most recent lifecycle timestamp", () => {
   // Created long ago but only started recently — not stale yet.
   const row = candidate({
     createdAt: new Date(T0 - 3_600_000).toISOString(),
     queuedAt: new Date(T0 - 3_600_000).toISOString(),
     startedAt: new Date(T0).toISOString(),
-  })
-  const now = T0 + 60_000
-  assertEquals(isStaleCommand(row, now), false)
-})
+  });
+  const now = T0 + 60_000;
+  assertEquals(isStaleCommand(row, now), false);
+});
 
-test('isStaleCommand handles queued rows that never dispatched', () => {
-  const row = candidate({ queuedAt: new Date(T0).toISOString() })
-  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000
-  assertEquals(isStaleCommand(row, now), true)
-})
+test("isStaleCommand handles queued rows that never dispatched", () => {
+  const row = candidate({ queuedAt: new Date(T0).toISOString() });
+  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000;
+  assertEquals(isStaleCommand(row, now), true);
+});
 
-test('isStaleCommand treats unparseable timestamps as not stale', () => {
-  const row = candidate({ createdAt: 'not-a-date' })
-  assertEquals(isStaleCommand(row, T0 + 86_400_000), false)
-})
+test("isStaleCommand treats unparseable timestamps as not stale", () => {
+  const row = candidate({ createdAt: "not-a-date" });
+  assertEquals(isStaleCommand(row, T0 + 86_400_000), false);
+});
 
-test('isStaleCommand falls back through acked, sent, and dispatch timestamps', () => {
-  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000
+test("isStaleCommand falls back through acked, sent, and dispatch timestamps", () => {
+  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000;
   assertEquals(
     isStaleCommand(
       candidate({
@@ -75,7 +78,7 @@ test('isStaleCommand falls back through acked, sent, and dispatch timestamps', (
       now,
     ),
     true,
-  )
+  );
   assertEquals(
     isStaleCommand(
       candidate({
@@ -85,7 +88,7 @@ test('isStaleCommand falls back through acked, sent, and dispatch timestamps', (
       now,
     ),
     true,
-  )
+  );
   assertEquals(
     isStaleCommand(
       candidate({
@@ -95,18 +98,48 @@ test('isStaleCommand falls back through acked, sent, and dispatch timestamps', (
       now,
     ),
     true,
-  )
-})
+  );
+});
 
-test('isStaleCommand respects longer budgets per type', () => {
+test("isStaleCommand respects longer budgets per type", () => {
   // managed.backup budget is 30 minutes — 15 minutes in is not stale.
   const row = candidate({
-    name: 'managed.backup',
+    name: "managed.backup",
     startedAt: new Date(T0).toISOString(),
-  })
-  assertEquals(isStaleCommand(row, T0 + 900_000), false)
+  });
+  assertEquals(isStaleCommand(row, T0 + 900_000), false);
   assertEquals(
     isStaleCommand(row, T0 + 1_800_000 + STALE_COMMAND_GRACE_MS + 1_000),
     true,
-  )
-})
+  );
+});
+
+test("a stalled command says whether re-running it is free", () => {
+  const base = {
+    id: "00000000-0000-4000-8000-0000000000c1",
+    name: "environment.deploy",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    queuedAt: "2026-01-01T00:00:00.000Z",
+    dispatchStartedAt: "2026-01-01T00:00:00.000Z",
+    sentAt: "2026-01-01T00:00:01.000Z",
+    ackedAt: null,
+    startedAt: null,
+    updatedAt: "2026-01-01T00:00:01.000Z",
+  };
+  // Put on the wire and never acknowledged: nothing ran on the host.
+  assertEquals(daemonEverHadCommand(base), false);
+  // The daemon's own frames are the evidence that it arrived.
+  assertEquals(
+    daemonEverHadCommand({ ...base, ackedAt: "2026-01-01T00:00:02.000Z" }),
+    true,
+  );
+  assertEquals(
+    daemonEverHadCommand({ ...base, startedAt: "2026-01-01T00:00:03.000Z" }),
+    true,
+  );
+  // Never even sent.
+  assertEquals(
+    daemonEverHadCommand({ ...base, sentAt: null, dispatchStartedAt: null }),
+    false,
+  );
+});

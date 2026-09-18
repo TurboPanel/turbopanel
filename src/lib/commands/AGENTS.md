@@ -9,6 +9,22 @@ Root context: `../../../AGENTS.md`. Daemon cell (delivery +
 `createRequestAndWait`/`waitForRequest`): `../../daemon/cell/AGENTS.md`. Compose
 documents: `../compose/AGENTS.md`.
 
+### A stalled command says whether re-running it is free
+
+`sweepStaleCommands` transitions a stranded command to `timed_out` with one of
+two error codes, because the operator's next move differs. `stalled_undelivered`
+— the daemon never acknowledged it (`acked_at` and `started_at` both null), so
+nothing ran on the host and re-issuing is free. `stalled` — the daemon did
+acknowledge it, so the work may still be running there, and a second
+`environment.deploy` would race a build that is quietly still going. The
+console renders the distinction (`stalledDeploymentHint`, ui).
+
+Still open (`daemon-deploy-resume`): nothing re-issues the free case
+automatically. A blind re-enqueue of the stored payload is not safe — a deploy
+payload carries material sealed at prepare time — so an automatic re-drive has
+to rebuild it through `deploy-prepare`, or `environment.deploy` has to become
+reconcile-shaped like `fabric.reconcile` and its siblings.
+
 ## Command Pipeline
 
 Commands are canonical in Postgres (`command` table). Queues are transport only
