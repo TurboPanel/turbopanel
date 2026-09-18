@@ -12,7 +12,7 @@ import {
   parseJsonBody,
 } from "../shared.ts";
 import { type Db, getDaemonCellRegistry, getDb } from "../../db.ts";
-import { recordAudit } from "../../lib/db/audit-records.ts";
+import { recordAuditAndNotify } from "../../lib/notifications/audit-bridge.ts";
 import { parseOrganizationOptions } from "../../lib/organization-options.ts";
 import { parseDatacenterOptions } from "../../lib/datacenter-options.ts";
 import {
@@ -1436,7 +1436,7 @@ export function registerServerRoutes(
     const organizationId = orgResult;
 
     const [row] = await db
-      .select({ id: server.id })
+      .select({ id: server.id, name: server.name, hostname: server.hostname })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
       .limit(1);
@@ -1471,7 +1471,7 @@ export function registerServerRoutes(
       : "registry_unavailable";
     const revoked = await getServerDaemonStateByServerId(db, id);
 
-    await recordAudit(db, {
+    await recordAuditAndNotify(c, {
       organizationId,
       actorUserId: session.userId,
       actorEmail: session.email,
@@ -1479,7 +1479,7 @@ export function registerServerRoutes(
       targetType: "server",
       targetId: id,
       context: { purged: purgeError === null },
-    });
+    }, { serverName: row.name ?? row.hostname ?? id });
 
     return c.json({
       ok: true as const,
@@ -1502,7 +1502,7 @@ export function registerServerRoutes(
     const organizationId = orgResult;
 
     const [row] = await db
-      .select({ id: server.id })
+      .select({ id: server.id, name: server.name, hostname: server.hostname })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
       .limit(1);
@@ -1586,7 +1586,7 @@ export function registerServerRoutes(
       );
     });
 
-    await recordAudit(db, {
+    await recordAuditAndNotify(c, {
       organizationId,
       actorUserId: session.userId,
       actorEmail: session.email,
@@ -1594,7 +1594,7 @@ export function registerServerRoutes(
       targetType: "server",
       targetId: id,
       context: { purged: purgeError === null },
-    });
+    }, { serverName: row.name ?? row.hostname ?? id });
 
     return serverDeletedResponse(c, id, purgeError);
   });

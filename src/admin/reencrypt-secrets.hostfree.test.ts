@@ -21,6 +21,7 @@ import {
   setting,
   storage,
   tls,
+  notificationChannel,
   twoFactor,
   variable,
 } from "../lib/db/schema.ts";
@@ -56,6 +57,7 @@ type StageKey =
   | "forge"
   | "gitconnection"
   | "twofactor"
+  | "notifications"
   | "email";
 
 function stageForTable(table: unknown): StageKey | null {
@@ -67,6 +69,7 @@ function stageForTable(table: unknown): StageKey | null {
   if (table === forge) return "forge";
   if (table === gitConnection) return "gitconnection";
   if (table === twoFactor) return "twofactor";
+  if (table === notificationChannel) return "notifications";
   if (table === setting) return "email";
   return null;
 }
@@ -104,6 +107,7 @@ function stagedSweepDb(opts: {
     forge: 0,
     gitconnection: 0,
     twofactor: 0,
+    notifications: 0,
     email: 0,
   };
   const updateApplied = opts.updateApplied ?? true;
@@ -770,6 +774,41 @@ test("reencryptAtRestSecrets sweeps 2fa.secret (tpsecret only)", async () => {
   });
   assertEquals(batch.reencrypted, 1);
   assertEquals(batch.scanned, 1);
+  assertEquals(batch.completed, true);
+});
+
+test("reencryptAtRestSecrets sweeps notification channel addresses and signing secrets", async () => {
+  await resetReencryptSweepLockForTests();
+  const v1Only = await deriveV1Only();
+  const { secrets: rotated } = await deriveRotated();
+  const oldAddress = await encryptSecret(v1Only, "https://hooks.example.com/x");
+  const oldSigning = await encryptSecret(v1Only, "shh");
+  const db = stagedSweepDb({
+    pages: {
+      notifications: [[
+        {
+          id: "00000000-0000-4000-8000-0000000000n1",
+          kind: "webhook",
+          address: oldAddress,
+          signingSecret: oldSigning,
+        },
+        // An email address is stored plain and is never a blob to reseal.
+        {
+          id: "00000000-0000-4000-8000-0000000000n2",
+          kind: "email",
+          address: "ops@example.com",
+          signingSecret: null,
+        },
+      ]],
+    },
+  });
+
+  const batch = await reencryptAtRestSecrets(db, rotated, {
+    cursor: { stage: "notifications" },
+    limit: 50,
+  });
+  assertEquals(batch.reencrypted, 2);
+  assertEquals(batch.scanned, 2);
   assertEquals(batch.completed, true);
 });
 

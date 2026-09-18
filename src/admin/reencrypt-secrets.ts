@@ -51,6 +51,7 @@ import {
   setting,
   storage,
   tls,
+  notificationChannel,
   twoFactor,
   variable,
 } from "../lib/db/schema.ts";
@@ -87,6 +88,7 @@ export const REENCRYPT_STAGES = [
   "forge",
   "gitconnection",
   "twofactor",
+  "notifications",
   "authproviders",
   "email",
 ] as const;
@@ -773,6 +775,83 @@ async function sweepTwoFactorSecretsBatch(
 }
 
 /**
+ * Notification channels: the `address` of every kind but `email` is a sealed
+ * credential (a webhook URL, a push token), and `signing_secret` always is.
+ * Two blobs per row, each compare-and-swapped on its own column.
+ */
+async function sweepNotificationChannelSecretsBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number,
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({
+      id: notificationChannel.id,
+      kind: notificationChannel.kind,
+      address: notificationChannel.address,
+      signingSecret: notificationChannel.signingSecret,
+    })
+    .from(notificationChannel)
+    .where(afterId === undefined ? undefined : gt(notificationChannel.id, afterId))
+    .orderBy(asc(notificationChannel.id))
+    .limit(limit);
+
+  for (const row of rows) {
+    if (row.kind !== "email") {
+      const original = row.address;
+      await processBlob(
+        summary,
+        secrets,
+        original,
+        async (resealed) => {
+          const updated = await db
+            .update(notificationChannel)
+            .set({ address: resealed })
+            .where(
+              and(
+                eq(notificationChannel.id, row.id),
+                eq(notificationChannel.address, original),
+              ),
+            )
+            .returning({ id: notificationChannel.id });
+          return updated.length > 0;
+        },
+        { allowDaemonBound: false },
+      );
+    }
+    if (row.signingSecret) {
+      const original = row.signingSecret;
+      await processBlob(
+        summary,
+        secrets,
+        original,
+        async (resealed) => {
+          const updated = await db
+            .update(notificationChannel)
+            .set({ signingSecret: resealed })
+            .where(
+              and(
+                eq(notificationChannel.id, row.id),
+                eq(notificationChannel.signingSecret, original),
+              ),
+            )
+            .returning({ id: notificationChannel.id });
+          return updated.length > 0;
+        },
+        { allowDaemonBound: false },
+      );
+    }
+  }
+
+  return {
+    pageSize: rows.length,
+    lastId: rows.at(-1)?.id,
+  };
+}
+
+/**
  * Re-seal `GITHUB_CLIENT_SECRET` / `GOOGLE_CLIENT_SECRET` in the single
  * `SYSTEM_AUTH_PROVIDERS` settings row. All provider secrets live in one JSON
  * `setting.value`, so a single compare-and-swap on the whole row persists
@@ -993,6 +1072,14 @@ async function runTableStageBatch(
       );
     case "twofactor":
       return sweepTwoFactorSecretsBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+    case "notifications":
+      return sweepNotificationChannelSecretsBatch(
         db,
         dataEncryptionSecrets,
         summary,

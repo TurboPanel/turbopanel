@@ -1,5 +1,5 @@
 import { and, eq, gt } from "drizzle-orm";
-import { recordAudit } from "../../lib/db/audit-records.ts";
+import { recordAuditAndNotify } from "../../lib/notifications/audit-bridge.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
 import type { Context, Hono } from "hono";
 import type { AppEnv } from "../../app.ts";
@@ -421,7 +421,7 @@ export function registerAccessRoutes(
       entity.entityId,
     );
     if (grantOrganizationId) {
-      await recordAudit(db, {
+      await recordAuditAndNotify(c, {
         organizationId: grantOrganizationId,
         actorUserId: session.userId,
         actorEmail: session.email,
@@ -458,6 +458,7 @@ export function registerAccessRoutes(
         entityId: grant.entityId,
         permission: grant.permission,
         actorId: grant.actorId,
+        actorType: grant.actorType,
       })
       .from(grant)
       .where(eq(grant.id, accessId))
@@ -492,7 +493,7 @@ export function registerAccessRoutes(
       accessRow.entityId,
     );
     if (revokedOrganizationId) {
-      await recordAudit(db, {
+      await recordAuditAndNotify(c, {
         organizationId: revokedOrganizationId,
         actorUserId: session.userId,
         actorEmail: session.email,
@@ -503,6 +504,10 @@ export function registerAccessRoutes(
           permission: accessRow.permission,
           actorId: accessRow.actorId,
         },
+      }, {
+        permissionKey: accessRow.permission,
+        subjectKind: accessRow.actorType,
+        subjectId: accessRow.actorId,
       });
     }
 

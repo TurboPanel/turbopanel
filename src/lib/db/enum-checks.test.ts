@@ -7,6 +7,16 @@ import { KNOWN_SUBSCRIPTION_STATUSES } from './billing-records.ts'
 import { ADMIN_ROLE, SUPERADMIN_ROLE } from '../../client/authn/session-store.ts'
 import { INVITATION_STATUSES } from '../../client/access/routes-helpers.ts'
 import { BILLING_PROVIDER_IDS } from '../billing/gateway.ts'
+import {
+  NOTIFICATION_EVENTS,
+  NOTIFICATION_RULE_EVENTS,
+  NOTIFICATION_SEVERITIES,
+} from '../notifications/events.ts'
+import {
+  NOTIFICATION_CHANNEL_KINDS,
+  NOTIFICATION_CHANNEL_SCOPES,
+  NOTIFICATION_DELIVERY_STATUSES,
+} from '../notifications/records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -51,6 +61,15 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['subscription_status_check', [...KNOWN_SUBSCRIPTION_STATUSES, 'unknown']],
   ['tier_provider_check', BILLING_PROVIDER_IDS],
   ['payer_provider_check', BILLING_PROVIDER_IDS],
+  ['notification_channel_scope_check', NOTIFICATION_CHANNEL_SCOPES],
+  ['notification_channel_kind_check', NOTIFICATION_CHANNEL_KINDS],
+  ['notification_rule_event_check', NOTIFICATION_RULE_EVENTS],
+  ['notification_rule_min_severity_check', NOTIFICATION_SEVERITIES],
+  ['notification_event_check', NOTIFICATION_EVENTS],
+  ['notification_severity_check', NOTIFICATION_SEVERITIES],
+  ['notification_delivery_event_check', NOTIFICATION_EVENTS],
+  ['notification_delivery_severity_check', NOTIFICATION_SEVERITIES],
+  ['notification_delivery_status_check', NOTIFICATION_DELIVERY_STATUSES],
 ]
 
 for (const [constraint, values] of CASES) {

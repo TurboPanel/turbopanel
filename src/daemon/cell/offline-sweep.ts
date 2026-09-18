@@ -67,6 +67,7 @@ import {
   NOOP_ALERT_SENDER,
 } from "../../lib/alerts/alert-sender.ts";
 import { resolveAlertSender } from "../../lib/alerts/resolve-alert-sender.ts";
+import { retryDueDeliveries } from "../../lib/notifications/emit.ts";
 import {
   ALERT_DELIVERY_BUDGET_MS,
   notifyDemotions,
@@ -1344,6 +1345,25 @@ async function runOptionalCronPhases(
           sweepExpiredWebhookDeliveriesSafely,
           capDbTimeout(deadlineMs),
         ),
+    ))
+  ) {
+    return;
+  }
+
+  // Retry notification deliveries whose backoff has elapsed (chat/webhook
+  // channels; email and push have their own transports). Bounded batch, and
+  // the sweep itself never throws.
+  if (
+    !(await runOptionalPhase(
+      deadlineMs,
+      "notification-retries",
+      opts.scheduledTime,
+      phasesSkipped,
+      async () => {
+        await retryDueDeliveries(db, tlsRenewal?.dataEncryptionSecrets, {
+          allowPrivateTargets: false,
+        });
+      },
     ))
   ) {
     return;

@@ -14,6 +14,12 @@
       "tag": "0001_audit_table",
       "when": 1789699422238,
       "sha256": "dbb3a24969e9f5b76916ddfbf11dd92a2991cf4c0522f895beb9e4e24293cb7a"
+    },
+    {
+      "idx": 2,
+      "tag": "0002_notifications",
+      "when": 1789761675226,
+      "sha256": "f9eecceb220cc798621055edd00f4fbb686f3231e87587f165e1df597e7d4bfd"
     }
   ]
 }

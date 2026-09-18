@@ -321,6 +321,9 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/http/bounded-body.test.ts \
   src/lib/http/outbound-url.hostfree.test.ts \
   src/lib/alerts/alert-sender.hostfree.test.ts \
+  src/lib/notifications/events.hostfree.test.ts \
+  src/lib/notifications/senders.hostfree.test.ts \
+  src/lib/notifications/emit.test.ts \
   src/lib/alerts/alert-webhook-settings.hostfree.test.ts \
   src/daemon/cell/contracts.test.ts \
   src/daemon/cell/do-storage-classify.test.ts \

@@ -20,6 +20,7 @@ import { sweepStalePresence } from './daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from './daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from './lib/alerts/resolve-alert-sender.ts'
 import { SELF_HOSTED_ALERT_WEBHOOK_POLICY } from './lib/alerts/alert-webhook-settings.ts'
+import { retryDueDeliveries } from './lib/notifications/emit.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -565,6 +566,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       // replay-protection retention window.
       await runCleanupPhase('webhook delivery sweep', () =>
         sweepExpiredWebhookDeliveries(db, { limit: WEBHOOK_DELIVERY_SWEEP_LIMIT })
+      )
+      // Workers parity (offline-sweep cron): resend notification deliveries
+      // whose backoff has elapsed. Self-hosted may dial a LAN receiver.
+      await runCleanupPhase('notification retry sweep', () =>
+        retryDueDeliveries(db, dataEncryptionSecrets, { allowPrivateTargets: true })
       )
       // Workers parity (offline-sweep cron): bounded removal of command
       // transcripts past retention. Object/filesystem only — no db involved.

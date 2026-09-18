@@ -76,6 +76,14 @@ the same rule `setting` rows follow. Written from `recordAudit`
 server delete, grant create/delete, forge create/update/delete, and the three
 organization gates. Read by owners only, at `GET /organizations/:id/audit`.
 
+**The notification tables** (`notification_channel`, `notification_rule`,
+`notification`, `notification_delivery` — migration `0002_notifications`,
+2026-09-18) are owned by `src/lib/notifications/records.ts` and documented in
+`src/lib/notifications/AGENTS.md`. A channel's `address` is a sealed `tpsecret`
+for every kind but `email`, `signing_secret` always is, and both are a stage of
+the re-encrypt sweep; every fixed-value column carries a CHECK pinned by
+`enum-checks.test.ts` to the catalogue in `events.ts`.
+
 **Shipped migration files are immutable, and the guard for that is
 `migrations/manifest.json`** (`scripts/check-migration-freeze.mjs`,
 enforced by `src/lib/db/migration-manifest.test.ts`). It pins every journal

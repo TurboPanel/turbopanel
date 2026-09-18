@@ -5269,3 +5269,293 @@ export const capabilityPlanGeneration = pgTable(
     }).onDelete("cascade"),
   ],
 );
+
+/**
+ * Notifications — the tables behind "an event happened and someone should
+ * hear about it". Four tables, added after the freeze (migration 0002), one
+ * data model for self-hosted, High Availability and the store apps
+ * (decided 2026-09-18):
+ *
+ * - `notification_channel` — an address something can be delivered to. Owned
+ *   by the instance (an operator's alert webhook), an organization, or a user.
+ *   `address` is a `tpsecret` envelope wherever the address is a credential —
+ *   every webhook URL is (the path is the secret) and so is a push token;
+ *   an email address is stored plain. Everything sealed here is a stage of
+ *   the re-encrypt sweep.
+ * - `notification_rule` — which events reach a channel. No rule means the
+ *   channel receives nothing; `*` means everything at or above its severity
+ *   floor. Inbox rows need no rule.
+ * - `notification` — one row per event × recipient: the bell's inbox.
+ * - `notification_delivery` — one attempt ledger row per event × channel,
+ *   written before the send so a crash mid-send leaves a pending row rather
+ *   than silence; bounded retries on the maintenance tick.
+ */
+export const notificationChannel = pgTable(
+  "notification_channel",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /** Who owns the channel — NOTIFICATION_CHANNEL_SCOPES; the owner columns follow the scope. */
+    scope: text().notNull(),
+    organizationId: uuid("organization_id"),
+    userId: uuid("user_id"),
+    /** NOTIFICATION_CHANNEL_KINDS. */
+    kind: text().notNull(),
+    /** What the owner calls it: "Ops Slack", "my phone". */
+    label: text().notNull(),
+    /** Sealed (`tpsecret`) for every kind but `email`, where it is the plain address. */
+    address: text().notNull(),
+    /** Sealed HMAC key for the generic `webhook` kind; null for the rest. */
+    signingSecret: text("signing_secret"),
+    /** When the address was confirmed (an email verification, a Telegram /start). Null = unverified. */
+    verifiedAt: timestamp("verified_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    /** A disabled channel keeps its rules and receives nothing. */
+    disabledAt: timestamp("disabled_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    createdByUserId: uuid("created_by_user_id"),
+  },
+  (table) => [
+    check(
+      "notification_channel_scope_check",
+      sql`scope IN ('instance', 'organization', 'user')`,
+    ),
+    check(
+      "notification_channel_kind_check",
+      sql`kind IN ('email', 'webhook', 'slack', 'discord', 'telegram', 'push')`,
+    ),
+    // The owner columns say what the scope says, and nothing else.
+    check(
+      "notification_channel_owner_check",
+      sql`(scope = 'instance' AND organization_id IS NULL AND user_id IS NULL) OR (scope = 'organization' AND organization_id IS NOT NULL AND user_id IS NULL) OR (scope = 'user' AND user_id IS NOT NULL AND organization_id IS NULL)`,
+    ),
+    index("idx_notification_channel_organization").on(table.organizationId),
+    index("idx_notification_channel_user").on(table.userId),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: "notification_channel_organization_id_organization_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: "notification_channel_user_id_user_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.createdByUserId],
+      foreignColumns: [user.id],
+      name: "notification_channel_created_by_user_id_user_id_fk",
+    }).onDelete("set null"),
+  ],
+);
+
+export const notificationRule = pgTable(
+  "notification_rule",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    channelId: uuid("channel_id").notNull(),
+    /** One event code, or `*` — NOTIFICATION_RULE_EVENTS. */
+    event: text().notNull(),
+    /** Deliver only at or above this — NOTIFICATION_SEVERITIES. */
+    minSeverity: text("min_severity").default("info").notNull(),
+  },
+  (table) => [
+    check(
+      "notification_rule_event_check",
+      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`,
+    ),
+    check(
+      "notification_rule_min_severity_check",
+      sql`min_severity IN ('info', 'warning', 'critical')`,
+    ),
+    uniqueIndex("uniq_notification_rule_channel_event").on(
+      table.channelId,
+      table.event,
+    ),
+    foreignKey({
+      columns: [table.channelId],
+      foreignColumns: [notificationChannel.id],
+      name: "notification_rule_channel_id_notification_channel_id_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const notification = pgTable(
+  "notification",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    /** The recipient — one row per person the event reached. */
+    userId: uuid("user_id").notNull(),
+    /** Null for an instance-scoped event. */
+    organizationId: uuid("organization_id"),
+    /** NOTIFICATION_EVENTS. */
+    event: text().notNull(),
+    /** NOTIFICATION_SEVERITIES. */
+    severity: text().notNull(),
+    title: text().notNull(),
+    body: text(),
+    /** What it is about: a catalog entity kind and id, so the bell can link to it. */
+    targetType: text("target_type"),
+    targetId: uuid("target_id"),
+    /** The small non-secret context the sentence was rendered from. */
+    context: jsonb(),
+    readAt: timestamp("read_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    dismissedAt: timestamp("dismissed_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+  },
+  (table) => [
+    check(
+      "notification_event_check",
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`,
+    ),
+    check(
+      "notification_severity_check",
+      sql`severity IN ('info', 'warning', 'critical')`,
+    ),
+    index("idx_notification_user_created").on(
+      table.userId,
+      table.createdAt.desc(),
+    ),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: "notification_user_id_user_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: "notification_organization_id_organization_id_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const notificationDelivery = pgTable(
+  "notification_delivery",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    channelId: uuid("channel_id").notNull(),
+    /** Null for an instance-scoped event. */
+    organizationId: uuid("organization_id"),
+    /** NOTIFICATION_EVENTS. */
+    event: text().notNull(),
+    /** NOTIFICATION_SEVERITIES. */
+    severity: text().notNull(),
+    /** The rendered, non-secret message: title, body, context, target. */
+    payload: jsonb(),
+    /** NOTIFICATION_DELIVERY_STATUSES. */
+    status: text().default("pending").notNull(),
+    attempts: integer().default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    sentAt: timestamp("sent_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    /** The last failure, as a short code or an HTTP status — never a body, never the address. */
+    lastError: text("last_error"),
+  },
+  (table) => [
+    check(
+      "notification_delivery_event_check",
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`,
+    ),
+    check(
+      "notification_delivery_severity_check",
+      sql`severity IN ('info', 'warning', 'critical')`,
+    ),
+    check(
+      "notification_delivery_status_check",
+      sql`status IN ('pending', 'sent', 'failed', 'abandoned')`,
+    ),
+    index("idx_notification_delivery_pending").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+    index("idx_notification_delivery_channel_created").on(
+      table.channelId,
+      table.createdAt.desc(),
+    ),
+    foreignKey({
+      columns: [table.channelId],
+      foreignColumns: [notificationChannel.id],
+      name: "notification_delivery_channel_id_notification_channel_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: "notification_delivery_organization_id_organization_id_fk",
+    }).onDelete("cascade"),
+  ],
+);
