@@ -4,6 +4,10 @@ import { getDb } from "../db.ts";
 import { DAEMON_WS_PATH } from "../surfaces.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
+  getServerDaemonStateByServerId,
+  isDaemonKeyActive,
+} from "./authn/server-identity-db.ts";
+import {
   resolveCellLocationHint,
 } from "./cell/location.ts";
 import { extractCloudflareGeo } from "../lib/geo/server-geo.ts";
@@ -107,6 +111,24 @@ export function registerWorkersDaemonWebSocket<E extends Env>(
     const db = getDb(c);
     if (db === undefined) {
       return new Response("Database unavailable", { status: 503 });
+    }
+
+    // A valid JWT is not enough to open a socket.
+    //
+    // The token lives for DAEMON_JWT_LIFETIME_MS (15 minutes) and says
+    // nothing about whether the key that minted it is still active. Without
+    // this check, an operator who revoked a compromised host's daemon key and
+    // purged its cell watched that host reconnect with its cached token and
+    // keep receiving queued commands and secrets until the token expired —
+    // the self-hosted socket re-checks the key on every inbound frame
+    // (`deno-ws.ts` assertDaemonKeyStillActive), and hosted checked nothing.
+    // The kid in the payload is the daemon key id, so the same row answers
+    // both questions: is this still the current key, and is it still active.
+    const daemonState = await getServerDaemonStateByServerId(db, serverId);
+    if (
+      daemonState?.key.id !== payload.kid || !isDaemonKeyActive(daemonState.key)
+    ) {
+      return new Response("Forbidden", { status: 403 });
     }
 
     const locationHint = await resolveCellLocationHint(db, serverId);

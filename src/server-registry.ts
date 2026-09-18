@@ -662,6 +662,30 @@ async function resolveLicensedServerId(
  * when a valid license is presented. Returns null for unknown servers without
  * a license.
  */
+/**
+ * Read-only: which existing server row would {@link resolveServerId} land on,
+ * if any?
+ *
+ * Exists so the enrollment path can check revocation *before* anything is
+ * written. `resolveServerId` is not a lookup — it touches metadata, binds
+ * licences and reconciles fabric membership on the way to an id — so a
+ * revoked host that re-ran enroll used to rewrite its own `hostname`,
+ * `machineKey` and OS metadata on every attempt it got a 403 for. Same
+ * lookups, same order, no writes; it can only refuse enrollments that the
+ * post-resolve check would have refused anyway, just earlier.
+ */
+export async function findServerIdForIdentity(
+  db: Db,
+  identity: ServerHelloIdentity,
+): Promise<string | undefined> {
+  const licenseId = identity.licenseId?.trim()
+  if (licenseId) {
+    const bound = await findServerBoundToLicense(db, licenseId)
+    if (bound) return bound
+  }
+  return await findExistingServerId(db, identity)
+}
+
 export async function resolveServerId(
   db: Db,
   identity: ServerHelloIdentity,

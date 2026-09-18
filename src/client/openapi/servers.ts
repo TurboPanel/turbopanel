@@ -1228,7 +1228,7 @@ export const serverPaths: Record<string, unknown> = {
       ],
       responses: {
         '200': {
-          description: 'Key revoked. purged=false means the live cell could not be reached (purgeError says why). Even unpurged, the revoke bites at the next point the key is re-checked: self-hosted, the socket rejects the daemon\'s next inbound frame (close code key_revoked); hosted, an already-authenticated Durable Object socket is closed by the purge or by the daemon\'s next reconnect, and either runtime refuses the next session mint.',
+          description: 'Key revoked. purged=false means the live cell could not be reached (purgeError is a fixed code — purge_failed or registry_unavailable; the driver\'s own message is logged, never returned, because it names registry internals). Even unpurged, the revoke bites at the next point the key is re-checked: self-hosted, the socket rejects the daemon\'s next inbound frame (close code key_revoked); hosted, an already-authenticated Durable Object socket is closed by the purge or by the daemon\'s next reconnect, and either runtime refuses the next session mint.',
           content: {
             'application/json': {
               schema: {
@@ -1238,7 +1238,10 @@ export const serverPaths: Record<string, unknown> = {
                   ok: { type: 'boolean', enum: [true] },
                   revokedAt: { type: ['string', 'null'], format: 'date-time' },
                   purged: { type: 'boolean' },
-                  purgeError: { type: 'string' },
+                  purgeError: {
+                    type: 'string',
+                    enum: ['purge_failed', 'registry_unavailable'],
+                  },
                 },
               },
             },

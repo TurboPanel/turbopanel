@@ -271,6 +271,11 @@ export type ServerDeletedPayload =
     status: 500
   }
 
+/**
+ * `purgeError` is a fixed code, never the registry's own message — that names
+ * Redis / Durable Object internals and this string is read by an organization
+ * admin. The detail is logged at the purge site instead.
+ */
 export function serverDeletedPayload(
   serverId: string,
   purgeError: string | null,
@@ -280,7 +285,7 @@ export function serverDeletedPayload(
       ok: false,
       serverId,
       deleted: true,
-      error: `Server deleted but daemon cell purge failed: ${purgeError}`,
+      error: `Server deleted but daemon cell purge failed (${purgeError})`,
       status: 500,
     }
   }

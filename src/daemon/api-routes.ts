@@ -99,6 +99,7 @@ import { DAEMON_API_PREFIX } from "../surfaces.ts";
 import { normalizeMachineKey } from "../lib/machine-key.ts";
 import {
   type FabricMembershipDeps,
+  findServerIdForIdentity,
   getServerLicenseBinding,
   resolveServerId,
   touchServerMetadata,
@@ -367,17 +368,36 @@ async function finalizeDaemonEnrollment(
     fabricDeps,
   } = params;
 
-  const serverId = await resolveServerId(
-    db,
-    {
-      serverId: serverIdBody,
-      machineKey,
-      hostname,
-      licenseId,
-      licenseToken,
-    },
-    fabricDeps,
-  );
+  const identity = {
+    serverId: serverIdBody,
+    machineKey,
+    hostname,
+    licenseId,
+    licenseToken,
+  };
+
+  // Revocation is sticky, and the refusal comes *before* anything is written.
+  // `resolveServerId` is not a lookup — it touches metadata, binds licences
+  // and reconciles fabric membership on the way to an id — so checking after
+  // it let a revoked host holding its licence and server id rewrite its own
+  // `hostname`, `machineKey` and OS metadata on every attempt it got a 403
+  // for. The read-only resolution answers the same question without writing.
+  //
+  // Three layers, cheapest first: this one; the post-resolve check below, for
+  // a row that only exists once the licence path has run; and the upsert's
+  // `setWhere` inside `attachDaemonStateToServer`, which is the atomic one,
+  // for a revoke that commits between a read and the write. Recovery is
+  // `DELETE /servers/:id` (which clears daemon state and retires the bound
+  // license), then enrolling the rebuilt host fresh.
+  const knownServerId = await findServerIdForIdentity(db, identity);
+  if (knownServerId) {
+    const known = await getServerDaemonStateByServerId(db, knownServerId);
+    if (known && !isDaemonKeyActive(known.key)) {
+      return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR };
+    }
+  }
+
+  const serverId = await resolveServerId(db, identity, fabricDeps);
   if (!serverId) {
     return {
       ok: false,
@@ -386,13 +406,6 @@ async function finalizeDaemonEnrollment(
     };
   }
 
-  // Revocation is sticky: the license token still on a compromised host's
-  // disk must not re-enroll it past an operator's revoke. This pre-check is
-  // the cheap, common-case refusal; the upsert's `setWhere` inside
-  // `attachDaemonStateToServer` is the atomic one, for a revoke that commits
-  // between here and the write. Recovery is `DELETE /servers/:id` (which
-  // clears daemon state and retires the bound license), then enrolling the
-  // rebuilt host fresh.
   const current = await getServerDaemonStateByServerId(db, serverId);
   if (current && !isDaemonKeyActive(current.key)) {
     return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR };

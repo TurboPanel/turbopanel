@@ -24,21 +24,65 @@ async function createTestSecrets() {
   );
 }
 
-const mockLimit = () => Promise.resolve([]);
-const mockWhere = () => ({ limit: mockLimit });
-const mockFrom = () => ({ where: mockWhere });
-const mockSelect = () => ({ from: mockFrom });
+const TEST_KEY_ID = "11111111-2222-4333-8444-555555555555";
 
-function createMockDb(): Db {
+/**
+ * One row of the `server` ⋈ `key` join `getServerDaemonStateByServerId`
+ * reads. The upgrade path checks the key on every connect, so every test that
+ * expects to reach the cell needs an active one.
+ */
+function activeKeyRow(overrides: Record<string, unknown> = {}) {
   return {
-    select: mockSelect,
+    daemon: null,
+    metadata: null,
+    hostname: "host.example",
+    machineKey: "machine-1",
+    connected: false,
+    statusChangedAt: null,
+    id: TEST_KEY_ID,
+    algorithm: "Ed25519",
+    publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+    fingerprint: "fp-1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    revokedAt: null,
+    lastUsedAt: null,
+    ...overrides,
+  };
+}
+
+/**
+ * The two reads the upgrade path makes are told apart by `innerJoin`: the
+ * daemon-key check joins `key`, the location hint does not.
+ */
+function createMockDb(
+  opts: {
+    locationHint?: string;
+    keyRow?: Record<string, unknown> | null;
+  } = {},
+): Db {
+  const keyRows = opts.keyRow === null ? [] : [opts.keyRow ?? activeKeyRow()];
+  const locationRows = opts.locationHint === undefined ? [] : [
+    { options: { cellLocationHint: opts.locationHint }, metadata: null },
+  ];
+  return {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({ limit: () => Promise.resolve(keyRows) }),
+        }),
+        where: () => ({ limit: () => Promise.resolve(locationRows) }),
+      }),
+    }),
   } as unknown as Db;
 }
 
-async function issueTestToken(serverId: string): Promise<string> {
+async function issueTestToken(
+  serverId: string,
+  keyId: string = TEST_KEY_ID,
+): Promise<string> {
   const secrets = await createTestSecrets();
   const issued = await issueDaemonJwt(
-    { sub: serverId, kid: crypto.randomUUID() },
+    { sub: serverId, kid: keyId },
     secrets,
   );
   return issued.token;
@@ -78,18 +122,7 @@ function createForwardCaptureEnv(): {
 }
 
 function createLocationHintDb(locationHint: string): Db {
-  return {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () =>
-            Promise.resolve([
-              { options: { cellLocationHint: locationHint }, metadata: null },
-            ]),
-        }),
-      }),
-    }),
-  } as unknown as Db;
+  return createMockDb({ locationHint });
 }
 
 function createWorkersWsAppWithDb(
@@ -336,5 +369,57 @@ describe("registerWorkersDaemonWebSocket forwarding", () => {
     expect(response.status).toBe(200);
     expect(getByNameArg()).toBe(serverId);
     expect(getByNameOptions()).toEqual({ locationHint: "wnam" });
+  });
+});
+
+describe("registerWorkersDaemonWebSocket key revocation", () => {
+  // A valid JWT is not enough. It lives 15 minutes and says nothing about
+  // whether the key that minted it is still active, so before this check an
+  // operator who revoked a compromised host's daemon key and purged its cell
+  // watched that host reconnect with its cached token and keep receiving
+  // queued commands and secrets until the token expired. The self-hosted
+  // socket re-checks on every inbound frame; hosted checked nothing.
+  const serverId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
+  async function connectWith(db: Db): Promise<Response> {
+    const secrets = await createTestSecrets();
+    const app = createWorkersWsAppWithDb(secrets, db);
+    const token = await issueTestToken(serverId);
+    return await app.request(
+      DAEMON_WS_PATH,
+      {
+        headers: {
+          Upgrade: "websocket",
+          Authorization: `Bearer ${token}`,
+        },
+      },
+      createForwardCaptureEnv().env,
+    );
+  }
+
+  it("refuses a revoked key even with a still-valid JWT", async () => {
+    const response = await connectWith(
+      createMockDb({ keyRow: activeKeyRow({ revokedAt: "2026-01-02T00:00:00.000Z" }) }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("refuses a JWT minted by a key that is no longer the server's current one", async () => {
+    // Re-enrolment mints a new key row; a token from the superseded key must
+    // not open a socket.
+    const response = await connectWith(
+      createMockDb({ keyRow: activeKeyRow({ id: "99999999-8888-4777-8666-555555555555" }) }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("refuses a server with no key row at all", async () => {
+    const response = await connectWith(createMockDb({ keyRow: null }));
+    expect(response.status).toBe(403);
+  });
+
+  it("allows an active, current key", async () => {
+    const response = await connectWith(createMockDb());
+    expect(response.status).toBe(200);
   });
 });

@@ -349,10 +349,20 @@ async function assertServerDeletable(
   return null;
 }
 
+/**
+ * Why a purge did not happen, as a fixed code.
+ *
+ * Deliberately not the driver's message: the registry is Redis or a Durable
+ * Object, and its errors name hosts, keys and internal addresses. This code
+ * goes into an API response that an organization admin reads; the message it
+ * replaces goes to the log, where an operator can see it.
+ */
+export type DaemonCellPurgeFailure = "purge_failed" | "registry_unavailable";
+
 async function purgeServerDaemonCell(
   registry: DaemonCellRegistry,
   serverId: string,
-): Promise<string | null> {
+): Promise<DaemonCellPurgeFailure | null> {
   try {
     await registry.getCell(serverId).purge();
     return null;
@@ -361,7 +371,7 @@ async function purgeServerDaemonCell(
     console.error(
       `Failed to purge daemon cell for server ${serverId}: ${message}`,
     );
-    return message;
+    return "purge_failed";
   }
 }
 
@@ -635,7 +645,7 @@ async function reconcileFabricAfterServerDelete(
 function serverDeletedResponse(
   c: Context,
   serverId: string,
-  purgeError: string | null,
+  purgeError: DaemonCellPurgeFailure | null,
 ): Response {
   const payload = serverDeletedPayload(serverId, purgeError);
   if (payload.ok) {
@@ -1458,7 +1468,7 @@ export function registerServerRoutes(
     }
     const purgeError = registry
       ? await purgeServerDaemonCell(registry, id)
-      : "Daemon cell registry unavailable";
+      : "registry_unavailable";
     const revoked = await getServerDaemonStateByServerId(db, id);
 
     await recordAudit(db, {

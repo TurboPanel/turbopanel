@@ -208,11 +208,13 @@ test('serverDeletedPayload and hostingHierarchyFailedBody shapes', () => {
     serverId: 'srv-1',
     status: 200,
   })
-  assertEquals(serverDeletedPayload('srv-1', 'boom'), {
+  // A fixed code, never the registry's own message: that names Redis /
+  // Durable Object internals and this string is read by an org admin.
+  assertEquals(serverDeletedPayload('srv-1', 'purge_failed'), {
     ok: false,
     serverId: 'srv-1',
     deleted: true,
-    error: 'Server deleted but daemon cell purge failed: boom',
+    error: 'Server deleted but daemon cell purge failed (purge_failed)',
     status: 500,
   })
   assertEquals(hostingHierarchyFailedBody(), {
