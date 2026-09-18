@@ -1056,7 +1056,12 @@ export function registerDaemonApiRoutes<E extends Env>(
   daemon.get("/readiness", async (c) => {
     const db = getDb(c);
     if (db === undefined) {
-      return c.json({ ok: false, error: "Database unavailable" }, 503);
+      // Same body as a database that throws below: a monitor matching on the
+      // answer should not have to learn two spellings of one condition.
+      return c.json(
+        { ok: false, ready: false, error: "database unavailable" },
+        503,
+      );
     }
 
     let installed: boolean;

@@ -15,7 +15,11 @@ export const readinessPaths: Record<string, unknown> = {
       summary: "Install readiness probe",
       description:
         "Co-located self-hosted daemons poll this before opening the daemon WebSocket. " +
-        "Returns 503 until the install wizard has created org + superadmin.",
+        "Returns 503 until the install wizard has created org + superadmin.\n\n" +
+        "This is also the endpoint to monitor. `/api/health` is a static identity " +
+        "payload (licence, version, commit) and answers 200 with the database gone; " +
+        "this route reads the database, so the two 503 bodies below tell " +
+        "\"not installed yet\" apart from \"database unavailable\".",
       responses: {
         "200": {
           description: "Instance is ready for daemon connections",
@@ -49,10 +53,11 @@ export const readinessPaths: Record<string, unknown> = {
                   },
                   {
                     type: "object",
-                    required: ["ok", "error"],
+                    required: ["ok", "ready", "error"],
                     properties: {
                       ok: { type: "boolean", const: false },
-                      error: { type: "string" },
+                      ready: { type: "boolean", const: false },
+                      error: { type: "string", const: "database unavailable" },
                     },
                   },
                 ],
