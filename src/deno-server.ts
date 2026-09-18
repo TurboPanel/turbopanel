@@ -547,6 +547,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
             dataEncryptionSecrets,
             undefined,
             SELF_HOSTED_ALERT_WEBHOOK_POLICY,
+            {
+              queue: emailQueue,
+              from: emailSettings.from,
+              consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
+            },
           ))
       } catch (err) {
         logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
@@ -570,7 +575,14 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       // Workers parity (offline-sweep cron): resend notification deliveries
       // whose backoff has elapsed. Self-hosted may dial a LAN receiver.
       await runCleanupPhase('notification retry sweep', () =>
-        retryDueDeliveries(db, dataEncryptionSecrets, { allowPrivateTargets: true })
+        retryDueDeliveries(db, dataEncryptionSecrets, {
+          allowPrivateTargets: true,
+          email: {
+            queue: emailQueue,
+            from: emailSettings.from,
+            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
+          },
+        })
       )
       // Workers parity (offline-sweep cron): bounded removal of command
       // transcripts past retention. Object/filesystem only — no db involved.

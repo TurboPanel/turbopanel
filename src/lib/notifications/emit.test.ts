@@ -309,14 +309,41 @@ test("email rows stay pending for the mailer; a disabled channel gets nothing; a
     );
     assertEquals(byChannel.has(off.id), false);
 
-    // Self-hosted policy: the LAN receiver is dialled.
+    // Self-hosted policy with a mail queue: the LAN receiver is dialled and
+    // the email channel becomes one rendered job on the queue.
+    const jobs: unknown[] = [];
     const selfHosted = await emitNotification(db, enc, {
       event: "server.offline",
       organizationId,
       context: { serverName: "db-2" },
-    }, { fetchImpl: fakeFetch(200, captured), allowPrivateTargets: true });
-    assertEquals(selfHosted.sent, 1);
+      targetType: "server",
+      targetId: "00000000-0000-4000-8000-0000000000b2",
+    }, {
+      fetchImpl: fakeFetch(200, captured),
+      allowPrivateTargets: true,
+      email: {
+        queue: {
+          enqueue: (job) => {
+            jobs.push(job);
+            return Promise.resolve();
+          },
+        },
+        from: "noreply@example.com",
+        consoleBaseUrl: "https://panel.example.com/",
+      },
+    });
+    assertEquals(selfHosted.sent, 2);
     assertEquals(captured[0]!.url, "https://10.0.0.5/alerts");
+    assertEquals(jobs.length, 1);
+    const job = jobs[0] as Record<string, unknown>;
+    assertEquals(job.type, "notification");
+    assertEquals(job.to, "ops@example.com");
+    assertEquals(job.title, "Server db-2 went offline");
+    assertEquals(job.organizationName, "Notify Org");
+    assertEquals(
+      job.consoleUrl,
+      `https://panel.example.com/${organizationId}/servers/00000000-0000-4000-8000-0000000000b2`,
+    );
   });
 });
 

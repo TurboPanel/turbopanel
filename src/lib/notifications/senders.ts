@@ -27,14 +27,19 @@ export type SendTarget = {
   signingSecret?: string | null;
 };
 
-/** The line every chat-style receiver shows: the title, then the context as `key=value`. */
-export function renderText(payload: DeliveryPayload): string {
-  const parts = Object.keys(payload.context)
+/** The context as sorted `key=value` lines, nulls dropped — what an email lists and a chat line appends. */
+export function renderDetails(payload: DeliveryPayload): string[] {
+  return Object.keys(payload.context)
     .sort((a, b) => a.localeCompare(b))
     .filter((key) =>
       payload.context[key] !== undefined && payload.context[key] !== null
     )
     .map((key) => `${key}=${payload.context[key]}`);
+}
+
+/** The line every chat-style receiver shows: the title, then the context as `key=value`. */
+export function renderText(payload: DeliveryPayload): string {
+  const parts = renderDetails(payload);
   const head = payload.body
     ? `${payload.title} — ${payload.body}`
     : payload.title;

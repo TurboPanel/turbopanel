@@ -2,6 +2,7 @@ import {
   createEmailOtpEmail,
   createEmailVerificationLinkEmail,
   createInvitationEmail,
+  createNotificationEmail,
   createServerTierNoticeEmail,
 } from '../templates.ts'
 import type { EmailJob } from '../types.ts'
@@ -31,6 +32,9 @@ function resolveMailpitTemplate(job: EmailJob) {
   }
   if (job.type === 'invitation') {
     return createInvitationEmail(job)
+  }
+  if (job.type === 'notification') {
+    return createNotificationEmail(job)
   }
   return null
 }

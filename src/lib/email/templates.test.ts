@@ -3,6 +3,7 @@ import {
   createEmailOtpEmail,
   createEmailVerificationLinkEmail,
   createInvitationEmail,
+  createNotificationEmail,
 } from './templates.ts'
 
 /**
@@ -77,4 +78,42 @@ test('createInvitationEmail escapes interpolated fields and sets the subject', (
   assertEquals(html.includes('owner@&lt;org&gt;.example'), true)
   assertEquals(text.includes('Acme <script>'), true)
   assertEquals(text.includes('https://example.com/accept-invitation?id=<script>'), true)
+})
+
+test('createNotificationEmail carries the severity in the subject and escapes every field', () => {
+  const { subject, html, text } = createNotificationEmail({
+    type: 'notification',
+    to: 'ops@example.com',
+    from: 'noreply@example.com',
+    event: 'server.offline',
+    severity: 'critical',
+    title: 'Server <db-1> went offline',
+    body: 'Stopped & gone.',
+    details: ['serverName=<db-1>'],
+    organizationName: 'Acme "Inc"',
+    consoleUrl: 'https://panel.example.com/org/servers/s1?x=<y>',
+    at: '2026-09-18T10:00:00.000Z',
+  })
+  assertEquals(subject, '[TurboPanel Critical] Server <db-1> went offline')
+  assertEquals(html.includes('<db-1>'), false)
+  assertEquals(html.includes('&lt;db-1&gt;'), true)
+  assertEquals(html.includes('&quot;Inc&quot;'), true)
+  assertEquals(html.includes('Open in TurboPanel'), true)
+  assertEquals(text.includes('serverName=<db-1>'), true)
+  assertEquals(text.includes('Open: https://panel.example.com/org/servers/s1?x=<y>'), true)
+  const bare = createNotificationEmail({
+    type: 'notification',
+    to: 'ops@example.com',
+    from: 'noreply@example.com',
+    event: 'fleet.mass_disconnect',
+    severity: 'warning',
+    title: '7 servers went offline in one sweep',
+    body: null,
+    details: [],
+    organizationName: null,
+    consoleUrl: null,
+    at: '2026-09-18T10:00:00.000Z',
+  })
+  assertEquals(bare.subject, '[TurboPanel Warning] 7 servers went offline in one sweep')
+  assertEquals(bare.html.includes('Open in TurboPanel'), false)
 })

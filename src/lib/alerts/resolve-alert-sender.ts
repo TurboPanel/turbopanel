@@ -32,7 +32,7 @@ import {
   HOSTED_ALERT_WEBHOOK_POLICY,
 } from "./alert-webhook-settings.ts";
 import { validateOutboundUrl } from "../http/outbound-url.ts";
-import { emitNotification } from "../notifications/emit.ts";
+import { type EmitEmail, emitNotification } from "../notifications/emit.ts";
 import type {
   NotificationContext,
   NotificationEvent,
@@ -142,6 +142,7 @@ export async function resolveAlertSender(
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   trace?: AlertSenderTrace,
   policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
+  email?: EmitEmail,
 ): Promise<AlertSender> {
   const legacy = await resolveLegacyWebhookSender(
     db,
@@ -162,7 +163,7 @@ export async function resolveAlertSender(
         context: mapped.context,
         targetType: mapped.targetId ? "server" : null,
         targetId: mapped.targetId,
-      }, { allowPrivateTargets: policy.allowPrivateTargets });
+      }, { allowPrivateTargets: policy.allowPrivateTargets, email });
     } catch (err) {
       // emitNotification never throws; this guards the lookup above.
       trace?.("alert-sender-resolve-failed", {

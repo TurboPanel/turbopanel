@@ -44,11 +44,13 @@ import {
   type NotificationChannelRecord,
   type NotificationDeliveryRecord,
   organizationMemberIds,
+  organizationName,
   recordDeliveryAttempt,
   resolveChannelAddress,
   resolveChannelSigningSecret,
 } from "./records.ts";
-import { send, type SendOutcome } from "./senders.ts";
+import { renderDetails, send, type SendOutcome } from "./senders.ts";
+import type { EmailJob, EmailQueue } from "../email/types.ts";
 
 export type EmitInput = {
   event: NotificationEvent;
@@ -59,10 +61,19 @@ export type EmitInput = {
   targetId?: string | null;
 };
 
+export type EmitEmail = {
+  queue: EmailQueue;
+  from: string;
+  /** The console's public base URL, for the "Open in TurboPanel" link; null when unknown. */
+  consoleBaseUrl?: string | null;
+};
+
 export type EmitDeps = {
   fetchImpl?: typeof fetch;
   /** Self-hosted may deliver to a LAN address; hosted may not (decided 2026-09-18). */
   allowPrivateTargets?: boolean;
+  /** Without this, email channels' deliveries stay pending for a later tick that has a queue. */
+  email?: EmitEmail;
   now?: () => number;
   trace?: (event: string, detail: Record<string, unknown>) => void;
 };
@@ -107,6 +118,12 @@ export async function emitNotification(
       title,
       body,
       organizationId,
+      organizationName: organizationId
+        ? await runWithDbTimeout(
+          db,
+          (tx) => organizationName(tx, organizationId),
+        )
+        : null,
       targetType: input.targetType ?? null,
       targetId: input.targetId ?? null,
       context,
@@ -177,12 +194,66 @@ export async function emitNotification(
   }
 }
 
-/** Sent from the ledger: never email or push (their transports own them), never a disabled channel. */
+/**
+ * Sent from the ledger: never push (the Expo transport owns it), email only
+ * when this tick has a queue to hand it to, never a disabled channel.
+ */
 function deliverableHere(
   channel: NotificationChannelRecord | null,
+  deps: EmitDeps,
 ): channel is NotificationChannelRecord {
-  return channel !== null && channel.disabledAt === null &&
-    channel.kind !== "email" && channel.kind !== "push";
+  if (channel === null || channel.disabledAt !== null) return false;
+  if (channel.kind === "push") return false;
+  if (channel.kind === "email") return deps.email !== undefined;
+  return true;
+}
+
+/** Where the console shows the event's target, when it has one. */
+export function consoleUrlFor(
+  base: string | null | undefined,
+  payload: DeliveryPayload,
+): string | null {
+  if (!base) return null;
+  const root = base.replace(/\/$/, "");
+  if (
+    payload.organizationId && payload.targetType === "server" &&
+    payload.targetId
+  ) {
+    return `${root}/${payload.organizationId}/servers/${payload.targetId}`;
+  }
+  if (payload.organizationId) {
+    return `${root}/${payload.organizationId}/overview`;
+  }
+  return root;
+}
+
+async function enqueueEmail(
+  email: EmitEmail,
+  to: string,
+  payload: DeliveryPayload,
+): Promise<SendOutcome> {
+  const job: EmailJob = {
+    type: "notification",
+    to,
+    from: email.from,
+    event: payload.event,
+    severity: payload.severity,
+    title: payload.title,
+    body: payload.body,
+    details: renderDetails(payload),
+    organizationName: payload.organizationName,
+    consoleUrl: consoleUrlFor(email.consoleBaseUrl, payload),
+    at: payload.at,
+  };
+  try {
+    await email.queue.enqueue(job);
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? `queue_${error.name}` : "queue",
+    };
+  }
 }
 
 async function attemptOne(
@@ -193,6 +264,11 @@ async function attemptOne(
 ): Promise<SendOutcome> {
   const address = await resolveChannelAddress(secrets, channel);
   if (address === null) return { ok: false, error: "address_unreadable" };
+  if (channel.kind === "email") {
+    return deps.email
+      ? await enqueueEmail(deps.email, address, delivery.payload)
+      : { ok: false, error: "no_email_queue" };
+  }
   // Re-validated at send, not only at write: a stored address may predate a
   // rule change or have been written by something other than the route.
   if (channel.kind !== "telegram") {
@@ -225,7 +301,7 @@ async function attemptDeliveries(
   let sent = 0;
   let failed = 0;
   for (const { delivery, channel } of items) {
-    if (!deliverableHere(channel)) continue;
+    if (!deliverableHere(channel, deps)) continue;
     if ((deps.now?.() ?? Date.now()) >= deadline) {
       deps.trace?.("notification-delivery-deferred", {
         remaining: items.length - sent - failed,

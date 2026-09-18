@@ -6,7 +6,7 @@ Root context: `../../../AGENTS.md`.
 
 ## Email
 
-The `src/lib/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob`, `getEmailQueue`) shared by both runtimes. Job types: `signup-verification`, `email-otp`, `server-tier-notice` (hosted license-tier nag from `src/lib/tiers/tier-notice-sweep.ts`), and `invitation` (team invite from `src/client/access/invitation-http.ts`). Every sender switch (`mailgun/send.ts`, `mailpit/send.ts`, `mailer/smtp-sender.ts`, `mailer/mailgun-sender.ts`, `mailer/mailpit-sender.ts`) plus `mailer/parse-email-job.ts` (`parseEmailJob`, used by `mailer/main.ts`) must handle a new type or the job is dropped.
+The `src/lib/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob`, `getEmailQueue`) shared by both runtimes. Job types: `signup-verification`, `email-otp`, `server-tier-notice` (hosted license-tier nag from `src/lib/tiers/tier-notice-sweep.ts`), `invitation` (team invite from `src/client/access/invitation-http.ts`), and `notification` (one event delivered to an email channel, rendered by `src/lib/notifications/emit.ts` from the catalogue in `events.ts`; template `createNotificationEmail`). Every sender switch (`mailgun/send.ts`, `mailpit/send.ts`, `mailer/smtp-sender.ts`, `mailer/mailgun-sender.ts`, `mailer/mailpit-sender.ts`) plus `mailer/parse-email-job.ts` (`parseEmailJob`, used by `mailer/main.ts`) must handle a new type or the job is dropped.
 
 ### Deno vs Workers paths
 

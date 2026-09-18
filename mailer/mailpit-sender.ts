@@ -2,6 +2,7 @@ import {
   createEmailOtpEmail,
   createEmailVerificationLinkEmail,
   createInvitationEmail,
+  createNotificationEmail,
   createServerTierNoticeEmail,
 } from '../src/lib/email/templates.ts'
 import { resolveEmailSettings, type ResolvedEmailSettings } from '../src/lib/settings/email-settings.ts'
@@ -82,6 +83,11 @@ export class MailerMailpitSender {
         case 'invitation': {
           validateEmailAddress(job.to, 'recipient')
           result = createInvitationEmail(job)
+          break
+        }
+        case 'notification': {
+          validateEmailAddress(job.to, 'recipient')
+          result = createNotificationEmail(job)
           break
         }
         default:

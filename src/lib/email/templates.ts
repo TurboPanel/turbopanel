@@ -175,6 +175,53 @@ export function createInvitationEmail(
   return { subject, html, text }
 }
 
+const SEVERITY_LABEL = { info: 'Notice', warning: 'Warning', critical: 'Critical' } as const
+const SEVERITY_COLOR = { info: '#2563eb', warning: '#b45309', critical: '#b91c1c' } as const
+
+export function createNotificationEmail(
+  job: Extract<EmailJob, { type: 'notification' }>,
+): TemplateResult {
+  const scope = job.organizationName ? ` · ${job.organizationName}` : ''
+  const subject = `[TurboPanel ${SEVERITY_LABEL[job.severity]}] ${job.title}`
+  const safeSubject = escapeHtml(subject)
+  const safeTitle = escapeHtml(job.title)
+  const safeBody = job.body ? escapeHtml(job.body) : ''
+  const safeScope = escapeHtml(scope)
+  const safeDetails = job.details.map((d) => `<li style="margin:0 0 4px;">${escapeHtml(d)}</li>`).join('')
+  const safeUrl = job.consoleUrl ? escapeHtml(job.consoleUrl) : null
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${safeSubject}</title>
+</head>
+<body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;padding:24px;">
+  <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08);padding:32px;">
+    <p style="margin:0 0 8px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:${SEVERITY_COLOR[job.severity]};">${SEVERITY_LABEL[job.severity]}${safeScope}</p>
+    <h1 style="margin:0 0 16px;font-size:22px;color:#111;">${safeTitle}</h1>
+    ${safeBody ? `<p style="margin:0 0 16px;color:#444;line-height:1.5;">${safeBody}</p>` : ''}
+    ${safeDetails ? `<ul style="margin:0 0 16px;padding-left:20px;color:#444;font-family:ui-monospace,Menlo,monospace;font-size:13px;">${safeDetails}</ul>` : ''}
+    ${
+    safeUrl
+      ? `<p style="margin:0 0 24px;"><a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Open in TurboPanel</a></p>`
+      : ''
+  }
+    <p style="margin:0;font-size:12px;color:#999;">${escapeHtml(job.event)} · ${escapeHtml(job.at)}</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+  </div>
+</body>
+</html>
+`.trim()
+  const text =
+    `${subject}\n\n${job.body ?? ''}${job.body ? '\n\n' : ''}` +
+    (job.details.length > 0 ? `${job.details.join('\n')}\n\n` : '') +
+    (job.consoleUrl ? `Open: ${job.consoleUrl}\n\n` : '') +
+    `${job.event} · ${job.at}\n\nTurboPanel – Self-hosted control plane`
+  return { subject, html, text }
+}
+
 function escapeHtml(s: string): string {
   return s
     .replaceAll('&', '&amp;')

@@ -38,6 +38,22 @@ export type EmailJob =
       teamName: string
       acceptUrl: string
     }
+  | {
+      /** One notification event delivered to an email channel (`src/lib/notifications/`). */
+      type: 'notification'
+      to: string
+      from: string
+      event: string
+      severity: 'info' | 'warning' | 'critical'
+      title: string
+      body: string | null
+      /** `key=value` lines of the non-secret context, already rendered. */
+      details: string[]
+      organizationName: string | null
+      /** Where to look, when the event has a target the console can show. */
+      consoleUrl: string | null
+      at: string
+    }
 
 export interface EmailQueue {
   enqueue(job: EmailJob): Promise<void>

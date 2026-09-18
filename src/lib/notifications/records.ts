@@ -21,6 +21,7 @@ import {
   notificationChannel,
   notificationDelivery,
   notificationRule,
+  organization,
   team,
   teammate,
   user,
@@ -370,6 +371,18 @@ export async function channelsForEvent(
   return out;
 }
 
+export async function organizationName(
+  db: Db,
+  organizationId: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ name: organization.name })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1);
+  return row?.name ?? null;
+}
+
 /** Everyone who belongs to the organization through a team — the inbox fan-out. */
 export async function organizationMemberIds(
   db: Db,
@@ -529,6 +542,8 @@ export type DeliveryPayload = {
   title: string;
   body: string | null;
   organizationId: string | null;
+  /** Denormalized for the message; null for an instance-scoped event. */
+  organizationName: string | null;
   targetType: string | null;
   targetId: string | null;
   context: NotificationContext;

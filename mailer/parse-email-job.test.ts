@@ -56,6 +56,30 @@ test('parseEmailJob accepts an invitation payload', () => {
   assertEquals(parseEmailJob(INVITATION_JOB), INVITATION_JOB)
 })
 
+const NOTIFICATION_JOB: EmailJob = {
+  type: 'notification',
+  to: 'ops@example.com',
+  from: 'noreply@example.com',
+  event: 'server.offline',
+  severity: 'critical',
+  title: 'Server db-1 went offline',
+  body: 'The daemon stopped answering.',
+  details: ['serverName=db-1'],
+  organizationName: 'Acme',
+  consoleUrl: 'https://panel.example.com/org/servers/s1',
+  at: '2026-09-18T10:00:00.000Z',
+}
+
+test('parseEmailJob accepts a notification payload and refuses a malformed one', () => {
+  assertEquals(parseEmailJob(NOTIFICATION_JOB), NOTIFICATION_JOB)
+  assertEquals(
+    parseEmailJob({ ...NOTIFICATION_JOB, body: null, consoleUrl: null, organizationName: null }),
+    { ...NOTIFICATION_JOB, body: null, consoleUrl: null, organizationName: null },
+  )
+  assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, severity: 'loud' }), null)
+  assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, details: 'serverName=db-1' }), null)
+})
+
 test('parseEmailJob rejects unknown types and incomplete tier-notice fields', () => {
   assertEquals(parseEmailJob(null), null)
   assertEquals(parseEmailJob({ type: 'invitation', to: 'a@b.co' }), null)

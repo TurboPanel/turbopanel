@@ -23,6 +23,7 @@ const payload: DeliveryPayload = {
   title: "Server db-1 went offline",
   body: "The daemon stopped answering.",
   organizationId: "00000000-0000-4000-8000-0000000000a1",
+  organizationName: "Acme",
   targetType: "server",
   targetId: "00000000-0000-4000-8000-0000000000b1",
   context: { serverName: "db-1", zed: 1, alpha: "x", gone: null },

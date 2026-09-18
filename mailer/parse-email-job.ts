@@ -123,6 +123,34 @@ function parseInvitation(
   }
 }
 
+function parseNotification(
+  job: Record<string, unknown>,
+  to: string,
+  from: string,
+): EmailJob | null {
+  if (typeof job.event !== 'string') return null
+  if (job.severity !== 'info' && job.severity !== 'warning' && job.severity !== 'critical') return null
+  if (typeof job.title !== 'string') return null
+  if (job.body !== null && typeof job.body !== 'string') return null
+  if (!Array.isArray(job.details) || !job.details.every((d) => typeof d === 'string')) return null
+  if (job.organizationName !== null && typeof job.organizationName !== 'string') return null
+  if (job.consoleUrl !== null && typeof job.consoleUrl !== 'string') return null
+  if (typeof job.at !== 'string') return null
+  return {
+    type: 'notification',
+    to,
+    from,
+    event: job.event,
+    severity: job.severity,
+    title: job.title,
+    body: job.body,
+    details: job.details as string[],
+    organizationName: job.organizationName,
+    consoleUrl: job.consoleUrl,
+    at: job.at,
+  }
+}
+
 /** Decode a queued mailer payload into an {@link EmailJob}, or `null` if invalid. */
 export function parseEmailJob(raw: unknown): EmailJob | null {
   if (!isRecord(raw)) return null
@@ -139,6 +167,9 @@ export function parseEmailJob(raw: unknown): EmailJob | null {
   }
   if (raw.type === 'invitation') {
     return parseInvitation(raw, raw.to, raw.from)
+  }
+  if (raw.type === 'notification') {
+    return parseNotification(raw, raw.to, raw.from)
   }
 
   return null

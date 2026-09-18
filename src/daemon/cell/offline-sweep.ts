@@ -67,7 +67,10 @@ import {
   NOOP_ALERT_SENDER,
 } from "../../lib/alerts/alert-sender.ts";
 import { resolveAlertSender } from "../../lib/alerts/resolve-alert-sender.ts";
-import { retryDueDeliveries } from "../../lib/notifications/emit.ts";
+import {
+  type EmitEmail,
+  retryDueDeliveries,
+} from "../../lib/notifications/emit.ts";
 import {
   ALERT_DELIVERY_BUDGET_MS,
   notifyDemotions,
@@ -133,6 +136,7 @@ import {
   tryBeginOfflineSweep,
 } from "./offline-sweep-lease.ts";
 import { resolveWorkersEmailQueue } from "../../lib/email/mailgun/workers-queue.ts";
+import { resolveEmailSettings } from "../../lib/settings/email-settings.ts";
 import { sweepTierNotices } from "../../lib/tiers/tier-notice-sweep.ts";
 import { resolveBillingConfig } from "../../lib/billing/config.ts";
 import { createStripeClient } from "../../lib/billing/client.ts";
@@ -1219,6 +1223,35 @@ async function sweepExecutionLogsPhase(
   );
 }
 
+/** The mail queue and from address a Workers tick hands the notifications pipeline. */
+async function workersNotificationEmail(
+  env: CloudflareBindings,
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined,
+): Promise<EmitEmail | undefined> {
+  const platformEnv = env as unknown as Record<string, string | undefined>;
+  try {
+    const queue = await resolveWorkersEmailQueue(
+      db,
+      platformEnv,
+      tlsRenewal?.dataEncryptionSecrets,
+    );
+    const settings = await resolveEmailSettings(
+      db,
+      platformEnv,
+      tlsRenewal?.dataEncryptionSecrets,
+    );
+    const publicUrls = platformEnv.TURBOPANEL_PUBLIC_URLS?.split(",")[0]?.trim();
+    return {
+      queue,
+      from: settings.from,
+      consoleBaseUrl: platformEnv.TURBOPANEL_BASE_URL?.trim() || publicUrls || null,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 async function sweepTierNoticesPhase(
   env: CloudflareBindings,
   db: Db,
@@ -1362,6 +1395,7 @@ async function runOptionalCronPhases(
       async () => {
         await retryDueDeliveries(db, tlsRenewal?.dataEncryptionSecrets, {
           allowPrivateTargets: false,
+          email: await workersNotificationEmail(env, db, tlsRenewal),
         });
       },
     ))
@@ -1488,6 +1522,8 @@ export async function runOfflineSweep(
                 db,
                 tlsRenewal?.dataEncryptionSecrets,
                 sweepTrace,
+                undefined,
+                await workersNotificationEmail(env, db, tlsRenewal),
               ),
             nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
             deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,

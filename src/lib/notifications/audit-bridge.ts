@@ -17,6 +17,8 @@ import {
   recordAudit,
 } from "../db/audit-records.ts";
 import { emitNotification } from "./emit.ts";
+import { getEmailQueue } from "../email/types.ts";
+import { resolvePublicBaseUrl } from "../resolve-public-base-url.ts";
 import type { NotificationContext, NotificationEvent } from "./events.ts";
 
 export const AUDIT_EVENTS: Partial<Record<AuditAction, NotificationEvent>> = {
@@ -54,11 +56,19 @@ export async function recordAuditAndNotify(
   await recordAudit(db, entry);
   const event = AUDIT_EVENTS[entry.action];
   if (!event || !db || !entry.organizationId) return;
+  const queue = getEmailQueue(c);
+  const email = queue
+    ? {
+      queue,
+      from: c.get("emailFrom") || "noreply@turbopanel.local",
+      consoleBaseUrl: await resolvePublicBaseUrl(c).catch(() => null),
+    }
+    : undefined;
   await emitNotification(db, c.get("dataEncryptionSecrets"), {
     event,
     organizationId: entry.organizationId,
     context: contextFor(entry, extra),
     targetType: entry.targetType,
     targetId: entry.targetId ?? null,
-  }, { allowPrivateTargets: c.get("runtime") === "deno" });
+  }, { allowPrivateTargets: c.get("runtime") === "deno", email });
 }
