@@ -291,7 +291,7 @@ export async function patchForgeHandler(
     // The fields, never the values: credentials are the point of the trail,
     // not its contents.
     await recordForgeAudit(c, db, scope, "forge.update", app.id, {
-      fields: Object.keys(updates).sort(),
+      fields: Object.keys(updates).sort((a, b) => a.localeCompare(b)),
     });
     const publicOrigin = await resolvePublicOrigin(db);
     return c.json({

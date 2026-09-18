@@ -643,17 +643,24 @@ async function notifyDemotions(
 
   // A sender that never settles cannot hold the tick open either. Losing an
   // alert is the acceptable failure here; losing the tick is not.
+  //
+  // The timer is a plain one-shot `setTimeout(resolve, …)` sleep and nothing
+  // else: `scripts/check-durable-object-hibernation.mjs` forbids every other
+  // shape in this directory, because a timer that re-arms keeps the Durable
+  // Object awake and defeats hibernation. It is cleared as soon as the race
+  // settles so it cannot hold the isolate open after the phase is done.
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let delivered = false;
   await Promise.race([
-    deliver(),
+    deliver().then(() => {
+      delivered = true;
+    }),
     new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
-        sweepTrace("alerts-deadline-reached", {});
-        resolve();
-      }, remainingMs);
+      timer = setTimeout(resolve, remainingMs);
     }),
   ]);
   if (timer !== undefined) clearTimeout(timer);
+  if (!delivered) sweepTrace("alerts-deadline-reached", {});
 }
 
 async function healServers(

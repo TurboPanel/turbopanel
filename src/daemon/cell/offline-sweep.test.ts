@@ -1894,7 +1894,8 @@ it("a slow webhook cannot stop hosts from being demoted", async () => {
   // Every host was demoted, and the tick did not hang on the first alert:
   // it returned at the deadline rather than waiting on a promise that never
   // settles.
-  assertEquals(disconnected.sort(), [...ids].sort());
+  const byId = (a: string, b: string) => a.localeCompare(b);
+  assertEquals(disconnected.sort(byId), [...ids].sort(byId));
   assertEquals(alertsStarted >= 1, true);
   const elapsed = Date.now() - startedAt;
   assertEquals(elapsed < DEMOTION_RESERVE_MS + 3_000, true);
