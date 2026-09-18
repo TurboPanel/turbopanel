@@ -17,6 +17,7 @@ import {
 } from "../../client/authn/data-encryption.ts";
 import type { DerivedSecretsConfig } from "../../client/authn/secrets.ts";
 import {
+  grant,
   notification,
   notificationChannel,
   notificationDelivery,
@@ -394,6 +395,62 @@ export async function organizationName(
   return row?.name ?? null;
 }
 
+/**
+ * Everyone holding `organization:own` or `organization:manage` on the
+ * organization — directly, through a team they belong to, or through the
+ * organization itself as the subject. The inbox audience for events that
+ * mirror the owner-only audit trail (decided 2026-09-18): a plain teammate
+ * does not learn every grant change from the bell.
+ */
+export async function organizationManagerIds(
+  db: Db,
+  organizationId: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ actorType: grant.actorType, actorId: grant.actorId })
+    .from(grant)
+    .where(
+      and(
+        eq(grant.entityType, "organization"),
+        eq(grant.entityId, organizationId),
+        inArray(grant.permission, ["organization:own", "organization:manage"]),
+      ),
+    );
+  const ids = new Set<string>();
+  const teamIds: string[] = [];
+  let everyone = false;
+  for (const row of rows) {
+    if (row.actorType === "user") ids.add(row.actorId);
+    else if (row.actorType === "team") teamIds.push(row.actorId);
+    else if (row.actorType === "organization") everyone = true;
+  }
+  if (everyone) return await organizationMemberIds(db, organizationId);
+  if (teamIds.length > 0) {
+    const members = await db
+      .selectDistinct({ userId: teammate.userId })
+      .from(teammate)
+      .where(inArray(teammate.teamId, teamIds));
+    for (const m of members) ids.add(m.userId);
+  }
+  // Instance administrators see every organization; they hear about it too.
+  for (const admin of await instanceAdminIds(db)) ids.add(admin);
+  return [...ids];
+}
+
+/** The account emails of everyone in the organization — what an organization email channel may name. */
+export async function organizationMemberEmails(
+  db: Db,
+  organizationId: string,
+): Promise<Set<string>> {
+  const rows = await db
+    .selectDistinct({ email: user.email })
+    .from(teammate)
+    .innerJoin(team, eq(teammate.teamId, team.id))
+    .innerJoin(user, eq(teammate.userId, user.id))
+    .where(eq(team.organizationId, organizationId));
+  return new Set(rows.map((r) => r.email.toLowerCase()));
+}
+
 /** Everyone who belongs to the organization through a team — the inbox fan-out. */
 export async function organizationMemberIds(
   db: Db,
@@ -573,6 +630,16 @@ export type NotificationDeliveryRecord = {
   attempts: number;
 };
 
+/**
+ * How long the retry sweep leaves a fresh row to the inline attempt. The
+ * inline send is bounded at 5 s per channel; a sweep tick fires every 60 s on
+ * both runtimes. Two minutes means the sweep only ever reaches a row whose
+ * inline attempt never came back to record itself — a Worker killed
+ * mid-send, the case the ledger-first design exists for — and never races a
+ * slow one into a double send.
+ */
+export const INLINE_ATTEMPT_GRACE_MS = 2 * 60_000;
+
 /** Write the ledger row first — a crash between here and the send leaves a pending row, not silence. */
 export async function insertPendingDeliveries(
   db: Db,
@@ -591,7 +658,8 @@ export async function insertPendingDeliveries(
         payload,
         status: "pending",
         attempts: 0,
-        nextAttemptAt: sql`now()`,
+        nextAttemptAt: new Date(Date.now() + INLINE_ATTEMPT_GRACE_MS)
+          .toISOString(),
       })),
     )
     .returning();
@@ -613,23 +681,22 @@ function asDelivery(
   };
 }
 
+/**
+ * Record one attempt's outcome. The counter is bumped in SQL, not read then
+ * written, so two recorders for one row can never both count as attempt 1;
+ * the backoff and the abandon decision come from the value the update returns.
+ */
 export async function recordDeliveryAttempt(
   db: Db,
   id: string,
   outcome: { ok: true } | { ok: false; error: string },
 ): Promise<void> {
-  const [current] = await db
-    .select({ attempts: notificationDelivery.attempts })
-    .from(notificationDelivery)
-    .where(eq(notificationDelivery.id, id))
-    .limit(1);
-  const attempts = (current?.attempts ?? 0) + 1;
   if (outcome.ok) {
     await db
       .update(notificationDelivery)
       .set({
         status: "sent",
-        attempts,
+        attempts: sql`${notificationDelivery.attempts} + 1`,
         sentAt: sql`now()`,
         nextAttemptAt: null,
         lastError: null,
@@ -637,13 +704,21 @@ export async function recordDeliveryAttempt(
       .where(eq(notificationDelivery.id, id));
     return;
   }
+  const [row] = await db
+    .update(notificationDelivery)
+    .set({
+      status: "failed",
+      attempts: sql`${notificationDelivery.attempts} + 1`,
+      lastError: outcome.error.slice(0, 200),
+    })
+    .where(eq(notificationDelivery.id, id))
+    .returning({ attempts: notificationDelivery.attempts });
+  const attempts = row?.attempts ?? NOTIFICATION_DELIVERY_MAX_ATTEMPTS;
   const abandoned = attempts >= NOTIFICATION_DELIVERY_MAX_ATTEMPTS;
   await db
     .update(notificationDelivery)
     .set({
       status: abandoned ? "abandoned" : "failed",
-      attempts,
-      lastError: outcome.error.slice(0, 200),
       nextAttemptAt: abandoned
         ? null
         : new Date(Date.now() + nextAttemptDelayMs(attempts)).toISOString(),

@@ -28,12 +28,43 @@ const PHYSICAL_TABLE_NAME_EXCEPTIONS = new Set<string>(['2fa'])
 const PHYSICAL_TABLE_NAME_RE = /^[a-z][a-z0-9]*$/
 
 const CREATE_TABLE_RE = /CREATE\s+TABLE\s+"([^"]+)"/gi
+const RENAME_TABLE_RE = /ALTER\s+TABLE\s+"([^"]+)"\s+RENAME\s+TO\s+"([^"]+)"/gi
 
 function extractCreateTableNames(sql: string): string[] {
   const names: string[] = []
   for (const match of sql.matchAll(CREATE_TABLE_RE)) {
     const name = match[1]
     if (name !== undefined) names.push(name)
+  }
+  return names
+}
+
+/** `[from, to]` pairs, in statement order. */
+export function extractTableRenames(sql: string): Array<[string, string]> {
+  const renames: Array<[string, string]> = []
+  for (const match of sql.matchAll(RENAME_TABLE_RE)) {
+    const from = match[1]
+    const to = match[2]
+    if (from !== undefined && to !== undefined) renames.push([from, to])
+  }
+  return renames
+}
+
+/**
+ * The physical names a database holds after replaying the files in order:
+ * every CREATE TABLE, with each later `ALTER TABLE … RENAME TO` retiring the
+ * old name and adding the new. A shipped file is immutable, so a table that
+ * was created under a name the policy rejects can only be brought into line
+ * by a forward rename — and it is the *current* name the policy judges.
+ */
+export function accumulatePhysicalTableNames(sqlInOrder: readonly string[]): Set<string> {
+  const names = new Set<string>()
+  for (const sql of sqlInOrder) {
+    for (const name of extractCreateTableNames(sql)) names.add(name)
+    for (const [from, to] of extractTableRenames(sql)) {
+      names.delete(from)
+      names.add(to)
+    }
   }
   return names
 }
@@ -65,25 +96,22 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
     throw new TypeError('expected at least one NNNN_*.sql file under migrations/')
   }
 
-  // Known limitation: a future forward migration that does ALTER TABLE …
-  // RENAME TO would leave the old CREATE TABLE name visible in an earlier
-  // file and trip the retired-name reject on legitimate history. Handling
-  // this means folding ALTER TABLE … RENAME TO statements into the
-  // accumulated name set while scanning in _journal.json order. Deliberately
-  // not implemented now — the squash removed all rename history.
-
-  const names: string[] = []
+  // Renames are folded in file order (NNNN_ prefixes sort the same way the
+  // journal does): 0002_notifications created three tables under names this
+  // policy rejects, and 0003 renamed them — the shipped file cannot change,
+  // so the set judged is what a replayed database actually holds.
+  const sqlInOrder: string[] = []
   for (const file of sqlFiles) {
-    const sql = await Deno.readTextFile(join(migrationsDir, file))
-    names.push(...extractCreateTableNames(sql))
+    sqlInOrder.push(await Deno.readTextFile(join(migrationsDir, file)))
   }
-  if (names.length === 0) {
+  const accumulated = accumulatePhysicalTableNames(sqlInOrder)
+  if (accumulated.size === 0) {
     throw new TypeError(
       'expected at least one CREATE TABLE in scanned migration SQL files under migrations/',
     )
   }
 
-  const unique = [...new Set(names)].sort((a, b) => a.localeCompare(b))
+  const unique = [...accumulated].sort((a, b) => a.localeCompare(b))
   for (const name of unique) {
     assertPhysicalTableName(name)
   }
@@ -115,6 +143,12 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   }
   if (!unique.includes('slot')) {
     throw new TypeError('expected replica-slot table "slot"')
+  }
+  if (!unique.includes('channel') || !unique.includes('rule') || !unique.includes('attempt')) {
+    throw new TypeError('expected notification tables channel / rule / attempt')
+  }
+  if (unique.includes('notification_channel')) {
+    throw new TypeError('the 0003 rename must retire "notification_channel"')
   }
   if (!unique.includes('tag') || !unique.includes('marker')) {
     throw new TypeError('expected tagging tables tag / marker')
@@ -176,4 +210,16 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   }
 
   assertEquals(unique.includes('2fa'), true)
+})
+
+test('a forward rename retires the old physical name and judges the new one', () => {
+  const names = accumulatePhysicalTableNames([
+    'CREATE TABLE "notification_channel" (id uuid);',
+    'ALTER TABLE "notification_channel" RENAME TO "channel";--> statement-breakpoint\nCREATE TABLE "rule" (id uuid);',
+  ])
+  assertEquals([...names].sort(), ['channel', 'rule'])
+  assertEquals(extractTableRenames('ALTER TABLE "a" RENAME TO "b"; ALTER TABLE "b" RENAME TO "c";'), [
+    ['a', 'b'],
+    ['b', 'c'],
+  ])
 })

@@ -33,6 +33,7 @@ import {
   listRulesForChannel,
   markNotificationsRead,
   type NotificationChannelRecord,
+  organizationMemberEmails,
   replaceRulesForChannel,
   resolveChannelAddress,
   setChannelDisabled,
@@ -285,6 +286,30 @@ export function registerNotificationRoutes(
         error: "Encryption unavailable — no encryption key configured",
       }, 503);
     }
+    // An email channel may name only an address the platform already knows
+    // belongs to someone here: the caller's own for a personal channel, any
+    // member's account email for an organization channel. That is what
+    // `verified_at` records; a stranger's address waits for a verification
+    // flow that does not exist yet (decided 2026-09-18).
+    let verifiedAt: string | null = null;
+    if (parsed.value.kind === "email") {
+      const address = parsed.value.address.toLowerCase();
+      const known = organizationId
+        ? await organizationMemberEmails(db, organizationId)
+        : new Set([sess.email.toLowerCase()]);
+      if (!known.has(address)) {
+        return c.json(
+          {
+            error: "address_not_a_member",
+            reason: organizationId
+              ? "the address must be a member's account email"
+              : "the address must be your own",
+          },
+          422,
+        );
+      }
+      verifiedAt = new Date().toISOString();
+    }
     const channel = await createNotificationChannel(db, secrets, {
       scope: parsed.value.scope,
       organizationId,
@@ -294,6 +319,7 @@ export function registerNotificationRoutes(
       address: parsed.value.address,
       signingSecret: parsed.value.signingSecret,
       createdByUserId: sess.userId,
+      verifiedAt,
     });
     await replaceRulesForChannel(db, channel.id, parsed.value.rules);
     return c.json({ ok: true, channel: await present(c, channel) }, 201);

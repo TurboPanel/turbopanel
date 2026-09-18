@@ -20,6 +20,12 @@
       "tag": "0002_notifications",
       "when": 1789761675226,
       "sha256": "f9eecceb220cc798621055edd00f4fbb686f3231e87587f165e1df597e7d4bfd"
+    },
+    {
+      "idx": 3,
+      "tag": "0003_notification_table_names",
+      "when": 1789765317343,
+      "sha256": "2541a0818ecf5a06cdee2e2763c6167a1719d48655392f9bcc733abb2569364c"
     }
   ]
 }

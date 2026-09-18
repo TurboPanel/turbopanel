@@ -32,9 +32,18 @@ export type NotificationContext = Record<
   string | number | boolean | null | undefined
 >;
 
+/**
+ * Who gets the inbox row for an organization event: every member, or only
+ * those who could read the audit trail it mirrors (owners and managers).
+ * Instance events always go to instance administrators.
+ */
+export const NOTIFICATION_AUDIENCES = ["members", "managers"] as const;
+export type NotificationAudience = (typeof NOTIFICATION_AUDIENCES)[number];
+
 type EventDefinition = {
   readonly severity: NotificationSeverity;
   readonly scope: NotificationScope;
+  readonly audience: NotificationAudience;
   /** The short line the bell and the subject line show. */
   readonly title: (ctx: NotificationContext) => string;
   /** The fuller sentence, when the title alone is not enough. */
@@ -54,6 +63,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
   "server.offline": {
     severity: "critical",
     scope: "organization",
+    audience: "members",
     title: (ctx) => `Server ${name(ctx, "serverName", "unknown")} went offline`,
     body: (ctx) =>
       `The daemon on ${
@@ -67,6 +77,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
   "fleet.mass_disconnect": {
     severity: "critical",
     scope: "instance",
+    audience: "managers",
     title: (ctx) =>
       `${
         typeof ctx.count === "number" ? ctx.count : "Many"
@@ -78,6 +89,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
   "server.deleted": {
     severity: "info",
     scope: "organization",
+    audience: "managers",
     title: (ctx) => `Server ${name(ctx, "serverName", "unknown")} was deleted`,
     body: (ctx) =>
       `${name(ctx, "actorEmail", "An operator")} deleted the server.`,
@@ -85,6 +97,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
   "server.daemon_key_revoked": {
     severity: "warning",
     scope: "organization",
+    audience: "managers",
     title: (ctx) =>
       `Daemon key revoked on ${name(ctx, "serverName", "a server")}`,
     body: (ctx) =>
@@ -95,6 +108,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
   "access.grant_created": {
     severity: "info",
     scope: "organization",
+    audience: "managers",
     title: (ctx) =>
       `Access granted: ${name(ctx, "permissionKey", "a permission")}`,
     body: (ctx) =>
@@ -107,6 +121,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
   "access.grant_revoked": {
     severity: "warning",
     scope: "organization",
+    audience: "managers",
     title: (ctx) =>
       `Access revoked: ${name(ctx, "permissionKey", "a permission")}`,
     body: (ctx) =>
@@ -142,6 +157,10 @@ export function eventSeverity(event: NotificationEvent): NotificationSeverity {
 
 export function eventScope(event: NotificationEvent): NotificationScope {
   return NOTIFICATION_EVENT_DEFINITIONS[event].scope;
+}
+
+export function eventAudience(event: NotificationEvent): NotificationAudience {
+  return NOTIFICATION_EVENT_DEFINITIONS[event].audience;
 }
 
 /** The sentence(s) a human reads for one occurrence of an event. */

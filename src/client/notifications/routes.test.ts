@@ -91,6 +91,7 @@ type Ctx = {
   memberId: string;
   managerCookie: string;
   memberCookie: string;
+  memberEmail: string;
 };
 
 async function withFixtures(
@@ -117,10 +118,11 @@ async function withFixtures(
       role: "user",
     })
     .returning({ id: user.id });
+  const memberEmail = `nr-member-${crypto.randomUUID()}@example.com`;
   const [member] = await db
     .insert(user)
     .values({
-      email: `nr-member-${crypto.randomUUID()}@example.com`,
+      email: memberEmail,
       isEmailVerified: true,
       role: "user",
     })
@@ -151,6 +153,7 @@ async function withFixtures(
       memberId: member!.id,
       managerCookie: await cookieFor(db, secrets, manager!.id),
       memberCookie: await cookieFor(db, secrets, member!.id),
+      memberEmail,
     });
   } finally {
     await db.delete(organization).where(eq(organization.id, organizationId));
@@ -356,14 +359,31 @@ test("a user channel is created sealed, described by origin, and never handed ba
 test("an organization channel needs a manager and the organization header", async () => {
   await withFixtures(
     "deno",
-    async ({ app, organizationId, memberCookie, managerCookie }) => {
-      const body = {
+    async (
+      { app, organizationId, memberCookie, managerCookie, memberEmail },
+    ) => {
+      // An organization email channel may only name a member's account email.
+      const stranger = {
         scope: "organization",
         kind: "email",
         label: "Ops mail",
         address: "ops@example.com",
         rules: [{ event: "*" }],
       };
+      const refused = await json(
+        app,
+        managerCookie,
+        "POST",
+        "/notification-channels",
+        stranger,
+        organizationId,
+      );
+      assertEquals(refused.status, 422);
+      assertEquals(
+        (await refused.json() as { error: string }).error,
+        "address_not_a_member",
+      );
+      const body = { ...stranger, address: memberEmail };
       assertEquals(
         (await json(
           app,
@@ -385,11 +405,18 @@ test("an organization channel needs a manager and the organization header", asyn
       );
       assertEquals(created.status, 201);
       const { channel } = await created.json() as {
-        channel: { id: string; address: string; scope: string };
+        channel: {
+          id: string;
+          address: string;
+          scope: string;
+          verifiedAt: string | null;
+        };
       };
       assertEquals(channel.scope, "organization");
-      // An email address is not a credential; it is shown as typed.
-      assertEquals(channel.address, "ops@example.com");
+      // An email address is not a credential; it is shown as typed — and a
+      // member's address is verified on the spot.
+      assertEquals(channel.address, memberEmail);
+      assertEquals(typeof channel.verifiedAt, "string");
       const listed = await json(
         app,
         managerCookie,
@@ -415,7 +442,6 @@ test("an organization channel needs a manager and the organization header", asyn
     },
   );
 });
-
 test("the address rule follows the runtime: a LAN webhook is refused on Workers and accepted on self-hosted", async () => {
   const body = {
     kind: "webhook",
@@ -466,9 +492,9 @@ test("the address rule follows the runtime: a LAN webhook is refused on Workers 
       "POST",
       "/notification-channels",
       {
-        kind: "email",
+        kind: "slack",
         label: "m",
-        address: "a@example.com",
+        address: "https://hooks.slack.com/services/x",
         rules: [{ event: "deploy.succeeded" }],
       },
     );

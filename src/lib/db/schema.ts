@@ -5272,26 +5272,27 @@ export const capabilityPlanGeneration = pgTable(
 
 /**
  * Notifications — the tables behind "an event happened and someone should
- * hear about it". Four tables, added after the freeze (migration 0002), one
+ * hear about it". Four tables, added after the freeze (migration 0002, renamed to
+ * single words in 0003 per the table-naming rule), one
  * data model for self-hosted, High Availability and the store apps
  * (decided 2026-09-18):
  *
- * - `notification_channel` — an address something can be delivered to. Owned
+ * - `channel` — an address something can be delivered to. Owned
  *   by the instance (an operator's alert webhook), an organization, or a user.
  *   `address` is a `tpsecret` envelope wherever the address is a credential —
  *   every webhook URL is (the path is the secret) and so is a push token;
  *   an email address is stored plain. Everything sealed here is a stage of
  *   the re-encrypt sweep.
- * - `notification_rule` — which events reach a channel. No rule means the
+ * - `rule` — which events reach a channel. No rule means the
  *   channel receives nothing; `*` means everything at or above its severity
  *   floor. Inbox rows need no rule.
  * - `notification` — one row per event × recipient: the bell's inbox.
- * - `notification_delivery` — one attempt ledger row per event × channel,
+ * - `attempt` — one delivery-attempt ledger row per event × channel,
  *   written before the send so a crash mid-send leaves a pending row rather
  *   than silence; bounded retries on the maintenance tick.
  */
 export const notificationChannel = pgTable(
-  "notification_channel",
+  "channel",
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -5340,40 +5341,40 @@ export const notificationChannel = pgTable(
   },
   (table) => [
     check(
-      "notification_channel_scope_check",
+      "channel_scope_check",
       sql`scope IN ('instance', 'organization', 'user')`,
     ),
     check(
-      "notification_channel_kind_check",
+      "channel_kind_check",
       sql`kind IN ('email', 'webhook', 'slack', 'discord', 'telegram', 'push')`,
     ),
     // The owner columns say what the scope says, and nothing else.
     check(
-      "notification_channel_owner_check",
+      "channel_owner_check",
       sql`(scope = 'instance' AND organization_id IS NULL AND user_id IS NULL) OR (scope = 'organization' AND organization_id IS NOT NULL AND user_id IS NULL) OR (scope = 'user' AND user_id IS NOT NULL AND organization_id IS NULL)`,
     ),
-    index("idx_notification_channel_organization").on(table.organizationId),
-    index("idx_notification_channel_user").on(table.userId),
+    index("idx_channel_organization").on(table.organizationId),
+    index("idx_channel_user").on(table.userId),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: "notification_channel_organization_id_organization_id_fk",
+      name: "channel_organization_id_organization_id_fk",
     }).onDelete("cascade"),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
-      name: "notification_channel_user_id_user_id_fk",
+      name: "channel_user_id_user_id_fk",
     }).onDelete("cascade"),
     foreignKey({
       columns: [table.createdByUserId],
       foreignColumns: [user.id],
-      name: "notification_channel_created_by_user_id_user_id_fk",
+      name: "channel_created_by_user_id_user_id_fk",
     }).onDelete("set null"),
   ],
 );
 
 export const notificationRule = pgTable(
-  "notification_rule",
+  "rule",
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -5394,21 +5395,21 @@ export const notificationRule = pgTable(
   },
   (table) => [
     check(
-      "notification_rule_event_check",
+      "rule_event_check",
       sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`,
     ),
     check(
-      "notification_rule_min_severity_check",
+      "rule_min_severity_check",
       sql`min_severity IN ('info', 'warning', 'critical')`,
     ),
-    uniqueIndex("uniq_notification_rule_channel_event").on(
+    uniqueIndex("uniq_rule_channel_event").on(
       table.channelId,
       table.event,
     ),
     foreignKey({
       columns: [table.channelId],
       foreignColumns: [notificationChannel.id],
-      name: "notification_rule_channel_id_notification_channel_id_fk",
+      name: "rule_channel_id_channel_id_fk",
     }).onDelete("cascade"),
   ],
 );
@@ -5480,7 +5481,7 @@ export const notification = pgTable(
 );
 
 export const notificationDelivery = pgTable(
-  "notification_delivery",
+  "attempt",
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -5528,34 +5529,34 @@ export const notificationDelivery = pgTable(
   },
   (table) => [
     check(
-      "notification_delivery_event_check",
+      "attempt_event_check",
       sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`,
     ),
     check(
-      "notification_delivery_severity_check",
+      "attempt_severity_check",
       sql`severity IN ('info', 'warning', 'critical')`,
     ),
     check(
-      "notification_delivery_status_check",
+      "attempt_status_check",
       sql`status IN ('pending', 'sent', 'failed', 'abandoned')`,
     ),
-    index("idx_notification_delivery_pending").on(
+    index("idx_attempt_pending").on(
       table.status,
       table.nextAttemptAt,
     ),
-    index("idx_notification_delivery_channel_created").on(
+    index("idx_attempt_channel_created").on(
       table.channelId,
       table.createdAt.desc(),
     ),
     foreignKey({
       columns: [table.channelId],
       foreignColumns: [notificationChannel.id],
-      name: "notification_delivery_channel_id_notification_channel_id_fk",
+      name: "attempt_channel_id_channel_id_fk",
     }).onDelete("cascade"),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
-      name: "notification_delivery_organization_id_organization_id_fk",
+      name: "attempt_organization_id_organization_id_fk",
     }).onDelete("cascade"),
   ],
 );

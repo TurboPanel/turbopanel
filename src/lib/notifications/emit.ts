@@ -28,6 +28,7 @@ import { compatLogWarn } from "../../log-compat.ts";
 import { validateOutboundUrl } from "../http/outbound-url.ts";
 import {
   describeEvent,
+  eventAudience,
   eventScope,
   eventSeverity,
   type NotificationContext,
@@ -43,6 +44,7 @@ import {
   listDueDeliveries,
   type NotificationChannelRecord,
   type NotificationDeliveryRecord,
+  organizationManagerIds,
   organizationMemberIds,
   organizationName,
   recordDeliveryAttempt,
@@ -130,11 +132,15 @@ export async function emitNotification(
       at: new Date(deps.now?.() ?? Date.now()).toISOString(),
     };
 
-    // Phase one, one bounded transaction's worth of writes: inbox rows and
-    // the pending ledger rows for every routed channel.
+    // Phase one, bounded: the inbox rows and the pending ledger rows for
+    // every routed channel. Not one transaction — a ledger row that lands
+    // without its inbox rows (or the reverse) is still a true record — so
+    // the writes are ordered inbox first, ledger second.
     const written = await runWithDbTimeout(db, async (tx) => {
       const recipients = organizationId
-        ? await organizationMemberIds(tx, organizationId)
+        ? eventAudience(input.event) === "managers"
+          ? await organizationManagerIds(tx, organizationId)
+          : await organizationMemberIds(tx, organizationId)
         : await instanceAdminIds(tx);
       const inbox = await insertNotifications(
         tx,
@@ -204,7 +210,13 @@ function deliverableHere(
 ): channel is NotificationChannelRecord {
   if (channel === null || channel.disabledAt !== null) return false;
   if (channel.kind === "push") return false;
-  if (channel.kind === "email") return deps.email !== undefined;
+  // An email address is delivered to only once it is known to be the
+  // recipient's (decided 2026-09-18): the route sets `verified_at` when the
+  // address is the caller's own or a member's account email; anything else
+  // waits for a verification flow that does not exist yet.
+  if (channel.kind === "email") {
+    return deps.email !== undefined && channel.verifiedAt !== null;
+  }
   return true;
 }
 

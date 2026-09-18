@@ -15,6 +15,7 @@ import {
 } from "../../client/authn/secrets.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 import {
+  grant,
   notification,
   notificationChannel,
   notificationDelivery,
@@ -174,14 +175,31 @@ test("an organization event lands in every member inbox and reaches a routed cha
       .where(eq(notificationDelivery.channelId, channel.id));
     assertEquals(delivery, { status: "sent", attempts: 1 });
 
-    // An info event does not pass a warning floor: no delivery row at all.
+    // An audit-derived event goes to managers only (decided 2026-09-18): a
+    // plain member gets no inbox row for it — and an info event does not
+    // pass the channel's warning floor, so no delivery row either.
     const quiet = await emitNotification(db, enc, {
       event: "server.deleted",
       organizationId,
       context: { serverName: "db-1" },
     }, { fetchImpl: fakeFetch(200, captured) });
-    assertEquals(quiet, { inbox: 1, deliveries: 0, sent: 0, failed: 0 });
+    assertEquals(quiet, { inbox: 0, deliveries: 0, sent: 0, failed: 0 });
     assertEquals(captured.length, 1);
+
+    // Once the member holds organization:manage, the same event reaches them.
+    await db.insert(grant).values({
+      entityType: "organization",
+      entityId: organizationId,
+      actorType: "user",
+      actorId: memberId,
+      permission: "organization:manage",
+    });
+    const managed = await emitNotification(db, enc, {
+      event: "server.deleted",
+      organizationId,
+      context: { serverName: "db-1" },
+    }, { fetchImpl: fakeFetch(200, captured) });
+    assertEquals(managed.inbox, 1);
   });
 });
 
@@ -252,8 +270,21 @@ test("email rows stay pending for the mailer; a disabled channel gets nothing; a
       kind: "email",
       label: "Ops mail",
       address: "ops@example.com",
+      verifiedAt: new Date().toISOString(),
     });
     await replaceRulesForChannel(db, email.id, [{
+      event: "*",
+      minSeverity: "info",
+    }]);
+    // An unverified address is never delivered to: its row stays pending.
+    const stranger = await createNotificationChannel(db, enc, {
+      scope: "organization",
+      organizationId,
+      kind: "email",
+      label: "Stranger",
+      address: "stranger@example.com",
+    });
+    await replaceRulesForChannel(db, stranger.id, [{
       event: "*",
       minSeverity: "info",
     }]);
@@ -289,8 +320,8 @@ test("email rows stay pending for the mailer; a disabled channel gets nothing; a
       organizationId,
       context: { serverName: "db-1" },
     }, { fetchImpl: fakeFetch(200, captured), allowPrivateTargets: false });
-    // Two routed channels (email, LAN); the disabled one is not routed at all.
-    assertEquals(hosted.deliveries, 2);
+    // Three routed channels (email, stranger email, LAN); the disabled one is not routed at all.
+    assertEquals(hosted.deliveries, 3);
     assertEquals(captured.length, 0);
     const rows = await db
       .select({
@@ -302,6 +333,7 @@ test("email rows stay pending for the mailer; a disabled channel gets nothing; a
       .where(eq(notificationDelivery.organizationId, organizationId));
     const byChannel = new Map(rows.map((r) => [r.channelId, r]));
     assertEquals(byChannel.get(email.id)?.status, "pending");
+    assertEquals(byChannel.get(stranger.id)?.status, "pending");
     assertEquals(byChannel.get(lan.id)?.status, "failed");
     assertEquals(
       byChannel.get(lan.id)?.lastError,
@@ -332,6 +364,7 @@ test("email rows stay pending for the mailer; a disabled channel gets nothing; a
         consoleBaseUrl: "https://panel.example.com/",
       },
     });
+    // The LAN receiver and the verified email; the stranger's stays pending.
     assertEquals(selfHosted.sent, 2);
     assertEquals(captured[0]!.url, "https://10.0.0.5/alerts");
     assertEquals(jobs.length, 1);

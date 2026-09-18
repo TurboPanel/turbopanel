@@ -61,15 +61,15 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['subscription_status_check', [...KNOWN_SUBSCRIPTION_STATUSES, 'unknown']],
   ['tier_provider_check', BILLING_PROVIDER_IDS],
   ['payer_provider_check', BILLING_PROVIDER_IDS],
-  ['notification_channel_scope_check', NOTIFICATION_CHANNEL_SCOPES],
-  ['notification_channel_kind_check', NOTIFICATION_CHANNEL_KINDS],
-  ['notification_rule_event_check', NOTIFICATION_RULE_EVENTS],
-  ['notification_rule_min_severity_check', NOTIFICATION_SEVERITIES],
+  ['channel_scope_check', NOTIFICATION_CHANNEL_SCOPES],
+  ['channel_kind_check', NOTIFICATION_CHANNEL_KINDS],
+  ['rule_event_check', NOTIFICATION_RULE_EVENTS],
+  ['rule_min_severity_check', NOTIFICATION_SEVERITIES],
   ['notification_event_check', NOTIFICATION_EVENTS],
   ['notification_severity_check', NOTIFICATION_SEVERITIES],
-  ['notification_delivery_event_check', NOTIFICATION_EVENTS],
-  ['notification_delivery_severity_check', NOTIFICATION_SEVERITIES],
-  ['notification_delivery_status_check', NOTIFICATION_DELIVERY_STATUSES],
+  ['attempt_event_check', NOTIFICATION_EVENTS],
+  ['attempt_severity_check', NOTIFICATION_SEVERITIES],
+  ['attempt_status_check', NOTIFICATION_DELIVERY_STATUSES],
 ]
 
 for (const [constraint, values] of CASES) {
