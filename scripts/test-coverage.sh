@@ -295,6 +295,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/system/routes-helpers.hostfree.test.ts \
   src/client/teams/routes-helpers.hostfree.test.ts \
   src/client/teams/routes.test.ts \
+  src/client/notifications/routes.test.ts \
   src/client/tags/routes-helpers.hostfree.test.ts \
   src/client/tags/routes.hostfree.test.ts \
   src/client/tasks/routes-helpers.hostfree.test.ts \

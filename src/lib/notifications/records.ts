@@ -269,6 +269,17 @@ export async function deleteChannel(db: Db, id: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+export async function updateChannelLabel(
+  db: Db,
+  id: string,
+  label: string,
+): Promise<void> {
+  await db
+    .update(notificationChannel)
+    .set({ label })
+    .where(eq(notificationChannel.id, id));
+}
+
 export async function setChannelDisabled(
   db: Db,
   id: string,
