@@ -9,6 +9,10 @@ import {
   MINIMUM_POSTGRES_MAJOR,
   runMigrateCommand,
 } from "./migrate.ts";
+import {
+  describeSchemaState,
+  readShippedMigrationHashes,
+} from "../lib/db/schema-state.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -102,10 +106,18 @@ test("runMigrateCommand passes both gates and is a no-op on an already-migrated 
   assertEquals(errors, []);
   assertEquals(code, 0);
   assertMatch(logs[0] ?? "", /^PostgreSQL .* with uuidv7\(\) — ok$/);
+  // The history check (src/lib/db/schema-state.ts) reports under the lock.
+  // Derived from the manifest rather than written out: the count changes
+  // with every migration added, and a literal here turns each addition into
+  // an unrelated CI failure.
+  const shipped = await readShippedMigrationHashes();
   assertEquals(logs.slice(1), [
     "waiting for the migration advisory lock…",
-    // The history check (src/lib/db/schema-state.ts) reports under the lock.
-    "schema current (1 migration applied)",
+    describeSchemaState({
+      status: "current",
+      applied: shipped.length,
+      shipped: shipped.length,
+    }),
     "lock acquired, applying migrations…",
     "migrations applied successfully",
   ]);
