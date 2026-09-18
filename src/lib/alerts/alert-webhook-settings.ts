@@ -20,7 +20,11 @@
  *   fetched server-side, so it goes through the same
  *   {@link validateOutboundUrl} gate as a forge base URL: https only, no
  *   credentials in the URL, no reserved names, and an IP literal has to be
- *   publicly routable.
+ *   publicly routable — except on a self-hosted instance, where the operator
+ *   may point it at a receiver on their own LAN (`allowPrivateTargets`,
+ *   decided 2026-09-18: a hosted instance cannot reach a private address at
+ *   all, so the question only ever applied to self-hosted, and an
+ *   Alertmanager next to the control plane is the common shape there).
  */
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
@@ -36,6 +40,16 @@ import {
   resolveOutboundHostScope,
   validateOutboundUrl,
 } from '../http/outbound-url.ts'
+
+export type AlertWebhookPolicy = {
+  /** Self-hosted: the webhook may target a private address or a LAN name. */
+  allowPrivateTargets: boolean
+}
+
+/** Hosted (Workers) instances: public targets only — the only kind reachable from there. */
+export const HOSTED_ALERT_WEBHOOK_POLICY: AlertWebhookPolicy = { allowPrivateTargets: false }
+/** Self-hosted (Deno) instances: the operator's LAN is a legitimate destination. */
+export const SELF_HOSTED_ALERT_WEBHOOK_POLICY: AlertWebhookPolicy = { allowPrivateTargets: true }
 
 export const ALERT_WEBHOOK_URL_KEY = 'ALERT_WEBHOOK_URL'
 
@@ -53,11 +67,15 @@ export class AlertWebhookUrlError extends Error {
  * half, so a name that points at the loopback is refused before it is stored
  * rather than at the first alert.
  */
-export async function assertAlertWebhookUrlAllowed(raw: string): Promise<string> {
+export async function assertAlertWebhookUrlAllowed(
+  raw: string,
+  policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
+): Promise<string> {
   const url = raw.trim()
-  const reason = validateOutboundUrl(url)
+  const gate = { allowPrivate: policy.allowPrivateTargets }
+  const reason = validateOutboundUrl(url, gate)
   if (reason) throw new AlertWebhookUrlError(reason)
-  const resolved = await resolveOutboundHostScope(url)
+  const resolved = await resolveOutboundHostScope(url, gate)
   if (resolved) throw new AlertWebhookUrlError(resolved)
   return url
 }
@@ -110,12 +128,13 @@ export async function setAlertWebhookUrl(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   url: string | null,
+  policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
 ): Promise<void> {
   if (url === null) {
     await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
     return
   }
-  const allowed = await assertAlertWebhookUrlAllowed(url)
+  const allowed = await assertAlertWebhookUrlAllowed(url, policy)
   if (!dataEncryptionSecrets) {
     throw new Error(
       'data encryption secrets required to store the alert webhook URL',

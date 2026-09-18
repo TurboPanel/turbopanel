@@ -44,6 +44,24 @@ test('the refusals, one per reason', () => {
   assertEquals(validateOutboundUrl('https://192.168.1.1'), 'address_not_public')
 })
 
+test('allowPrivate lifts the address and name rules, never scheme or credentials', () => {
+  // The self-hosted alert webhook (decided 2026-09-18): an Alertmanager on the
+  // operator's LAN is a legitimate destination there. What stays is what
+  // protects the credential and the transport, not the address.
+  const lan = { allowPrivate: true }
+  assertEquals(validateOutboundUrl('https://10.0.0.5/alerts', lan), null)
+  assertEquals(validateOutboundUrl('https://192.168.1.1', lan), null)
+  assertEquals(validateOutboundUrl('https://[::1]', lan), null)
+  assertEquals(validateOutboundUrl('https://alertmanager', lan), null)
+  assertEquals(validateOutboundUrl('https://alerts.local', lan), null)
+  assertEquals(validateOutboundUrl('https://169.254.169.254/latest', lan), null)
+  assertEquals(validateOutboundUrl('http://10.0.0.5/alerts', lan), 'scheme_not_https')
+  assertEquals(validateOutboundUrl('https://u:p@10.0.0.5', lan), 'credentials_in_url')
+  assertEquals(validateOutboundUrl('nonsense', lan), 'malformed')
+  // The default is unchanged: no option means public-only.
+  assertEquals(validateOutboundUrl('https://10.0.0.5/alerts'), 'address_not_public')
+})
+
 test('a bare single-label host is reserved — Docker service names resolve', () => {
   assertEquals(hostIsReserved('postgres'), true)
   assertEquals(hostIsReserved('intranet'), true)

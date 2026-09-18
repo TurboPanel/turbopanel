@@ -19,6 +19,7 @@ import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from './daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from './daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from './lib/alerts/resolve-alert-sender.ts'
+import { SELF_HOSTED_ALERT_WEBHOOK_POLICY } from './lib/alerts/alert-webhook-settings.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -540,7 +541,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       }
       try {
         await sweepStalePresence(db, daemonCellRegistry, () =>
-          resolveAlertSender(db, dataEncryptionSecrets))
+          resolveAlertSender(
+            db,
+            dataEncryptionSecrets,
+            undefined,
+            SELF_HOSTED_ALERT_WEBHOOK_POLICY,
+          ))
       } catch (err) {
         logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
       }

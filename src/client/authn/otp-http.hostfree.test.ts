@@ -496,7 +496,7 @@ test('reset-password/otp updates password for mock credential user', async () =>
     }),
   })
   assertEquals(res.status, 200)
-  assertEquals(state.accounts[0]?.password.startsWith('$argon2'), true)
+  assertEquals(state.accounts[0]?.password?.startsWith('$argon2'), true)
 })
 
 test('send-otp returns 429 when auth rate limit is exceeded', async () => {

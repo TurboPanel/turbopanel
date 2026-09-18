@@ -8,7 +8,11 @@ import type {
   MetricEvent,
   NetworkDeviceSample,
 } from '../../contract.ts'
-import type { AuthenticatedMetricsSample, ServerStatusEvent } from '../../types.ts'
+import type {
+  AuthenticatedMetricsSample,
+  HostSeriesResult,
+  ServerStatusEvent,
+} from '../../types.ts'
 import { AE_MISSING_METRIC_SENTINEL } from '../cloudflare/field-map.ts'
 import { MAX_STATUS_EVENTS } from '../cloudflare/sql-api.ts'
 import { type DuckDbConnectionLike, openDuckDb, resolveDuckDbPaths } from './database.ts'
@@ -1251,9 +1255,9 @@ it('age-based flush writes a sample that is under the row batch cap', async () =
     // run can take hundreds of ms. Poll the query (which force-flushes) so a
     // slow first open is not a flake.
     const deadline = Date.now() + 2_000
-    let result = {
+    let result: Pick<HostSeriesResult, 'sampleCount' | 'points'> = {
       sampleCount: 0,
-      points: [] as { values: Record<string, number | null> }[],
+      points: [],
     }
     while (Date.now() < deadline) {
       result = await store.queryHostSeries({

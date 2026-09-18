@@ -16,7 +16,11 @@
 import { type Db, runWithDbTimeout } from '../../db.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import { type AlertSender, createWebhookAlertSender, NOOP_ALERT_SENDER } from './alert-sender.ts'
-import { getAlertWebhookUrl } from './alert-webhook-settings.ts'
+import {
+  type AlertWebhookPolicy,
+  getAlertWebhookUrl,
+  HOSTED_ALERT_WEBHOOK_POLICY,
+} from './alert-webhook-settings.ts'
 import { validateOutboundUrl } from '../http/outbound-url.ts'
 
 export type AlertSenderTrace = (
@@ -28,6 +32,7 @@ export async function resolveAlertSender(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   trace?: AlertSenderTrace,
+  policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
 ): Promise<AlertSender> {
   try {
     // Bounded: this read sits on a sweep's critical path, and a slow — not
@@ -42,7 +47,9 @@ export async function resolveAlertSender(
     // predate the gate (an unsealed legacy row) or have been written by
     // something other than the settings route. Same two-layer shape
     // `git/forge-url.ts` uses.
-    const rejection = validateOutboundUrl(url)
+    const rejection = validateOutboundUrl(url, {
+      allowPrivate: policy.allowPrivateTargets,
+    })
     if (rejection) {
       trace?.('alert-webhook-refused', { reason: rejection })
       return NOOP_ALERT_SENDER

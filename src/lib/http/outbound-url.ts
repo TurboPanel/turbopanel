@@ -17,8 +17,18 @@
  * - {@link resolveOutboundHostScope} resolves the name, which a literal-only
  *   validator cannot do. Only the Deno instance has a resolver; elsewhere it
  *   is a no-op. A name that later re-points to a private address (rebinding)
- *   is therefore not caught at fetch time; the compiled instance's
- *   `--allow-net` allowlist is the second wall there.
+ *   is therefore not caught at fetch time; the host firewall is the second
+ *   wall there (the compiled instance runs with unrestricted `--allow-net`
+ *   since 2026-09-18).
+ *
+ * `allowPrivate` (decided 2026-09-18) lifts the address and reserved-name
+ * rules for a caller whose destination legitimately lives on the operator's
+ * own LAN — the self-hosted alert webhook pointed at an Alertmanager or a
+ * receiver next to the control plane. Scheme and credential rules stay. A
+ * hosted (Workers) instance never passes it: a private address is
+ * unreachable from there regardless, so the public-only rule costs nothing
+ * and keeps the blind-SSRF surface closed. A forge URL never passes it
+ * either — that fetch carries the App's credentials.
  */
 import { ipAddressScope, normalizeIpAddress } from '../ip-address.ts'
 
@@ -48,8 +58,16 @@ export function unbracket(hostname: string): string {
   return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
 }
 
+export type OutboundUrlOptions = {
+  /** Accept loopback, link-local, RFC 1918 and reserved names — self-hosted LAN targets. */
+  allowPrivate?: boolean
+}
+
 /** Returns the reason the URL is refused, or `null` when it is dialable. */
-export function validateOutboundUrl(raw: string): OutboundUrlRejection | null {
+export function validateOutboundUrl(
+  raw: string,
+  opts: OutboundUrlOptions = {},
+): OutboundUrlRejection | null {
   let url: URL
   try {
     url = new URL(raw.trim())
@@ -60,6 +78,7 @@ export function validateOutboundUrl(raw: string): OutboundUrlRejection | null {
   if (url.username !== '' || url.password !== '') return 'credentials_in_url'
   const hostname = unbracket(url.hostname.toLowerCase())
   if (hostname.length === 0) return 'malformed'
+  if (opts.allowPrivate) return null
   const literal = normalizeIpAddress(hostname)
   if (literal !== null) {
     return ipAddressScope(literal) === 'public' ? null : 'address_not_public'
@@ -76,7 +95,9 @@ export function validateOutboundUrl(raw: string): OutboundUrlRejection | null {
  */
 export async function resolveOutboundHostScope(
   raw: string,
+  opts: OutboundUrlOptions = {},
 ): Promise<OutboundUrlRejection | null> {
+  if (opts.allowPrivate) return null
   const deno = (globalThis as { Deno?: { resolveDns?: unknown } }).Deno
   if (typeof deno?.resolveDns !== 'function') return null
   const resolveDns = deno.resolveDns as (

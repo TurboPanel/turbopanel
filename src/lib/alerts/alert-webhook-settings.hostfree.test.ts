@@ -11,6 +11,8 @@ import {
   assertAlertWebhookUrlAllowed,
   describeAlertWebhook,
   getAlertWebhookUrl,
+  HOSTED_ALERT_WEBHOOK_POLICY,
+  SELF_HOSTED_ALERT_WEBHOOK_POLICY,
 } from './alert-webhook-settings.ts'
 
 /**
@@ -65,6 +67,37 @@ test('the URL cannot point back inside the box', async () => {
     )
     assertEquals(error.reason, reason, url)
   }
+})
+
+test('a self-hosted instance may point the webhook at its own LAN', async () => {
+  // Decided 2026-09-18: a hosted instance cannot reach a private address at
+  // all, so the public-only rule only ever bit self-hosted operators — whose
+  // Alertmanager sits next to the control plane more often than not.
+  for (
+    const url of [
+      'https://10.0.0.5/alerts',
+      'https://alertmanager/api/v2/alerts',
+      'https://alerts.local/hook',
+      'https://[::1]/hook',
+    ]
+  ) {
+    assertEquals(
+      await assertAlertWebhookUrlAllowed(url, SELF_HOSTED_ALERT_WEBHOOK_POLICY),
+      url,
+    )
+  }
+  // The hosted policy is the default, and it is what a Workers instance passes.
+  const error = await assertRejects(
+    () => assertAlertWebhookUrlAllowed('https://10.0.0.5/alerts', HOSTED_ALERT_WEBHOOK_POLICY),
+    AlertWebhookUrlError,
+  )
+  assertEquals(error.reason, 'address_not_public')
+  // Scheme and credentials are not the address rule and stay on both.
+  const plain = await assertRejects(
+    () => assertAlertWebhookUrlAllowed('http://10.0.0.5/alerts', SELF_HOSTED_ALERT_WEBHOOK_POLICY),
+    AlertWebhookUrlError,
+  )
+  assertEquals(plain.reason, 'scheme_not_https')
 })
 
 test('what a settings panel renders is the origin, never the path', () => {

@@ -14,6 +14,8 @@ import {
   AlertWebhookUrlError,
   describeAlertWebhook,
   getAlertWebhookUrl,
+  HOSTED_ALERT_WEBHOOK_POLICY,
+  SELF_HOSTED_ALERT_WEBHOOK_POLICY,
   setAlertWebhookUrl,
 } from "../lib/alerts/alert-webhook-settings.ts";
 import {
@@ -515,7 +517,14 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     }
 
     try {
-      await setAlertWebhookUrl(db, dataEncryptionSecrets, url);
+      await setAlertWebhookUrl(
+        db,
+        dataEncryptionSecrets,
+        url,
+        opts.runtime === "deno"
+          ? SELF_HOSTED_ALERT_WEBHOOK_POLICY
+          : HOSTED_ALERT_WEBHOOK_POLICY,
+      );
     } catch (err) {
       if (err instanceof AlertWebhookUrlError) {
         return c.json({ error: err.message, reason: err.reason }, 400);

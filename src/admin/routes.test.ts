@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../app.ts";
 import { createBrowserWriteProtectionMiddleware } from "../browser-write-protection.ts";
 import { getDatabaseUrl } from "../db-url.ts";
-import { createDenoDb } from "../db.ts";
+import { createDenoDb, endDbConnection } from "../db.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
@@ -197,8 +197,12 @@ async function createAdminTestApp(
   if (options.withBrowserWriteProtection) {
     app.use("*", createBrowserWriteProtectionMiddleware("workers"));
   }
+  // One pool per test app, not one per request: a pool opened per request
+  // and never ended leaks a connection each time, and a file this size then
+  // runs into Postgres' connection cap ("sorry, too many clients already").
+  const appDb = createDenoDb();
   app.use("*", (c, next) => {
-    c.set("db", createDenoDb());
+    c.set("db", appDb);
     c.set("daemonCellRegistry", registry);
     if (dataEncryptionSecrets) {
       c.set("dataEncryptionSecrets", dataEncryptionSecrets);
@@ -211,7 +215,7 @@ async function createAdminTestApp(
     devSurface: options.devSurface ?? false,
     ...(options.getEnv ? { getEnv: options.getEnv } : {}),
   });
-  return { app, secrets };
+  return { app, secrets, appDb };
 }
 
 async function adminSessionCookie(
@@ -235,6 +239,7 @@ async function withRoleUser(
     withBrowserWriteProtection?: boolean;
     getEnv?: () => Record<string, string | undefined>;
     devSurface?: boolean;
+    runtime?: "deno" | "workers";
   }> = {},
 ): Promise<void> {
   if (!dbUrl) {
@@ -252,7 +257,7 @@ async function withRoleUser(
   const userId = insertedUser!.id;
 
   const { registry } = createTrackingRegistry();
-  const { app, secrets } = await createAdminTestApp(registry, options);
+  const { app, secrets, appDb } = await createAdminTestApp(registry, options);
   const cookie = await adminSessionCookie(db, secrets, userId);
 
   try {
@@ -260,6 +265,8 @@ async function withRoleUser(
   } finally {
     await db.delete(user).where(eq(user.id, userId));
     await resetReencryptSweepLockForTests(db);
+    await endDbConnection(appDb);
+    await endDbConnection(db);
   }
 }
 
@@ -1253,16 +1260,10 @@ test("GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back",
       assertEquals(typeof stored[0]?.value, "string");
       assertEquals(String(stored[0]?.value).includes("SECRETPATH"), false);
 
-      // An address that points back inside the box is refused, not stored.
-      for (
-        const rejected of [
-          "http://hooks.slack.com/x",
-          "https://127.0.0.1/hook",
-          "https://localhost/hook",
-          "https://169.254.169.254/latest/meta-data",
-          "https://redis/hook",
-        ]
-      ) {
+      // Scheme and credential rules hold on every runtime; the test app is
+      // the self-hosted (Deno) runtime, where a LAN or loopback target is
+      // allowed by decision (2026-09-18) — see the Workers case below.
+      for (const rejected of ["http://hooks.slack.com/x", "https://u:p@hooks.slack.com/x"]) {
         assertEquals((await put(rejected)).status, 400, rejected);
       }
       assertEquals((await put(42)).status, 400);
@@ -1288,4 +1289,41 @@ test("GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back",
       await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY));
     }
   });
+});
+
+test("PUT /api/admin/v1/settings/alert-webhook refuses a private target on the hosted runtime only", async () => {
+  // Decided 2026-09-18: a Workers instance cannot reach a private address at
+  // all, so it keeps the public-only rule; a self-hosted instance may point
+  // the webhook at an Alertmanager on its own LAN.
+  // Two shapes, not the whole matrix: the test app opens a pool per request
+  // and this file runs close to Postgres' connection cap; the full list is
+  // covered in outbound-url.hostfree.test.ts.
+  const privateTargets = ["https://127.0.0.1/hook", "https://10.0.0.5/hook"];
+  const put = (app: Hono<AppEnv>, cookie: string, url: string | null) =>
+    app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
+      method: "PUT",
+      headers: { Cookie: cookie, "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+  await withRoleUser("superadmin", async ({ app, cookie }) => {
+    for (const url of privateTargets) {
+      const res = await put(app, cookie, url);
+      assertEquals(res.status, 400, `workers: ${url}`);
+      assertEquals((await jsonBody<{ reason: string }>(res)).reason.length > 0, true);
+    }
+  }, { runtime: "workers" });
+  await withRoleUser("superadmin", async ({ app, cookie }) => {
+    try {
+      for (const url of privateTargets) {
+        const res = await put(app, cookie, url);
+        assertEquals(res.status, 200, `deno: ${url}`);
+        const body = await jsonBody<{ configured: boolean; origin: string | null }>(res);
+        assertEquals(body.configured, true);
+        assertEquals(JSON.stringify(body).includes("/hook"), false);
+      }
+    } finally {
+      // Clear through the route itself: `null` deletes the row.
+      assertEquals((await put(app, cookie, null)).status, 200);
+    }
+  }, { runtime: "deno" });
 });

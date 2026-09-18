@@ -788,7 +788,7 @@ test('reset-password/otp updates credential password with seeded OTP', async () 
   assertEquals(res.status, 200)
   const body = await res.json() as { ok?: boolean }
   assertEquals(body.ok, true)
-  assertEquals(state.accounts[0]?.password.startsWith('$argon2'), true)
+  assertEquals(state.accounts[0]?.password?.startsWith('$argon2'), true)
 })
 
 test('reset-password/request-otp returns 200 with mock db', async () => {
