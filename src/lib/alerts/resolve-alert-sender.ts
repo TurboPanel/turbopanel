@@ -13,7 +13,7 @@
  * a sweep's job is to demote stale servers, and it runs whether or not anyone
  * can be told about it.
  */
-import type { Db } from '../../db.ts'
+import { type Db, runWithDbTimeout } from '../../db.ts'
 import type { DerivedSecretsConfig } from '../../client/authn/secrets.ts'
 import { type AlertSender, createWebhookAlertSender, NOOP_ALERT_SENDER } from './alert-sender.ts'
 import { getAlertWebhookUrl } from './alert-webhook-settings.ts'
@@ -30,7 +30,12 @@ export async function resolveAlertSender(
   trace?: AlertSenderTrace,
 ): Promise<AlertSender> {
   try {
-    const url = await getAlertWebhookUrl(db, dataEncryptionSecrets)
+    // Bounded: this read sits on a sweep's critical path, and a slow — not
+    // dead — Postgres must not hold a tick open over a settings lookup.
+    const url = await runWithDbTimeout(
+      db,
+      (settingDb) => getAlertWebhookUrl(settingDb, dataEncryptionSecrets),
+    )
     if (!url) return NOOP_ALERT_SENDER
     // Re-validated here, not only at write time: this is the choke point
     // where the URL becomes an outbound fetch, and the stored value may

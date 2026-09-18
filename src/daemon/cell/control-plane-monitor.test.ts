@@ -31,6 +31,7 @@ import {
   seedUpdateManifestCacheForTests,
 } from '../../lib/update/manifest.ts'
 import type { ServerStatusEvent } from '../metrics/types.ts'
+import type { Alert } from '../../lib/alerts/alert-sender.ts'
 import {
   resetServerStatusEventSinkForTests,
   setServerStatusEventSink,
@@ -1184,5 +1185,141 @@ test('sweepStalePresence skips servers whose presence is still live', async () =
   await sweepStalePresence(db, registry)
 
   assertEquals(events.length, 0)
+  resetServerStatusEventSinkForTests()
+})
+
+/**
+ * The self-hosted half of daemon-offline alerting. The first pass wired it
+ * only to the Workers cron, and self-hosted instances demote here — so the
+ * deployment shape most operators run would have got nothing.
+ */
+function stalePresenceRegistry(serverIds: string[]): RedisDaemonCellRegistry {
+  return {
+    listOnlineServerIds: () => Promise.resolve(serverIds),
+    getCell: (id: string) => ({
+      reconcileStalePresence: () => Promise.resolve(true),
+      getSnapshot: () =>
+        Promise.resolve({
+          serverId: id,
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          connected: false,
+          hostname: 'host-1',
+          machineKey: TEST_MACHINE_KEY,
+        }),
+    }),
+    getSnapshots: () => {
+      throw new TypeError('unused')
+    },
+    purge: () => Promise.resolve(),
+    client: {} as RedisDaemonCellRegistry['client'],
+    maintain: () => Promise.resolve(),
+    reclaimOrphanedSocketLeasesOnStartup: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+  } as unknown as RedisDaemonCellRegistry
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 40; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
+test('sweepStalePresence alerts on the servers it demoted', async () => {
+  resetServerStatusEventSinkForTests()
+  setServerStatusEventSink({ writeStatusEvent() {} })
+  const { db } = createTrackingDb(
+    { key: baseKey, projection: { hostname: 'host-1' } },
+    { connected: true, statusChangedAt: '2020-01-01T00:00:00.000Z' },
+  )
+  const alerts: Alert[] = []
+
+  await sweepStalePresence(db, stalePresenceRegistry([serverId]), () =>
+    Promise.resolve((alert) => {
+      alerts.push(alert)
+      return Promise.resolve()
+    }))
+  await settle()
+
+  assertEquals(alerts.length, 1)
+  assertEquals(alerts[0].kind, 'server.offline')
+  assertEquals(alerts[0].detail, { serverId })
+  resetServerStatusEventSinkForTests()
+})
+
+test('sweepStalePresence sends the aggregate first when the fleet goes dark together', async () => {
+  resetServerStatusEventSinkForTests()
+  setServerStatusEventSink({ writeStatusEvent() {} })
+  const { db } = createTrackingDb(
+    { key: baseKey, projection: { hostname: 'host-1' } },
+    { connected: true, statusChangedAt: '2020-01-01T00:00:00.000Z' },
+  )
+  const alerts: Alert[] = []
+  const ids = ['srv-a', 'srv-b', 'srv-c']
+
+  await sweepStalePresence(db, stalePresenceRegistry(ids), () =>
+    Promise.resolve((alert) => {
+      alerts.push(alert)
+      return Promise.resolve()
+    }))
+  await settle()
+
+  assertEquals(alerts[0].kind, 'fleet.mass_disconnect')
+  assertEquals(alerts[0].detail, { staleCount: 3, connectedBefore: 3 })
+  assertEquals(alerts.length, 4)
+  resetServerStatusEventSinkForTests()
+})
+
+test('a hung webhook does not hold the liveness lane', async () => {
+  // This runs on the Deno maintenance scheduler's liveness lane, which refuses
+  // to overlap itself — so awaiting a webhook here would skip every
+  // stale-presence tick until it returned. Demotions land, the sweep returns,
+  // the alert goes out behind it.
+  resetServerStatusEventSinkForTests()
+  const events: ServerStatusEvent[] = []
+  setServerStatusEventSink({
+    writeStatusEvent(event) {
+      events.push(event)
+    },
+  })
+  const { db } = createTrackingDb(
+    { key: baseKey, projection: { hostname: 'host-1' } },
+    { connected: true, statusChangedAt: '2020-01-01T00:00:00.000Z' },
+  )
+
+  const startedAt = Date.now()
+  await sweepStalePresence(db, stalePresenceRegistry([serverId]), () =>
+    Promise.resolve(() => new Promise<void>(() => {})))
+
+  assertEquals(Date.now() - startedAt < 1_000, true)
+  assertEquals(events.length, 1)
+  assertEquals(events[0]?.reason, 'sweep_stale')
+  resetServerStatusEventSinkForTests()
+})
+
+test('no demotions means no settings read and no alert', async () => {
+  resetServerStatusEventSinkForTests()
+  setServerStatusEventSink({ writeStatusEvent() {} })
+  const { db } = createTrackingDb(
+    { key: baseKey, projection: { hostname: 'host-1' } },
+    { connected: true, statusChangedAt: '2020-01-01T00:00:00.000Z' },
+  )
+  let resolved = 0
+
+  const registry = {
+    ...stalePresenceRegistry([serverId]),
+    getCell: () => ({
+      reconcileStalePresence: () => Promise.resolve(false),
+      getSnapshot: () => Promise.resolve({}),
+    }),
+  } as unknown as RedisDaemonCellRegistry
+
+  await sweepStalePresence(db, registry, () => {
+    resolved++
+    return Promise.resolve(() => Promise.resolve())
+  })
+  await settle()
+
+  assertEquals(resolved, 0)
   resetServerStatusEventSinkForTests()
 })

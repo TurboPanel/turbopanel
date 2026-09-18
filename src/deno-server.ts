@@ -539,11 +539,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         logWarn('daemon-cell', `maintenance error: ${String(err)}`)
       }
       try {
-        await sweepStalePresence(
-          db,
-          daemonCellRegistry,
-          await resolveAlertSender(db, dataEncryptionSecrets),
-        )
+        await sweepStalePresence(db, daemonCellRegistry, () =>
+          resolveAlertSender(db, dataEncryptionSecrets))
       } catch (err) {
         logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
       }

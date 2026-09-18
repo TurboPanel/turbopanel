@@ -937,7 +937,9 @@ test('POST /servers/:id/daemon-key/revoke still revokes when the daemon cell reg
     const body = await readJson<{ ok: boolean; purged: boolean; purgeError?: string }>(res)
     assertEquals(body.ok, true)
     assertEquals(body.purged, false)
-    assertEquals(body.purgeError, 'Daemon cell registry unavailable')
+    // A fixed code, not the registry's own message — that names Redis /
+    // Durable Object internals and this body is read by an org admin.
+    assertEquals(body.purgeError, 'registry_unavailable')
     const state = await getServerDaemonStateByServerId(db, serverId)
     assertEquals(typeof state?.key.revokedAt, 'string')
   } finally {

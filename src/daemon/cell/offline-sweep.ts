@@ -68,10 +68,10 @@ import {
 } from "../../lib/alerts/alert-sender.ts";
 import { resolveAlertSender } from "../../lib/alerts/resolve-alert-sender.ts";
 import {
-  isMassDisconnect,
-  massDisconnectText,
-  serverOfflineText,
-} from "./mass-disconnect.ts";
+  ALERT_DELIVERY_BUDGET_MS,
+  notifyDemotions,
+} from "../../lib/alerts/notify-demotions.ts";
+import { isMassDisconnect } from "./mass-disconnect.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
@@ -173,16 +173,9 @@ export const OFFLINE_SWEEP_TICK_BUDGET_MS = 45_000;
  */
 export const DEMOTION_RESERVE_MS = 8_000;
 
-/**
- * Ceiling on what one tick will spend telling an operator what it did.
- *
- * Bounded separately from the tick deadline: alerts are the least important
- * thing a sweep does, and letting them run to the deadline would let a slow
- * webhook eat the phases that come after demotion (self-heal, command
- * dispatch, the optional cron sweeps). Alerts that do not fit are dropped,
- * with a trace saying so.
- */
-export const ALERT_DELIVERY_BUDGET_MS = 5_000;
+// Re-exported: the sweep's tests and callers have always reached for it here,
+// and the definition now lives with the delivery it bounds.
+export { ALERT_DELIVERY_BUDGET_MS } from "../../lib/alerts/notify-demotions.ts";
 
 /** Hard deadline per `checkLiveness` DO RPC. */
 export const LIVENESS_RPC_TIMEOUT_MS = 5_000;
@@ -251,23 +244,6 @@ function sweepTrace(event: string, detail: Record<string, unknown> = {}): void {
   console.info(parts.join(" "));
 }
 
-/**
- * Extension point for real delivery (email/webhook) once a target audience
- * exists — see AGENTS.md "eventually notify on server-down" note. For now
- * this only emits a greppable structured log line.
- */
-function notifyServerWentOffline(
-  serverId: string,
-  alertSender: AlertSender,
-): Promise<void> {
-  sweepTrace("notify-offline", { serverId });
-  return alertSender({
-    kind: "server.offline",
-    text: serverOfflineText(serverId),
-    detail: { serverId },
-  });
-}
-
 // The predicate and the two message strings live in ./mass-disconnect.ts:
 // the self-hosted Deno sweep needs them too, and it cannot import this
 // Workers-typed module to get them. Re-exported so existing importers of
@@ -278,32 +254,6 @@ export {
   MASS_DISCONNECT_MIN_SERVERS,
   MASS_DISCONNECT_RATIO,
 } from "./mass-disconnect.ts";
-
-/**
- * One aggregate line when a sweep loses enough hosts at once to suspect a
- * shared cause. Distinct from the per-server notices on purpose: this is the
- * line an operator greps for, and the one a pager rule should key on.
- */
-function notifyMassDisconnect(
-  staleCount: number,
-  connectedBefore: number,
-  alertSender: AlertSender,
-): Promise<void> {
-  sweepTrace("notify-mass-disconnect", {
-    staleCount,
-    connectedBefore,
-    ratio: connectedBefore > 0
-      ? Math.round((staleCount / connectedBefore) * 100) / 100
-      : null,
-  });
-  const text = massDisconnectText(staleCount, connectedBefore);
-  compatLogWarn("daemon-cell", text);
-  return alertSender({
-    kind: "fleet.mass_disconnect",
-    text,
-    detail: { staleCount, connectedBefore },
-  });
-}
 
 async function withBoundedConcurrency<T>(
   items: T[],
@@ -560,6 +510,15 @@ async function demoteStale(
   const massDisconnect = isMassDisconnect(staleIds.length, connectedBefore);
 
   const demoted: string[] = [];
+  if (massDisconnect) {
+    sweepTrace("notify-mass-disconnect", {
+      staleCount: staleIds.length,
+      connectedBefore,
+      ratio: connectedBefore > 0
+        ? Math.round((staleIds.length / connectedBefore) * 100) / 100
+        : null,
+    });
+  }
   await withBoundedConcurrency(
     staleIds,
     FANOUT_CONCURRENCY,
@@ -567,6 +526,7 @@ async function demoteStale(
       try {
         await onDisconnected(db, serverId);
         demoted.push(serverId);
+        sweepTrace("notify-offline", { serverId });
       } catch (err) {
         sweepTrace("mark-offline-failed", {
           serverId,
@@ -589,68 +549,9 @@ async function demoteStale(
     demoted,
     massDisconnect ? { staleCount: staleIds.length, connectedBefore } : null,
     alertSender,
-    deadlineMs,
+    Math.min(deadlineMs - Date.now(), ALERT_DELIVERY_BUDGET_MS),
+    sweepTrace,
   );
-}
-
-/**
- * Deliver this sweep's alerts within the remaining tick budget. The aggregate
- * goes first — it is what explains the per-server lines that follow.
- */
-async function notifyDemotions(
-  demoted: string[],
-  massDisconnect: { staleCount: number; connectedBefore: number } | null,
-  alertSender: AlertSender,
-  deadlineMs: number,
-): Promise<void> {
-  if (!massDisconnect && demoted.length === 0) return;
-
-  const deliver = async (): Promise<void> => {
-    if (massDisconnect) {
-      await notifyMassDisconnect(
-        massDisconnect.staleCount,
-        massDisconnect.connectedBefore,
-        alertSender,
-      );
-    }
-    for (const serverId of demoted) {
-      if (Date.now() >= deadlineMs) {
-        sweepTrace("alerts-truncated", { remaining: demoted.length });
-        return;
-      }
-      await notifyServerWentOffline(serverId, alertSender);
-    }
-  };
-
-  const remainingMs = Math.min(
-    deadlineMs - Date.now(),
-    ALERT_DELIVERY_BUDGET_MS,
-  );
-  if (remainingMs <= 0) {
-    sweepTrace("alerts-skipped", { count: demoted.length });
-    return;
-  }
-
-  // A sender that never settles cannot hold the tick open either. Losing an
-  // alert is the acceptable failure here; losing the tick is not.
-  //
-  // The timer is a plain one-shot `setTimeout(resolve, …)` sleep and nothing
-  // else: `scripts/check-durable-object-hibernation.mjs` forbids every other
-  // shape in this directory, because a timer that re-arms keeps the Durable
-  // Object awake and defeats hibernation. It is cleared as soon as the race
-  // settles so it cannot hold the isolate open after the phase is done.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let delivered = false;
-  await Promise.race([
-    deliver().then(() => {
-      delivered = true;
-    }),
-    new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, remainingMs);
-    }),
-  ]);
-  if (timer !== undefined) clearTimeout(timer);
-  if (!delivered) sweepTrace("alerts-deadline-reached", {});
 }
 
 async function healServers(

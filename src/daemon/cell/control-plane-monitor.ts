@@ -15,11 +15,8 @@ import {
   type AlertSender,
   NOOP_ALERT_SENDER,
 } from "../../lib/alerts/alert-sender.ts";
-import {
-  isMassDisconnect,
-  massDisconnectText,
-  serverOfflineText,
-} from "./mass-disconnect.ts";
+import { isMassDisconnect } from "./mass-disconnect.ts";
+import { notifyDemotions } from "../../lib/alerts/notify-demotions.ts";
 import {
   daemonBuildChanged,
   identityFromSnapshot,
@@ -315,15 +312,27 @@ export async function onDaemonHeartbeat(
  * cron's `offline-sweep.ts`, and the one a self-hosted operator actually runs.
  *
  * It carries the same two alerts for the same reason: alerting that only
- * exists on the hosted runtime is alerting most instances do not have. The
- * aggregate goes out first, then one line per host, and the whole thing
- * happens *after* the demotions rather than interleaved with them — a webhook
- * must never be able to delay marking a host offline.
+ * exists on the hosted runtime is alerting most instances do not have.
+ *
+ * The delivery is deliberately **not awaited**. This runs on the Deno
+ * maintenance scheduler's liveness lane, which exists precisely so that "a
+ * hung command-dispatch, webhook, execution-log, or system-reconcile phase
+ * must not suppress the next stale-presence tick" (`deno-maintenance.ts`) —
+ * and the lane refuses to overlap itself, so awaiting twenty hosts' worth of
+ * webhook timeouts here would skip every liveness tick in between. Demotions
+ * land first, the alerts go out behind them, and `notifyDemotions` carries
+ * its own batch bound so a pathological sender cannot accumulate across
+ * ticks.
  */
 export async function sweepStalePresence(
   db: Db,
   registry: RedisDaemonCellRegistry,
-  alertSender: AlertSender = NOOP_ALERT_SENDER,
+  /**
+   * Resolved lazily, and only when something was actually demoted: the
+   * common tick demotes nothing, and it should not cost a settings read.
+   */
+  resolveSender: () => Promise<AlertSender> = () =>
+    Promise.resolve(NOOP_ALERT_SENDER),
 ): Promise<void> {
   const onlineServerIds = await registry.listOnlineServerIds();
   const connectedBefore = onlineServerIds.length;
@@ -342,18 +351,10 @@ export async function sweepStalePresence(
 
   if (demotedIds.length === 0) return;
 
-  if (isMassDisconnect(demotedIds.length, connectedBefore)) {
-    await alertSender({
-      kind: "fleet.mass_disconnect",
-      text: massDisconnectText(demotedIds.length, connectedBefore),
-      detail: { staleCount: demotedIds.length, connectedBefore },
-    });
-  }
-  for (const serverId of demotedIds) {
-    await alertSender({
-      kind: "server.offline",
-      text: serverOfflineText(serverId),
-      detail: { serverId },
-    });
-  }
+  const massDisconnect = isMassDisconnect(demotedIds.length, connectedBefore)
+    ? { staleCount: demotedIds.length, connectedBefore }
+    : null;
+  void resolveSender().then((alertSender) =>
+    notifyDemotions(demotedIds, massDisconnect, alertSender)
+  );
 }
