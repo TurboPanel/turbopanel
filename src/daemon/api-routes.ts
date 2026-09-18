@@ -16,6 +16,7 @@ import {
   parseDaemonSecretEnvelope,
 } from "../client/authn/data-encryption.ts";
 import type { Db } from "../db.ts";
+import { logWarn } from "../logger.ts";
 import {
   getDaemonCellRegistry,
   getDb,
@@ -1045,13 +1046,40 @@ export function registerDaemonApiRoutes<E extends Env>(
 
   // Co-located self-hosted daemons poll this before opening the daemon WS.
   // Returns 503 until the install wizard has created org + superadmin.
+  //
+  // It is also the endpoint to monitor, because it is the one that can fail:
+  // `/api/health` is a static identity payload (licence, version, commit) and
+  // answers `ok: true` even with the database gone — proven in a game day on
+  // 2026-09-18, where the control-plane database was killed and `/api/health`
+  // kept returning 200 throughout. This route reads the database, so a
+  // database that is down, unreachable or mid-failover answers 503 here.
   daemon.get("/readiness", async (c) => {
     const db = getDb(c);
     if (db === undefined) {
       return c.json({ ok: false, error: "Database unavailable" }, 503);
     }
 
-    const installed = await isInstanceInstalled(db);
+    let installed: boolean;
+    try {
+      installed = await isInstanceInstalled(db);
+    } catch (err) {
+      // A dead or failing-over database throws here. That is a 503 — the
+      // instance is not ready — not a 500, which reads as a bug in the route
+      // and tells a monitor the wrong thing. The driver's message goes to the
+      // log, not to the body: this route is unauthenticated, and a connection
+      // error names the host, port and role it failed to reach.
+      logWarn(
+        "daemon-api",
+        `readiness: database unavailable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return c.json({
+        ok: false,
+        ready: false,
+        error: "database unavailable",
+      }, 503);
+    }
     if (!installed) {
       return c.json({ ok: true, ready: false, needsInstall: true }, 503);
     }

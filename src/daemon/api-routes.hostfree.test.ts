@@ -495,3 +495,27 @@ test("POST /auth/session treats malformed JSON as missing fields", async () => {
   const body = await response.json() as { error?: unknown };
   assertEquals(body.error, "Missing required session fields");
 });
+
+test("readiness answers 503, not 500, when the database is down", async () => {
+  // A game day on 2026-09-18 killed the control-plane database and found
+  // /api/health still answering 200 — it is a static identity payload. This
+  // route is the one that reads the database, so it is the one a monitor
+  // should watch, and a dead database has to look like "not ready" rather
+  // than like a bug in the route.
+  const failing = {
+    select: () => {
+      throw new Error("Connection terminated unexpectedly");
+    },
+  } as unknown as Db;
+  const app = daemonApp({}, failing);
+  const response = await app.request(`${DAEMON_API_PREFIX}/readiness`);
+  assertEquals(response.status, 503);
+  const body = await response.json() as {
+    ok: boolean;
+    ready: boolean;
+    error: string;
+  };
+  assertEquals(body.ok, false);
+  assertEquals(body.ready, false);
+  assertEquals(body.error, "database unavailable");
+});
