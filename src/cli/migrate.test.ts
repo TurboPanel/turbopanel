@@ -104,6 +104,8 @@ test("runMigrateCommand passes both gates and is a no-op on an already-migrated 
   assertMatch(logs[0] ?? "", /^PostgreSQL .* with uuidv7\(\) — ok$/);
   assertEquals(logs.slice(1), [
     "waiting for the migration advisory lock…",
+    // The history check (src/lib/db/schema-state.ts) reports under the lock.
+    "schema current (1 migration applied)",
     "lock acquired, applying migrations…",
     "migrations applied successfully",
   ]);
