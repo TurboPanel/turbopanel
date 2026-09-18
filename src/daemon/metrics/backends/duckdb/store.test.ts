@@ -1222,7 +1222,7 @@ it('queryHostSeries rejects unsafe ids, inverted ranges, and empty metrics', asy
           to: new Date(DAY_START + 60_000).toISOString(),
         }),
       TypeError,
-      'metrics must be a non-empty list of v5 canonical names',
+      'metrics must be a non-empty list of v6 canonical names',
     )
     await assertRejects(
       () =>

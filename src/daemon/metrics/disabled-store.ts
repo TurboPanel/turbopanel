@@ -4,7 +4,7 @@ import type {
   ServerStatusEvent,
 } from './types.ts'
 
-/** Default v5 store when no real backend has been wired yet (write-only no-op). */
+/** Default v6 store when no real backend has been wired yet (write-only no-op). */
 export class DisabledServerMetricsStore implements ServerMetricsStore {
   writeSample(_input: AuthenticatedMetricsSample): void {
     // no-op

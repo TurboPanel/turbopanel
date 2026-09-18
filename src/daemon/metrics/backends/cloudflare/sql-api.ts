@@ -682,7 +682,7 @@ export function timeRangePredicate(fromUnix: number, toUnix: number): string {
   return `${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix}) AND ${AE_TIMESTAMP_COLUMN} < toDateTime(${toUnix})`
 }
 
-/** `index1 = '<serverId>'` predicate for the AE v5 dataset. */
+/** `index1 = '<serverId>'` predicate for the AE v6 dataset. */
 export function serverIdPredicate(serverId: string): string {
   return `${AE_INDEX_SERVER_ID_COLUMN} = ${quoteSqlString(serverId)}`
 }

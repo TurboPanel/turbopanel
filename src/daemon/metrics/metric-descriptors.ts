@@ -1,5 +1,5 @@
 /**
- * Host metrics v5 per-metric storage/query contract (control-plane only —
+ * Host metrics v6 per-metric storage/query contract (control-plane only —
  * no daemon-side twin, unlike `contract.ts`). Pairs with
  * `contract.ts` the way v3's `metric-descriptors.ts` pairs with
  * `contract.ts`: `contract.ts` owns the wire shape, this file owns

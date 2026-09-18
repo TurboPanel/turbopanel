@@ -766,7 +766,7 @@ export function registerServerMetricsRoutes(
       return c.json({ ok: false, error: rangeCheck.message }, 400);
     }
 
-    // Status transitions are v5-only: `queryStatusHistory` is optional on
+    // Status transitions are v6-only: `queryStatusHistory` is optional on
     // `ServerMetricsStore` (only `DisabledServerMetricsStore` omits it),
     // so an unconfigured backend falls back to an inline "disabled" result
     // below rather than reading from a v3 store.
@@ -854,10 +854,10 @@ export function registerServerMetricsRoutes(
   });
 
   /**
-   * v5-only: hardware-health / lifecycle events (`sample.events`) for a
+   * v6-only: hardware-health / lifecycle events (`sample.events`) for a
    * server in a time range. No v3 equivalent — v3 has no discrete event
    * stream, only the fixed host-metrics allowlist. `available: false` (never
-   * a 503) when the resolved v5 store has no `queryMetricEvents` (e.g.
+   * a 503) when the resolved v6 store has no `queryMetricEvents` (e.g.
    * `DisabledServerMetricsStore` — no backend binding configured).
    */
   router.get("/servers/:id/metrics/events", async (c) => {

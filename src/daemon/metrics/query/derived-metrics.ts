@@ -47,7 +47,7 @@ function usedPercent(used: number | null, totalBytes: number | null): number | n
   return (used / totalBytes) * 100
 }
 
-/** Compute all route-layer derived host values from a v5 canonical-name-keyed value map. */
+/** Compute all route-layer derived host values from a v6 canonical-name-keyed value map. */
 export function computeDerivedHostValues(
   values: Partial<Record<string, number | null>>,
   capacities: HostCapacities

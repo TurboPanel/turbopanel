@@ -1556,10 +1556,10 @@ function parseHardwareProfileGenerations(raw: unknown): number[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Descriptor-driven bucket aggregate for one v5 canonical metric —
+ * Descriptor-driven bucket aggregate for one v6 canonical metric —
  * weighted-average/last/max/delta-sum per
  * `HostMetricsMetricDescriptor.aggregation`, over any real column (host or
- * per-entity). Every v5 canonical name that resolves to a descriptor has a
+ * per-entity). Every v6 canonical name that resolves to a descriptor has a
  * real column — there is no `NULL`-literal fallback case here.
  */
 function hostFieldAggregateSql(
@@ -1677,7 +1677,7 @@ const HOST_SERIES_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
 const NO_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set()
 
 /**
- * Validate `metrics` as a non-empty list of v5 canonical names, each
+ * Validate `metrics` as a non-empty list of v6 canonical names, each
  * resolving to a `HOST_METRICS_METRIC_DESCRIPTORS` entry scoped to
  * `host.*` (the only scope `queryFleetHostSnapshot`'s v5 path reads) or, when
  * `extraScopes` is passed (`queryHostSeries` only), one of those extra
@@ -1688,7 +1688,7 @@ function assertHostMetrics(
   extraScopes: ReadonlySet<MetricEntityScope> = NO_EXTRA_SCOPES
 ): string[] {
   if (metrics.length === 0) {
-    throw new TypeError('metrics must be a non-empty list of v5 canonical names')
+    throw new TypeError('metrics must be a non-empty list of v6 canonical names')
   }
   const out: string[] = []
   for (const name of metrics) {
@@ -1697,7 +1697,7 @@ function assertHostMetrics(
       descriptor !== undefined &&
       (descriptor.entityScope.startsWith('host.') || extraScopes.has(descriptor.entityScope))
     if (!scopeOk) {
-      throw new TypeError(`unknown host metrics v5 canonical name: ${name}`)
+      throw new TypeError(`unknown host metrics v6 canonical name: ${name}`)
     }
     out.push(name)
   }

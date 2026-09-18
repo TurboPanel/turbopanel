@@ -1212,9 +1212,9 @@ export async function runOfflineSweep(
   lastScheduledTimeForTests = opts.scheduledTime
 
   // `workers.ts`'s `scheduled()` handler awaits `initWorkerApp` (which already
-  // registers the v5 sink) before calling this function, but re-register here
+  // registers the v6 sink) before calling this function, but re-register here
   // unconditionally anyway — this function is also called directly in tests
-  // and must not depend on that ordering. Always the v5 store so demotions /
+  // and must not depend on that ordering. Always the v6 store so demotions /
   // self-heal status rows land in the same dataset the read side queries.
   setServerStatusEventSink(
     resolveServerMetricsStore({
