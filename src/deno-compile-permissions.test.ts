@@ -97,19 +97,54 @@ it("compile tasks grant the metrics state tree", async () => {
 });
 
 it("compile tasks carry no ClickHouse grants", async () => {
-  // The metrics store is moving to embedded DuckDB; the compiled instance
-  // must not retain network reachability to the retired ClickHouse HTTP port.
+  // The metrics store moved to embedded DuckDB; the compiled instance must
+  // not retain any reference to the retired ClickHouse store.
   const tasks = await readCompileTasks();
   for (const [taskName, task] of Object.entries(tasks)) {
-    const allowNet = extractAllowNetFlag(task);
-    assert(allowNet, `${taskName} must include --allow-net`);
-    assert(
-      !allowNet.split(",").includes("127.0.0.1:8123"),
-      `${taskName} --allow-net must not include the ClickHouse HTTP port 127.0.0.1:8123`,
-    );
     assert(
       !task.includes("TURBOPANEL_CLICKHOUSE"),
       `${taskName} must not reference TURBOPANEL_CLICKHOUSE`,
+    );
+    assert(
+      !task.includes("clickhouse"),
+      `${taskName} must not reference clickhouse`,
+    );
+  }
+});
+
+it("instance outbound network is unrestricted on self-hosted — no --allow-net host list", async () => {
+  // Decided 2026-09-18: a self-hosted control plane reaches whatever its
+  // operator configures — an alert webhook, a chat integration, a push relay,
+  // a self-managed forge — and a host list baked at compile time made every
+  // one of those impossible (Deno cannot widen it at runtime; delivery failed
+  // with PermissionDenied). The host firewall is the boundary now. The bare
+  // flag stays: Deno 2.9+ treats Unix-domain connect (Postgres, Redis, the
+  // listen socket) as net, so removing --allow-net entirely would refuse the
+  // database. A reintroduced host list is the regression this test exists for.
+  const tasks = await readCompileTasks();
+  for (const [taskName, task] of Object.entries(tasks)) {
+    assert(
+      /(^|\s)--allow-net(\s|$)/.test(task),
+      `${taskName} must carry a bare --allow-net`,
+    );
+    assert(
+      extractAllowNetFlag(task) === null,
+      `${taskName} must not carry a --allow-net=<hosts> list (decided 2026-09-18)`,
+    );
+  }
+
+  const execStartLines = await readUnitExecStartLines();
+  if (execStartLines === null) return; // standalone CI: daemon checkout absent
+  const denoRunLines = execStartLines.filter((line) => line.includes(" run "));
+  assert(denoRunLines.length > 0, "unit template must keep deno-run branches");
+  for (const line of denoRunLines) {
+    assert(
+      /(^|\s)--allow-net(\s|$)/.test(line),
+      "deno-run ExecStart must carry a bare --allow-net",
+    );
+    assert(
+      extractAllowNetFlag(line) === null,
+      "deno-run ExecStart must not carry a --allow-net=<hosts> list (decided 2026-09-18)",
     );
   }
 });
@@ -215,79 +250,12 @@ it("compiled instance branch vendors libduckdb.so on LD_LIBRARY_PATH", async () 
   );
 });
 
-it("instance --allow-net includes public Git provider APIs and the GitHub Releases update rail", async () => {
-  const tasks = await readCompileTasks();
-  // Git provider APIs, plus the hosts a rc/release channel manifest fetch
-  // touches: github.com answers releases/…/download/manifest.json with a
-  // redirect to a *.githubusercontent.com asset host (see
-  // src/lib/update/channel.ts). A missing host is a silent "target unknown".
-  const required = [
-    "api.github.com:443",
-    "gitlab.com:443",
-    "github.com:443",
-    "release-assets.githubusercontent.com:443",
-    "objects.githubusercontent.com:443",
-  ];
-
-  for (const [taskName, task] of Object.entries(tasks)) {
-    const allowNet = extractAllowNetFlag(task);
-    assert(allowNet, `${taskName} must include --allow-net`);
-    const hosts = allowNet.split(",");
-    for (const host of required) {
-      assert(
-        hosts.includes(host),
-        `${taskName} --allow-net must include ${host} for Git provider API calls`,
-      );
-    }
-  }
-
-  try {
-    const serviceUnit = await Deno.readTextFile(instanceLaunchUnitPath());
-    for (const host of required) {
-      assert(
-        serviceUnit.includes(host),
-        `turbopanel-instance.service.j2 must allow ${host}`,
-      );
-    }
-  } catch (err) {
-    if (!(err instanceof Deno.errors.NotFound)) throw err;
-  }
-});
-
-it("compile --allow-net includes OAuth provider hosts", async () => {
-  const tasks = await readCompileTasks();
-  const required = [
-    "github.com:443",
-    "accounts.google.com:443",
-    "oauth2.googleapis.com:443",
-    "openidconnect.googleapis.com:443",
-  ];
-
-  for (const [taskName, task] of Object.entries(tasks)) {
-    const allowNet = extractAllowNetFlag(task);
-    assert(allowNet, `${taskName} must include --allow-net`);
-    const hosts = allowNet.split(",");
-    for (const host of required) {
-      assert(
-        hosts.includes(host),
-        `${taskName} --allow-net must include ${host} for OAuth sign-in`,
-      );
-    }
-  }
-});
-
 it("self-hosted compile tasks do not grant Stripe", async () => {
   const tasks = await readCompileTasks();
+  // Outbound network is unrestricted (decided 2026-09-18), so the guard is
+  // that nothing in a self-hosted compile task *names* Stripe: billing is
+  // Workers-only and a compiled instance must never be configured toward it.
   for (const [taskName, task] of Object.entries(tasks)) {
-    const allowNet = extractAllowNetFlag(task);
-    assert(allowNet, `${taskName} must include --allow-net`);
-    const hosts = allowNet.split(",");
-    assert(
-      !hosts.some((host) =>
-        host === "api.stripe.com:443" || host.startsWith("api.stripe.com")
-      ),
-      `${taskName} --allow-net must not include api.stripe.com`,
-    );
     assert(
       !task.includes("api.stripe.com"),
       `${taskName} must not mention api.stripe.com`,
@@ -307,21 +275,14 @@ it("production compile excludes developer-only permissions and entry", async () 
     "production compile must not target src/deno-dev.ts",
   );
 
-  const allowNet = extractAllowNetFlag(compileTask);
-  assert(allowNet, "compile task must include --allow-net");
-  const netHosts = allowNet.split(",");
-  assert(
-    !netHosts.includes("127.0.0.1:4983"),
-    "production compile must not allow Drizzle Studio :4983",
-  );
-  assert(
-    !netHosts.includes("127.0.0.1:1025"),
-    "production compile must not allow Mailpit SMTP :1025",
-  );
-  assert(
-    !netHosts.includes("127.0.0.1:8123"),
-    "production compile must not allow ClickHouse HTTP :8123",
-  );
+  // Outbound network is unrestricted (decided 2026-09-18), so the developer
+  // ports are no longer a --allow-net question; they must simply not appear.
+  for (const port of ["4983", "1025", "8123"]) {
+    assert(
+      !compileTask.includes(`127.0.0.1:${port}`),
+      `production compile must not reference developer port ${port}`,
+    );
+  }
 
   const allowRun = /--allow-run=([^\s]+)/.exec(compileTask)?.[1] ?? "";
   for (const denied of ["git", "tar", "systemctl", "mkfifo"]) {
@@ -424,12 +385,12 @@ it("compile tasks can read and write the Postgres socket directory the unit name
       allowWrite.includes("/var/run/turbopanel"),
       `${taskName} --allow-write must include /var/run/turbopanel`,
     );
-    const allowNet = extractAllowNetFlag(task) ?? "";
+    // The Postgres socket connect is covered by the bare --allow-net
+    // (decided 2026-09-18); the read/write grants above are the part that
+    // still has to be spelled out for postgres.js.
     assert(
-      allowNet.split(",").includes(
-        "unix:/var/run/turbopanel/postgres/.s.PGSQL.5432",
-      ),
-      `${taskName} --allow-net must keep the Postgres socket entry`,
+      /(^|\s)--allow-net(\s|$)/.test(task),
+      `${taskName} must carry --allow-net for the Postgres socket connect`,
     );
   }
 });

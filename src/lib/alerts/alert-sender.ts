@@ -87,29 +87,12 @@ export function createWebhookAlertSender(
         'alerts',
         `webhook delivery failed for ${alert.kind} to ${originOf(url)}: ${
           error instanceof Error ? error.message : String(error)
-        }${permissionHint(error, url)}`,
+        }`,
       )
     } finally {
       clearTimeout(timer)
     }
   }
-}
-
-/**
- * The compiled self-hosted binary runs under a fixed `--allow-net` allowlist
- * (`deno.json` `compile`), which cannot name a host the operator has not
- * configured yet. A webhook to anywhere else is refused by the runtime, not
- * by the network — and "Requires net access" on its own sends an operator
- * looking at their firewall. Say what it actually is.
- */
-function permissionHint(error: unknown, url: string): string {
-  const isPermissionDenied = typeof Deno !== 'undefined' &&
-      error instanceof Deno.errors.PermissionDenied ||
-    (error instanceof Error && error.name === 'PermissionDenied')
-  if (!isPermissionDenied) return ''
-  return ` — this build runs under a fixed --allow-net allowlist that does not include ${
-    originOf(url)
-  }; alerts cannot be delivered to it from a compiled instance`
 }
 
 function originOf(url: string): string {

@@ -111,29 +111,3 @@ test('the delivery is bounded by an abort signal', async () => {
 test('the no-op sender is what an unconfigured instance uses', async () => {
   await NOOP_ALERT_SENDER(OFFLINE)
 })
-
-test('a permission-denied delivery says it is the allowlist, not the network', async () => {
-  // The compiled self-hosted binary runs under a fixed --allow-net allowlist
-  // that cannot name a host the operator configures later. "Requires net
-  // access" on its own sends someone looking at their firewall.
-  // compatLogWarn writes straight to Deno.stderr under Deno, not console.
-  const lines: string[] = []
-  const decoder = new TextDecoder()
-  const originalWriteSync = Deno.stderr.writeSync.bind(Deno.stderr)
-  Deno.stderr.writeSync = (bytes: Uint8Array) => {
-    lines.push(decoder.decode(bytes))
-    return bytes.length
-  }
-  try {
-    const send = createWebhookAlertSender(
-      'https://hooks.example.com/x',
-      () => Promise.reject(new Deno.errors.PermissionDenied('Requires net access')),
-    )
-    await send(OFFLINE)
-  } finally {
-    Deno.stderr.writeSync = originalWriteSync
-  }
-  assertEquals(lines.length, 1)
-  assertEquals(lines[0].includes('--allow-net allowlist'), true)
-  assertEquals(lines[0].includes('https://hooks.example.com'), true)
-})

@@ -692,17 +692,16 @@ on `--allow-net` — Deno 2.9+ treats Unix-socket connect as net, not read — b
 `node:net` connect (postgres.js) additionally needs `--allow-read` **and**
 `--allow-write` on the socket path, so `/var/run/turbopanel` sits on both lists
 in the compile tasks and the unit (`postgres_socket_dir`); without it the
-compiled binary's first `migrate` on a clean host fails `NotCapable`. TCP
-dev Postgres adds `--allow-net=127.0.0.1:5432`. Public Git provider APIs
-(`api.github.com:443`, `gitlab.com:443`) must stay on that list — the GitHub App
-manifest callback and GitLab token/API calls fetch them from this process, and a
-missing host surfaces as HTTP 502 (`NotCapable`). So must the daemon update
-rail's hosts (`github.com:443`, `release-assets.githubusercontent.com:443`,
-`objects.githubusercontent.com:443`): a `rc` / `release` channel manifest is a
-GitHub Release asset behind a redirect, and a missing host there surfaces only
-as "target unknown" on the servers page (`src/lib/update/channel.ts`). A GitHub Enterprise or
-self-managed GitLab origin is not pre-allowed; add that host to the unit when
-one is configured.
+compiled binary's first `migrate` on a clean host fails `NotCapable`. **Outbound
+network is unrestricted on self-hosted (decided 2026-09-18):** the `compile` /
+`compile:dev` tasks and both source-mode `ExecStart` lines carry a bare
+`--allow-net` with no host list, because a self-hosted control plane reaches
+whatever its operator configures — alert webhooks, chat integrations, push
+relays, a GitHub Enterprise or self-managed GitLab origin — and a list baked at
+compile time made every one of those a `PermissionDenied` at runtime. The host
+firewall is the boundary. `src/deno-compile-permissions.test.ts` refuses a
+reintroduced `--allow-net=<hosts>` list. The bare flag must stay: without it the
+Unix-socket connects above are refused.
 
 ### Production
 
