@@ -16,6 +16,13 @@
  *   treatment `email-settings.ts` gives an SMTP password) and never returned
  *   to a client in full — {@link describeAlertWebhook} is what a settings
  *   panel renders.
+ * Since 2026-09-18 the webhook *is* a notification channel (instance scope,
+ * `webhook`, labelled "Operator alert webhook", rule `*`): the legacy
+ * `ALERT_WEBHOOK_URL` setting is adopted into one on first touch, and the
+ * admin route below is a thin face over that channel. `getAlertWebhookUrl`
+ * and `setAlertWebhookUrl` read and write the legacy row only and exist for
+ * the adoption and its tests.
+ *
  * - **The URL is an SSRF vector.** It is typed in by an admin and then
  *   fetched server-side, so it goes through the same
  *   {@link validateOutboundUrl} gate as a forge base URL: https only, no
@@ -40,6 +47,16 @@ import {
   resolveOutboundHostScope,
   validateOutboundUrl,
 } from '../http/outbound-url.ts'
+import {
+  createNotificationChannel,
+  deleteChannel,
+  getOperatorWebhookChannel,
+  type NotificationChannelRecord,
+  OPERATOR_WEBHOOK_LABEL,
+  replaceRulesForChannel,
+  resolveChannelAddress,
+  updateChannelAddress,
+} from '../notifications/records.ts'
 
 export type AlertWebhookPolicy = {
   /** Self-hosted: the webhook may target a private address or a LAN name. */
@@ -78,6 +95,87 @@ export async function assertAlertWebhookUrlAllowed(
   const resolved = await resolveOutboundHostScope(url, gate)
   if (resolved) throw new AlertWebhookUrlError(resolved)
   return url
+}
+
+/**
+ * Fold the legacy `ALERT_WEBHOOK_URL` setting into the notifications model:
+ * one instance-scoped webhook channel labelled {@link OPERATOR_WEBHOOK_LABEL}
+ * with a `*` rule at `info` — every event, the firehose the setting always
+ * was. Idempotent and cheap: once the row is gone this is one indexed read.
+ * Called from the admin route and from the sweep's resolver, so an instance
+ * upgraded past the setting keeps alerting with nothing re-typed.
+ *
+ * Returns the channel the setting became (or already was), or null when
+ * neither exists.
+ */
+export async function adoptLegacyAlertWebhook(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+): Promise<NotificationChannelRecord | null> {
+  const existing = await getOperatorWebhookChannel(db)
+  const legacy = await getAlertWebhookUrl(db, dataEncryptionSecrets)
+  if (!legacy) return existing
+  if (existing) {
+    // Both exist: the channel is the truth; the setting is a leftover.
+    await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+    return existing
+  }
+  if (!dataEncryptionSecrets) return null
+  const channel = await createNotificationChannel(db, dataEncryptionSecrets, {
+    scope: 'instance',
+    kind: 'webhook',
+    label: OPERATOR_WEBHOOK_LABEL,
+    address: legacy,
+  })
+  await replaceRulesForChannel(db, channel.id, [{ event: '*', minSeverity: 'info' }])
+  await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+  return channel
+}
+
+/** The operator webhook's plain URL — the channel first, the legacy setting adopted on the way. */
+export async function resolveOperatorWebhookUrl(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+): Promise<string | null> {
+  const channel = await adoptLegacyAlertWebhook(db, dataEncryptionSecrets)
+  if (!channel) return null
+  return await resolveChannelAddress(dataEncryptionSecrets, channel)
+}
+
+/**
+ * Set or clear the operator webhook through the channel it now is. Kept as
+ * the body of `PUT /api/admin/v1/settings/alert-webhook` so the documented
+ * curl keeps working; the same channel is editable at
+ * `/api/admin/v1/notification-channels` like any other.
+ */
+export async function setOperatorWebhookUrl(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  url: string | null,
+  policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
+): Promise<void> {
+  const existing = await adoptLegacyAlertWebhook(db, dataEncryptionSecrets)
+  if (url === null) {
+    if (existing) await deleteChannel(db, existing.id)
+    return
+  }
+  const allowed = await assertAlertWebhookUrlAllowed(url, policy)
+  if (!dataEncryptionSecrets) {
+    throw new Error(
+      'data encryption secrets required to store the alert webhook URL',
+    )
+  }
+  if (existing) {
+    await updateChannelAddress(db, dataEncryptionSecrets, existing.id, 'webhook', allowed)
+    return
+  }
+  const channel = await createNotificationChannel(db, dataEncryptionSecrets, {
+    scope: 'instance',
+    kind: 'webhook',
+    label: OPERATOR_WEBHOOK_LABEL,
+    address: allowed,
+  })
+  await replaceRulesForChannel(db, channel.id, [{ event: '*', minSeverity: 'info' }])
 }
 
 /**

@@ -13,11 +13,12 @@ import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import {
   AlertWebhookUrlError,
   describeAlertWebhook,
-  getAlertWebhookUrl,
   HOSTED_ALERT_WEBHOOK_POLICY,
+  resolveOperatorWebhookUrl,
   SELF_HOSTED_ALERT_WEBHOOK_POLICY,
-  setAlertWebhookUrl,
+  setOperatorWebhookUrl,
 } from "../lib/alerts/alert-webhook-settings.ts";
+import { registerNotificationAdminRoutes } from "./notification-routes.ts";
 import {
   broadcastEchoToFleet,
   collectFleetCommands,
@@ -123,6 +124,7 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
   admin.use("*", createAdminAccessMiddleware(opts.secrets));
 
   opts.registerTiers?.(admin);
+  registerNotificationAdminRoutes(admin, { runtime: opts.runtime });
 
   admin.get("/daemon/connections", async (c) => {
     const registry = getDaemonCellRegistry(c);
@@ -493,7 +495,10 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     const db = getDb(c);
     if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-    const url = await getAlertWebhookUrl(db, c.get("dataEncryptionSecrets"));
+    const url = await resolveOperatorWebhookUrl(
+      db,
+      c.get("dataEncryptionSecrets"),
+    );
     return c.json(describeAlertWebhook(url));
   });
 
@@ -517,7 +522,7 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     }
 
     try {
-      await setAlertWebhookUrl(
+      await setOperatorWebhookUrl(
         db,
         dataEncryptionSecrets,
         url,
@@ -532,7 +537,7 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
       throw err;
     }
 
-    const stored = await getAlertWebhookUrl(db, dataEncryptionSecrets);
+    const stored = await resolveOperatorWebhookUrl(db, dataEncryptionSecrets);
     return c.json(describeAlertWebhook(stored));
   });
 

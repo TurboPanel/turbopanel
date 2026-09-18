@@ -765,3 +765,51 @@ export async function listRecentDeliveriesForChannel(
     .limit(20);
   return rows.map(asDelivery);
 }
+
+/** The label the operator's instance-wide alert webhook carries once folded into a channel. */
+export const OPERATOR_WEBHOOK_LABEL = "Operator alert webhook";
+
+/** The instance webhook channel the legacy `ALERT_WEBHOOK_URL` setting became, if any. */
+export async function getOperatorWebhookChannel(
+  db: Db,
+): Promise<NotificationChannelRecord | null> {
+  const [row] = await db
+    .select()
+    .from(notificationChannel)
+    .where(
+      and(
+        eq(notificationChannel.scope, "instance"),
+        eq(notificationChannel.kind, "webhook"),
+        eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL),
+      ),
+    )
+    .orderBy(notificationChannel.createdAt)
+    .limit(1);
+  return row ? asChannel(row) : null;
+}
+
+/** Replace a channel's sealed address (already-validated plain input). */
+export async function updateChannelAddress(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  id: string,
+  kind: NotificationChannelKind,
+  plainAddress: string,
+): Promise<void> {
+  const address = channelAddressIsSecret(kind)
+    ? await encryptSecret(secrets, plainAddress)
+    : plainAddress;
+  await db
+    .update(notificationChannel)
+    .set({ address })
+    .where(eq(notificationChannel.id, id));
+}
+
+/** The account emails of every instance administrator — what an instance email channel may name. */
+export async function instanceAdminEmails(db: Db): Promise<Set<string>> {
+  const rows = await db
+    .select({ email: user.email })
+    .from(user)
+    .where(inArray(user.role, ["admin", "superadmin"]));
+  return new Set(rows.map((r) => r.email.toLowerCase()));
+}

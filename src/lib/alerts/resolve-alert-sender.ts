@@ -9,10 +9,9 @@
  * Since 2026-09-18 an alert is an event in the notifications pipeline
  * (`src/lib/notifications/`): it lands in the inbox of everyone in the
  * server's organization (or every instance admin, for the fleet-wide
- * aggregate) and reaches every channel a rule routes it to. The operator's
- * instance-wide webhook setting — the alerting that existed before the
- * pipeline — is still honoured as one more destination, read per tick so a
- * webhook configured mid-incident gets the next sweep's alerts. Nothing here
+ * aggregate) and reaches every channel a rule routes it to — including the
+ * operator's instance-wide webhook, which the legacy setting is folded into
+ * here on first touch so an upgraded instance keeps alerting. Nothing here
  * throws: a sweep's job is to demote stale servers, and it runs whether or
  * not anyone can be told about it.
  */
@@ -20,18 +19,12 @@ import { eq } from "drizzle-orm";
 import { type Db, runWithDbTimeout } from "../../db.ts";
 import type { DerivedSecretsConfig } from "../../client/authn/secrets.ts";
 import { server } from "../db/schema.ts";
+import type { Alert, AlertSender } from "./alert-sender.ts";
 import {
-  type Alert,
-  type AlertSender,
-  createWebhookAlertSender,
-  NOOP_ALERT_SENDER,
-} from "./alert-sender.ts";
-import {
+  adoptLegacyAlertWebhook,
   type AlertWebhookPolicy,
-  getAlertWebhookUrl,
   HOSTED_ALERT_WEBHOOK_POLICY,
 } from "./alert-webhook-settings.ts";
-import { validateOutboundUrl } from "../http/outbound-url.ts";
 import { type EmitEmail, emitNotification } from "../notifications/emit.ts";
 import type {
   NotificationContext,
@@ -40,46 +33,10 @@ import type {
 
 export type AlertSenderTrace = (
   event:
-    | "alert-webhook-refused"
     | "alert-sender-resolve-failed"
     | "alert-server-unknown",
   detail: Record<string, unknown>,
 ) => void;
-
-/** The legacy instance-wide webhook as a sender, or the no-op when none is configured. */
-async function resolveLegacyWebhookSender(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
-  trace: AlertSenderTrace | undefined,
-  policy: AlertWebhookPolicy,
-): Promise<AlertSender> {
-  try {
-    // Bounded: this read sits on a sweep's critical path, and a slow — not
-    // dead — Postgres must not hold a tick open over a settings lookup.
-    const url = await runWithDbTimeout(
-      db,
-      (settingDb) => getAlertWebhookUrl(settingDb, dataEncryptionSecrets),
-    );
-    if (!url) return NOOP_ALERT_SENDER;
-    // Re-validated here, not only at write time: this is the choke point
-    // where the URL becomes an outbound fetch, and the stored value may
-    // predate the gate (an unsealed legacy row) or have been written by
-    // something other than the settings route.
-    const rejection = validateOutboundUrl(url, {
-      allowPrivate: policy.allowPrivateTargets,
-    });
-    if (rejection) {
-      trace?.("alert-webhook-refused", { reason: rejection });
-      return NOOP_ALERT_SENDER;
-    }
-    return createWebhookAlertSender(url);
-  } catch (err) {
-    trace?.("alert-sender-resolve-failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return NOOP_ALERT_SENDER;
-  }
-}
 
 type MappedEvent = {
   event: NotificationEvent;
@@ -144,16 +101,21 @@ export async function resolveAlertSender(
   policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
   email?: EmitEmail,
 ): Promise<AlertSender> {
-  const legacy = await resolveLegacyWebhookSender(
-    db,
-    dataEncryptionSecrets,
-    trace,
-    policy,
-  );
+  // An instance upgraded past the ALERT_WEBHOOK_URL setting keeps its
+  // webhook: the setting becomes an instance channel on first touch, and the
+  // pipeline below reaches it like any other. Bounded, and never the reason
+  // a sweep fails.
+  try {
+    await runWithDbTimeout(
+      db,
+      (tx) => adoptLegacyAlertWebhook(tx, dataEncryptionSecrets),
+    );
+  } catch (err) {
+    trace?.("alert-sender-resolve-failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
   return async (alert) => {
-    // The legacy webhook first: it is what an operator configured before the
-    // pipeline existed, and it must not wait behind the fan-out.
-    await legacy(alert);
     try {
       const mapped = await toEvent(db, alert, trace);
       if (!mapped) return;
