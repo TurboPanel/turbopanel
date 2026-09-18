@@ -1,22 +1,22 @@
-import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js'
-import type { Context } from 'hono'
-import postgres from 'postgres'
-import type { DaemonCellRegistry } from './daemon/cell/contracts.ts'
-import type { ServerMetricsStore } from './daemon/metrics/types.ts'
-import type { ExecutionLogStore } from './lib/execution-logs/types.ts'
-import type { QueryCache } from './query-cache/contracts.ts'
-import { getDatabaseUrl, resolvePostgresConnection } from './db-url.ts'
-import * as schema from './lib/db/schema.ts'
+import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import type { Context } from "hono";
+import postgres from "postgres";
+import type { DaemonCellRegistry } from "./daemon/cell/contracts.ts";
+import type { ServerMetricsStore } from "./daemon/metrics/types.ts";
+import type { ExecutionLogStore } from "./lib/execution-logs/types.ts";
+import type { QueryCache } from "./query-cache/contracts.ts";
+import { getDatabaseUrl, resolvePostgresConnection } from "./db-url.ts";
+import * as schema from "./lib/db/schema.ts";
 
-export type Db = PostgresJsDatabase<typeof schema>
+export type Db = PostgresJsDatabase<typeof schema>;
 
 /** Minimal Hyperdrive surface used by `createWorkersDb` (Workers runtime). */
 export type HyperdriveBinding = {
-  connectionString: string
-}
+  connectionString: string;
+};
 
 /** Hyperdrive — `max: 1` connection per client (one client is created **per request**, not per isolate — see below). `prepare: true` enables protocol-level prepared statements, which Hyperdrive requires to cache parameterized `SELECT` queries on the `HYPERDRIVE_CACHED` binding. Hyperdrive manages prepared-statement lifecycle across its connection pool, so session-scoped state is not a concern here. */
-const PG_OPTS_WORKERS = { prepare: true as const, max: 1 }
+const PG_OPTS_WORKERS = { prepare: true as const, max: 1 };
 
 /**
  * Default connect/statement bounds for the Workers/Hyperdrive path. A stalled
@@ -25,17 +25,17 @@ const PG_OPTS_WORKERS = { prepare: true as const, max: 1 }
  * bills the object for the entire WebSocket lifetime. See the 71-minute
  * billable-duration incident in `src/daemon/cell/do.ts` (Daemon Cell).
  */
-const DEFAULT_WORKERS_CONNECT_TIMEOUT_S = 15
-const DEFAULT_WORKERS_STATEMENT_TIMEOUT_MS = 30_000
+const DEFAULT_WORKERS_CONNECT_TIMEOUT_S = 15;
+const DEFAULT_WORKERS_STATEMENT_TIMEOUT_MS = 30_000;
 
 export type WorkersDbOptions = {
   /** Abort the TCP/connect phase after this many seconds (postgres.js `connect_timeout`). */
-  connectTimeoutSeconds?: number
+  connectTimeoutSeconds?: number;
   /** Server-side per-statement cap (Postgres `statement_timeout` GUC, milliseconds). */
-  statementTimeoutMs?: number
+  statementTimeoutMs?: number;
   /** Release idle pooled connections (postgres.js `idle_timeout`, seconds). Omit on long-lived request isolates. */
-  idleTimeoutSeconds?: number
-}
+  idleTimeoutSeconds?: number;
+};
 
 /** `prepare` is intentionally a separate decision for the Deno/self-hosted path (direct Postgres, no Hyperdrive). */
 /**
@@ -53,7 +53,7 @@ const PG_OPTS_DENO = {
   prepare: false as const,
   max: 10,
   backoff: () => 0,
-}
+};
 
 /**
  * Build a Workers/Hyperdrive postgres.js client.
@@ -70,10 +70,14 @@ const PG_OPTS_DENO = {
  * See `AGENTS.md` → Workers Hyperdrive (HARD RULE) and
  * https://developers.cloudflare.com/hyperdrive/observability/troubleshooting/
  */
-export function createWorkersDb(hyperdrive: HyperdriveBinding, options: WorkersDbOptions = {}): Db {
+export function createWorkersDb(
+  hyperdrive: HyperdriveBinding,
+  options: WorkersDbOptions = {},
+): Db {
   const client = postgres(hyperdrive.connectionString, {
     ...PG_OPTS_WORKERS,
-    connect_timeout: options.connectTimeoutSeconds ?? DEFAULT_WORKERS_CONNECT_TIMEOUT_S,
+    connect_timeout: options.connectTimeoutSeconds ??
+      DEFAULT_WORKERS_CONNECT_TIMEOUT_S,
     // Only bound idle connections when asked. `resolveWorkersDb` creates a fresh
     // client per request (Workers cannot reuse a DB socket across requests); the
     // Durable Object projection opens a short-lived client and closes per call.
@@ -81,57 +85,58 @@ export function createWorkersDb(hyperdrive: HyperdriveBinding, options: WorkersD
       ? { idle_timeout: options.idleTimeoutSeconds }
       : {}),
     connection: {
-      statement_timeout: options.statementTimeoutMs ?? DEFAULT_WORKERS_STATEMENT_TIMEOUT_MS,
+      statement_timeout: options.statementTimeoutMs ??
+        DEFAULT_WORKERS_STATEMENT_TIMEOUT_MS,
     },
-  })
-  return drizzle(client, { schema })
+  });
+  return drizzle(client, { schema });
 }
 
-const DATABASE_URL_REQUIRED = 'TURBOPANEL_DATABASE_URL is required'
+const DATABASE_URL_REQUIRED = "TURBOPANEL_DATABASE_URL is required";
 
 /** Open a postgres.js client from a URL that may be TCP or Unix-socket form. */
 function createPostgresJsClient(
   url: string,
-  options: typeof PG_OPTS_DENO
+  options: typeof PG_OPTS_DENO,
 ): ReturnType<typeof postgres> {
-  const connection = resolvePostgresConnection(url)
-  if (typeof connection === 'string') {
-    return postgres(connection, options)
+  const connection = resolvePostgresConnection(url);
+  if (typeof connection === "string") {
+    return postgres(connection, options);
   }
-  return postgres({ ...connection, ...options })
+  return postgres({ ...connection, ...options });
 }
 
 export function createDenoDb(): Db {
-  const url = getDatabaseUrl()
+  const url = getDatabaseUrl();
   if (!url) {
-    throw new Error(DATABASE_URL_REQUIRED)
+    throw new Error(DATABASE_URL_REQUIRED);
   }
-  const client = createPostgresJsClient(url, PG_OPTS_DENO)
-  return drizzle(client, { schema })
+  const client = createPostgresJsClient(url, PG_OPTS_DENO);
+  return drizzle(client, { schema });
 }
 
 /** Node/drizzle-kit migration repair — requires `TURBOPANEL_DATABASE_URL`. */
 export function createToolingDb(): Db {
-  return createDenoDb()
+  return createDenoDb();
 }
 
-type PostgresJsClient = ReturnType<typeof postgres>
+type PostgresJsClient = ReturnType<typeof postgres>;
 
 /** Close a drizzle postgres.js pool (no-op for mock/test clients without `$client`). */
 export async function endDbConnection(db: Db): Promise<void> {
-  const client = (db as Db & { $client?: PostgresJsClient }).$client
+  const client = (db as Db & { $client?: PostgresJsClient }).$client;
   if (client?.end) {
-    await client.end({ timeout: 5 })
+    await client.end({ timeout: 5 });
   }
 }
 
 /** Hard client-side deadline for a single Durable Object projection operation. */
-export const DB_OP_TIMEOUT_MS = 8_000
+export const DB_OP_TIMEOUT_MS = 8_000;
 
 export class DbOperationTimeoutError extends Error {
   constructor(timeoutMs: number) {
-    super(`database operation exceeded ${timeoutMs}ms timeout`)
-    this.name = 'DbOperationTimeoutError'
+    super(`database operation exceeded ${timeoutMs}ms timeout`);
+    this.name = "DbOperationTimeoutError";
   }
 }
 
@@ -152,22 +157,25 @@ export class DbOperationTimeoutError extends Error {
 export async function runWithDbTimeout<T>(
   db: Db,
   fn: (db: Db) => Promise<T>,
-  timeoutMs: number = DB_OP_TIMEOUT_MS
+  timeoutMs: number = DB_OP_TIMEOUT_MS,
 ): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const work = fn(db)
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = fn(db);
   // The losing side of the race settles later; swallow it so a post-timeout
   // rejection never surfaces as an unhandled rejection.
-  work.catch(() => {})
+  work.catch(() => {});
   try {
     return await Promise.race([
       work,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new DbOperationTimeoutError(timeoutMs)), timeoutMs)
+        timer = setTimeout(
+          () => reject(new DbOperationTimeoutError(timeoutMs)),
+          timeoutMs,
+        );
       }),
-    ])
+    ]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer)
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -190,47 +198,49 @@ export async function runWithDbTimeout<T>(
 export async function raceWithTimeout<T>(
   work: Promise<T>,
   timeoutMs: number,
-  timeoutMessage: string
+  timeoutMessage: string,
 ): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  work.catch(() => {})
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  work.catch(() => {});
   try {
     return await Promise.race([
       work,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
       }),
-    ])
+    ]);
   } finally {
-    if (timer !== undefined) clearTimeout(timer)
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
 /** Run tooling DB work and close the postgres.js pool so short-lived scripts can exit. */
 export async function withToolingDb<T>(fn: (db: Db) => Promise<T>): Promise<T> {
-  const url = getDatabaseUrl()
+  const url = getDatabaseUrl();
   if (!url) {
-    throw new Error(DATABASE_URL_REQUIRED)
+    throw new Error(DATABASE_URL_REQUIRED);
   }
-  const client = createPostgresJsClient(url, PG_OPTS_DENO)
-  const db = drizzle(client, { schema })
+  const client = createPostgresJsClient(url, PG_OPTS_DENO);
+  const db = drizzle(client, { schema });
   try {
-    return await fn(db)
+    return await fn(db);
   } finally {
-    await client.end({ timeout: 5 })
+    await client.end({ timeout: 5 });
   }
 }
 
 export function getDb(c: Context): Db | undefined {
-  return c.get('db')
+  return c.get("db");
 }
 
-export function getDaemonCellRegistry(c: Context): DaemonCellRegistry | undefined {
-  return c.get('daemonCellRegistry')
+export function getDaemonCellRegistry(
+  c: Context,
+): DaemonCellRegistry | undefined {
+  return c.get("daemonCellRegistry");
 }
 
 export function getQueryCache(c: Context): QueryCache | undefined {
-  return c.get('queryCache')
+  return c.get("queryCache");
 }
 
 /**
@@ -241,8 +251,10 @@ export function getQueryCache(c: Context): QueryCache | undefined {
  * `SERVER_METRICS` (or `DisabledServerMetricsStore` when that binding is
  * unconfigured).
  */
-export function getServerMetricsStore(c: Context): ServerMetricsStore | undefined {
-  return c.get('serverMetricsStore')
+export function getServerMetricsStore(
+  c: Context,
+): ServerMetricsStore | undefined {
+  return c.get("serverMetricsStore");
 }
 
 /**
@@ -250,6 +262,46 @@ export function getServerMetricsStore(c: Context): ServerMetricsStore | undefine
  * driver (R2 / filesystem / S3 hold no connection), so — unlike a DB client —
  * one resolved instance is safe to share across requests.
  */
-export function getExecutionLogStore(c: Context): ExecutionLogStore | undefined {
-  return c.get('executionLogStore')
+export function getExecutionLogStore(
+  c: Context,
+): ExecutionLogStore | undefined {
+  return c.get("executionLogStore");
+}
+
+/**
+ * Postgres/driver codes that mean "the connection went away", not "the query
+ * was wrong".
+ *
+ * The first four are postgres.js's own; `57P01`/`57P02`/`57P03` are the
+ * server's admin-shutdown, crash-shutdown and cannot-connect-now — exactly
+ * what a primary restart or a failover emits at the connections it is
+ * dropping. Nothing here overlaps with a constraint violation or a syntax
+ * error: a retry on one of those would be a retry on a real refusal.
+ */
+const CONNECTION_CLOSED_CODES = new Set([
+  "CONNECTION_CLOSED",
+  "CONNECTION_ENDED",
+  "CONNECTION_DESTROYED",
+  "CONNECTION_REFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "57P01",
+  "57P02",
+  "57P03",
+]);
+
+/**
+ * True when `err` (or its cause — drizzle 0.45 wraps driver errors in
+ * `DrizzleQueryError`) is a connection-closed class error.
+ */
+export function isConnectionClosedError(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && CONNECTION_CLOSED_CODES.has(code)) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }

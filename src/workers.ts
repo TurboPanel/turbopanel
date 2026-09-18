@@ -1,52 +1,55 @@
-import { Hono } from 'hono'
-import type { DaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
-import { deriveDaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
+import { Hono } from "hono";
+import type { DaemonJwtKeyring } from "./daemon/authn/daemon-jwt-keyring.ts";
+import { deriveDaemonJwtKeyring } from "./daemon/authn/daemon-jwt-keyring.ts";
 import {
   type DerivedSecretsConfig,
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsFromEnv,
   type SecretsConfig,
-} from './client/authn/secrets.ts'
-import { type AppEnv, createApp } from './app.ts'
-import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
-import { runOfflineSweep } from './daemon/cell/offline-sweep.ts'
-import { registerAdminRoutes } from './admin/routes.ts'
-import { registerAdminTierRoutes } from './admin/tier-routes.ts'
-import { getWorkersAdminOpenApiSpec } from './admin/openapi/workers.ts'
-import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
-import { registerWebhookRoutes } from './webhook/routes.ts'
-import { registerStripeWebhookRoutes } from './webhook/billing/stripe.ts'
-import { registerBillingRoutes } from './client/billing/routes.ts'
-import { getWorkersClientOpenApiSpec } from './client/openapi/workers.ts'
-import { resolveBillingConfig } from './lib/billing/config.ts'
-import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
-import { resolveWorkersEmailQueue } from './lib/email/mailgun/workers-queue.ts'
-import type { EmailQueue } from './lib/email/types.ts'
-import { normalizeSignupEnvOverride } from './client/authn/install-state.ts'
+} from "./client/authn/secrets.ts";
+import { type AppEnv, createApp } from "./app.ts";
+import { createDurableObjectDaemonCellRegistry } from "./daemon/cell/do-registry.ts";
+import { runOfflineSweep } from "./daemon/cell/offline-sweep.ts";
+import { registerAdminRoutes } from "./admin/routes.ts";
+import { registerAdminTierRoutes } from "./admin/tier-routes.ts";
+import { getWorkersAdminOpenApiSpec } from "./admin/openapi/workers.ts";
+import { registerDaemonApiRoutes } from "./daemon/api-routes.ts";
+import { registerWebhookRoutes } from "./webhook/routes.ts";
+import { registerStripeWebhookRoutes } from "./webhook/billing/stripe.ts";
+import { registerBillingRoutes } from "./client/billing/routes.ts";
+import { getWorkersClientOpenApiSpec } from "./client/openapi/workers.ts";
+import { resolveBillingConfig } from "./lib/billing/config.ts";
+import { registerWorkersDaemonWebSocket } from "./daemon/workers-ws.ts";
+import { resolveWorkersEmailQueue } from "./lib/email/mailgun/workers-queue.ts";
+import type { EmailQueue } from "./lib/email/types.ts";
+import { normalizeSignupEnvOverride } from "./client/authn/install-state.ts";
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
-} from './client/authn/password.ts'
-import { createWorkersCommandQueue } from './lib/commands/workers-queue.ts'
-import { createNoopCommandQueue } from './lib/commands/noop-command-queue.ts'
-import type { CommandQueue } from './lib/commands/queue.ts'
-import { isTransientError, processCommandEnvelope } from './lib/commands/consumer.ts'
-import { parseCommandEnvelope } from './lib/commands/envelope.ts'
+} from "./client/authn/password.ts";
+import { createWorkersCommandQueue } from "./lib/commands/workers-queue.ts";
+import { createNoopCommandQueue } from "./lib/commands/noop-command-queue.ts";
+import type { CommandQueue } from "./lib/commands/queue.ts";
+import {
+  isTransientError,
+  processCommandEnvelope,
+} from "./lib/commands/consumer.ts";
+import { parseCommandEnvelope } from "./lib/commands/envelope.ts";
 import {
   type AnalyticsEngineDatasetLike,
   resolveCloudflareAnalyticsSqlConfig,
   resolveServerMetricsStore,
-} from './daemon/metrics/store-selection-workers.ts'
-import { setServerStatusEventSink } from './daemon/metrics/status-events.ts'
-import type { ServerMetricsStore } from './daemon/metrics/types.ts'
+} from "./daemon/metrics/store-selection-workers.ts";
+import { setServerStatusEventSink } from "./daemon/metrics/status-events.ts";
+import type { ServerMetricsStore } from "./daemon/metrics/types.ts";
 import {
   parseExecutionLogRetentionDays,
   type R2BucketLike,
   resolveExecutionLogStore,
-} from './lib/execution-logs/store-selection.ts'
-import { setExecutionLogSealSink } from './lib/execution-logs/seal-on-terminal.ts'
-import type { ExecutionLogStore } from './lib/execution-logs/types.ts'
+} from "./lib/execution-logs/store-selection.ts";
+import { setExecutionLogSealSink } from "./lib/execution-logs/seal-on-terminal.ts";
+import type { ExecutionLogStore } from "./lib/execution-logs/types.ts";
 import {
   closeWorkersRequestDb,
   openWorkersRequestDb,
@@ -63,59 +66,67 @@ import {
   warnIfGithubWebhookRateLimiterMissing,
   warnIfGitlabWebhookRateLimiterMissing,
   warnIfStripeWebhookRateLimiterMissing,
-} from './workers-bindings.ts'
-import { type createWorkersDb, type Db, endDbConnection } from './db.ts'
-import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
-import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
-import { WEBAUTHN_CHALLENGE_PURPOSE } from './client/authn/passkeys.ts'
+} from "./workers-bindings.ts";
+import {
+  type createWorkersDb,
+  type Db,
+  endDbConnection,
+  isConnectionClosedError,
+} from "./db.ts";
+import { compatLogWarn } from "./log-compat.ts";
+import type { AuthRateLimiter } from "./client/authn/auth-rate-limit.ts";
+import { OTP_VERIFIER_SECRET_PURPOSE } from "./client/authn/email-otp.ts";
+import { WEBAUTHN_CHALLENGE_PURPOSE } from "./client/authn/passkeys.ts";
 import {
   BACKUP_CODE_VERIFIER_PURPOSE,
   TWO_FACTOR_CHALLENGE_PURPOSE,
-} from './client/authn/two-factor.ts'
+} from "./client/authn/two-factor.ts";
 
-export { DaemonCellObject } from './daemon/cell/do.ts'
+export { DaemonCellObject } from "./daemon/cell/do.ts";
 
-let initPromise: Promise<void> | null = null
-let cachedApp: ReturnType<typeof createApp> | null = null
-let cachedSessionSecrets: Awaited<ReturnType<typeof deriveSecretsConfig>> | null = null
-let cachedOtpVerifierSecrets: DerivedSecretsConfig | null = null
-let cachedTwoFactorChallengeSecrets: DerivedSecretsConfig | null = null
-let cachedBackupCodeVerifierSecrets: DerivedSecretsConfig | null = null
-let cachedWebauthnChallengeSecrets: DerivedSecretsConfig | null = null
-let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
-let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
-let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
-let cachedSecretsConfig: SecretsConfig | null = null
-let cachedCommandQueue: CommandQueue | null = null
-let cachedServerMetricsStore: ServerMetricsStore | null = null
-let cachedExecutionLogStore: ExecutionLogStore | null = null
-let cachedAuthRateLimiter: AuthRateLimiter | null = null
+let initPromise: Promise<void> | null = null;
+let cachedApp: ReturnType<typeof createApp> | null = null;
+let cachedSessionSecrets:
+  | Awaited<ReturnType<typeof deriveSecretsConfig>>
+  | null = null;
+let cachedOtpVerifierSecrets: DerivedSecretsConfig | null = null;
+let cachedTwoFactorChallengeSecrets: DerivedSecretsConfig | null = null;
+let cachedBackupCodeVerifierSecrets: DerivedSecretsConfig | null = null;
+let cachedWebauthnChallengeSecrets: DerivedSecretsConfig | null = null;
+let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null;
+let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null;
+let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null;
+let cachedSecretsConfig: SecretsConfig | null = null;
+let cachedCommandQueue: CommandQueue | null = null;
+let cachedServerMetricsStore: ServerMetricsStore | null = null;
+let cachedExecutionLogStore: ExecutionLogStore | null = null;
+let cachedAuthRateLimiter: AuthRateLimiter | null = null;
 let cachedDaemonCellRegistryFactory:
   | ((
-      env: CloudflareBindings,
-      db?: ReturnType<typeof createWorkersDb>
-    ) => ReturnType<typeof createDurableObjectDaemonCellRegistry>)
-  | null = null
+    env: CloudflareBindings,
+    db?: ReturnType<typeof createWorkersDb>,
+  ) => ReturnType<typeof createDurableObjectDaemonCellRegistry>)
+  | null = null;
 
 /** @internal Clears per-isolate Worker caches so entry tests can re-init. */
 export function resetWorkerAppCachesForTests(): void {
-  initPromise = null
-  cachedApp = null
-  cachedSessionSecrets = null
-  cachedOtpVerifierSecrets = null
-  cachedTwoFactorChallengeSecrets = null
-  cachedBackupCodeVerifierSecrets = null
-  cachedWebauthnChallengeSecrets = null
-  cachedDaemonJwtKeyring = null
-  cachedChallengeSigningSecrets = null
-  cachedDataEncryptionSecrets = null
-  cachedSecretsConfig = null
-  cachedCommandQueue = null
-  cachedServerMetricsStore = null
-  cachedExecutionLogStore = null
-  cachedAuthRateLimiter = null
-  cachedDaemonCellRegistryFactory = null
-  lazyEmailQueueResolveCallsForTests = 0
+  initPromise = null;
+  cachedApp = null;
+  cachedSessionSecrets = null;
+  cachedOtpVerifierSecrets = null;
+  cachedTwoFactorChallengeSecrets = null;
+  cachedBackupCodeVerifierSecrets = null;
+  cachedWebauthnChallengeSecrets = null;
+  cachedDaemonJwtKeyring = null;
+  cachedChallengeSigningSecrets = null;
+  cachedDataEncryptionSecrets = null;
+  cachedSecretsConfig = null;
+  cachedCommandQueue = null;
+  cachedServerMetricsStore = null;
+  cachedExecutionLogStore = null;
+  cachedAuthRateLimiter = null;
+  cachedDaemonCellRegistryFactory = null;
+  lazyEmailQueueResolveCallsForTests = 0;
 }
 
 /**
@@ -124,14 +135,14 @@ export function resetWorkerAppCachesForTests(): void {
  * from a test, so the lazy resolver's own call count is the seam — a
  * rate-limited or non-email-sending request must leave this at 0.
  */
-let lazyEmailQueueResolveCallsForTests = 0
+let lazyEmailQueueResolveCallsForTests = 0;
 
 export function resetLazyEmailQueueResolveCallsForTests(): void {
-  lazyEmailQueueResolveCallsForTests = 0
+  lazyEmailQueueResolveCallsForTests = 0;
 }
 
 export function getLazyEmailQueueResolveCallsForTests(): number {
-  return lazyEmailQueueResolveCallsForTests
+  return lazyEmailQueueResolveCallsForTests;
 }
 
 /**
@@ -148,27 +159,27 @@ export function getLazyEmailQueueResolveCallsForTests(): number {
 function createLazyWorkersEmailQueue(
   db: Db | undefined,
   platformEnv: Record<string, string | undefined>,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
 ): EmailQueue {
-  let resolved: Promise<EmailQueue> | null = null
+  let resolved: Promise<EmailQueue> | null = null;
   const resolve = (): Promise<EmailQueue> => {
     resolved ??= (() => {
-      lazyEmailQueueResolveCallsForTests += 1
-      return resolveWorkersEmailQueue(db, platformEnv, dataEncryptionSecrets)
-    })()
-    return resolved
-  }
+      lazyEmailQueueResolveCallsForTests += 1;
+      return resolveWorkersEmailQueue(db, platformEnv, dataEncryptionSecrets);
+    })();
+    return resolved;
+  };
   return {
     async enqueue(job) {
-      const queue = await resolve()
-      await queue.enqueue(job)
+      const queue = await resolve();
+      await queue.enqueue(job);
     },
     async close() {
-      if (!resolved) return
-      const queue = await resolved
-      await queue.close?.()
+      if (!resolved) return;
+      const queue = await resolved;
+      await queue.close?.();
     },
-  }
+  };
 }
 
 async function initWorkerApp(env: CloudflareBindings) {
@@ -177,41 +188,47 @@ async function initWorkerApp(env: CloudflareBindings) {
       TURBOPANEL_SECRET: env.TURBOPANEL_SECRET,
       TURBOPANEL_SECRETS: env.TURBOPANEL_SECRETS,
     },
-    'workers'
-  )
+    "workers",
+  );
   configureArgon2idWorkFactor({
     memoryKib: env.TURBOPANEL_ARGON2ID_MEMORY_KIB,
     timeCost: env.TURBOPANEL_ARGON2ID_TIME_COST,
-  })
-  await assertPasswordHasherAvailable()
-  cachedSecretsConfig = secretsConfig
-  cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  cachedOtpVerifierSecrets = await deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE)
+  });
+  await assertPasswordHasherAvailable();
+  cachedSecretsConfig = secretsConfig;
+  cachedSessionSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    "session-signing",
+  );
+  cachedOtpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    OTP_VERIFIER_SECRET_PURPOSE,
+  );
   cachedTwoFactorChallengeSecrets = await deriveSecretsConfig(
     secretsConfig,
     TWO_FACTOR_CHALLENGE_PURPOSE,
-  )
+  );
   cachedBackupCodeVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
     BACKUP_CODE_VERIFIER_PURPOSE,
-  )
+  );
   cachedWebauthnChallengeSecrets = await deriveSecretsConfig(
     secretsConfig,
     WEBAUTHN_CHALLENGE_PURPOSE,
-  )
-  cachedDaemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
+  );
+  cachedDaemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig);
   cachedChallengeSigningSecrets = await deriveSecretsConfig(
     secretsConfig,
-    'daemon-challenge-signing'
-  )
+    "daemon-challenge-signing",
+  );
   cachedDataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption'
-  )
+    "data-encryption",
+  );
   cachedCommandQueue = env.TURBOPANEL_COMMAND_QUEUE
     ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
-    : createNoopCommandQueue()
-  const analyticsEngineSql = resolveCloudflareAnalyticsSqlConfig(env)
+    : createNoopCommandQueue();
+  const analyticsEngineSql = resolveCloudflareAnalyticsSqlConfig(env);
   // Real backend (writes to SERVER_METRICS — the current envelope, per
   // field-map.ts). `CloudflareAnalyticsEngineServerMetricsStore`
   // implements the full `ServerMetricsStore` surface (writes and reads
@@ -223,18 +240,19 @@ async function initWorkerApp(env: CloudflareBindings) {
   // `SERVER_METRICS` binding is unconfigured, so this is always the
   // correct store to use here regardless of binding state.
   cachedServerMetricsStore = resolveServerMetricsStore({
-    runtime: 'workers',
-    analyticsEngine: (env as { SERVER_METRICS?: AnalyticsEngineDatasetLike }).SERVER_METRICS,
+    runtime: "workers",
+    analyticsEngine:
+      (env as { SERVER_METRICS?: AnalyticsEngineDatasetLike }).SERVER_METRICS,
     analyticsEngineSql,
-  })
-  setServerStatusEventSink(cachedServerMetricsStore)
+  });
+  setServerStatusEventSink(cachedServerMetricsStore);
   cachedExecutionLogStore = resolveExecutionLogStore({
-    runtime: 'workers',
+    runtime: "workers",
     r2: (env as { EXECUTION_LOGS?: R2BucketLike }).EXECUTION_LOGS,
-  })
+  });
   // Terminal command transitions run in the queue-consumer and cron isolates
   // that never see a Hono context — register the seal sink at isolate init.
-  setExecutionLogSealSink(cachedExecutionLogStore)
+  setExecutionLogSealSink(cachedExecutionLogStore);
   // Email queue + signup force are resolved per request from current env/DB —
   // do not bake them into createApp() so dashboard/panel changes apply without
   // waiting for an isolate recycle. signupEnvOverride here is only a fallback
@@ -246,7 +264,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     twoFactorChallengeSecrets: cachedTwoFactorChallengeSecrets ?? undefined,
     backupCodeVerifierSecrets: cachedBackupCodeVerifierSecrets ?? undefined,
     webauthnChallengeSecrets: cachedWebauthnChallengeSecrets ?? undefined,
-    runtime: 'workers',
+    runtime: "workers",
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
     serverMetricsStore: cachedServerMetricsStore,
@@ -255,89 +273,98 @@ async function initWorkerApp(env: CloudflareBindings) {
     secretsConfig: cachedSecretsConfig ?? undefined,
     registerBilling: registerBillingRoutes,
     getClientOpenApiSpec: getWorkersClientOpenApiSpec,
-  })
-  warnIfDaemonRateLimitersMissing(env)
-  warnIfClientAuthRateLimiterMissing(env)
-  warnIfClientAuthStrictRateLimiterMissing(env)
-  warnIfGithubWebhookRateLimiterMissing(env)
-  warnIfGitlabWebhookRateLimiterMissing(env)
-  warnIfStripeWebhookRateLimiterMissing(env)
-  cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env)
-  const rateLimiters = resolveWorkersDaemonRateLimiters(env)
+  });
+  warnIfDaemonRateLimitersMissing(env);
+  warnIfClientAuthRateLimiterMissing(env);
+  warnIfClientAuthStrictRateLimiterMissing(env);
+  warnIfGithubWebhookRateLimiterMissing(env);
+  warnIfGitlabWebhookRateLimiterMissing(env);
+  warnIfStripeWebhookRateLimiterMissing(env);
+  cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env);
+  const rateLimiters = resolveWorkersDaemonRateLimiters(env);
   // Daemon registrars are generic over the env — the app's `AppEnv` carries
   // through without a cast (same as deno-server.ts).
-  const daemonRoutes = cachedApp
+  const daemonRoutes = cachedApp;
   registerDaemonApiRoutes(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     challengeSigningSecrets: cachedChallengeSigningSecrets ?? undefined,
     secretsConfig: cachedSecretsConfig ?? undefined,
     restLimiter: rateLimiters.rest,
     metricsLimiter: rateLimiters.metrics,
-    runtime: 'workers',
-  })
+    runtime: "workers",
+  });
   registerWorkersDaemonWebSocket(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     connectLimiter: rateLimiters.connect,
-  })
+  });
   // Unversioned, session-free surface: mounted on the top-level app rather than
   // under CLIENT_API_PREFIX, and authenticating itself (see
   // `src/webhook/AGENTS.md`).
   registerWebhookRoutes(cachedApp, {
-    runtime: 'workers',
+    runtime: "workers",
     github: resolveWorkersGithubWebhookRateLimiter(env),
     gitlab: resolveWorkersGitlabWebhookRateLimiter(env),
-  })
+  });
   registerStripeWebhookRoutes(cachedApp, {
-    runtime: 'workers',
+    runtime: "workers",
     rateLimiter: resolveWorkersStripeWebhookRateLimiter(env),
-  })
+  });
   registerAdminRoutes(cachedApp, {
     secrets: cachedSessionSecrets!,
-    runtime: 'workers',
+    runtime: "workers",
     devSurface: isWorkersDevSurface(env),
     registerTiers: (admin) =>
       registerAdminTierRoutes(admin, { secrets: cachedSessionSecrets! }),
     getOpenApiSpec: getWorkersAdminOpenApiSpec,
-  })
-  cachedDaemonCellRegistryFactory = (env, db) => createDurableObjectDaemonCellRegistry(env, db)
+  });
+  cachedDaemonCellRegistryFactory = (env, db) =>
+    createDurableObjectDaemonCellRegistry(env, db);
 }
 
 function isWorkersDevSurface(env: CloudflareBindings): boolean {
-  const flag = env.TURBOPANEL_DEV_SURFACE?.trim().toLowerCase()
-  return flag === '1' || flag === 'true'
+  const flag = env.TURBOPANEL_DEV_SURFACE?.trim().toLowerCase();
+  return flag === "1" || flag === "true";
 }
 
-function stringBindingEnv(env: CloudflareBindings): Record<string, string | undefined> {
-  const out: Record<string, string | undefined> = {}
+function stringBindingEnv(
+  env: CloudflareBindings,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(env)) {
-    if (typeof value === 'string') out[key] = value
+    if (typeof value === "string") out[key] = value;
   }
   // Plain-text dashboard vars are normally strings, but bindings may arrive as
   // numbers/booleans — keep the signup force visible on platformEnv either way.
-  const signupForce = normalizeSignupEnvOverride(env.TURBOPANEL_IS_SIGNUP_ENABLED)
+  const signupForce = normalizeSignupEnvOverride(
+    env.TURBOPANEL_IS_SIGNUP_ENABLED,
+  );
   if (signupForce !== undefined) {
-    out.TURBOPANEL_IS_SIGNUP_ENABLED = signupForce
+    out.TURBOPANEL_IS_SIGNUP_ENABLED = signupForce;
   }
-  return out
+  return out;
 }
 
 export default {
-  async fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
-    initPromise ??= initWorkerApp(env)
-    await initPromise
+  async fetch(
+    request: Request,
+    env: CloudflareBindings,
+    ctx: ExecutionContext,
+  ) {
+    initPromise ??= initWorkerApp(env);
+    await initPromise;
 
-    const postgresConnectionString =
-      env.HYPERDRIVE?.connectionString ?? env.TURBOPANEL_DATABASE_URL?.trim() ?? undefined
-    warnIfCachedHyperdriveMissing(env)
+    const postgresConnectionString = env.HYPERDRIVE?.connectionString ??
+      env.TURBOPANEL_DATABASE_URL?.trim() ?? undefined;
+    warnIfCachedHyperdriveMissing(env);
     // Fresh clients for this invocation only — close in finally via waitUntil
     // so postgres.js pools cannot stack to the 128 MB isolate limit.
-    const dbHandles = openWorkersRequestDb(env)
-    const { db, queryCache } = dbHandles
+    let dbHandles = openWorkersRequestDb(env);
+    let { db, queryCache } = dbHandles;
     try {
-      const platformEnv = stringBindingEnv(env)
+      const platformEnv = stringBindingEnv(env);
       // Per request, like platformEnv — a dashboard secret change applies
       // without an isolate recycle. Absence *is* billing off.
-      const billingConfig = resolveBillingConfig(platformEnv)
+      const billingConfig = resolveBillingConfig(platformEnv);
       // Lazy: resolving email settings decrypts the Mailgun/SMTP secret on
       // every call, so it must not run ahead of routing (or the auth rate
       // limiter) for requests that never send email — a webhook flood or an
@@ -350,116 +377,149 @@ export default {
       const emailQueue: EmailQueue = createLazyWorkersEmailQueue(
         db,
         platformEnv,
-        cachedDataEncryptionSecrets ?? undefined
-      )
-      const requestApp = new Hono<AppEnv>()
-      requestApp.use('*', async (c, next) => {
+        cachedDataEncryptionSecrets ?? undefined,
+      );
+      const requestApp = new Hono<AppEnv>();
+      requestApp.use("*", async (c, next) => {
         // Session-cookie TLS uses the URL-derived (Workers) path — a spoofed
         // X-Forwarded-Proto must never downgrade the cookie's Secure flag/name.
-        c.set('runtime', 'workers')
+        c.set("runtime", "workers");
         if (db) {
-          c.set('db', db)
+          c.set("db", db);
         }
         if (queryCache) {
-          c.set('queryCache', queryCache)
+          c.set("queryCache", queryCache);
         }
-        c.set('emailQueue', emailQueue)
-        if (cachedCommandQueue) c.set('commandQueue', cachedCommandQueue)
+        c.set("emailQueue", emailQueue);
+        if (cachedCommandQueue) c.set("commandQueue", cachedCommandQueue);
         if (cachedAuthRateLimiter) {
-          c.set('authRateLimiter', cachedAuthRateLimiter)
+          c.set("authRateLimiter", cachedAuthRateLimiter);
         }
-        c.set('platformEnv', platformEnv)
-        if (billingConfig) c.set('billingConfig', billingConfig)
+        c.set("platformEnv", platformEnv);
+        if (billingConfig) c.set("billingConfig", billingConfig);
         if (postgresConnectionString) {
-          c.set('postgresConnectionString', postgresConnectionString)
+          c.set("postgresConnectionString", postgresConnectionString);
         }
         if (cachedDaemonCellRegistryFactory) {
-          const registry = cachedDaemonCellRegistryFactory(env, db)
-          c.set('daemonCellRegistry', registry)
+          const registry = cachedDaemonCellRegistryFactory(env, db);
+          c.set("daemonCellRegistry", registry);
         }
         if (cachedServerMetricsStore) {
-          c.set('serverMetricsStore', cachedServerMetricsStore)
+          c.set("serverMetricsStore", cachedServerMetricsStore);
         }
         if (cachedExecutionLogStore) {
-          c.set('executionLogStore', cachedExecutionLogStore)
+          c.set("executionLogStore", cachedExecutionLogStore);
         }
-        await next()
-      })
-      requestApp.route('/', cachedApp!)
+        await next();
+      });
+      requestApp.route("/", cachedApp!);
 
-      return await requestApp.fetch(request, env, ctx)
+      try {
+        return await requestApp.fetch(request, env, ctx);
+      } catch (err) {
+        // A primary restart or a failover drops the connections it is
+        // holding, and this runtime opens a fresh client per request — so
+        // the only request that can see it is the one in flight. Retry it
+        // once, on a new connection, for the methods HTTP already defines as
+        // safe: a GET that failed mid-flight has changed nothing, while
+        // replaying a POST could double a write. Anything that is not a
+        // connection-closed error propagates untouched.
+        const method = request.method.toUpperCase();
+        if (
+          !isConnectionClosedError(err) ||
+          (method !== "GET" && method !== "HEAD")
+        ) {
+          throw err;
+        }
+        compatLogWarn(
+          "db",
+          `connection lost mid-request on ${method} ${
+            new URL(request.url).pathname
+          }; retrying once on a fresh connection`,
+        );
+        const previousHandles = dbHandles;
+        ctx.waitUntil(closeWorkersRequestDb(previousHandles).catch(() => {}));
+        dbHandles = openWorkersRequestDb(env);
+        db = dbHandles.db;
+        queryCache = dbHandles.queryCache;
+        // The same request object: GET/HEAD carry no body to have consumed.
+        return await requestApp.fetch(request, env, ctx);
+      }
     } finally {
-      ctx.waitUntil(closeWorkersRequestDb(dbHandles).catch(() => {}))
+      ctx.waitUntil(closeWorkersRequestDb(dbHandles).catch(() => {}));
     }
   },
 
-  async scheduled(controller: ScheduledController, env: CloudflareBindings, ctx: ExecutionContext) {
-    initPromise ??= initWorkerApp(env)
-    await initPromise
+  async scheduled(
+    controller: ScheduledController,
+    env: CloudflareBindings,
+    ctx: ExecutionContext,
+  ) {
+    initPromise ??= initWorkerApp(env);
+    await initPromise;
     const sweep = runOfflineSweep(
       env,
       cachedSecretsConfig && cachedDataEncryptionSecrets
         ? {
-            secretsConfig: cachedSecretsConfig,
-            dataEncryptionSecrets: cachedDataEncryptionSecrets,
-          }
+          secretsConfig: cachedSecretsConfig,
+          dataEncryptionSecrets: cachedDataEncryptionSecrets,
+        }
         : null,
       {
         // Hosted retention override, resolved at the entry point exactly like
         // deno-server.ts does for the self-hosted path.
         executionLogRetentionDays: parseExecutionLogRetentionDays(
-          env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS
+          env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS,
         ),
         scheduledTime: controller.scheduledTime,
-      }
-    )
-    ctx.waitUntil(sweep)
-    await sweep
+      },
+    );
+    ctx.waitUntil(sweep);
+    await sweep;
   },
 
   async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {
-    initPromise ??= initWorkerApp(env)
-    await initPromise
+    initPromise ??= initWorkerApp(env);
+    await initPromise;
 
-    const db = resolveWorkersDb(env)
+    const db = resolveWorkersDb(env);
     try {
       if (!db || !cachedDaemonCellRegistryFactory) {
-        batch.retryAll()
-        return
+        batch.retryAll();
+        return;
       }
 
-      const registry = cachedDaemonCellRegistryFactory(env, db)
+      const registry = cachedDaemonCellRegistryFactory(env, db);
 
       try {
         for (const msg of batch.messages) {
           try {
-            const envelope = parseCommandEnvelope(msg.body)
+            const envelope = parseCommandEnvelope(msg.body);
             await processCommandEnvelope(db, registry, envelope, {
               commandQueue: cachedCommandQueue ?? undefined,
-              resealDeps:
-                cachedSecretsConfig && cachedDataEncryptionSecrets
-                  ? {
-                      secretsConfig: cachedSecretsConfig,
-                      dataEncryptionSecrets: cachedDataEncryptionSecrets,
-                    }
-                  : undefined,
+              resealDeps: cachedSecretsConfig && cachedDataEncryptionSecrets
+                ? {
+                  secretsConfig: cachedSecretsConfig,
+                  dataEncryptionSecrets: cachedDataEncryptionSecrets,
+                }
+                : undefined,
               secretsConfig: cachedSecretsConfig ?? undefined,
               dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
-            })
-            msg.ack()
+            });
+            msg.ack();
           } catch (error) {
             if (isTransientError(error)) {
-              msg.retry()
+              msg.retry();
             } else {
-              msg.ack()
+              msg.ack();
             }
           }
         }
       } catch {
-        batch.retryAll()
+        batch.retryAll();
       }
     } finally {
-      if (db) await endDbConnection(db).catch(() => {})
+      if (db) await endDbConnection(db).catch(() => {});
     }
   },
-} satisfies ExportedHandler<CloudflareBindings>
+} satisfies ExportedHandler<CloudflareBindings>;
