@@ -568,6 +568,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/query-cache/hyperdrive-query-cache.test.ts \
   src/runtime-paths.test.ts \
   src/scalar-html.test.ts \
+  src/security-headers.test.ts \
   src/server-paths.deno.test.ts \
   src/server-addresses-deno.hostfree.test.ts \
   src/server-registry-metadata.test.ts \
