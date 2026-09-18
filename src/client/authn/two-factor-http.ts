@@ -28,6 +28,7 @@ import {
 import { assertRecentAuthOr403 } from "./reauth.ts";
 import {
   createSession,
+  deleteOtherSessionsForUser,
   getSession,
   type SessionData,
 } from "./session-store.ts";
@@ -117,7 +118,10 @@ async function readOptionalJsonObject(
   }
 }
 
-function mapTwoFactorMutationError(c: Context<AppEnv>, err: unknown): Response | null {
+function mapTwoFactorMutationError(
+  c: Context<AppEnv>,
+  err: unknown,
+): Response | null {
   if (err instanceof TwoFactorEnabledError) {
     return c.json({ ok: false, error: "two_factor_enabled" }, 409);
   }
@@ -278,6 +282,12 @@ export function registerTwoFactorRoutes(
         dataEncryptionSecrets,
         backupCodeVerifierSecrets: opts.backupCodeVerifierSecrets,
       });
+      // 2FA is now on: every other outstanding session predates it and goes.
+      await deleteOtherSessionsForUser(
+        db,
+        sessionData.userId,
+        sessionData.sessionId,
+      );
       return c.json(verified, 200);
     } catch (err) {
       const mapped = mapTwoFactorMutationError(c, err);
@@ -312,6 +322,13 @@ export function registerTwoFactorRoutes(
         userId: sessionData.userId,
         backupCodeVerifierSecrets: opts.backupCodeVerifierSecrets,
       });
+      // Regenerating backup codes is a "secure my account" action; the same
+      // discipline applies.
+      await deleteOtherSessionsForUser(
+        db,
+        sessionData.userId,
+        sessionData.sessionId,
+      );
       return c.json(regenerated, 200);
     } catch (err) {
       const mapped = mapTwoFactorMutationError(c, err);
@@ -338,6 +355,12 @@ export function registerTwoFactorRoutes(
     if (reauth) return reauth;
 
     await disableTwoFactor(db, sessionData.userId);
+    // Turning 2FA off changes how the account signs in — revoke the rest.
+    await deleteOtherSessionsForUser(
+      db,
+      sessionData.userId,
+      sessionData.sessionId,
+    );
     return c.json({ ok: true }, 200);
   });
 

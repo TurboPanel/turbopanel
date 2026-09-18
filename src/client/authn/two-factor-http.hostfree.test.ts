@@ -439,3 +439,66 @@ test("sign-in/2fa rejects a user disabled after challenge issuance", async () =>
   assertEquals(ctx.state.insertedSessions.length, sessionsBefore);
   assertEquals(ctx.state.sessions.size, tokenCountBefore);
 });
+
+test("enrolling, regenerating and disabling each revoke the user's other sessions", async () => {
+  const ctx = await buildTwoFactorApp();
+  // The hostfree session double resolves a cookie to the newest session row,
+  // so each phase seeds its "other" session first and then mints the cookie
+  // it will use — the other session is always the older of the two.
+  const seedOther = async (): Promise<string> => {
+    const { token } = await createSession(ctx.db, ctx.userId, {});
+    return token;
+  };
+
+  const firstOther = await seedOther();
+  let cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId);
+  assertEquals(ctx.state.sessions.size, 2);
+
+  const enrollRes = await ctx.app.request(`${AUTH}/2fa/totp/enroll`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ password: PASSWORD }),
+  });
+  assertEquals(enrollRes.status, 200);
+  const enrolled = await readJsonBody<{ secret: string }>(enrollRes);
+  // Enrolment alone does not turn 2FA on, so it revokes nothing yet.
+  assertEquals(ctx.state.sessions.size, 2);
+
+  const code = await generateTotp(decodeBase32(enrolled.secret), {
+    unixSeconds: Math.floor(Date.now() / 1000),
+  });
+  const verifyRes = await ctx.app.request(`${AUTH}/2fa/totp/verify`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  assertEquals(verifyRes.status, 200);
+  // 2FA is on now: the older session predates it and is gone.
+  assertEquals(ctx.state.sessions.has(firstOther), false);
+  assertEquals(ctx.state.sessions.size, 1);
+
+  const secondOther = await seedOther();
+  cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId);
+  const regenRes = await ctx.app.request(
+    `${AUTH}/2fa/backup-codes/regenerate`,
+    {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ password: PASSWORD }),
+    },
+  );
+  assertEquals(regenRes.status, 200);
+  assertEquals(ctx.state.sessions.has(secondOther), false);
+  assertEquals(ctx.state.sessions.size, 1);
+
+  const thirdOther = await seedOther();
+  cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId);
+  const disableRes = await ctx.app.request(`${AUTH}/2fa/disable`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ password: PASSWORD }),
+  });
+  assertEquals(disableRes.status, 200);
+  assertEquals(ctx.state.sessions.has(thirdOther), false);
+  assertEquals(ctx.state.sessions.size, 1);
+});

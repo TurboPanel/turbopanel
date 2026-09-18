@@ -19,6 +19,7 @@ import { registerAuthRoutes } from "../http.ts";
 import { hashPassword } from "../password.ts";
 import { deriveSecretsConfig } from "../secrets.ts";
 import { createSession } from "../session-store.ts";
+import { REAUTH_WINDOW_MS } from "../reauth.ts";
 import { TWO_FACTOR_CHALLENGE_PURPOSE } from "../two-factor.ts";
 import { OAUTH_STATE_TTL_MS, signOAuthState } from "./oauth-state.ts";
 
@@ -924,4 +925,117 @@ test("callback missing two-factor challenge secrets redirects not_configured", a
   } finally {
     restore();
   }
+});
+
+/** Age the session behind `token` so it falls outside the step-up window. */
+function ageSession(
+  state: ReturnType<typeof createEmptyMockAuthState>,
+  token: string,
+  ageMs: number,
+): void {
+  const data = state.sessions.get(token);
+  if (!data) throw new Error("no session for that token");
+  state.sessions.set(token, {
+    ...data,
+    createdAt: new Date(Date.now() - ageMs).toISOString(),
+  });
+}
+
+test("link start refuses a stale session — a hijacked session cannot plant a sign-in method", async () => {
+  const { app, db, state, secrets } = await buildApp();
+  const userId = crypto.randomUUID();
+  seedMockCredentialUser(state, {
+    id: userId,
+    email: "owner@example.com",
+    password: await hashPassword(PASSWORD),
+    isEmailVerified: true,
+  });
+  const { token } = await createSession(db, userId, {});
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
+    token,
+    secrets,
+  )}`;
+
+  // Fresh: the redirect to the provider is issued as before.
+  const fresh = await app.request(
+    `${ORIGIN}${AUTH}/oauth/github/start?link=1`,
+    {
+      headers: { cookie },
+    },
+  );
+  assertEquals(fresh.status, 302);
+  assertEquals(
+    (fresh.headers.get("location") ?? "").includes(
+      "https://github.com/login/oauth/authorize",
+    ),
+    true,
+  );
+
+  // Older than the step-up window: refused, and no provider redirect at all.
+  ageSession(state, token, REAUTH_WINDOW_MS + 60_000);
+  const stale = await app.request(
+    `${ORIGIN}${AUTH}/oauth/github/start?link=1`,
+    {
+      headers: { cookie },
+    },
+  );
+  assertEquals(stale.status, 302);
+  assertEquals(
+    stale.headers.get("location"),
+    "/account/security?linked=&error=oauth_reauth_required",
+  );
+
+  // Signing in (not linking) is unaffected by session age.
+  const signIn = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`);
+  assertEquals(signIn.status, 302);
+  assertEquals(
+    (signIn.headers.get("location") ?? "").includes(
+      "https://github.com/login/oauth/authorize",
+    ),
+    true,
+  );
+});
+
+test("linking a provider revokes the user's other sessions and keeps the current one", async () => {
+  const { app, db, state, secrets } = await buildApp();
+  const userId = crypto.randomUUID();
+  seedMockCredentialUser(state, {
+    id: userId,
+    email: "owner@example.com",
+    password: await hashPassword(PASSWORD),
+    isEmailVerified: true,
+  });
+  // An older session elsewhere — a laptop left signed in, or an attacker's.
+  const { token: otherToken } = await createSession(db, userId, {});
+  const { token } = await createSession(db, userId, {});
+  const cookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(
+    token,
+    secrets,
+  )}`;
+  assertEquals(state.sessions.size, 2);
+
+  const restore = stubGithubIdentityFetch();
+  try {
+    const start = await app.request(
+      `${ORIGIN}${AUTH}/oauth/github/start?link=1`,
+      { headers: { cookie } },
+    );
+    const authorize = new URL(start.headers.get("location") ?? "");
+    const signedState = authorize.searchParams.get("state") ?? "";
+    const linked = await app.request(
+      `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
+        encodeURIComponent(signedState)
+      }`,
+      { headers: { cookie } },
+    );
+    assertEquals(
+      linked.headers.get("location"),
+      "/account/security?linked=github",
+    );
+  } finally {
+    restore();
+  }
+
+  assertEquals(state.sessions.has(token), true);
+  assertEquals(state.sessions.has(otherToken), false);
 });

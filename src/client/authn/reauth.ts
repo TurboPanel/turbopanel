@@ -13,6 +13,23 @@ import type { SessionData } from "./session-store.ts";
 export const REAUTH_WINDOW_MS = 15 * 60 * 1000;
 
 /**
+ * Was this session created within {@link REAUTH_WINDOW_MS}?
+ *
+ * The session half of {@link assertRecentAuthOr403}, on its own, for the one
+ * step-up that cannot carry a password: the OAuth link redirect is a browser
+ * `GET`, so there is no body to resubmit a password in. A stale session is
+ * refused there rather than being allowed to plant a permanent
+ * attacker-controlled sign-in method.
+ */
+export function isSessionRecentlyAuthenticated(
+  session: Pick<SessionData, "createdAt">,
+): boolean {
+  if (!session.createdAt) return false;
+  const ageMs = Date.now() - new Date(session.createdAt).getTime();
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= REAUTH_WINDOW_MS;
+}
+
+/**
  * Step-up auth for sensitive 2FA mutations.
  *
  * Credential accounts must resubmit `body.password`. Everyone else (passkey /
@@ -54,11 +71,7 @@ export async function assertRecentAuthOr403(
     return null;
   }
 
-  if (!session.createdAt) {
-    return c.json({ ok: false, error: "Reauthentication required" }, 403);
-  }
-  const ageMs = Date.now() - new Date(session.createdAt).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > REAUTH_WINDOW_MS) {
+  if (!isSessionRecentlyAuthenticated(session)) {
     return c.json({ ok: false, error: "Reauthentication required" }, 403);
   }
   return null;

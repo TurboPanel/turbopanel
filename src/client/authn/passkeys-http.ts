@@ -30,16 +30,17 @@ import {
   deletePasskey,
   InvalidPasskeyCeremonyError,
   listPasskeys,
+  type PasskeyCredentialAssertion,
+  type PasskeyCredentialAttestation,
   PasskeyExistsError,
   signWebauthnChallenge,
   verifyPasskeyLogin,
   verifyPasskeyRegistration,
-  type PasskeyCredentialAssertion,
-  type PasskeyCredentialAttestation,
 } from "./passkeys.ts";
 import { assertRecentAuthOr403 } from "./reauth.ts";
 import {
   createSession,
+  deleteOtherSessionsForUser,
   getSession,
   type SessionData,
 } from "./session-store.ts";
@@ -117,7 +118,10 @@ async function readOptionalJsonObject(
   }
 }
 
-function mapPasskeyMutationError(c: Context<AppEnv>, err: unknown): Response | null {
+function mapPasskeyMutationError(
+  c: Context<AppEnv>,
+  err: unknown,
+): Response | null {
   if (err instanceof PasskeyExistsError) {
     return c.json({ ok: false, error: "passkey_exists" }, 409);
   }
@@ -166,7 +170,9 @@ type LoginVerifyBody = {
   credential: PasskeyCredentialAssertion;
 };
 
-function parseLoginVerifyBody(body: unknown): AuthBodyValidation<LoginVerifyBody> {
+function parseLoginVerifyBody(
+  body: unknown,
+): AuthBodyValidation<LoginVerifyBody> {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "Invalid request" };
   }
@@ -189,7 +195,9 @@ function parseLoginVerifyBody(body: unknown): AuthBodyValidation<LoginVerifyBody
   };
 }
 
-function parseEmptyObject(body: unknown): AuthBodyValidation<Record<string, never>> {
+function parseEmptyObject(
+  body: unknown,
+): AuthBodyValidation<Record<string, never>> {
   if (body === null || body === undefined) {
     return { ok: true, value: {} };
   }
@@ -282,6 +290,12 @@ export function registerPasskeyRoutes(
         expectedRpId: rpId,
         expectedOrigin: origin,
       });
+      // A new way into the account: every other outstanding session goes.
+      await deleteOtherSessionsForUser(
+        db,
+        sessionData.userId,
+        sessionData.sessionId,
+      );
       return c.json({ ok: true, id: registered.id }, 200);
     } catch (err) {
       const mapped = mapPasskeyMutationError(c, err);
@@ -325,6 +339,12 @@ export function registerPasskeyRoutes(
     if (!deleted) {
       return c.json({ ok: false, error: "Not found" }, 404);
     }
+    // A sign-in method changed: every other session goes with it.
+    await deleteOtherSessionsForUser(
+      db,
+      sessionData.userId,
+      sessionData.sessionId,
+    );
     return c.json({ ok: true }, 200);
   });
 

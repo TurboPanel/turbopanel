@@ -219,7 +219,7 @@ async function buildPasskeyApp() {
     secrets,
   )}`;
 
-  return { app, db, state, userId, cookie };
+  return { app, db, state, userId, cookie, secrets };
 }
 
 async function registerOptions(
@@ -656,4 +656,52 @@ test("mismatched origin is rejected", async () => {
     }),
   });
   assertEquals(loginVerify.status, 400);
+});
+
+test("adding and removing a passkey revokes the user's other sessions", async () => {
+  const ctx = await buildPasskeyApp();
+  // The hostfree session double resolves a cookie to the newest session row,
+  // so the "other" session is seeded first and the working cookie re-minted
+  // after it — the other session is always the older of the two.
+  const mintCookie = async (): Promise<string> => {
+    const { token } = await createSession(ctx.db, ctx.userId, {});
+    return `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(
+      token,
+      ctx.secrets,
+    )}`;
+  };
+  const { token: firstOther } = await createSession(ctx.db, ctx.userId, {});
+  let cookie = await mintCookie();
+
+  const pair = await generateEs256();
+  const options = await registerOptions(ctx.app, cookie);
+  const built = await registerCredential(pair, options.options.challenge, 0);
+  const verifyRes = await ctx.app.request(`${AUTH}/passkeys/register/verify`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      challenge: options.challenge,
+      name: "Laptop",
+      credential: built.credential,
+    }),
+  });
+  assertEquals(verifyRes.status, 200);
+  const registered = await readJsonBody<{ id: string }>(verifyRes);
+  // A new way into the account: the older session is gone.
+  assertEquals(ctx.state.sessions.has(firstOther), false);
+  assertEquals(ctx.state.sessions.size, 1);
+
+  const { token: secondOther } = await createSession(ctx.db, ctx.userId, {});
+  cookie = await mintCookie();
+  const deleteRes = await ctx.app.request(
+    `${AUTH}/passkeys/${registered.id}`,
+    {
+      method: "DELETE",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ password: PASSWORD }),
+    },
+  );
+  assertEquals(deleteRes.status, 200);
+  assertEquals(ctx.state.sessions.has(secondOther), false);
+  assertEquals(ctx.state.sessions.size, 1);
 });

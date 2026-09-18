@@ -1,4 +1,4 @@
-import { and, eq, gt } from 'drizzle-orm'
+import { and, eq, gt, ne } from 'drizzle-orm'
 import { generateSessionToken, SESSION_EXPIRES_IN_MS } from './crypto.ts'
 import type { Db } from '../../db.ts'
 import { session, user } from '../../lib/db/schema.ts'
@@ -104,6 +104,25 @@ export async function deleteSession(
   if (db !== undefined) {
     await db.delete(session).where(eq(session.token, token))
   }
+}
+
+/**
+ * Revoke every session for `userId` except `keepSessionId` — the discipline
+ * password reset already had, applied to every other change of how an account
+ * can be signed into (2FA enrolled or disabled, backup codes regenerated, a
+ * provider linked or unlinked, a passkey added or removed). A session
+ * compromised before the user secured their account must not outlive the
+ * securing; the one doing the securing stays signed in.
+ */
+export async function deleteOtherSessionsForUser(
+  db: Db | undefined,
+  userId: string,
+  keepSessionId: string,
+): Promise<void> {
+  if (db === undefined) return
+  await db
+    .delete(session)
+    .where(and(eq(session.userId, userId), ne(session.id, keepSessionId)))
 }
 
 /** Revoke every session for `userId` (e.g. after password reset). */

@@ -441,6 +441,70 @@ function buildSelectFrom(
   return chain;
 }
 
+/**
+ * Sessions the delete removes.
+ *
+ * Hostfree doubles ignore `WHERE` almost everywhere, but session deletion is
+ * the one place where "all of them" and "all but this one" are different
+ * behaviours worth modelling: `deleteSessionsByUserId` (password reset) takes
+ * everything, `deleteOtherSessionsForUser` (2FA, passkeys, OAuth link/unlink)
+ * keeps the session doing the securing. The condition's own chunks carry the
+ * `<>` operator and the id to keep, so the double reads that much rather than
+ * pretending both calls mean the same thing.
+ */
+function deleteSessionRows(state: MockAuthState, condition: unknown): void {
+  const keepId = keptSessionId(condition);
+  if (keepId === undefined) {
+    state.sessions.clear();
+    return;
+  }
+  for (const [token, data] of [...state.sessions.entries()]) {
+    if (data.sessionId !== keepId) state.sessions.delete(token);
+  }
+}
+
+/**
+ * The right-hand value of a `ne(...)` in a drizzle condition, if any.
+ *
+ * A condition flattens to alternating text chunks (`{ value: string[] }`) and
+ * parameters (`{ value }`); the parameter after the ` <> ` text is the id the
+ * caller is keeping.
+ */
+function keptSessionId(condition: unknown): string | undefined {
+  const flat: unknown[] = [];
+  const flatten = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    const nested = (value as Record<string, unknown>).queryChunks;
+    if (!Array.isArray(nested)) return;
+    for (const chunk of nested) {
+      flat.push(chunk);
+      flatten(chunk);
+    }
+  };
+  flatten(condition);
+  const chunkText = (chunk: unknown): string | undefined => {
+    if (!chunk || typeof chunk !== "object") return undefined;
+    const value = (chunk as Record<string, unknown>).value;
+    return Array.isArray(value) &&
+        value.every((part) => typeof part === "string")
+      ? value.join("")
+      : undefined;
+  };
+  for (let i = 0; i < flat.length; i++) {
+    if (chunkText(flat[i])?.trim() !== "<>") continue;
+    for (let j = i + 1; j < flat.length; j++) {
+      const candidate = flat[j];
+      if (chunkText(candidate) !== undefined) continue;
+      const value = candidate && typeof candidate === "object"
+        ? (candidate as Record<string, unknown>).value
+        : undefined;
+      if (typeof value === "string") return value;
+      break;
+    }
+  }
+  return undefined;
+}
+
 function insertSessionRow(state: MockAuthState, row: Record<string, unknown>) {
   state.insertedSessions.push(row);
   const userId = String(row.userId);
@@ -832,7 +896,7 @@ export function createMockAuthDb(state: MockAuthState): Db {
     delete: (table: unknown) => ({
       where: (_cond: unknown) => {
         let returningRows: Row[] = [];
-        if (table === session) state.sessions.clear();
+        if (table === session) deleteSessionRows(state, _cond);
         if (table === twoFactor) state.twoFactorRows = [];
         if (table === verification) deleteVerificationRows(state, internal);
         if (table === passkey) {

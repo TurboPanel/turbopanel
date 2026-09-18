@@ -35,9 +35,13 @@ import {
   resolveEffectiveSignupEnabled,
   resolveSignupEnvOverrideFromContext,
 } from "../install-state.ts";
-import { assertRecentAuthOr403 } from "../reauth.ts";
+import {
+  assertRecentAuthOr403,
+  isSessionRecentlyAuthenticated,
+} from "../reauth.ts";
 import {
   createSession,
+  deleteOtherSessionsForUser,
   getSession,
   type SessionData,
 } from "../session-store.ts";
@@ -403,6 +407,9 @@ async function handleOAuthAccountLink(
   if (linked === "conflict") {
     return c.redirect("/account/security?linked=&error=account_conflict");
   }
+  // A new way into the account: every other outstanding session goes, so a
+  // session compromised beforehand cannot outlive the change.
+  await deleteOtherSessionsForUser(db, linkUserId, sessionData.sessionId);
   return c.redirect(
     `/account/security?linked=${encodeURIComponent(providerParam)}`,
   );
@@ -515,6 +522,17 @@ export function registerOAuthRoutes(
       const sessionData = await readActiveSession(c, opts);
       if (!sessionData) {
         return signInErrorRedirect(c, "oauth_unauthenticated");
+      }
+      // Linking a provider adds a permanent way into the account, the same
+      // as registering a passkey or enrolling 2FA — and those require a
+      // step-up. This redirect is a browser GET with no body to resubmit a
+      // password in, so the session half of the step-up is what applies:
+      // a session older than the window must sign in again first, which
+      // stops a hijacked long-lived session from planting a sign-in method.
+      if (!isSessionRecentlyAuthenticated(sessionData)) {
+        return c.redirect(
+          "/account/security?linked=&error=oauth_reauth_required",
+        );
       }
       linkUserId = sessionData.userId;
     }
@@ -676,6 +694,12 @@ export function registerOAuthRoutes(
     if (deleted.length === 0) {
       return c.json({ ok: false, error: "Not found" }, 404);
     }
+    // A sign-in method changed: every other session goes with it.
+    await deleteOtherSessionsForUser(
+      db,
+      sessionData.userId,
+      sessionData.sessionId,
+    );
     return c.json({ ok: true }, 200);
   });
 }
