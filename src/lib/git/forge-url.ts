@@ -10,6 +10,11 @@
  * my behalf". Nothing else on the write path looked at the value beyond
  * "non-empty string" before this module existed.
  *
+ * The rule itself now lives in `http/outbound-url.ts`, because it is not
+ * forge-specific: every operator-supplied URL this instance fetches gets the
+ * same treatment. What stays here is the forge vocabulary — which field was
+ * refused, and the error type the forge routes catch.
+ *
  * Two layers, on purpose:
  *
  * - {@link validateForgeUrl} runs at write time (create, patch, the manifest
@@ -26,16 +31,16 @@
  * (rebinding) is therefore not caught at fetch time; the compiled instance's
  * `--allow-net` allowlist is the second wall there (`deno.json` `compile`).
  */
-import { ipAddressScope, normalizeIpAddress } from '../ip-address.ts'
+import {
+  type OutboundUrlRejection,
+  resolveOutboundHostScope,
+  validateOutboundUrl,
+} from '../http/outbound-url.ts'
 
 export type ForgeUrlField = 'baseUrl' | 'apiUrl' | 'webhookOrigin'
 
-export type ForgeUrlRejection =
-  | 'malformed'
-  | 'scheme_not_https'
-  | 'credentials_in_url'
-  | 'reserved_host'
-  | 'address_not_public'
+/** The forge fields' name for {@link OutboundUrlRejection}. */
+export type ForgeUrlRejection = OutboundUrlRejection
 
 export class ForgeUrlError extends Error {
   readonly field: ForgeUrlField
@@ -49,45 +54,11 @@ export class ForgeUrlError extends Error {
 }
 
 /**
- * Names that never denote a forge reachable by anyone but this host. `.local`
- * (mDNS), `.internal` (cloud metadata / service discovery), `.localhost`
- * (RFC 6761), `.arpa`, and bare single-label hosts (`intranet`, `postgres` —
- * Docker service names resolve on the daemon-host network).
- */
-const RESERVED_SUFFIXES = ['.localhost', '.local', '.internal', '.arpa', '.home.arpa'] as const
-
-function hostIsReserved(hostname: string): boolean {
-  if (hostname === 'localhost') return true
-  if (!hostname.includes('.')) return true
-  return RESERVED_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
-}
-
-/** `[::1]` → `::1`; anything else unchanged. */
-function unbracket(hostname: string): string {
-  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
-}
-
-/**
  * Validate one forge URL field. Returns the reason it is refused, or `null`
  * when the URL is one this instance will dial.
  */
 export function validateForgeUrl(raw: string): ForgeUrlRejection | null {
-  let url: URL
-  try {
-    url = new URL(raw.trim())
-  } catch {
-    return 'malformed'
-  }
-  if (url.protocol !== 'https:') return 'scheme_not_https'
-  if (url.username !== '' || url.password !== '') return 'credentials_in_url'
-  const hostname = unbracket(url.hostname.toLowerCase())
-  if (hostname.length === 0) return 'malformed'
-  const literal = normalizeIpAddress(hostname)
-  if (literal !== null) {
-    return ipAddressScope(literal) === 'public' ? null : 'address_not_public'
-  }
-  if (hostIsReserved(hostname)) return 'reserved_host'
-  return null
+  return validateOutboundUrl(raw)
 }
 
 /** Throwing form for the fetch-time choke points. */
@@ -107,29 +78,5 @@ export function assertForgeUrlAllowed(field: ForgeUrlField, raw: string): string
 export async function resolveForgeHostScope(
   raw: string,
 ): Promise<ForgeUrlRejection | null> {
-  const deno = (globalThis as { Deno?: { resolveDns?: unknown } }).Deno
-  if (typeof deno?.resolveDns !== 'function') return null
-  const resolveDns = deno.resolveDns as (
-    query: string,
-    recordType: 'A' | 'AAAA',
-  ) => Promise<string[]>
-  let hostname: string
-  try {
-    hostname = unbracket(new URL(raw.trim()).hostname.toLowerCase())
-  } catch {
-    return 'malformed'
-  }
-  if (normalizeIpAddress(hostname) !== null) return null
-  const answers: string[] = []
-  for (const recordType of ['A', 'AAAA'] as const) {
-    try {
-      answers.push(...(await resolveDns(hostname, recordType)))
-    } catch {
-      // NXDOMAIN / no records of this type / resolver unavailable: nothing to judge.
-    }
-  }
-  for (const answer of answers) {
-    if (ipAddressScope(answer) !== 'public') return 'address_not_public'
-  }
-  return null
+  return await resolveOutboundHostScope(raw)
 }

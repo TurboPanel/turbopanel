@@ -33,6 +33,7 @@ import {
   takeLastOfflineSweepScheduledTimeForTests,
   updateNullGraceBookkeeping,
 } from "./offline-sweep.ts";
+import type { Alert } from "../../lib/alerts/alert-sender.ts";
 import { WEBHOOK_DELIVERY_SWEEP_LIMIT } from "../../lib/db/webhook-delivery-records.ts";
 import type { ExecutionLogStore } from "../../lib/execution-logs/types.ts";
 import {
@@ -1761,4 +1762,86 @@ it("a mass disconnect is distinguished from unrelated host failures", () => {
   // count is the only bound that can fire.
   assertEquals(isMassDisconnect(3, 0), false);
   assertEquals(isMassDisconnect(MASS_DISCONNECT_ABSOLUTE, 0), true);
+});
+
+it("a demoted server reaches the operator, not only the log", async () => {
+  // The delivery half of daemon-offline-alerting: notifyServerWentOffline was
+  // a structured log line and nothing else, so a host going dark at 3am paged
+  // nobody.
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null });
+  const alerts: Alert[] = [];
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(new Map([[ID_A, cell]])),
+    resolveActiveServerIds: () => Promise.resolve(new Map()),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.resolve(),
+    alertSender: (alert) => {
+      alerts.push(alert);
+      return Promise.resolve();
+    },
+  });
+
+  assertEquals(alerts.length, 1);
+  assertEquals(alerts[0].kind, "server.offline");
+  assertEquals(alerts[0].detail, { serverId: ID_A });
+});
+
+it("a mass disconnect sends the aggregate alert as well as the per-server ones", async () => {
+  resetOfflineSweepNullGraceForTests();
+  const ids = [ID_A, ID_B, "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa"];
+  const cells = new Map(
+    ids.map((id) => [id, createFakeCell({ connected: false, lastPingAtMs: null })]),
+  );
+  const alerts: Alert[] = [];
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(cells),
+    resolveActiveServerIds: () => Promise.resolve(new Map()),
+    listConnected: () =>
+      Promise.resolve(
+        ids.map((id) => ({ id, connectedAt: new Date().toISOString() })),
+      ),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: () => Promise.resolve(),
+    alertSender: (alert) => {
+      alerts.push(alert);
+      return Promise.resolve();
+    },
+  });
+
+  // The aggregate goes first: it is the one that explains the three that follow.
+  assertEquals(alerts[0].kind, "fleet.mass_disconnect");
+  assertEquals(alerts[0].detail, { staleCount: 3, connectedBefore: 3 });
+  assertEquals(
+    alerts.slice(1).map((alert) => alert.kind),
+    ["server.offline", "server.offline", "server.offline"],
+  );
+});
+
+it("an instance with no webhook configured still sweeps", async () => {
+  // The default is a no-op sender; a sweep must never depend on one existing.
+  resetOfflineSweepNullGraceForTests();
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null });
+  const disconnected: string[] = [];
+
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(new Map([[ID_A, cell]])),
+    resolveActiveServerIds: () => Promise.resolve(new Map()),
+    listConnected: () =>
+      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: (_db, id) => {
+      disconnected.push(id);
+      return Promise.resolve();
+    },
+    onConnected: () => Promise.resolve(),
+  });
+
+  assertEquals(disconnected, [ID_A]);
 });

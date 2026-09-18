@@ -29,6 +29,7 @@ import {
 } from "./reencrypt-secrets.ts";
 import { registerAdminRoutes } from "./routes.ts";
 import { SERVER_METRICS_LIVE_MAX_MINUTES_KEY } from "../lib/settings/server-metrics-settings.ts";
+import { ALERT_WEBHOOK_URL_KEY } from "../lib/alerts/alert-webhook-settings.ts";
 
 const dbUrl = getDatabaseUrl();
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
@@ -1201,6 +1202,90 @@ test("GET and PUT /api/admin/v1/settings/server-metrics-live round-trip the cap"
           value: previous[0]!.value,
         });
       }
+    }
+  });
+});
+
+test("GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back", async () => {
+  await withRoleUser("superadmin", async ({ app, cookie }) => {
+    const db = createDenoDb();
+    try {
+      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY));
+
+      const initial = await app.request(
+        `${ADMIN_API_PREFIX}/settings/alert-webhook`,
+        { headers: { Cookie: cookie } },
+      );
+      assertEquals(initial.status, 200);
+      assertEquals(
+        await jsonBody<{ configured: boolean; origin: string | null }>(initial),
+        { configured: false, origin: null },
+      );
+
+      const put = (url: unknown) =>
+        app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
+          method: "PUT",
+          headers: { Cookie: cookie, "content-type": "application/json" },
+          body: JSON.stringify({ url }),
+        });
+
+      const set = await put("https://hooks.slack.com/services/T0/B0/SECRETPATH");
+      assertEquals(set.status, 200);
+      const setBody = await jsonBody<
+        { configured: boolean; origin: string | null }
+      >(set);
+      assertEquals(setBody, {
+        configured: true,
+        origin: "https://hooks.slack.com",
+      });
+
+      // The response says a webhook exists and where it points, and does not
+      // contain the path — the path is the credential.
+      assertEquals(JSON.stringify(setBody).includes("SECRETPATH"), false);
+
+      // Nor is the row itself plaintext: it is sealed the way an SMTP
+      // password is.
+      const stored = await db
+        .select({ value: setting.value })
+        .from(setting)
+        .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+        .limit(1);
+      assertEquals(typeof stored[0]?.value, "string");
+      assertEquals(String(stored[0]?.value).includes("SECRETPATH"), false);
+
+      // An address that points back inside the box is refused, not stored.
+      for (
+        const rejected of [
+          "http://hooks.slack.com/x",
+          "https://127.0.0.1/hook",
+          "https://localhost/hook",
+          "https://169.254.169.254/latest/meta-data",
+          "https://redis/hook",
+        ]
+      ) {
+        assertEquals((await put(rejected)).status, 400, rejected);
+      }
+      assertEquals((await put(42)).status, 400);
+
+      // The refusals left the working webhook in place.
+      const unchanged = await app.request(
+        `${ADMIN_API_PREFIX}/settings/alert-webhook`,
+        { headers: { Cookie: cookie } },
+      );
+      assertEquals(
+        (await jsonBody<{ origin: string | null }>(unchanged)).origin,
+        "https://hooks.slack.com",
+      );
+
+      // null clears it.
+      const cleared = await put(null);
+      assertEquals(cleared.status, 200);
+      assertEquals(
+        await jsonBody<{ configured: boolean; origin: string | null }>(cleared),
+        { configured: false, origin: null },
+      );
+    } finally {
+      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY));
     }
   });
 });

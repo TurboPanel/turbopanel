@@ -62,6 +62,12 @@ import { runDatacenterRepinFanoutSweep } from "../../client/datacenters/repin-fa
 import { runSystemReconcileSweep } from "../../client/system/reconcile.ts";
 import { runLeafRenewalSweepTick } from "../../client/tls/leaf-renewal-sweep.ts";
 import { compatLogWarn } from "../../log-compat.ts";
+import {
+  type AlertSender,
+  createWebhookAlertSender,
+  NOOP_ALERT_SENDER,
+} from "../../lib/alerts/alert-sender.ts";
+import { getAlertWebhookUrl } from "../../lib/alerts/alert-webhook-settings.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
@@ -235,8 +241,16 @@ function sweepTrace(event: string, detail: Record<string, unknown> = {}): void {
  * exists — see AGENTS.md "eventually notify on server-down" note. For now
  * this only emits a greppable structured log line.
  */
-function notifyServerWentOffline(serverId: string): void {
+function notifyServerWentOffline(
+  serverId: string,
+  alertSender: AlertSender,
+): Promise<void> {
   sweepTrace("notify-offline", { serverId });
+  return alertSender({
+    kind: "server.offline",
+    text: `Server ${serverId} stopped answering and has been marked offline`,
+    detail: { serverId },
+  });
 }
 
 /**
@@ -270,7 +284,8 @@ export function isMassDisconnect(
 function notifyMassDisconnect(
   staleCount: number,
   connectedBefore: number,
-): void {
+  alertSender: AlertSender,
+): Promise<void> {
   sweepTrace("notify-mass-disconnect", {
     staleCount,
     connectedBefore,
@@ -278,10 +293,14 @@ function notifyMassDisconnect(
       ? Math.round((staleCount / connectedBefore) * 100) / 100
       : null,
   });
-  compatLogWarn(
-    "daemon-cell",
-    `mass disconnect: ${staleCount} of ${connectedBefore} connected servers went offline in one sweep — suspect a shared cause (daemon release, ingress, or cell outage) rather than ${staleCount} unrelated hosts`,
-  );
+  const text =
+    `Mass disconnect: ${staleCount} of ${connectedBefore} connected servers went offline in one sweep — suspect a shared cause (daemon release, ingress, or cell outage) rather than ${staleCount} unrelated hosts`;
+  compatLogWarn("daemon-cell", text);
+  return alertSender({
+    kind: "fleet.mass_disconnect",
+    text,
+    detail: { staleCount, connectedBefore },
+  });
 }
 
 async function withBoundedConcurrency<T>(
@@ -457,6 +476,13 @@ export type SweepOnceDeps = {
     connectedAt?: string | null,
   ) => Promise<unknown>;
   onDisconnected?: (db: Db, serverId: string) => Promise<unknown>;
+  /**
+   * Where an operator finds out. Defaults to {@link NOOP_ALERT_SENDER} — an
+   * instance with no webhook configured still sweeps, it just does it
+   * quietly. A sender may not reject; see alerts/alert-sender.ts for why an
+   * alert must never fail the thing it reports on.
+   */
+  alertSender?: AlertSender;
   nowMs?: number;
   /** Stop claiming new probe indices once this wall-clock instant is passed. */
   deadlineMs?: number;
@@ -524,12 +550,13 @@ async function demoteStale(
   onDisconnected: (db: Db, serverId: string) => Promise<unknown>,
   deadlineMs: number,
   connectedBefore = 0,
+  alertSender: AlertSender = NOOP_ALERT_SENDER,
 ): Promise<void> {
   if (staleIds.length === 0) return;
 
   sweepTrace("stale-detected", { count: staleIds.length });
   if (isMassDisconnect(staleIds.length, connectedBefore)) {
-    notifyMassDisconnect(staleIds.length, connectedBefore);
+    await notifyMassDisconnect(staleIds.length, connectedBefore, alertSender);
   }
 
   await withBoundedConcurrency(
@@ -538,7 +565,7 @@ async function demoteStale(
     async (serverId) => {
       try {
         await onDisconnected(db, serverId);
-        notifyServerWentOffline(serverId);
+        await notifyServerWentOffline(serverId, alertSender);
       } catch (err) {
         sweepTrace("mark-offline-failed", {
           serverId,
@@ -614,7 +641,11 @@ async function healServersFromEvidence(
 type SweepResolvedDeps = Required<
   Pick<
     SweepOnceDeps,
-    "registry" | "onConnected" | "onConnectedFromEvidence" | "onDisconnected"
+    | "registry"
+    | "onConnected"
+    | "onConnectedFromEvidence"
+    | "onDisconnected"
+    | "alertSender"
   >
 >;
 
@@ -725,6 +756,7 @@ async function sweepOnceFallback(
           deps.onDisconnected,
           deadlineMs,
           connected.length,
+          deps.alertSender,
         ),
     ))
   ) {
@@ -805,6 +837,7 @@ async function sweepOnceWithAe(
           deps.onDisconnected,
           deadlineMs,
           connected.length,
+          deps.alertSender,
         ),
     ))
   ) {
@@ -882,6 +915,7 @@ export async function sweepOnce(
     onConnected,
     onConnectedFromEvidence,
     onDisconnected,
+    alertSender: deps.alertSender ?? NOOP_ALERT_SENDER,
   };
 
   const connected = await listConnected(db);
@@ -923,6 +957,36 @@ type CronTlsRenewal = {
 
 function sweepErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Resolve where this tick's alerts go: the instance's configured webhook, or
+ * nowhere.
+ *
+ * Read per tick rather than cached, so an operator who configures a webhook
+ * mid-incident gets the next sweep's alerts without a redeploy — the same
+ * rule every other `setting`-backed value in this codebase follows. Bounded
+ * and swallowed: the sweep's job is to demote stale servers, and it must run
+ * whether or not anyone can be told about it.
+ */
+async function resolveAlertSender(
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined,
+): Promise<AlertSender> {
+  try {
+    const url = await runWithDbTimeout(
+      db,
+      (settingDb) =>
+        getAlertWebhookUrl(settingDb, tlsRenewal?.dataEncryptionSecrets),
+    );
+    if (!url) return NOOP_ALERT_SENDER;
+    return createWebhookAlertSender(url);
+  } catch (err) {
+    sweepTrace("alert-sender-resolve-failed", {
+      error: sweepErrorMessage(err),
+    });
+    return NOOP_ALERT_SENDER;
+  }
 }
 
 async function sweepOnceSafely(
@@ -1452,6 +1516,8 @@ export async function runOfflineSweep(
         async () => {
           stats = await sweepOnceSafely(env, db, {
             ...opts.sweepOnceDeps,
+            alertSender: opts.sweepOnceDeps?.alertSender ??
+              await resolveAlertSender(db, tlsRenewal),
             nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
             deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,
           });

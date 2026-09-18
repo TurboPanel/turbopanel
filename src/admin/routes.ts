@@ -11,6 +11,12 @@ import {
 } from "../client/authn/install-state.ts";
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import {
+  AlertWebhookUrlError,
+  describeAlertWebhook,
+  getAlertWebhookUrl,
+  setAlertWebhookUrl,
+} from "../lib/alerts/alert-webhook-settings.ts";
+import {
   broadcastEchoToFleet,
   collectFleetCommands,
   enqueueEchoToServer,
@@ -474,6 +480,51 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     await setServerMetricsLiveMaxMinutes(db, parsed.maxMinutes);
     const maxMinutes = await getServerMetricsLiveMaxMinutes(db);
     return c.json({ maxMinutes });
+  });
+
+  // The operator's alert webhook. The URL is never returned in full: the path
+  // is the secret in every common incoming-webhook scheme, so handing it back
+  // to the panel would make every admin who can open the page a holder of the
+  // credential. The origin is enough to answer "is it still pointed at the
+  // right Slack".
+  admin.get("/settings/alert-webhook", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const url = await getAlertWebhookUrl(db, c.get("dataEncryptionSecrets"));
+    return c.json(describeAlertWebhook(url));
+  });
+
+  admin.put("/settings/alert-webhook", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const body = await c.req.json().catch(() => null);
+    const raw = (body as { url?: unknown } | null)?.url;
+    if (raw !== null && typeof raw !== "string") {
+      return c.json({ error: "url must be a string, or null to clear it" }, 400);
+    }
+    const url = raw === null || raw.trim() === "" ? null : raw.trim();
+
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+    if (url !== null && !dataEncryptionSecrets) {
+      return c.json(
+        { error: "data encryption secrets are required to store a webhook URL" },
+        503,
+      );
+    }
+
+    try {
+      await setAlertWebhookUrl(db, dataEncryptionSecrets, url);
+    } catch (err) {
+      if (err instanceof AlertWebhookUrlError) {
+        return c.json({ error: err.message, reason: err.reason }, 400);
+      }
+      throw err;
+    }
+
+    const stored = await getAlertWebhookUrl(db, dataEncryptionSecrets);
+    return c.json(describeAlertWebhook(stored));
   });
 
   admin.post("/instance/public-urls/apply", async (c) => {
