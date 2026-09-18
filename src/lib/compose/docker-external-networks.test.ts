@@ -1,16 +1,16 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals } from "@std/assert";
 import {
   buildNetworkDockerOptions,
   isValidDockerNetworkName,
   normalizeDockerNetworkOptions,
   readNetworkDockerNetworkName,
-} from '../docker-network-name.ts'
+} from "../docker-network-name.ts";
 import {
   collectComposeExternalDockerNetworkNames,
   collectServiceComposeNetworkKeys,
   pruneUnreferencedComposeNetworks,
   readComposeExternalDockerNetworkName,
-} from './docker-external-networks.ts'
+} from "./docker-external-networks.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -18,9 +18,9 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
-test('collectComposeExternalDockerNetworkNames reads external name overrides', () => {
+test("collectComposeExternalDockerNetworkNames reads external name overrides", () => {
   const yaml = `
 services:
   api:
@@ -33,20 +33,24 @@ networks:
     name: turbopanel-shared
   internal:
     driver: bridge
-`
-  assertEquals(collectComposeExternalDockerNetworkNames(yaml), ['turbopanel-shared'])
-})
+`;
+  assertEquals(collectComposeExternalDockerNetworkNames(yaml), [
+    "turbopanel-shared",
+  ]);
+});
 
-test('collectComposeExternalDockerNetworkNames uses mapping key when name omitted', () => {
+test("collectComposeExternalDockerNetworkNames uses mapping key when name omitted", () => {
   const yaml = `
 networks:
   legacy_shared:
     external: true
-`
-  assertEquals(collectComposeExternalDockerNetworkNames(yaml), ['legacy_shared'])
-})
+`;
+  assertEquals(collectComposeExternalDockerNetworkNames(yaml), [
+    "legacy_shared",
+  ]);
+});
 
-test('collectComposeExternalDockerNetworkNames reads Compose Spec object form', () => {
+test("collectComposeExternalDockerNetworkNames reads Compose Spec object form", () => {
   const yaml = `
 networks:
   backend:
@@ -56,14 +60,14 @@ networks:
     external: {}
   internal:
     driver: bridge
-`
+`;
   assertEquals(collectComposeExternalDockerNetworkNames(yaml), [
-    'bare',
-    'turbopanel-shared',
-  ])
-})
+    "bare",
+    "turbopanel-shared",
+  ]);
+});
 
-test('collectComposeExternalDockerNetworkNames never returns a spanning network', () => {
+test("collectComposeExternalDockerNetworkNames never returns a spanning network", () => {
   // A `driver: overlay` network is TurboFabric's, not the operator's: the
   // compiler allocates its `tpn_<networkId>` host name, so it must never reach
   // the external-network registration gate. It never sets `external:`, which is
@@ -81,156 +85,175 @@ networks:
   shared:
     external: true
     name: turbopanel-shared
-`
+`;
   assertEquals(collectComposeExternalDockerNetworkNames(yaml), [
-    'turbopanel-shared',
-  ])
+    "turbopanel-shared",
+  ]);
   assertEquals(
-    readComposeExternalDockerNetworkName('spans', { driver: 'overlay' }),
+    readComposeExternalDockerNetworkName("spans", { driver: "overlay" }),
     null,
-  )
-})
+  );
+});
 
-test('readComposeExternalDockerNetworkName rejects non-external entries', () => {
+test("readComposeExternalDockerNetworkName rejects non-external entries", () => {
   assertEquals(
-    readComposeExternalDockerNetworkName('backend', { driver: 'bridge' }),
+    readComposeExternalDockerNetworkName("backend", { driver: "bridge" }),
     null,
-  )
+  );
   assertEquals(
-    readComposeExternalDockerNetworkName('backend', { external: false }),
+    readComposeExternalDockerNetworkName("backend", { external: false }),
     null,
-  )
-})
+  );
+});
 
-test('collectServiceComposeNetworkKeys supports list and map forms', () => {
+test("collectServiceComposeNetworkKeys supports list and map forms", () => {
   assertEquals(
-    collectServiceComposeNetworkKeys({ networks: ['a', 'b'] }).sort((a, b) =>
+    collectServiceComposeNetworkKeys({ networks: ["a", "b"] }).sort((a, b) =>
       a.localeCompare(b)
     ),
-    ['a', 'b'],
-  )
+    ["a", "b"],
+  );
   assertEquals(
     collectServiceComposeNetworkKeys({ networks: { backend: {}, edge: null } })
       .sort((a, b) => a.localeCompare(b)),
-    ['backend', 'edge'],
-  )
-})
+    ["backend", "edge"],
+  );
+});
 
-test('pruneUnreferencedComposeNetworks drops networks only site used', () => {
+test("pruneUnreferencedComposeNetworks drops networks only site used", () => {
   const pruned = pruneUnreferencedComposeNetworks(
     {
-      api: { image: 'node:22', networks: ['shared'] },
+      api: { image: "node:22", networks: ["shared"] },
     },
     {
-      shared: { external: true, name: 'turbopanel-shared' },
-      web_only: { driver: 'bridge' },
+      shared: { external: true, name: "turbopanel-shared" },
+      web_only: { driver: "bridge" },
     },
-  )
+  );
   assertEquals(pruned, {
-    shared: { external: true, name: 'turbopanel-shared' },
-  })
-})
+    shared: { external: true, name: "turbopanel-shared" },
+  });
+});
 
-test('pruneUnreferencedComposeNetworks returns undefined when none remain', () => {
+test("pruneUnreferencedComposeNetworks returns undefined when none remain", () => {
   assertEquals(
     pruneUnreferencedComposeNetworks(
-      { api: { image: 'node:22' } },
-      { orphan: { driver: 'bridge' } },
+      { api: { image: "node:22" } },
+      { orphan: { driver: "bridge" } },
     ),
     undefined,
-  )
-})
+  );
+});
 
-test('collectComposeExternalDockerNetworkNames ignores invalid external names', () => {
+test("collectComposeExternalDockerNetworkNames ignores invalid external names", () => {
   const yaml = `
 networks:
   bad name:
     external: true
-`
-  assertEquals(collectComposeExternalDockerNetworkNames(yaml), [])
-})
+`;
+  assertEquals(collectComposeExternalDockerNetworkNames(yaml), []);
+});
 
-test('collectServiceComposeNetworkKeys supports string and object list entries', () => {
-  assertEquals(collectServiceComposeNetworkKeys({ networks: ' solo ' }), ['solo'])
+test("collectServiceComposeNetworkKeys supports string and object list entries", () => {
+  assertEquals(collectServiceComposeNetworkKeys({ networks: " solo " }), [
+    "solo",
+  ]);
   assertEquals(
-    collectServiceComposeNetworkKeys({ networks: [{ backend: {} }, 'edge'] }),
-    ['backend', 'edge'],
-  )
-  assertEquals(collectServiceComposeNetworkKeys({ image: 'node:22' }), [])
-})
+    collectServiceComposeNetworkKeys({ networks: [{ backend: {} }, "edge"] }),
+    ["backend", "edge"],
+  );
+  assertEquals(collectServiceComposeNetworkKeys({ image: "node:22" }), []);
+});
 
-test('collectComposeExternalDockerNetworkNames returns empty for blank yaml', () => {
-  assertEquals(collectComposeExternalDockerNetworkNames(''), [])
-})
+test("collectComposeExternalDockerNetworkNames returns empty for blank yaml", () => {
+  assertEquals(collectComposeExternalDockerNetworkNames(""), []);
+});
 
-test('docker-network-name helpers validate and normalize names', () => {
-  assertEquals(isValidDockerNetworkName('turbopanel-shared'), true)
-  assertEquals(isValidDockerNetworkName('-bad'), false)
-  assertEquals(readNetworkDockerNetworkName({ dockerNetworkName: '  net-a  ' }, null), 'net-a')
-  assertEquals(readNetworkDockerNetworkName(null, { dockerNetworkName: 'meta-net' }), 'meta-net')
-  assertEquals(buildNetworkDockerOptions(' net-b '), { dockerNetworkName: 'net-b' })
-  assertEquals(normalizeDockerNetworkOptions({ dockerNetworkName: 'valid-net', extra: true }), {
-    extra: true,
-    dockerNetworkName: 'valid-net',
-  })
-  assertEquals(normalizeDockerNetworkOptions({ dockerNetworkName: ' bad name' }), null)
-})
-
-test('readComposeExternalDockerNetworkName rejects invalid mapping keys', () => {
+test("docker-network-name helpers validate and normalize names", () => {
+  assertEquals(isValidDockerNetworkName("turbopanel-shared"), true);
+  assertEquals(isValidDockerNetworkName("-bad"), false);
   assertEquals(
-    readComposeExternalDockerNetworkName('bad name', { external: {} }),
-    null,
-  )
-})
-
-test('readComposeExternalDockerNetworkName rejects non-mapping entries', () => {
-  assertEquals(readComposeExternalDockerNetworkName('backend', 'bad'), null)
-})
-
-test('readComposeExternalDockerNetworkName falls back to sibling name', () => {
+    readNetworkDockerNetworkName({ dockerNetworkName: "  net-a  " }, null),
+    "net-a",
+  );
   assertEquals(
-    readComposeExternalDockerNetworkName('backend', {
-      external: {},
-      name: 'turbopanel-shared',
+    readNetworkDockerNetworkName(null, { dockerNetworkName: "meta-net" }),
+    "meta-net",
+  );
+  assertEquals(buildNetworkDockerOptions(" net-b "), {
+    dockerNetworkName: "net-b",
+  });
+  assertEquals(
+    normalizeDockerNetworkOptions({
+      dockerNetworkName: "valid-net",
+      extra: true,
     }),
-    'turbopanel-shared',
-  )
-})
-
-test('collectServiceComposeNetworkKeys returns empty for null networks', () => {
-  assertEquals(collectServiceComposeNetworkKeys({ networks: null }), [])
-})
-
-test('collectServiceComposeNetworkKeys returns empty for a non-mapping service or non-collection networks', () => {
-  assertEquals(collectServiceComposeNetworkKeys(null), [])
-  assertEquals(collectServiceComposeNetworkKeys('web'), [])
-  assertEquals(collectServiceComposeNetworkKeys({ networks: 12 }), [])
-  assertEquals(collectServiceComposeNetworkKeys({ networks: '   ' }), [])
-})
-
-test('readComposeExternalDockerNetworkName rejects a non-string explicit name', () => {
+    {
+      extra: true,
+      dockerNetworkName: "valid-net",
+    },
+  );
   assertEquals(
-    readComposeExternalDockerNetworkName('backend', {
+    normalizeDockerNetworkOptions({ dockerNetworkName: " bad name" }),
+    null,
+  );
+});
+
+test("readComposeExternalDockerNetworkName rejects invalid mapping keys", () => {
+  assertEquals(
+    readComposeExternalDockerNetworkName("bad name", { external: {} }),
+    null,
+  );
+});
+
+test("readComposeExternalDockerNetworkName rejects non-mapping entries", () => {
+  assertEquals(readComposeExternalDockerNetworkName("backend", "bad"), null);
+});
+
+test("readComposeExternalDockerNetworkName falls back to sibling name", () => {
+  assertEquals(
+    readComposeExternalDockerNetworkName("backend", {
+      external: {},
+      name: "turbopanel-shared",
+    }),
+    "turbopanel-shared",
+  );
+});
+
+test("collectServiceComposeNetworkKeys returns empty for null networks", () => {
+  assertEquals(collectServiceComposeNetworkKeys({ networks: null }), []);
+});
+
+test("collectServiceComposeNetworkKeys returns empty for a non-mapping service or non-collection networks", () => {
+  assertEquals(collectServiceComposeNetworkKeys(null), []);
+  assertEquals(collectServiceComposeNetworkKeys("web"), []);
+  assertEquals(collectServiceComposeNetworkKeys({ networks: 12 }), []);
+  assertEquals(collectServiceComposeNetworkKeys({ networks: "   " }), []);
+});
+
+test("readComposeExternalDockerNetworkName rejects a non-string explicit name", () => {
+  assertEquals(
+    readComposeExternalDockerNetworkName("backend", {
       external: true,
       name: 12,
     }),
-    'backend',
-  )
+    "backend",
+  );
   assertEquals(
-    readComposeExternalDockerNetworkName('backend', {
+    readComposeExternalDockerNetworkName("backend", {
       external: { name: 12 },
     }),
-    'backend',
-  )
-})
+    "backend",
+  );
+});
 
-test('pruneUnreferencedComposeNetworks returns undefined for empty networks input', () => {
+test("pruneUnreferencedComposeNetworks returns undefined for empty networks input", () => {
   assertEquals(
-    pruneUnreferencedComposeNetworks({ api: { image: 'node:22' } }, undefined),
+    pruneUnreferencedComposeNetworks({ api: { image: "node:22" } }, undefined),
     undefined,
-  )
+  );
   assertEquals(
-    pruneUnreferencedComposeNetworks({ api: { image: 'node:22' } }, {}),
+    pruneUnreferencedComposeNetworks({ api: { image: "node:22" } }, {}),
     undefined,
-  )
-})
+  );
+});

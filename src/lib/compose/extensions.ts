@@ -10,28 +10,24 @@
 import {
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
-} from './placement.ts'
-import { TURBOPANEL_SERVICE_EXTENSION_KEY } from './service-kind.ts'
+} from "./placement.ts";
+import { TURBOPANEL_SERVICE_EXTENSION_KEY } from "./service-kind.ts";
+import { composeTagOf, isComposeTaggedValue, makeComposeTag } from "./tags.ts";
 import {
-  composeTagOf,
-  isComposeTaggedValue,
-  makeComposeTag,
-} from './tags.ts'
-import {
-  normalizeCompose,
   type ComposeDocument,
   type ComposePresentation,
-} from './types.ts'
+  normalizeCompose,
+} from "./types.ts";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function nonEmptyString(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.length === 0) {
-    return undefined
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
   }
-  return value
+  return value;
 }
 
 /** Shallow-clone presentation with a replacement keyOrder. */
@@ -42,22 +38,24 @@ function clonePresentation(
   const next: ComposePresentation = {
     keyOrder,
     comments: { ...presentation.comments },
-  }
+  };
   if (presentation.blankLines) {
-    next.blankLines = { ...presentation.blankLines }
+    next.blankLines = { ...presentation.blankLines };
   }
-  const documentCommentBefore = nonEmptyString(presentation.documentCommentBefore)
+  const documentCommentBefore = nonEmptyString(
+    presentation.documentCommentBefore,
+  );
   if (documentCommentBefore) {
-    next.documentCommentBefore = documentCommentBefore
+    next.documentCommentBefore = documentCommentBefore;
   }
-  const documentComment = nonEmptyString(presentation.documentComment)
+  const documentComment = nonEmptyString(presentation.documentComment);
   if (documentComment) {
-    next.documentComment = documentComment
+    next.documentComment = documentComment;
   }
   if (presentation.editorView) {
-    next.editorView = presentation.editorView
+    next.editorView = presentation.editorView;
   }
-  return next
+  return next;
 }
 
 /**
@@ -69,27 +67,27 @@ function mapThroughTag(
   map: (inner: unknown) => unknown,
 ): unknown {
   if (isComposeTaggedValue(value)) {
-    const tag = composeTagOf(value)
-    if (tag === null) return value
-    return makeComposeTag(tag, map(value.value))
+    const tag = composeTagOf(value);
+    if (tag === null) return value;
+    return makeComposeTag(tag, map(value.value));
   }
-  return map(value)
+  return map(value);
 }
 
 function stripServiceExtension(raw: unknown): {
-  value: unknown
-  changed: boolean
+  value: unknown;
+  changed: boolean;
 } {
-  let changed = false
+  let changed = false;
   const value = mapThroughTag(raw, (inner) => {
     if (!isPlainObject(inner) || !(TURBOPANEL_SERVICE_EXTENSION_KEY in inner)) {
-      return inner
+      return inner;
     }
-    const { [TURBOPANEL_SERVICE_EXTENSION_KEY]: _removed, ...rest } = inner
-    changed = true
-    return rest
-  })
-  return { value, changed }
+    const { [TURBOPANEL_SERVICE_EXTENSION_KEY]: _removed, ...rest } = inner;
+    changed = true;
+    return rest;
+  });
+  return { value, changed };
 }
 
 /**
@@ -108,43 +106,43 @@ export function stripComposeTurbopanelExtensions(
   document: ComposeDocument,
 ): ComposeDocument {
   // Placement first so residual extension-only fields fall into the full strip.
-  const withoutPlacement = stripComposePlacement(document)
-  const normalized = normalizeCompose(withoutPlacement)
-  const data = { ...normalized.data }
-  let keyOrder = [...normalized.presentation.keyOrder]
-  let changed = false
+  const withoutPlacement = stripComposePlacement(document);
+  const normalized = normalizeCompose(withoutPlacement);
+  const data = { ...normalized.data };
+  let keyOrder = [...normalized.presentation.keyOrder];
+  let changed = false;
 
   if (TURBOPANEL_EXTENSION_KEY in data) {
-    delete data[TURBOPANEL_EXTENSION_KEY]
-    keyOrder = keyOrder.filter((key) => key !== TURBOPANEL_EXTENSION_KEY)
-    changed = true
+    delete data[TURBOPANEL_EXTENSION_KEY];
+    keyOrder = keyOrder.filter((key) => key !== TURBOPANEL_EXTENSION_KEY);
+    changed = true;
   }
 
   if (data.services !== undefined) {
-    let servicesChanged = false
+    let servicesChanged = false;
     const nextServices = mapThroughTag(data.services, (inner) => {
-      if (!isPlainObject(inner)) return inner
-      const next: Record<string, unknown> = {}
+      if (!isPlainObject(inner)) return inner;
+      const next: Record<string, unknown> = {};
       for (const [name, raw] of Object.entries(inner)) {
-        const stripped = stripServiceExtension(raw)
-        if (stripped.changed) servicesChanged = true
-        next[name] = stripped.value
+        const stripped = stripServiceExtension(raw);
+        if (stripped.changed) servicesChanged = true;
+        next[name] = stripped.value;
       }
-      return next
-    })
+      return next;
+    });
     if (servicesChanged) {
-      data.services = nextServices
-      changed = true
+      data.services = nextServices;
+      changed = true;
     }
   }
 
   if (!changed) {
-    return normalized
+    return normalized;
   }
 
   return {
     version: 1,
     data,
     presentation: clonePresentation(normalized.presentation, keyOrder),
-  }
+  };
 }

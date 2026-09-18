@@ -46,7 +46,6 @@
       "description": "Language models that will be used by your application."
     },
 
-
     "networks": {
       "type": "object",
       "patternProperties": {
@@ -91,54 +90,136 @@
     }
   },
 
-  "patternProperties": {"^x-": {}},
+  "patternProperties": { "^x-": {} },
   "additionalProperties": false,
 
   "$defs": {
-
     "service": {
       "type": "object",
       "description": "Configuration for a service.",
       "properties": {
-        "develop": {"$ref": "#/$defs/development"},
-        "deploy": {"$ref": "#/$defs/deployment"},
-        "annotations": {"$ref": "#/$defs/list_or_dict"},
-        "attach": {"type": ["boolean", "string"]},
+        "develop": { "$ref": "#/$defs/development" },
+        "deploy": { "$ref": "#/$defs/deployment" },
+        "annotations": { "$ref": "#/$defs/list_or_dict" },
+        "attach": { "type": ["boolean", "string"] },
         "build": {
           "description": "Configuration options for building the service's image.",
           "oneOf": [
-            {"type": "string", "description": "Path to the build context. Can be a relative path or a URL."},
+            {
+              "type": "string",
+              "description": "Path to the build context. Can be a relative path or a URL."
+            },
             {
               "type": "object",
               "properties": {
-                "context": {"type": "string", "description": "Path to the build context. Can be a relative path or a URL."},
-                "dockerfile": {"type": "string", "description": "Name of the Dockerfile to use for building the image."},
-                "dockerfile_inline": {"type": "string", "description": "Inline Dockerfile content to use instead of a Dockerfile from the build context."},
-                "entitlements": {"type": "array", "items": {"type": "string"}, "description": "List of extra privileged entitlements to grant to the build process."},
-                "args": {"$ref": "#/$defs/list_or_dict", "description": "Build-time variables, specified as a map or a list of KEY=VAL pairs."},
-                "ssh": {"$ref": "#/$defs/list_or_dict", "description": "SSH agent socket or keys to expose to the build. Format is either a string or a list of 'default|<id>[=<socket>|<key>[,<key>]]'."},
-                "labels": {"$ref": "#/$defs/list_or_dict", "description": "Labels to apply to the built image."},
-                "cache_from": {"type": "array", "items": {"type": "string"}, "description": "List of sources the image builder should use for cache resolution"},
-                "cache_to": {"type": "array", "items": {"type": "string"}, "description": "Cache destinations for the build cache."},
-                "no_cache": {"type": ["boolean", "string"], "description": "Do not use cache when building the image."},
-                "no_cache_filter": {"$ref": "#/$defs/string_or_list", "description": "Do not use build cache for the specified stages."},
-                "additional_contexts": {"$ref": "#/$defs/list_or_dict", "description": "Additional build contexts to use, specified as a map of name to context path or URL."},
-                "network": {"type": "string", "description": "Network mode to use for the build. Options include 'default', 'none', 'host', or a network name."},
-                "provenance": {"type": ["string","boolean"], "description": "Add a provenance attestation"},
-                "sbom": {"type": ["string","boolean"], "description": "Add a SBOM attestation"},
-                "pull": {"type": ["boolean", "string"], "description": "Always attempt to pull a newer version of the image."},
-                "target": {"type": "string", "description": "Build stage to target in a multi-stage Dockerfile."},
-                "shm_size": {"type": ["integer", "string"], "description": "Size of /dev/shm for the build container. A string value can use suffix like '2g' for 2 gigabytes."},
-                "extra_hosts": {"$ref": "#/$defs/extra_hosts", "description": "Add hostname mappings for the build container."},
-                "isolation": {"type": "string", "description": "Container isolation technology to use for the build process."},
-                "privileged": {"type": ["boolean", "string"], "description": "Give extended privileges to the build container."},
-                "secrets": {"$ref": "#/$defs/service_config_or_secret", "description": "Secrets to expose to the build. These are accessible at build-time."},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "Additional tags to apply to the built image."},
-                "ulimits": {"$ref": "#/$defs/ulimits", "description": "Override the default ulimits for the build container."},
-                "platforms": {"type": "array", "items": {"type": "string"}, "description": "Platforms to build for, e.g., 'linux/amd64', 'linux/arm64', or 'windows/amd64'."}
+                "context": {
+                  "type": "string",
+                  "description": "Path to the build context. Can be a relative path or a URL."
+                },
+                "dockerfile": {
+                  "type": "string",
+                  "description": "Name of the Dockerfile to use for building the image."
+                },
+                "dockerfile_inline": {
+                  "type": "string",
+                  "description": "Inline Dockerfile content to use instead of a Dockerfile from the build context."
+                },
+                "entitlements": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "List of extra privileged entitlements to grant to the build process."
+                },
+                "args": {
+                  "$ref": "#/$defs/list_or_dict",
+                  "description": "Build-time variables, specified as a map or a list of KEY=VAL pairs."
+                },
+                "ssh": {
+                  "$ref": "#/$defs/list_or_dict",
+                  "description": "SSH agent socket or keys to expose to the build. Format is either a string or a list of 'default|<id>[=<socket>|<key>[,<key>]]'."
+                },
+                "labels": {
+                  "$ref": "#/$defs/list_or_dict",
+                  "description": "Labels to apply to the built image."
+                },
+                "cache_from": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "List of sources the image builder should use for cache resolution"
+                },
+                "cache_to": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Cache destinations for the build cache."
+                },
+                "no_cache": {
+                  "type": ["boolean", "string"],
+                  "description": "Do not use cache when building the image."
+                },
+                "no_cache_filter": {
+                  "$ref": "#/$defs/string_or_list",
+                  "description": "Do not use build cache for the specified stages."
+                },
+                "additional_contexts": {
+                  "$ref": "#/$defs/list_or_dict",
+                  "description": "Additional build contexts to use, specified as a map of name to context path or URL."
+                },
+                "network": {
+                  "type": "string",
+                  "description": "Network mode to use for the build. Options include 'default', 'none', 'host', or a network name."
+                },
+                "provenance": {
+                  "type": ["string", "boolean"],
+                  "description": "Add a provenance attestation"
+                },
+                "sbom": {
+                  "type": ["string", "boolean"],
+                  "description": "Add a SBOM attestation"
+                },
+                "pull": {
+                  "type": ["boolean", "string"],
+                  "description": "Always attempt to pull a newer version of the image."
+                },
+                "target": {
+                  "type": "string",
+                  "description": "Build stage to target in a multi-stage Dockerfile."
+                },
+                "shm_size": {
+                  "type": ["integer", "string"],
+                  "description": "Size of /dev/shm for the build container. A string value can use suffix like '2g' for 2 gigabytes."
+                },
+                "extra_hosts": {
+                  "$ref": "#/$defs/extra_hosts",
+                  "description": "Add hostname mappings for the build container."
+                },
+                "isolation": {
+                  "type": "string",
+                  "description": "Container isolation technology to use for the build process."
+                },
+                "privileged": {
+                  "type": ["boolean", "string"],
+                  "description": "Give extended privileges to the build container."
+                },
+                "secrets": {
+                  "$ref": "#/$defs/service_config_or_secret",
+                  "description": "Secrets to expose to the build. These are accessible at build-time."
+                },
+                "tags": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Additional tags to apply to the built image."
+                },
+                "ulimits": {
+                  "$ref": "#/$defs/ulimits",
+                  "description": "Override the default ulimits for the build container."
+                },
+                "platforms": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Platforms to build for, e.g., 'linux/amd64', 'linux/arm64', or 'windows/amd64'."
+                }
               },
               "additionalProperties": false,
-              "patternProperties": {"^x-": {}}
+              "patternProperties": { "^x-": {} }
             }
           ]
         },
@@ -149,22 +230,22 @@
             "device_read_bps": {
               "type": "array",
               "description": "Limit read rate (bytes per second) from a device.",
-              "items": {"$ref": "#/$defs/blkio_limit"}
+              "items": { "$ref": "#/$defs/blkio_limit" }
             },
             "device_read_iops": {
               "type": "array",
               "description": "Limit read rate (IO per second) from a device.",
-              "items": {"$ref": "#/$defs/blkio_limit"}
+              "items": { "$ref": "#/$defs/blkio_limit" }
             },
             "device_write_bps": {
               "type": "array",
               "description": "Limit write rate (bytes per second) to a device.",
-              "items": {"$ref": "#/$defs/blkio_limit"}
+              "items": { "$ref": "#/$defs/blkio_limit" }
             },
             "device_write_iops": {
               "type": "array",
               "description": "Limit write rate (IO per second) to a device.",
-              "items": {"$ref": "#/$defs/blkio_limit"}
+              "items": { "$ref": "#/$defs/blkio_limit" }
             },
             "weight": {
               "type": ["integer", "string"],
@@ -173,20 +254,20 @@
             "weight_device": {
               "type": "array",
               "description": "Block IO weight (relative weight) for specific devices.",
-              "items": {"$ref": "#/$defs/blkio_weight"}
+              "items": { "$ref": "#/$defs/blkio_weight" }
             }
           },
           "additionalProperties": false
         },
         "cap_add": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": { "type": "string" },
           "uniqueItems": true,
           "description": "Add Linux capabilities. For example, 'CAP_SYS_ADMIN', 'SYS_ADMIN', or 'NET_ADMIN'."
         },
         "cap_drop": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": { "type": "string" },
           "uniqueItems": true,
           "description": "Drop Linux capabilities. For example, 'CAP_SYS_ADMIN', 'SYS_ADMIN', or 'NET_ADMIN'."
         },
@@ -214,15 +295,15 @@
         },
         "cpu_count": {
           "oneOf": [
-            {"type": "string"},
-            {"type": "integer", "minimum": 0}
+            { "type": "string" },
+            { "type": "integer", "minimum": 0 }
           ],
           "description": "Number of usable CPUs."
         },
         "cpu_percent": {
           "oneOf": [
-            {"type": "string"},
-            {"type": "integer", "minimum": 0, "maximum": 100}
+            { "type": "string" },
+            { "type": "integer", "minimum": 0, "maximum": 100 }
           ],
           "description": "Percentage of CPU resources to use."
         },
@@ -272,11 +353,11 @@
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "depends_on": {
           "oneOf": [
-            {"$ref": "#/$defs/list_of_strings"},
+            { "$ref": "#/$defs/list_of_strings" },
             {
               "type": "object",
               "additionalProperties": false,
@@ -284,20 +365,24 @@
                 "^[a-zA-Z0-9._-]+$": {
                   "type": "object",
                   "additionalProperties": false,
-                  "patternProperties": {"^x-": {}},
+                  "patternProperties": { "^x-": {} },
                   "properties": {
                     "restart": {
                       "type": ["boolean", "string"],
                       "description": "Whether to restart dependent services when this service is restarted."
                     },
                     "required": {
-                      "type":  "boolean",
+                      "type": "boolean",
                       "default": true,
                       "description": "Whether the dependency is required for the dependent service to start."
                     },
                     "condition": {
                       "type": "string",
-                      "enum": ["service_started", "service_healthy", "service_completed_successfully"],
+                      "enum": [
+                        "service_started",
+                        "service_healthy",
+                        "service_completed_successfully"
+                      ],
                       "description": "Condition to wait for. 'service_started' waits until the service has started, 'service_healthy' waits until the service is healthy (as defined by its healthcheck), 'service_completed_successfully' waits until the service has completed successfully."
                     }
                   },
@@ -317,7 +402,7 @@
           "description": "List of device mappings for the container.",
           "items": {
             "oneOf": [
-              {"type": "string"},
+              { "type": "string" },
               {
                 "type": "object",
                 "required": ["source"],
@@ -336,7 +421,7 @@
                   }
                 },
                 "additionalProperties": false,
-                "patternProperties": {"^x-": {}}
+                "patternProperties": { "^x-": {} }
               }
             ]
           }
@@ -347,7 +432,7 @@
         },
         "dns_opt": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": { "type": "string" },
           "uniqueItems": true,
           "description": "Custom DNS options to be passed to the container's DNS resolver."
         },
@@ -385,7 +470,7 @@
         },
         "extends": {
           "oneOf": [
-            {"type": "string"},
+            { "type": "string" },
             {
               "type": "object",
               "properties": {
@@ -417,19 +502,24 @@
               "type": "object",
               "description": "Provider-specific options.",
               "patternProperties": {
-                "^.+$": {"oneOf": [
-                  { "type": ["string", "number", "boolean"] },
-                  { "type": "array", "items": {"type": ["string", "number", "boolean"]}}
-                ]}
+                "^.+$": {
+                  "oneOf": [
+                    { "type": ["string", "number", "boolean"] },
+                    {
+                      "type": "array",
+                      "items": { "type": ["string", "number", "boolean"] }
+                    }
+                  ]
+                }
               }
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "external_links": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": { "type": "string" },
           "uniqueItems": true,
           "description": "Link to services started outside this Compose application. Specify services as <service_name>:<alias>."
         },
@@ -479,7 +569,7 @@
         },
         "links": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": { "type": "string" },
           "uniqueItems": true,
           "description": "Link to containers in another service. Either specify both the service name and a link alias (SERVICE:ALIAS), or just the service name."
         },
@@ -495,12 +585,12 @@
               "type": "object",
               "description": "Options for the logging driver.",
               "patternProperties": {
-                "^.+$": {"type": ["string", "number", "null"]}
+                "^.+$": { "type": ["string", "number", "null"] }
               }
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "mac_address": {
           "type": "string",
@@ -528,8 +618,9 @@
         },
         "models": {
           "oneOf": [
-            {"$ref": "#/$defs/list_of_strings"},
-            {"type": "object",
+            { "$ref": "#/$defs/list_of_strings" },
+            {
+              "type": "object",
               "patternProperties": {
                 "^[a-zA-Z0-9._-]+$": {
                   "oneOf": [
@@ -546,9 +637,9 @@
                         }
                       },
                       "additionalProperties": false,
-                      "patternProperties": {"^x-": {}}
+                      "patternProperties": { "^x-": {} }
                     },
-                    {"type": "null"}
+                    { "type": "null" }
                   ]
                 }
               }
@@ -558,7 +649,7 @@
         },
         "networks": {
           "oneOf": [
-            {"$ref": "#/$defs/list_of_strings"},
+            { "$ref": "#/$defs/list_of_strings" },
             {
               "type": "object",
               "patternProperties": {
@@ -595,7 +686,7 @@
                           "type": "object",
                           "description": "Driver options for this network.",
                           "patternProperties": {
-                            "^.+$": {"type": ["string", "number"]}
+                            "^.+$": { "type": ["string", "number"] }
                           }
                         },
                         "priority": {
@@ -608,9 +699,9 @@
                         }
                       },
                       "additionalProperties": false,
-                      "patternProperties": {"^x-": {}}
+                      "patternProperties": { "^x-": {} }
                     },
-                    {"type": "null"}
+                    { "type": "null" }
                   ]
                 }
               },
@@ -625,8 +716,8 @@
         },
         "oom_score_adj": {
           "oneOf": [
-            {"type": "string"},
-            {"type": "integer", "minimum": -1000, "maximum": 1000}
+            { "type": "string" },
+            { "type": "integer", "minimum": -1000, "maximum": 1000 }
           ],
           "description": "Tune host's OOM preferences for the container (accepts -1000 to 1000)."
         },
@@ -647,8 +738,8 @@
           "description": "Expose container ports. Short format ([HOST:]CONTAINER[/PROTOCOL]).",
           "items": {
             "oneOf": [
-              {"type": "number"},
-              {"type": "string"},
+              { "type": "number" },
+              { "type": "string" },
               {
                 "type": "object",
                 "properties": {
@@ -682,7 +773,7 @@
                   }
                 },
                 "additionalProperties": false,
-                "patternProperties": {"^x-": {}}
+                "patternProperties": { "^x-": {} }
               }
             ]
           },
@@ -690,17 +781,17 @@
         },
         "pre_start": {
           "type": "array",
-          "items": {"$ref": "#/$defs/pre_start_hook"},
+          "items": { "$ref": "#/$defs/pre_start_hook" },
           "description": "Init containers to run to completion before the service container is started. Each step runs in its own ephemeral container, in declared order; a non-zero exit fails the bring-up of the service and its dependents."
         },
         "post_start": {
           "type": "array",
-          "items": {"$ref": "#/$defs/service_hook"},
+          "items": { "$ref": "#/$defs/service_hook" },
           "description": "Commands to run after the container starts. If any command fails, the container stops."
         },
         "pre_stop": {
           "type": "array",
-          "items": {"$ref": "#/$defs/service_hook"},
+          "items": { "$ref": "#/$defs/service_hook" },
           "description": "Commands to run before the container stops. If any command fails, the container stop is aborted."
         },
         "privileged": {
@@ -738,7 +829,7 @@
         },
         "security_opt": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": { "type": "string" },
           "uniqueItems": true,
           "description": "Override the default labeling scheme for each container."
         },
@@ -803,14 +894,21 @@
           "description": "Mount host paths or named volumes accessible to the container. Short syntax (VOLUME:CONTAINER_PATH[:MODE])",
           "items": {
             "oneOf": [
-              {"type": "string"},
+              { "type": "string" },
               {
                 "type": "object",
                 "required": ["type"],
                 "properties": {
                   "type": {
                     "type": "string",
-                    "enum": ["bind", "volume", "tmpfs", "cluster", "npipe", "image"],
+                    "enum": [
+                      "bind",
+                      "volume",
+                      "tmpfs",
+                      "cluster",
+                      "npipe",
+                      "image"
+                    ],
                     "description": "The mount type: bind for mounting host directories, volume for named volumes, tmpfs for temporary filesystems, cluster for cluster volumes, npipe for named pipes, or image for mounting from an image."
                   },
                   "source": {
@@ -853,7 +951,7 @@
                       }
                     },
                     "additionalProperties": false,
-                    "patternProperties": {"^x-": {}}
+                    "patternProperties": { "^x-": {} }
                   },
                   "volume": {
                     "type": "object",
@@ -873,7 +971,7 @@
                       }
                     },
                     "additionalProperties": false,
-                    "patternProperties": {"^x-": {}}
+                    "patternProperties": { "^x-": {} }
                   },
                   "tmpfs": {
                     "type": "object",
@@ -881,8 +979,8 @@
                     "properties": {
                       "size": {
                         "oneOf": [
-                          {"type": "integer", "minimum": 0},
-                          {"type": "string"}
+                          { "type": "integer", "minimum": 0 },
+                          { "type": "string" }
                         ],
                         "description": "Size of the tmpfs mount in bytes."
                       },
@@ -892,7 +990,7 @@
                       }
                     },
                     "additionalProperties": false,
-                    "patternProperties": {"^x-": {}}
+                    "patternProperties": { "^x-": {} }
                   },
                   "image": {
                     "type": "object",
@@ -904,11 +1002,11 @@
                       }
                     },
                     "additionalProperties": false,
-                    "patternProperties": {"^x-": {}}
+                    "patternProperties": { "^x-": {} }
                   }
                 },
                 "additionalProperties": false,
-                "patternProperties": {"^x-": {}}
+                "patternProperties": { "^x-": {} }
               }
             ]
           },
@@ -916,7 +1014,7 @@
         },
         "volumes_from": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": { "type": "string" },
           "uniqueItems": true,
           "description": "Mount volumes from another service or container. Optionally specify read-only access (ro) or read-write (rw)."
         },
@@ -925,7 +1023,7 @@
           "description": "The working directory in which the entrypoint or command will be run"
         }
       },
-      "patternProperties": {"^x-": {}},
+      "patternProperties": { "^x-": {} },
       "additionalProperties": false
     },
 
@@ -947,8 +1045,8 @@
         },
         "test": {
           "oneOf": [
-            {"type": "string"},
-            {"type": "array", "items": {"type": "string"}}
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
           ],
           "description": "The test to perform to check container health. Can be a string or a list. The first item is either NONE, CMD, or CMD-SHELL. If it's CMD, the rest of the command is exec'd. If it's CMD-SHELL, the rest is run in the shell."
         },
@@ -966,7 +1064,7 @@
         }
       },
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}}
+      "patternProperties": { "^x-": {} }
     },
     "development": {
       "type": ["object", "null"],
@@ -993,7 +1091,13 @@
               },
               "action": {
                 "type": "string",
-                "enum": ["rebuild", "sync", "restart", "sync+restart", "sync+exec"],
+                "enum": [
+                  "rebuild",
+                  "sync",
+                  "restart",
+                  "sync+restart",
+                  "sync+exec"
+                ],
                 "description": "Action to take when a change is detected: rebuild the container, sync files, restart the container, sync and restart, or sync and execute a command."
               },
               "target": {
@@ -1010,12 +1114,12 @@
               }
             },
             "additionalProperties": false,
-            "patternProperties": {"^x-": {}}
+            "patternProperties": { "^x-": {} }
           }
         }
       },
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}}
+      "patternProperties": { "^x-": {} }
     },
     "deployment": {
       "type": ["object", "null"],
@@ -1068,7 +1172,7 @@
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "update_config": {
           "type": "object",
@@ -1101,7 +1205,7 @@
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "resources": {
           "type": "object",
@@ -1125,7 +1229,7 @@
                 }
               },
               "additionalProperties": false,
-              "patternProperties": {"^x-": {}}
+              "patternProperties": { "^x-": {} }
             },
             "reservations": {
               "type": "object",
@@ -1149,11 +1253,11 @@
                 }
               },
               "additionalProperties": false,
-              "patternProperties": {"^x-": {}}
+              "patternProperties": { "^x-": {} }
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "restart_policy": {
           "type": "object",
@@ -1177,7 +1281,7 @@
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "placement": {
           "type": "object",
@@ -1185,7 +1289,7 @@
           "properties": {
             "constraints": {
               "type": "array",
-              "items": {"type": "string"},
+              "items": { "type": "string" },
               "description": "Placement constraints for the service (e.g., 'node.role==manager')."
             },
             "preferences": {
@@ -1200,7 +1304,7 @@
                   }
                 },
                 "additionalProperties": false,
-                "patternProperties": {"^x-": {}}
+                "patternProperties": { "^x-": {} }
               }
             },
             "max_replicas_per_node": {
@@ -1209,11 +1313,11 @@
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         }
       },
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}}
+      "patternProperties": { "^x-": {} }
     },
 
     "generic_resources": {
@@ -1236,11 +1340,11 @@
               }
             },
             "additionalProperties": false,
-            "patternProperties": {"^x-": {}}
+            "patternProperties": { "^x-": {} }
           }
         },
         "additionalProperties": false,
-        "patternProperties": {"^x-": {}}
+        "patternProperties": { "^x-": {} }
       }
     },
 
@@ -1272,7 +1376,7 @@
           }
         },
         "additionalProperties": false,
-        "patternProperties": {"^x-": {}},
+        "patternProperties": { "^x-": {} },
         "required": [
           "capabilities"
         ]
@@ -1315,7 +1419,7 @@
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         }
       ]
     },
@@ -1323,7 +1427,7 @@
     "include": {
       "description": "Compose application or sub-projects to be included.",
       "oneOf": [
-        {"type": "string"},
+        { "type": "string" },
         {
           "type": "object",
           "properties": {
@@ -1361,7 +1465,7 @@
           "type": "object",
           "description": "Specify driver-specific options defined as key/value pairs.",
           "patternProperties": {
-            "^.+$": {"type": ["string", "number"]}
+            "^.+$": { "type": ["string", "number"] }
           }
         },
         "ipam": {
@@ -1394,22 +1498,22 @@
                     "type": "object",
                     "description": "Auxiliary IPv4 or IPv6 addresses used by Network driver.",
                     "additionalProperties": false,
-                    "patternProperties": {"^.+$": {"type": "string"}}
+                    "patternProperties": { "^.+$": { "type": "string" } }
                   }
                 },
                 "additionalProperties": false,
-                "patternProperties": {"^x-": {}}
+                "patternProperties": { "^x-": {} }
               }
             },
             "options": {
               "type": "object",
               "description": "Driver-specific options for the IPAM driver.",
               "additionalProperties": false,
-              "patternProperties": {"^.+$": {"type": "string"}}
+              "patternProperties": { "^.+$": { "type": "string" } }
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "external": {
           "type": ["boolean", "string", "object"],
@@ -1422,7 +1526,7 @@
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "internal": {
           "type": ["boolean", "string"],
@@ -1446,7 +1550,7 @@
         }
       },
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}}
+      "patternProperties": { "^x-": {} }
     },
 
     "volume": {
@@ -1465,7 +1569,7 @@
           "type": "object",
           "description": "Specify driver-specific options.",
           "patternProperties": {
-            "^.+$": {"type": ["string", "number"]}
+            "^.+$": { "type": ["string", "number"] }
           }
         },
         "external": {
@@ -1479,7 +1583,7 @@
             }
           },
           "additionalProperties": false,
-          "patternProperties": {"^x-": {}}
+          "patternProperties": { "^x-": {} }
         },
         "labels": {
           "$ref": "#/$defs/list_or_dict",
@@ -1487,7 +1591,7 @@
         }
       },
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}}
+      "patternProperties": { "^x-": {} }
     },
 
     "secret": {
@@ -1528,7 +1632,7 @@
           "type": "object",
           "description": "Specify driver-specific options.",
           "patternProperties": {
-            "^.+$": {"type": ["string", "number"]}
+            "^.+$": { "type": ["string", "number"] }
           }
         },
         "template_driver": {
@@ -1537,7 +1641,7 @@
         }
       },
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}}
+      "patternProperties": { "^x-": {} }
     },
 
     "config": {
@@ -1581,7 +1685,7 @@
         }
       },
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}}
+      "patternProperties": { "^x-": {} }
     },
 
     "model": {
@@ -1601,13 +1705,13 @@
         },
         "runtime_flags": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": { "type": "string" },
           "description": "Raw runtime flags to pass to the inference engine."
         }
       },
       "required": ["model"],
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}}
+      "patternProperties": { "^x-": {} }
     },
 
     "command": {
@@ -1658,7 +1762,7 @@
         }
       },
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}},
+      "patternProperties": { "^x-": {} },
       "required": ["command"]
     },
 
@@ -1696,7 +1800,7 @@
         }
       },
       "additionalProperties": false,
-      "patternProperties": {"^x-": {}}
+      "patternProperties": { "^x-": {} }
     },
 
     "env_file": {
@@ -1914,7 +2018,7 @@
               }
             },
             "additionalProperties": false,
-            "patternProperties": {"^x-": {}}
+            "patternProperties": { "^x-": {} }
           }
         ]
       }
@@ -1944,7 +2048,7 @@
               },
               "required": ["soft", "hard"],
               "additionalProperties": false,
-              "patternProperties": {"^x-": {}}
+              "patternProperties": { "^x-": {} }
             }
           ]
         }

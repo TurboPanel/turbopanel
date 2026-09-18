@@ -355,7 +355,11 @@ test("splitNativeAppServices carries authored cron on a node service", () => {
     web: nodeService({
       framework: "next",
       cron: [
-        { name: "nightly", schedule: "0 3 * * *", command: "/usr/bin/node cron.js" },
+        {
+          name: "nightly",
+          schedule: "0 3 * * *",
+          command: "/usr/bin/node cron.js",
+        },
       ],
     }),
   });

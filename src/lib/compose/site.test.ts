@@ -1,11 +1,11 @@
-import { assertEquals, assertThrows } from '@std/assert'
+import { assertEquals, assertThrows } from "@std/assert";
 import {
   allocateSiteListenPort,
   assignSiteListenPorts,
   emptyContainerComposeYaml,
   isSafeSiteRoot,
   splitSiteServices,
-} from './site.ts'
+} from "./site.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -13,117 +13,117 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
-test('isSafeSiteRoot rejects traversal and absolute paths', () => {
-  assertEquals(isSafeSiteRoot('public'), true)
-  assertEquals(isSafeSiteRoot('www/html'), true)
-  assertEquals(isSafeSiteRoot('/var/www'), false)
-  assertEquals(isSafeSiteRoot('../etc'), false)
-  assertEquals(isSafeSiteRoot(''), false)
-})
+test("isSafeSiteRoot rejects traversal and absolute paths", () => {
+  assertEquals(isSafeSiteRoot("public"), true);
+  assertEquals(isSafeSiteRoot("www/html"), true);
+  assertEquals(isSafeSiteRoot("/var/www"), false);
+  assertEquals(isSafeSiteRoot("../etc"), false);
+  assertEquals(isSafeSiteRoot(""), false);
+});
 
-test('allocateSiteListenPort prefers hosting targetPort when free', () => {
-  const used = new Set<number>()
-  assertEquals(allocateSiteListenPort('site', used, 8080), 8080)
-  assertEquals(used.has(8080), true)
+test("allocateSiteListenPort prefers hosting targetPort when free", () => {
+  const used = new Set<number>();
+  assertEquals(allocateSiteListenPort("site", used, 8080), 8080);
+  assertEquals(used.has(8080), true);
   // Second call with same preferred falls back to hash range.
-  const second = allocateSiteListenPort('site', used, 8080)
-  assertEquals(second >= 18_080 && second <= 18_999, true)
-  assertEquals(second !== 8080, true)
-})
+  const second = allocateSiteListenPort("site", used, 8080);
+  assertEquals(second >= 18_080 && second <= 18_999, true);
+  assertEquals(second !== 8080, true);
+});
 
-test('splitSiteServices partitions container vs site', () => {
+test("splitSiteServices partitions container vs site", () => {
   const result = splitSiteServices({
-    api: { image: 'node:22' },
+    api: { image: "node:22" },
     site: {
-      'x-turbopanel': {
-        serviceKind: 'site',
-        engine: 'nginx',
-        root: 'www',
+      "x-turbopanel": {
+        serviceKind: "site",
+        engine: "nginx",
+        root: "www",
       },
     },
     legacy: {
-      'x-turbopanel': {
-        serviceKind: 'site',
-        engine: 'apache',
+      "x-turbopanel": {
+        serviceKind: "site",
+        engine: "apache",
       },
     },
-  })
+  });
 
-  assertEquals(Object.keys(result.containerServices), ['api'])
-  assertEquals(result.sites.length, 2)
-  assertEquals(result.sites[0]?.composeServiceName, 'legacy')
-  assertEquals(result.sites[0]?.engine, 'apache')
-  assertEquals(result.sites[1]?.composeServiceName, 'site')
-  assertEquals(result.sites[1]?.root, 'www')
-})
+  assertEquals(Object.keys(result.containerServices), ["api"]);
+  assertEquals(result.sites.length, 2);
+  assertEquals(result.sites[0]?.composeServiceName, "legacy");
+  assertEquals(result.sites[0]?.engine, "apache");
+  assertEquals(result.sites[1]?.composeServiceName, "site");
+  assertEquals(result.sites[1]?.root, "www");
+});
 
-test('splitSiteServices accepts openlitespeed', () => {
+test("splitSiteServices accepts openlitespeed", () => {
   const result = splitSiteServices({
     ols: {
-      'x-turbopanel': {
-        serviceKind: 'site',
-        engine: 'openlitespeed',
+      "x-turbopanel": {
+        serviceKind: "site",
+        engine: "openlitespeed",
       },
     },
-  })
-  assertEquals(result.sites.length, 1)
-  assertEquals(result.sites[0]?.engine, 'openlitespeed')
-})
+  });
+  assertEquals(result.sites.length, 1);
+  assertEquals(result.sites[0]?.engine, "openlitespeed");
+});
 
-test('assignSiteListenPorts reassigns from preferred map', () => {
+test("assignSiteListenPorts reassigns from preferred map", () => {
   const sites = splitSiteServices({
     site: {
-      'x-turbopanel': { serviceKind: 'site', engine: 'nginx' },
+      "x-turbopanel": { serviceKind: "site", engine: "nginx" },
     },
-  }).sites
+  }).sites;
   const assigned = assignSiteListenPorts(
     sites,
-    new Map([['site', 9090]]),
-  )
-  assertEquals(assigned[0]?.listenPort, 9090)
-})
+    new Map([["site", 9090]]),
+  );
+  assertEquals(assigned[0]?.listenPort, 9090);
+});
 
-test('emptyContainerComposeYaml is a valid empty services document', () => {
-  assertEquals(emptyContainerComposeYaml(), 'services: {}\n')
-})
+test("emptyContainerComposeYaml is a valid empty services document", () => {
+  assertEquals(emptyContainerComposeYaml(), "services: {}\n");
+});
 
-test('allocateSiteListenPort throws when the range is exhausted', () => {
-  const used = new Set<number>()
+test("allocateSiteListenPort throws when the range is exhausted", () => {
+  const used = new Set<number>();
   for (let port = 18_080; port < 18_080 + 920; port++) {
-    used.add(port)
+    used.add(port);
   }
   assertThrows(
-    () => allocateSiteListenPort('site', used),
+    () => allocateSiteListenPort("site", used),
     Error,
-    'No free site listen port',
-  )
-})
+    "No free site listen port",
+  );
+});
 
-test('splitSiteServices defaults a missing engine to caddy and an unsafe root to public', () => {
+test("splitSiteServices defaults a missing engine to caddy and an unsafe root to public", () => {
   const result = splitSiteServices({
     bare: {
-      'x-turbopanel': { serviceKind: 'site' },
+      "x-turbopanel": { serviceKind: "site" },
     },
     unsafe: {
-      'x-turbopanel': {
-        serviceKind: 'site',
-        engine: 'nginx',
-        root: '../etc',
+      "x-turbopanel": {
+        serviceKind: "site",
+        engine: "nginx",
+        root: "../etc",
       },
     },
-  })
-  assertEquals(Object.keys(result.containerServices), [])
-  assertEquals(result.sites.length, 2)
+  });
+  assertEquals(Object.keys(result.containerServices), []);
+  assertEquals(result.sites.length, 2);
   // This is the one place the default is applied, so the wire always carries
   // an explicit engine and the daemon never has to guess.
-  const bare = result.sites.find((s) => s.composeServiceName === 'bare')
-  assertEquals(bare?.engine, 'caddy')
-  assertEquals(bare?.root, 'public')
-  const unsafe = result.sites.find((s) => s.composeServiceName === 'unsafe')
-  assertEquals(unsafe?.root, 'public')
-})
+  const bare = result.sites.find((s) => s.composeServiceName === "bare");
+  assertEquals(bare?.engine, "caddy");
+  assertEquals(bare?.root, "public");
+  const unsafe = result.sites.find((s) => s.composeServiceName === "unsafe");
+  assertEquals(unsafe?.root, "public");
+});
 
 test("splitSiteServices carries sourceKind through to the site spec", () => {
   const { sites } = splitSiteServices({
@@ -135,17 +135,20 @@ test("splitSiteServices carries sourceKind through to the site spec", () => {
       },
     },
     app: { "x-turbopanel": { serviceKind: "site", root: "public" } },
-  })
-  assertEquals(sites.length, 2)
+  });
+  assertEquals(sites.length, 2);
   // Absent stays absent rather than being resolved to an explicit `release`:
   // the daemon reads an absent value the same way, and emitting it would churn
   // the wire for every site that never opted in.
-  assertEquals(sites.find((s) => s.composeServiceName === "app")?.sourceKind, undefined)
+  assertEquals(
+    sites.find((s) => s.composeServiceName === "app")?.sourceKind,
+    undefined,
+  );
   assertEquals(
     sites.find((s) => s.composeServiceName === "blog")?.sourceKind,
     "managed-directory",
-  )
-})
+  );
+});
 
 test("an unknown sourceKind is dropped rather than carried", () => {
   const { sites } = splitSiteServices({
@@ -156,8 +159,8 @@ test("an unknown sourceKind is dropped rather than carried", () => {
         sourceKind: "whatever",
       },
     },
-  })
+  });
   // Falls back to the release lane, which is the safe default: it asserts a
   // tree rather than creating a principal-writable one.
-  assertEquals(sites[0]?.sourceKind, undefined)
-})
+  assertEquals(sites[0]?.sourceKind, undefined);
+});

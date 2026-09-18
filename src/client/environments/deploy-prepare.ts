@@ -28,6 +28,7 @@ import { sha256HexUtf8 } from "../../lib/compose/desired-hash.ts";
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
+  resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
 } from "../../lib/organization-options.ts";
 import {
@@ -3048,6 +3049,11 @@ export async function prepareDeployCompose(
       pipeline.containers,
       pipeline.localReplicaCounts,
       params.serverId,
+    ),
+    // Opt-in per organization; fills a ceiling only where the service sets
+    // none of its own (tenant-resource-limits-lint, decided 2026-09-16).
+    resolveComposeDefaultResourceLimits(
+      parseOrganizationOptions(orgRow?.options),
     ),
   );
 

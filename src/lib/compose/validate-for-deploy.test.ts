@@ -1,8 +1,8 @@
-import { assertEquals } from '@std/assert'
-import { mergeComposeLayers, type ComposeLayer } from './layers.ts'
-import { makeComposeTag } from './tags.ts'
-import type { ComposeDocument } from './types.ts'
-import { validateComposeForDeploy } from './validate-for-deploy.ts'
+import { assertEquals } from "@std/assert";
+import { type ComposeLayer, mergeComposeLayers } from "./layers.ts";
+import { makeComposeTag } from "./tags.ts";
+import type { ComposeDocument } from "./types.ts";
+import { validateComposeForDeploy } from "./validate-for-deploy.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -10,14 +10,14 @@ import { validateComposeForDeploy } from './validate-for-deploy.ts'
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
 function doc(data: Record<string, unknown>): ComposeDocument {
   return {
     version: 1,
     data,
     presentation: { keyOrder: Object.keys(data), comments: {} },
-  }
+  };
 }
 
 /**
@@ -32,207 +32,213 @@ function merge(
   overlay: Record<string, unknown>,
 ): ComposeDocument {
   const layers: ComposeLayer[] = [
-    { role: 'project', filename: 'docker-compose.yml', document: doc(base) },
+    { role: "project", filename: "docker-compose.yml", document: doc(base) },
     {
-      role: 'environment',
-      filename: 'docker-compose.env.yml',
+      role: "environment",
+      filename: "docker-compose.env.yml",
       document: doc(overlay),
     },
-  ]
-  return mergeComposeLayers(layers)
+  ];
+  return mergeComposeLayers(layers);
 }
 
-test('a clean merge is not refused', () => {
+test("a clean merge is not refused", () => {
   const merged = merge(
-    { services: { web: { image: 'nginx:alpine' } } },
-    { services: { web: { environment: { LOG_LEVEL: 'debug' } } } },
-  )
-  assertEquals(validateComposeForDeploy(merged), null)
-})
+    { services: { web: { image: "nginx:alpine" } } },
+    { services: { web: { environment: { LOG_LEVEL: "debug" } } } },
+  );
+  assertEquals(validateComposeForDeploy(merged), null);
+});
 
-test('an overlay !reset that removes the base image is refused as a merged failure', () => {
+test("an overlay !reset that removes the base image is refused as a merged failure", () => {
   // Each layer is fine alone: the base declares an image, the overlay only says
   // "not this one". Their sum is a service with nothing to run, which no save
   // boundary was ever in a position to notice.
   const merged = merge(
-    { services: { web: { image: 'nginx:alpine' } } },
-    { services: { web: { image: makeComposeTag('reset', null) } } },
-  )
-  const error = validateComposeForDeploy(merged)
-  assertEquals(error?.kind, 'compose_merged_invalid')
+    { services: { web: { image: "nginx:alpine" } } },
+    { services: { web: { image: makeComposeTag("reset", null) } } },
+  );
+  const error = validateComposeForDeploy(merged);
+  assertEquals(error?.kind, "compose_merged_invalid");
   assertEquals(
-    error?.issues.some((issue) => issue.path === 'services.web'),
+    error?.issues.some((issue) => issue.path === "services.web"),
     true,
-  )
-})
+  );
+});
 
-test('an overlay !reset on the root principals map orphans the base alias', () => {
+test("an overlay !reset on the root principals map orphans the base alias", () => {
   const base = {
-    'x-turbopanel': { principals: { app: { access: 'none' } } },
+    "x-turbopanel": { principals: { app: { access: "none" } } },
     services: {
-      web: { 'x-turbopanel': { serviceKind: 'site', principal: 'app' } },
+      web: { "x-turbopanel": { serviceKind: "site", principal: "app" } },
     },
-  }
+  };
   // The base on its own is a document that saves and deploys.
-  assertEquals(validateComposeForDeploy(doc(base)), null)
+  assertEquals(validateComposeForDeploy(doc(base)), null);
 
   const merged = merge(base, {
-    'x-turbopanel': { principals: makeComposeTag('reset', null) },
-  })
-  const error = validateComposeForDeploy(merged)
-  assertEquals(error?.kind, 'compose_merged_invalid')
+    "x-turbopanel": { principals: makeComposeTag("reset", null) },
+  });
+  const error = validateComposeForDeploy(merged);
+  assertEquals(error?.kind, "compose_merged_invalid");
   // The site would otherwise have been deployed as nobody.
   assertEquals(
     error?.issues.some((issue) =>
-      issue.path === 'services.web.x-turbopanel.principal'
+      issue.path === "services.web.x-turbopanel.principal"
     ),
     true,
-  )
-})
+  );
+});
 
-test('a merge that drops a schema-required key is refused by the upstream schema stage', () => {
+test("a merge that drops a schema-required key is refused by the upstream schema stage", () => {
   const base = {
     services: {
-      web: { image: 'nginx:alpine', extends: { service: 'other', file: 'o.yml' } },
+      web: {
+        image: "nginx:alpine",
+        extends: { service: "other", file: "o.yml" },
+      },
     },
-  }
-  assertEquals(validateComposeForDeploy(doc(base)), null)
+  };
+  assertEquals(validateComposeForDeploy(doc(base)), null);
 
   // `extends` is a `oneOf` union whose object branch requires `service`. Resetting
   // that one key leaves a shape the Compose Specification does not allow — and
   // the only document that ever holds it is the merge.
   const merged = merge(base, {
-    services: { web: { extends: { service: makeComposeTag('reset', null) } } },
-  })
-  const error = validateComposeForDeploy(merged)
-  assertEquals(error?.kind, 'compose_merged_invalid')
+    services: { web: { extends: { service: makeComposeTag("reset", null) } } },
+  });
+  const error = validateComposeForDeploy(merged);
+  assertEquals(error?.kind, "compose_merged_invalid");
   assertEquals(
     error?.issues.some((issue) =>
-      issue.path === 'services.web.extends' &&
+      issue.path === "services.web.extends" &&
       issue.message.includes('required key "service"')
     ),
     true,
-  )
-})
+  );
+});
 
-test('a merged document naming an unsupported field is refused as policy, not as invalid', () => {
+test("a merged document naming an unsupported field is refused as policy, not as invalid", () => {
   const merged = merge(
-    { services: { web: { image: 'nginx:alpine' } } },
-    { services: { web: { deploy: { endpoint_mode: 'dnsrr' } } } },
-  )
-  const error = validateComposeForDeploy(merged)
-  assertEquals(error?.kind, 'compose_field_unsupported')
+    { services: { web: { image: "nginx:alpine" } } },
+    { services: { web: { deploy: { endpoint_mode: "dnsrr" } } } },
+  );
+  const error = validateComposeForDeploy(merged);
+  assertEquals(error?.kind, "compose_field_unsupported");
   assertEquals(
     error?.issues.map((issue) => issue.path),
-    ['services.web.deploy.endpoint_mode'],
-  )
-})
+    ["services.web.deploy.endpoint_mode"],
+  );
+});
 
-test('structure is answered before policy', () => {
+test("structure is answered before policy", () => {
   // Both faults are present. The one that says "this is not a document we can
   // run" has to win, because the policy verdict on a document that is not a
   // valid Compose file answers the wrong question.
   const merged = merge(
-    { services: { web: { image: 'nginx:alpine' } } },
+    { services: { web: { image: "nginx:alpine" } } },
     {
       services: {
         web: {
-          image: makeComposeTag('reset', null),
-          deploy: { endpoint_mode: 'dnsrr' },
+          image: makeComposeTag("reset", null),
+          deploy: { endpoint_mode: "dnsrr" },
         },
       },
     },
-  )
-  assertEquals(validateComposeForDeploy(merged)?.kind, 'compose_merged_invalid')
-})
+  );
+  assertEquals(
+    validateComposeForDeploy(merged)?.kind,
+    "compose_merged_invalid",
+  );
+});
 
-test('a merged deploy.mode job value is refused as an unsupported field', () => {
+test("a merged deploy.mode job value is refused as an unsupported field", () => {
   // Each layer saves: the base is an ordinary service, the overlay only sets a
   // mode. Their sum asks for finite work from a scheduler that only runs
   // long-lived replicas, and the deploy is where that stops being advice.
   const merged = merge(
-    { services: { worker: { image: 'nginx:alpine' } } },
-    { services: { worker: { deploy: { mode: 'replicated-job' } } } },
-  )
-  const error = validateComposeForDeploy(merged)
-  assertEquals(error?.kind, 'compose_field_unsupported')
+    { services: { worker: { image: "nginx:alpine" } } },
+    { services: { worker: { deploy: { mode: "replicated-job" } } } },
+  );
+  const error = validateComposeForDeploy(merged);
+  assertEquals(error?.kind, "compose_field_unsupported");
   assertEquals(
     error?.issues.map((issue) => issue.path),
-    ['services.worker.deploy.mode'],
-  )
-})
+    ["services.worker.deploy.mode"],
+  );
+});
 
-test('deploy.mode: global still deploys', () => {
+test("deploy.mode: global still deploys", () => {
   const merged = merge(
-    { services: { worker: { image: 'nginx:alpine' } } },
-    { services: { worker: { deploy: { mode: 'global' } } } },
-  )
-  assertEquals(validateComposeForDeploy(merged), null)
-})
+    { services: { worker: { image: "nginx:alpine" } } },
+    { services: { worker: { deploy: { mode: "global" } } } },
+  );
+  assertEquals(validateComposeForDeploy(merged), null);
+});
 
-test('privileged is refused for an org that has not opted in — the default', () => {
+test("privileged is refused for an org that has not opted in — the default", () => {
   const merged = merge(
-    { services: { web: { image: 'nginx:alpine' } } },
+    { services: { web: { image: "nginx:alpine" } } },
     { services: { web: { privileged: true } } },
-  )
+  );
   // No opts at all is the same as an explicit false — deny-by-default, not
   // deny-only-when-asked.
   assertEquals(
     validateComposeForDeploy(merged)?.kind,
-    'compose_field_requires_org_opt_in',
-  )
+    "compose_field_requires_org_opt_in",
+  );
   assertEquals(
     validateComposeForDeploy(merged, { composeGatedFieldsEnabled: false })
       ?.kind,
-    'compose_field_requires_org_opt_in',
-  )
-})
+    "compose_field_requires_org_opt_in",
+  );
+});
 
-test('privileged deploys once the organization opts in', () => {
+test("privileged deploys once the organization opts in", () => {
   const merged = merge(
-    { services: { web: { image: 'nginx:alpine' } } },
+    { services: { web: { image: "nginx:alpine" } } },
     { services: { web: { privileged: true } } },
-  )
+  );
   assertEquals(
     validateComposeForDeploy(merged, { composeGatedFieldsEnabled: true }),
     null,
-  )
-})
+  );
+});
 
-test('every gated field is refused by name, not just the first one found', () => {
+test("every gated field is refused by name, not just the first one found", () => {
   const merged = merge(
-    { services: { web: { image: 'nginx:alpine' } } },
+    { services: { web: { image: "nginx:alpine" } } },
     {
       services: {
         web: {
-          cap_add: ['SYS_ADMIN'],
-          network_mode: 'host',
+          cap_add: ["SYS_ADMIN"],
+          network_mode: "host",
           privileged: true,
         },
       },
     },
-  )
-  const error = validateComposeForDeploy(merged)
-  assertEquals(error?.kind, 'compose_field_requires_org_opt_in')
+  );
+  const error = validateComposeForDeploy(merged);
+  assertEquals(error?.kind, "compose_field_requires_org_opt_in");
   assertEquals(
     error?.issues.map((issue) => issue.path).sort(),
     [
-      'services.web.cap_add',
-      'services.web.network_mode',
-      'services.web.privileged',
+      "services.web.cap_add",
+      "services.web.network_mode",
+      "services.web.privileged",
     ],
-  )
-})
+  );
+});
 
-test('a gated field never masquerades as compose_field_unsupported', () => {
+test("a gated field never masquerades as compose_field_unsupported", () => {
   // TurboPanel does implement privileged — unlike deploy.endpoint_mode above,
   // the fix is an org-owner opt-in, not removing the field.
   const merged = merge(
-    { services: { web: { image: 'nginx:alpine' } } },
+    { services: { web: { image: "nginx:alpine" } } },
     { services: { web: { privileged: true } } },
-  )
+  );
   assertEquals(
-    validateComposeForDeploy(merged)?.kind !== 'compose_field_unsupported',
+    validateComposeForDeploy(merged)?.kind !== "compose_field_unsupported",
     true,
-  )
-})
+  );
+});

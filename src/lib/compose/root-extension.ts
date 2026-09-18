@@ -31,7 +31,7 @@ import {
   isPrincipalAlias,
   SERVICE_DESCRIPTION_MAX_LENGTH,
   type ServiceTurbopanelValidationIssue,
-} from './service-kind.ts'
+} from "./service-kind.ts";
 
 /**
  * How a principal declared in compose reaches its account.
@@ -47,18 +47,18 @@ import {
  * imported from `./placement.ts`, which owns the *runtime* object under the
  * same key — see the module comment for why the two never share a type.
  */
-export const TURBOPANEL_ROOT_EXTENSION_KEY = 'x-turbopanel'
+export const TURBOPANEL_ROOT_EXTENSION_KEY = "x-turbopanel";
 
-export type PrincipalAccess = 'none' | 'sftp' | 'ssh'
+export type PrincipalAccess = "none" | "sftp" | "ssh";
 
 export const PRINCIPAL_ACCESS_VALUES: readonly PrincipalAccess[] = [
-  'none',
-  'sftp',
-  'ssh',
-]
+  "none",
+  "sftp",
+  "ssh",
+];
 
 /** Default when `access` is omitted — existence without login. */
-export const DEFAULT_PRINCIPAL_ACCESS: PrincipalAccess = 'none'
+export const DEFAULT_PRINCIPAL_ACCESS: PrincipalAccess = "none";
 
 /**
  * One entry in `x-turbopanel.principals`.
@@ -73,10 +73,10 @@ export const DEFAULT_PRINCIPAL_ACCESS: PrincipalAccess = 'none'
  */
 export type PrincipalSpec = {
   /** Operator-facing note. TurboPanel-only metadata; Docker never sees it. */
-  description?: string
+  description?: string;
   /** Requested access level. Omitted means {@link DEFAULT_PRINCIPAL_ACCESS}. */
-  access?: PrincipalAccess
-}
+  access?: PrincipalAccess;
+};
 
 /**
  * The **authored** top-level `x-turbopanel` block.
@@ -84,13 +84,13 @@ export type PrincipalSpec = {
  * Has no `placement` key by construction. See the module comment.
  */
 export type TurbopanelRootExtension = {
-  principals?: Record<string, PrincipalSpec>
-}
+  principals?: Record<string, PrincipalSpec>;
+};
 
 /** Top-level keys an author may write. Anything else is reported. */
 export const AUTHORED_ROOT_EXTENSION_KEYS: ReadonlySet<string> = new Set([
-  'principals',
-])
+  "principals",
+]);
 
 /**
  * Document-local alias charset.
@@ -101,8 +101,8 @@ export const AUTHORED_ROOT_EXTENSION_KEYS: ReadonlySet<string> = new Set([
  * the regex here and importing it back is the direction that would close a
  * cycle. Every existing caller still reaches for it here.
  */
-export { isPrincipalAlias }
-export { PRINCIPAL_ALIAS_RE } from './service-kind.ts'
+export { isPrincipalAlias };
+export { PRINCIPAL_ALIAS_RE } from "./service-kind.ts";
 
 /**
  * The one message for "placement is not a stored compose shape".
@@ -111,7 +111,7 @@ export { PRINCIPAL_ALIAS_RE } from './service-kind.ts'
  * placement rejection cannot drift into two different sentences for one rule.
  */
 export const PLACEMENT_NOT_STORED_MESSAGE =
-  'placement is not stored in compose; use environment.server_id'
+  "placement is not stored in compose; use environment.server_id";
 
 /**
  * Keys that are refused with a pointer rather than a bare "unknown".
@@ -124,44 +124,44 @@ export const ROOT_KEY_REDIRECTS: Readonly<Record<string, string>> = {
   placement: PLACEMENT_NOT_STORED_MESSAGE,
   server_id: PLACEMENT_NOT_STORED_MESSAGE,
   uid:
-    'uid is not authored in compose; operator id overrides live on principal.options',
+    "uid is not authored in compose; operator id overrides live on principal.options",
   gid:
-    'gid is not authored in compose; operator id overrides live on principal.options',
+    "gid is not authored in compose; operator id overrides live on principal.options",
   home:
     "home is not authored in compose; the daemon derives a principal's home directory (turbopaneld ensure-principal.ts)",
   shell:
-    'shell is not authored in compose; the access level is encoded by principal.options.shell',
+    "shell is not authored in compose; the access level is encoded by principal.options.shell",
   password:
-    'password is not authored in compose; principal credentials live on the ssh table',
+    "password is not authored in compose; principal credentials live on the ssh table",
   authorized_keys:
-    'authorized_keys is not authored in compose; principal keys live on the ssh table',
+    "authorized_keys is not authored in compose; principal keys live on the ssh table",
   cgroup:
-    'cgroup is not authored in compose; resource limits are org and server policy',
-}
+    "cgroup is not authored in compose; resource limits are org and server policy",
+};
 
 /** Keys a principal entry may carry. Anything else is reported. */
 const PRINCIPAL_SPEC_KEYS: ReadonlySet<string> = new Set([
-  'description',
-  'access',
-])
+  "description",
+  "access",
+]);
 
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function isPrincipalAccess(value: unknown): value is PrincipalAccess {
-  return typeof value === 'string' &&
-    (PRINCIPAL_ACCESS_VALUES as readonly string[]).includes(value)
+  return typeof value === "string" &&
+    (PRINCIPAL_ACCESS_VALUES as readonly string[]).includes(value);
 }
 
 function readTrimmedString(
   value: unknown,
   maxLength: number,
 ): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
-  if (trimmed.length === 0 || trimmed.length > maxLength) return undefined
-  return trimmed
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > maxLength) return undefined;
+  return trimmed;
 }
 
 /**
@@ -175,42 +175,42 @@ function readTrimmedString(
 export function parseRootExtension(
   value: unknown,
 ): TurbopanelRootExtension | null {
-  if (value === null || value === undefined) return {}
-  if (!isPlainMapping(value)) return null
+  if (value === null || value === undefined) return {};
+  if (!isPlainMapping(value)) return null;
 
-  const principals = parsePrincipals(value.principals)
-  return principals ? { principals } : {}
+  const principals = parsePrincipals(value.principals);
+  return principals ? { principals } : {};
 }
 
 function parsePrincipalSpec(raw: unknown): PrincipalSpec | null {
-  if (raw !== null && raw !== undefined && !isPlainMapping(raw)) return null
+  if (raw !== null && raw !== undefined && !isPlainMapping(raw)) return null;
 
-  const spec: PrincipalSpec = {}
+  const spec: PrincipalSpec = {};
   if (isPlainMapping(raw)) {
     const description = readTrimmedString(
       raw.description,
       SERVICE_DESCRIPTION_MAX_LENGTH,
-    )
-    if (description) spec.description = description
-    if (isPrincipalAccess(raw.access)) spec.access = raw.access
+    );
+    if (description) spec.description = description;
+    if (isPrincipalAccess(raw.access)) spec.access = raw.access;
   }
-  return spec
+  return spec;
 }
 
 function parsePrincipals(
   value: unknown,
 ): Record<string, PrincipalSpec> | undefined {
-  if (!isPlainMapping(value)) return undefined
+  if (!isPlainMapping(value)) return undefined;
 
-  const principals: Record<string, PrincipalSpec> = {}
+  const principals: Record<string, PrincipalSpec> = {};
   for (const [alias, raw] of Object.entries(value)) {
-    if (!isPrincipalAlias(alias)) continue
-    const spec = parsePrincipalSpec(raw)
-    if (spec === null) continue
-    principals[alias] = spec
+    if (!isPrincipalAlias(alias)) continue;
+    const spec = parsePrincipalSpec(raw);
+    if (spec === null) continue;
+    principals[alias] = spec;
   }
 
-  return Object.keys(principals).length > 0 ? principals : undefined
+  return Object.keys(principals).length > 0 ? principals : undefined;
 }
 
 /**
@@ -227,14 +227,14 @@ function parsePrincipals(
  * still has to open in the editor.
  */
 export function principalAliasesInComposeData(data: unknown): Set<string> {
-  if (!isPlainMapping(data)) return new Set()
-  const parsed = parseRootExtension(data[TURBOPANEL_ROOT_EXTENSION_KEY])
-  return new Set(Object.keys(parsed?.principals ?? {}))
+  if (!isPlainMapping(data)) return new Set();
+  const parsed = parseRootExtension(data[TURBOPANEL_ROOT_EXTENSION_KEY]);
+  return new Set(Object.keys(parsed?.principals ?? {}));
 }
 
 /** The access an entry asks for, resolving the omitted case. */
 export function principalAccessOf(spec: PrincipalSpec): PrincipalAccess {
-  return spec.access ?? DEFAULT_PRINCIPAL_ACCESS
+  return spec.access ?? DEFAULT_PRINCIPAL_ACCESS;
 }
 
 /**
@@ -251,29 +251,31 @@ export function collectRootExtensionValidationIssues(
   basePath: string,
   value: unknown,
 ): ServiceTurbopanelValidationIssue[] {
-  if (!isPlainMapping(value)) return []
+  if (!isPlainMapping(value)) return [];
 
-  const issues: ServiceTurbopanelValidationIssue[] = []
+  const issues: ServiceTurbopanelValidationIssue[] = [];
   for (const key of Object.keys(value)) {
-    if (AUTHORED_ROOT_EXTENSION_KEYS.has(key)) continue
+    if (AUTHORED_ROOT_EXTENSION_KEYS.has(key)) continue;
     issues.push({
       path: `${basePath}.${key}`,
       message: ROOT_KEY_REDIRECTS[key] ?? unknownRootKeyMessage(key),
-    })
+    });
   }
 
-  if ('principals' in value) {
-    issues.push(...validatePrincipals(`${basePath}.principals`, value.principals))
+  if ("principals" in value) {
+    issues.push(
+      ...validatePrincipals(`${basePath}.principals`, value.principals),
+    );
   }
 
-  return issues
+  return issues;
 }
 
 function unknownRootKeyMessage(key: string): string {
   const known = [...AUTHORED_ROOT_EXTENSION_KEYS].sort((a, b) =>
     a.localeCompare(b)
-  )
-  return `unknown x-turbopanel key "${key}"; supported: ${known.join(', ')}`
+  );
+  return `unknown x-turbopanel key "${key}"; supported: ${known.join(", ")}`;
 }
 
 function validatePrincipals(
@@ -283,13 +285,13 @@ function validatePrincipals(
   if (!isPlainMapping(value)) {
     return [{
       path: basePath,
-      message: 'principals must be a mapping of alias to principal',
-    }]
+      message: "principals must be a mapping of alias to principal",
+    }];
   }
 
-  const issues: ServiceTurbopanelValidationIssue[] = []
+  const issues: ServiceTurbopanelValidationIssue[] = [];
   for (const [alias, raw] of Object.entries(value)) {
-    const path = `${basePath}.${alias}`
+    const path = `${basePath}.${alias}`;
     if (!isPrincipalAlias(alias)) {
       issues.push({
         path,
@@ -297,12 +299,12 @@ function validatePrincipals(
         // referable and quotable, not about the eventual Unix account name.
         message:
           'principal alias must start with a letter and contain only letters, digits, "-", and "_" (at most 64 characters)',
-      })
-      continue
+      });
+      continue;
     }
-    issues.push(...validatePrincipalSpec(path, raw))
+    issues.push(...validatePrincipalSpec(path, raw));
   }
-  return issues
+  return issues;
 }
 
 function validatePrincipalSpec(
@@ -311,47 +313,47 @@ function validatePrincipalSpec(
 ): ServiceTurbopanelValidationIssue[] {
   // `alias:` with nothing under it is the minimum useful declaration — an alias
   // that exists and grants no login — so an empty body is valid, not missing.
-  if (value === null || value === undefined) return []
+  if (value === null || value === undefined) return [];
   if (!isPlainMapping(value)) {
-    return [{ path: basePath, message: 'principal must be a mapping' }]
+    return [{ path: basePath, message: "principal must be a mapping" }];
   }
 
-  const issues: ServiceTurbopanelValidationIssue[] = []
+  const issues: ServiceTurbopanelValidationIssue[] = [];
   for (const key of Object.keys(value)) {
-    if (PRINCIPAL_SPEC_KEYS.has(key)) continue
+    if (PRINCIPAL_SPEC_KEYS.has(key)) continue;
     issues.push({
       path: `${basePath}.${key}`,
       message: ROOT_KEY_REDIRECTS[key] ?? unknownPrincipalKeyMessage(key),
-    })
+    });
   }
 
-  if ('description' in value) {
-    const description = value.description
-    if (typeof description !== 'string') {
+  if ("description" in value) {
+    const description = value.description;
+    if (typeof description !== "string") {
       issues.push({
         path: `${basePath}.description`,
-        message: 'description must be a string',
-      })
+        message: "description must be a string",
+      });
     } else if (description.trim().length > SERVICE_DESCRIPTION_MAX_LENGTH) {
       issues.push({
         path: `${basePath}.description`,
         message:
           `description must be at most ${SERVICE_DESCRIPTION_MAX_LENGTH} characters`,
-      })
+      });
     }
   }
 
-  if ('access' in value && !isPrincipalAccess(value.access)) {
+  if ("access" in value && !isPrincipalAccess(value.access)) {
     issues.push({
       path: `${basePath}.access`,
       message: 'access must be "none", "sftp", or "ssh"',
-    })
+    });
   }
 
-  return issues
+  return issues;
 }
 
 function unknownPrincipalKeyMessage(key: string): string {
-  const known = [...PRINCIPAL_SPEC_KEYS].sort((a, b) => a.localeCompare(b))
-  return `unknown principal key "${key}"; supported: ${known.join(', ')}`
+  const known = [...PRINCIPAL_SPEC_KEYS].sort((a, b) => a.localeCompare(b));
+  return `unknown principal key "${key}"; supported: ${known.join(", ")}`;
 }

@@ -9,10 +9,7 @@ import {
   canAccessOrganization,
   listAccessibleOrganizations,
 } from "../org-context.ts";
-import {
-  assertCanManageOr403,
-  parseJsonBody,
-} from "../shared.ts";
+import { assertCanManageOr403, parseJsonBody } from "../shared.ts";
 import { type Db, getDb } from "../../db.ts";
 import { organization } from "../../lib/db/schema.ts";
 import {
@@ -27,18 +24,21 @@ import { findDockerBridgePoolOverlap } from "../../lib/docker-address-pools.ts";
 import { cidrCollisionResponse } from "../networks/network-scope.ts";
 import {
   applyManagedDefaultsPatch,
+  composeDefaultResourceLimitsGetResponse,
+  composeDefaultResourceLimitsPutResponse,
   composeGatedFieldsGetResponse,
   composeGatedFieldsPutResponse,
   defaultEnvironmentGetResponse,
-  dockerNetworkingGetResponse,
-  dockerNetworkingPutResponse,
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
   defaultTimezonePutResponse,
+  dockerNetworkingGetResponse,
+  dockerNetworkingPutResponse,
   hostDefaultsGetResponse,
   hostDefaultsPutResponse,
   managedDefaultsGetResponse,
   managedDefaultsPutResponse,
+  parseComposeDefaultResourceLimitsPatch,
   parseComposeGatedFieldsPatch,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
@@ -458,6 +458,76 @@ export function registerOrganizationRoutes(
     const options = parseOrganizationOptions(updated?.options);
 
     return c.json(composeGatedFieldsPutResponse(options));
+  });
+
+  router.get("/organizations/:id/compose-resource-defaults", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertOrgOwnerOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    return c.json(
+      composeDefaultResourceLimitsGetResponse(
+        parseOrganizationOptions(orgRow.options),
+      ),
+    );
+  });
+
+  router.put("/organizations/:id/compose-resource-defaults", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertOrgOwnerOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
+
+    const parsedPatch = parseComposeDefaultResourceLimitsPatch(body);
+    if (!parsedPatch.ok) {
+      return c.json({ error: parsedPatch.error }, parsedPatch.status);
+    }
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    // `null` clears the opt-in; jsonb merge-patch cannot remove a key, so the
+    // clear is written as a key removal on the stored object.
+    const patch = parsedPatch.patch.composeDefaultResourceLimits;
+    await db.update(organization).set({
+      options: patch === null
+        ? sql`COALESCE(${organization.options}, '{}'::jsonb) - 'composeDefaultResourceLimits'`
+        : sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+          JSON.stringify({ composeDefaultResourceLimits: patch })
+        }::jsonb`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id));
+
+    const [updated] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+
+    return c.json(
+      composeDefaultResourceLimitsPutResponse(
+        parseOrganizationOptions(updated?.options),
+      ),
+    );
   });
 
   router.get("/organizations/:id/host-defaults", async (c) => {

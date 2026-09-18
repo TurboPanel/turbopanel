@@ -35,7 +35,7 @@
 import type {
   ComposeServiceKind,
   ServiceTurbopanelValidationIssue,
-} from './service-kind.ts'
+} from "./service-kind.ts";
 
 /**
  * How the edge terminates TLS for one authored hostname.
@@ -47,13 +47,13 @@ import type {
  * of parsing it away into a route that silently terminates with a self-signed
  * certificate.
  */
-export type ComposeHostingTlsMode = 'automatic' | 'internal' | 'certificate'
+export type ComposeHostingTlsMode = "automatic" | "internal" | "certificate";
 
 export const HOSTING_TLS_MODES: readonly ComposeHostingTlsMode[] = [
-  'automatic',
-  'internal',
-  'certificate',
-]
+  "automatic",
+  "internal",
+  "certificate",
+];
 
 /**
  * Default when `tls` is omitted — the self-signed certificate the edge
@@ -66,71 +66,71 @@ export const HOSTING_TLS_MODES: readonly ComposeHostingTlsMode[] = [
  * certificates and hand back self-signed ones, so the omitted case names what
  * actually happens.
  */
-export const DEFAULT_HOSTING_TLS_MODE: ComposeHostingTlsMode = 'internal'
+export const DEFAULT_HOSTING_TLS_MODE: ComposeHostingTlsMode = "internal";
 
 /**
  * Which address family the route listens on. Mirrors `HostingBindScope` in
  * `../hosting-options.ts`, which is the shape actually stored on the row.
  */
-export type ComposeHostingBindScope = 'public' | 'datacenter' | 'local'
+export type ComposeHostingBindScope = "public" | "datacenter" | "local";
 
 export const HOSTING_BIND_SCOPES: readonly ComposeHostingBindScope[] = [
-  'public',
-  'datacenter',
-  'local',
-]
+  "public",
+  "datacenter",
+  "local",
+];
 
 /** Default when `bind` is omitted — the same default `resolveHostingBind` reads. */
-export const DEFAULT_HOSTING_BIND_SCOPE: ComposeHostingBindScope = 'public'
+export const DEFAULT_HOSTING_BIND_SCOPE: ComposeHostingBindScope = "public";
 
 /** Default when `pathPrefix` is omitted — the whole hostname. */
-export const DEFAULT_HOSTING_PATH_PREFIX = '/'
+export const DEFAULT_HOSTING_PATH_PREFIX = "/";
 
 /** DNS name length ceiling, so an over-long hostname is reported, not stored. */
-export const HOSTING_HOSTNAME_MAX_LENGTH = 253
+export const HOSTING_HOSTNAME_MAX_LENGTH = 253;
 
 /** Ceiling for `pathPrefix`, matching the relative-path rule `root` uses. */
-export const HOSTING_PATH_PREFIX_MAX_LENGTH = 200
+export const HOSTING_PATH_PREFIX_MAX_LENGTH = 200;
 
 /** Ceiling for a `certificateRef` / `ipRef` — a name or a UUID, never a blob. */
-export const HOSTING_REF_MAX_LENGTH = 255
+export const HOSTING_REF_MAX_LENGTH = 255;
 
 /**
  * Most routes one service may declare. Not a platform limit — a guard against
  * a generated document quietly minting hundreds of `hosting` rows per deploy.
  */
-export const MAX_HOSTING_ENTRIES_PER_SERVICE = 20
+export const MAX_HOSTING_ENTRIES_PER_SERVICE = 20;
 
 /**
  * One label, or a leading `*` wildcard label. Deliberately narrower than the
  * RFC: the value ends up in an edge router rule and a certificate SAN, so the
  * safe direction is to accept what real hostnames use and report the rest.
  */
-const HOSTNAME_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+const HOSTNAME_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
 export const HOSTING_HOSTNAME_RE: RegExp = new RegExp(
   String.raw`^(?:\*\.)?${HOSTNAME_LABEL}(?:\.${HOSTNAME_LABEL})*$`,
-  'i',
-)
+  "i",
+);
 
 /** `tls` on one entry. `certificateRef` is required by `certificate` alone. */
 export type ComposeHostingTlsSpec = {
-  mode: ComposeHostingTlsMode
+  mode: ComposeHostingTlsMode;
   /**
    * A `tls` row in the caller's organization, named by **id or name**. Shape
    * only here — resolution is the linter's (`knownTlsIds`) and deploy-prepare's.
    */
-  certificateRef?: string
-}
+  certificateRef?: string;
+};
 
 /** `bind` on one entry — which listen address the route is published on. */
 export type ComposeHostingBindSpec = {
-  scope: ComposeHostingBindScope
+  scope: ComposeHostingBindScope;
   /**
    * An `ip` row in the caller's organization, named by **id or address**.
    * Shape only here, same split as {@link ComposeHostingTlsSpec.certificateRef}.
    */
-  ipRef?: string
-}
+  ipRef?: string;
+};
 
 /**
  * One entry in `x-turbopanel.hosting`.
@@ -141,9 +141,9 @@ export type ComposeHostingBindSpec = {
  */
 export type ComposeHostingExtensionEntry = {
   /** The name the edge answers on. Lowercased on parse. */
-  hostname: string
+  hostname: string;
   /** Route prefix under the hostname. Omitted means {@link DEFAULT_HOSTING_PATH_PREFIX}. */
-  pathPrefix?: string
+  pathPrefix?: string;
   /**
    * Port inside the service the edge forwards to.
    *
@@ -156,38 +156,38 @@ export type ComposeHostingExtensionEntry = {
    * report it. {@link hostingTargetPortAuthorable} is the one place that says
    * which kinds may author it.
    */
-  targetPort?: number
+  targetPort?: number;
   /** Redirect plain HTTP to HTTPS. Omitted means the row default (`true`). */
-  forceHttps?: boolean
-  tls?: ComposeHostingTlsSpec
-  bind?: ComposeHostingBindSpec
-}
+  forceHttps?: boolean;
+  tls?: ComposeHostingTlsSpec;
+  bind?: ComposeHostingBindSpec;
+};
 
 /** Keys one `hosting[]` entry may carry. Anything else is reported. */
 export const HOSTING_ENTRY_KEYS: ReadonlySet<string> = new Set([
-  'hostname',
-  'pathPrefix',
-  'targetPort',
-  'forceHttps',
-  'tls',
-  'bind',
-])
+  "hostname",
+  "pathPrefix",
+  "targetPort",
+  "forceHttps",
+  "tls",
+  "bind",
+]);
 
 /** Keys a `hosting[].tls` block may carry. */
 export const HOSTING_TLS_KEYS: ReadonlySet<string> = new Set([
-  'mode',
-  'certificateRef',
-])
+  "mode",
+  "certificateRef",
+]);
 
 /** Keys a `hosting[].bind` block may carry. */
 export const HOSTING_BIND_KEYS: ReadonlySet<string> = new Set([
-  'scope',
-  'ipRef',
-])
+  "scope",
+  "ipRef",
+]);
 
 /** The one sentence for "an ingress route is not a port publish". */
 export const HOSTING_NOT_A_PUBLISH_MESSAGE =
-  'x-turbopanel.hosting declares an ingress route, not a port publish; use the service ports: list to bind a host port'
+  "x-turbopanel.hosting declares an ingress route, not a port publish; use the service ports: list to bind a host port";
 
 /**
  * Keys refused with a pointer rather than a bare "unknown".
@@ -200,38 +200,41 @@ export const HOSTING_KEY_REDIRECTS: Readonly<Record<string, string>> = {
   ports: HOSTING_NOT_A_PUBLISH_MESSAGE,
   publish: HOSTING_NOT_A_PUBLISH_MESSAGE,
   protocol:
-    'protocol is not authored in compose; raw tcp/udp ingress is a hosting row setting (hosting.options.protocol)',
+    "protocol is not authored in compose; raw tcp/udp ingress is a hosting row setting (hosting.options.protocol)",
   certificate:
-    'certificate is not authored in compose; pin one with tls.certificateRef and keep the material on the tls row',
+    "certificate is not authored in compose; pin one with tls.certificateRef and keep the material on the tls row",
   certificatePem:
-    'certificatePem is not authored in compose; certificate material lives on the tls table',
+    "certificatePem is not authored in compose; certificate material lives on the tls table",
   privateKeyPem:
-    'privateKeyPem is not authored in compose; certificate material lives on the tls table',
-  ip: 'ip is not authored in compose; name a managed address with bind.ipRef',
-  ipId: 'ipId is not authored in compose; name a managed address with bind.ipRef',
+    "privateKeyPem is not authored in compose; certificate material lives on the tls table",
+  ip: "ip is not authored in compose; name a managed address with bind.ipRef",
+  ipId:
+    "ipId is not authored in compose; name a managed address with bind.ipRef",
   tlsId:
-    'tlsId is not authored in compose; name an organization certificate with tls.certificateRef',
+    "tlsId is not authored in compose; name an organization certificate with tls.certificateRef",
   web:
-    'web is not authored in compose; static web env and PHP hints live on the hosting row (hosting.options.web)',
+    "web is not authored in compose; static web env and PHP hints live on the hosting row (hosting.options.web)",
   php:
-    'php is not authored in compose here; PHP belongs to the service block (x-turbopanel.php)',
-  gzip: 'gzip is not authored in compose; proxy toggles live on the hosting row',
-  brotli: 'brotli is not authored in compose; proxy toggles live on the hosting row',
+    "php is not authored in compose here; PHP belongs to the service block (x-turbopanel.php)",
+  gzip:
+    "gzip is not authored in compose; proxy toggles live on the hosting row",
+  brotli:
+    "brotli is not authored in compose; proxy toggles live on the hosting row",
   stripPrefix:
-    'stripPrefix is not authored in compose; proxy toggles live on the hosting row',
-}
+    "stripPrefix is not authored in compose; proxy toggles live on the hosting row",
+};
 
 /** Message for a `hosting[]` entry with no usable hostname. */
 export const HOSTING_HOSTNAME_REQUIRED_MESSAGE =
-  `hostname is required and must be a DNS name like "app.example.com" or "*.example.com" (at most ${HOSTING_HOSTNAME_MAX_LENGTH} characters)`
+  `hostname is required and must be a DNS name like "app.example.com" or "*.example.com" (at most ${HOSTING_HOSTNAME_MAX_LENGTH} characters)`;
 
 /** Message for `targetPort` on a `site`, where the daemon owns the port. */
 export const HOSTING_TARGET_PORT_NOT_FOR_SITE_MESSAGE =
-  'targetPort is not valid on a site service; the daemon allocates the engine listen port'
+  "targetPort is not valid on a site service; the daemon allocates the engine listen port";
 
 /** Message for `targetPort` on a `node`, where the daemon owns the port. */
 export const HOSTING_TARGET_PORT_NOT_FOR_NODE_MESSAGE =
-  'targetPort is not valid on a node service; the daemon allocates the app listen port'
+  "targetPort is not valid on a node service; the daemon allocates the app listen port";
 
 /**
  * Message for `tls.mode: automatic`, which nothing downstream can perform yet.
@@ -244,116 +247,124 @@ export const HOSTING_TARGET_PORT_NOT_FOR_NODE_MESSAGE =
  * so it is refused at save time and again at deploy-prepare.
  */
 export const HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE =
-  'tls.mode "automatic" is not supported yet; use "internal" for a self-signed certificate, or "certificate" with tls.certificateRef to pin one from this organization'
+  'tls.mode "automatic" is not supported yet; use "internal" for a self-signed certificate, or "certificate" with tls.certificateRef to pin one from this organization';
 
 /** Message for an out-of-range or non-integer `targetPort`. */
 export const HOSTING_TARGET_PORT_RANGE_MESSAGE =
-  'targetPort must be an integer between 1 and 65535'
+  "targetPort must be an integer between 1 and 65535";
 
 /** Message for a `pathPrefix` that is not an absolute, traversal-free path. */
 export const HOSTING_PATH_PREFIX_MESSAGE =
-  `pathPrefix must start with "/" and contain no whitespace or ".." (at most ${HOSTING_PATH_PREFIX_MAX_LENGTH} characters)`
+  `pathPrefix must start with "/" and contain no whitespace or ".." (at most ${HOSTING_PATH_PREFIX_MAX_LENGTH} characters)`;
 
 export function hostingTlsRefUnresolvedMessage(ref: string): string {
-  return `certificate '${ref}' was not found for this organization`
+  return `certificate '${ref}' was not found for this organization`;
 }
 
 export function hostingIpRefUnresolvedMessage(ref: string): string {
-  return `ip '${ref}' was not found for this organization`
+  return `ip '${ref}' was not found for this organization`;
 }
 
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function isHostingTlsMode(value: unknown): value is ComposeHostingTlsMode {
-  return typeof value === 'string' &&
-    (HOSTING_TLS_MODES as readonly string[]).includes(value)
+export function isHostingTlsMode(
+  value: unknown,
+): value is ComposeHostingTlsMode {
+  return typeof value === "string" &&
+    (HOSTING_TLS_MODES as readonly string[]).includes(value);
 }
 
 export function isHostingBindScope(
   value: unknown,
 ): value is ComposeHostingBindScope {
-  return typeof value === 'string' &&
-    (HOSTING_BIND_SCOPES as readonly string[]).includes(value)
+  return typeof value === "string" &&
+    (HOSTING_BIND_SCOPES as readonly string[]).includes(value);
 }
 
 /** A DNS name this platform will route on, lowercased, or nothing. */
 export function readHostingHostname(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim().toLowerCase()
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim().toLowerCase();
   if (trimmed.length === 0 || trimmed.length > HOSTING_HOSTNAME_MAX_LENGTH) {
-    return undefined
+    return undefined;
   }
-  return HOSTING_HOSTNAME_RE.test(trimmed) ? trimmed : undefined
+  return HOSTING_HOSTNAME_RE.test(trimmed) ? trimmed : undefined;
 }
 
 /** An absolute, traversal-free route prefix, or nothing. */
 export function readHostingPathPrefix(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
   if (trimmed.length === 0 || trimmed.length > HOSTING_PATH_PREFIX_MAX_LENGTH) {
-    return undefined
+    return undefined;
   }
-  if (!trimmed.startsWith('/')) return undefined
-  if (trimmed.includes('..')) return undefined
-  if (/\s/.test(trimmed)) return undefined
-  return trimmed
+  if (!trimmed.startsWith("/")) return undefined;
+  if (trimmed.includes("..")) return undefined;
+  if (/\s/.test(trimmed)) return undefined;
+  return trimmed;
 }
 
 function readHostingTargetPort(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isInteger(value)) return undefined
-  return value >= 1 && value <= 65535 ? value : undefined
+  if (typeof value !== "number" || !Number.isInteger(value)) return undefined;
+  return value >= 1 && value <= 65535 ? value : undefined;
 }
 
 function readHostingRef(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
   if (trimmed.length === 0 || trimmed.length > HOSTING_REF_MAX_LENGTH) {
-    return undefined
+    return undefined;
   }
-  return trimmed
+  return trimmed;
 }
 
-function parseHostingTlsSpec(value: unknown): ComposeHostingTlsSpec | undefined {
-  if (!isPlainMapping(value)) return undefined
-  if (!isHostingTlsMode(value.mode)) return undefined
-  const spec: ComposeHostingTlsSpec = { mode: value.mode }
-  const certificateRef = readHostingRef(value.certificateRef)
-  if (certificateRef && spec.mode === 'certificate') {
-    spec.certificateRef = certificateRef
+function parseHostingTlsSpec(
+  value: unknown,
+): ComposeHostingTlsSpec | undefined {
+  if (!isPlainMapping(value)) return undefined;
+  if (!isHostingTlsMode(value.mode)) return undefined;
+  const spec: ComposeHostingTlsSpec = { mode: value.mode };
+  const certificateRef = readHostingRef(value.certificateRef);
+  if (certificateRef && spec.mode === "certificate") {
+    spec.certificateRef = certificateRef;
   }
-  return spec
+  return spec;
 }
 
-function parseHostingBindSpec(value: unknown): ComposeHostingBindSpec | undefined {
-  if (!isPlainMapping(value)) return undefined
-  if (!isHostingBindScope(value.scope)) return undefined
-  const spec: ComposeHostingBindSpec = { scope: value.scope }
-  const ipRef = readHostingRef(value.ipRef)
-  if (ipRef) spec.ipRef = ipRef
-  return spec
+function parseHostingBindSpec(
+  value: unknown,
+): ComposeHostingBindSpec | undefined {
+  if (!isPlainMapping(value)) return undefined;
+  if (!isHostingBindScope(value.scope)) return undefined;
+  const spec: ComposeHostingBindSpec = { scope: value.scope };
+  const ipRef = readHostingRef(value.ipRef);
+  if (ipRef) spec.ipRef = ipRef;
+  return spec;
 }
 
 function parseHostingEntry(
   value: unknown,
 ): ComposeHostingExtensionEntry | undefined {
-  if (!isPlainMapping(value)) return undefined
-  const hostname = readHostingHostname(value.hostname)
-  if (!hostname) return undefined
+  if (!isPlainMapping(value)) return undefined;
+  const hostname = readHostingHostname(value.hostname);
+  if (!hostname) return undefined;
 
-  const entry: ComposeHostingExtensionEntry = { hostname }
-  const pathPrefix = readHostingPathPrefix(value.pathPrefix)
-  if (pathPrefix) entry.pathPrefix = pathPrefix
-  const targetPort = readHostingTargetPort(value.targetPort)
-  if (targetPort !== undefined) entry.targetPort = targetPort
+  const entry: ComposeHostingExtensionEntry = { hostname };
+  const pathPrefix = readHostingPathPrefix(value.pathPrefix);
+  if (pathPrefix) entry.pathPrefix = pathPrefix;
+  const targetPort = readHostingTargetPort(value.targetPort);
+  if (targetPort !== undefined) entry.targetPort = targetPort;
   // `false` must survive the round-trip — never a truthiness guard here.
-  if (typeof value.forceHttps === 'boolean') entry.forceHttps = value.forceHttps
-  const tls = parseHostingTlsSpec(value.tls)
-  if (tls) entry.tls = tls
-  const bind = parseHostingBindSpec(value.bind)
-  if (bind) entry.bind = bind
-  return entry
+  if (typeof value.forceHttps === "boolean") {
+    entry.forceHttps = value.forceHttps;
+  }
+  const tls = parseHostingTlsSpec(value.tls);
+  if (tls) entry.tls = tls;
+  const bind = parseHostingBindSpec(value.bind);
+  if (bind) entry.bind = bind;
+  return entry;
 }
 
 /**
@@ -368,41 +379,41 @@ function parseHostingEntry(
 export function parseHostingExtensionEntries(
   value: unknown,
 ): ComposeHostingExtensionEntry[] | undefined {
-  if (!Array.isArray(value)) return undefined
+  if (!Array.isArray(value)) return undefined;
 
-  const seen = new Set<string>()
-  const entries: ComposeHostingExtensionEntry[] = []
+  const seen = new Set<string>();
+  const entries: ComposeHostingExtensionEntry[] = [];
   for (const raw of value) {
-    if (entries.length >= MAX_HOSTING_ENTRIES_PER_SERVICE) break
-    const entry = parseHostingEntry(raw)
-    if (!entry) continue
-    const key = hostingEntryKey(entry)
-    if (seen.has(key)) continue
-    seen.add(key)
-    entries.push(entry)
+    if (entries.length >= MAX_HOSTING_ENTRIES_PER_SERVICE) break;
+    const entry = parseHostingEntry(raw);
+    if (!entry) continue;
+    const key = hostingEntryKey(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push(entry);
   }
-  return entries.length > 0 ? entries : undefined
+  return entries.length > 0 ? entries : undefined;
 }
 
 /** The prefix an entry routes on, resolving the omitted case. */
 export function hostingPathPrefixOf(
-  entry: Pick<ComposeHostingExtensionEntry, 'pathPrefix'>,
+  entry: Pick<ComposeHostingExtensionEntry, "pathPrefix">,
 ): string {
-  return entry.pathPrefix ?? DEFAULT_HOSTING_PATH_PREFIX
+  return entry.pathPrefix ?? DEFAULT_HOSTING_PATH_PREFIX;
 }
 
 /** The TLS mode an entry asks for, resolving the omitted case. */
 export function hostingTlsModeOf(
   entry: ComposeHostingExtensionEntry,
 ): ComposeHostingTlsMode {
-  return entry.tls?.mode ?? DEFAULT_HOSTING_TLS_MODE
+  return entry.tls?.mode ?? DEFAULT_HOSTING_TLS_MODE;
 }
 
 /** The bind scope an entry asks for, resolving the omitted case. */
 export function hostingBindScopeOf(
   entry: ComposeHostingExtensionEntry,
 ): ComposeHostingBindScope {
-  return entry.bind?.scope ?? DEFAULT_HOSTING_BIND_SCOPE
+  return entry.bind?.scope ?? DEFAULT_HOSTING_BIND_SCOPE;
 }
 
 /**
@@ -414,9 +425,9 @@ export function hostingBindScopeOf(
  * separately is how the three drift.
  */
 export function hostingEntryKey(
-  entry: Pick<ComposeHostingExtensionEntry, 'hostname' | 'pathPrefix'>,
+  entry: Pick<ComposeHostingExtensionEntry, "hostname" | "pathPrefix">,
 ): string {
-  return `${entry.hostname} ${hostingPathPrefixOf(entry)}`
+  return `${entry.hostname} ${hostingPathPrefixOf(entry)}`;
 }
 
 /**
@@ -431,47 +442,50 @@ export function collectHostingExtensionValidationIssues(
   value: unknown,
   serviceKind: ComposeServiceKind | undefined,
 ): ServiceTurbopanelValidationIssue[] {
-  const path = `${basePath}.hosting`
-  if (value === null || value === undefined) return []
+  const path = `${basePath}.hosting`;
+  if (value === null || value === undefined) return [];
   if (!Array.isArray(value)) {
-    return [{ path, message: 'hosting must be a list of ingress entries' }]
+    return [{ path, message: "hosting must be a list of ingress entries" }];
   }
   if (value.length > MAX_HOSTING_ENTRIES_PER_SERVICE) {
     return [{
       path,
       message:
         `hosting must declare at most ${MAX_HOSTING_ENTRIES_PER_SERVICE} entries`,
-    }]
+    }];
   }
 
-  const issues: ServiceTurbopanelValidationIssue[] = []
-  const seen = new Set<string>()
+  const issues: ServiceTurbopanelValidationIssue[] = [];
+  const seen = new Set<string>();
   for (const [index, raw] of value.entries()) {
-    const entryPath = `${path}[${index}]`
+    const entryPath = `${path}[${index}]`;
     if (!isPlainMapping(raw)) {
-      issues.push({ path: entryPath, message: 'hosting entry must be a mapping' })
-      continue
+      issues.push({
+        path: entryPath,
+        message: "hosting entry must be a mapping",
+      });
+      continue;
     }
-    issues.push(...validateHostingEntry(entryPath, raw, serviceKind))
+    issues.push(...validateHostingEntry(entryPath, raw, serviceKind));
 
-    const hostname = readHostingHostname(raw.hostname)
-    if (!hostname) continue
-    const pathPrefix = readHostingPathPrefix(raw.pathPrefix)
+    const hostname = readHostingHostname(raw.hostname);
+    if (!hostname) continue;
+    const pathPrefix = readHostingPathPrefix(raw.pathPrefix);
     const key = hostingEntryKey(
       pathPrefix ? { hostname, pathPrefix } : { hostname },
-    )
+    );
     if (seen.has(key)) {
       issues.push({
         path: entryPath,
         message: `hosting already declares ${hostname}${
           pathPrefix ?? DEFAULT_HOSTING_PATH_PREFIX
         } on this service; one route is one entry`,
-      })
-      continue
+      });
+      continue;
     }
-    seen.add(key)
+    seen.add(key);
   }
-  return issues
+  return issues;
 }
 
 function validateHostingEntry(
@@ -479,43 +493,43 @@ function validateHostingEntry(
   raw: Record<string, unknown>,
   serviceKind: ComposeServiceKind | undefined,
 ): ServiceTurbopanelValidationIssue[] {
-  const issues: ServiceTurbopanelValidationIssue[] = []
+  const issues: ServiceTurbopanelValidationIssue[] = [];
 
   for (const key of Object.keys(raw)) {
-    if (HOSTING_ENTRY_KEYS.has(key)) continue
+    if (HOSTING_ENTRY_KEYS.has(key)) continue;
     issues.push({
       path: `${entryPath}.${key}`,
       message: HOSTING_KEY_REDIRECTS[key] ?? unknownHostingKeyMessage(key),
-    })
+    });
   }
 
   if (!readHostingHostname(raw.hostname)) {
     issues.push({
       path: `${entryPath}.hostname`,
       message: HOSTING_HOSTNAME_REQUIRED_MESSAGE,
-    })
+    });
   }
 
-  if ('pathPrefix' in raw && !readHostingPathPrefix(raw.pathPrefix)) {
+  if ("pathPrefix" in raw && !readHostingPathPrefix(raw.pathPrefix)) {
     issues.push({
       path: `${entryPath}.pathPrefix`,
       message: HOSTING_PATH_PREFIX_MESSAGE,
-    })
+    });
   }
 
-  issues.push(...validateHostingTargetPort(entryPath, raw, serviceKind))
+  issues.push(...validateHostingTargetPort(entryPath, raw, serviceKind));
 
-  if ('forceHttps' in raw && typeof raw.forceHttps !== 'boolean') {
+  if ("forceHttps" in raw && typeof raw.forceHttps !== "boolean") {
     issues.push({
       path: `${entryPath}.forceHttps`,
-      message: 'forceHttps must be true or false',
-    })
+      message: "forceHttps must be true or false",
+    });
   }
 
-  if ('tls' in raw) issues.push(...validateHostingTls(entryPath, raw.tls))
-  if ('bind' in raw) issues.push(...validateHostingBind(entryPath, raw.bind))
+  if ("tls" in raw) issues.push(...validateHostingTls(entryPath, raw.tls));
+  if ("bind" in raw) issues.push(...validateHostingBind(entryPath, raw.bind));
 
-  return issues
+  return issues;
 }
 
 /**
@@ -531,7 +545,7 @@ function validateHostingEntry(
 export function hostingTargetPortAuthorable(
   serviceKind: ComposeServiceKind | undefined,
 ): boolean {
-  return serviceKind !== 'site' && serviceKind !== 'node'
+  return serviceKind !== "site" && serviceKind !== "node";
 }
 
 /**
@@ -548,121 +562,124 @@ function validateHostingTargetPort(
   raw: Record<string, unknown>,
   serviceKind: ComposeServiceKind | undefined,
 ): ServiceTurbopanelValidationIssue[] {
-  if (!('targetPort' in raw)) return []
-  const path = `${entryPath}.targetPort`
+  if (!("targetPort" in raw)) return [];
+  const path = `${entryPath}.targetPort`;
   if (!hostingTargetPortAuthorable(serviceKind)) {
     return [{
       path,
-      message: serviceKind === 'site'
+      message: serviceKind === "site"
         ? HOSTING_TARGET_PORT_NOT_FOR_SITE_MESSAGE
         : HOSTING_TARGET_PORT_NOT_FOR_NODE_MESSAGE,
-    }]
+    }];
   }
   if (readHostingTargetPort(raw.targetPort) === undefined) {
-    return [{ path, message: HOSTING_TARGET_PORT_RANGE_MESSAGE }]
+    return [{ path, message: HOSTING_TARGET_PORT_RANGE_MESSAGE }];
   }
-  return []
+  return [];
 }
 
 function validateHostingTls(
   entryPath: string,
   value: unknown,
 ): ServiceTurbopanelValidationIssue[] {
-  const path = `${entryPath}.tls`
+  const path = `${entryPath}.tls`;
   if (!isPlainMapping(value)) {
-    return [{ path, message: 'tls must be a mapping' }]
+    return [{ path, message: "tls must be a mapping" }];
   }
 
-  const issues: ServiceTurbopanelValidationIssue[] = []
+  const issues: ServiceTurbopanelValidationIssue[] = [];
   for (const key of Object.keys(value)) {
-    if (HOSTING_TLS_KEYS.has(key)) continue
+    if (HOSTING_TLS_KEYS.has(key)) continue;
     issues.push({
       path: `${path}.${key}`,
       message: HOSTING_KEY_REDIRECTS[key] ?? unknownTlsKeyMessage(key),
-    })
+    });
   }
 
   if (!isHostingTlsMode(value.mode)) {
     issues.push({
       path: `${path}.mode`,
       message: 'tls.mode must be "automatic", "internal", or "certificate"',
-    })
-  } else if (value.mode === 'automatic') {
+    });
+  } else if (value.mode === "automatic") {
     issues.push({
       path: `${path}.mode`,
       message: HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE,
-    })
+    });
   }
 
-  const certificateRef = readHostingRef(value.certificateRef)
-  if (value.mode === 'certificate') {
+  const certificateRef = readHostingRef(value.certificateRef);
+  if (value.mode === "certificate") {
     if (!certificateRef) {
       issues.push({
         path: `${path}.certificateRef`,
         message:
           'tls.certificateRef is required when tls.mode is "certificate"; name a certificate in this organization by id or name',
-      })
+      });
     }
-  } else if ('certificateRef' in value) {
+  } else if ("certificateRef" in value) {
     issues.push({
       path: `${path}.certificateRef`,
-      message: 'tls.certificateRef is only valid when tls.mode is "certificate"',
-    })
+      message:
+        'tls.certificateRef is only valid when tls.mode is "certificate"',
+    });
   }
 
-  return issues
+  return issues;
 }
 
 function validateHostingBind(
   entryPath: string,
   value: unknown,
 ): ServiceTurbopanelValidationIssue[] {
-  const path = `${entryPath}.bind`
+  const path = `${entryPath}.bind`;
   if (!isPlainMapping(value)) {
-    return [{ path, message: 'bind must be a mapping' }]
+    return [{ path, message: "bind must be a mapping" }];
   }
 
-  const issues: ServiceTurbopanelValidationIssue[] = []
+  const issues: ServiceTurbopanelValidationIssue[] = [];
   for (const key of Object.keys(value)) {
-    if (HOSTING_BIND_KEYS.has(key)) continue
+    if (HOSTING_BIND_KEYS.has(key)) continue;
     issues.push({
       path: `${path}.${key}`,
       message: HOSTING_KEY_REDIRECTS[key] ?? unknownBindKeyMessage(key),
-    })
+    });
   }
 
   if (!isHostingBindScope(value.scope)) {
     issues.push({
       path: `${path}.scope`,
       message: 'bind.scope must be "public", "datacenter", or "local"',
-    })
+    });
   }
 
-  if ('ipRef' in value && !readHostingRef(value.ipRef)) {
+  if ("ipRef" in value && !readHostingRef(value.ipRef)) {
     issues.push({
       path: `${path}.ipRef`,
       message:
         `bind.ipRef must name a managed address in this organization by id or address (at most ${HOSTING_REF_MAX_LENGTH} characters)`,
-    })
+    });
   }
 
-  return issues
+  return issues;
 }
 
 function sortedKeys(keys: ReadonlySet<string>): string {
-  return [...keys].sort((a, b) => a.localeCompare(b)).join(', ')
+  return [...keys].sort((a, b) => a.localeCompare(b)).join(", ");
 }
 
 function unknownHostingKeyMessage(key: string): string {
   return `unknown hosting key "${key}"; supported: ${
     sortedKeys(HOSTING_ENTRY_KEYS)
-  }`
+  }`;
 }
 
 function unknownTlsKeyMessage(key: string): string {
-  return `unknown tls key "${key}"; supported: ${sortedKeys(HOSTING_TLS_KEYS)}`
+  return `unknown tls key "${key}"; supported: ${sortedKeys(HOSTING_TLS_KEYS)}`;
 }
 
 function unknownBindKeyMessage(key: string): string {
-  return `unknown bind key "${key}"; supported: ${sortedKeys(HOSTING_BIND_KEYS)}`
+  return `unknown bind key "${key}"; supported: ${
+    sortedKeys(HOSTING_BIND_KEYS)
+  }`;
 }

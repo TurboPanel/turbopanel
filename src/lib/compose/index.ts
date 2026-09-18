@@ -9,14 +9,14 @@ export {
   isComposeEditorView,
   normalizeCompose,
   pruneBlankComposeData,
-} from './types.ts'
+} from "./types.ts";
 export {
   composeDocumentToRuntimeYaml,
   composeDocumentToYaml,
   ComposeParseError,
   yamlToComposeDocument,
-} from './convert.ts'
-export { mergeComposeDocuments, mergeComposeOverlay } from './merge.ts'
+} from "./convert.ts";
+export { mergeComposeDocuments, mergeComposeOverlay } from "./merge.ts";
 export {
   COMPOSE_CUSTOM_TAGS,
   COMPOSE_TAG_KEY,
@@ -27,7 +27,7 @@ export {
   makeComposeTag,
   resolveComposeTags,
   unwrapComposeTag,
-} from './tags.ts'
+} from "./tags.ts";
 export {
   collectSiteServiceNames,
   type ComposeLayer,
@@ -36,8 +36,8 @@ export {
   renameComposeVolumesInLayer,
   stripComposePlacementFromLayer,
   stripSiteServicesFromLayer,
-} from './layers.ts'
-export { stripComposeTurbopanelExtensions } from './extensions.ts'
+} from "./layers.ts";
+export { stripComposeTurbopanelExtensions } from "./extensions.ts";
 export {
   type Application,
   type ApplicationPrincipal,
@@ -61,22 +61,22 @@ export {
   type ResolvedSlotInput,
   type ServerDeployment,
   serviceIdsOnServer,
-} from './ir.ts'
-export { renameComposeVolumes } from './rename-volumes.ts'
-export { expandComposeServiceInstances } from './expand-instances.ts'
+} from "./ir.ts";
+export { renameComposeVolumes } from "./rename-volumes.ts";
+export { expandComposeServiceInstances } from "./expand-instances.ts";
 export {
   compileRuntimeCompose,
   compileRuntimeComposeDocument,
   type CompileRuntimeOptions,
   type CompileRuntimeResult,
-} from './compile-runtime.ts'
-export { SHA256_HEX_RE, sha256HexUtf8 } from './desired-hash.ts'
+} from "./compile-runtime.ts";
+export { SHA256_HEX_RE, sha256HexUtf8 } from "./desired-hash.ts";
 export {
   collectComposeExternalDockerNetworkNames,
   collectServiceComposeNetworkKeys,
   pruneUnreferencedComposeNetworks,
   readComposeExternalDockerNetworkName,
-} from './docker-external-networks.ts'
+} from "./docker-external-networks.ts";
 export {
   applyValidatedComposeOption,
   assertComposeDocument,
@@ -86,7 +86,7 @@ export {
   stripComposePlacementOption,
   stripProjectComposePlacementOption,
   validateComposeDocument,
-} from './validate.ts'
+} from "./validate.ts";
 export {
   blockingComposeLintIssues,
   type ComposeLintCode,
@@ -94,7 +94,7 @@ export {
   type ComposeLintLevel,
   type ComposeLintOptions,
   lintComposeYaml,
-} from './lint.ts'
+} from "./lint.ts";
 export {
   classifyDeployKey,
   classifyDeployPlacementKey,
@@ -107,24 +107,24 @@ export {
   SERVICE_FIELD_KEYS,
   TOP_LEVEL_FIELD_KEYS,
   unsupportedDeployReason,
-} from './field-policy.ts'
+} from "./field-policy.ts";
 export {
   COMPOSE_SPEC_SCHEMA_REVISION,
   validateAgainstUpstreamSchema,
-} from './upstream-schema.ts'
+} from "./upstream-schema.ts";
 export {
   type ComposeDeployValidationError,
   type ComposeMergedInvalidError,
   type ComposeUnsupportedFieldError,
   validateComposeForDeploy,
-} from './validate-for-deploy.ts'
+} from "./validate-for-deploy.ts";
 export {
   applyComposePlacement,
   isPlacementServerId,
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
   type TurbopanelRuntimeRootExtension,
-} from './placement.ts'
+} from "./placement.ts";
 export {
   collectHostingExtensionValidationIssues,
   type ComposeHostingBindScope,
@@ -162,7 +162,7 @@ export {
   parseHostingExtensionEntries,
   readHostingHostname,
   readHostingPathPrefix,
-} from './hosting-extension.ts'
+} from "./hosting-extension.ts";
 export {
   AUTHORED_ROOT_EXTENSION_KEYS,
   collectRootExtensionValidationIssues,
@@ -178,9 +178,9 @@ export {
   principalAliasesInComposeData,
   type PrincipalSpec,
   ROOT_KEY_REDIRECTS,
-  type TurbopanelRootExtension,
   TURBOPANEL_ROOT_EXTENSION_KEY,
-} from './root-extension.ts'
+  type TurbopanelRootExtension,
+} from "./root-extension.ts";
 export {
   collectServiceTurbopanelValidationIssues,
   type ComposeContainerServiceExtension,
@@ -204,13 +204,13 @@ export {
   readServiceTurbopanelExtension,
   SERVICE_KIND_FIELD_TABLE,
   type ServiceKindFieldRules,
+  type SiteEngine,
   SOURCE_BRANCH_MAX_LENGTH,
   SOURCE_COMMAND_MAX_LENGTH,
   type SourceIdResolver,
-  type SiteEngine,
   SUPPORTED_NODE_SERIES,
   TURBOPANEL_SERVICE_EXTENSION_KEY,
-} from './service-kind.ts'
+} from "./service-kind.ts";
 export {
   assignNativeAppListenPorts,
   NATIVE_APP_DEFAULT_FRAMEWORK,
@@ -223,16 +223,16 @@ export {
   readNativeAppServiceLabels,
   type SplitNativeAppResult,
   splitNativeAppServices,
-} from './native-app.ts'
+} from "./native-app.ts";
 export {
   allocateSiteListenPort,
   assignSiteListenPorts,
   emptyContainerComposeYaml,
   isSafeSiteRoot,
+  type SiteSpec,
   type SplitSiteResult,
   splitSiteServices,
-  type SiteSpec,
-} from './site.ts'
+} from "./site.ts";
 export {
   type ApplyVariablesError,
   type ApplyVariablesResult,
@@ -242,13 +242,13 @@ export {
   escapeLiteralComposeValue,
   isApplyVariablesError,
   trimVariableValue,
-} from './apply-variables.ts'
-export { type DeploySecretPlanEntry } from './secret-files.ts'
+} from "./apply-variables.ts";
+export { type DeploySecretPlanEntry } from "./secret-files.ts";
 export {
   type ParsedVariableRef,
   parseExactVariableRef,
   type VariableRefScope,
-} from './variable-refs.ts'
+} from "./variable-refs.ts";
 export {
   applyResourcesToComposeService,
   type ApplyServiceOptionsResult,
@@ -259,4 +259,4 @@ export {
   type ServiceDeployHook,
   serviceHasComposeHealthCheck,
   type ServiceOptionsByComposeName,
-} from './apply-service-options.ts'
+} from "./apply-service-options.ts";

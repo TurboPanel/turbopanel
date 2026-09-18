@@ -1,15 +1,11 @@
+import { composeTagOf, isComposeTaggedValue, makeComposeTag } from "./tags.ts";
 import {
-  composeTagOf,
-  isComposeTaggedValue,
-  makeComposeTag,
-} from './tags.ts'
-import {
-  normalizeCompose,
   type ComposeDocument,
   type ComposePresentation,
-} from './types.ts'
+  normalizeCompose,
+} from "./types.ts";
 
-export const TURBOPANEL_EXTENSION_KEY = 'x-turbopanel'
+export const TURBOPANEL_EXTENSION_KEY = "x-turbopanel";
 
 /**
  * The **runtime** top-level `x-turbopanel` block — compile-time audit metadata
@@ -26,27 +22,28 @@ export const TURBOPANEL_EXTENSION_KEY = 'x-turbopanel'
  */
 export type TurbopanelRuntimeRootExtension = {
   placement: {
-    server_id: string
-  }
-}
+    server_id: string;
+  };
+};
 
 /** Lenient UUID (any version), matching server-registry enrollment IDs. */
 const PLACEMENT_SERVER_ID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isPlacementServerId(value: unknown): boolean {
-  return typeof value === 'string' && value.length > 0 && PLACEMENT_SERVER_ID_RE.test(value)
+  return typeof value === "string" && value.length > 0 &&
+    PLACEMENT_SERVER_ID_RE.test(value);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function nonEmptyString(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.length === 0) {
-    return undefined
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
   }
-  return value
+  return value;
 }
 
 /** Shallow-clone presentation with a replacement keyOrder. */
@@ -57,22 +54,24 @@ function clonePresentation(
   const next: ComposePresentation = {
     keyOrder,
     comments: { ...presentation.comments },
-  }
+  };
   if (presentation.blankLines) {
-    next.blankLines = { ...presentation.blankLines }
+    next.blankLines = { ...presentation.blankLines };
   }
-  const documentCommentBefore = nonEmptyString(presentation.documentCommentBefore)
+  const documentCommentBefore = nonEmptyString(
+    presentation.documentCommentBefore,
+  );
   if (documentCommentBefore) {
-    next.documentCommentBefore = documentCommentBefore
+    next.documentCommentBefore = documentCommentBefore;
   }
-  const documentComment = nonEmptyString(presentation.documentComment)
+  const documentComment = nonEmptyString(presentation.documentComment);
   if (documentComment) {
-    next.documentComment = documentComment
+    next.documentComment = documentComment;
   }
   if (presentation.editorView) {
-    next.editorView = presentation.editorView
+    next.editorView = presentation.editorView;
   }
-  return next
+  return next;
 }
 
 /**
@@ -90,40 +89,46 @@ function clonePresentation(
 type StripPlacementResult =
   | { changed: false }
   | { changed: true; remove: true }
-  | { changed: true; remove: false; next: unknown }
+  | { changed: true; remove: false; next: unknown };
 
 function stripPlacementFromExtension(extension: unknown): StripPlacementResult {
   if (isComposeTaggedValue(extension)) {
-    const tag = composeTagOf(extension)
-    if (tag === null) return { changed: false }
-    const inner = stripPlacementFromExtension(extension.value)
-    if (!inner.changed) return { changed: false }
-    if (inner.remove) return { changed: true, remove: true }
-    return { changed: true, remove: false, next: makeComposeTag(tag, inner.next) }
+    const tag = composeTagOf(extension);
+    if (tag === null) return { changed: false };
+    const inner = stripPlacementFromExtension(extension.value);
+    if (!inner.changed) return { changed: false };
+    if (inner.remove) return { changed: true, remove: true };
+    return {
+      changed: true,
+      remove: false,
+      next: makeComposeTag(tag, inner.next),
+    };
   }
-  if (!isPlainObject(extension) || !('placement' in extension)) {
-    return { changed: false }
+  if (!isPlainObject(extension) || !("placement" in extension)) {
+    return { changed: false };
   }
-  const { placement: _removed, ...rest } = extension
+  const { placement: _removed, ...rest } = extension;
   if (Object.keys(rest).length === 0) {
-    return { changed: true, remove: true }
+    return { changed: true, remove: true };
   }
-  return { changed: true, remove: false, next: rest }
+  return { changed: true, remove: false, next: rest };
 }
 
-export function stripComposePlacement(document: ComposeDocument): ComposeDocument {
-  const normalized = normalizeCompose(document)
-  const extension = normalized.data[TURBOPANEL_EXTENSION_KEY]
-  if (extension === undefined) return normalized
+export function stripComposePlacement(
+  document: ComposeDocument,
+): ComposeDocument {
+  const normalized = normalizeCompose(document);
+  const extension = normalized.data[TURBOPANEL_EXTENSION_KEY];
+  if (extension === undefined) return normalized;
 
-  const stripped = stripPlacementFromExtension(extension)
-  if (!stripped.changed) return normalized
+  const stripped = stripPlacementFromExtension(extension);
+  if (!stripped.changed) return normalized;
 
-  const data = { ...normalized.data }
-  const keyOrder = [...normalized.presentation.keyOrder]
+  const data = { ...normalized.data };
+  const keyOrder = [...normalized.presentation.keyOrder];
 
   if (stripped.remove) {
-    delete data[TURBOPANEL_EXTENSION_KEY]
+    delete data[TURBOPANEL_EXTENSION_KEY];
     return {
       version: 1,
       data,
@@ -131,15 +136,15 @@ export function stripComposePlacement(document: ComposeDocument): ComposeDocumen
         normalized.presentation,
         keyOrder.filter((key) => key !== TURBOPANEL_EXTENSION_KEY),
       ),
-    }
+    };
   }
 
-  data[TURBOPANEL_EXTENSION_KEY] = stripped.next
+  data[TURBOPANEL_EXTENSION_KEY] = stripped.next;
   return {
     version: 1,
     data,
     presentation: clonePresentation(normalized.presentation, keyOrder),
-  }
+  };
 }
 
 /**
@@ -151,21 +156,22 @@ export function applyComposePlacement(
   document: ComposeDocument,
   serverId: string,
 ): ComposeDocument {
-  if (!isPlacementServerId(serverId)) return document
-  const normalized = normalizeCompose(document)
-  const existing = normalized.data[TURBOPANEL_EXTENSION_KEY]
-  const rest = isPlainObject(existing) ? { ...existing } : {}
-  rest.placement = { server_id: serverId }
+  if (!isPlacementServerId(serverId)) return document;
+  const normalized = normalizeCompose(document);
+  const existing = normalized.data[TURBOPANEL_EXTENSION_KEY];
+  const rest = isPlainObject(existing) ? { ...existing } : {};
+  rest.placement = { server_id: serverId };
 
-  const { [TURBOPANEL_EXTENSION_KEY]: _existing, ...restData } = normalized.data
-  const data = { ...restData, [TURBOPANEL_EXTENSION_KEY]: rest }
+  const { [TURBOPANEL_EXTENSION_KEY]: _existing, ...restData } =
+    normalized.data;
+  const data = { ...restData, [TURBOPANEL_EXTENSION_KEY]: rest };
   const keyOrder = normalized.presentation.keyOrder.filter(
     (key) => key !== TURBOPANEL_EXTENSION_KEY,
-  )
-  keyOrder.push(TURBOPANEL_EXTENSION_KEY)
+  );
+  keyOrder.push(TURBOPANEL_EXTENSION_KEY);
   return {
     version: 1,
     data,
     presentation: clonePresentation(normalized.presentation, keyOrder),
-  }
+  };
 }

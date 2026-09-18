@@ -7,23 +7,23 @@
  */
 
 import {
+  type ComposeServiceCronJob,
+  type ComposeServicePhpExtension,
   isSiteComposeService,
   readServiceTurbopanelExtension,
-  type ComposeServicePhpExtension,
   type SiteEngine,
-  type ComposeServiceCronJob,
   type SiteSourceKind,
-} from './service-kind.ts'
+} from "./service-kind.ts";
 
 export type SiteSpec = {
-  composeServiceName: string
-  engine: SiteEngine
+  composeServiceName: string;
+  engine: SiteEngine;
   /** Document-root segment under the site directory (default `public`). */
-  root: string
+  root: string;
   /** Loopback listen port for hosting Caddy → nginx/apache. */
-  listenPort: number
+  listenPort: number;
   /** PHP config from `x-turbopanel.php`, when the service declares any. */
-  php?: ComposeServicePhpExtension
+  php?: ComposeServicePhpExtension;
   /**
    * Where the content comes from. Omitted means `release`, which is what every
    * site had before the managed-directory lane existed.
@@ -32,38 +32,38 @@ export type SiteSpec = {
    * value as `release` too, and emitting an explicit `release` on every site
    * would churn the wire for services that never opted in.
    */
-  sourceKind?: SiteSourceKind
+  sourceKind?: SiteSourceKind;
   /** Authored cron jobs from `x-turbopanel.cron`, untranslated. */
-  cron?: ComposeServiceCronJob[]
-}
+  cron?: ComposeServiceCronJob[];
+};
 
 /** Engine a site gets when its compose block does not name one. */
-export const DEFAULT_SITE_ENGINE: SiteEngine = 'caddy'
+export const DEFAULT_SITE_ENGINE: SiteEngine = "caddy";
 
-const DEFAULT_ROOT = 'public'
-const LISTEN_PORT_BASE = 18_080
-const LISTEN_PORT_SPAN = 920
+const DEFAULT_ROOT = "public";
+const LISTEN_PORT_BASE = 18_080;
+const LISTEN_PORT_SPAN = 920;
 
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Reject path traversal and absolute paths — daemon resolves under stateDir. */
 export function isSafeSiteRoot(value: string): boolean {
-  const trimmed = value.trim()
-  if (trimmed.length === 0 || trimmed.length > 200) return false
-  if (trimmed.startsWith('/') || trimmed.startsWith('\\')) return false
-  if (trimmed.includes('..')) return false
-  if (trimmed.includes('\0')) return false
-  return /^[A-Za-z0-9._/-]+$/.test(trimmed)
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 200) return false;
+  if (trimmed.startsWith("/") || trimmed.startsWith("\\")) return false;
+  if (trimmed.includes("..")) return false;
+  if (trimmed.includes("\0")) return false;
+  return /^[A-Za-z0-9._/-]+$/.test(trimmed);
 }
 
 function hashServiceName(name: string): number {
-  let hash = 0
+  let hash = 0;
   for (let i = 0; i < name.length; i++) {
-    hash = (hash * 31 + (name.codePointAt(i) ?? 0)) >>> 0
+    hash = (hash * 31 + (name.codePointAt(i) ?? 0)) >>> 0;
   }
-  return hash
+  return hash;
 }
 
 /**
@@ -82,28 +82,29 @@ export function allocateSiteListenPort(
     preferred <= 65_535 &&
     !used.has(preferred)
   ) {
-    used.add(preferred)
-    return preferred
+    used.add(preferred);
+    return preferred;
   }
 
-  let port = LISTEN_PORT_BASE + (hashServiceName(composeServiceName) % LISTEN_PORT_SPAN)
+  let port = LISTEN_PORT_BASE +
+    (hashServiceName(composeServiceName) % LISTEN_PORT_SPAN);
   for (let attempt = 0; attempt < LISTEN_PORT_SPAN; attempt++) {
     if (!used.has(port)) {
-      used.add(port)
-      return port
+      used.add(port);
+      return port;
     }
     port = port >= LISTEN_PORT_BASE + LISTEN_PORT_SPAN - 1
       ? LISTEN_PORT_BASE
-      : port + 1
+      : port + 1;
   }
-  throw new Error('No free site listen port in 18080–18999')
+  throw new Error("No free site listen port in 18080–18999");
 }
 
 export type SplitSiteResult = {
   /** Services that remain for Docker Compose. */
-  containerServices: Record<string, unknown>
-  sites: SiteSpec[]
-}
+  containerServices: Record<string, unknown>;
+  sites: SiteSpec[];
+};
 
 /**
  * Partition compose `services` into Docker containers vs sites.
@@ -121,31 +122,31 @@ export function splitSiteServices(
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
   usedPorts: Set<number> = new Set<number>(),
 ): SplitSiteResult {
-  const containerServices: Record<string, unknown> = {}
-  const sites: SiteSpec[] = []
+  const containerServices: Record<string, unknown> = {};
+  const sites: SiteSpec[] = [];
 
-  const names = Object.keys(services).sort((a, b) => a.localeCompare(b))
+  const names = Object.keys(services).sort((a, b) => a.localeCompare(b));
   for (const name of names) {
-    const raw = services[name]
+    const raw = services[name];
     if (!isPlainMapping(raw) || !isSiteComposeService(raw)) {
-      containerServices[name] = raw
-      continue
+      containerServices[name] = raw;
+      continue;
     }
 
-    const extension = readServiceTurbopanelExtension(raw)
+    const extension = readServiceTurbopanelExtension(raw);
     // `engine` is optional on a site. This is the one place the default is
     // resolved, so the wire always carries an explicit engine and the daemon
     // never has to guess. Caddy is the default because a static site then
     // needs no engine choice, no PHP pool, and no vhost tuning at all.
-    const engine = extension?.engine ?? DEFAULT_SITE_ENGINE
+    const engine = extension?.engine ?? DEFAULT_SITE_ENGINE;
 
-    const rootRaw = extension?.root?.trim() || DEFAULT_ROOT
-    const root = isSafeSiteRoot(rootRaw) ? rootRaw : DEFAULT_ROOT
+    const rootRaw = extension?.root?.trim() || DEFAULT_ROOT;
+    const root = isSafeSiteRoot(rootRaw) ? rootRaw : DEFAULT_ROOT;
     const listenPort = allocateSiteListenPort(
       name,
       usedPorts,
       preferredListenPortByService.get(name),
-    )
+    );
 
     sites.push({
       composeServiceName: name,
@@ -155,18 +156,18 @@ export function splitSiteServices(
       ...(extension?.php ? { php: extension.php } : {}),
       ...(extension?.sourceKind ? { sourceKind: extension.sourceKind } : {}),
       ...(extension?.cron ? { cron: extension.cron } : {}),
-    })
+    });
   }
 
   return {
     containerServices,
     sites,
-  }
+  };
 }
 
 /** Runtime compose YAML body when every service is site. */
 export function emptyContainerComposeYaml(): string {
-  return 'services: {}\n'
+  return "services: {}\n";
 }
 
 /**
@@ -186,7 +187,7 @@ export function assignSiteListenPorts<
 ): T[] {
   const sorted = [...sites].sort((a, b) =>
     a.composeServiceName.localeCompare(b.composeServiceName)
-  )
+  );
   return sorted.map((site) => ({
     ...site,
     listenPort: allocateSiteListenPort(
@@ -194,5 +195,5 @@ export function assignSiteListenPorts<
       used,
       preferredListenPortByService.get(site.composeServiceName),
     ),
-  }))
+  }));
 }

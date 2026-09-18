@@ -6,18 +6,18 @@
  * replicas. Single-instance services keep their original key.
  */
 
-import { isSiteComposeService } from './service-kind.ts'
-import type { ComposeDocument } from './types.ts'
+import { isSiteComposeService } from "./service-kind.ts";
+import type { ComposeDocument } from "./types.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export type ExpandComposeServiceInstancesResult = {
-  document: ComposeDocument
+  document: ComposeDocument;
   /** Original compose key → clone keys (single-instance maps to `[original]`). */
-  expansion: Map<string, string[]>
-}
+  expansion: Map<string, string[]>;
+};
 
 /**
  * Replace each multi-instance container service with `<name>-1` … `<name>-N`
@@ -30,32 +30,32 @@ export function expandComposeServiceInstances(
 ): ExpandComposeServiceInstancesResult {
   const services = isRecord(document.data.services)
     ? (document.data.services as Record<string, unknown>)
-    : {}
+    : {};
 
-  const nextServices: Record<string, unknown> = {}
-  const expansion = new Map<string, string[]>()
+  const nextServices: Record<string, unknown> = {};
+  const expansion = new Map<string, string[]>();
 
   for (const [name, raw] of Object.entries(services)) {
     if (!isRecord(raw) || isSiteComposeService(raw)) {
-      nextServices[name] = raw
-      expansion.set(name, [name])
-      continue
+      nextServices[name] = raw;
+      expansion.set(name, [name]);
+      continue;
     }
 
-    const count = instancesByComposeName.get(name) ?? 1
+    const count = instancesByComposeName.get(name) ?? 1;
     if (count <= 1) {
-      nextServices[name] = raw
-      expansion.set(name, [name])
-      continue
+      nextServices[name] = raw;
+      expansion.set(name, [name]);
+      continue;
     }
 
-    const clones: string[] = []
+    const clones: string[] = [];
     for (let ordinal = 1; ordinal <= count; ordinal += 1) {
-      const cloneName = `${name}-${ordinal}`
-      nextServices[cloneName] = { ...raw }
-      clones.push(cloneName)
+      const cloneName = `${name}-${ordinal}`;
+      nextServices[cloneName] = { ...raw };
+      clones.push(cloneName);
     }
-    expansion.set(name, clones)
+    expansion.set(name, clones);
   }
 
   return {
@@ -68,5 +68,5 @@ export function expandComposeServiceInstances(
       presentation: document.presentation,
     },
     expansion,
-  }
+  };
 }

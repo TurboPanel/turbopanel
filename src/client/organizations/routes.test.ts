@@ -10,7 +10,13 @@ import {
 } from "../authn/crypto.ts";
 import { createSession } from "../authn/session-store.ts";
 import { deriveSecretsConfig, parseSecretsEnv } from "../authn/secrets.ts";
-import { fabric, grant, network, organization, user } from "../../lib/db/schema.ts";
+import {
+  fabric,
+  grant,
+  network,
+  organization,
+  user,
+} from "../../lib/db/schema.ts";
 import { registerOrganizationRoutes } from "./routes.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 
@@ -25,8 +31,10 @@ const dbUrl = getDatabaseUrl();
 const test = Deno.test.bind(Deno);
 
 async function createOrgRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+  const secretsConfig = parseSecretsEnv(
+    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno",
+  );
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
@@ -565,7 +573,9 @@ test("PUT /organizations/:id/docker-networking replaces, echoes, clears, and 409
           cidr: "10.200.0.0/16",
           conflictingCidr: "10.192.0.0/12",
         });
-        await db.delete(fabric).where(eq(fabric.organizationId, organizationId));
+        await db.delete(fabric).where(
+          eq(fabric.organizationId, organizationId),
+        );
 
         // The stored pools are now part of the registry in the other
         // direction: a reserved range inside one is refused. None of the
@@ -614,14 +624,20 @@ test("PUT /organizations/:id/docker-networking replaces, echoes, clears, and 409
           addressPools: [],
           defaultBridgeCidr: null,
         });
-        const afterClear = await app.request(path, { headers: { Cookie: cookie } });
+        const afterClear = await app.request(path, {
+          headers: { Cookie: cookie },
+        });
         assertEquals(await afterClear.json(), {
           addressPools: [],
           defaultBridgeCidr: null,
         });
       } finally {
-        await db.delete(fabric).where(eq(fabric.organizationId, organizationId));
-        await db.delete(network).where(eq(network.organizationId, organizationId));
+        await db.delete(fabric).where(
+          eq(fabric.organizationId, organizationId),
+        );
+        await db.delete(network).where(
+          eq(network.organizationId, organizationId),
+        );
       }
     },
   );

@@ -6,14 +6,16 @@
  * prepared compose; a future feature will let operators opt into them.
  */
 
-import { RESERVED_DEPLOY_VARIABLE_KEYS } from '../naming.ts'
-import type { DeployVariableEntry } from './apply-variables.ts'
+import { RESERVED_DEPLOY_VARIABLE_KEYS } from "../naming.ts";
+import type { DeployVariableEntry } from "./apply-variables.ts";
 
 /** Drop any entries whose key is in {@link RESERVED_DEPLOY_VARIABLE_KEYS}. */
 export function stripReservedDeployVariableKeys(
   entries: readonly DeployVariableEntry[],
 ): DeployVariableEntry[] {
-  return entries.filter((entry) => !RESERVED_DEPLOY_VARIABLE_KEYS.has(entry.key))
+  return entries.filter((entry) =>
+    !RESERVED_DEPLOY_VARIABLE_KEYS.has(entry.key)
+  );
 }
 
 /**
@@ -24,6 +26,6 @@ export function stripBindingOwnedKeys(
   entries: readonly DeployVariableEntry[],
   bindingOwnedKeys: ReadonlySet<string>,
 ): DeployVariableEntry[] {
-  if (bindingOwnedKeys.size === 0) return [...entries]
-  return entries.filter((entry) => !bindingOwnedKeys.has(entry.key))
+  if (bindingOwnedKeys.size === 0) return [...entries];
+  return entries.filter((entry) => !bindingOwnedKeys.has(entry.key));
 }

@@ -122,6 +122,24 @@ export type OrganizationOptions = {
    * this on explicitly; it is not a per-field allowlist.
    */
   composeGatedFieldsEnabled?: boolean;
+  /**
+   * Per-service ceiling applied at deploy to any container service whose
+   * compose sets none (`mem_limit` / `cpus` / `deploy.resources.limits`).
+   *
+   * Opt-in, and omitted by default: decided 2026-09-16 (user) that 0.1.0
+   * ships no platform-wide number, because a wrong one breaks legitimate
+   * workloads and there are no per-container metrics yet to justify a
+   * figure. The compose linter says so advisorily on every unbounded
+   * service (`field_recommends_resource_limits`); this is the organization's
+   * answer when it wants one. A service that declares its own ceiling is
+   * never overridden — the default fills a gap, it does not cap anyone.
+   */
+  composeDefaultResourceLimits?: {
+    /** Whole or fractional cores, as Compose's `cpus`. */
+    cpus?: number;
+    /** Bytes, as Compose's `mem_limit`. */
+    memoryBytes?: number;
+  };
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -274,6 +292,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.composeGatedFieldsEnabled === "boolean") {
     options.composeGatedFieldsEnabled = value.composeGatedFieldsEnabled;
   }
+  assignComposeDefaultResourceLimits(options, value);
   return options;
 }
 
@@ -294,6 +313,43 @@ export function resolveTemperatureUnit(
 /** Effective Let's Encrypt gate: off unless the org has opted in. */
 export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
   return options.acmeEnabled ?? false;
+}
+
+function assignComposeDefaultResourceLimits(
+  options: OrganizationOptions,
+  value: Record<string, unknown>,
+): void {
+  const raw = value.composeDefaultResourceLimits;
+  if (!isRecord(raw)) return;
+  const limits: NonNullable<
+    OrganizationOptions["composeDefaultResourceLimits"]
+  > = {};
+  if (
+    typeof raw.cpus === "number" && Number.isFinite(raw.cpus) && raw.cpus > 0
+  ) {
+    limits.cpus = raw.cpus;
+  }
+  if (
+    typeof raw.memoryBytes === "number" &&
+    Number.isFinite(raw.memoryBytes) &&
+    raw.memoryBytes > 0
+  ) {
+    limits.memoryBytes = Math.trunc(raw.memoryBytes);
+  }
+  // An empty or all-invalid object is the same as not opting in.
+  if (Object.keys(limits).length > 0) {
+    options.composeDefaultResourceLimits = limits;
+  }
+}
+
+/**
+ * The organization's default per-service ceiling, or null when it has not
+ * opted into one (the 0.1.0 default).
+ */
+export function resolveComposeDefaultResourceLimits(
+  options: OrganizationOptions,
+): NonNullable<OrganizationOptions["composeDefaultResourceLimits"]> | null {
+  return options.composeDefaultResourceLimits ?? null;
 }
 
 /** Effective gated-Compose-fields posture: off (deny) unless the org opted in. */

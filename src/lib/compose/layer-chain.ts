@@ -11,77 +11,81 @@
  * their surface returns.
  */
 
-import { assertComposeDocument } from './validate.ts'
-import type { ComposeDocument, ComposeLayer } from './index.ts'
+import { assertComposeDocument } from "./validate.ts";
+import type { ComposeDocument, ComposeLayer } from "./index.ts";
 
 /** Emitted as the project layer's filename on the deploy host. */
-export const PROJECT_COMPOSE_FILENAME = 'docker-compose.yml'
+export const PROJECT_COMPOSE_FILENAME = "docker-compose.yml";
 
 /** Cap on operator-authored extra layers per parent. */
-export const MAX_COMPOSE_OVERLAYS = 8
+export const MAX_COMPOSE_OVERLAYS = 8;
 
-export type ComposeChainError = { kind: 'invalid_compose' }
+export type ComposeChainError = { kind: "invalid_compose" };
 
 export function isComposeChainError(
   value: unknown,
 ): value is ComposeChainError {
-  return typeof value === 'object' && value !== null && 'kind' in value
+  return typeof value === "object" && value !== null && "kind" in value;
 }
 
 /** One stored extra layer, beyond the project/environment base documents. */
 export type ComposeOverlayRecord = {
-  id: string
-  name: string
-  filename: string
-  document: ComposeDocument
+  id: string;
+  name: string;
+  filename: string;
+  document: ComposeDocument;
   /** Set when the layer's content came from a repository. */
-  origin?: { sourceId: string; ref: string; path: string; commitSha: string }
-}
+  origin?: { sourceId: string; ref: string; path: string; commitSha: string };
+};
 
 /** Host-free: pull `options.compose` (or null) out of a jsonb options blob. */
 export function extractComposeFromOptions(options: unknown): unknown {
-  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
-    return null
+  if (
+    typeof options !== "object" || options === null || Array.isArray(options)
+  ) {
+    return null;
   }
-  return (options as Record<string, unknown>).compose ?? null
+  return (options as Record<string, unknown>).compose ?? null;
 }
 
 /** Host-free: pull `options.composeOverlays` (or `[]`). */
 export function extractComposeOverlays(
   options: unknown,
 ): ComposeOverlayRecord[] {
-  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
-    return []
+  if (
+    typeof options !== "object" || options === null || Array.isArray(options)
+  ) {
+    return [];
   }
-  const raw = (options as Record<string, unknown>).composeOverlays
-  if (!Array.isArray(raw)) return []
-  const out: ComposeOverlayRecord[] = []
+  const raw = (options as Record<string, unknown>).composeOverlays;
+  if (!Array.isArray(raw)) return [];
+  const out: ComposeOverlayRecord[] = [];
   for (const entry of raw.slice(0, MAX_COMPOSE_OVERLAYS)) {
-    if (typeof entry !== 'object' || entry === null) continue
-    const record = entry as Record<string, unknown>
-    if (typeof record.id !== 'string' || typeof record.filename !== 'string') {
-      continue
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.id !== "string" || typeof record.filename !== "string") {
+      continue;
     }
     out.push({
       id: record.id,
-      name: typeof record.name === 'string' ? record.name : record.id,
+      name: typeof record.name === "string" ? record.name : record.id,
       filename: record.filename,
       document: assertComposeDocument(record.document ?? null),
       ...(isOriginRecord(record.origin) ? { origin: record.origin } : {}),
-    })
+    });
   }
-  return out
+  return out;
 }
 
 function isOriginRecord(
   value: unknown,
-): value is ComposeOverlayRecord['origin'] {
-  if (typeof value !== 'object' || value === null) return false
-  const record = value as Record<string, unknown>
-  return typeof record.sourceId === 'string' &&
-    typeof record.ref === 'string' &&
-    typeof record.path === 'string' &&
-    typeof record.commitSha === 'string'
+): value is ComposeOverlayRecord["origin"] {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.sourceId === "string" &&
+    typeof record.ref === "string" &&
+    typeof record.path === "string" &&
+    typeof record.commitSha === "string";
 }
 
 /**
@@ -97,43 +101,43 @@ function isOriginRecord(
  * staying the untouched default.
  */
 export function resolveComposeLayerChain(params: {
-  projectOptions: unknown
-  environmentOptions: unknown
-  environmentFilename: string
+  projectOptions: unknown;
+  environmentOptions: unknown;
+  environmentFilename: string;
 }): ComposeLayer[] | ComposeChainError {
   try {
     const layers: ComposeLayer[] = [
       {
-        role: 'project',
+        role: "project",
         filename: PROJECT_COMPOSE_FILENAME,
         document: assertComposeDocument(
           extractComposeFromOptions(params.projectOptions),
         ),
       },
-    ]
+    ];
     for (const overlay of extractComposeOverlays(params.projectOptions)) {
       layers.push({
-        role: 'project',
+        role: "project",
         filename: overlay.filename,
         document: overlay.document,
-      })
+      });
     }
     layers.push({
-      role: 'environment',
+      role: "environment",
       filename: params.environmentFilename,
       document: assertComposeDocument(
         extractComposeFromOptions(params.environmentOptions),
       ),
-    })
+    });
     for (const overlay of extractComposeOverlays(params.environmentOptions)) {
       layers.push({
-        role: 'environment',
+        role: "environment",
         filename: overlay.filename,
         document: overlay.document,
-      })
+      });
     }
-    return layers
+    return layers;
   } catch {
-    return { kind: 'invalid_compose' }
+    return { kind: "invalid_compose" };
   }
 }

@@ -59,11 +59,14 @@
  *   translated rather than handed to Docker.
  */
 
-import { composeDocumentToYaml } from './convert.ts'
-import { lintComposeYaml, type ComposeLintIssue } from './lint.ts'
-import { principalAliasesInComposeData } from './root-extension.ts'
-import type { ComposeDocument } from './types.ts'
-import { validateComposeDocument, type ComposeValidationIssue } from './validate.ts'
+import { composeDocumentToYaml } from "./convert.ts";
+import { type ComposeLintIssue, lintComposeYaml } from "./lint.ts";
+import { principalAliasesInComposeData } from "./root-extension.ts";
+import type { ComposeDocument } from "./types.ts";
+import {
+  type ComposeValidationIssue,
+  validateComposeDocument,
+} from "./validate.ts";
 
 /**
  * A merged document that names a field TurboPanel does not implement.
@@ -76,9 +79,9 @@ import { validateComposeDocument, type ComposeValidationIssue } from './validate
  * that is not there.
  */
 export type ComposeUnsupportedFieldError = {
-  kind: 'compose_field_unsupported'
-  issues: ComposeValidationIssue[]
-}
+  kind: "compose_field_unsupported";
+  issues: ComposeValidationIssue[];
+};
 
 /**
  * The merge of layers that each saved cleanly is not itself a valid document.
@@ -89,9 +92,9 @@ export type ComposeUnsupportedFieldError = {
  * removed something the base still depends on.
  */
 export type ComposeMergedInvalidError = {
-  kind: 'compose_merged_invalid'
-  issues: ComposeValidationIssue[]
-}
+  kind: "compose_merged_invalid";
+  issues: ComposeValidationIssue[];
+};
 
 /**
  * A merged document sets a field TurboPanel supports only for an
@@ -107,15 +110,15 @@ export type ComposeMergedInvalidError = {
  * not removing the field or deploying elsewhere.
  */
 export type ComposeGatedFieldError = {
-  kind: 'compose_field_requires_org_opt_in'
-  issues: ComposeValidationIssue[]
-}
+  kind: "compose_field_requires_org_opt_in";
+  issues: ComposeValidationIssue[];
+};
 
 /** Everything {@link validateComposeForDeploy} can refuse a deploy with. */
 export type ComposeDeployValidationError =
   | ComposeMergedInvalidError
   | ComposeUnsupportedFieldError
-  | ComposeGatedFieldError
+  | ComposeGatedFieldError;
 
 function toValidationIssue(issue: ComposeLintIssue): ComposeValidationIssue {
   return {
@@ -123,7 +126,7 @@ function toValidationIssue(issue: ComposeLintIssue): ComposeValidationIssue {
     message: issue.message,
     ...(issue.level === undefined ? {} : { level: issue.level }),
     ...(issue.line === undefined ? {} : { line: issue.line }),
-  }
+  };
 }
 
 /**
@@ -144,7 +147,7 @@ export function validateComposeForDeploy(
      * ACME org gate. Omitted (e.g. a caller with no org context yet)
      * defaults to `false` — the safe, deny-by-default reading.
      */
-    composeGatedFieldsEnabled?: boolean
+    composeGatedFieldsEnabled?: boolean;
   },
 ): ComposeDeployValidationError | null {
   // Stages 1–3. `validateComposeDocument` runs the vendored Compose schema, the
@@ -160,9 +163,9 @@ export function validateComposeForDeploy(
   // let the deploy run services as nobody.
   const structural = validateComposeDocument(document, {
     knownPrincipalAliases: principalAliasesInComposeData(document.data),
-  })
+  });
   if (!structural.ok) {
-    return { kind: 'compose_merged_invalid', issues: structural.issues }
+    return { kind: "compose_merged_invalid", issues: structural.issues };
   }
 
   // Stage 4 — the deploy-time-only posture. Filtered to the field-policy code
@@ -174,14 +177,16 @@ export function validateComposeForDeploy(
   // second call would just repeat the same walk.
   const lintIssues = lintComposeYaml(composeDocumentToYaml(document), {
     strict: true,
-  })
+  });
 
-  const unsupported = lintIssues.filter((issue) => issue.code === 'field_unsupported')
+  const unsupported = lintIssues.filter((issue) =>
+    issue.code === "field_unsupported"
+  );
   if (unsupported.length > 0) {
     return {
-      kind: 'compose_field_unsupported',
+      kind: "compose_field_unsupported",
       issues: unsupported.map(toValidationIssue),
-    }
+    };
   }
 
   // Stage 5 — org-gated fields. The linter itself never blocks on this code
@@ -189,15 +194,15 @@ export function validateComposeForDeploy(
   // is made here, with the caller-supplied opt-in flag.
   if (!opts?.composeGatedFieldsEnabled) {
     const gated = lintIssues.filter((issue) =>
-      issue.code === 'field_requires_org_opt_in'
-    )
+      issue.code === "field_requires_org_opt_in"
+    );
     if (gated.length > 0) {
       return {
-        kind: 'compose_field_requires_org_opt_in',
+        kind: "compose_field_requires_org_opt_in",
         issues: gated.map(toValidationIssue),
-      }
+      };
     }
   }
 
-  return null
+  return null;
 }

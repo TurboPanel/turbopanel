@@ -11,34 +11,27 @@
  * pruning per layer would delete networks another layer still references.
  */
 
-import { mergeComposeDocuments } from './merge.ts'
-import { stripComposePlacement } from './placement.ts'
-import { renameComposeVolumes } from './rename-volumes.ts'
+import { mergeComposeDocuments } from "./merge.ts";
+import { stripComposePlacement } from "./placement.ts";
+import { renameComposeVolumes } from "./rename-volumes.ts";
+import { isNodeComposeService, isSiteComposeService } from "./service-kind.ts";
+import { composeTagOf, isComposeTaggedValue, makeComposeTag } from "./tags.ts";
 import {
-  isNodeComposeService,
-  isSiteComposeService,
-} from './service-kind.ts'
-import {
-  composeTagOf,
-  isComposeTaggedValue,
-  makeComposeTag,
-} from './tags.ts'
-import {
+  type ComposeDocument,
   emptyComposeDocument,
   normalizeCompose,
-  type ComposeDocument,
-} from './types.ts'
+} from "./types.ts";
 
-export type ComposeLayerRole = 'project' | 'environment' | 'platform'
+export type ComposeLayerRole = "project" | "environment" | "platform";
 
 export type ComposeLayer = {
-  role: ComposeLayerRole
-  filename: string
-  document: ComposeDocument
-}
+  role: ComposeLayerRole;
+  filename: string;
+  document: ComposeDocument;
+};
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -50,11 +43,11 @@ function mapThroughTag(
   map: (inner: unknown) => unknown,
 ): unknown {
   if (isComposeTaggedValue(value)) {
-    const tag = composeTagOf(value)
-    if (tag === null) return value
-    return makeComposeTag(tag, map(value.value))
+    const tag = composeTagOf(value);
+    if (tag === null) return value;
+    return makeComposeTag(tag, map(value.value));
   }
-  return map(value)
+  return map(value);
 }
 
 /**
@@ -63,8 +56,8 @@ function mapThroughTag(
 export function mergeComposeLayers(
   layers: readonly ComposeLayer[],
 ): ComposeDocument {
-  if (layers.length === 0) return emptyComposeDocument()
-  return mergeComposeDocuments(layers.map((layer) => layer.document))
+  if (layers.length === 0) return emptyComposeDocument();
+  return mergeComposeDocuments(layers.map((layer) => layer.document));
 }
 
 /**
@@ -75,61 +68,61 @@ export function mergeComposeLayers(
 export function collectSiteServiceNames(
   merged: ComposeDocument,
 ): Set<string> {
-  const names = new Set<string>()
+  const names = new Set<string>();
   const collectFrom = (services: unknown) => {
     if (isComposeTaggedValue(services)) {
-      collectFrom(services.value)
-      return
+      collectFrom(services.value);
+      return;
     }
-    if (!isPlainObject(services)) return
+    if (!isPlainObject(services)) return;
     for (const [name, raw] of Object.entries(services)) {
-      let body = raw
-      if (isComposeTaggedValue(body)) body = body.value
+      let body = raw;
+      if (isComposeTaggedValue(body)) body = body.value;
       if (
         isPlainObject(body) &&
         (isSiteComposeService(body) || isNodeComposeService(body))
       ) {
-        names.add(name)
+        names.add(name);
       }
     }
-  }
-  collectFrom(merged.data.services)
-  return names
+  };
+  collectFrom(merged.data.services);
+  return names;
 }
 
 function stripServicesMapping(
   services: Record<string, unknown>,
   drop: ReadonlySet<string>,
 ): { next: Record<string, unknown>; removed: boolean } {
-  const nextServices: Record<string, unknown> = {}
-  let removed = false
+  const nextServices: Record<string, unknown> = {};
+  let removed = false;
   for (const [name, raw] of Object.entries(services)) {
     if (drop.has(name)) {
-      removed = true
-      continue
+      removed = true;
+      continue;
     }
-    nextServices[name] = raw
+    nextServices[name] = raw;
   }
-  return { next: nextServices, removed }
+  return { next: nextServices, removed };
 }
 
 function selfDetectSiteNames(services: unknown): Set<string> {
-  const self = new Set<string>()
+  const self = new Set<string>();
   if (isComposeTaggedValue(services)) {
-    return selfDetectSiteNames(services.value)
+    return selfDetectSiteNames(services.value);
   }
-  if (!isPlainObject(services)) return self
+  if (!isPlainObject(services)) return self;
   for (const [name, raw] of Object.entries(services)) {
-    let body = raw
-    if (isComposeTaggedValue(body)) body = body.value
+    let body = raw;
+    if (isComposeTaggedValue(body)) body = body.value;
     if (
       isPlainObject(body) &&
       (isSiteComposeService(body) || isNodeComposeService(body))
     ) {
-      self.add(name)
+      self.add(name);
     }
   }
-  return self
+  return self;
 }
 
 /**
@@ -144,28 +137,28 @@ export function stripSiteServicesFromLayer(
   document: ComposeDocument,
   names?: ReadonlySet<string>,
 ): ComposeDocument {
-  const normalized = normalizeCompose(document)
-  const services = normalized.data.services
+  const normalized = normalizeCompose(document);
+  const services = normalized.data.services;
 
-  const drop = names ?? selfDetectSiteNames(services)
-  if (drop.size === 0) return normalized
+  const drop = names ?? selfDetectSiteNames(services);
+  if (drop.size === 0) return normalized;
 
-  let removed = false
+  let removed = false;
   const nextServices = mapThroughTag(services, (inner) => {
-    if (!isPlainObject(inner)) return inner
-    const result = stripServicesMapping(inner, drop)
-    if (result.removed) removed = true
-    return result.next
-  })
+    if (!isPlainObject(inner)) return inner;
+    const result = stripServicesMapping(inner, drop);
+    if (result.removed) removed = true;
+    return result.next;
+  });
 
-  if (!removed) return normalized
+  if (!removed) return normalized;
 
-  const data = { ...normalized.data, services: nextServices }
+  const data = { ...normalized.data, services: nextServices };
   return {
     version: 1,
     data,
     presentation: normalized.presentation,
-  }
+  };
 }
 
 /** Per-layer volume rename wrapper (callers avoid deep-importing rename-volumes). */
@@ -173,12 +166,12 @@ export function renameComposeVolumesInLayer(
   document: ComposeDocument,
   renames: ReadonlyMap<string, string>,
 ): ComposeDocument {
-  return renameComposeVolumes(document, renames)
+  return renameComposeVolumes(document, renames);
 }
 
 /** Per-layer placement strip (input sanitization). */
 export function stripComposePlacementFromLayer(
   document: ComposeDocument,
 ): ComposeDocument {
-  return stripComposePlacement(document)
+  return stripComposePlacement(document);
 }

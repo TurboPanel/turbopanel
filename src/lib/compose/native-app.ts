@@ -17,8 +17,8 @@ import {
   type NativeRuntimeFramework,
   type NodeAppMode,
   readServiceTurbopanelExtension,
-} from './service-kind.ts'
-import { allocateSiteListenPort } from './site.ts'
+} from "./service-kind.ts";
+import { allocateSiteListenPort } from "./site.ts";
 
 /**
  * `services.<name>.deploy.restart_policy`, as authored.
@@ -40,33 +40,33 @@ import { allocateSiteListenPort } from './site.ts'
  * `StartLimitIntervalSec=`.
  */
 export type NativeAppRestartPolicy = {
-  condition?: 'none' | 'on-failure' | 'any'
+  condition?: "none" | "on-failure" | "any";
   /** Compose duration (`5s`, `1m30s`). */
-  delay?: string
+  delay?: string;
   /** Positive count; at least 1. */
-  maxAttempts?: number
+  maxAttempts?: number;
   /** Compose duration. */
-  window?: string
-}
+  window?: string;
+};
 
 export type NativeAppServiceSpec = {
-  composeServiceName: string
+  composeServiceName: string;
   /** Resolved runtime family; `auto` leaves detection to the daemon build. */
-  framework: NativeRuntimeFramework
+  framework: NativeRuntimeFramework;
   /** Loopback listen port for hosting Caddy → the app process. */
-  listenPort: number
+  listenPort: number;
   /** Operator-pinned Node series, when the author declared one. */
-  nodeVersion?: string
+  nodeVersion?: string;
   /** `NODE_ENV` for build and unit. Omitted means `production`. */
-  appMode?: NodeAppMode
+  appMode?: NodeAppMode;
   /**
    * Omitted means `true`. A disabled app is still emitted — dropping it would
    * make the daemon reconcile tear the unit down and strand the release; the
    * daemon stops and disables the unit instead of starting it.
    */
-  enabled?: boolean
+  enabled?: boolean;
   /** Script run when `source.startCommand` is absent. Default `server.js`. */
-  startupFile?: string
+  startupFile?: string;
   /**
    * Authored `deploy.restart_policy`, when the document set one. Absent means
    * the document said nothing about supervision — see
@@ -80,8 +80,8 @@ export type NativeAppServiceSpec = {
    * and never reached a host. Carried here in the shape the author wrote;
    * deploy-prepare translates it exactly once, the same call sites use.
    */
-  cron?: ComposeServiceCronJob[]
-  restartPolicy?: NativeAppRestartPolicy
+  cron?: ComposeServiceCronJob[];
+  restartPolicy?: NativeAppRestartPolicy;
   /**
    * Authored `deploy.labels`, when the document set any.
    *
@@ -100,14 +100,14 @@ export type NativeAppServiceSpec = {
    * rather than `labels` precisely so no later reader mistakes it for the
    * container's own.
    */
-  serviceLabels?: Record<string, string>
-}
+  serviceLabels?: Record<string, string>;
+};
 
 /** Framework when `x-turbopanel.framework` is omitted. */
-export const NATIVE_APP_DEFAULT_FRAMEWORK: NativeRuntimeFramework = 'auto'
+export const NATIVE_APP_DEFAULT_FRAMEWORK: NativeRuntimeFramework = "auto";
 
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -118,25 +118,25 @@ function isPlainMapping(value: unknown): value is Record<string, unknown> {
  * linter is exactly the drift that lets the two disagree.
  */
 export const NATIVE_APP_RESTART_CONDITIONS: ReadonlySet<string> = new Set([
-  'none',
-  'on-failure',
-  'any',
-])
+  "none",
+  "on-failure",
+  "any",
+]);
 
 /** Compose duration: one or more `<number><unit>` pairs (`5s`, `1m30s`). */
 export const NATIVE_APP_RESTART_DURATION_RE =
-  /^(\d+(?:\.\d+)?(?:us|ms|s|m|h))+$/
+  /^(\d+(?:\.\d+)?(?:us|ms|s|m|h))+$/;
 
 /** True when `value` names a condition the generated unit can express. */
 export function isNativeAppRestartCondition(value: unknown): boolean {
-  return typeof value === 'string' &&
-    NATIVE_APP_RESTART_CONDITIONS.has(value.trim())
+  return typeof value === "string" &&
+    NATIVE_APP_RESTART_CONDITIONS.has(value.trim());
 }
 
 /** True when `value` is a Compose duration the unit renderer can carry. */
 export function isNativeAppRestartDuration(value: unknown): boolean {
-  return typeof value === 'string' &&
-    NATIVE_APP_RESTART_DURATION_RE.test(value.trim())
+  return typeof value === "string" &&
+    NATIVE_APP_RESTART_DURATION_RE.test(value.trim());
 }
 
 /**
@@ -150,31 +150,31 @@ export function isNativeAppRestartDuration(value: unknown): boolean {
  * document.
  */
 export function isNativeAppRestartMaxAttempts(value: unknown): boolean {
-  if (typeof value === 'number') return Number.isInteger(value) && value >= 1
-  if (typeof value !== 'string') return false
-  const trimmed = value.trim()
-  return /^\d+$/.test(trimmed) && Number.parseInt(trimmed, 10) >= 1
+  if (typeof value === "number") return Number.isInteger(value) && value >= 1;
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  return /^\d+$/.test(trimmed) && Number.parseInt(trimmed, 10) >= 1;
 }
 
 function restartDuration(value: unknown): string | undefined {
   return isNativeAppRestartDuration(value)
     ? (value as string).trim()
-    : undefined
+    : undefined;
 }
 
 function restartMaxAttempts(value: unknown): number | undefined {
-  if (!isNativeAppRestartMaxAttempts(value)) return undefined
-  return typeof value === 'number'
+  if (!isNativeAppRestartMaxAttempts(value)) return undefined;
+  return typeof value === "number"
     ? value
-    : Number.parseInt((value as string).trim(), 10)
+    : Number.parseInt((value as string).trim(), 10);
 }
 
 /** An authored `restart_policy` key, named as the document spells it. */
 export type NativeAppRestartPolicyField =
-  | 'condition'
-  | 'delay'
-  | 'max_attempts'
-  | 'window'
+  | "condition"
+  | "delay"
+  | "max_attempts"
+  | "window";
 
 /**
  * The outcome of reading `deploy.restart_policy` off a `node` service.
@@ -187,7 +187,7 @@ export type NativeAppRestartPolicyField =
  */
 export type NativeAppRestartPolicyRead = {
   /** What the generated unit can express, or absent when nothing usable was set. */
-  policy?: NativeAppRestartPolicy
+  policy?: NativeAppRestartPolicy;
   /**
    * Authored keys this lane cannot honour, in document spelling.
    *
@@ -198,8 +198,8 @@ export type NativeAppRestartPolicyRead = {
    * what the lane can carry, and a caller that skipped the linter has to be
    * able to see what it would have said.
    */
-  unsupported: NativeAppRestartPolicyField[]
-}
+  unsupported: NativeAppRestartPolicyField[];
+};
 
 /**
  * Read `deploy.restart_policy` off a raw compose service.
@@ -215,46 +215,46 @@ export type NativeAppRestartPolicyRead = {
 export function readNativeAppRestartPolicy(
   raw: Record<string, unknown>,
 ): NativeAppRestartPolicyRead {
-  if (!isPlainMapping(raw.deploy)) return { unsupported: [] }
-  const authored = raw.deploy.restart_policy
-  if (authored === undefined || authored === null) return { unsupported: [] }
+  if (!isPlainMapping(raw.deploy)) return { unsupported: [] };
+  const authored = raw.deploy.restart_policy;
+  if (authored === undefined || authored === null) return { unsupported: [] };
   // A `restart_policy` that is not a mapping is the Compose schema's to
   // report; this reader has no field-level answer for it.
-  if (!isPlainMapping(authored)) return { unsupported: [] }
+  if (!isPlainMapping(authored)) return { unsupported: [] };
 
-  const unsupported: NativeAppRestartPolicyField[] = []
+  const unsupported: NativeAppRestartPolicyField[] = [];
   const keep = <T>(
     field: NativeAppRestartPolicyField,
     value: unknown,
     read: (value: unknown) => T | undefined,
   ): T | undefined => {
-    if (value === undefined) return undefined
-    const parsed = read(value)
-    if (parsed === undefined) unsupported.push(field)
-    return parsed
-  }
+    if (value === undefined) return undefined;
+    const parsed = read(value);
+    if (parsed === undefined) unsupported.push(field);
+    return parsed;
+  };
 
   const condition = keep(
-    'condition',
+    "condition",
     authored.condition,
     (value) =>
       isNativeAppRestartCondition(value)
-        ? (value as string).trim() as NativeAppRestartPolicy['condition']
+        ? (value as string).trim() as NativeAppRestartPolicy["condition"]
         : undefined,
-  )
-  const delay = keep('delay', authored.delay, restartDuration)
+  );
+  const delay = keep("delay", authored.delay, restartDuration);
   const maxAttempts = keep(
-    'max_attempts',
+    "max_attempts",
     authored.max_attempts,
     restartMaxAttempts,
-  )
-  const window = keep('window', authored.window, restartDuration)
+  );
+  const window = keep("window", authored.window, restartDuration);
 
   if (
     condition === undefined && delay === undefined &&
     maxAttempts === undefined && window === undefined
   ) {
-    return { unsupported }
+    return { unsupported };
   }
   return {
     policy: {
@@ -264,7 +264,7 @@ export function readNativeAppRestartPolicy(
       ...(window === undefined ? {} : { window }),
     },
     unsupported,
-  }
+  };
 }
 
 /**
@@ -282,65 +282,65 @@ export function readNativeAppRestartPolicy(
 export function readNativeAppServiceLabels(
   raw: Record<string, unknown>,
 ): Record<string, string> | undefined {
-  if (!isPlainMapping(raw.deploy)) return undefined
-  const authored = raw.deploy.labels
+  if (!isPlainMapping(raw.deploy)) return undefined;
+  const authored = raw.deploy.labels;
 
-  let labels: Record<string, string>
+  let labels: Record<string, string>;
   if (isPlainMapping(authored)) {
-    labels = serviceLabelsFromMapping(authored)
+    labels = serviceLabelsFromMapping(authored);
   } else if (Array.isArray(authored)) {
-    labels = serviceLabelsFromSequence(authored)
+    labels = serviceLabelsFromSequence(authored);
   } else {
-    return undefined
+    return undefined;
   }
 
-  return Object.keys(labels).length > 0 ? labels : undefined
+  return Object.keys(labels).length > 0 ? labels : undefined;
 }
 
 function serviceLabelsFromMapping(
   authored: Record<string, unknown>,
 ): Record<string, string> {
-  const labels: Record<string, string> = {}
+  const labels: Record<string, string> = {};
   for (const [key, value] of Object.entries(authored)) {
-    if (key.length === 0) continue
+    if (key.length === 0) continue;
     if (value === null || value === undefined) {
-      labels[key] = ''
-      continue
+      labels[key] = "";
+      continue;
     }
     // Allow-list the scalar types worth stringifying, rather than excluding
     // `object`: the narrower guard is what tells a static analyzer `value`
     // can no longer be a bare object collapsing to `[object Object]` below.
     if (
-      typeof value !== 'string' &&
-      typeof value !== 'number' &&
-      typeof value !== 'boolean'
+      typeof value !== "string" &&
+      typeof value !== "number" &&
+      typeof value !== "boolean"
     ) {
-      continue
+      continue;
     }
-    labels[key] = String(value)
+    labels[key] = String(value);
   }
-  return labels
+  return labels;
 }
 
 function serviceLabelsFromSequence(
   authored: readonly unknown[],
 ): Record<string, string> {
-  const labels: Record<string, string> = {}
+  const labels: Record<string, string> = {};
   for (const entry of authored) {
-    if (typeof entry !== 'string') continue
-    const separator = entry.indexOf('=')
-    const key = (separator === -1 ? entry : entry.slice(0, separator)).trim()
-    if (key.length === 0) continue
-    labels[key] = separator === -1 ? '' : entry.slice(separator + 1)
+    if (typeof entry !== "string") continue;
+    const separator = entry.indexOf("=");
+    const key = (separator === -1 ? entry : entry.slice(0, separator)).trim();
+    if (key.length === 0) continue;
+    labels[key] = separator === -1 ? "" : entry.slice(separator + 1);
   }
-  return labels
+  return labels;
 }
 
 export type SplitNativeAppResult = {
   /** Services that remain for Docker Compose (native apps removed). */
-  containerServices: Record<string, unknown>
-  apps: NativeAppServiceSpec[]
-}
+  containerServices: Record<string, unknown>;
+  apps: NativeAppServiceSpec[];
+};
 
 /**
  * Partition compose `services`, pulling `serviceKind: node` entries out into
@@ -355,22 +355,22 @@ export function splitNativeAppServices(
   usedPorts: Set<number> = new Set<number>(),
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
 ): SplitNativeAppResult {
-  const containerServices: Record<string, unknown> = {}
-  const apps: NativeAppServiceSpec[] = []
+  const containerServices: Record<string, unknown> = {};
+  const apps: NativeAppServiceSpec[] = [];
 
-  const names = Object.keys(services).sort((a, b) => a.localeCompare(b))
+  const names = Object.keys(services).sort((a, b) => a.localeCompare(b));
   for (const name of names) {
-    const raw = services[name]
+    const raw = services[name];
     if (!isPlainMapping(raw) || !isNodeComposeService(raw)) {
-      containerServices[name] = raw
-      continue
+      containerServices[name] = raw;
+      continue;
     }
 
-    const extension = readServiceTurbopanelExtension(raw)
+    const extension = readServiceTurbopanelExtension(raw);
     // Validation rejects a `node` service with no source; a document that slips
     // through anyway must still stay out of Docker — an image-less service
     // would just fail `compose up`.
-    if (!extension?.source) continue
+    if (!extension?.source) continue;
 
     apps.push(nativeAppSpecFor(
       name,
@@ -381,10 +381,10 @@ export function splitNativeAppServices(
         usedPorts,
         preferredListenPortByService.get(name),
       ),
-    ))
+    ));
   }
 
-  return { containerServices, apps }
+  return { containerServices, apps };
 }
 
 function nativeAppSpecFor(
@@ -396,8 +396,8 @@ function nativeAppSpecFor(
   // `unsupported` is not consulted here: `./lint.ts` refuses those documents
   // at deploy time, so anything reaching this split has already been told
   // what this lane can carry.
-  const { policy: restartPolicy } = readNativeAppRestartPolicy(raw)
-  const serviceLabels = readNativeAppServiceLabels(raw)
+  const { policy: restartPolicy } = readNativeAppRestartPolicy(raw);
+  const serviceLabels = readNativeAppServiceLabels(raw);
 
   return {
     composeServiceName: name,
@@ -417,7 +417,7 @@ function nativeAppSpecFor(
     ...(extension.cron === undefined ? {} : { cron: extension.cron }),
     ...(restartPolicy === undefined ? {} : { restartPolicy }),
     ...(serviceLabels === undefined ? {} : { serviceLabels }),
-  }
+  };
 }
 
 /**
@@ -441,7 +441,7 @@ export function assignNativeAppListenPorts<
 ): T[] {
   const sorted = [...apps].sort((a, b) =>
     a.composeServiceName.localeCompare(b.composeServiceName)
-  )
+  );
   return sorted.map((app) => ({
     ...app,
     listenPort: allocateSiteListenPort(
@@ -449,5 +449,5 @@ export function assignNativeAppListenPorts<
       used,
       preferredListenPortByService.get(app.composeServiceName),
     ),
-  }))
+  }));
 }

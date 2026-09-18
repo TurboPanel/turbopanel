@@ -15,6 +15,7 @@ import {
   hostDefaultsPutResponse,
   managedDefaultsGetResponse,
   managedDefaultsPutResponse,
+  parseComposeDefaultResourceLimitsPatch,
   parseComposeGatedFieldsPatch,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
@@ -508,4 +509,55 @@ test("default timezone and environment response shapers", () => {
     defaultEnvironmentPutResponse({ defaultEnvironmentName: "Staging" }),
     { ok: true, defaultEnvironmentName: "Staging" },
   );
+});
+
+test("parseComposeDefaultResourceLimitsPatch takes positive figures, or null to clear", () => {
+  assertEquals(
+    parseComposeDefaultResourceLimitsPatch({
+      composeDefaultResourceLimits: { cpus: 1, memoryBytes: 536870912 },
+    }),
+    {
+      ok: true,
+      patch: {
+        composeDefaultResourceLimits: { cpus: 1, memoryBytes: 536870912 },
+      },
+    },
+  );
+  // Either figure alone is a valid ceiling.
+  assertEquals(
+    parseComposeDefaultResourceLimitsPatch({
+      composeDefaultResourceLimits: { cpus: 0.5 },
+    }),
+    { ok: true, patch: { composeDefaultResourceLimits: { cpus: 0.5 } } },
+  );
+  // null clears the opt-in, back to the 0.1.0 default of no platform number.
+  assertEquals(
+    parseComposeDefaultResourceLimitsPatch({
+      composeDefaultResourceLimits: null,
+    }),
+    { ok: true, patch: { composeDefaultResourceLimits: null } },
+  );
+  // An empty object would read as opting in to nothing.
+  assertEquals(
+    parseComposeDefaultResourceLimitsPatch({ composeDefaultResourceLimits: {} })
+      .ok,
+    false,
+  );
+  for (
+    const bad of [
+      { composeDefaultResourceLimits: { cpus: 0 } },
+      { composeDefaultResourceLimits: { cpus: -2 } },
+      { composeDefaultResourceLimits: { memoryBytes: 1.5 } },
+      { composeDefaultResourceLimits: { memoryBytes: "512m" } },
+      { composeDefaultResourceLimits: [] },
+      { composeDefaultResourceLimits: "1" },
+      {},
+    ]
+  ) {
+    assertEquals(
+      parseComposeDefaultResourceLimitsPatch(bad).ok,
+      false,
+      JSON.stringify(bad),
+    );
+  }
 });

@@ -244,7 +244,9 @@ async function buildFabricEnableApp(opts: {
 }): Promise<{
   app: Hono<AppEnv>;
   cookie: string;
-  fabrics: Array<{ id: string; organizationId: string; cidr: string; options: unknown }>;
+  fabrics: Array<
+    { id: string; organizationId: string; cidr: string; options: unknown }
+  >;
   relays: Array<Record<string, unknown>>;
 }> {
   const secretsConfig = parseTestSecretsConfig("deno");
@@ -316,7 +318,9 @@ async function buildFabricEnableApp(opts: {
         if (opts.enableWithServers && table === server) {
           return {
             where: () =>
-              thenableRows((opts.serverIds ?? [serverId]).map((id) => ({ id }))),
+              thenableRows(
+                (opts.serverIds ?? [serverId]).map((id) => ({ id })),
+              ),
           };
         }
         if (
@@ -1153,7 +1157,10 @@ test("PUT /fabric containerPool: 409 fabric_container_pool_in_use when a relay p
   // A pool overlapping the tp0 host range is a registry collision.
   const hostHit = await put({ enabled: true, containerPool: "10.250.0.0/16" });
   assertEquals(hostHit.status, 409);
-  assertEquals((await hostHit.json() as { error: string }).error, "cidr_overlaps_fabric");
+  assertEquals(
+    (await hostHit.json() as { error: string }).error,
+    "cidr_overlaps_fabric",
+  );
 
   // Narrowing around the allocated prefix is fine and lands in fabric.options.
   const narrowed = await put({ enabled: true, containerPool: "10.192.0.0/13" });

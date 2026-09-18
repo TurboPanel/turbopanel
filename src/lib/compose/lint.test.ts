@@ -9,6 +9,22 @@ import { blockingComposeLintIssues, lintComposeYaml } from "./lint.ts";
  */
 const test = Deno.test.bind(Deno);
 
+/**
+ * Issues other than the unbounded-resources advisory.
+ *
+ * That advisory fires on every container service that declares no ceiling,
+ * which is most fixtures here and is the point of the rule
+ * (`field_recommends_resource_limits`, decided 2026-09-16). Tests that mean
+ * "nothing else to report" filter it out rather than restating it.
+ */
+function lintWithoutResourceAdvisory(
+  ...args: Parameters<typeof lintComposeYaml>
+): ReturnType<typeof lintComposeYaml> {
+  return lintComposeYaml(...args).filter(
+    (issue) => issue.code !== "field_recommends_resource_limits",
+  );
+}
+
 test("lintComposeYaml returns no issues for empty input", () => {
   assertEquals(lintComposeYaml(""), []);
   assertEquals(lintComposeYaml("   \n"), []);
@@ -21,7 +37,7 @@ test("lintComposeYaml accepts a valid service", () => {
     ports:
       - "8080:80"
 `;
-  assertEquals(lintComposeYaml(source), []);
+  assertEquals(lintWithoutResourceAdvisory(source), []);
 });
 
 test("lintComposeYaml flags misspelled service key with suggestion and line", () => {
@@ -60,7 +76,7 @@ test("lintComposeYaml skips image requirement for site services", () => {
       serviceKind: site
       engine: apache
 `;
-  assertEquals(lintComposeYaml(source), []);
+  assertEquals(lintWithoutResourceAdvisory(source), []);
 });
 
 test("lintComposeYaml orders issues by line number", () => {
@@ -70,7 +86,7 @@ test("lintComposeYaml orders issues by line number", () => {
     # comment
     imaage: nginx
 `;
-  const issues = lintComposeYaml(source);
+  const issues = lintWithoutResourceAdvisory(source);
   assertEquals(issues.map((issue) => issue.line), [3, 5]);
   assertEquals(issues[0]?.level, "error");
   assertEquals(issues[1]?.level, "warning");
@@ -136,7 +152,7 @@ test("lintComposeYaml accepts build without image", () => {
   api:
     build: .
 `;
-  assertEquals(lintComposeYaml(source), []);
+  assertEquals(lintWithoutResourceAdvisory(source), []);
 });
 
 test("lintComposeYaml treats empty-string image as missing", () => {
@@ -162,7 +178,7 @@ test("lintComposeYaml accepts build when image is an empty string", () => {
       dockerfile_inline: |
         FROM alpine
 `;
-  assertEquals(lintComposeYaml(source), []);
+  assertEquals(lintWithoutResourceAdvisory(source), []);
 });
 
 test("lintComposeYaml allows x-turbopanel extension keys on services", () => {
@@ -298,7 +314,7 @@ test("lintComposeYaml accepts exact scoped variable refs in environment map", ()
       PORT: "{$project.PORT}"
       HOST: "{$environment.HOST}"
 `;
-  assertEquals(lintComposeYaml(source), []);
+  assertEquals(lintWithoutResourceAdvisory(source), []);
 });
 
 test("lintComposeYaml lints build.args variable refs", () => {
@@ -494,7 +510,7 @@ test("lintComposeYaml emits base-layer advisory when top-level services is tagge
 
 test("lintComposeYaml accepts build shorthand scalar and tagged override shorthand", () => {
   assertEquals(
-    lintComposeYaml(`services:
+    lintWithoutResourceAdvisory(`services:
   api:
     build: .
 `),
@@ -1271,7 +1287,57 @@ test("lintComposeYaml leaves the two modes TurboPanel schedules alone", () => {
     deploy:
       mode: ${mode}
 `;
-    assertEquals(lintComposeYaml(source), []);
-    assertEquals(lintComposeYaml(source, { strict: true }), []);
+    assertEquals(lintWithoutResourceAdvisory(source), []);
+    assertEquals(lintWithoutResourceAdvisory(source, { strict: true }), []);
   }
+});
+
+test("an unbounded container service gets an advisory, and a bounded one does not", () => {
+  const issues = lintComposeYaml(`services:
+  web:
+    image: nginx:alpine
+  worker:
+    image: worker:1
+    mem_limit: 268435456
+  api:
+    image: api:1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+`);
+  const advisories = issues.filter(
+    (issue) => issue.code === "field_recommends_resource_limits",
+  );
+  assertEquals(advisories.map((issue) => issue.path), ["services.web"]);
+  // Advisory only: it never blocks a save or a deploy.
+  assertEquals(advisories[0]?.level, "warning");
+  assertEquals(advisories[0]?.blocking, false);
+  assertEquals(
+    blockingComposeLintIssues(issues).some(
+      (issue) => issue.code === "field_recommends_resource_limits",
+    ),
+    false,
+  );
+});
+
+test("host-native services are exempt from the resource advisory", () => {
+  // Sites and node apps run under systemd, not Docker; their ceilings come
+  // from the unit, so a compose ceiling would mean nothing.
+  const issues = lintComposeYaml(`services:
+  blog:
+    x-turbopanel:
+      serviceKind: site
+      root: public
+      principal: app
+  app:
+    x-turbopanel:
+      serviceKind: node
+      source:
+        repository: example/app
+`);
+  assertEquals(
+    issues.some((issue) => issue.code === "field_recommends_resource_limits"),
+    false,
+  );
 });

@@ -3,6 +3,7 @@ import {
   parseMaxServersInput,
   parseTemperatureUnitInput,
   resolveAcmeEnabled,
+  resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   type TemperatureUnit,
 } from "../../lib/organization-options.ts";
@@ -32,8 +33,8 @@ import {
   resolveManagedSslMode,
 } from "../../lib/managed/ssl.ts";
 import {
-  type DockerAddressingRejection,
   DOCKER_ADDRESS_POOLS_MAX,
+  type DockerAddressingRejection,
   isValidDefaultBridgeCidr,
   type OrganizationDockerNetworking,
   validateDockerAddressPools,
@@ -63,6 +64,10 @@ export type TlsSettingsPatch = {
 
 export type ComposeGatedFieldsPatch = {
   composeGatedFieldsEnabled: boolean;
+};
+
+export type ComposeDefaultResourceLimitsPatch = {
+  composeDefaultResourceLimits: { cpus?: number; memoryBytes?: number } | null;
 };
 
 export type HostDefaultsPatch = {
@@ -231,7 +236,9 @@ export function parseDockerNetworkingPatch(
 ):
   | { ok: true; value: OrganizationDockerNetworking | null }
   | OrganizationRouteValidationError {
-  if (!isRecord(body)) return { ok: false, error: "Invalid request", status: 400 };
+  if (!isRecord(body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
+  }
   if (!("addressPools" in body) && !("defaultBridgeCidr" in body)) {
     return { ok: false, error: "Invalid request", status: 400 };
   }
@@ -375,6 +382,75 @@ export function parseComposeGatedFieldsPatch(
   return {
     ok: true,
     patch: { composeGatedFieldsEnabled: body.composeGatedFieldsEnabled },
+  };
+}
+
+/**
+ * The organization's opt-in per-service ceiling. `null` clears it (back to
+ * the 0.1.0 default of no platform number); an object must carry at least
+ * one positive figure, since an empty one would read as opting in to
+ * nothing.
+ */
+export function parseComposeDefaultResourceLimitsPatch(
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: ComposeDefaultResourceLimitsPatch }
+  | OrganizationRouteValidationError {
+  const raw = body.composeDefaultResourceLimits;
+  if (raw === null) {
+    return { ok: true, patch: { composeDefaultResourceLimits: null } };
+  }
+  if (typeof raw !== "object" || raw === undefined || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: "Invalid composeDefaultResourceLimits",
+      status: 400,
+    };
+  }
+  const record = raw as Record<string, unknown>;
+  const limits: { cpus?: number; memoryBytes?: number } = {};
+  if (record.cpus !== undefined) {
+    if (
+      typeof record.cpus !== "number" || !Number.isFinite(record.cpus) ||
+      record.cpus <= 0
+    ) {
+      return { ok: false, error: "Invalid cpus", status: 400 };
+    }
+    limits.cpus = record.cpus;
+  }
+  if (record.memoryBytes !== undefined) {
+    if (
+      typeof record.memoryBytes !== "number" ||
+      !Number.isInteger(record.memoryBytes) || record.memoryBytes <= 0
+    ) {
+      return { ok: false, error: "Invalid memoryBytes", status: 400 };
+    }
+    limits.memoryBytes = record.memoryBytes;
+  }
+  if (limits.cpus === undefined && limits.memoryBytes === undefined) {
+    return {
+      ok: false,
+      error: "composeDefaultResourceLimits needs cpus or memoryBytes",
+      status: 400,
+    };
+  }
+  return { ok: true, patch: { composeDefaultResourceLimits: limits } };
+}
+
+export function composeDefaultResourceLimitsGetResponse(options: {
+  composeDefaultResourceLimits?: { cpus?: number; memoryBytes?: number };
+}) {
+  return {
+    composeDefaultResourceLimits: resolveComposeDefaultResourceLimits(options),
+  };
+}
+
+export function composeDefaultResourceLimitsPutResponse(options: {
+  composeDefaultResourceLimits?: { cpus?: number; memoryBytes?: number };
+}) {
+  return {
+    ok: true as const,
+    ...composeDefaultResourceLimitsGetResponse(options),
   };
 }
 

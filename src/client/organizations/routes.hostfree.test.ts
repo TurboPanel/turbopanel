@@ -840,13 +840,21 @@ test("PUT /docker-networking rejects malformed bodies with 400 before touching t
     const [body, error] of [
       [{}, "Invalid request"],
       [{ addressPools: "10.0.0.0/8" }, "Invalid addressPools"],
-      [{ addressPools: [{ base: "nope", size: 24 }] }, "Invalid addressPools base (entry 0)"],
+      [
+        { addressPools: [{ base: "nope", size: 24 }] },
+        "Invalid addressPools base (entry 0)",
+      ],
       [
         { addressPools: [{ base: "10.0.0.0/8", size: 4 }] },
         "Invalid addressPools size (integer between the base prefix and /30) (entry 0)",
       ],
       [
-        { addressPools: [{ base: "10.0.0.0/8", size: 24 }, { base: "10.1.0.0/16", size: 24 }] },
+        {
+          addressPools: [{ base: "10.0.0.0/8", size: 24 }, {
+            base: "10.1.0.0/16",
+            size: 24,
+          }],
+        },
         "addressPools entries overlap each other (entry 1)",
       ],
       [

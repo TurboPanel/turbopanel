@@ -517,7 +517,10 @@ test("compileRuntimeComposeDocument annotates x-turbopanel placement", () => {
     placement: { server_id: serverId },
   });
   const yaml = composeDocumentToRuntimeYaml(compiled);
-  assertEquals(yaml.lastIndexOf("x-turbopanel:") > yaml.indexOf("services:"), true);
+  assertEquals(
+    yaml.lastIndexOf("x-turbopanel:") > yaml.indexOf("services:"),
+    true,
+  );
   assertEquals(yaml.includes(serverId), true);
 });
 
@@ -816,8 +819,9 @@ test("compileRuntimeComposeDocument drops depends_on when every dependency is re
     }),
     { localServiceNames: new Set(["web"]) },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals("depends_on" in (web ?? {}), false);
 });
 
@@ -878,8 +882,9 @@ test("compileRuntimeComposeDocument skips non-string extra_hosts entries when me
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.extra_hosts, [
     12,
     "legacy.local:192.0.2.1",
@@ -917,8 +922,9 @@ test("compileRuntimeComposeDocument omits peer extra_hosts when peer networks ar
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals("extra_hosts" in (web ?? {}), false);
 });
 
@@ -959,8 +965,9 @@ test("compileRuntimeComposeDocument merges map-form labels when scale is greater
     }),
     { localReplicaCounts: new Map([["web", 3]]) },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.scale, 3);
   assertEquals(web?.labels, {
     "com.example": "keep",
@@ -994,8 +1001,9 @@ test("compileRuntimeComposeDocument skips extra_hosts that already use name= for
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.extra_hosts, ["api.env-1=198.51.100.9", "api.env-1"]);
 });
 
@@ -1024,8 +1032,9 @@ test("compileRuntimeComposeDocument replaces a non-list extra_hosts value when m
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.extra_hosts, ["api.env-1:203.0.113.20"]);
 });
 
@@ -1040,8 +1049,9 @@ test("compileRuntimeComposeDocument merges managed ingress extra_hosts without s
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.extra_hosts, ["svc-in:203.0.113.254"]);
 });
 
@@ -1060,8 +1070,9 @@ test("compileRuntimeComposeDocument does not attach default when the service alr
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.networks, ["frontend"]);
   assertEquals(compiled.data.networks, {
     frontend: { external: true, name: "tpn_front" },
@@ -1102,8 +1113,9 @@ test("compileRuntimeComposeDocument object-form networks with non-object values 
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.networks, {
     frontend: { ipv4_address: "203.0.113.10" },
   });
@@ -1119,8 +1131,9 @@ test("compileRuntimeComposeDocument keeps a string depends_on when filtering loc
     }),
     { localServiceNames: new Set(["web"]) },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.depends_on, "db");
 });
 
@@ -1142,8 +1155,9 @@ test("compileRuntimeComposeDocument drops non-string depends_on list entries dur
       spanningNetworks: new Map([["frontend", "tpn_net1"]]),
     },
   );
-  const api = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .api;
+  const api =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .api;
   assertEquals("depends_on" in (api ?? {}), false);
 });
 
@@ -1184,8 +1198,9 @@ test("compileRuntimeComposeDocument ignores an empty task-address slot map", () 
       taskAddressesByService: new Map([["web", new Map()]]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.networks, ["frontend"]);
 });
 
@@ -1210,8 +1225,9 @@ test("compileRuntimeComposeDocument skips replica extra_hosts with a blank addre
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.extra_hosts, ["api.env-1:203.0.113.20"]);
 });
 
@@ -1289,8 +1305,9 @@ test("compileRuntimeComposeDocument skips extra_hosts that already use exact nam
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.extra_hosts, ["api.env-1"]);
 });
 
@@ -1319,8 +1336,9 @@ test("compileRuntimeComposeDocument skips extra_hosts that already use name: for
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals(web?.extra_hosts, ["api.env-1:192.0.2.9"]);
 });
 
@@ -1339,8 +1357,9 @@ test("compileRuntimeComposeDocument omits managed ingress extra_hosts when the s
       ]),
     },
   );
-  const web = (compiled.data.services as Record<string, Record<string, unknown>>)
-    .web;
+  const web =
+    (compiled.data.services as Record<string, Record<string, unknown>>)
+      .web;
   assertEquals("extra_hosts" in (web ?? {}), false);
 });
 

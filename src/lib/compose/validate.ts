@@ -1,57 +1,57 @@
-import { composeDocumentToYaml } from './convert.ts'
+import { composeDocumentToYaml } from "./convert.ts";
 import {
   blockingComposeLintIssues,
-  lintComposeYaml,
   type ComposeLintIssue,
-} from './lint.ts'
+  lintComposeYaml,
+} from "./lint.ts";
 import {
   stripComposePlacement,
   TURBOPANEL_EXTENSION_KEY,
-} from './placement.ts'
-import { collectRootExtensionValidationIssues } from './root-extension.ts'
-import { collectServiceTurbopanelValidationIssues } from './service-kind.ts'
+} from "./placement.ts";
+import { collectRootExtensionValidationIssues } from "./root-extension.ts";
+import { collectServiceTurbopanelValidationIssues } from "./service-kind.ts";
 import {
   COMPOSE_TAG_KEY,
   isComposeTaggedValue,
   resolveComposeTags,
-} from './tags.ts'
+} from "./tags.ts";
 import {
+  type ComposeDocument,
   emptyComposeDocument,
   isComposeDocument,
   normalizeCompose,
-  type ComposeDocument,
-} from './types.ts'
+} from "./types.ts";
 
 export type ComposeValidationIssue = {
-  path: string
-  message: string
-  level?: ComposeLintIssue['level']
-  line?: number
-}
+  path: string;
+  message: string;
+  level?: ComposeLintIssue["level"];
+  line?: number;
+};
 
 export type ComposeValidationResult =
   | { ok: true; document: ComposeDocument }
-  | { ok: false; issues: ComposeValidationIssue[] }
+  | { ok: false; issues: ComposeValidationIssue[] };
 
 export type ComposeValidateOptions = {
   /**
    * Layer role for lint tag semantics. Defaults to `base` (existing call sites
    * unchanged). Overlay prepares later phases can pass `layer: 'overlay'`.
    */
-  layer?: 'base' | 'overlay'
+  layer?: "base" | "overlay";
   /**
    * Source ids visible to the caller's organization, forwarded to the linter so
    * `x-turbopanel.source.sourceId` can be checked. Omitted by callers that
    * cannot reach the database — the check is then skipped, not failed.
    */
-  knownSourceIds?: ReadonlySet<string>
+  knownSourceIds?: ReadonlySet<string>;
   /**
    * The project's bound repository, forwarded to the linter's
    * one-repository-per-project rule. Omitted by callers with no project
    * context — the check is then skipped, not failed; `null` means the project
    * has no binding yet and the rule weakens to "at most one distinct id".
    */
-  projectRepositoryId?: string | null
+  projectRepositoryId?: string | null;
   /**
    * Principal aliases in scope for this document, forwarded to the linter so
    * `x-turbopanel.principal` can be checked against what is actually declared.
@@ -61,21 +61,21 @@ export type ComposeValidateOptions = {
    * project's root as well. Omitted skips the rule rather than failing it —
    * same contract as {@link ComposeValidateOptions.knownSourceIds}.
    */
-  knownPrincipalAliases?: ReadonlySet<string>
+  knownPrincipalAliases?: ReadonlySet<string>;
   /**
    * Organization TLS rows in scope, forwarded to the linter so
    * `x-turbopanel.hosting[i].tls.certificateRef` can be checked. Ids and names
    * share the set — a ref may spell either. Omitted skips the rule rather than
    * failing it, same contract as {@link ComposeValidateOptions.knownSourceIds}.
    */
-  knownTlsIds?: ReadonlySet<string>
+  knownTlsIds?: ReadonlySet<string>;
   /**
    * Organization managed addresses in scope, forwarded to the linter for
    * `x-turbopanel.hosting[i].bind.ipRef`. Ids and addresses share the set;
    * omitted skips the rule.
    */
-  knownIpIds?: ReadonlySet<string>
-}
+  knownIpIds?: ReadonlySet<string>;
+};
 
 /**
  * Structural validation for stored / editor compose documents.
@@ -95,59 +95,63 @@ export function validateComposeDocument(
   value: unknown,
   options?: ComposeValidateOptions,
 ): ComposeValidationResult {
-  const layer = options?.layer ?? 'base'
-  const knownSourceIds = options?.knownSourceIds
-  const projectRepositoryId = options?.projectRepositoryId
-  const knownPrincipalAliases = options?.knownPrincipalAliases
-  const knownTlsIds = options?.knownTlsIds
-  const knownIpIds = options?.knownIpIds
+  const layer = options?.layer ?? "base";
+  const knownSourceIds = options?.knownSourceIds;
+  const projectRepositoryId = options?.projectRepositoryId;
+  const knownPrincipalAliases = options?.knownPrincipalAliases;
+  const knownTlsIds = options?.knownTlsIds;
+  const knownIpIds = options?.knownIpIds;
 
   if (value == null) {
-    return { ok: true, document: emptyComposeDocument() }
+    return { ok: true, document: emptyComposeDocument() };
   }
 
   if (!isComposeDocument(value)) {
     return {
       ok: false,
       issues: [{
-        path: 'compose',
-        message: 'must be a ComposeDocument (version 1 with data and presentation)',
+        path: "compose",
+        message:
+          "must be a ComposeDocument (version 1 with data and presentation)",
       }],
-    }
+    };
   }
 
-  const document = normalizeCompose(value)
-  const issues: ComposeValidationIssue[] = []
+  const document = normalizeCompose(value);
+  const issues: ComposeValidationIssue[] = [];
 
-  collectMalformedTagIssues(document.data, '', issues)
+  collectMalformedTagIssues(document.data, "", issues);
 
-  if ('services' in document.data) {
-    const services = document.data.services
+  if ("services" in document.data) {
+    const services = document.data.services;
     if (isComposeTaggedValue(services)) {
       // Tagged services mapping is intentional; do not require plain mapping.
     } else if (
-      typeof services !== 'object' ||
+      typeof services !== "object" ||
       services === null ||
       Array.isArray(services)
     ) {
-      issues.push({ path: 'services', message: 'services must be a mapping' })
+      issues.push({ path: "services", message: "services must be a mapping" });
     }
   }
 
   // Placement + extension checks on the unwrapped tree so a tagged extension
   // is still validated once tags are resolved.
-  const unwrappedData = resolveComposeTags(document.data) as Record<string, unknown>
-  validateTurbopanelExtension(unwrappedData, issues)
+  const unwrappedData = resolveComposeTags(document.data) as Record<
+    string,
+    unknown
+  >;
+  validateTurbopanelExtension(unwrappedData, issues);
 
-  const services = unwrappedData.services
+  const services = unwrappedData.services;
   if (isPlainMapping(services)) {
     for (const issue of collectServiceTurbopanelValidationIssues(services)) {
-      issues.push(issue)
+      issues.push(issue);
     }
   }
 
   if (issues.length > 0) {
-    return { ok: false, issues }
+    return { ok: false, issues };
   }
 
   const lintIssues = blockingComposeLintIssues(
@@ -162,24 +166,26 @@ export function validateComposeDocument(
       // "unbound project".
       ...(projectRepositoryId === undefined ? {} : { projectRepositoryId }),
     }),
-  )
+  );
   if (lintIssues.length > 0) {
     return {
       ok: false,
       issues: lintIssues.map((issue) => ({
         path: issue.path,
-        message: issue.line ? `Line ${issue.line}: ${issue.message}` : issue.message,
+        message: issue.line
+          ? `Line ${issue.line}: ${issue.message}`
+          : issue.message,
         level: issue.level,
         line: issue.line,
       })),
-    }
+    };
   }
 
-  return { ok: true, document }
+  return { ok: true, document };
 }
 
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -197,28 +203,30 @@ function collectMalformedTagIssues(
         item,
         path ? `${path}[${index}]` : `[${index}]`,
         issues,
-      )
-    })
-    return
+      );
+    });
+    return;
   }
-  if (!isPlainMapping(value)) return
+  if (!isPlainMapping(value)) return;
 
   if (COMPOSE_TAG_KEY in value) {
-    const tagName = value[COMPOSE_TAG_KEY]
-    if (tagName !== 'reset' && tagName !== 'override') {
+    const tagName = value[COMPOSE_TAG_KEY];
+    if (tagName !== "reset" && tagName !== "override") {
       issues.push({
-        path: path || '$',
-        message: `unknown compose tag "${String(tagName)}" (expected reset or override)`,
-      })
-      return
+        path: path || "$",
+        message: `unknown compose tag "${
+          String(tagName)
+        }" (expected reset or override)`,
+      });
+      return;
     }
     // Well-formed sentinel: walk the inner value only.
     collectMalformedTagIssues(
       value.value,
       path,
       issues,
-    )
-    return
+    );
+    return;
   }
 
   for (const [key, child] of Object.entries(value)) {
@@ -226,7 +234,7 @@ function collectMalformedTagIssues(
       child,
       path ? `${path}.${key}` : key,
       issues,
-    )
+    );
   }
 }
 
@@ -235,13 +243,16 @@ function validateTurbopanelExtension(
   issues: ComposeValidationIssue[],
 ): void {
   if (!(TURBOPANEL_EXTENSION_KEY in data)) {
-    return
+    return;
   }
 
-  const extension = data[TURBOPANEL_EXTENSION_KEY]
+  const extension = data[TURBOPANEL_EXTENSION_KEY];
   if (!isPlainMapping(extension)) {
-    issues.push({ path: 'x-turbopanel', message: 'x-turbopanel must be a mapping' })
-    return
+    issues.push({
+      path: "x-turbopanel",
+      message: "x-turbopanel must be a mapping",
+    });
+    return;
   }
 
   // The authored root accepts `principals` and nothing else. Placement is
@@ -253,17 +264,24 @@ function validateTurbopanelExtension(
   // recognized is reported instead of ignored, which is the same guarantee a
   // version stamp is usually reached for and one an author cannot forget to
   // set. See `./root-extension.ts`.
-  for (const issue of collectRootExtensionValidationIssues('x-turbopanel', extension)) {
-    issues.push(issue)
+  for (
+    const issue of collectRootExtensionValidationIssues(
+      "x-turbopanel",
+      extension,
+    )
+  ) {
+    issues.push(issue);
   }
 }
 
 export function assertComposeDocument(value: unknown): ComposeDocument {
-  const result = validateComposeDocument(value)
+  const result = validateComposeDocument(value);
   if (!result.ok) {
-    throw new TypeError(result.issues.map((i) => `${i.path}: ${i.message}`).join('; '))
+    throw new TypeError(
+      result.issues.map((i) => `${i.path}: ${i.message}`).join("; "),
+    );
   }
-  return result.document
+  return result.document;
 }
 
 /**
@@ -277,13 +295,13 @@ export function applyValidatedComposeOption(
   options: Record<string, unknown> | null,
   validateOptions?: ComposeValidateOptions,
 ): { ok: true } | { ok: false; issues: ComposeValidationIssue[] } {
-  if (options === null || !('compose' in options)) {
-    return { ok: true }
+  if (options === null || !("compose" in options)) {
+    return { ok: true };
   }
-  const result = validateComposeDocument(options.compose, validateOptions)
-  if (!result.ok) return result
-  options.compose = result.document
-  return { ok: true }
+  const result = validateComposeDocument(options.compose, validateOptions);
+  if (!result.ok) return result;
+  options.compose = result.document;
+  return { ok: true };
 }
 
 /**
@@ -294,20 +312,20 @@ export function applyValidatedComposeOption(
 export function stripComposePlacementOption(
   options: Record<string, unknown> | null,
 ): void {
-  if (options === null || !('compose' in options)) {
-    return
+  if (options === null || !("compose" in options)) {
+    return;
   }
   if (!isComposeDocument(options.compose)) {
-    return
+    return;
   }
-  options.compose = stripComposePlacement(options.compose)
+  options.compose = stripComposePlacement(options.compose);
 }
 
 /** Alias kept for existing project-route call sites. */
 export function stripProjectComposePlacementOption(
   options: Record<string, unknown> | null,
 ): void {
-  stripComposePlacementOption(options)
+  stripComposePlacementOption(options);
 }
 
-export { isComposeDocument }
+export { isComposeDocument };

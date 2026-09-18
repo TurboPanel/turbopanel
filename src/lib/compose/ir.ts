@@ -56,24 +56,24 @@
  * cannot change a deploy's behavior.
  */
 
-import type { ComposeDocument } from './types.ts'
-import type { ComposeHostingExtensionEntry } from './hosting-extension.ts'
+import type { ComposeDocument } from "./types.ts";
+import type { ComposeHostingExtensionEntry } from "./hosting-extension.ts";
 import {
   type ComposeServiceKind,
   type ComposeServiceTurbopanelExtension,
   readServiceTurbopanelExtension,
-} from './service-kind.ts'
+} from "./service-kind.ts";
 import {
-  type PrincipalAccess,
   parseRootExtension,
+  type PrincipalAccess,
   principalAccessOf,
   type PrincipalSpec,
   TURBOPANEL_ROOT_EXTENSION_KEY,
-} from './root-extension.ts'
+} from "./root-extension.ts";
 import {
   interpretServiceSchedule,
   type ServiceScheduleSpec,
-} from '../schedule/interpret.ts'
+} from "../schedule/interpret.ts";
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployDockerNetwork,
@@ -87,19 +87,19 @@ import type {
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
   EnvironmentDeployVariableMaterial,
-} from '../commands/schemas.ts'
-import type { ManagedIngressPorts } from '../managed/ingress-ports.ts'
+} from "../commands/schemas.ts";
+import type { ManagedIngressPorts } from "../managed/ingress-ports.ts";
 
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function mappingAt(
   data: Record<string, unknown>,
   key: string,
 ): Record<string, unknown> {
-  const value = data[key]
-  return isPlainMapping(value) ? value : {}
+  const value = data[key];
+  return isPlainMapping(value) ? value : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -112,15 +112,15 @@ function mappingAt(
  * Named rather than inlined so a reader can tell "the Compose half" from the
  * `x-turbopanel` half at a glance; it is still the untyped mapping Compose is.
  */
-export type ComposeServiceNode = Record<string, unknown>
+export type ComposeServiceNode = Record<string, unknown>;
 
 /** The project a document belongs to. Absent when read outside one (lint, preview). */
 export type ApplicationProject = {
   /** `project.id`. */
-  id?: string
+  id?: string;
   /** `project.repository_id` — the one Git repository this project is, or null. */
-  repositoryId?: string | null
-}
+  repositoryId?: string | null;
+};
 
 /**
  * One entry of the root `x-turbopanel.principals` map.
@@ -131,60 +131,60 @@ export type ApplicationProject = {
  */
 export type ApplicationPrincipal = {
   /** Document-local alias — the key services point at with `x-turbopanel.principal`. */
-  alias: string
+  alias: string;
   /** Requested access, with the omitted case already resolved. */
-  access: PrincipalAccess
+  access: PrincipalAccess;
   /** Operator-facing note. TurboPanel-only metadata; Docker never sees it. */
-  description?: string
+  description?: string;
   /** The parsed entry as authored, for callers that need the raw spec. */
-  spec: PrincipalSpec
-}
+  spec: PrincipalSpec;
+};
 
 /** One service of the merged document, read into its named parts. */
 export type ApplicationService = {
   /** Compose service key, exactly as authored. */
-  name: string
+  name: string;
   /** `x-turbopanel.serviceKind`, with the omitted case resolved to `container`. */
-  kind: ComposeServiceKind
+  kind: ComposeServiceKind;
   /** The Compose body — what the workload wants. */
-  compose: ComposeServiceNode
+  compose: ComposeServiceNode;
   /**
    * The parsed `x-turbopanel` block. `{}` when the service declares none;
    * `null` when it declares something that is not a mapping (the validators,
    * not this read view, are what turn that into an operator-facing message).
    */
-  turbopanel: ComposeServiceTurbopanelExtension | null
+  turbopanel: ComposeServiceTurbopanelExtension | null;
   /**
    * The interpreted `deploy:` block — mode, replicas, constraints, spread keys,
    * colocation, published host ports, per-node cap. From
    * `../schedule/interpret.ts`, the one interpreter the planner also uses.
    */
-  deployment: ServiceScheduleSpec
+  deployment: ServiceScheduleSpec;
   /** Parsed `x-turbopanel.hosting[]`; empty when the service declares none. */
-  hosting: ComposeHostingExtensionEntry[]
+  hosting: ComposeHostingExtensionEntry[];
   /** The principal alias this service runs as, when it names one. */
-  principalAlias?: string
-}
+  principalAlias?: string;
+};
 
 /**
  * The merged document, normalized. Post-merge and post-validate; pre-schedule,
  * pre-allocate, and pre-anything that needs a database.
  */
 export type Application = {
-  project: ApplicationProject
+  project: ApplicationProject;
   /** Root-declared principal aliases, in stable alias order. */
-  principals: ApplicationPrincipal[]
+  principals: ApplicationPrincipal[];
   /** Services in authored key order — the same order `services:` lists them. */
-  services: ApplicationService[]
+  services: ApplicationService[];
   /** Top-level `networks:` as authored. */
-  networks: Record<string, unknown>
+  networks: Record<string, unknown>;
   /** Top-level `volumes:` as authored. */
-  volumes: Record<string, unknown>
+  volumes: Record<string, unknown>;
   /** Top-level `secrets:` as authored. */
-  secrets: Record<string, unknown>
+  secrets: Record<string, unknown>;
   /** Top-level `configs:` as authored. */
-  configs: Record<string, unknown>
-}
+  configs: Record<string, unknown>;
+};
 
 /**
  * Read a merged document into an {@link Application}.
@@ -203,15 +203,15 @@ export type Application = {
 export function buildApplicationModel(
   merged: ComposeDocument,
   options?: {
-    project?: ApplicationProject
-    instancesByComposeName?: ReadonlyMap<string, number>
+    project?: ApplicationProject;
+    instancesByComposeName?: ReadonlyMap<string, number>;
   },
 ): Application {
-  const data = isPlainMapping(merged.data) ? merged.data : {}
-  const services = mappingAt(data, 'services')
-  const instances = options?.instancesByComposeName
+  const data = isPlainMapping(merged.data) ? merged.data : {};
+  const services = mappingAt(data, "services");
+  const instances = options?.instancesByComposeName;
 
-  const root = parseRootExtension(data[TURBOPANEL_ROOT_EXTENSION_KEY])
+  const root = parseRootExtension(data[TURBOPANEL_ROOT_EXTENSION_KEY]);
   const principals: ApplicationPrincipal[] = Object.entries(
     root?.principals ?? {},
   )
@@ -219,19 +219,21 @@ export function buildApplicationModel(
     .map(([alias, spec]) => ({
       alias,
       access: principalAccessOf(spec),
-      ...(spec.description === undefined ? {} : { description: spec.description }),
+      ...(spec.description === undefined
+        ? {}
+        : { description: spec.description }),
       spec,
-    }))
+    }));
 
-  const modeled: ApplicationService[] = []
+  const modeled: ApplicationService[] = [];
   for (const [name, raw] of Object.entries(services)) {
-    const compose: ComposeServiceNode = isPlainMapping(raw) ? raw : {}
+    const compose: ComposeServiceNode = isPlainMapping(raw) ? raw : {};
     const turbopanel = isPlainMapping(raw)
       ? readServiceTurbopanelExtension(raw)
-      : {}
+      : {};
     modeled.push({
       name,
-      kind: turbopanel?.serviceKind ?? 'container',
+      kind: turbopanel?.serviceKind ?? "container",
       compose,
       turbopanel,
       deployment: interpretServiceSchedule(
@@ -243,18 +245,18 @@ export function buildApplicationModel(
       ...(turbopanel?.principal === undefined
         ? {}
         : { principalAlias: turbopanel.principal }),
-    })
+    });
   }
 
   return {
     project: options?.project ?? {},
     principals,
     services: modeled,
-    networks: mappingAt(data, 'networks'),
-    volumes: mappingAt(data, 'volumes'),
-    secrets: mappingAt(data, 'secrets'),
-    configs: mappingAt(data, 'configs'),
-  }
+    networks: mappingAt(data, "networks"),
+    volumes: mappingAt(data, "volumes"),
+    secrets: mappingAt(data, "secrets"),
+    configs: mappingAt(data, "configs"),
+  };
 }
 
 /** The service by compose key, or `undefined` when the document has none. */
@@ -262,7 +264,9 @@ export function applicationService(
   application: Application,
   composeServiceName: string,
 ): ApplicationService | undefined {
-  return application.services.find((entry) => entry.name === composeServiceName)
+  return application.services.find((entry) =>
+    entry.name === composeServiceName
+  );
 }
 
 /**
@@ -272,26 +276,26 @@ export function applicationService(
  */
 export function hostNativeServiceNames(application: Application): string[] {
   return application.services
-    .filter((entry) => entry.kind === 'site' || entry.kind === 'node')
-    .map((entry) => entry.name)
+    .filter((entry) => entry.kind === "site" || entry.kind === "node")
+    .map((entry) => entry.name);
 }
 
 /** Services that do become containers. The complement of {@link hostNativeServiceNames}. */
 export function containerServiceNames(application: Application): string[] {
   return application.services
-    .filter((entry) => entry.kind !== 'site' && entry.kind !== 'node')
-    .map((entry) => entry.name)
+    .filter((entry) => entry.kind !== "site" && entry.kind !== "node")
+    .map((entry) => entry.name);
 }
 
 /** Compose service name → the principal alias it names, for services that name one. */
 export function principalAliasByServiceName(
   application: Application,
 ): Map<string, string> {
-  const out = new Map<string, string>()
+  const out = new Map<string, string>();
   for (const entry of application.services) {
-    if (entry.principalAlias) out.set(entry.name, entry.principalAlias)
+    if (entry.principalAlias) out.set(entry.name, entry.principalAlias);
   }
-  return out
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,70 +304,70 @@ export function principalAliasByServiceName(
 
 /** A `slot` row as this projection reads it. `DesiredSlotInput` satisfies it. */
 export type ResolvedSlotInput = {
-  serviceId: string
-  serverId: string
-  slot: number
+  serviceId: string;
+  serverId: string;
+  slot: number;
   /** Spanning-network address allocated for the slot; `null` clears one. */
-  address?: string | null
-}
+  address?: string | null;
+};
 
 /** A container allocation as this projection reads it. `ContainerAllocation` satisfies it. */
 export type ResolvedContainerInput = {
-  serviceId: string
-  composeServiceName: string
-  cloneComposeServiceName: string
-  containerRowId: string
-  containerName: string
-  ordinal: number
-  serverId: string
-}
+  serviceId: string;
+  composeServiceName: string;
+  cloneComposeServiceName: string;
+  containerRowId: string;
+  containerName: string;
+  ordinal: number;
+  serverId: string;
+};
 
 /** The clamped, effective resource ceiling for one service. */
 export type ResolvedResources = {
-  cpus?: number
-  memoryBytes?: number
-  memoryReservationBytes?: number
-}
+  cpus?: number;
+  memoryBytes?: number;
+  memoryReservationBytes?: number;
+};
 
 /** One replica of one service, placed. */
 export type ResolvedSlot = {
   /** `slot.slot` — the replica ordinal within the service. */
-  ordinal: number
-  serverId: string
+  ordinal: number;
+  serverId: string;
   /** The spanning-network address allocated for this slot, when it has one. */
-  address?: string
+  address?: string;
   /** True when this replica lands on the server this slice compiles for. */
-  local: boolean
-}
+  local: boolean;
+};
 
 /** One service after the control plane answered what the document could not. */
 export type ResolvedService = {
   /** `service.id` — the row the compose key reconciled into. */
-  serviceId: string
+  serviceId: string;
   /** The authored compose key. */
-  composeServiceName: string
-  kind: ComposeServiceKind
+  composeServiceName: string;
+  kind: ComposeServiceKind;
   /** `principal.id` the service's alias materialized into, when it names one. */
-  principalId?: string
+  principalId?: string;
   /** Clone compose keys after multi-instance expansion (`web`, `web-2`, …). */
-  clones: string[]
+  clones: string[];
   /** Placed replicas, across every participating server. */
-  slots: ResolvedSlot[]
+  slots: ResolvedSlot[];
   /** Pre-allocated container rows for this service on this server. */
-  containers: ResolvedContainerInput[]
+  containers: ResolvedContainerInput[];
   /** Effective ceiling after org / server clamping, when one applies. */
-  resources?: ResolvedResources
+  resources?: ResolvedResources;
   /** Declared ingress for this service, carried through from the {@link Application}. */
-  hostings: ComposeHostingExtensionEntry[]
-}
+  hostings: ComposeHostingExtensionEntry[];
+};
 
 /** One materialized principal alias. */
 export type ResolvedPrincipal = {
   /** The document-local alias. */
-  logicalAlias: string
+  logicalAlias: string;
   /** The `principal.id` it materialized into. */
-  principalId: string
-}
+  principalId: string;
+};
 
 /**
  * The application after reconcile → schedule → allocate, for one server's
@@ -371,7 +375,7 @@ export type ResolvedPrincipal = {
  */
 export type ResolvedApplication = {
   /** The server this slice compiles for. */
-  serverId: string
+  serverId: string;
   /**
    * Whether a scheduler plan decided placement.
    *
@@ -380,10 +384,10 @@ export type ResolvedApplication = {
    * the unscheduled path's *everything*. Conflating the two is how an empty
    * slice would silently deploy the whole environment onto one host.
    */
-  scheduled: boolean
-  principals: ResolvedPrincipal[]
-  services: ResolvedService[]
-}
+  scheduled: boolean;
+  principals: ResolvedPrincipal[];
+  services: ResolvedService[];
+};
 
 /**
  * Project the already-computed reconcile / schedule / allocate outputs into a
@@ -403,78 +407,83 @@ export type ResolvedApplication = {
  * path, where placement is "all of it, here".
  */
 export function buildResolvedApplication(input: {
-  serverId: string
-  application: Application
+  serverId: string;
+  application: Application;
   /** `service` rows for this environment. */
-  serviceRows: readonly { id: string; composeServiceName: string }[]
-  slots?: readonly ResolvedSlotInput[]
-  containers?: readonly ResolvedContainerInput[]
+  serviceRows: readonly { id: string; composeServiceName: string }[];
+  slots?: readonly ResolvedSlotInput[];
+  containers?: readonly ResolvedContainerInput[];
   /** Compose service key → clone keys after multi-instance expansion. */
-  expansion?: ReadonlyMap<string, readonly string[]>
+  expansion?: ReadonlyMap<string, readonly string[]>;
   principals?: {
-    principalIdByAlias: ReadonlyMap<string, string>
-    aliasByComposeServiceName: ReadonlyMap<string, string>
-  }
+    principalIdByAlias: ReadonlyMap<string, string>;
+    aliasByComposeServiceName: ReadonlyMap<string, string>;
+  };
   /** Effective, clamped ceiling per compose service name. */
-  resourcesByComposeServiceName?: ReadonlyMap<string, ResolvedResources>
+  resourcesByComposeServiceName?: ReadonlyMap<string, ResolvedResources>;
 }): ResolvedApplication {
-  const { serverId, application, serviceRows } = input
+  const { serverId, application, serviceRows } = input;
 
-  const slotsByServiceId = new Map<string, ResolvedSlot[]>()
+  const slotsByServiceId = new Map<string, ResolvedSlot[]>();
   for (const row of input.slots ?? []) {
-    const list = slotsByServiceId.get(row.serviceId) ?? []
+    const list = slotsByServiceId.get(row.serviceId) ?? [];
     list.push({
       ordinal: row.slot,
       serverId: row.serverId,
-      ...(typeof row.address === 'string' ? { address: row.address } : {}),
+      ...(typeof row.address === "string" ? { address: row.address } : {}),
       local: row.serverId === serverId,
-    })
-    slotsByServiceId.set(row.serviceId, list)
+    });
+    slotsByServiceId.set(row.serviceId, list);
   }
 
-  const containersByServiceId = new Map<string, ResolvedContainerInput[]>()
+  const containersByServiceId = new Map<string, ResolvedContainerInput[]>();
   for (const row of input.containers ?? []) {
-    const list = containersByServiceId.get(row.serviceId) ?? []
-    list.push(row)
-    containersByServiceId.set(row.serviceId, list)
+    const list = containersByServiceId.get(row.serviceId) ?? [];
+    list.push(row);
+    containersByServiceId.set(row.serviceId, list);
   }
 
   const kindByName = new Map(
     application.services.map((entry) => [entry.name, entry.kind] as const),
-  )
+  );
   const hostingByName = new Map(
     application.services.map((entry) => [entry.name, entry.hosting] as const),
-  )
+  );
   const aliasByName = input.principals?.aliasByComposeServiceName ??
-    principalAliasByServiceName(application)
+    principalAliasByServiceName(application);
 
   const services: ResolvedService[] = serviceRows.map((row) => {
-    const name = row.composeServiceName
-    const alias = aliasByName.get(name)
+    const name = row.composeServiceName;
+    const alias = aliasByName.get(name);
     const principalId = alias === undefined
       ? undefined
-      : input.principals?.principalIdByAlias.get(alias)
-    const resources = input.resourcesByComposeServiceName?.get(name)
+      : input.principals?.principalIdByAlias.get(alias);
+    const resources = input.resourcesByComposeServiceName?.get(name);
     return {
       serviceId: row.id,
       composeServiceName: name,
-      kind: kindByName.get(name) ?? 'container',
+      kind: kindByName.get(name) ?? "container",
       ...(principalId === undefined ? {} : { principalId }),
       clones: [...(input.expansion?.get(name) ?? [name])],
       slots: slotsByServiceId.get(row.id) ?? [],
       containers: containersByServiceId.get(row.id) ?? [],
       ...(resources === undefined ? {} : { resources }),
       hostings: hostingByName.get(name) ?? [],
-    }
-  })
+    };
+  });
 
   const principals: ResolvedPrincipal[] = [
     ...(input.principals?.principalIdByAlias ?? new Map<string, string>()),
   ]
     .toSorted(([a], [b]) => a.localeCompare(b))
-    .map(([logicalAlias, principalId]) => ({ logicalAlias, principalId }))
+    .map(([logicalAlias, principalId]) => ({ logicalAlias, principalId }));
 
-  return { serverId, scheduled: input.slots !== undefined, principals, services }
+  return {
+    serverId,
+    scheduled: input.slots !== undefined,
+    principals,
+    services,
+  };
 }
 
 /**
@@ -489,23 +498,23 @@ export function serviceIdsOnServer(
   resolved: ResolvedApplication,
 ): string[] {
   if (!resolved.scheduled) {
-    return resolved.services.map((entry) => entry.serviceId)
+    return resolved.services.map((entry) => entry.serviceId);
   }
   return resolved.services
     .filter((entry) => entry.slots.some((slot) => slot.local))
-    .map((entry) => entry.serviceId)
+    .map((entry) => entry.serviceId);
 }
 
 /** Compose keys (clones included) with a replica on this slice's server. */
 export function localComposeServiceNames(
   resolved: ResolvedApplication,
 ): string[] {
-  const names: string[] = []
+  const names: string[] = [];
   for (const entry of resolved.services) {
-    if (resolved.scheduled && !entry.slots.some((slot) => slot.local)) continue
-    names.push(...entry.clones)
+    if (resolved.scheduled && !entry.slots.some((slot) => slot.local)) continue;
+    names.push(...entry.clones);
   }
-  return names
+  return names;
 }
 
 // ---------------------------------------------------------------------------
@@ -523,8 +532,8 @@ export function localComposeServiceNames(
  */
 export type PreparedNativeAppService = Omit<
   EnvironmentDeployNativeAppService,
-  'serviceId'
->
+  "serviceId"
+>;
 
 /**
  * What one server is told to run — the fourth and last model.
@@ -550,37 +559,37 @@ export type ServerDeployment = {
    * Optional because the empty-compose short-circuit builds one before any
    * server is in hand; every real prepare sets it.
    */
-  serverId?: string
+  serverId?: string;
   /** Required runtime snapshot: exactly one `role: 'runtime'` `compose.yaml`. */
-  composeFiles: EnvironmentDeployComposeFile[]
+  composeFiles: EnvironmentDeployComposeFile[];
   /** SHA-256 hex of the compiled runtime body, before daemon overlay. */
-  desiredHash: string
+  desiredHash: string;
   /** Local replica counts keyed by logical compose service name. */
-  replicaCounts: Record<string, number>
-  variableMaterial: EnvironmentDeployVariableMaterial[]
-  storageMaterial: EnvironmentDeployStorageMaterial[]
-  principalMaterial: EnvironmentDeployPrincipalMaterial[]
-  sites: EnvironmentDeploySite[]
+  replicaCounts: Record<string, number>;
+  variableMaterial: EnvironmentDeployVariableMaterial[];
+  storageMaterial: EnvironmentDeployStorageMaterial[];
+  principalMaterial: EnvironmentDeployPrincipalMaterial[];
+  sites: EnvironmentDeploySite[];
   /** Host-supervised native apps (`serviceKind: node`) scheduled on this server. */
-  nativeAppServices: PreparedNativeAppService[]
+  nativeAppServices: PreparedNativeAppService[];
   /** Git-backed releases resolved from `x-turbopanel.source`. */
-  sourceMaterial: EnvironmentDeploySource[]
+  sourceMaterial: EnvironmentDeploySource[];
   /** Operator-registered external Docker networks this document names. */
-  dockerExternalNetworks: string[]
+  dockerExternalNetworks: string[];
   /**
    * Addressing for the `dockerExternalNetworks` entries whose registration
    * carries any (`network.cidr` / `options.subnet|ipRange|gateway|mtu`).
    * Additive on the wire — a name absent here is created bare.
    */
-  dockerNetworkAddressing: EnvironmentDeployDockerNetwork[]
+  dockerNetworkAddressing: EnvironmentDeployDockerNetwork[];
   /** Platform-owned `tpn_*` routed bridges. Disjoint from `dockerExternalNetworks`. */
-  fabricNetworks: EnvironmentDeployFabricNetwork[]
+  fabricNetworks: EnvironmentDeployFabricNetwork[];
   /** Compose services that must join the org's managed network. */
-  managedNetworkServices: string[]
+  managedNetworkServices: string[];
   /** Docker network name of that managed network; absent when nothing joins it. */
-  managedNetwork?: string
+  managedNetwork?: string;
   /** Per-service tcp/udp Traefik ingress allocations (`<service.id>-in`). */
-  ingressServices: EnvironmentDeployIngressService[]
+  ingressServices: EnvironmentDeployIngressService[];
   /**
    * Resolved edge routes for the services on this server — hostnames, path
    * prefix, target port, bind address, resolved certificate, web/PHP metadata
@@ -589,7 +598,7 @@ export type ServerDeployment = {
    * Fanned out across clone compose keys, so a multi-instance service routes to
    * every replica rather than only the key the operator authored.
    */
-  hostings: EnvironmentDeployHosting[]
+  hostings: EnvironmentDeployHosting[];
   /**
    * Certificate + **daemon-sealed** private key for every `tlsId` the hostings
    * above name, resealed to this server's active daemon key.
@@ -598,23 +607,23 @@ export type ServerDeployment = {
    * on another, which is why this belongs to a *server* deployment rather than
    * to the environment.
    */
-  tlsMaterial: EnvironmentDeployTlsMaterial[]
+  tlsMaterial: EnvironmentDeployTlsMaterial[];
   /**
    * The organization's effective managed-database listener ports, resolved from
    * the **server's owner** rather than the requesting org — the ProxySQL
    * frontend a joining service dials belongs to whoever owns the host.
    */
-  listenerPorts: ManagedIngressPorts
+  listenerPorts: ManagedIngressPorts;
   /**
    * Shared HTTP proxy identity for this server's hostings. Absent when nothing
    * on this slice needs HTTP routing (a tcp/udp-only deploy has none).
    */
-  hostingIngress?: EnvironmentDeployIngressService
+  hostingIngress?: EnvironmentDeployIngressService;
   /**
    * Docker network of the shared hosting-ingress component — the same
    * `hosting-ingress` `serviceId`, never a literal. Set whenever this slice
    * carries hostings at all, including the tcp/udp-only case whose per-service
    * Traefik still joins it.
    */
-  hostingIngressNetwork?: string
-}
+  hostingIngressNetwork?: string;
+};
