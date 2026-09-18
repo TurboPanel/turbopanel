@@ -195,6 +195,13 @@ export async function startCommandConsumer(
     while (!closed) {
       try {
         const rebuilt = await openSession()
+        if (closed) {
+          // close() landed while this was being set up; installing it would
+          // leave a consumer running past shutdown.
+          await rebuilt.channel.close().catch(() => undefined)
+          await rebuilt.connection.close().catch(() => undefined)
+          break
+        }
         if (rebuilt.lost) {
           // The broker went away again while this session was being set up.
           // Its own listeners already fired and found `session` unset, so
@@ -204,6 +211,8 @@ export async function startCommandConsumer(
             'command-consumer',
             'AMQP connection was lost again during reconnect — retrying',
           )
+          await rebuilt.channel.close().catch(() => undefined)
+          await rebuilt.connection.close().catch(() => undefined)
           await sleep(delay)
           delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
           continue

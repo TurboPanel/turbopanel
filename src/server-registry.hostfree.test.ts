@@ -6,6 +6,7 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from './db.ts'
 import {
+  findServerIdForIdentity,
   getServerLicenseBinding,
   mergeServerMetadataIdentity,
   touchServerMetadata,
@@ -385,4 +386,66 @@ test('touchServerMetadata skips the repin hook on a CPU / docker-only delta', as
   })
   assertEquals(probe.updates(), 1)
   assertEquals(probe.repinLoads(), 0)
+})
+
+/**
+ * A licensed identity resolves only through its licence binding.
+ *
+ * The first pass fell through to the hostname/machine-key lookup when a
+ * licence was unbound, which is not what `resolveServerId` does — it inserts
+ * a new row. Hostname uniqueness is per-organization, so the fall-through
+ * matched a *different* org's server, and a brand-new host sharing a hostname
+ * with some other org's revoked one would have been told
+ * `Server key revoked` — a string on turbopaneld's permanent
+ * enrollment-failure list, so the daemon would have stopped trying over a key
+ * it never had.
+ */
+function lookupDb(calls: string[], rows: Record<string, unknown[]>): Db {
+  return {
+    select: (columns: Record<string, unknown>) => {
+      const shape = Object.keys(columns).sort().join(',')
+      calls.push(shape)
+      const result = queryResult(rows[shape] ?? [])
+      return {
+        from: () => Object.assign(result, { where: () => result }),
+      }
+    },
+  } as unknown as Db
+}
+
+test('a licensed identity resolves only through its license binding', async () => {
+  // Bound: that server, and only that server.
+  const boundCalls: string[] = []
+  assertEquals(
+    await findServerIdForIdentity(
+      lookupDb(boundCalls, { serverId: [{ serverId: SERVER_ID }] }),
+      { licenseId: 'lic-1', licenseToken: 'tok', hostname: 'web-01' },
+    ),
+    SERVER_ID,
+  )
+  assertEquals(boundCalls, ['serverId'])
+
+  // Unbound: undefined, and the hostname lookup is never reached — that row
+  // does not exist yet, and matching one by hostname would cross organizations.
+  const unboundCalls: string[] = []
+  assertEquals(
+    await findServerIdForIdentity(
+      lookupDb(unboundCalls, { serverId: [{ serverId: null }] }),
+      { licenseId: 'lic-1', licenseToken: 'tok', hostname: 'web-01' },
+    ),
+    undefined,
+  )
+  assertEquals(unboundCalls, ['serverId'])
+})
+
+test('an unlicensed identity falls back to the hostname and machine-key lookup', async () => {
+  const calls: string[] = []
+  assertEquals(
+    await findServerIdForIdentity(
+      lookupDb(calls, { id: [{ id: SERVER_ID }] }),
+      { machineKey: HEX64, hostname: 'web-01' },
+    ),
+    SERVER_ID,
+  )
+  assertEquals(calls, ['id'])
 })

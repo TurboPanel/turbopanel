@@ -16,7 +16,9 @@ import type {
 } from "./contracts.ts";
 import {
   canDirectHealFromAeEvidence,
+  ALERT_DELIVERY_BUDGET_MS,
   CONNECTED_SWEEP_BUDGET,
+  DEMOTION_RESERVE_MS,
   isMassDisconnect,
   isStale,
   MASS_DISCONNECT_ABSOLUTE,
@@ -1844,4 +1846,58 @@ it("an instance with no webhook configured still sweeps", async () => {
   });
 
   assertEquals(disconnected, [ID_A]);
+});
+
+it("a slow webhook cannot stop hosts from being demoted", async () => {
+  // The fan-out's shouldStop gates claiming the next index, so an alert
+  // awaited inside a worker spends tick budget. A hanging webhook times N
+  // stale hosts would blow the deadline with hosts still marked online —
+  // the alerting path causing the outage it exists to report. Demotion runs
+  // first and alerting gets whatever budget is left.
+  resetOfflineSweepNullGraceForTests();
+  const ids = [
+    ID_A,
+    ID_B,
+    "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa",
+    "dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb",
+  ];
+  const cells = new Map(
+    ids.map((id) => [id, createFakeCell({ connected: false, lastPingAtMs: null })]),
+  );
+  const disconnected: string[] = [];
+  let alertsStarted = 0;
+
+  const startedAt = Date.now();
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(cells),
+    resolveActiveServerIds: () => Promise.resolve(new Map()),
+    listConnected: () =>
+      Promise.resolve(
+        ids.map((id) => ({ id, connectedAt: new Date().toISOString() })),
+      ),
+    listRecentlyOffline: () => Promise.resolve([]),
+    onDisconnected: (_db, id) => {
+      disconnected.push(id);
+      return Promise.resolve();
+    },
+    onConnected: () => Promise.resolve(),
+    // Never settles: the worst a webhook can do.
+    alertSender: () => {
+      alertsStarted++;
+      return new Promise<void>(() => {});
+    },
+    // Probing reserves DEMOTION_RESERVE_MS of this; alerting then gets the
+    // smaller of what is left and ALERT_DELIVERY_BUDGET_MS.
+    deadlineMs: startedAt + DEMOTION_RESERVE_MS + 400,
+  });
+
+  // Every host was demoted, and the tick did not hang on the first alert:
+  // it returned at the deadline rather than waiting on a promise that never
+  // settles.
+  assertEquals(disconnected.sort(), [...ids].sort());
+  assertEquals(alertsStarted >= 1, true);
+  const elapsed = Date.now() - startedAt;
+  assertEquals(elapsed < DEMOTION_RESERVE_MS + 3_000, true);
+  // And the wait was the alert budget, not the whole tick deadline.
+  assertEquals(elapsed < ALERT_DELIVERY_BUDGET_MS + 3_000, true);
 });

@@ -670,9 +670,26 @@ async function resolveLicensedServerId(
  * written. `resolveServerId` is not a lookup — it touches metadata, binds
  * licences and reconciles fabric membership on the way to an id — so a
  * revoked host that re-ran enroll used to rewrite its own `hostname`,
- * `machineKey` and OS metadata on every attempt it got a 403 for. Same
- * lookups, same order, no writes; it can only refuse enrollments that the
- * post-resolve check would have refused anyway, just earlier.
+ * `machineKey` and OS metadata on every attempt it got a 403 for.
+ *
+ * It mirrors `resolveServerId`'s two paths exactly, and the licensed one is
+ * the reason this is not simply `findExistingServerId`:
+ *
+ * - **With a licence**, only the server that licence is already bound to
+ *   counts. An unbound licence means a row that does not exist yet
+ *   (`insertLicensedServer`), so the answer is `undefined` — falling through
+ *   to the hostname/machine-key lookup would match a *different*
+ *   organization's server, because hostname uniqueness is per-organization.
+ *   A brand-new host enrolling with a fresh licence and a hostname that some
+ *   other org's revoked server also uses would then be told
+ *   `Server key revoked` — and that string is on turbopaneld's permanent
+ *   enrollment-failure list, so the daemon would stop trying, over a key it
+ *   never had.
+ * - **Without a licence**, it is exactly `findExistingServerId`, the same
+ *   lookup in the same order.
+ *
+ * So it can only refuse enrollments the post-resolve check would have
+ * refused anyway — just before anything is written.
  */
 export async function findServerIdForIdentity(
   db: Db,
@@ -680,8 +697,7 @@ export async function findServerIdForIdentity(
 ): Promise<string | undefined> {
   const licenseId = identity.licenseId?.trim()
   if (licenseId) {
-    const bound = await findServerBoundToLicense(db, licenseId)
-    if (bound) return bound
+    return await findServerBoundToLicense(db, licenseId)
   }
   return await findExistingServerId(db, identity)
 }

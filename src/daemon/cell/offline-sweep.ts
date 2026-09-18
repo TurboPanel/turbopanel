@@ -68,6 +68,7 @@ import {
   NOOP_ALERT_SENDER,
 } from "../../lib/alerts/alert-sender.ts";
 import { getAlertWebhookUrl } from "../../lib/alerts/alert-webhook-settings.ts";
+import { validateOutboundUrl } from "../../lib/http/outbound-url.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
@@ -168,6 +169,17 @@ export const OFFLINE_SWEEP_TICK_BUDGET_MS = 45_000;
  * accuracy.
  */
 export const DEMOTION_RESERVE_MS = 8_000;
+
+/**
+ * Ceiling on what one tick will spend telling an operator what it did.
+ *
+ * Bounded separately from the tick deadline: alerts are the least important
+ * thing a sweep does, and letting them run to the deadline would let a slow
+ * webhook eat the phases that come after demotion (self-heal, command
+ * dispatch, the optional cron sweeps). Alerts that do not fit are dropped,
+ * with a trace saying so.
+ */
+export const ALERT_DELIVERY_BUDGET_MS = 5_000;
 
 /** Hard deadline per `checkLiveness` DO RPC. */
 export const LIVENESS_RPC_TIMEOUT_MS = 5_000;
@@ -555,17 +567,16 @@ async function demoteStale(
   if (staleIds.length === 0) return;
 
   sweepTrace("stale-detected", { count: staleIds.length });
-  if (isMassDisconnect(staleIds.length, connectedBefore)) {
-    await notifyMassDisconnect(staleIds.length, connectedBefore, alertSender);
-  }
+  const massDisconnect = isMassDisconnect(staleIds.length, connectedBefore);
 
+  const demoted: string[] = [];
   await withBoundedConcurrency(
     staleIds,
     FANOUT_CONCURRENCY,
     async (serverId) => {
       try {
         await onDisconnected(db, serverId);
-        await notifyServerWentOffline(serverId, alertSender);
+        demoted.push(serverId);
       } catch (err) {
         sweepTrace("mark-offline-failed", {
           serverId,
@@ -575,6 +586,74 @@ async function demoteStale(
     },
     () => Date.now() >= deadlineMs,
   );
+
+  // Alerting happens after the demotions, never interleaved with them.
+  //
+  // The fan-out's `shouldStop` gates claiming the next index, so an alert
+  // awaited inside a worker spends tick budget: a webhook that hangs for its
+  // full timeout, times N stale hosts over FANOUT_CONCURRENCY workers, and the
+  // deadline fires with hosts still marked online. That is the alerting path
+  // causing the outage it exists to report. Demote first, tell afterwards,
+  // and give the telling whatever budget is left rather than the demotions'.
+  await notifyDemotions(
+    demoted,
+    massDisconnect ? { staleCount: staleIds.length, connectedBefore } : null,
+    alertSender,
+    deadlineMs,
+  );
+}
+
+/**
+ * Deliver this sweep's alerts within the remaining tick budget. The aggregate
+ * goes first — it is what explains the per-server lines that follow.
+ */
+async function notifyDemotions(
+  demoted: string[],
+  massDisconnect: { staleCount: number; connectedBefore: number } | null,
+  alertSender: AlertSender,
+  deadlineMs: number,
+): Promise<void> {
+  if (!massDisconnect && demoted.length === 0) return;
+
+  const deliver = async (): Promise<void> => {
+    if (massDisconnect) {
+      await notifyMassDisconnect(
+        massDisconnect.staleCount,
+        massDisconnect.connectedBefore,
+        alertSender,
+      );
+    }
+    for (const serverId of demoted) {
+      if (Date.now() >= deadlineMs) {
+        sweepTrace("alerts-truncated", { remaining: demoted.length });
+        return;
+      }
+      await notifyServerWentOffline(serverId, alertSender);
+    }
+  };
+
+  const remainingMs = Math.min(
+    deadlineMs - Date.now(),
+    ALERT_DELIVERY_BUDGET_MS,
+  );
+  if (remainingMs <= 0) {
+    sweepTrace("alerts-skipped", { count: demoted.length });
+    return;
+  }
+
+  // A sender that never settles cannot hold the tick open either. Losing an
+  // alert is the acceptable failure here; losing the tick is not.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    deliver(),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        sweepTrace("alerts-deadline-reached", {});
+        resolve();
+      }, remainingMs);
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
 }
 
 async function healServers(
@@ -980,6 +1059,16 @@ async function resolveAlertSender(
         getAlertWebhookUrl(settingDb, tlsRenewal?.dataEncryptionSecrets),
     );
     if (!url) return NOOP_ALERT_SENDER;
+    // Re-validated here, not only at write time: this is the choke point
+    // where the URL becomes an outbound fetch, and the stored value may
+    // predate the gate (an unsealed legacy row) or have been written by
+    // something other than the settings route. Same two-layer shape
+    // `git/forge-url.ts` uses.
+    const rejection = validateOutboundUrl(url);
+    if (rejection) {
+      sweepTrace("alert-webhook-refused", { reason: rejection });
+      return NOOP_ALERT_SENDER;
+    }
     return createWebhookAlertSender(url);
   } catch (err) {
     sweepTrace("alert-sender-resolve-failed", {
