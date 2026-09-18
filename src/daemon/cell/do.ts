@@ -1846,6 +1846,7 @@ export class DaemonCellObject {
           attachment.serverId,
           async (db) => {
             await handleAcmeIssuanceEvent(db, {
+              serverId: attachment.serverId,
               hostname: parsed.hostname,
               ok: parsed.ok,
               ...(parsed.errorMessage
