@@ -184,7 +184,7 @@ Contracts and gotchas for the three account-security paths. Route table is below
 
 **OAuth:** GitHub and Google share the provider abstraction in `oauth/providers.ts`. Client id/secret resolve env-first (`TURBOPANEL_AUTH_PROVIDERS__*`) over the `SYSTEM_AUTH_PROVIDERS` setting row. The instance persists **identity only** (`account.provider_id` / `provider_user_id`) — never access or refresh tokens — and **does not auto-link by email**. Callback errors are **redirect-only** (`/sign-in?error=` or `/account/security?linked=&error=` in link mode); the callback never returns JSON. Link-mode callback does not trust signed `linkUserId` alone — it re-reads the live session and requires that user.
 
-**Re-auth:** `assertRecentAuthOr403` (`reauth.ts`) is shared by enroll/disable 2FA, passkey add/remove, and provider unlink. Accept a password in the body, or a session younger than 15 minutes; otherwise **403**.
+**Re-auth:** `assertRecentAuthOr403` (`reauth.ts`) is shared by enroll/disable 2FA, passkey add/remove, and provider unlink. An account with a credential row must resubmit its password in the body — a fresh session never substitutes; an account with no password (passkey / OAuth only) passes on a session younger than 15 minutes; otherwise **403**. Provider *linking* is a redirect and uses the session window alone (`oauth_reauth_required`).
 
 ### Auth routes
 
@@ -271,7 +271,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `src/client/authn/oauth/providers.ts` | GitHub / Google OAuth `authorizeUrl` / `tokenUrl` / `fetchIdentity` |
 | `src/client/authn/oauth/oauth-state.ts` | `tpoauth` signed CSRF state (`oauth-sign-in-state`) |
 | `src/client/authn/oauth/oauth-http.ts` | `/auth/oauth*` start, callback, unlink |
-| `src/client/authn/reauth.ts` | `assertRecentAuthOr403` — password reauth, or 15-minute session window |
+| `src/client/authn/reauth.ts` | `assertRecentAuthOr403` — password reauth for credential accounts; 15-minute session window only for password-less accounts |
 | `src/lib/install/routes.ts` | `registerInstallRoutes` — self-hosted install wizard (`/api/install/v1/*`; Deno entry only) |
 | `src/client/authn/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
 | `src/client/authn/middleware.ts` | Session + superadmin middleware helpers |
