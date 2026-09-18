@@ -52,7 +52,7 @@
     "notices:check": "deno run --allow-read --allow-run --allow-net --allow-env scripts/generate-notices.ts --check",
     "test:permissions": "deno test --allow-read --allow-env=TURBOPANEL_DAEMON_REPO src/deno-compile-permissions.test.ts",
     "test:authz": "deno test --allow-env --allow-net --allow-read src/client/authz/",
-    "test:authn": "deno test --no-check --allow-env --allow-net --allow-read src/client/authn/workers-onboarding.test.ts src/client/authn/install-state.test.ts",
+    "test:authn": "deno test --no-check --allow-env --allow-net --allow-read --allow-write src/client/authn/workers-onboarding.test.ts src/client/authn/install-state.test.ts",
     "test:paths": "deno test --allow-read --allow-write src/server-paths.deno.test.ts",
     "test:compose": "deno test --allow-read --allow-env src/lib/compose/",
     "test:docker-run": "deno test --allow-read --allow-env src/lib/docker-run/ src/client/docker-run/",
