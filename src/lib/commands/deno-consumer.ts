@@ -104,6 +104,8 @@ type ConsumerSession = {
   connection: AmqpConnection
   channel: AmqpChannel
   consumerTag: string | undefined
+  /** Set by the listeners when this session's broker went away. */
+  lost: boolean
 }
 
 export async function startCommandConsumer(
@@ -136,6 +138,7 @@ export async function startCommandConsumer(
     const emitter = target as AmqpEmitter
     if (typeof emitter.on !== 'function') return
     emitter.on('error', (error) => {
+      owner.lost = true
       compatLogWarn(
         'command-consumer',
         `AMQP ${label} error: ${errorMessage(error)}`,
@@ -143,6 +146,7 @@ export async function startCommandConsumer(
       void reopen(owner, `${label} error`)
     })
     emitter.on('close', () => {
+      owner.lost = true
       void reopen(owner, `${label} closed`)
     })
   }
@@ -153,7 +157,12 @@ export async function startCommandConsumer(
     await assertCommandAmqpTopology(channel)
     await channel.prefetch(1)
 
-    const opened: ConsumerSession = { connection, channel, consumerTag: undefined }
+    const opened: ConsumerSession = {
+      connection,
+      channel,
+      consumerTag: undefined,
+      lost: false,
+    }
     // Before consume(): a broker that dies during the first delivery still
     // has to find a listener waiting for it.
     watchForLoss(connection, 'connection', opened)
@@ -185,7 +194,21 @@ export async function startCommandConsumer(
     let delay = RECONNECT_BASE_DELAY_MS
     while (!closed) {
       try {
-        session = await openSession()
+        const rebuilt = await openSession()
+        if (rebuilt.lost) {
+          // The broker went away again while this session was being set up.
+          // Its own listeners already fired and found `session` unset, so
+          // nothing else will retry — installing it would leave a dead
+          // session that never emits again.
+          compatLogWarn(
+            'command-consumer',
+            'AMQP connection was lost again during reconnect — retrying',
+          )
+          await sleep(delay)
+          delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
+          continue
+        }
+        session = rebuilt
         compatLogWarn('command-consumer', 'AMQP reconnected, consuming again')
         break
       } catch (error) {
@@ -200,12 +223,40 @@ export async function startCommandConsumer(
     reconnecting = false
   }
 
+  /**
+   * ack/nack on a channel the broker has already taken away throws
+   * synchronously (`IllegalOperationError: Channel closed`). Unguarded that is
+   * the same process-exit this module's listeners exist to prevent: the throw
+   * escapes `handleMessage`, and `void handleMessage(...)` makes it an
+   * unhandled rejection — nothing in this codebase registers a handler for
+   * those, so the instance dies. Swallowing is also the correct answer:
+   * RabbitMQ requeues every unacknowledged delivery when a channel closes, so
+   * the message is not lost, it is redelivered on the rebuilt session.
+   */
+  function disposeSafely(
+    channel: AmqpChannel,
+    msg: NonNullable<AmqpMessage>,
+    disposition: CommandMessageDisposition,
+  ): void {
+    try {
+      applyCommandMessageDisposition(channel, msg, disposition)
+    } catch (error) {
+      compatLogWarn(
+        'command-consumer',
+        `could not ${disposition} a delivery: ${
+          errorMessage(error)
+        } — the channel is gone; the broker will redeliver`,
+      )
+    }
+  }
+
   async function handleMessage(
     channel: AmqpChannel,
     msg: AmqpMessage,
   ): Promise<void> {
     if (!msg) return
 
+    let disposition: CommandMessageDisposition
     try {
       const envelope = parseCommandEnvelope(msg.content.toString())
       await processCommandEnvelope(
@@ -214,17 +265,19 @@ export async function startCommandConsumer(
         envelope,
         consumerDeps,
       )
-      applyCommandMessageDisposition(channel, msg, commandMessageDisposition({ ok: true }))
+      disposition = commandMessageDisposition({ ok: true })
     } catch (error) {
       const errMsg = errorMessage(error)
-      const disposition = commandMessageDisposition({ ok: false, error })
+      disposition = commandMessageDisposition({ ok: false, error })
       if (disposition === 'nack_requeue') {
         compatLogWarn('command-consumer', `transient error, requeueing: ${errMsg}`)
       } else {
         compatLogError('command-consumer', `permanent error, dead-lettering: ${errMsg}`)
       }
-      applyCommandMessageDisposition(channel, msg, disposition)
     }
+    // Outside the try: a failed ack is a broker problem, not a reason to
+    // re-classify a command that processed fine as a processing failure.
+    disposeSafely(channel, msg, disposition)
   }
 
   session = await openSession()

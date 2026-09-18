@@ -94,6 +94,10 @@ function createStubBroker(options: {
   cancel?: () => Promise<void>
   channelClose?: () => Promise<void>
   connectionClose?: () => Promise<void>
+  /** Make ack/nack throw, the way a channel the broker took away does. */
+  dispositionError?: Error
+  /** Runs inside consume(), i.e. after the loss listeners are attached. */
+  duringConsume?: () => void
 } = {}) {
   const dispositions: Array<{ method: string; requeue?: boolean }> = []
   let onMessage: ConsumeHandler | undefined
@@ -109,12 +113,15 @@ function createStubBroker(options: {
     consume: async (_queue: string, handler: ConsumeHandler) => {
       onMessage = handler
       consumeCount++
+      options.duringConsume?.()
       return { consumerTag: options.consumerTag ?? 'ctag-1' }
     },
     ack: () => {
+      if (options.dispositionError) throw options.dispositionError
       dispositions.push({ method: 'ack' })
     },
     nack: (_msg: unknown, _allUpTo: boolean, requeue: boolean) => {
+      if (options.dispositionError) throw options.dispositionError
       dispositions.push({ method: 'nack', requeue })
     },
     cancel: options.cancel ?? (async () => undefined),
@@ -426,6 +433,84 @@ test('a broker event after close does not reopen the consumer', async () => {
     broker.emitConnection('error', new Error('Unexpected close'))
     await new Promise((resolve) => setTimeout(resolve, 30))
     assertEquals(broker.consumeCount(), 1)
+  } finally {
+    connectStub.restore()
+  }
+})
+
+/**
+ * The other half of the same crash: a broker that dies with a delivery in
+ * flight makes `channel.ack` throw `IllegalOperationError: Channel closed`.
+ * Nothing in this codebase registers an `unhandledrejection` handler, so an
+ * escape from the message handler is a process exit — the game day could not
+ * reach this path because the dev instance has no daemons and therefore no
+ * commands in flight.
+ */
+test('a delivery whose ack throws does not escape the message handler', async () => {
+  const broker = createStubBroker({
+    dispositionError: new Error('Channel closed'),
+  })
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  const rejections: unknown[] = []
+  const onRejection = (event: PromiseRejectionEvent) => {
+    rejections.push(event.reason)
+    event.preventDefault()
+  }
+  globalThis.addEventListener('unhandledrejection', onRejection)
+  try {
+    const handle = await startCommandConsumer({
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+    })
+    broker.deliver({ content: { toString: () => PING_ENVELOPE_JSON } })
+    // A processing failure takes the other branch; it must be just as safe.
+    broker.deliver({ content: { toString: () => 'not-json' } })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assertEquals(rejections, [])
+    assertEquals(broker.dispositions, [])
+    await handle.close()
+  } finally {
+    globalThis.removeEventListener('unhandledrejection', onRejection)
+    connectStub.restore()
+  }
+})
+
+test('a broker that dies during the reconnect handshake is retried, not installed dead', async () => {
+  // The session's listeners are attached before consume() resolves, so a
+  // broker that flaps right then fires them while the rebuilt session is not
+  // yet the live one. Installing it anyway would leave a consumer wired to a
+  // connection that will never emit again.
+  let flapOnce = false
+  const broker = createStubBroker({
+    duringConsume: () => {
+      if (!flapOnce) return
+      flapOnce = false
+      broker.emitConnection('close')
+    },
+  })
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  try {
+    const handle = await startCommandConsumer({
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+    })
+    assertEquals(broker.consumeCount(), 1)
+
+    flapOnce = true
+    broker.emitConnection('close')
+
+    // Session 2 dies mid-handshake; session 3 is the one that sticks.
+    for (let i = 0; i < 200 && broker.consumeCount() < 3; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assertEquals(broker.consumeCount(), 3)
+
+    broker.deliver({ content: { toString: () => PING_ENVELOPE_JSON } })
+    await waitForDisposition(broker.dispositions)
+    assertEquals(broker.dispositions, [{ method: 'ack' }])
+    await handle.close()
   } finally {
     connectStub.restore()
   }
