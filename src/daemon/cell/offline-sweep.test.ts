@@ -17,7 +17,9 @@ import type {
 import {
   canDirectHealFromAeEvidence,
   CONNECTED_SWEEP_BUDGET,
+  isMassDisconnect,
   isStale,
+  MASS_DISCONNECT_ABSOLUTE,
   OFFLINE_SWEEP_STALE_MS,
   resetOfflineSweepNullGraceForTests,
   runOfflineSweep,
@@ -561,7 +563,8 @@ it("stale-command sweep failures stay isolated after a successful dispatch delet
 
   assertEquals(
     traces.some((line) =>
-      line.includes("event=command-dispatch-swept") && line.includes("deleted=1")
+      line.includes("event=command-dispatch-swept") &&
+      line.includes("deleted=1")
     ),
     true,
   );
@@ -621,7 +624,10 @@ function createOfflineSweepLockMemoryDb(initial?: SweepLockValue): Db {
           limit: () =>
             Promise.resolve(
               lock.current
-                ? [{ owner: lock.current.owner, expiresAt: lock.current.expiresAt }]
+                ? [{
+                  owner: lock.current.owner,
+                  expiresAt: lock.current.expiresAt,
+                }]
                 : [],
             ),
         }),
@@ -1527,7 +1533,10 @@ it("runOfflineSweep logs lease-release-failed and still finishes the tick", asyn
 // run in order with one, and what a throwing grace clock does to the rest.
 // ---------------------------------------------------------------------------
 
-import { createMemoryDb, type MemoryDb } from "../../test-fixtures/memory-db.ts";
+import {
+  createMemoryDb,
+  type MemoryDb,
+} from "../../test-fixtures/memory-db.ts";
 import {
   allowance,
   key,
@@ -1569,7 +1578,9 @@ function billingSweepDb(opts: { withSubscription: boolean }): MemoryDb {
     [license, []],
     [tier, []],
     [payer, []],
-    ...(opts.withSubscription ? [[subscription, []] as [typeof subscription, Record<string, unknown>[]]] : []),
+    ...(opts.withSubscription
+      ? [[subscription, []] as [typeof subscription, Record<string, unknown>[]]]
+      : []),
     [subscriptionItem, []],
     [webhookDelivery, []],
   ]);
@@ -1601,8 +1612,11 @@ async function runTickCapturingTrace(
   return traces;
 }
 
-const tickComplete = (traces: string[]) => traces.find((line) => line.includes("event=tick-complete")) ?? "";
-const reconcileReport = (db: MemoryDb) => db.rows(setting).find((row) => row.key === BILLING_RECONCILE_REPORT_KEY) ?? null;
+const tickComplete = (traces: string[]) =>
+  traces.find((line) => line.includes("event=tick-complete")) ?? "";
+const reconcileReport = (db: MemoryDb) =>
+  db.rows(setting).find((row) => row.key === BILLING_RECONCILE_REPORT_KEY) ??
+    null;
 
 it("T12 · with no Stripe key neither billing phase runs: no projection read, no reconcile report, nothing marked skipped", async () => {
   const db = billingSweepDb({ withSubscription: false });
@@ -1617,7 +1631,9 @@ it("T12 · with no Stripe key neither billing phase runs: no projection read, no
 
 it("T12 · with a key both billing phases run on their tick: the grace clock scans subscriptions, reconcile lists payers and writes its report", async () => {
   const db = billingSweepDb({ withSubscription: true });
-  const env = { TURBOPANEL_STRIPE_SECRET_KEY: "sk_test_x" } as unknown as CloudflareBindings;
+  const env = {
+    TURBOPANEL_STRIPE_SECRET_KEY: "sk_test_x",
+  } as unknown as CloudflareBindings;
   const traces = await runTickCapturingTrace(env, db);
   assertEquals(db.ops.includes("select:subscription"), true);
   assertEquals(db.ops.includes("select:payer"), true);
@@ -1628,17 +1644,24 @@ it("T12 · with a key both billing phases run on their tick: the grace clock sca
 it("T12 · finding: a throwing grace clock is NOT isolated — reconcile and the queued sweeps after it are skipped on that tick", async () => {
   // `subscription` is unregistered, so the grace clock's first read throws.
   const db = billingSweepDb({ withSubscription: false });
-  const env = { TURBOPANEL_STRIPE_SECRET_KEY: "sk_test_x" } as unknown as CloudflareBindings;
+  const env = {
+    TURBOPANEL_STRIPE_SECRET_KEY: "sk_test_x",
+  } as unknown as CloudflareBindings;
   const traces = await runTickCapturingTrace(env, db);
   assertEquals(
-    traces.some((line) => line.includes("event=budget-exhausted") && line.includes("phase=billing-grace-clock")),
+    traces.some((line) =>
+      line.includes("event=budget-exhausted") &&
+      line.includes("phase=billing-grace-clock")
+    ),
     true,
   );
   // The code comment promises each billing phase is isolated; the optional
   // phase runner aborts the chain instead, exactly as it does for the other
   // optional phases. Reconcile is Postgres-only and did not need Stripe.
   const done = tickComplete(traces);
-  for (const phase of ["billing-grace-clock", "billing-reconcile", "reconcile"]) {
+  for (
+    const phase of ["billing-grace-clock", "billing-reconcile", "reconcile"]
+  ) {
     assertEquals(done.includes(phase), true, phase);
   }
   assertEquals(db.ops.includes("select:payer"), false);
@@ -1717,4 +1740,25 @@ it("queued cron: leaf renewal and managed-ingress orphan failures are isolated a
     true,
   );
   assertEquals(tickComplete(traces).includes("phasesSkipped=[]"), true);
+});
+
+it("a mass disconnect is distinguished from unrelated host failures", () => {
+  // Below the floor: two hosts going quiet is two hosts, whatever the fleet
+  // size — never a systemic alarm.
+  assertEquals(isMassDisconnect(1, 1), false);
+  assertEquals(isMassDisconnect(2, 2), false);
+
+  // A small fleet going dark at once crosses the ratio.
+  assertEquals(isMassDisconnect(3, 4), true);
+  assertEquals(isMassDisconnect(3, 20), false);
+
+  // A large fleet losing a chunk crosses the absolute count even though the
+  // ratio is low — ten hosts at once is a shared cause, not ten coincidences.
+  assertEquals(isMassDisconnect(10, 500), true);
+  assertEquals(isMassDisconnect(9, 500), false);
+
+  // A fleet with nothing connected cannot produce a ratio; the absolute
+  // count is the only bound that can fire.
+  assertEquals(isMassDisconnect(3, 0), false);
+  assertEquals(isMassDisconnect(MASS_DISCONNECT_ABSOLUTE, 0), true);
 });
