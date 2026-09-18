@@ -975,3 +975,30 @@ it('queryRecentlyActiveServerIds: maps serverId to latest-sample epoch ms, skips
   assertEquals(result.size, 1)
   assertEquals(result.get(HOST_SERVER_ID), 1735689600 * 1000)
 })
+
+it('AE SQL is posted to the Cloudflare client/v4 API — the only version that routes', async () => {
+  // A 2026-09-07 rename of the metrics contract (v5) also renamed the API
+  // base path, and Cloudflare answered "No route for that URI" to every
+  // hosted metrics query until the tag sweep caught it. The API version is
+  // Cloudflare's, not ours.
+  const urls: string[] = []
+  await queryStatusHistoryViaSqlApi(
+    {
+      accountId: 'acct123',
+      apiToken: 'token-xyz',
+      fetch: async (url) => {
+        urls.push(String(url))
+        return new Response(envelopedSqlResponse([]), { status: 200 })
+      },
+    },
+    { serverId: '00000000-0000-4000-8000-000000000001', from: '2026-01-01T00:00:00.000Z', to: '2026-01-01T01:00:00.000Z' }
+  )
+  assertEquals(urls.length > 0, true)
+  for (const url of urls) {
+    assertEquals(
+      url.startsWith('https://api.cloudflare.com/client/v4/accounts/acct123/analytics_engine/sql'),
+      true,
+      url
+    )
+  }
+})

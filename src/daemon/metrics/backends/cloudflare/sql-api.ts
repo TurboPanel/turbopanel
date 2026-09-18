@@ -317,7 +317,7 @@ async function executeSql(
   if (!token) {
     throw new TypeError('TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN is required for AE SQL')
   }
-  const url = `https://api.cloudflare.com/client/v5/accounts/${encodeURIComponent(
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
     accountId
   )}/analytics_engine/sql`
   const fetchFn = config.fetch ?? fetch
@@ -780,7 +780,7 @@ function buildStatusPriorStateSql(
 }
 
 /**
- * Real v5 status-history query — mirrors v3's `queryStatusHistoryViaSqlApi`
+ * Real v6 status-history query — mirrors v3's `queryStatusHistoryViaSqlApi`
  * exactly (same uptime math via the shared `computeStatusUptime`), scoped to
  * the v5 dataset's `"status"`-kind rows.
  */
