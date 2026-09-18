@@ -144,6 +144,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/client/authn/oauth/providers.test.ts \
   src/client/authn/passkeys-http.hostfree.test.ts \
   src/client/authn/passkeys.test.ts \
+  src/client/authn/reauth.hostfree.test.ts \
   src/client/authn/password.deno.test.ts \
   src/client/authn/secrets.deno.test.ts \
   src/client/authn/session-store.test.ts \
