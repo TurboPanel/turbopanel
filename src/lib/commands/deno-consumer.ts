@@ -83,24 +83,127 @@ async function connectAmqp(url: string): Promise<AmqpConnection> {
   throw new Error('connectAmqp: unreachable')
 }
 
+/**
+ * Reconnect backoff after the broker drops an established connection. The
+ * first retry is immediate-ish because a container restart is usually over in
+ * a second; the cap keeps a long broker outage from spinning.
+ */
+const RECONNECT_BASE_DELAY_MS = 1_000
+const RECONNECT_MAX_DELAY_MS = 30_000
+
+/** The subset of the amqplib EventEmitter surface this module uses. */
+type AmqpEmitter = {
+  on?: (event: string, listener: (arg?: unknown) => void) => unknown
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+type ConsumerSession = {
+  connection: AmqpConnection
+  channel: AmqpChannel
+  consumerTag: string | undefined
+}
+
 export async function startCommandConsumer(
   opts: StartCommandConsumerOpts,
 ): Promise<{ close(): Promise<void> }> {
-  const connection = await connectAmqp(opts.amqpUrl)
-  const channel = await connection.createConfirmChannel()
-  await assertCommandAmqpTopology(channel)
-  await channel.prefetch(1)
-
   const consumerDeps = buildCommandConsumerDeps(opts)
 
-  const { consumerTag } = await channel.consume(
-    COMMAND_AMQP_QUEUE,
-    (msg) => {
-      void handleMessage(msg)
-    },
-  )
+  let closed = false
+  let reconnecting = false
+  let session: ConsumerSession | undefined
 
-  async function handleMessage(msg: AmqpMessage): Promise<void> {
+  /**
+   * Attach the listeners amqplib requires us to attach.
+   *
+   * A connection object with no `error` listener is why the instance used to
+   * die with the broker: amqplib's `succeed()` wires
+   * `stream.on('end', onSocketError.bind(self, new Error('Unexpected close')))`,
+   * so when RabbitMQ goes away the connection emits `error` — and an
+   * unhandled `error` event on an EventEmitter is a thrown exception, which
+   * for a top-level consumer means the process exits 1. A game day on
+   * 2026-09-18 killed the RabbitMQ container and took the whole control plane
+   * down with it; the retry loop in {@link connectAmqp} only ever covered
+   * failures to *open* a connection, never the loss of an open one.
+   */
+  function watchForLoss(
+    target: AmqpConnection | AmqpChannel,
+    label: string,
+    owner: ConsumerSession,
+  ): void {
+    const emitter = target as AmqpEmitter
+    if (typeof emitter.on !== 'function') return
+    emitter.on('error', (error) => {
+      compatLogWarn(
+        'command-consumer',
+        `AMQP ${label} error: ${errorMessage(error)}`,
+      )
+      void reopen(owner, `${label} error`)
+    })
+    emitter.on('close', () => {
+      void reopen(owner, `${label} closed`)
+    })
+  }
+
+  async function openSession(): Promise<ConsumerSession> {
+    const connection = await connectAmqp(opts.amqpUrl)
+    const channel = await connection.createConfirmChannel()
+    await assertCommandAmqpTopology(channel)
+    await channel.prefetch(1)
+
+    const opened: ConsumerSession = { connection, channel, consumerTag: undefined }
+    // Before consume(): a broker that dies during the first delivery still
+    // has to find a listener waiting for it.
+    watchForLoss(connection, 'connection', opened)
+    watchForLoss(channel, 'channel', opened)
+
+    const { consumerTag } = await channel.consume(
+      COMMAND_AMQP_QUEUE,
+      (msg) => {
+        void handleMessage(channel, msg)
+      },
+    )
+    opened.consumerTag = consumerTag
+    return opened
+  }
+
+  /**
+   * Rebuild the session after the broker went away. Retries until it works or
+   * {@link close} is called: a queue that is down for ten minutes is an
+   * outage to ride out, not a reason to stop consuming commands forever.
+   */
+  async function reopen(from: ConsumerSession, reason: string): Promise<void> {
+    // `close` and `error` both fire for the same loss, and a session that has
+    // already been replaced can still emit late; one rebuild per loss.
+    if (closed || reconnecting || session !== from) return
+    reconnecting = true
+    session = undefined
+    compatLogWarn('command-consumer', `AMQP ${reason} — reconnecting`)
+
+    let delay = RECONNECT_BASE_DELAY_MS
+    while (!closed) {
+      try {
+        session = await openSession()
+        compatLogWarn('command-consumer', 'AMQP reconnected, consuming again')
+        break
+      } catch (error) {
+        compatLogError(
+          'command-consumer',
+          `AMQP reconnect failed: ${errorMessage(error)} — retrying in ${delay}ms`,
+        )
+        await sleep(delay)
+        delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
+      }
+    }
+    reconnecting = false
+  }
+
+  async function handleMessage(
+    channel: AmqpChannel,
+    msg: AmqpMessage,
+  ): Promise<void> {
     if (!msg) return
 
     try {
@@ -113,7 +216,7 @@ export async function startCommandConsumer(
       )
       applyCommandMessageDisposition(channel, msg, commandMessageDisposition({ ok: true }))
     } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error)
+      const errMsg = errorMessage(error)
       const disposition = commandMessageDisposition({ ok: false, error })
       if (disposition === 'nack_requeue') {
         compatLogWarn('command-consumer', `transient error, requeueing: ${errMsg}`)
@@ -124,13 +227,19 @@ export async function startCommandConsumer(
     }
   }
 
+  session = await openSession()
+
   return {
     async close(): Promise<void> {
-      if (consumerTag) {
-        await channel.cancel(consumerTag).catch(() => undefined)
+      closed = true
+      const open = session
+      session = undefined
+      if (!open) return
+      if (open.consumerTag) {
+        await open.channel.cancel(open.consumerTag).catch(() => undefined)
       }
-      await channel.close().catch(() => undefined)
-      await connection.close().catch(() => undefined)
+      await open.channel.close().catch(() => undefined)
+      await open.connection.close().catch(() => undefined)
     },
   }
 }

@@ -97,13 +97,18 @@ function createStubBroker(options: {
 } = {}) {
   const dispositions: Array<{ method: string; requeue?: boolean }> = []
   let onMessage: ConsumeHandler | undefined
+  let consumeCount = 0
+  const connectionEvents = createStubEmitter()
+  const channelEvents = createStubEmitter()
   const channel = {
+    ...channelEvents.part,
     assertExchange: async () => undefined,
     assertQueue: async () => undefined,
     bindQueue: async () => undefined,
     prefetch: async () => undefined,
     consume: async (_queue: string, handler: ConsumeHandler) => {
       onMessage = handler
+      consumeCount++
       return { consumerTag: options.consumerTag ?? 'ctag-1' }
     },
     ack: () => {
@@ -116,13 +121,47 @@ function createStubBroker(options: {
     close: options.channelClose ?? (async () => undefined),
   }
   const connection = {
+    ...connectionEvents.part,
     createConfirmChannel: async () => channel,
     close: options.connectionClose ?? (async () => undefined),
   }
-  return { channel, connection, dispositions, deliver: (msg: Parameters<ConsumeHandler>[0]) => {
-    if (!onMessage) throw new TypeError('consume handler was not registered')
-    onMessage(msg)
-  } }
+  return {
+    channel,
+    connection,
+    dispositions,
+    /** How many times consume() has been called — one per opened session. */
+    consumeCount: () => consumeCount,
+    emitConnection: connectionEvents.emit,
+    emitChannel: channelEvents.emit,
+    deliver: (msg: Parameters<ConsumeHandler>[0]) => {
+      if (!onMessage) throw new TypeError('consume handler was not registered')
+      onMessage(msg)
+    },
+  }
+}
+
+/**
+ * The slice of EventEmitter amqplib exposes. Deliberately *not* a real
+ * EventEmitter: a real one throws on an unhandled 'error', which is the very
+ * failure under test, and would make the test crash instead of fail.
+ */
+function createStubEmitter() {
+  const listeners = new Map<string, Array<(arg?: unknown) => void>>()
+  return {
+    part: {
+      on(event: string, listener: (arg?: unknown) => void) {
+        const bucket = listeners.get(event) ?? []
+        bucket.push(listener)
+        listeners.set(event, bucket)
+      },
+    },
+    emit(event: string, arg?: unknown) {
+      for (const listener of listeners.get(event) ?? []) listener(arg)
+    },
+    listenerCount(event: string) {
+      return (listeners.get(event) ?? []).length
+    },
+  }
 }
 
 function emptyRegistry(): DaemonCellRegistry {
@@ -325,6 +364,68 @@ test('startCommandConsumer rejects when the first connect succeeds but channel s
       Error,
       'channel down',
     )
+  } finally {
+    connectStub.restore()
+  }
+})
+
+/**
+ * The regression a game day on 2026-09-18 found: SIGKILL on the RabbitMQ
+ * container took the whole instance down. amqplib emits `error` on the
+ * connection when the broker's socket ends, nothing listened for it, and an
+ * unhandled `error` event is a thrown exception — systemd restarted the unit.
+ * A queue outage has to be something the control plane rides out.
+ */
+test('startCommandConsumer survives the broker dropping an open connection and consumes again', async () => {
+  const broker = createStubBroker()
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  try {
+    const handle = await startCommandConsumer({
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+    })
+    assertEquals(broker.consumeCount(), 1)
+
+    // Exactly what amqplib does when the broker goes away mid-connection.
+    broker.emitConnection('error', new Error('Unexpected close'))
+    broker.emitConnection('close')
+
+    for (let i = 0; i < 50 && broker.consumeCount() < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    // One rebuild, not two: `error` and `close` describe the same loss.
+    assertEquals(broker.consumeCount(), 2)
+
+    // And the rebuilt session is the live one — deliveries still land.
+    broker.deliver({ content: { toString: () => PING_ENVELOPE_JSON } })
+    await waitForDisposition(broker.dispositions)
+    assertEquals(broker.dispositions, [{ method: 'ack' }])
+
+    await handle.close()
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('a broker event after close does not reopen the consumer', async () => {
+  const broker = createStubBroker()
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  try {
+    const handle = await startCommandConsumer({
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+    })
+    await handle.close()
+
+    // Closing the connection makes amqplib emit too; a shutdown must not
+    // start a reconnect loop that keeps the process alive.
+    broker.emitChannel('close')
+    broker.emitConnection('close')
+    broker.emitConnection('error', new Error('Unexpected close'))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assertEquals(broker.consumeCount(), 1)
   } finally {
     connectStub.restore()
   }
