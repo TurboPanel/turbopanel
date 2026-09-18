@@ -48,6 +48,7 @@ import {
   mergeProjectEnvironmentCompose,
   nativeAppServicesForDeploy,
   readHostingProxyFromOptions,
+  renderCronForDeploy,
   resolveHostingBindAddress,
   resolveProjectEnvironmentComposeLayers,
   resolveSitesForMode,
@@ -84,6 +85,59 @@ function resolvedServicesFixture(
 }
 
 describe("deploy-prepare helpers", () => {
+  it("merges task rows into the wire cron after compose-authored jobs, compose winning a collision", () => {
+    const taskRow = (
+      over: Partial<import("../../lib/db/task-records.ts").TaskRecord> & { name: string },
+    ): import("../../lib/db/task-records.ts").TaskRecord => ({
+      id: "00000000-0000-4000-8000-000000000001",
+      serviceId: "00000000-0000-4000-8000-000000000002",
+      schedule: "0 3 * * *",
+      command: "/usr/bin/php artisan schedule:run",
+      timezone: null,
+      isEnabled: true,
+      concurrencyPolicy: "forbid",
+      timeoutSeconds: null,
+      metadata: null,
+      options: null,
+      createdAt: "2026-09-18T00:00:00.000Z",
+      updatedAt: "2026-09-18T00:00:00.000Z",
+      ...over,
+    });
+    const cron = renderCronForDeploy(
+      [{ name: "warm-cache", schedule: "*/15 * * * *", command: "/usr/bin/php warm.php" }],
+      [
+        // Display name folds to a unit name; timezone rides the schedule; the
+        // per-row ceiling and policy are carried.
+        taskRow({
+          name: "Nightly backup",
+          schedule: "30 2 * * *",
+          timezone: "Europe/Berlin",
+          timeoutSeconds: 600,
+        }),
+        // Same unit name as the compose job → compose wins, row dropped.
+        taskRow({ name: "Warm Cache", schedule: "0 * * * *" }),
+        // Disabled rows are not rendered.
+        taskRow({ name: "Paused", isEnabled: false }),
+        // A policy the wire does not carry is rendered without one.
+        taskRow({ name: "Reindex", concurrencyPolicy: "allow", schedule: "@daily" }),
+        // A schedule the translator refuses is dropped, like a compose job.
+        taskRow({ name: "Broken", schedule: "61 * * * *" }),
+      ],
+    );
+    assertEquals(cron.map((job) => job.name), ["warm-cache", "nightly-backup", "reindex"]);
+    assertEquals(cron[1], {
+      name: "nightly-backup",
+      schedule: "*-*-* 2:30:00 Europe/Berlin",
+      command: ["/usr/bin/php", "artisan", "schedule:run"],
+      timeoutSeconds: 600,
+      concurrencyPolicy: "forbid",
+    });
+    assertEquals("concurrencyPolicy" in cron[2], false);
+    // Task rows alone (no compose cron) still render.
+    assertEquals(renderCronForDeploy(undefined, [taskRow({ name: "Solo" })]).length, 1);
+    assertEquals(renderCronForDeploy(undefined, []), []);
+  });
+
   it("counts compose services for resource usage even without DB options rows", () => {
     const merged = assertComposeDocument({
       version: 1,

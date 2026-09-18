@@ -1,6 +1,7 @@
 /** Per-service `x-turbopanel` extension (Compose `services.<name>.x-turbopanel`). */
 
 import {
+  CRON_JOB_NAME_RE,
   cronToOnCalendar,
   MAX_CRON_JOBS_PER_SERVICE,
   parseCronCommand,
@@ -489,7 +490,6 @@ function readSiteEngine(
 }
 
 /** Unit-name segment: lowercase, `[a-z0-9-]`, so it is safe as a filename. */
-const CRON_JOB_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
 
 /**
  * Shape-only read; `lib/cron.ts` is what validates the schedule and the command,

@@ -30,7 +30,7 @@ One row per question an operator can ask, and the one place its answer lives. A 
 | Ingress hostnames / TLS / bind | `x-turbopanel.hosting[]` → `hosting` rows | Never a `ports:` replacement. |
 | Git source | `x-turbopanel.source` → `sourceMaterial[]` | Release trees are resolved control-plane side. |
 | PHP version / extensions / pool | `x-turbopanel.php` | Keyed 1:1 with the *service*, not the hosting. |
-| Scheduled jobs | `x-turbopanel.cron[]` | Rendered as systemd timers under the service's principal. |
+| Scheduled jobs | `x-turbopanel.cron[]` + `task` rows | Rendered as systemd timers under the service's principal. Two authoring paths, one namespace: a `POST /tasks` row's display name folds to a unit name (`cronJobUnitName`), the API refuses one that a compose job owns (`task_name_in_compose`) or another task folds to (`task_name_in_use`), and at deploy compose comes first and wins a collision (`renderCronForDeploy`). Disabled rows are not rendered. |
 | Spanning (TurboFabric) networks | `networks.<key>.driver: overlay` | Compose already expresses overlay intent — no `x-` key. |
 | Container naming | `project.options.containerNaming` | A compiler decision, not a document one. |
 | Variable & secret values | Variable store (org/project/env/server scopes) | Compose carries refs, never values. |

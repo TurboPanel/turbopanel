@@ -23,6 +23,10 @@ import {
 import { deriveSecretsConfig } from "../authn/secrets.ts";
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from "../authz/http.ts";
 import { TASK_NAME_IN_USE_ERROR } from "../display-name-uniqueness.ts";
+import {
+  TASK_NAME_IN_COMPOSE_ERROR,
+  TASK_NAME_UNREPRESENTABLE_ERROR,
+} from "./unit-name-collision.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerClientRoutes } from "../routes.ts";
 import { MAX_CRON_JOBS_PER_SERVICE } from "./routes-helpers.ts";
@@ -79,6 +83,12 @@ type TaskSessionOpts = {
   taskSelectQueue?: unknown[][];
   taskRows?: unknown[];
   serviceRows?: unknown[];
+  /**
+   * The joined service → environment → project row `listComposeCronJobNames`
+   * reads (unit-name-collision.ts); omitted means no compose, so no
+   * compose-authored cron to collide with.
+   */
+  composeServiceRow?: Record<string, unknown>;
   createdId?: string;
 };
 
@@ -200,10 +210,24 @@ function createTaskRouteDb(opts: TaskSessionOpts = {}): Db {
           };
         }
         if (table === service) {
+          const joinedRows = opts.composeServiceRow
+            ? [opts.composeServiceRow]
+            : [];
+          // `.innerJoin(environment).innerJoin(project).where().limit()` is
+          // the compose-collision lookup; a single `.innerJoin().where()` is
+          // the existing org-scope check.
+          const joined = {
+            innerJoin: () => joined,
+            where: () =>
+              Object.assign(thenableRows(joinedRows), {
+                limit: () => thenableRows(joinedRows),
+              }),
+          };
           return {
             where: () => thenableRows(serviceRows),
             innerJoin: () => ({
               where: () => thenableRows(serviceRows),
+              innerJoin: () => joined,
             }),
           };
         }
@@ -493,6 +517,90 @@ test("POST /tasks returns 409 when the display name is taken", async () => {
   });
   assertEquals(res.status, 409);
   assertEquals(await res.json(), { error: TASK_NAME_IN_USE_ERROR });
+});
+
+test("POST /tasks returns 409 when another task folds to the same unit name", async () => {
+  // "Nightly Backup" and "nightly-backup" are different display names but
+  // the same timer on the host; the second would never run.
+  const { app, cookie } = await buildSessionApp({
+    executeQueue: [
+      [{ organization_id: orgId }],
+      [{ allowed: true }],
+      [{ kind: "user" }],
+    ],
+    taskSelectQueue: [[], [], [{ id: taskId, name: "Nightly Backup" }]],
+  });
+  const res = await app.request("/tasks", {
+    method: "POST",
+    headers: authHeaders(cookie),
+    body: JSON.stringify(createBody({ name: "nightly-backup" })),
+  });
+  assertEquals(res.status, 409);
+  assertEquals(await res.json(), { error: TASK_NAME_IN_USE_ERROR });
+});
+
+test("POST /tasks returns 409 when the service's compose already owns that cron job name", async () => {
+  const { app, cookie } = await buildSessionApp({
+    executeQueue: [
+      [{ organization_id: orgId }],
+      [{ allowed: true }],
+      [{ kind: "user" }],
+    ],
+    taskSelectQueue: [[], [], []],
+    composeServiceRow: {
+      composeServiceName: "app",
+      environmentId,
+      environmentName: "production",
+      environmentOptions: {},
+      projectOptions: {
+        compose: {
+          version: 1,
+          presentation: { keyOrder: [], comments: {} },
+          data: {
+            services: {
+              app: {
+                "x-turbopanel": {
+                  serviceKind: "site",
+                  root: "public",
+                  principal: "app",
+                  cron: [{
+                    name: "nightly",
+                    schedule: "0 0 * * *",
+                    command: "/usr/bin/true",
+                  }],
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  const res = await app.request("/tasks", {
+    method: "POST",
+    headers: authHeaders(cookie),
+    body: JSON.stringify(createBody({ name: "Nightly" })),
+  });
+  assertEquals(res.status, 409);
+  assertEquals(await res.json(), { error: TASK_NAME_IN_COMPOSE_ERROR });
+});
+
+test("POST /tasks returns 409 when the display name folds to no unit name", async () => {
+  const { app, cookie } = await buildSessionApp({
+    executeQueue: [
+      [{ organization_id: orgId }],
+      [{ allowed: true }],
+      [{ kind: "user" }],
+    ],
+    taskSelectQueue: [[], []],
+  });
+  const res = await app.request("/tasks", {
+    method: "POST",
+    headers: authHeaders(cookie),
+    body: JSON.stringify(createBody({ name: "日次バックアップ" })),
+  });
+  assertEquals(res.status, 409);
+  assertEquals(await res.json(), { error: TASK_NAME_UNREPRESENTABLE_ERROR });
 });
 
 test("POST /tasks returns 409 when the per-service limit is reached", async () => {

@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from '@std/assert'
-import { cronToOnCalendar, parseCronCommand, parseCronSchedule } from './cron.ts'
+import { cronJobUnitName, cronToOnCalendar, parseCronCommand, parseCronSchedule } from './cron.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -247,4 +247,20 @@ test('a rejected schedule is still rejected when a zone is supplied', () => {
   // must not become a way around it.
   const result = cronToOnCalendar('0 0 13 * 5', 'Europe/Berlin')
   assert(!result.ok, 'expected the day-field union to stay refused')
+})
+
+test('cronJobUnitName folds a display name to the unit-name rule, or refuses it', () => {
+  assertEquals(cronJobUnitName('Nightly backup'), 'nightly-backup')
+  assertEquals(cronJobUnitName('  Rotate Logs (weekly)! '), 'rotate-logs-weekly')
+  assertEquals(cronJobUnitName('Éclair'), 'eclair')
+  // Two display names that fold to the same unit are one timer — the API
+  // refuses the second (task_name_in_use).
+  assertEquals(cronJobUnitName('nightly-backup'), cronJobUnitName('Nightly Backup'))
+  // 32 characters, never ending on the hyphen the cut left behind.
+  assertEquals(cronJobUnitName('a'.repeat(40))?.length, 32)
+  assertEquals(cronJobUnitName('abcdefghijklmnopqrstuvwxyzabcde-fgh'), 'abcdefghijklmnopqrstuvwxyzabcde')
+  // Nothing survives the fold.
+  assertEquals(cronJobUnitName('!!!'), null)
+  assertEquals(cronJobUnitName('   '), null)
+  assertEquals(cronJobUnitName('日次'), null)
 })

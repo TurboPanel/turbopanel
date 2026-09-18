@@ -49,6 +49,7 @@ import {
   parseTaskListFilters,
   type TaskListFilters,
 } from './routes-helpers.ts'
+import { checkTaskUnitName } from './unit-name-collision.ts'
 
 type TaskRequestContext = {
   db: Db
@@ -151,6 +152,11 @@ async function assertTaskCreateCapacity(
   if (await isTaskDisplayNameTaken(db, serviceId, name)) {
     return c.json({ error: TASK_NAME_IN_USE_ERROR }, 409)
   }
+  // Task rows and compose-authored cron share one namespace of timers on the
+  // host; a name that another task folds to, or that a compose job owns, would
+  // never run — refuse it here rather than drop it silently at deploy.
+  const unit = await checkTaskUnitName(db, serviceId, name)
+  if (!unit.ok) return c.json({ error: unit.error }, 409)
   return null
 }
 
@@ -165,6 +171,8 @@ async function assertTaskRenameAvailable(
   if (await isTaskDisplayNameTaken(db, serviceId, name, taskId)) {
     return c.json({ error: TASK_NAME_IN_USE_ERROR }, 409)
   }
+  const unit = await checkTaskUnitName(db, serviceId, name, taskId)
+  if (!unit.ok) return c.json({ error: unit.error }, 409)
   return null
 }
 

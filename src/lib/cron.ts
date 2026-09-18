@@ -31,6 +31,34 @@ export const MAX_CRON_JOBS_PER_SERVICE = 20
  */
 export const MAX_CRON_TIMEOUT_SECONDS = 86_400
 
+/**
+ * A job name becomes a systemd unit filename segment, so the compose linter,
+ * the deploy translator and the tasks API all hold it to one rule: lowercase,
+ * `[a-z0-9-]`, 1–32 characters, no leading hyphen.
+ */
+export const CRON_JOB_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
+
+/**
+ * The unit-name segment a task row runs under. Task rows carry a human display
+ * name ("Nightly backup"); compose-authored jobs carry a unit-safe `name`. Both
+ * end up as timers on the same host for the same service, so they share one
+ * namespace: this is the display name folded to that rule, and `null` when
+ * nothing survives the fold (the API refuses such a name).
+ */
+export function cronJobUnitName(displayName: string): string | null {
+  const folded = displayName
+    .normalize('NFKD')
+    // Decomposition leaves accents as combining marks; drop those so
+    // "Éclair" folds to "eclair", not "e-clair".
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32)
+    .replace(/-+$/g, '')
+  return CRON_JOB_NAME_RE.test(folded) ? folded : null
+}
+
 /** Longest command line accepted, before argv splitting. */
 const MAX_COMMAND_LENGTH = 1000
 /** Longest single argument, so one token cannot blow up a unit file. */

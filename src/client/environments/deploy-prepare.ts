@@ -84,10 +84,16 @@ import {
 import { accessGroupsFor } from "../../lib/principal-access.ts";
 import { SHA512_CRYPT_HASH_RE } from "../../lib/sha512-crypt.ts";
 import {
+  CRON_JOB_NAME_RE,
+  cronJobUnitName,
   cronToOnCalendar,
   MAX_CRON_JOBS_PER_SERVICE,
   parseCronCommand,
 } from "../../lib/cron.ts";
+import {
+  listTasksForServices,
+  type TaskRecord,
+} from "../../lib/db/task-records.ts";
 import { loadSshKeysByPrincipalIds } from "../principals/ssh-keys.ts";
 import {
   parsePrincipalOptions,
@@ -1819,6 +1825,7 @@ function nativeAppServicesForDeploy(
   resolvedServices: readonly ResolvedService[],
   orgOptions: unknown,
   serverOptions: unknown,
+  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map(),
 ): PreparedNativeAppService[] {
   if (apps.length === 0) return [];
   const accountLimits = effectiveAccountLimits(orgOptions, serverOptions);
@@ -1828,7 +1835,10 @@ function nativeAppServicesForDeploy(
     ),
   );
   return apps.map((app) => {
-    const cron = renderCronForDeploy(app.cron);
+    const cron = renderCronForDeploy(
+      app.cron,
+      tasksByComposeName.get(app.composeServiceName),
+    );
     const resources = resourcesByComposeName.get(app.composeServiceName);
     const cpus = resources?.cpus;
     const memoryBytes = resources?.memoryBytes;
@@ -3090,6 +3100,12 @@ export async function prepareDeployCompose(
     (hook) => !hostNativeNames.has(hook.composeServiceName),
   );
 
+  // Task rows (`POST /tasks`) join compose-authored cron on the wire for
+  // sites and native apps alike — loaded once here, keyed by compose name.
+  const tasksByComposeName = await loadTasksByComposeServiceName(
+    db,
+    serviceRows,
+  );
   const siteResolved = resolveSitesForMode(
     mode,
     warnings,
@@ -3100,6 +3116,7 @@ export async function prepareDeployCompose(
       principalMaterial,
       split.sites,
       principalResolution,
+      tasksByComposeName,
     ),
     split.sites,
   );
@@ -3115,6 +3132,7 @@ export async function prepareDeployCompose(
       resolved.services,
       orgRow?.options,
       serverRow?.options,
+      tasksByComposeName,
     ),
     pipeline.localServiceNames,
   );
@@ -3333,6 +3351,7 @@ function prepareSiteForDeploy(
   principalById: ReadonlyMap<string, EnvironmentDeployPrincipalMaterial>,
   /** `principal.id` the service's declared alias resolved to, if it declared one. */
   declared: { alias: string; principalId: string | undefined } | undefined,
+  tasks: readonly TaskRecord[] = [],
 ): { ok: true; site: EnvironmentDeploySite } | {
   ok: false;
   error: SitePrincipalError;
@@ -3368,7 +3387,7 @@ function prepareSiteForDeploy(
   // than escaped — the save-time linter is what tells them why.
   const { php: authoredPhp, cron: authoredCron, ...rest } = site;
   const php = renderPhpForDeploy(authoredPhp, ALLOWED_PHP_EXTENSIONS);
-  const cron = renderCronForDeploy(authoredCron);
+  const cron = renderCronForDeploy(authoredCron, tasks);
   // A timer with no `User=` runs as root; the wire refuses that.
   if (cron.length > 0 && !principalPin) return fail("site_cron_unowned");
 
@@ -3397,6 +3416,7 @@ export async function attachPrincipalsToSites(
   principalMaterial: readonly EnvironmentDeployPrincipalMaterial[],
   sites: readonly SiteSpec[],
   principalResolution: ComposePrincipalResolution,
+  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map(),
 ): Promise<EnvironmentDeploySite[] | SitePrincipalError> {
   if (sites.length === 0) return [];
 
@@ -3430,6 +3450,7 @@ export async function attachPrincipalsToSites(
         alias,
         principalId: principalResolution.principalIdByAlias.get(alias),
       },
+      tasksByComposeName.get(site.composeServiceName),
     );
     if (!prepared.ok) return prepared.error;
     out.push(prepared.site);
@@ -3438,20 +3459,30 @@ export async function attachPrincipalsToSites(
 }
 
 /**
- * Translate authored cron into the wire shape.
+ * Translate authored cron and the service's task rows into the wire shape.
+ *
+ * Two authoring paths, one namespace of timers on the host: compose-authored
+ * jobs (`x-turbopanel.cron`) and task rows (`POST /tasks`). Compose comes
+ * first and wins a name collision — the API refuses a task whose unit name
+ * matches a compose job (`task_name_in_compose`), so a collision here is a
+ * compose edit made after the task existed, and the document is what the
+ * operator is looking at when they deploy. Disabled rows are not rendered.
  *
  * A job whose schedule or command fails its spec is **dropped**, matching how
- * PHP settings are handled: the compose linter already refused it at save with
- * the reason, and re-reporting it at deploy would be a second, worse
- * explanation of a problem the operator has already been shown.
+ * PHP settings are handled: the compose linter / the tasks API already
+ * refused it at save with the reason, and re-reporting it at deploy would be
+ * a second, worse explanation of a problem the operator has already been
+ * shown. The combined list is capped at {@link MAX_CRON_JOBS_PER_SERVICE},
+ * which each path also enforces on its own.
  */
-function renderCronForDeploy(
+export function renderCronForDeploy(
   jobs: readonly ComposeServiceCronJob[] | undefined,
+  tasks: readonly TaskRecord[] = [],
 ): EnvironmentDeployCronJob[] {
-  if (!jobs || jobs.length === 0) return [];
   const out: EnvironmentDeployCronJob[] = [];
   const seen = new Set<string>();
-  for (const job of jobs.slice(0, MAX_CRON_JOBS_PER_SERVICE)) {
+  for (const job of jobs ?? []) {
+    if (out.length >= MAX_CRON_JOBS_PER_SERVICE) break;
     if (!CRON_JOB_NAME_RE.test(job.name) || seen.has(job.name)) continue;
     const schedule = cronToOnCalendar(job.schedule);
     if (!schedule.ok) continue;
@@ -3464,11 +3495,53 @@ function renderCronForDeploy(
       command: command.value,
     });
   }
+  for (const row of tasks) {
+    if (out.length >= MAX_CRON_JOBS_PER_SERVICE) break;
+    if (!row.isEnabled) continue;
+    const name = cronJobUnitName(row.name);
+    if (name === null || seen.has(name)) continue;
+    const schedule = cronToOnCalendar(row.schedule, row.timezone);
+    if (!schedule.ok) continue;
+    const command = parseCronCommand(row.command);
+    if (!command.ok) continue;
+    seen.add(name);
+    out.push({
+      name,
+      schedule: schedule.value,
+      command: command.value,
+      ...(row.timeoutSeconds !== null
+        ? { timeoutSeconds: row.timeoutSeconds }
+        : {}),
+      // The wire carries `forbid` only (see EnvironmentDeployCronJob); a row
+      // holding another policy is rendered without one, which is systemd's
+      // own behaviour for a still-active unit — the same thing as forbid.
+      ...(row.concurrencyPolicy === "forbid"
+        ? { concurrencyPolicy: "forbid" as const }
+        : {}),
+    });
+  }
   return out;
 }
 
-/** Mirrors the compose linter's rule; a name becomes a unit filename. */
-const CRON_JOB_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/** Task rows for an environment's services, keyed by compose service name. */
+export async function loadTasksByComposeServiceName(
+  db: Db,
+  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>,
+): Promise<ReadonlyMap<string, TaskRecord[]>> {
+  const byServiceId = new Map(
+    serviceRows.map((row) => [row.id, row.composeServiceName]),
+  );
+  const out = new Map<string, TaskRecord[]>();
+  if (byServiceId.size === 0) return out;
+  for (const row of await listTasksForServices(db, [...byServiceId.keys()])) {
+    const composeName = byServiceId.get(row.serviceId);
+    if (composeName === undefined) continue;
+    const list = out.get(composeName) ?? [];
+    list.push(row);
+    out.set(composeName, list);
+  }
+  return out;
+}
 
 function toSitePrincipal(
   material: EnvironmentDeployPrincipalMaterial,

@@ -127,7 +127,8 @@ const mutationExtraResponses = {
     content: { 'application/json': { schema: clientErrorJson } },
   },
   '409': {
-    description: 'task_name_in_use',
+    description:
+      'task_limit_reached; task_name_in_use (another task on the service, by display name or by the unit name both fold to); task_name_in_compose (the service\'s compose x-turbopanel.cron already owns that unit name); task_name_unrepresentable (the display name folds to no unit-safe name)',
     content: { 'application/json': { schema: clientErrorJson } },
   },
 }
