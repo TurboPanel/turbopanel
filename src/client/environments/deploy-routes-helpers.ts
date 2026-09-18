@@ -301,7 +301,7 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
             prepared.issues.length === 1 ? 'a field' : 'fields'
           } that grant root-equivalent access to the shared daemon host: ${
             prepared.issues.map((issue) => issue.path).join(', ')
-          }. An organization owner has to opt in under Organization settings → Compose before a deploy that sets ${
+          }. An organization owner has to opt in under Manage Organization → Compose before a deploy that sets ${
             prepared.issues.length === 1 ? 'it' : 'them'
           } will run.`,
         },

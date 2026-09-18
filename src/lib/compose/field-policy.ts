@@ -103,8 +103,8 @@ function gatedField(field: string): ComposeFieldPolicy {
     state: "gated",
     reason:
       `${field} grants root-equivalent access to the shared daemon host — ` +
-      "the organization has to opt in explicitly (Organization settings → " +
-      "Compose) before a deploy that sets it will run",
+      "an organization owner has to opt in under Manage Organization → " +
+      "Compose before a deploy that sets it will run",
   };
 }
 
