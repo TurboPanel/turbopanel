@@ -216,9 +216,10 @@ and TLS keys. An org owner (not just `organization:manage`) opts in per-org via
 `PUT /organizations/:id/compose-privileged-fields` — deliberately a higher bar
 than the ACME toggle's `assertCanManageOr403`, matching the audit's own "gated
 behind an explicit, audited org-owner opt-in" language. The "audited" half is
-not built — TurboPanel has no audit-log table yet (see the schema freeze's
-roadmap-restructures bucket) — so this is authorization only, not yet a logged
-one.
+built as of 2026-09-18: flipping this gate writes an
+`organization.compose_privileged_fields.set` row through `recordAudit`
+(`../db/audit-records.ts`), readable by owners at
+`GET /organizations/:id/audit`.
 
 ### Unbounded resources: an advisory, and an opt-in default
 

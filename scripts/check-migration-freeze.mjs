@@ -14,7 +14,7 @@
  *     a migration that never runs on an instance already past that point;
  *   - a `NNNN_*.sql` file that is not in the journal is ignored outright.
  *
- * The manifest (`migrations/meta/manifest.json`) pins every migration the
+ * The manifest (`migrations/manifest.json`) pins every migration the
  * repo has ever shipped: idx, tag, journal `when`, and the sha256 of the file
  * exactly as drizzle computes it (`readMigrationFiles` in
  * `drizzle-orm/migrator.js`: the whole file as a UTF-8 string, breakpoints
@@ -195,7 +195,7 @@ function writeManifest(file, manifest) {
 export function main(argv, { root } = {}) {
   const repoRoot = root ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const migrationsDir = path.join(repoRoot, 'migrations')
-  const manifestPath = path.join(migrationsDir, 'meta', 'manifest.json')
+  const manifestPath = path.join(migrationsDir, 'manifest.json')
   const mode = argv.includes('--rebaseline')
     ? 'rebaseline'
     : argv.includes('--update')

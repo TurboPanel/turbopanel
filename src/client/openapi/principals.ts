@@ -239,6 +239,78 @@ export const principalPaths = {
       },
     },
   },
+  "/api/client/v1/organizations/{id}/audit": {
+    get: {
+      tags: ["Organizations"],
+      summary: "Read the organization's audit trail",
+      description:
+        "Security-relevant operator actions, newest first: daemon-key revokes, server deletes, " +
+        "grant changes, forge credential edits, organization gate flips. Owner only — the trail " +
+        "names who did what. Keyset pagination: pass the last row's createdAt as `before`.",
+      parameters: [
+        { name: "id", in: "path", required: true, schema: { type: "string" } },
+        {
+          name: "before",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "date-time" },
+          description: "createdAt of the previous page's last row",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+        },
+      ],
+      responses: {
+        200: {
+          description: "Audit entries",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["entries"],
+                properties: {
+                  entries: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      required: ["id", "createdAt", "action", "targetType"],
+                      properties: {
+                        id: { type: "string", format: "uuid" },
+                        createdAt: { type: "string", format: "date-time" },
+                        actorUserId: {
+                          type: "string",
+                          format: "uuid",
+                          nullable: true,
+                        },
+                        actorEmail: { type: "string", nullable: true },
+                        action: { type: "string" },
+                        targetType: { type: "string" },
+                        targetId: {
+                          type: "string",
+                          format: "uuid",
+                          nullable: true,
+                        },
+                        context: {
+                          type: "object",
+                          nullable: true,
+                          additionalProperties: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        400: { description: "Invalid limit" },
+        403: { description: "organization owner required" },
+      },
+    },
+  },
   "/api/client/v1/organizations/{id}/compose-resource-defaults": {
     get: {
       tags: ["Resource limits"],

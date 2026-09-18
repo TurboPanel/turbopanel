@@ -11,6 +11,11 @@ import {
 } from "../org-context.ts";
 import { assertCanManageOr403, parseJsonBody } from "../shared.ts";
 import { type Db, getDb } from "../../db.ts";
+import {
+  AUDIT_MAX_PAGE_SIZE,
+  listAuditForOrganization,
+  recordAudit,
+} from "../../lib/db/audit-records.ts";
 import { organization } from "../../lib/db/schema.ts";
 import {
   parseOrganizationOptions,
@@ -357,6 +362,7 @@ export function registerOrganizationRoutes(
     const db = getDb(c);
     if (!db) return c.json({ error: "Database unavailable" }, 503);
 
+    const session = c.get("session");
     const id = c.req.param("id");
     const denied = await assertCanManageOr403(c, "organization", id);
     if (denied) return denied;
@@ -391,6 +397,16 @@ export function registerOrganizationRoutes(
       .limit(1);
     const options = parseOrganizationOptions(updated?.options);
 
+    await recordAudit(db, {
+      organizationId: id,
+      actorUserId: session?.userId ?? null,
+      actorEmail: session?.email ?? null,
+      action: "organization.acme.set",
+      targetType: "organization",
+      targetId: id,
+      context: { acmeEnabled: patch.acmeEnabled },
+    });
+
     return c.json(tlsSettingsPutResponse(options));
   });
 
@@ -423,6 +439,7 @@ export function registerOrganizationRoutes(
     const db = getDb(c);
     if (!db) return c.json({ error: "Database unavailable" }, 503);
 
+    const session = c.get("session");
     const id = c.req.param("id");
     const denied = await assertOrgOwnerOr403(c, "organization", id);
     if (denied) return denied;
@@ -457,7 +474,51 @@ export function registerOrganizationRoutes(
       .limit(1);
     const options = parseOrganizationOptions(updated?.options);
 
+    await recordAudit(db, {
+      organizationId: id,
+      actorUserId: session?.userId ?? null,
+      actorEmail: session?.email ?? null,
+      action: "organization.compose_privileged_fields.set",
+      targetType: "organization",
+      targetId: id,
+      context: { composeGatedFieldsEnabled: patch.composeGatedFieldsEnabled },
+    });
+
     return c.json(composeGatedFieldsPutResponse(options));
+  });
+
+  /**
+   * The organization's audit trail, newest first.
+   *
+   * Owner-only, matching the bar on the actions it records: the trail names
+   * who did what, which is exactly what an attacker with a member session
+   * would read to learn the shape of an organization. Keyset pagination —
+   * pass the last row's `createdAt` as `before`.
+   */
+  router.get("/organizations/:id/audit", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertOrgOwnerOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const before = c.req.query("before");
+    const limitRaw = c.req.query("limit");
+    const limit = limitRaw === undefined ? undefined : Number(limitRaw);
+    if (
+      limit !== undefined &&
+      (!Number.isInteger(limit) || limit <= 0 || limit > AUDIT_MAX_PAGE_SIZE)
+    ) {
+      return c.json({ error: "Invalid limit" }, 400);
+    }
+
+    const entries = await listAuditForOrganization(db, {
+      organizationId: id,
+      ...(before ? { before } : {}),
+      ...(limit === undefined ? {} : { limit }),
+    });
+    return c.json({ entries });
   });
 
   router.get("/organizations/:id/compose-resource-defaults", async (c) => {
@@ -486,6 +547,7 @@ export function registerOrganizationRoutes(
     const db = getDb(c);
     if (!db) return c.json({ error: "Database unavailable" }, 503);
 
+    const session = c.get("session");
     const id = c.req.param("id");
     const denied = await assertOrgOwnerOr403(c, "organization", id);
     if (denied) return denied;
@@ -522,6 +584,16 @@ export function registerOrganizationRoutes(
       .from(organization)
       .where(eq(organization.id, id))
       .limit(1);
+
+    await recordAudit(db, {
+      organizationId: id,
+      actorUserId: session?.userId ?? null,
+      actorEmail: session?.email ?? null,
+      action: "organization.compose_resource_defaults.set",
+      targetType: "organization",
+      targetId: id,
+      context: { composeDefaultResourceLimits: patch },
+    });
 
     return c.json(
       composeDefaultResourceLimitsPutResponse(

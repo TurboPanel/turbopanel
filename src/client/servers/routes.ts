@@ -12,6 +12,7 @@ import {
   parseJsonBody,
 } from "../shared.ts";
 import { type Db, getDaemonCellRegistry, getDb } from "../../db.ts";
+import { recordAudit } from "../../lib/db/audit-records.ts";
 import { parseOrganizationOptions } from "../../lib/organization-options.ts";
 import { parseDatacenterOptions } from "../../lib/datacenter-options.ts";
 import {
@@ -1460,6 +1461,16 @@ export function registerServerRoutes(
       : "Daemon cell registry unavailable";
     const revoked = await getServerDaemonStateByServerId(db, id);
 
+    await recordAudit(db, {
+      organizationId,
+      actorUserId: session.userId,
+      actorEmail: session.email,
+      action: "server.daemon_key.revoke",
+      targetType: "server",
+      targetId: id,
+      context: { purged: purgeError === null },
+    });
+
     return c.json({
       ok: true as const,
       revokedAt: revoked?.key.revokedAt ?? null,
@@ -1563,6 +1574,16 @@ export function registerServerRoutes(
         "servers",
         `tier assignment recompute after delete failed: ${String(err)}`,
       );
+    });
+
+    await recordAudit(db, {
+      organizationId,
+      actorUserId: session.userId,
+      actorEmail: session.email,
+      action: "server.delete",
+      targetType: "server",
+      targetId: id,
+      context: { purged: purgeError === null },
     });
 
     return serverDeletedResponse(c, id, purgeError);

@@ -8,7 +8,7 @@
  * migrated by files this checkout does not ship (a newer release, or the
  * pre-freeze baseline) it would apply our files on top of a foreign history
  * and fail half-way with a mid-DDL error. `ahead` / `diverged` refuse up
- * front. The comparison is against migrations/meta/manifest.json (the frozen
+ * front. The comparison is against migrations/manifest.json (the frozen
  * truth) and public.migration.hash (drizzle writes the same sha256).
  */
 import fs from 'node:fs'
@@ -58,11 +58,11 @@ export function describeSchemaState(state) {
 
 export function readShippedMigrationHashes(migrationsFolder) {
   const manifest = JSON.parse(
-    fs.readFileSync(path.join(migrationsFolder, 'meta', 'manifest.json'), 'utf8'),
+    fs.readFileSync(path.join(migrationsFolder, 'manifest.json'), 'utf8'),
   )
   const hashes = (manifest.entries ?? []).map((entry) => entry.sha256)
   if (hashes.length === 0 || hashes.some((hash) => typeof hash !== 'string')) {
-    throw new Error('migrations/meta/manifest.json has no usable entries')
+    throw new Error('migrations/manifest.json has no usable entries')
   }
   return hashes
 }

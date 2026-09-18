@@ -17,11 +17,12 @@
  * admin view throughout.
  */
 
-import type { Context } from 'hono'
-import { and, eq } from 'drizzle-orm'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
-import { forge } from '../../lib/db/schema.ts'
+import type { Context } from "hono";
+import { and, eq } from "drizzle-orm";
+import type { AppEnv } from "../../app.ts";
+import type { Db } from "../../db.ts";
+import { recordAudit } from "../../lib/db/audit-records.ts";
+import { forge } from "../../lib/db/schema.ts";
 import {
   createForge,
   deleteForge,
@@ -33,50 +34,50 @@ import {
   loadForge,
   updateForge,
   visibleForgesCondition,
-} from '../../lib/git/forge-records.ts'
+} from "../../lib/git/forge-records.ts";
 import {
   buildGithubAppManifest,
   convertGithubAppManifest,
   githubAppCreateUrl,
   GithubManifestError,
-} from '../../lib/git/github-manifest.ts'
-import { githubApiBaseFor } from '../../lib/git/github-app-token.ts'
+} from "../../lib/git/github-manifest.ts";
+import { githubApiBaseFor } from "../../lib/git/github-app-token.ts";
 import {
   type ForgeUrlField,
   resolveForgeHostScope,
   validateForgeUrl,
-} from '../../lib/git/forge-url.ts'
-import { fetchGithubAppMetadata } from '../../lib/git/github-app-metadata.ts'
+} from "../../lib/git/forge-url.ts";
+import { fetchGithubAppMetadata } from "../../lib/git/github-app-metadata.ts";
 import {
   getPublicUrls,
   publicUrlEntryToInstallOrigin,
-} from '../../admin/public-urls.ts'
-import { webhookPathFor } from '../../lib/git/webhook-reachability.ts'
+} from "../../admin/public-urls.ts";
+import { webhookPathFor } from "../../lib/git/webhook-reachability.ts";
 import {
   signGithubManifestState,
   verifyGithubManifestState,
-} from '../repositories/provider-install-state.ts'
+} from "../repositories/provider-install-state.ts";
 import {
   FORGE_UUID_RE,
-  parseForgeCreateBody,
-  parseGithubManifestStartBody,
-  parseForgePatchBody,
-  serializeForge,
-  githubManifestUiReturnPath,
   type GithubManifestReturnError,
-} from './routes-helpers.ts'
+  githubManifestUiReturnPath,
+  parseForgeCreateBody,
+  parseForgePatchBody,
+  parseGithubManifestStartBody,
+  serializeForge,
+} from "./routes-helpers.ts";
 
 export type ForgeScope = {
   /** `null` = the instance-wide (admin) view. */
-  organizationId: string | null
-}
+  organizationId: string | null;
+};
 
 /** Every origin this instance publishes, normalized for comparison. */
 async function listPublicOrigins(db: Db): Promise<string[]> {
   return (await getPublicUrls(db))
     .map((entry) => publicUrlEntryToInstallOrigin(entry))
     .filter((origin): origin is string => origin !== null)
-    .map((origin) => origin.replace(/\/$/, ''))
+    .map((origin) => origin.replace(/\/$/, ""));
 }
 
 /**
@@ -90,8 +91,9 @@ async function listPublicOrigins(db: Db): Promise<string[]> {
 async function resolvePublicOrigin(db: Db): Promise<string | null> {
   const origins = (await getPublicUrls(db))
     .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .filter((origin): origin is string => origin !== null)
-  return origins.find((origin) => origin.startsWith('https://')) ?? origins[0] ?? null
+    .filter((origin): origin is string => origin !== null);
+  return origins.find((origin) => origin.startsWith("https://")) ??
+    origins[0] ?? null;
 }
 
 /**
@@ -112,8 +114,8 @@ async function loadVisibleApp(
     })
     .from(forge)
     .where(and(eq(forge.id, id), visibleForgesCondition(scope.organizationId)))
-    .limit(1)
-  return row ?? null
+    .limit(1);
+  return row ?? null;
 }
 
 /**
@@ -128,8 +130,8 @@ function assertWritable(
   scope: ForgeScope,
   row: { organizationId: string | null },
 ): Response | null {
-  if (row.organizationId === scope.organizationId) return null
-  return c.json({ error: 'git_app_not_writable' }, 403)
+  if (row.organizationId === scope.organizationId) return null;
+  return c.json({ error: "git_app_not_writable" }, 403);
 }
 
 export async function listForgesHandler(
@@ -137,13 +139,16 @@ export async function listForgesHandler(
   db: Db,
   scope: ForgeScope,
 ): Promise<Response> {
-  const apps = await listForges(db, { organizationId: scope.organizationId })
-  const publicOrigin = await resolvePublicOrigin(db)
+  const apps = await listForges(db, { organizationId: scope.organizationId });
+  const publicOrigin = await resolvePublicOrigin(db);
   return c.json({
     apps: apps.map((app) =>
-      serializeForge(app, { publicOrigin, viewerOrganizationId: scope.organizationId })
+      serializeForge(app, {
+        publicOrigin,
+        viewerOrganizationId: scope.organizationId,
+      })
     ),
-  })
+  });
 }
 
 export async function getForgeHandler(
@@ -152,19 +157,19 @@ export async function getForgeHandler(
   scope: ForgeScope,
   id: string,
 ): Promise<Response> {
-  if (!FORGE_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
-  const visible = await loadVisibleApp(db, scope, id)
-  if (!visible) return c.json({ error: 'Not found' }, 404)
+  if (!FORGE_UUID_RE.test(id)) return c.json({ error: "Not found" }, 404);
+  const visible = await loadVisibleApp(db, scope, id);
+  if (!visible) return c.json({ error: "Not found" }, 404);
 
-  const app = await getForgeSummary(db, id)
-  if (!app) return c.json({ error: 'Not found' }, 404)
-  const publicOrigin = await resolvePublicOrigin(db)
+  const app = await getForgeSummary(db, id);
+  if (!app) return c.json({ error: "Not found" }, 404);
+  const publicOrigin = await resolvePublicOrigin(db);
   return c.json({
     app: serializeForge(app, {
       publicOrigin,
       viewerOrganizationId: scope.organizationId,
     }),
-  })
+  });
 }
 
 /**
@@ -178,13 +183,37 @@ async function rejectUnsafeForgeUrls(
   c: Context<AppEnv>,
   urls: Partial<Record<ForgeUrlField, string | null | undefined>>,
 ): Promise<Response | null> {
-  for (const field of ['baseUrl', 'apiUrl', 'webhookOrigin'] as const) {
-    const value = urls[field]
-    if (typeof value !== 'string') continue
-    const reason = validateForgeUrl(value) ?? (await resolveForgeHostScope(value))
-    if (reason) return c.json({ error: 'forge_url_rejected', field, reason }, 400)
+  for (const field of ["baseUrl", "apiUrl", "webhookOrigin"] as const) {
+    const value = urls[field];
+    if (typeof value !== "string") continue;
+    const reason = validateForgeUrl(value) ??
+      (await resolveForgeHostScope(value));
+    if (reason) {
+      return c.json({ error: "forge_url_rejected", field, reason }, 400);
+    }
   }
-  return null
+  return null;
+}
+
+/** One place for the three forge mutations' audit writes. */
+async function recordForgeAudit(
+  c: Context<AppEnv>,
+  db: Db,
+  scope: ForgeScope,
+  action: "forge.create" | "forge.update" | "forge.delete",
+  forgeId: string,
+  context: Record<string, unknown> | null,
+): Promise<void> {
+  const session = c.get("session");
+  await recordAudit(db, {
+    organizationId: scope.organizationId,
+    actorUserId: session?.userId ?? null,
+    actorEmail: session?.email ?? null,
+    action,
+    targetType: "forge",
+    targetId: forgeId,
+    context,
+  });
 }
 
 export async function createForgeHandler(
@@ -192,38 +221,43 @@ export async function createForgeHandler(
   db: Db,
   scope: ForgeScope,
 ): Promise<Response> {
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
   if (!dataEncryptionSecrets) {
-    return c.json({ error: 'Encryption unavailable' }, 503)
+    return c.json({ error: "Encryption unavailable" }, 503);
   }
 
-  const body = await c.req.json().catch(() => null)
-  const input = parseForgeCreateBody(body, scope.organizationId)
+  const body = await c.req.json().catch(() => null);
+  const input = parseForgeCreateBody(body, scope.organizationId);
   if (!input) {
     return c.json({
       error:
-        'expected { provider, name, externalAppId, baseUrl?, apiUrl?, appSlug?, ' +
-        'clientId?, redirectUri?, privateKeyPem?, clientSecret?, webhookSecret? }',
-    }, 400)
+        "expected { provider, name, externalAppId, baseUrl?, apiUrl?, appSlug?, " +
+        "clientId?, redirectUri?, privateKeyPem?, clientSecret?, webhookSecret? }",
+    }, 400);
   }
-  const unsafe = await rejectUnsafeForgeUrls(c, input)
-  if (unsafe) return unsafe
+  const unsafe = await rejectUnsafeForgeUrls(c, input);
+  if (unsafe) return unsafe;
 
   try {
-    const app = await createForge(db, dataEncryptionSecrets, input)
-    const publicOrigin = await resolvePublicOrigin(db)
+    const app = await createForge(db, dataEncryptionSecrets, input);
+    await recordForgeAudit(c, db, scope, "forge.create", app.id, {
+      provider: app.provider,
+    });
+    const publicOrigin = await resolvePublicOrigin(db);
     return c.json({
       app: serializeForge(app, {
         publicOrigin,
         viewerOrganizationId: scope.organizationId,
       }),
-    }, 201)
+    }, 201);
   } catch (error) {
     if (error instanceof ForgeConflictError) {
-      return c.json({ error: error.message }, 409)
+      return c.json({ error: error.message }, 409);
     }
-    if (error instanceof ForgeError) return c.json({ error: error.message }, 400)
-    throw error
+    if (error instanceof ForgeError) {
+      return c.json({ error: error.message }, 400);
+    }
+    throw error;
   }
 }
 
@@ -233,40 +267,47 @@ export async function patchForgeHandler(
   scope: ForgeScope,
   id: string,
 ): Promise<Response> {
-  if (!FORGE_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+  if (!FORGE_UUID_RE.test(id)) return c.json({ error: "Not found" }, 404);
 
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
   if (!dataEncryptionSecrets) {
-    return c.json({ error: 'Encryption unavailable' }, 503)
+    return c.json({ error: "Encryption unavailable" }, 503);
   }
 
-  const visible = await loadVisibleApp(db, scope, id)
-  if (!visible) return c.json({ error: 'Not found' }, 404)
-  const denied = assertWritable(c, scope, visible)
-  if (denied) return denied
+  const visible = await loadVisibleApp(db, scope, id);
+  if (!visible) return c.json({ error: "Not found" }, 404);
+  const denied = assertWritable(c, scope, visible);
+  if (denied) return denied;
 
-  const body = await c.req.json().catch(() => null)
-  const updates = parseForgePatchBody(body)
-  if (!updates) return c.json({ error: 'Invalid request' }, 400)
-  const unsafe = await rejectUnsafeForgeUrls(c, updates)
-  if (unsafe) return unsafe
+  const body = await c.req.json().catch(() => null);
+  const updates = parseForgePatchBody(body);
+  if (!updates) return c.json({ error: "Invalid request" }, 400);
+  const unsafe = await rejectUnsafeForgeUrls(c, updates);
+  if (unsafe) return unsafe;
 
   try {
-    const app = await updateForge(db, dataEncryptionSecrets, id, updates)
-    if (!app) return c.json({ error: 'Not found' }, 404)
-    const publicOrigin = await resolvePublicOrigin(db)
+    const app = await updateForge(db, dataEncryptionSecrets, id, updates);
+    if (!app) return c.json({ error: "Not found" }, 404);
+    // The fields, never the values: credentials are the point of the trail,
+    // not its contents.
+    await recordForgeAudit(c, db, scope, "forge.update", app.id, {
+      fields: Object.keys(updates).sort(),
+    });
+    const publicOrigin = await resolvePublicOrigin(db);
     return c.json({
       app: serializeForge(app, {
         publicOrigin,
         viewerOrganizationId: scope.organizationId,
       }),
-    })
+    });
   } catch (error) {
     if (error instanceof ForgeConflictError) {
-      return c.json({ error: error.message }, 409)
+      return c.json({ error: error.message }, 409);
     }
-    if (error instanceof ForgeError) return c.json({ error: error.message }, 400)
-    throw error
+    if (error instanceof ForgeError) {
+      return c.json({ error: error.message }, 400);
+    }
+    throw error;
   }
 }
 
@@ -276,18 +317,19 @@ export async function deleteForgeHandler(
   scope: ForgeScope,
   id: string,
 ): Promise<Response> {
-  if (!FORGE_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+  if (!FORGE_UUID_RE.test(id)) return c.json({ error: "Not found" }, 404);
 
-  const visible = await loadVisibleApp(db, scope, id)
-  if (!visible) return c.json({ error: 'Not found' }, 404)
-  const denied = assertWritable(c, scope, visible)
-  if (denied) return denied
+  const visible = await loadVisibleApp(db, scope, id);
+  if (!visible) return c.json({ error: "Not found" }, 404);
+  const denied = assertWritable(c, scope, visible);
+  if (denied) return denied;
 
   // `gitConnection` cascades from here, and `repository.connection_id` is
   // ON DELETE SET NULL — so deleting an app disconnects its repositories
   // rather than destroying the operator's repository rows.
-  await deleteForge(db, id)
-  return c.body(null, 204)
+  await deleteForge(db, id);
+  await recordForgeAudit(c, db, scope, "forge.delete", id, null);
+  return c.body(null, 204);
 }
 
 /**
@@ -308,29 +350,29 @@ export async function syncForgeHandler(
   scope: ForgeScope,
   id: string,
 ): Promise<Response> {
-  if (!FORGE_UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+  if (!FORGE_UUID_RE.test(id)) return c.json({ error: "Not found" }, 404);
 
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
   if (!dataEncryptionSecrets) {
-    return c.json({ error: 'Encryption unavailable' }, 503)
+    return c.json({ error: "Encryption unavailable" }, 503);
   }
 
-  const visible = await loadVisibleApp(db, scope, id)
-  if (!visible) return c.json({ error: 'Not found' }, 404)
-  const denied = assertWritable(c, scope, visible)
-  if (denied) return denied
+  const visible = await loadVisibleApp(db, scope, id);
+  if (!visible) return c.json({ error: "Not found" }, 404);
+  const denied = assertWritable(c, scope, visible);
+  if (denied) return denied;
 
-  const app = await loadForge(db, dataEncryptionSecrets, id)
-  if (!app) return c.json({ error: 'Not found' }, 404)
-  if (app.provider !== 'github') {
+  const app = await loadForge(db, dataEncryptionSecrets, id);
+  if (!app) return c.json({ error: "Not found" }, 404);
+  if (app.provider !== "github") {
     // GitLab OAuth applications have no equivalent self-describing endpoint;
     // there is nothing to reconcile against.
-    return c.json({ error: 'git_app_sync_unsupported' }, 400)
+    return c.json({ error: "git_app_sync_unsupported" }, 400);
   }
 
-  let metadata
+  let metadata;
   try {
-    metadata = await fetchGithubAppMetadata(app)
+    metadata = await fetchGithubAppMetadata(app);
   } catch (error) {
     // Always 502: every failure here is GitHub's answer to *our* App secrets,
     // not a fault in the operator's request. A 401 from GitHub means the stored
@@ -338,9 +380,9 @@ export async function syncForgeHandler(
     // `detail` rather than reflecting back as a 401 the console would read as
     // "your session expired".
     return c.json({
-      error: 'git_app_sync_failed',
-      detail: error instanceof Error ? error.message : 'unknown error',
-    }, 502)
+      error: "git_app_sync_failed",
+      detail: error instanceof Error ? error.message : "unknown error",
+    }, 502);
   }
 
   const updated = await updateForge(db, dataEncryptionSecrets, id, {
@@ -350,10 +392,10 @@ export async function syncForgeHandler(
     // `null` means GitHub did not report visibility; keep what we recorded.
     ...(metadata.isPublic === null ? {} : { isPublic: metadata.isPublic }),
     syncedAt: new Date().toISOString(),
-  })
-  if (!updated) return c.json({ error: 'Not found' }, 404)
+  });
+  if (!updated) return c.json({ error: "Not found" }, 404);
 
-  const publicOrigin = await resolvePublicOrigin(db)
+  const publicOrigin = await resolvePublicOrigin(db);
   return c.json({
     app: serializeForge(updated, {
       publicOrigin,
@@ -362,7 +404,7 @@ export async function syncForgeHandler(
     // Reported rather than judged: what counts as drift is a product question,
     // and the console is where that comparison belongs.
     provider: { permissions: metadata.permissions, events: metadata.events },
-  })
+  });
 }
 
 /**
@@ -382,44 +424,48 @@ export async function startGithubManifestHandler(
   db: Db,
   scope: ForgeScope,
 ): Promise<Response> {
-  const secretsConfig = c.get('secretsConfig')
+  const secretsConfig = c.get("secretsConfig");
   if (!secretsConfig) {
-    return c.json({ error: 'Signing unavailable — no root secret configured' }, 503)
+    return c.json(
+      { error: "Signing unavailable — no root secret configured" },
+      503,
+    );
   }
 
-  const publicOrigin = await resolvePublicOrigin(db)
-  if (!publicOrigin) return c.json({ error: 'public_url_not_configured' }, 503)
+  const publicOrigin = await resolvePublicOrigin(db);
+  if (!publicOrigin) return c.json({ error: "public_url_not_configured" }, 503);
 
   const body = (await c.req.json().catch(() => null)) as
     | Record<string, unknown>
-    | null
-  const wizard = parseGithubManifestStartBody(body)
-  if (!wizard) return c.json({ error: 'invalid_manifest_request' }, 400)
+    | null;
+  const wizard = parseGithubManifestStartBody(body);
+  if (!wizard) return c.json({ error: "invalid_manifest_request" }, 400);
 
-  const { name, baseUrl, organizationLogin, apiUrl, pullRequestAccess } = wizard
-  const unsafe = await rejectUnsafeForgeUrls(c, { baseUrl, apiUrl })
-  if (unsafe) return unsafe
+  const { name, baseUrl, organizationLogin, apiUrl, pullRequestAccess } =
+    wizard;
+  const unsafe = await rejectUnsafeForgeUrls(c, { baseUrl, apiUrl });
+  if (unsafe) return unsafe;
 
   // The operator picks which published URL the App delivers to, because an
   // instance may have several and GitHub stores exactly one. It has to be one
   // this instance actually publishes — otherwise the App would be registered
   // against an address nothing here answers on. Falling back to the instance
   // default keeps the old single-URL behaviour working.
-  let webhookOrigin = publicOrigin.replace(/\/$/, '')
+  let webhookOrigin = publicOrigin.replace(/\/$/, "");
   if (wizard.webhookOrigin) {
-    const known = await listPublicOrigins(db)
+    const known = await listPublicOrigins(db);
     if (!known.includes(wizard.webhookOrigin)) {
-      return c.json({ error: 'webhook_origin_not_published' }, 400)
+      return c.json({ error: "webhook_origin_not_published" }, 400);
     }
-    webhookOrigin = wizard.webhookOrigin
+    webhookOrigin = wizard.webhookOrigin;
   }
 
   // Instance-wide apps have to be installable by accounts other than the one
   // that created them; an organization's own app should not be.
-  const isPublic = scope.organizationId === null
+  const isPublic = scope.organizationId === null;
 
-  const webhookRef = generateWebhookRef()
-  const origin = publicOrigin.replace(/\/$/, '')
+  const webhookRef = generateWebhookRef();
+  const origin = publicOrigin.replace(/\/$/, "");
   // GitHub sends the operator's *browser* to this URL, and a top-level
   // navigation carries no `X-Turbopanel-Organization-Id`. The org-scoped
   // *manifest* callback still pins the organization in the query string,
@@ -427,10 +473,10 @@ export async function startGithubManifestHandler(
   // not a secret — the session and the signed state are what authorize the
   // conversion; this only says which org context to resolve it in.
   const callbackPath = scope.organizationId === null
-    ? '/api/admin/v1/forges/github/manifest/callback'
+    ? "/api/admin/v1/forges/github/manifest/callback"
     : `/api/client/v1/forges/github/manifest/callback?organizationId=${
       encodeURIComponent(scope.organizationId)
-    }`
+    }`;
 
   const state = await signGithubManifestState(secretsConfig, {
     organizationId: scope.organizationId,
@@ -443,29 +489,31 @@ export async function startGithubManifestHandler(
     pullRequestAccess,
     customGitUser: wizard.customGitUser,
     customGitPort: wizard.customGitPort,
-  })
+  });
 
   // The install redirect lands on the *repository* callback — the one that
   // writes the `gitConnection` row. GitHub stores a single setup URL, so this
   // path stays org-neutral: the signed `state` carries organization and forge.
-  const setupPath = '/api/client/v1/repositories/github/callback'
+  const setupPath = "/api/client/v1/repositories/github/callback";
 
   const manifest = buildGithubAppManifest({
     name,
     publicUrl: origin,
     // The app's own origin, and the ref only when self-hosted — this URL is
     // what GitHub stores, and nothing revisits it.
-    webhookUrl: `${webhookOrigin}${webhookPathFor('github', webhookRef, baseUrl)}`,
+    webhookUrl: `${webhookOrigin}${
+      webhookPathFor("github", webhookRef, baseUrl)
+    }`,
     redirectUrl: `${origin}${callbackPath}`,
     setupUrl: `${origin}${setupPath}`,
     publicApp: isPublic,
     pullRequestAccess,
-  })
+  });
   return c.json({
     manifest,
     createUrl: githubAppCreateUrl(baseUrl, state, organizationLogin),
     state,
-  })
+  });
 }
 
 function redirectToForgesUi(
@@ -473,8 +521,8 @@ function redirectToForgesUi(
   scope: ForgeScope,
   query: { created?: string; error?: GithubManifestReturnError },
 ): Response {
-  const location = githubManifestUiReturnPath(scope.organizationId, query)
-  return c.redirect(location, 302)
+  const location = githubManifestUiReturnPath(scope.organizationId, query);
+  return c.redirect(location, 302);
 }
 
 /**
@@ -492,41 +540,41 @@ export async function completeGithubManifestHandler(
   db: Db,
   scope: ForgeScope,
 ): Promise<Response> {
-  const secretsConfig = c.get('secretsConfig')
+  const secretsConfig = c.get("secretsConfig");
   if (!secretsConfig) {
-    return redirectToForgesUi(c, scope, { error: 'unavailable' })
+    return redirectToForgesUi(c, scope, { error: "unavailable" });
   }
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
   if (!dataEncryptionSecrets) {
-    return redirectToForgesUi(c, scope, { error: 'unavailable' })
+    return redirectToForgesUi(c, scope, { error: "unavailable" });
   }
 
-  const state = c.req.query('state')
-  const code = c.req.query('code')
+  const state = c.req.query("state");
+  const code = c.req.query("code");
   if (!state || !code) {
-    return redirectToForgesUi(c, scope, { error: 'invalid_request' })
+    return redirectToForgesUi(c, scope, { error: "invalid_request" });
   }
 
-  const pending = await verifyGithubManifestState(secretsConfig, state)
+  const pending = await verifyGithubManifestState(secretsConfig, state);
   if (!pending) {
-    return redirectToForgesUi(c, scope, { error: 'state_invalid' })
+    return redirectToForgesUi(c, scope, { error: "state_invalid" });
   }
   // The signed state is the authority; the surface it came back on must agree.
   if (pending.organizationId !== scope.organizationId) {
-    return redirectToForgesUi(c, scope, { error: 'forbidden' })
+    return redirectToForgesUi(c, scope, { error: "forbidden" });
   }
 
-  let conversion
+  let conversion;
   try {
     conversion = await convertGithubAppManifest(
       githubApiBaseFor({ apiUrl: null, baseUrl: pending.baseUrl }),
       code,
-    )
+    );
   } catch (error) {
     if (error instanceof GithubManifestError) {
-      return redirectToForgesUi(c, scope, { error: 'conversion_failed' })
+      return redirectToForgesUi(c, scope, { error: "conversion_failed" });
     }
-    throw error
+    throw error;
   }
 
   try {
@@ -535,7 +583,7 @@ export async function completeGithubManifestHandler(
     // reject every delivery until someone noticed.
     const app = await createForge(db, dataEncryptionSecrets, {
       organizationId: scope.organizationId,
-      provider: 'github',
+      provider: "github",
       name: pending.name,
       baseUrl: pending.baseUrl,
       externalAppId: conversion.externalAppId,
@@ -555,16 +603,16 @@ export async function completeGithubManifestHandler(
       isPublic: pending.isPublic === true,
       customGitUser: pending.customGitUser ?? null,
       customGitPort: pending.customGitPort ?? null,
-    })
+    });
 
-    return redirectToForgesUi(c, scope, { created: app.id })
+    return redirectToForgesUi(c, scope, { created: app.id });
   } catch (error) {
     if (error instanceof ForgeConflictError) {
-      return redirectToForgesUi(c, scope, { error: 'conflict' })
+      return redirectToForgesUi(c, scope, { error: "conflict" });
     }
     if (error instanceof ForgeError) {
-      return redirectToForgesUi(c, scope, { error: 'create_failed' })
+      return redirectToForgesUi(c, scope, { error: "create_failed" });
     }
-    throw error
+    throw error;
   }
 }

@@ -20,7 +20,7 @@
  *     Workers runtime skips this on purpose — `pnpm deploy` migrates before
  *     `wrangler deploy`, and a Worker has no boot to check at.
  *
- * The comparison is against `migrations/meta/manifest.json` — the frozen
+ * The comparison is against `migrations/manifest.json` — the frozen
  * truth (see scripts/check-migration-freeze.mjs) — and `public.migration`'s
  * `hash` column, which drizzle writes with the same sha256 the manifest
  * records. Applied rows must be exactly a prefix of the manifest, in order.
@@ -105,11 +105,11 @@ type ManifestFile = { entries?: Array<{ sha256?: unknown }> }
 export async function readShippedMigrationHashes(
   migrationsFolder: string = MIGRATIONS_FOLDER,
 ): Promise<string[]> {
-  const raw = await Deno.readTextFile(join(migrationsFolder, 'meta', 'manifest.json'))
+  const raw = await Deno.readTextFile(join(migrationsFolder, 'manifest.json'))
   const manifest = JSON.parse(raw) as ManifestFile
   const hashes = (manifest.entries ?? []).map((entry) => entry.sha256)
   if (hashes.length === 0 || hashes.some((hash) => typeof hash !== 'string')) {
-    throw new Error('migrations/meta/manifest.json has no usable entries')
+    throw new Error('migrations/manifest.json has no usable entries')
   }
   return hashes as string[]
 }

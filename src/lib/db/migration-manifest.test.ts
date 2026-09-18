@@ -1,6 +1,6 @@
 /**
  * Guard: every shipped migration file still hashes to what
- * `migrations/meta/manifest.json` recorded when it shipped, and the journal
+ * `migrations/manifest.json` recorded when it shipped, and the journal
  * is something drizzle's migrator will actually replay in full.
  *
  * drizzle applies a journal entry only when its `when` is newer than the
@@ -49,7 +49,7 @@ test('manifest pins every journaled migration file byte-for-byte', async () => {
   const journal = await readJson<{ entries: JournalEntry[] }>(
     join(migrationsDir, 'meta/_journal.json')
   )
-  const manifest = await readJson<Manifest>(join(migrationsDir, 'meta/manifest.json'))
+  const manifest = await readJson<Manifest>(join(migrationsDir, 'manifest.json'))
   assertEquals(manifest.version, 1)
   assertEquals(
     manifest.entries.map((e) => e.tag),

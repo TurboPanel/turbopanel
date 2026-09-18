@@ -2175,7 +2175,10 @@ export const backup = pgTable(
       foreignColumns: [managed.id],
       name: "backup_managed_id_managed_id_fk",
     }).onDelete("cascade"),
-    uniqueIndex("uniq_backup_managed_backup_id").on(table.managedId, table.backupId),
+    uniqueIndex("uniq_backup_managed_backup_id").on(
+      table.managedId,
+      table.backupId,
+    ),
     check("backup_id_format_check", sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
     check(
       "backup_checksum_format_check",
@@ -4683,11 +4686,85 @@ export const grant = pgTable(
     index("idx_grant_actor").on(table.actorType, table.actorId),
     // Mirror `SUBJECT_TYPES` / `GRANT_ENTITY_TYPES` (src/client/authz/catalog.ts) —
     // pinned by enum-checks.test.ts.
-    check("grant_actor_type_check", sql`actor_type IN ('user', 'team', 'organization')`),
+    check(
+      "grant_actor_type_check",
+      sql`actor_type IN ('user', 'team', 'organization')`,
+    ),
     check(
       "grant_entity_type_check",
       sql`entity_type IN ('organization', 'workspace', 'environment', 'project', 'service', 'server', 'hosting', 'variable', 'managed', 'container', 'tls', 'team')`,
     ),
+  ],
+);
+/**
+ * Append-only record of security-relevant operator actions.
+ *
+ * Revoking a daemon key, deleting a server, changing a member's grants,
+ * editing a forge's credentials, flipping an organization gate: each happened
+ * with no record of who did it or when, so an incident could not be
+ * reconstructed afterwards — and three separate guards in this codebase
+ * already promised "audited" in their own comments. This is that record.
+ *
+ * Nothing ever updates or deletes a row, which is why there is no
+ * `updated_at`: an audit trail a compromised operator can edit is not one.
+ * `context` is a small jsonb bag for the few facts worth keeping beside the
+ * action (a before/after where it is cheap, the reason string a route already
+ * carries); secrets never go in it — the rule is the same as `setting`'s.
+ */
+export const audit = pgTable(
+  "audit",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    /**
+     * The organization the action belongs to; the org-scoped read filters by
+     * it. Null for an instance-wide action (a superadmin editing a forge that
+     * belongs to no organization) — the most privileged case, which must
+     * still be recorded even though no organization can read it.
+     */
+    organizationId: uuid("organization_id"),
+    /**
+     * Who acted. Null only for an action the platform took on nobody's
+     * behalf (a scheduled sweep), never for an operator action.
+     */
+    actorUserId: uuid("actor_user_id"),
+    /** Denormalized on purpose: the trail must survive the account's deletion. */
+    actorEmail: text("actor_email"),
+    /** Dot-joined verb, e.g. `server.daemon_key.revoke` — AUDIT_ACTIONS. */
+    action: text().notNull(),
+    /** What it was done to: a catalog entity kind, or `organization`. */
+    targetType: text("target_type").notNull(),
+    targetId: uuid("target_id"),
+    /** Small, non-secret facts worth keeping beside the action. */
+    context: jsonb(),
+  },
+  (table) => [
+    index("idx_audit_organization_created").on(
+      table.organizationId,
+      table.createdAt.desc(),
+    ),
+    index("idx_audit_target").on(table.targetType, table.targetId),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: "audit_organization_id_organization_id_fk",
+    }).onDelete("cascade"),
+    // The actor's account may be deleted; the row stays, with the id nulled
+    // and `actor_email` still naming who it was.
+    foreignKey({
+      columns: [table.actorUserId],
+      foreignColumns: [user.id],
+      name: "audit_actor_user_id_user_id_fk",
+    }).onDelete("set null"),
   ],
 );
 export const session = pgTable(

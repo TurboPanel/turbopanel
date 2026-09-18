@@ -8,6 +8,12 @@
       "tag": "0000_init",
       "when": 1789684226718,
       "sha256": "251f69e7ef0849005656064b9f7c717955237cbe7e9cf57244efbd7716a7a17b"
+    },
+    {
+      "idx": 1,
+      "tag": "0001_audit_table",
+      "when": 1789699422238,
+      "sha256": "dbb3a24969e9f5b76916ddfbf11dd92a2991cf4c0522f895beb9e4e24293cb7a"
     }
   ]
 }

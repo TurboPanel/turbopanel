@@ -5,7 +5,7 @@
  *
  * Layer one (`scripts/check-migration-freeze.mjs`, run by
  * `src/lib/db/migration-manifest.test.ts`) proves the working tree matches
- * `migrations/meta/manifest.json`. That alone cannot stop a commit that edits a
+ * `migrations/manifest.json`. That alone cannot stop a commit that edits a
  * shipped migration *and* re-records its hash — so this script compares the
  * commit against its base ref and refuses any modified or deleted
  * `NNNN_*.sql` or `meta/NNNN_snapshot.json` when the *base's* manifest says
@@ -39,10 +39,10 @@ const base = !requested || requested === NIL_SHA ? 'origin/trunk' : requested
 
 let baseManifest = null
 try {
-  baseManifest = JSON.parse(git('show', `${base}:migrations/meta/manifest.json`))
+  baseManifest = JSON.parse(git('show', `${base}:migrations/manifest.json`))
 } catch {
   console.log(
-    `migration-additions: ${base} has no migrations/meta/manifest.json — nothing frozen yet, skipping`
+    `migration-additions: ${base} has no migrations/manifest.json — nothing frozen yet, skipping`
   )
   process.exit(0)
 }
