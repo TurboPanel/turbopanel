@@ -134,10 +134,11 @@ changes.
   `normalizeDisplayName` / `isValidDisplayName` (**400** for control characters
   or over-length). `GET`/`DELETE /licenses` are owner-only; the UI **Pending
   keys** page lists unbound keys (OpenAPI `name`). Self-hosted operators set the
-  cap. When billing is configured, `POST /licenses` also requires `tierId`
-  (**400** `tier_required` / `tier_not_purchasable`) and answers **409**
-  `no_free_seat` when the active licenses at that tier already fill its seats
-  (net of outstanding seat releases); `DELETE /licenses/:id` runs the
+  cap. When billing is configured, `POST /licenses` takes no `tierId` — the
+  tier is derived from the server once it enrols — and answers **409**
+  `no_license_available` (with the held/purchased counts, so the console can
+  say "buy one more") when every purchased license is bound, waiting to
+  connect, or already leaving (net of outstanding seat releases); `DELETE /licenses/:id` runs the
   detach-first refusal, then the billing gate (`authn/license-lifecycle.ts`),
   which records a deferred `release-seat` intent under the org's quantity lease
   so the seat drops at the period boundary (**409**
