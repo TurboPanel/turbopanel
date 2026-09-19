@@ -103,14 +103,15 @@ test("resolveUpdateManifest follows rc and release to GitHub Releases", async ()
   }
 });
 
-test("resolveUpdateManifest is null for reserved channels without fetching", async () => {
+test("resolveUpdateManifest is null for the reserved channel without fetching", async () => {
   resetUpdateManifestCacheForTests();
   const stub = stubFetch(() => {
     throw new TypeError("must not fetch");
   });
   try {
+    // canary is advertised now (the rolling GitHub pre-release); only edge
+    // still has no built-in location.
     assertEquals(await resolveUpdateManifest("edge"), null);
-    assertEquals(await resolveUpdateManifest("canary"), null);
     assertEquals(stub.calls, []);
   } finally {
     stub.restore();
