@@ -29,6 +29,30 @@ preserved for restart). When a reported compose service has no `service` row yet
 can resolve; reconciliation failures are logged and never revert the
 already-succeeded command.
 
+`server.firewall.reconcile` (added 2026-09-19, Road row `fw-daemon-reconcile`)
+carries the **complete** desired host firewall for one server, the way
+`server.principals.reconcile` carries every account: `{ generation, mode:
+managed | observe | off, policy: { inputDefault: accept | drop, ipv6: mirror |
+skip }, rules[], controlPlane?: { tcpPorts[] }, sshPorts?[] }`. A rule is
+`{ id, scope: host | published, action: accept | drop | reject, proto: tcp | udp
+| any, ports?: "8443" | "5432-5440", sources[]: CIDR | address | "any",
+destinations?[], origin: system | derived | user, comment? }`. `host` renders
+into the daemon's `TP-INPUT` (off `INPUT`), `published` into `TP-FWD` (off
+`DOCKER-USER`, matched post-DNAT on the original destination); an `accept` from
+named sources on a published port **narrows** it, an `accept` from `any` renders
+nothing. Parsers are byte-identical on both sides (`parseFirewallReconcilePayload`
+/ `parseFirewallReconcileResult`): ids unique, an `accept` names its ports, a
+range ascends, addresses normalise (`10.0.0.5` → `10.0.0.5/32`). Result:
+`{ generation, mode, applied, digest, ruleCount, ipv6Applied, forwardApplied,
+sshPorts[], warnings[], summary }` — `applied: false` with warnings is a
+**refusal state the console shows**, not a failed command: today the daemon
+refuses `inputDefault: drop` outright until commit-confirm rollback lands
+(`fw-invariants-commit-confirm`), and refuses a default-drop on a co-located
+control-plane host whose payload names no `controlPlane.tcpPorts`. 120s
+consumer timeout. **Nothing in the control plane enqueues this command yet**
+(`fw-derived-rules` builds the desired-state derivation); the contract lands
+first so both repos agree before either side depends on it.
+
 `server.reboot` requires `organization:manage`, carries an empty payload, uses a
 120s consumer timeout, has no `touchServerMetadata` side-effect, and is executed
 daemon-side via `sudo systemctl reboot` (handler implemented in a separate

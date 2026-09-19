@@ -97,6 +97,7 @@ test("commandTimeoutMs returns per-type budgets and the default", () => {
   assertEquals(commandTimeoutMs("managed.ha.failover"), 600_000);
   assertEquals(commandTimeoutMs("system.reconcile"), 300_000);
   assertEquals(commandTimeoutMs("server.principals.reconcile"), 120_000);
+  assertEquals(commandTimeoutMs("server.firewall.reconcile"), 120_000);
   assertEquals(commandTimeoutMs("unknown.future.command"), 60_000);
 });
 

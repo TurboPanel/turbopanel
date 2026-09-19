@@ -1,6 +1,8 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { encodeCommandEnvelope, parseCommandEnvelope } from "./envelope.ts";
 import {
+  type FirewallReconcileCommandPayload,
+  type FirewallReconcileCommandResult,
   isSystemComponentKey,
   isValidNtpServer,
   parseCommandPayload,
@@ -167,6 +169,7 @@ const DAEMON_COMMAND_TYPES = [
   "server.fabric.reconcile",
   "server.tls.trust.reconcile",
   "server.principals.reconcile",
+  "server.firewall.reconcile",
   "environment.deploy",
   "environment.lifecycle",
   "environment.stop",
@@ -884,7 +887,11 @@ test("parseCommandPayload and parseCommandResult dispatch by type", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+      composeFiles: [{
+        filename: "compose.yaml",
+        role: "runtime" as const,
+        content: "services: {}\\n",
+      }],
       hostings: [],
     }),
     {
@@ -892,7 +899,11 @@ test("parseCommandPayload and parseCommandResult dispatch by type", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+      composeFiles: [{
+        filename: "compose.yaml",
+        role: "runtime" as const,
+        content: "services: {}\\n",
+      }],
       hostings: [],
     },
   );
@@ -1929,7 +1940,11 @@ test("parseCommandPayload accepts sites and dockerExternalNetworks", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
+      composeFiles: [{
+        filename: "compose.yaml",
+        role: "runtime" as const,
+        content: "services:\\n  api:\\n    image: node:22\\n",
+      }],
       hostings: [],
       dockerExternalNetworks: ["zeta-net", "alpha-net", "alpha-net"],
       sites: [
@@ -1957,7 +1972,11 @@ test("parseCommandPayload accepts sites and dockerExternalNetworks", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
+      composeFiles: [{
+        filename: "compose.yaml",
+        role: "runtime" as const,
+        content: "services:\\n  api:\\n    image: node:22\\n",
+      }],
       hostings: [],
       dockerExternalNetworks: ["alpha-net", "zeta-net"],
       sites: [
@@ -1990,7 +2009,11 @@ test("parseCommandPayload accepts noCache on environment.deploy", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
+      composeFiles: [{
+        filename: "compose.yaml",
+        role: "runtime" as const,
+        content: "services:\\n  api:\\n    image: node:22\\n",
+      }],
       hostings: [],
       noCache: true,
     }),
@@ -1999,7 +2022,11 @@ test("parseCommandPayload accepts noCache on environment.deploy", () => {
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  api:\\n    image: node:22\\n" }],
+      composeFiles: [{
+        filename: "compose.yaml",
+        role: "runtime" as const,
+        content: "services:\\n  api:\\n    image: node:22\\n",
+      }],
       hostings: [],
       noCache: true,
     },
@@ -2014,7 +2041,11 @@ test("parseCommandPayload rejects non-boolean noCache on environment.deploy", ()
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+        composeFiles: [{
+          filename: "compose.yaml",
+          role: "runtime" as const,
+          content: "services: {}\\n",
+        }],
         hostings: [],
         noCache: "yes",
       }),
@@ -2088,7 +2119,11 @@ test("parseCommandPayload accepts principalMaterial with and without uid/gid", (
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+      composeFiles: [{
+        filename: "compose.yaml",
+        role: "runtime" as const,
+        content: "services: {}\\n",
+      }],
       hostings: [],
       principalMaterial: [
         {
@@ -2111,7 +2146,11 @@ test("parseCommandPayload accepts principalMaterial with and without uid/gid", (
       projectId: "proj-1",
       organizationId: "org-1",
       projectName: "tp-demo",
-      composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+      composeFiles: [{
+        filename: "compose.yaml",
+        role: "runtime" as const,
+        content: "services: {}\\n",
+      }],
       hostings: [],
       principalMaterial: [
         {
@@ -2139,7 +2178,11 @@ test("parseCommandPayload round-trips a principal password hash and rejects junk
     projectId: "proj-1",
     organizationId: "org-1",
     projectName: "tp-demo",
-    composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+    composeFiles: [{
+      filename: "compose.yaml",
+      role: "runtime" as const,
+      content: "services: {}\\n",
+    }],
     hostings: [],
   };
   const parsed = parseCommandPayload("environment.deploy" as CommandType, {
@@ -2178,7 +2221,11 @@ test("parseCommandPayload rejects negative or non-integer principal ids", () => 
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+        composeFiles: [{
+          filename: "compose.yaml",
+          role: "runtime" as const,
+          content: "services: {}\\n",
+        }],
         hostings: [],
         principalMaterial: [
           {
@@ -2199,7 +2246,11 @@ test("parseCommandPayload rejects negative or non-integer principal ids", () => 
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+        composeFiles: [{
+          filename: "compose.yaml",
+          role: "runtime" as const,
+          content: "services: {}\\n",
+        }],
         hostings: [],
         sites: [
           {
@@ -2227,7 +2278,11 @@ test("parseCommandPayload rejects overlong, unsafe, or empty principal material 
     projectId: "proj-1",
     organizationId: "org-1",
     projectName: "tp-demo",
-    composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+    composeFiles: [{
+      filename: "compose.yaml",
+      role: "runtime" as const,
+      content: "services: {}\\n",
+    }],
     hostings: [] as unknown[],
   };
   const overlongUsername = `u${"x".repeat(32)}`; // 33 chars
@@ -2447,7 +2502,11 @@ test("parseCommandPayload rejects invalid dockerExternalNetworks names", () => {
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+        composeFiles: [{
+          filename: "compose.yaml",
+          role: "runtime" as const,
+          content: "services: {}\\n",
+        }],
         hostings: [],
         dockerExternalNetworks: ["-bad"],
       }),
@@ -2462,7 +2521,11 @@ test("parseCommandPayload accepts and dedupes managedNetworkServices", () => {
     projectId: "proj-1",
     organizationId: "org-1",
     projectName: "tp-demo",
-    composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services:\\n  app:\\n    image: node:22\\n" }],
+    composeFiles: [{
+      filename: "compose.yaml",
+      role: "runtime" as const,
+      content: "services:\\n  app:\\n    image: node:22\\n",
+    }],
     hostings: [],
     managedNetworkServices: ["app", "app"],
     managedNetwork: MANAGED_NETWORK,
@@ -2560,7 +2623,11 @@ test("parseCommandPayload rejects invalid managedNetworkServices entries", () =>
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+        composeFiles: [{
+          filename: "compose.yaml",
+          role: "runtime" as const,
+          content: "services: {}\\n",
+        }],
         hostings: [],
         managedNetworkServices: [123],
       }),
@@ -2576,7 +2643,11 @@ test("parseCommandPayload rejects invalid managedNetworkServices entries", () =>
         projectId: "proj-1",
         organizationId: "org-1",
         projectName: "tp-demo",
-        composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+        composeFiles: [{
+          filename: "compose.yaml",
+          role: "runtime" as const,
+          content: "services: {}\\n",
+        }],
         hostings: [],
         managedNetworkServices: ["bad name"],
         managedNetwork: MANAGED_NETWORK,
@@ -3070,7 +3141,11 @@ const BASE_ENVIRONMENT_DEPLOY = {
   projectId: "proj-1",
   organizationId: "org-1",
   projectName: "tp-demo",
-  composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\\n" }],
+  composeFiles: [{
+    filename: "compose.yaml",
+    role: "runtime" as const,
+    content: "services: {}\\n",
+  }],
   hostings: [] as unknown[],
 };
 
@@ -3151,7 +3226,7 @@ test("parseEnvironmentDeployPayload parses rich hostings and optional material",
     ...BASE_ENVIRONMENT_DEPLOY,
     // Required whenever hostings are present — the `hosting-ingress` system
     // component's allocated serviceId, not a readable literal.
-    hostingIngressNetwork: '00000000-0000-4000-8000-0000000000bb',
+    hostingIngressNetwork: "00000000-0000-4000-8000-0000000000bb",
     hostings: [
       {
         hostingId: "h1",
@@ -3407,13 +3482,14 @@ test("parseEnvironmentDeployPayload round-trips runtime composeFiles", () => {
 
 test("parseEnvironmentDeployPayload rejects missing composeFiles", () => {
   assertThrows(
-    () => parseEnvironmentDeployPayload({
-      environmentId: "env-1",
-      projectId: "proj-1",
-      organizationId: "org-1",
-      projectName: "tp-demo",
-      hostings: [],
-    }),
+    () =>
+      parseEnvironmentDeployPayload({
+        environmentId: "env-1",
+        projectId: "proj-1",
+        organizationId: "org-1",
+        projectName: "tp-demo",
+        hostings: [],
+      }),
     Error,
     "Invalid environment.deploy payload",
   );
@@ -3905,7 +3981,10 @@ test("sourceMaterial carries the HTTPS credential username opaquely", () => {
     ...NATIVE_APP_BASE,
     sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY }],
   });
-  assertEquals(withoutUsername.sourceMaterial?.[0]?.credentialUsername, undefined);
+  assertEquals(
+    withoutUsername.sourceMaterial?.[0]?.credentialUsername,
+    undefined,
+  );
 });
 
 test("sourceMaterial rejects a credentialUsername that could break the askpass script", () => {
@@ -4283,7 +4362,11 @@ test("a cron entry that could reach a unit file structurally is refused", () => 
       // A name that is not usable as a unit filename.
       { name: "A B", schedule: "*-*-* 0:0:00", command: ["/bin/x"] },
       // A schedule carrying something other than calendar syntax.
-      { name: "a", schedule: "*-*-* 0:0:00\nExecStart=/bin/sh", command: ["/bin/x"] },
+      {
+        name: "a",
+        schedule: "*-*-* 0:0:00\nExecStart=/bin/sh",
+        command: ["/bin/x"],
+      },
       { name: "a", schedule: "*-*-* 0:0:00", command: [] },
     ]
   ) {
@@ -4529,7 +4612,8 @@ test("parseManagedApplyPayload accepts resources, IPv6 bind, databases, and repl
 
 test("parseManagedApplyPayload rejects invalid resources, bind, databases, and replication", () => {
   assertThrows(
-    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, resources: "max" }),
+    () =>
+      parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, resources: "max" }),
     Error,
     "Invalid managed.apply resources",
   );
@@ -4564,13 +4648,18 @@ test("parseManagedApplyPayload rejects invalid resources, bind, databases, and r
     () =>
       parseManagedApplyPayload({
         ...VALID_MANAGED_APPLY,
-        exposure: { enabled: false, protocol: "tcp", bindAddress: "fe80::1%eth0" },
+        exposure: {
+          enabled: false,
+          protocol: "tcp",
+          bindAddress: "fe80::1%eth0",
+        },
       }),
     Error,
     "Invalid managed.apply exposure.bindAddress",
   );
   assertThrows(
-    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, databases: "appdb" }),
+    () =>
+      parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, databases: "appdb" }),
     TypeError,
     "Invalid managed.apply databases",
   );
@@ -4596,7 +4685,11 @@ test("parseManagedApplyPayload rejects invalid resources, bind, databases, and r
     "Invalid managed.apply databases entry",
   );
   assertThrows(
-    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, dropUsers: "olduser" }),
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        dropUsers: "olduser",
+      }),
     TypeError,
     "Invalid managed.apply dropUsers",
   );
@@ -4858,12 +4951,17 @@ test("parseFabricReconcilePayload rejects invalid enabled mesh fields", () => {
     "Invalid fabric enabled",
   );
   assertThrows(
-    () => parseFabricReconcilePayload({ ...enabledFabricBase(), address: "not-cidr" }),
+    () =>
+      parseFabricReconcilePayload({
+        ...enabledFabricBase(),
+        address: "not-cidr",
+      }),
     TypeError,
     "Invalid fabric address",
   );
   assertThrows(
-    () => parseFabricReconcilePayload({ ...enabledFabricBase(), prefix: "nope" }),
+    () =>
+      parseFabricReconcilePayload({ ...enabledFabricBase(), prefix: "nope" }),
     TypeError,
     "Invalid fabric prefix",
   );
@@ -4873,7 +4971,8 @@ test("parseFabricReconcilePayload rejects invalid enabled mesh fields", () => {
     "Invalid fabric peers",
   );
   assertThrows(
-    () => parseFabricReconcilePayload({ ...enabledFabricBase(), peers: [null] }),
+    () =>
+      parseFabricReconcilePayload({ ...enabledFabricBase(), peers: [null] }),
     TypeError,
     "Invalid fabric peer entry",
   );
@@ -4979,7 +5078,8 @@ test("parseFabricReconcilePayload rejects invalid enabled mesh fields", () => {
     "Invalid fabric fabricId",
   );
   assertThrows(
-    () => parseFabricReconcilePayload({ ...enabledFabricBase(), listenPort: 0 }),
+    () =>
+      parseFabricReconcilePayload({ ...enabledFabricBase(), listenPort: 0 }),
     TypeError,
     "Invalid fabric listenPort",
   );
@@ -4989,12 +5089,14 @@ test("parseFabricReconcilePayload rejects invalid enabled mesh fields", () => {
     "Invalid fabric mtu",
   );
   assertThrows(
-    () => parseFabricReconcilePayload({ ...enabledFabricBase(), networks: "x" }),
+    () =>
+      parseFabricReconcilePayload({ ...enabledFabricBase(), networks: "x" }),
     TypeError,
     "Invalid fabric networks",
   );
   assertThrows(
-    () => parseFabricReconcilePayload({ ...enabledFabricBase(), networks: [null] }),
+    () =>
+      parseFabricReconcilePayload({ ...enabledFabricBase(), networks: [null] }),
     TypeError,
     "Invalid fabric network entry",
   );
@@ -5020,13 +5122,18 @@ test("parseFabricReconcilePayload rejects invalid enabled mesh fields", () => {
     () =>
       parseFabricReconcilePayload({
         ...enabledFabricBase(),
-        networks: [{ name: "tpn_ok", subnet: "10.192.11.0/24", gateway: "not-ip" }],
+        networks: [{
+          name: "tpn_ok",
+          subnet: "10.192.11.0/24",
+          gateway: "not-ip",
+        }],
       }),
     TypeError,
     "Invalid fabric network gateway",
   );
   assertThrows(
-    () => parseFabricReconcilePayload({ ...enabledFabricBase(), gateway: "yes" }),
+    () =>
+      parseFabricReconcilePayload({ ...enabledFabricBase(), gateway: "yes" }),
     TypeError,
     "Invalid fabric gateway",
   );
@@ -5148,12 +5255,18 @@ test("parseEnvironmentDeployPayload hosting fields cover php, ports, and rejects
   assertEquals(parsed.hostings[0]?.protocol, "udp");
   assertEquals(parsed.hostings[0]?.proxy?.brotli, true);
   assertEquals(parsed.hostings[0]?.web?.php?.extensions, ["intl", "opcache"]);
-  assertEquals(parsed.hostings[0]?.web?.php?.settings, { memory_limit: "128M" });
+  assertEquals(parsed.hostings[0]?.web?.php?.settings, {
+    memory_limit: "128M",
+  });
   assertEquals(parsed.variableMaterial?.[0]?.forRuntime, true);
   assertEquals(parsed.serviceHooks?.[0]?.postDeployCommand, "/bin/true");
 
   assertThrows(
-    () => parseEnvironmentDeployPayload({ ...BASE_ENVIRONMENT_DEPLOY, hostings: "x" }),
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        hostings: "x",
+      }),
     TypeError,
     "Invalid environment.deploy payload",
   );
@@ -5172,7 +5285,11 @@ test("parseEnvironmentDeployPayload hosting fields cover php, ports, and rejects
       parseEnvironmentDeployPayload({
         ...BASE_ENVIRONMENT_DEPLOY,
         hostingIngressNetwork,
-        hostings: [{ serviceId: "s1", composeServiceName: "web", hostnames: [] }],
+        hostings: [{
+          serviceId: "s1",
+          composeServiceName: "web",
+          hostnames: [],
+        }],
       }),
     Error,
     "Invalid environment.deploy payload",
@@ -5302,17 +5419,20 @@ test("parseEnvironmentDeployPayload sites accept engines, php, and principal ids
     assertEquals(next.sites[0]?.engine, engine);
   }
   assertThrows(
-    () => parseEnvironmentDeployPayload(deployPayloadWithSite({ engine: "iis" })),
+    () =>
+      parseEnvironmentDeployPayload(deployPayloadWithSite({ engine: "iis" })),
     Error,
     "Invalid sites entry",
   );
   assertThrows(
-    () => parseEnvironmentDeployPayload(deployPayloadWithSite({ listenPort: 80 })),
+    () =>
+      parseEnvironmentDeployPayload(deployPayloadWithSite({ listenPort: 80 })),
     Error,
     "Invalid sites entry",
   );
   assertThrows(
-    () => parseEnvironmentDeployPayload(deployPayloadWithSite({ principal: "x" })),
+    () =>
+      parseEnvironmentDeployPayload(deployPayloadWithSite({ principal: "x" })),
     Error,
     "Invalid sites.principal entry",
   );
@@ -5537,7 +5657,10 @@ test("parseManagedIngressReconcilePayload covers monitor, ports, bind, and clust
     () =>
       parseManagedIngressReconcilePayload({
         ...VALID_MANAGED_INGRESS_RECONCILE,
-        monitor: { username: "bad user", password: "tpdaemon.v1.server.key.payload" },
+        monitor: {
+          username: "bad user",
+          password: "tpdaemon.v1.server.key.payload",
+        },
       }),
     TypeError,
     "Invalid managed.ingress.reconcile monitor credential",
@@ -5720,7 +5843,8 @@ test("parseManagedApplyPayload covers volumes, config files, privileges, and mon
     "Invalid managed.apply volumes entry",
   );
   assertThrows(
-    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, configFiles: "x" }),
+    () =>
+      parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, configFiles: "x" }),
     TypeError,
     "Invalid managed.apply configFiles",
   );
@@ -5738,7 +5862,8 @@ test("parseManagedApplyPayload covers volumes, config files, privileges, and mon
     "Invalid managed.apply configFiles: too many entries",
   );
   assertThrows(
-    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, configFiles: [null] }),
+    () =>
+      parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, configFiles: [null] }),
     Error,
     "Invalid managed.apply configFiles entry",
   );
@@ -5773,14 +5898,17 @@ test("parseManagedApplyPayload covers volumes, config files, privileges, and mon
         credentials: Array.from({ length: 33 }, (_, index) => ({
           ...VALID_MANAGED_APPLY.credentials[0],
           username: `user${index}`,
-          principalId: `00000000-0000-4000-8000-0000000000${String(index).padStart(2, "0")}`,
+          principalId: `00000000-0000-4000-8000-0000000000${
+            String(index).padStart(2, "0")
+          }`,
         })),
       }),
     Error,
     "Invalid managed.apply credentials: too many entries",
   );
   assertThrows(
-    () => parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, monitorUsers: "x" }),
+    () =>
+      parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, monitorUsers: "x" }),
     TypeError,
     "Invalid managed.apply monitorUsers",
   );
@@ -5953,7 +6081,10 @@ test("parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
       },
     }],
   });
-  assertEquals(railpack.sourceMaterial?.[0]?.cloneUrl, "git@gitlab.test:acme/app.git");
+  assertEquals(
+    railpack.sourceMaterial?.[0]?.cloneUrl,
+    "git@gitlab.test:acme/app.git",
+  );
   assertEquals(railpack.sourceMaterial?.[0]?.build, {
     kind: "railpack",
     installCommand: "pnpm install",
@@ -5970,9 +6101,15 @@ test("parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
       build: { kind: "static", buildCommand: "x".repeat(1000) },
     }],
   });
-  assertEquals(staticBuild.sourceMaterial?.[0]?.cloneUrl, "ssh://git.example.test/acme/app.git");
+  assertEquals(
+    staticBuild.sourceMaterial?.[0]?.cloneUrl,
+    "ssh://git.example.test/acme/app.git",
+  );
   assertEquals(staticBuild.sourceMaterial?.[0]?.subdirectory, "apps/web");
-  assertEquals(staticBuild.sourceMaterial?.[0]?.rollbackToReleaseId, "rel-prev");
+  assertEquals(
+    staticBuild.sourceMaterial?.[0]?.rollbackToReleaseId,
+    "rel-prev",
+  );
   assertEquals(staticBuild.sourceMaterial?.[0]?.build.kind, "static");
 
   assertThrows(
@@ -6130,7 +6267,10 @@ test("parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
     () =>
       parseEnvironmentDeployPayload({
         ...NATIVE_APP_BASE,
-        sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, credentialKind: "password" }],
+        sourceMaterial: [{
+          ...GITLAB_SOURCE_ENTRY,
+          credentialKind: "password",
+        }],
       }),
     Error,
     "Invalid sourceMaterial credentialKind",
@@ -6401,20 +6541,39 @@ test("parseCommandPayload round-trips dockerNetworkAddressing, dedupes, sorts an
     projectId: "proj-1",
     organizationId: "org-1",
     projectName: "tp-demo",
-    composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\n" }],
+    composeFiles: [{
+      filename: "compose.yaml",
+      role: "runtime" as const,
+      content: "services: {}\n",
+    }],
     hostings: [],
     dockerExternalNetworks: ["zeta-net", "alpha-net"],
     dockerNetworkAddressing: [
-      { name: "zeta-net", subnet: " 10.77.0.0/16 ", ipRange: "10.77.8.0/24", gateway: "10.77.0.1", mtu: 1450 },
+      {
+        name: "zeta-net",
+        subnet: " 10.77.0.0/16 ",
+        ipRange: "10.77.8.0/24",
+        gateway: "10.77.0.1",
+        mtu: 1450,
+      },
       { name: "alpha-net" },
       { name: "alpha-net", subnet: "10.78.0.0/16" },
       { name: "not-in-list", subnet: "10.79.0.0/16" },
     ],
-  }) as { dockerExternalNetworks?: string[]; dockerNetworkAddressing?: unknown };
+  }) as {
+    dockerExternalNetworks?: string[];
+    dockerNetworkAddressing?: unknown;
+  };
   assertEquals(parsed.dockerExternalNetworks, ["alpha-net", "zeta-net"]);
   assertEquals(parsed.dockerNetworkAddressing, [
     { name: "alpha-net" },
-    { name: "zeta-net", subnet: "10.77.0.0/16", ipRange: "10.77.8.0/24", gateway: "10.77.0.1", mtu: 1450 },
+    {
+      name: "zeta-net",
+      subnet: "10.77.0.0/16",
+      ipRange: "10.77.8.0/24",
+      gateway: "10.77.0.1",
+      mtu: 1450,
+    },
   ]);
 });
 
@@ -6424,10 +6583,17 @@ test("parseCommandPayload keeps a names-only deploy payload unchanged (no docker
     projectId: "proj-1",
     organizationId: "org-1",
     projectName: "tp-demo",
-    composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\n" }],
+    composeFiles: [{
+      filename: "compose.yaml",
+      role: "runtime" as const,
+      content: "services: {}\n",
+    }],
     hostings: [],
     dockerExternalNetworks: ["alpha-net"],
-  }) as { dockerExternalNetworks?: string[]; dockerNetworkAddressing?: unknown };
+  }) as {
+    dockerExternalNetworks?: string[];
+    dockerNetworkAddressing?: unknown;
+  };
   assertEquals(parsed.dockerExternalNetworks, ["alpha-net"]);
   assertEquals("dockerNetworkAddressing" in parsed, false);
 });
@@ -6438,7 +6604,11 @@ test("parseCommandPayload rejects malformed dockerNetworkAddressing entries", ()
     projectId: "proj-1",
     organizationId: "org-1",
     projectName: "tp-demo",
-    composeFiles: [{ filename: "compose.yaml", role: "runtime" as const, content: "services: {}\n" }],
+    composeFiles: [{
+      filename: "compose.yaml",
+      role: "runtime" as const,
+      content: "services: {}\n",
+    }],
     hostings: [],
     dockerExternalNetworks: ["edge"],
   };
@@ -6455,8 +6625,14 @@ test("parseCommandPayload rejects malformed dockerNetworkAddressing entries", ()
   reject("edge", "dockerNetworkAddressing must be an array");
   reject(["edge"], "dockerNetworkAddressing must be an array of objects");
   reject([{ name: "-bad" }], "Invalid dockerNetworkAddressing name");
-  reject([{ name: "edge", subnet: "10.77.0.0" }], "Invalid dockerNetworkAddressing subnet");
-  reject([{ name: "edge", ipRange: "10.77.8.0/24" }], "Invalid dockerNetworkAddressing ipRange");
+  reject(
+    [{ name: "edge", subnet: "10.77.0.0" }],
+    "Invalid dockerNetworkAddressing subnet",
+  );
+  reject(
+    [{ name: "edge", ipRange: "10.77.8.0/24" }],
+    "Invalid dockerNetworkAddressing ipRange",
+  );
   reject(
     [{ name: "edge", subnet: "10.77.0.0/16", ipRange: "10.78.0.0/24" }],
     "Invalid dockerNetworkAddressing ipRange",
@@ -6466,4 +6642,123 @@ test("parseCommandPayload rejects malformed dockerNetworkAddressing entries", ()
     "Invalid dockerNetworkAddressing gateway",
   );
   reject([{ name: "edge", mtu: 1279 }], "Invalid dockerNetworkAddressing mtu");
+});
+
+test("server.firewall.reconcile parses the complete set and normalises addresses and ranges", () => {
+  const parsed = parseCommandPayload("server.firewall.reconcile", {
+    generation: 3,
+    mode: "managed",
+    policy: { inputDefault: "accept", ipv6: "mirror" },
+    controlPlane: { tcpPorts: [8443, 8443] },
+    sshPorts: [22],
+    rules: [{
+      id: "proxysql",
+      scope: "published",
+      action: "accept",
+      proto: "tcp",
+      ports: "5432-5432",
+      sources: ["10.0.0.5", "2001:db8::1", "any"],
+      destinations: ["198.51.100.4"],
+      origin: "derived",
+      comment: "ProxySQL frontend",
+    }],
+  }) as FirewallReconcileCommandPayload;
+  assertEquals(parsed.controlPlane, { tcpPorts: [8443] });
+  assertEquals(parsed.rules[0]!.ports, "5432");
+  assertEquals(parsed.rules[0]!.sources, [
+    "10.0.0.5/32",
+    "2001:db8::1/128",
+    "any",
+  ]);
+  assertEquals(parsed.rules[0]!.destinations, ["198.51.100.4/32"]);
+
+  // the daemon's rules, byte for byte: duplicate ids, accept without ports,
+  // a descending range, a bad address, a closed vocabulary
+  const base = {
+    generation: 3,
+    mode: "managed",
+    policy: { inputDefault: "accept", ipv6: "skip" },
+  };
+  const rule = {
+    id: "r",
+    scope: "host",
+    action: "accept",
+    proto: "tcp",
+    ports: "22",
+    sources: ["any"],
+    origin: "user",
+  };
+  assertThrows(
+    () =>
+      parseCommandPayload("server.firewall.reconcile", {
+        ...base,
+        rules: [rule, rule],
+      }),
+    Error,
+    "more than once",
+  );
+  assertThrows(
+    () =>
+      parseCommandPayload("server.firewall.reconcile", {
+        ...base,
+        rules: [{ ...rule, ports: undefined }],
+      }),
+    Error,
+    "ports is required on an accept rule",
+  );
+  assertThrows(
+    () =>
+      parseCommandPayload("server.firewall.reconcile", {
+        ...base,
+        rules: [{ ...rule, ports: "90-80" }],
+      }),
+    Error,
+    "ascending range",
+  );
+  assertThrows(
+    () =>
+      parseCommandPayload("server.firewall.reconcile", {
+        ...base,
+        rules: [{ ...rule, sources: ["10.0.0.0/33"] }],
+      }),
+    Error,
+    'must be "any", an IP literal or a CIDR',
+  );
+  assertThrows(
+    () =>
+      parseCommandPayload("server.firewall.reconcile", {
+        ...base,
+        mode: "on",
+        rules: [],
+      }),
+    Error,
+    "mode must be",
+  );
+  assertThrows(
+    () => parseCommandPayload("server.firewall.reconcile", { ...base }),
+    TypeError,
+    "rules must be an array",
+  );
+});
+
+test("server.firewall.reconcile result round-trips the daemon report", () => {
+  const result = parseCommandResult("server.firewall.reconcile", {
+    generation: 3,
+    mode: "managed",
+    applied: false,
+    digest: "ab".repeat(32),
+    ruleCount: 2,
+    ipv6Applied: false,
+    forwardApplied: true,
+    sshPorts: [22],
+    warnings: ["policy.inputDefault drop is held"],
+    summary: "refused",
+  }) as FirewallReconcileCommandResult;
+  assertEquals(result.applied, false);
+  assertEquals(result.warnings.length, 1);
+  assertThrows(
+    () => parseCommandResult("server.firewall.reconcile", { generation: 3 }),
+    Error,
+    "mode must be",
+  );
 });

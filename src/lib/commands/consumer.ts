@@ -160,6 +160,9 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   // Writes a handful of small files, runs `sshd -t`, reloads. Nothing here
   // installs a package or waits on the network.
   "server.principals.reconcile": 120_000,
+  // A handful of iptables calls, an sshd -T, two restores. No package install,
+  // no network wait; the xtables lock wait is bounded at 5 s per call.
+  "server.firewall.reconcile": 120_000,
   "environment.deploy": 600_000,
   "environment.lifecycle": 120_000,
   "environment.stop": 120_000,
@@ -196,6 +199,7 @@ export function commandTimeoutMs(type: string): number {
     type === "server.fabric.reconcile" ||
     type === "server.tls.trust.reconcile" ||
     type === "server.principals.reconcile" ||
+    type === "server.firewall.reconcile" ||
     type === "environment.deploy" ||
     type === "environment.lifecycle" ||
     type === "environment.stop" ||
