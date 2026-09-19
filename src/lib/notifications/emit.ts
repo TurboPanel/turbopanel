@@ -72,7 +72,11 @@ export type EmitEmail = {
 
 export type EmitDeps = {
   fetchImpl?: typeof fetch;
-  /** Self-hosted may deliver to a LAN address; hosted may not (decided 2026-09-18). */
+  /**
+   * A LAN address is a legitimate target on every runtime (decided
+   * 2026-09-18, "allow everywhere, no exceptions"); `false` is a test seam
+   * for the strict gate the forge callers keep.
+   */
   allowPrivateTargets?: boolean;
   /** Without this, email channels' deliveries stay pending for a later tick that has a queue. */
   email?: EmitEmail;
@@ -285,7 +289,7 @@ async function attemptOne(
   // rule change or have been written by something other than the route.
   if (channel.kind !== "telegram") {
     const rejection = validateOutboundUrl(address, {
-      allowPrivate: deps.allowPrivateTargets === true,
+      allowPrivate: deps.allowPrivateTargets !== false,
     });
     if (rejection) return { ok: false, error: `address_${rejection}` };
   }

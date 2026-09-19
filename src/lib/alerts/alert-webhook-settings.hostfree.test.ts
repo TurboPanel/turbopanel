@@ -11,8 +11,7 @@ import {
   assertAlertWebhookUrlAllowed,
   describeAlertWebhook,
   getAlertWebhookUrl,
-  HOSTED_ALERT_WEBHOOK_POLICY,
-  SELF_HOSTED_ALERT_WEBHOOK_POLICY,
+  ALERT_WEBHOOK_POLICY,
 } from './alert-webhook-settings.ts'
 
 /**
@@ -44,20 +43,15 @@ test('a plausible incoming-webhook URL is accepted', async () => {
   )
 })
 
-test('the URL cannot point back inside the box', async () => {
-  // The same gate a forge base URL passes: an admin-typed URL that is fetched
-  // server-side is an SSRF vector, and the control plane's own Postgres,
-  // RabbitMQ and Redis are all one hop away.
+test('scheme and credentials are refused; the address is not', async () => {
+  // The forge gate refuses private addresses because a forge URL is fetched
+  // with the App's credentials attached. A notification target carries none
+  // and its response goes nowhere, so only the scheme and userinfo rules
+  // apply here — the strict address gate is exercised through the option
+  // in the LAN test below.
   const refusals: Array<[string, string]> = [
     ['http://hooks.example.com/x', 'scheme_not_https'],
     ['https://user:pw@hooks.example.com/x', 'credentials_in_url'],
-    ['https://localhost/x', 'reserved_host'],
-    ['https://postgres/x', 'reserved_host'],
-    ['https://metadata.internal/x', 'reserved_host'],
-    ['https://127.0.0.1/x', 'address_not_public'],
-    ['https://[::1]/x', 'address_not_public'],
-    ['https://169.254.169.254/latest/meta-data', 'address_not_public'],
-    ['https://10.0.0.5/x', 'address_not_public'],
     ['not a url', 'malformed'],
   ]
   for (const [url, reason] of refusals) {
@@ -69,10 +63,10 @@ test('the URL cannot point back inside the box', async () => {
   }
 })
 
-test('a self-hosted instance may point the webhook at its own LAN', async () => {
-  // Decided 2026-09-18: a hosted instance cannot reach a private address at
-  // all, so the public-only rule only ever bit self-hosted operators — whose
-  // Alertmanager sits next to the control plane more often than not.
+test('the webhook may point at a LAN address on every runtime', async () => {
+  // Decided 2026-09-18, "allow everywhere, no exceptions": the rule used to
+  // follow the runtime, and a hosted instance cannot reach a private address
+  // anyway, so refusing it there bought nothing but a second rule to explain.
   for (
     const url of [
       'https://10.0.0.5/alerts',
@@ -81,23 +75,27 @@ test('a self-hosted instance may point the webhook at its own LAN', async () => 
       'https://[::1]/hook',
     ]
   ) {
-    assertEquals(
-      await assertAlertWebhookUrlAllowed(url, SELF_HOSTED_ALERT_WEBHOOK_POLICY),
-      url,
-    )
+    assertEquals(await assertAlertWebhookUrlAllowed(url), url)
+    assertEquals(await assertAlertWebhookUrlAllowed(url, ALERT_WEBHOOK_POLICY), url)
   }
-  // The hosted policy is the default, and it is what a Workers instance passes.
-  const error = await assertRejects(
-    () => assertAlertWebhookUrlAllowed('https://10.0.0.5/alerts', HOSTED_ALERT_WEBHOOK_POLICY),
-    AlertWebhookUrlError,
-  )
-  assertEquals(error.reason, 'address_not_public')
-  // Scheme and credentials are not the address rule and stay on both.
+  // Scheme and credentials are not the address rule and stay.
   const plain = await assertRejects(
-    () => assertAlertWebhookUrlAllowed('http://10.0.0.5/alerts', SELF_HOSTED_ALERT_WEBHOOK_POLICY),
+    () => assertAlertWebhookUrlAllowed('http://10.0.0.5/alerts'),
     AlertWebhookUrlError,
   )
   assertEquals(plain.reason, 'scheme_not_https')
+  const creds = await assertRejects(
+    () => assertAlertWebhookUrlAllowed('https://u:p@10.0.0.5/alerts'),
+    AlertWebhookUrlError,
+  )
+  assertEquals(creds.reason, 'credentials_in_url')
+  // The strict gate is still reachable through the option, for the forge
+  // callers that keep it.
+  const strict = await assertRejects(
+    () => assertAlertWebhookUrlAllowed('https://10.0.0.5/alerts', { allowPrivateTargets: false }),
+    AlertWebhookUrlError,
+  )
+  assertEquals(strict.reason, 'address_not_public')
 })
 
 test('what a settings panel renders is the origin, never the path', () => {

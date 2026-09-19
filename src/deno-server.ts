@@ -19,7 +19,7 @@ import { createRedisDaemonCellRegistry } from './daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from './daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from './daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from './lib/alerts/resolve-alert-sender.ts'
-import { SELF_HOSTED_ALERT_WEBHOOK_POLICY } from './lib/alerts/alert-webhook-settings.ts'
+import { ALERT_WEBHOOK_POLICY } from './lib/alerts/alert-webhook-settings.ts'
 import { retryDueDeliveries } from './lib/notifications/emit.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from './daemon/cell/protocol.ts'
 import {
@@ -546,7 +546,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
             db,
             dataEncryptionSecrets,
             undefined,
-            SELF_HOSTED_ALERT_WEBHOOK_POLICY,
+            ALERT_WEBHOOK_POLICY,
             {
               queue: emailQueue,
               from: emailSettings.from,

@@ -315,6 +315,8 @@ test("email rows stay pending for the mailer; a disabled channel gets nothing; a
     }).where(eq(notificationChannel.id, off.id));
 
     const captured: Captured[] = [];
+    // The strict address gate through the test seam: proves a refused
+    // address is recorded as a failed delivery rather than thrown.
     const hosted = await emitNotification(db, enc, {
       event: "server.offline",
       organizationId,

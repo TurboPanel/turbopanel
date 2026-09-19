@@ -23,7 +23,7 @@ import type { Alert, AlertSender } from "./alert-sender.ts";
 import {
   adoptLegacyAlertWebhook,
   type AlertWebhookPolicy,
-  HOSTED_ALERT_WEBHOOK_POLICY,
+  ALERT_WEBHOOK_POLICY,
 } from "./alert-webhook-settings.ts";
 import { type EmitEmail, emitNotification } from "../notifications/emit.ts";
 import type {
@@ -98,7 +98,7 @@ export async function resolveAlertSender(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   trace?: AlertSenderTrace,
-  policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
+  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY,
   email?: EmitEmail,
 ): Promise<AlertSender> {
   // An instance upgraded past the ALERT_WEBHOOK_URL setting keeps its

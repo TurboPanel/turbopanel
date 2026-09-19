@@ -35,10 +35,7 @@ import {
   parseChannelPatchBody,
 } from "../client/notifications/routes-helpers.ts";
 
-export function registerNotificationAdminRoutes(
-  admin: Hono<AppEnv>,
-  opts: { runtime: "deno" | "workers" },
-) {
+export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
   async function present(
     c: Parameters<typeof getDb>[0],
     channel: NotificationChannelRecord,
@@ -108,7 +105,7 @@ export function registerNotificationAdminRoutes(
     const body = await c.req.json().catch(() => null);
     const parsed = await parseChannelCreateBody(
       { ...(body as Record<string, unknown> | null), scope: "user" },
-      { allowPrivateTargets: opts.runtime === "deno" },
+      { allowPrivateTargets: true },
     );
     if (!parsed.ok) {
       return c.json(

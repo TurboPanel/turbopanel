@@ -11,11 +11,10 @@ import {
 } from "../client/authn/install-state.ts";
 import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
 import {
+  ALERT_WEBHOOK_POLICY,
   AlertWebhookUrlError,
   describeAlertWebhook,
-  HOSTED_ALERT_WEBHOOK_POLICY,
   resolveOperatorWebhookUrl,
-  SELF_HOSTED_ALERT_WEBHOOK_POLICY,
   setOperatorWebhookUrl,
 } from "../lib/alerts/alert-webhook-settings.ts";
 import { registerNotificationAdminRoutes } from "./notification-routes.ts";
@@ -124,7 +123,7 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
   admin.use("*", createAdminAccessMiddleware(opts.secrets));
 
   opts.registerTiers?.(admin);
-  registerNotificationAdminRoutes(admin, { runtime: opts.runtime });
+  registerNotificationAdminRoutes(admin);
 
   admin.get("/daemon/connections", async (c) => {
     const registry = getDaemonCellRegistry(c);
@@ -526,9 +525,7 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
         db,
         dataEncryptionSecrets,
         url,
-        opts.runtime === "deno"
-          ? SELF_HOSTED_ALERT_WEBHOOK_POLICY
-          : HOSTED_ALERT_WEBHOOK_POLICY,
+        ALERT_WEBHOOK_POLICY,
       );
     } catch (err) {
       if (err instanceof AlertWebhookUrlError) {

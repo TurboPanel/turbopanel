@@ -1,7 +1,7 @@
 /**
  * The notification routes against a real Postgres: the inbox is the user's
  * own; a channel's address is never handed back whole; organization channels
- * need a manager; the LAN rule follows the runtime. Skipped without
+ * need a manager; a LAN address is accepted on every runtime. Skipped without
  * TURBOPANEL_DATABASE_URL like every Postgres suite.
  */
 import { assertEquals } from "@std/assert";
@@ -442,7 +442,10 @@ test("an organization channel needs a manager and the organization header", asyn
     },
   );
 });
-test("the address rule follows the runtime: a LAN webhook is refused on Workers and accepted on self-hosted", async () => {
+test("a LAN webhook is accepted on every runtime; scheme and credentials are still refused", async () => {
+  // Decided 2026-09-18, "allow everywhere, no exceptions" — the rule used to
+  // follow the runtime. A hosted instance cannot reach a private address
+  // anyway, so the refusal there bought nothing but a second rule to explain.
   const body = {
     kind: "webhook",
     label: "Alertmanager",
@@ -450,17 +453,25 @@ test("the address rule follows the runtime: a LAN webhook is refused on Workers 
     signingSecret: "shh",
   };
   await withFixtures("workers", async ({ app, memberCookie }) => {
-    const refused = await json(
+    const created = await json(
       app,
       memberCookie,
       "POST",
       "/notification-channels",
       body,
     );
-    assertEquals(refused.status, 422);
-    assertEquals(await refused.json(), {
+    assertEquals(created.status, 201);
+    const plain = await json(
+      app,
+      memberCookie,
+      "POST",
+      "/notification-channels",
+      { ...body, address: "http://10.0.0.5/alerts" },
+    );
+    assertEquals(plain.status, 422);
+    assertEquals(await plain.json(), {
       error: "address_rejected",
-      reason: "address_not_public",
+      reason: "scheme_not_https",
     });
   });
   await withFixtures("deno", async ({ app, memberCookie }) => {

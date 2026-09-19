@@ -21,14 +21,19 @@
  *   wall there (the compiled instance runs with unrestricted `--allow-net`
  *   since 2026-09-18).
  *
- * `allowPrivate` (decided 2026-09-18) lifts the address and reserved-name
- * rules for a caller whose destination legitimately lives on the operator's
- * own LAN — the self-hosted alert webhook pointed at an Alertmanager or a
- * receiver next to the control plane. Scheme and credential rules stay. A
- * hosted (Workers) instance never passes it: a private address is
- * unreachable from there regardless, so the public-only rule costs nothing
- * and keeps the blind-SSRF surface closed. A forge URL never passes it
- * either — that fetch carries the App's credentials.
+ * `allowPrivate` lifts the address and reserved-name rules. Scheme and
+ * credential rules stay. Who passes it is a per-caller decision:
+ *
+ * - **Notification and alert targets pass it on every runtime** (decided
+ *   2026-09-18, "allow everywhere, no exceptions"). Those fetches carry no
+ *   credential of ours and their response goes nowhere, so a private
+ *   address buys an attacker only a blind POST at the LAN — and the common
+ *   self-hosted shape is exactly an Alertmanager on the LAN. It first
+ *   followed the runtime (hosted refused, self-hosted allowed); a hosted
+ *   instance cannot reach a private address anyway, so the split bought
+ *   nothing but a second rule to explain.
+ * - **A forge URL never passes it** — that fetch carries the App's
+ *   credentials, and the response is parsed and acted on.
  */
 import { ipAddressScope, normalizeIpAddress } from '../ip-address.ts'
 

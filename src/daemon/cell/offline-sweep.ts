@@ -1394,7 +1394,7 @@ async function runOptionalCronPhases(
       phasesSkipped,
       async () => {
         await retryDueDeliveries(db, tlsRenewal?.dataEncryptionSecrets, {
-          allowPrivateTargets: false,
+          allowPrivateTargets: true,
           email: await workersNotificationEmail(env, db, tlsRenewal),
         });
       },

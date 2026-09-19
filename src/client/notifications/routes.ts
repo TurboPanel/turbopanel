@@ -271,7 +271,7 @@ export function registerNotificationRoutes(
     if (!sess) return c.json({ error: "Unauthorized" }, 401);
     const body = await c.req.json().catch(() => null);
     const parsed = await parseChannelCreateBody(body, {
-      allowPrivateTargets: c.get("runtime") === "deno",
+      allowPrivateTargets: true,
     });
     if (!parsed.ok) return refuse(c, parsed);
     let organizationId: string | null = null;

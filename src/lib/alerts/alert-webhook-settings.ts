@@ -23,15 +23,17 @@
  * and `setAlertWebhookUrl` read and write the legacy row only and exist for
  * the adoption and its tests.
  *
- * - **The URL is an SSRF vector.** It is typed in by an admin and then
- *   fetched server-side, so it goes through the same
- *   {@link validateOutboundUrl} gate as a forge base URL: https only, no
- *   credentials in the URL, no reserved names, and an IP literal has to be
- *   publicly routable — except on a self-hosted instance, where the operator
- *   may point it at a receiver on their own LAN (`allowPrivateTargets`,
- *   decided 2026-09-18: a hosted instance cannot reach a private address at
- *   all, so the question only ever applied to self-hosted, and an
- *   Alertmanager next to the control plane is the common shape there).
+ * - **The URL is an SSRF vector, within limits.** It is typed in by an admin
+ *   and then fetched server-side, so it goes through the same
+ *   {@link validateOutboundUrl} gate as a forge base URL for scheme and
+ *   credentials: https only, nothing in the userinfo. The *address* rule is
+ *   deliberately not applied (decided 2026-09-18, "allow everywhere, no
+ *   exceptions"): a notification target carries no credential of ours and
+ *   its response is never returned to anyone, so the only thing a private
+ *   address buys an attacker is a blind POST at something on the LAN — and
+ *   the common self-hosted shape is exactly an Alertmanager on the LAN. A
+ *   forge URL keeps the full rule; it is fetched with the App's credentials
+ *   attached.
  */
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db.ts'
@@ -59,14 +61,19 @@ import {
 } from '../notifications/records.ts'
 
 export type AlertWebhookPolicy = {
-  /** Self-hosted: the webhook may target a private address or a LAN name. */
+  /** The webhook may target a private address or a LAN name. */
   allowPrivateTargets: boolean
 }
 
-/** Hosted (Workers) instances: public targets only — the only kind reachable from there. */
-export const HOSTED_ALERT_WEBHOOK_POLICY: AlertWebhookPolicy = { allowPrivateTargets: false }
-/** Self-hosted (Deno) instances: the operator's LAN is a legitimate destination. */
-export const SELF_HOSTED_ALERT_WEBHOOK_POLICY: AlertWebhookPolicy = { allowPrivateTargets: true }
+/**
+ * The one policy, on every runtime (decided 2026-09-18). It used to follow
+ * the runtime — hosted refused private targets, self-hosted allowed them —
+ * and the user collapsed it: a hosted instance cannot reach a private
+ * address anyway, so the refusal there bought nothing but a second rule to
+ * explain. Kept as a named value so the tests can still exercise the strict
+ * gate through the option.
+ */
+export const ALERT_WEBHOOK_POLICY: AlertWebhookPolicy = { allowPrivateTargets: true }
 
 export const ALERT_WEBHOOK_URL_KEY = 'ALERT_WEBHOOK_URL'
 
@@ -86,7 +93,7 @@ export class AlertWebhookUrlError extends Error {
  */
 export async function assertAlertWebhookUrlAllowed(
   raw: string,
-  policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
+  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY,
 ): Promise<string> {
   const url = raw.trim()
   const gate = { allowPrivate: policy.allowPrivateTargets }
@@ -152,7 +159,7 @@ export async function setOperatorWebhookUrl(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   url: string | null,
-  policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
+  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY,
 ): Promise<void> {
   const existing = await adoptLegacyAlertWebhook(db, dataEncryptionSecrets)
   if (url === null) {
@@ -226,7 +233,7 @@ export async function setAlertWebhookUrl(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   url: string | null,
-  policy: AlertWebhookPolicy = HOSTED_ALERT_WEBHOOK_POLICY,
+  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY,
 ): Promise<void> {
   if (url === null) {
     await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))

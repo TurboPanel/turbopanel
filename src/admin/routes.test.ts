@@ -1364,10 +1364,10 @@ test("a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on
   });
 });
 
-test("PUT /api/admin/v1/settings/alert-webhook refuses a private target on the hosted runtime only", async () => {
-  // Decided 2026-09-18: a Workers instance cannot reach a private address at
-  // all, so it keeps the public-only rule; a self-hosted instance may point
-  // the webhook at an Alertmanager on its own LAN.
+test("PUT /api/admin/v1/settings/alert-webhook accepts a private target on every runtime", async () => {
+  // Decided 2026-09-18, "allow everywhere, no exceptions": the rule used to
+  // follow the runtime. A Workers instance cannot reach a private address
+  // anyway, so refusing it there bought nothing but a second rule to explain.
   // Two shapes, not the whole matrix: the test app opens a pool per request
   // and this file runs close to Postgres' connection cap; the full list is
   // covered in outbound-url.hostfree.test.ts.
@@ -1378,25 +1378,24 @@ test("PUT /api/admin/v1/settings/alert-webhook refuses a private target on the h
       headers: { Cookie: cookie, "content-type": "application/json" },
       body: JSON.stringify({ url }),
     });
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    for (const url of privateTargets) {
-      const res = await put(app, cookie, url);
-      assertEquals(res.status, 400, `workers: ${url}`);
-      assertEquals((await jsonBody<{ reason: string }>(res)).reason.length > 0, true);
-    }
-  }, { runtime: "workers" });
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    try {
-      for (const url of privateTargets) {
-        const res = await put(app, cookie, url);
-        assertEquals(res.status, 200, `deno: ${url}`);
-        const body = await jsonBody<{ configured: boolean; origin: string | null }>(res);
-        assertEquals(body.configured, true);
-        assertEquals(JSON.stringify(body).includes("/hook"), false);
+  for (const runtime of ["workers", "deno"] as const) {
+    await withRoleUser("superadmin", async ({ app, cookie }) => {
+      try {
+        for (const url of privateTargets) {
+          const res = await put(app, cookie, url);
+          assertEquals(res.status, 200, `${runtime}: ${url}`);
+          const body = await jsonBody<{ configured: boolean; origin: string | null }>(res);
+          assertEquals(body.configured, true);
+          assertEquals(JSON.stringify(body).includes("/hook"), false);
+        }
+        // Scheme is still the rule.
+        const plain = await put(app, cookie, "http://10.0.0.5/hook");
+        assertEquals(plain.status, 400, `${runtime}: http`);
+        assertEquals((await jsonBody<{ reason: string }>(plain)).reason, "scheme_not_https");
+      } finally {
+        // Clear through the route itself: `null` deletes the row.
+        assertEquals((await put(app, cookie, null)).status, 200);
       }
-    } finally {
-      // Clear through the route itself: `null` deletes the row.
-      assertEquals((await put(app, cookie, null)).status, 200);
-    }
-  }, { runtime: "deno" });
+    }, { runtime });
+  }
 });

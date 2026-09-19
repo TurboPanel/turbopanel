@@ -70,5 +70,5 @@ export async function recordAuditAndNotify(
     context: contextFor(entry, extra),
     targetType: entry.targetType,
     targetId: entry.targetId ?? null,
-  }, { allowPrivateTargets: c.get("runtime") === "deno", email });
+  }, { allowPrivateTargets: true, email });
 }
