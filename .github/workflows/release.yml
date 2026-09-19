@@ -17,6 +17,12 @@
 # with a throwaway version) skip the tag ↔ deno.json check but still require
 # a green Build on the commit they build.
 #
+# The canary channel reuses this same build: canary.yml calls this workflow
+# (workflow_call, channel=canary) after every green Build on trunk. The
+# version is then deno.json's number plus `-canary.<buildId>`, and the
+# packages go to the rolling `canary` pre-release through TurboPanel/dev's
+# gh-canary.yml instead of a versioned release.
+#
 # Each binary is smoke-tested before it is packaged: the `duckdb-smoke`
 # subcommand opens embedded DuckDB with the permission shape the binary
 # ships, against the vendored .so — the same gate `deno task duckdb:smoke`
@@ -42,6 +48,16 @@ on:
         required: true
         type: string
         default: rc
+  workflow_call:
+    inputs:
+      channel:
+        description: Only `canary` is meaningful here — the rolling trunk build
+        required: true
+        type: string
+      ref:
+        description: The trunk commit to build (the head of the green Build run)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -53,12 +69,29 @@ jobs:
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       channel: ${{ steps.resolve.outputs.channel }}
+      commit: ${{ steps.resolve.outputs.commit }}
     steps:
-      - name: Resolve version and channel
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Resolve version, channel and commit
         id: resolve
         run: |
           set -eu
-          if [ -n "${{ inputs.version }}" ]; then
+          _commit="$(git rev-parse HEAD)"
+          echo "commit=${_commit}" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.channel }}" = "canary" ] && [ -n "${{ inputs.ref }}" ]; then
+            # The rolling trunk build: deno.json's number (what the binary
+            # reports) plus a pre-release suffix that carries the build id,
+            # so every asset name is unique per build and semver orders it
+            # below the release it leads to.
+            _pkg_version="$(python3 -c 'import json; print(json.load(open("deno.json"))["version"])')"
+            _build_id="$(date -u '+%Y%m%d-%H%M%S')-$(git rev-parse --short=7 HEAD)"
+            echo "version=${_pkg_version}-canary.${_build_id}" >> "$GITHUB_OUTPUT"
+            echo "channel=canary" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.version }}" ]; then
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
             echo "channel=${{ inputs.channel }}" >> "$GITHUB_OUTPUT"
           else
@@ -67,15 +100,12 @@ jobs:
             echo "channel=release" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Require the tag to match deno.json's version
         # The number the binary reports (src/version.ts reads deno.json) and
         # the number on the release must be the same number — a tag cut
-        # before the bump is a release that lies about itself. Dry runs skip
-        # this.
-        if: inputs.version == ''
+        # before the bump is a release that lies about itself. Dry runs and
+        # canary builds skip this.
+        if: inputs.version == '' && steps.resolve.outputs.channel != 'canary'
         run: |
           set -eu
           _tag_version="${{ steps.resolve.outputs.version }}"
@@ -92,9 +122,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          _ok="$(gh run list --repo "${{ github.repository }}" --workflow Build --commit "${{ github.sha }}" --status success --json databaseId --jq 'length')"
+          _ok="$(gh run list --repo "${{ github.repository }}" --workflow Build --commit "${{ steps.resolve.outputs.commit }}" --status success --json databaseId --jq 'length')"
           if [ "${_ok:-0}" -lt 1 ]; then
-            echo "::error::no successful Build run found for ${{ github.sha }} — tag a commit whose Build is green"
+            echo "::error::no successful Build run found for ${{ steps.resolve.outputs.commit }} — tag a commit whose Build is green"
             exit 1
           fi
 
@@ -115,9 +145,12 @@ jobs:
     env:
       TP_ARCH: ${{ matrix.arch }}
       TP_VERSION: ${{ needs.prepare.outputs.version }}
+      TP_COMMIT: ${{ needs.prepare.outputs.commit }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -152,8 +185,8 @@ jobs:
         run: |
           set -eu
           grep -q "commit: ''," src/build-info.ts
-          sed -i "s/commit: '',/commit: '${GITHUB_SHA}',/" src/build-info.ts
-          grep -q "commit: '${GITHUB_SHA}'," src/build-info.ts
+          sed -i "s/commit: '',/commit: '${TP_COMMIT}',/" src/build-info.ts
+          grep -q "commit: '${TP_COMMIT}'," src/build-info.ts
 
       - name: Compile the instance
         run: deno task compile
@@ -224,16 +257,19 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           CHANNEL: ${{ needs.prepare.outputs.channel }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
           # Tag-pinned, not releases/latest — a promotion landing between a
-          # consumer's manifest fetch and its asset fetch must not 404 it.
-          ARTIFACT_BASE_URL: https://github.com/${{ github.repository }}/releases/download/v${{ needs.prepare.outputs.version }}
+          # consumer's manifest fetch and its asset fetch must not 404 it. A
+          # canary build points at the rolling release instead: its assets
+          # carry the build id in their names, so they are never overwritten.
+          ARTIFACT_BASE_URL: ${{ needs.prepare.outputs.channel == 'canary' && format('https://github.com/{0}/releases/download/canary', github.repository) || format('https://github.com/{0}/releases/download/v{1}', github.repository, needs.prepare.outputs.version) }}
         run: |
           set -eu
           ls -l release-assets
           python3 <<'PY'
-          import hashlib, json, os, time
+          import hashlib, json, os, re, time
           version = os.environ["VERSION"]
-          commit = os.environ["GITHUB_SHA"]
+          commit = os.environ["COMMIT"]
           artifacts = {}
           for arch in ("linux-amd64", "linux-arm64"):
               name = f"turbopanel-instance-{version}-{arch}.tar.zst"
@@ -247,12 +283,16 @@ jobs:
                   "size": len(data),
               }
           now = time.gmtime()
+          # A canary version already carries its build id; reuse it so the
+          # manifest, the asset names and the release notes all agree.
+          m = re.search(r"-canary\.(\d{8}-\d{6}-[0-9a-f]{7})$", version)
+          build_id = m.group(1) if m else f"{time.strftime('%Y%m%d-%H%M%S', now)}-{commit[:7]}"
           manifest = {
               "schema": 1,
               "channel": os.environ["CHANNEL"],
               "version": version,
               "commit": commit,
-              "buildId": f"{time.strftime('%Y%m%d-%H%M%S', now)}-{commit[:7]}",
+              "buildId": build_id,
               "builtAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", now),
               "artifacts": artifacts,
           }
@@ -272,6 +312,7 @@ jobs:
 
   release:
     needs: [prepare, manifest]
+    if: needs.prepare.outputs.channel != 'canary'
     uses: TurboPanel/dev/.github/workflows/gh-release.yml@trunk
     with:
       version: ${{ needs.prepare.outputs.version }}
@@ -279,3 +320,13 @@ jobs:
       assets-artifact-name: turbopanel-instance-release-assets
       manifest-filename: manifest.json
       release-notes: "See https://github.com/${{ github.repository }}/commits/v${{ needs.prepare.outputs.version }} for changes."
+
+  canary:
+    needs: [prepare, manifest]
+    if: needs.prepare.outputs.channel == 'canary'
+    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@trunk
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      commit: ${{ needs.prepare.outputs.commit }}
+      assets-artifact-name: turbopanel-instance-release-assets
+      manifest-filename: manifest.json

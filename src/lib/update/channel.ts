@@ -23,7 +23,7 @@ export type UpdateChannel = (typeof UPDATE_CHANNELS)[number]
 
 export const DEFAULT_UPDATE_CHANNEL: UpdateChannel = 'trunk'
 
-/** The repository whose GitHub Releases carry the daemon's rc/release packages. */
+/** The repository whose GitHub Releases carry the daemon's canary/rc/release packages. */
 export const DAEMON_GITHUB_RELEASES_REPO = 'TurboPanel/turbopaneld'
 
 /** The per-merge CDN drop — kept as the trunk rail and as the manual override catalog. */
@@ -66,11 +66,13 @@ export function assertValidUpdateChannelEnv(
  * for byte the daemon's `builtinChannelManifestUrl` (turbopaneld
  * src/update/urls.ts) and run.sh's `tp_builtin_channel_manifest_url`.
  *
- * `trunk` is the per-merge CDN drop. `rc` and `release` are GitHub Releases:
- * `release` follows the platform's own `releases/latest` pointer (skips
- * pre-releases, so promotion is `gh release edit --prerelease=false`), `rc`
- * a rolling pre-release tagged `rc`. `edge` / `canary` are reserved and
- * unadvertised: no built-in location, so the target is unknown.
+ * `trunk` is the per-merge CDN drop. `canary`, `rc` and `release` are GitHub
+ * Releases: `release` follows the platform's own `releases/latest` pointer
+ * (skips pre-releases, so promotion is `gh release edit --prerelease=false`),
+ * `rc` a rolling pre-release tagged `rc` that points at a versioned
+ * pre-release, `canary` a rolling pre-release tagged `canary` carrying the
+ * newest green trunk build's own bytes, replaced on every merge. `edge` is
+ * reserved and unadvertised: no built-in location, so the target is unknown.
  */
 export function builtinChannelManifestUrl(
   channel: UpdateChannel,
@@ -78,6 +80,8 @@ export function builtinChannelManifestUrl(
   switch (channel) {
     case 'trunk':
       return `${DL_BASE_URL}/channels/trunk/manifest.json`
+    case 'canary':
+      return `https://github.com/${DAEMON_GITHUB_RELEASES_REPO}/releases/download/canary/manifest.json`
     case 'rc':
       return `https://github.com/${DAEMON_GITHUB_RELEASES_REPO}/releases/download/rc/manifest.json`
     case 'release':

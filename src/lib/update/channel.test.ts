@@ -60,7 +60,7 @@ test("isUpdateChannel accepts exactly the daemon's vocabulary", () => {
   assertEquals(isUpdateChannel(undefined), false);
 });
 
-test("builtinChannelManifestUrl: trunk on the CDN, rc/release on GitHub Releases, reserved none", () => {
+test("builtinChannelManifestUrl: trunk on the CDN, canary/rc/release on GitHub Releases, edge none", () => {
   assertEquals(
     builtinChannelManifestUrl("trunk"),
     "https://dl.trbp.nl/channels/trunk/manifest.json",
@@ -73,8 +73,11 @@ test("builtinChannelManifestUrl: trunk on the CDN, rc/release on GitHub Releases
     builtinChannelManifestUrl("release"),
     "https://github.com/TurboPanel/turbopaneld/releases/latest/download/manifest.json",
   );
+  assertEquals(
+    builtinChannelManifestUrl("canary"),
+    "https://github.com/TurboPanel/turbopaneld/releases/download/canary/manifest.json",
+  );
   assertEquals(builtinChannelManifestUrl("edge"), null);
-  assertEquals(builtinChannelManifestUrl("canary"), null);
 });
 
 test("builtinChannelManifestUrl matches the daemon's table when the daemon checkout is beside this one", async () => {
@@ -105,6 +108,6 @@ test("builtinChannelManifestUrl matches the daemon's table when the daemon check
     const url = builtinChannelManifestUrl(channel);
     if (url !== null) expected.set(channel, url);
   }
-  assertEquals(table.size, 3);
+  assertEquals(table.size, 4);
   assertEquals(table, expected);
 });
