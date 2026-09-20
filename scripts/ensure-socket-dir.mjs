@@ -3,7 +3,9 @@
  * Ensure /run/turbopanel exists with correct ownership for Unix socket backends.
  *
  * Uses passwordless sudo when the directory is missing or has wrong owner/mode.
- * Prints TURBOPANEL_SOCKET and TURBOPANEL_SOCKET_DIAL for dev env wiring.
+ * Prints TURBOPANEL_RUN_DIR and TURBOPANEL_SOCKET for dev env wiring — Caddy
+ * derives its unix/ dial from TURBOPANEL_RUN_DIR (see Caddyfile), so there is
+ * no separate dial variable to export.
  *
  * Mode is 2770 (group-writable + setgid): co-located dev collapses owner/group
  * onto the single dev user; managed installs use tp:tp so the
@@ -23,7 +25,6 @@ function resolveSocketDir() {
 const SOCKET_DIR = resolveSocketDir()
 const SOCKET_NAME = 'instance.sock'
 const SOCKET_PATH = `${SOCKET_DIR}/${SOCKET_NAME}`
-const SOCKET_DIAL = SOCKET_PATH.replace(/^\/+/, '')
 const OWNER =
   process.env.TURBOPANEL_SOCKET_OWNER?.trim() ||
   process.env.TURBOPANEL_DEV_USER?.trim() ||
@@ -87,8 +88,8 @@ async function main() {
     }
   }
 
+  console.log(`TURBOPANEL_RUN_DIR=${SOCKET_DIR}`)
   console.log(`TURBOPANEL_SOCKET=${SOCKET_PATH}`)
-  console.log(`TURBOPANEL_SOCKET_DIAL=${SOCKET_DIAL}`)
 }
 
 try {

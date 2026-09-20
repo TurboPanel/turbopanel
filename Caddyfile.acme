@@ -20,7 +20,8 @@
 #
 # Env:
 #   TURBOPANEL_UI_ROOT            Static export directory (default: /opt/turbopanel/share/ui)
-#   TURBOPANEL_SOCKET_DIAL        Unix socket dial path for instance
+#   TURBOPANEL_RUN_DIR            Runtime dir holding instance.sock (default: /run/turbopanel);
+#                                 the unix/ dial is derived, never set by hand
 #   TURBOPANEL_PUBLIC_HOSTNAME    Public DNS name Caddy obtains a certificate for
 #   TURBOPANEL_CADDY_ACME_EMAIL_DIRECTIVE  Full `email <addr>` line when an ACME
 #                                contact is configured; empty expansion omits
@@ -71,14 +72,14 @@
 		request_body {
 			max_size 8MB
 		}
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+		reverse_proxy unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock {
 			header_up X-Real-IP {remote_host}
 		}
 	}
 
 	@ws path /ws/*
 	handle @ws {
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+		reverse_proxy unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock {
 			header_up X-Real-IP {remote_host}
 		}
 	}
@@ -95,7 +96,7 @@
 		request_body {
 			max_size 2MB
 		}
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+		reverse_proxy unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock {
 			header_up X-Real-IP {remote_host}
 		}
 	}

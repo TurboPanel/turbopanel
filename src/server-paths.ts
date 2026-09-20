@@ -270,12 +270,21 @@ function stripTrailingSlash(value: string): string {
 }
 
 /**
- * Path segment for Caddy's `unix//` dial syntax (no leading slash).
+ * Caddy `reverse_proxy` upstream address for the instance socket.
  *
- * Example: `/run/turbopanel/instance.sock` -> `run/turbopanel/instance.sock`
+ * Caddy's Unix-socket form is `unix/` followed by the absolute path, so the
+ * Caddyfiles spell it `unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock`
+ * and derive it from the same run-dir + filename contract as
+ * {@link resolveInstanceSocket}. There is no operator-set dial variable; the
+ * inputs are `TURBOPANEL_SOCKET`, `TURBOPANEL_RUN_DIR`, and
+ * `TURBOPANEL_SOCKET_DIR` only.
+ *
+ * Example: `/run/turbopanel/instance.sock` -> `unix//run/turbopanel/instance.sock`
  */
-export function caddyUnixDialPath(absolutePath: string): string {
-  return absolutePath.replace(/^\/+/, '')
+export function caddyInstanceUpstream(
+  env: Record<string, string | undefined> = Deno.env.toObject(),
+): string {
+  return `unix/${resolveInstanceSocket(env)}`
 }
 
 /**

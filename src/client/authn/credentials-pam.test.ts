@@ -105,7 +105,7 @@ describe("isDevHostAuthMode development-mode gate", () => {
     );
   });
 
-  it("allows the bypass only with explicit development-mode signals", async () => {
+  it("allows the bypass only with the explicit dev-surface flag", async () => {
     await withEnv(
       {
         TURBOPANEL_DEV_HOST_AUTH: "group-only",
@@ -118,6 +118,8 @@ describe("isDevHostAuthMode development-mode gate", () => {
       },
     );
 
+    // TURBOPANEL_UI_MODE selects Caddy/Expo serving only — the
+    // development + dev pair must not unlock a security-sensitive bypass.
     await withEnv(
       {
         TURBOPANEL_DEV_HOST_AUTH: "group-only",
@@ -126,7 +128,7 @@ describe("isDevHostAuthMode development-mode gate", () => {
         TURBOPANEL_UI_MODE: "dev",
       },
       () => {
-        assertEquals(isDevHostAuthMode(), true);
+        assertEquals(isDevHostAuthMode(), false);
       },
     );
   });

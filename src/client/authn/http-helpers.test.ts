@@ -164,12 +164,13 @@ test('isVerificationDevLoggingEnabled stays false on Workers', () => {
 
 test('isVerificationDevLoggingEnabled is true in explicit development mode', () => {
   const saved = new Map<string, string | undefined>()
-  for (const key of ['TURBOPANEL_MODE', 'TURBOPANEL_UI_MODE'] as const) {
+  for (const key of ['TURBOPANEL_MODE', 'TURBOPANEL_UI_MODE', 'TURBOPANEL_DEV_SURFACE'] as const) {
     saved.set(key, Deno.env.get(key))
   }
   try {
-    Deno.env.set('TURBOPANEL_MODE', 'development')
-    Deno.env.set('TURBOPANEL_UI_MODE', 'dev')
+    Deno.env.delete('TURBOPANEL_MODE')
+    Deno.env.delete('TURBOPANEL_UI_MODE')
+    Deno.env.set('TURBOPANEL_DEV_SURFACE', '1')
     assertEquals(
       isVerificationDevLoggingEnabled({
         runtime: 'deno',

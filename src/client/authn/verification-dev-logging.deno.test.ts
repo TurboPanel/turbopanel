@@ -38,7 +38,7 @@ function withEnv(
 }
 
 describe('isVerificationDevLoggingEnabled', () => {
-  it('is disabled when TURBOPANEL_UI_MODE is unset', () => {
+  it('is disabled when TURBOPANEL_DEV_SURFACE is unset', () => {
     withEnv({}, () => {
       assertEquals(
         isVerificationDevLoggingEnabled({
@@ -50,8 +50,8 @@ describe('isVerificationDevLoggingEnabled', () => {
     })
   })
 
-  it('is disabled for TURBOPANEL_UI_MODE=dev without TURBOPANEL_MODE=development', () => {
-    withEnv({ TURBOPANEL_UI_MODE: 'dev' }, () => {
+  it('is disabled for the TURBOPANEL_MODE=development + TURBOPANEL_UI_MODE=dev pair', () => {
+    withEnv({ TURBOPANEL_MODE: 'development', TURBOPANEL_UI_MODE: 'dev' }, () => {
       assertEquals(
         isVerificationDevLoggingEnabled({
           runtime: 'deno',
@@ -62,22 +62,7 @@ describe('isVerificationDevLoggingEnabled', () => {
     })
   })
 
-  it('is enabled only under explicit development (mode + ui pair)', () => {
-    withEnv(
-      { TURBOPANEL_MODE: 'development', TURBOPANEL_UI_MODE: 'dev' },
-      () => {
-        assertEquals(
-          isVerificationDevLoggingEnabled({
-            runtime: 'deno',
-            signupEnvOverride: undefined,
-          }),
-          true,
-        )
-      },
-    )
-  })
-
-  it('is enabled via TURBOPANEL_DEV_SURFACE=1', () => {
+  it('is enabled only via TURBOPANEL_DEV_SURFACE=1', () => {
     withEnv({ TURBOPANEL_DEV_SURFACE: '1' }, () => {
       assertEquals(
         isVerificationDevLoggingEnabled({
@@ -91,7 +76,7 @@ describe('isVerificationDevLoggingEnabled', () => {
 
   it('never enables on Workers even in explicit development', () => {
     withEnv(
-      { TURBOPANEL_MODE: 'development', TURBOPANEL_UI_MODE: 'dev' },
+      { TURBOPANEL_DEV_SURFACE: '1' },
       () => {
         assertEquals(
           isVerificationDevLoggingEnabled({

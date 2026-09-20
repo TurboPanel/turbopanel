@@ -179,7 +179,7 @@ test("rejects missing secrets outside explicit dev mode (deno)", () => {
   );
 });
 
-test("rejects missing secrets when TURBOPANEL_UI_MODE=static", () => {
+test("rejects missing secrets under development mode with a static UI", () => {
   withEnv(
     { TURBOPANEL_DEV_SURFACE: null, TURBOPANEL_MODE: "development", TURBOPANEL_UI_MODE: "static" },
     () => {
@@ -210,12 +210,16 @@ test("allows an ephemeral secret only under an explicit dev flag", () => {
   });
 });
 
-test("allows an ephemeral secret under strict development mode pair", () => {
+test("rejects missing secrets for the development + dev UI pair without the dev-surface flag", () => {
+  // TURBOPANEL_UI_MODE is a Caddy/Expo selector, not a dev-mode signal.
   withEnv(
     { TURBOPANEL_DEV_SURFACE: null, TURBOPANEL_MODE: "development", TURBOPANEL_UI_MODE: "dev" },
     () => {
-      const config = parseSecretsEnv(undefined, "deno");
-      assertEquals(config.versioned.length, 1);
+      assertThrows(
+        () => parseSecretsEnv(undefined, "deno"),
+        Error,
+        "required",
+      );
     },
   );
 });
