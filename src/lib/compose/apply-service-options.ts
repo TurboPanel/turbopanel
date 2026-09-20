@@ -125,11 +125,25 @@ function applyRestartPolicy(
   service.deploy = deploy;
 }
 
+/**
+ * Where the daemon runs a hook: inside the named compose service's container
+ * (`docker compose run` before `up`, `exec` after) — never a host shell. The
+ * daemon refuses a command-bearing hook without this field.
+ */
+export type ServiceDeployHookConfinement = "compose-service";
+
 export type ServiceDeployHook = {
   composeServiceName: string;
+  confinement?: ServiceDeployHookConfinement;
   preDeployCommand?: string;
   postDeployCommand?: string;
   buildDisableCache?: boolean;
+};
+
+/** Whether deploy hooks are read from service options for this deploy. */
+export type ApplyServiceOptionsHookPolicy = {
+  /** The organization's `deployHooksEnabled` gate; off drops hook commands. */
+  enabled: boolean;
 };
 
 export type ApplyServiceOptionsResult = {
@@ -268,6 +282,9 @@ function buildServiceDeployHook(
   if (parsed.postDeployCommand) {
     hook.postDeployCommand = parsed.postDeployCommand;
   }
+  if (hook.preDeployCommand || hook.postDeployCommand) {
+    hook.confinement = "compose-service";
+  }
   if (parsed.build?.disableCache) hook.buildDisableCache = true;
   if (
     hook.preDeployCommand || hook.postDeployCommand || hook.buildDisableCache
@@ -292,6 +309,12 @@ export function applyServiceOptionsToComposeDocument(
    * set one, and absent unless the organization opted in.
    */
   defaultResourceLimits?: { cpus?: number; memoryBytes?: number } | null,
+  /**
+   * Deploy-hook gate. Hooks are only read from `service.options` when the
+   * organization enabled them; the default (absent) reads none, so a caller
+   * that has not consulted the gate cannot emit a hook by accident.
+   */
+  hookPolicy: ApplyServiceOptionsHookPolicy = { enabled: false },
 ): ApplyServiceOptionsResult {
   const data = { ...document.data };
   const services = isRecord(data.services) ? { ...data.services } : {};
@@ -302,8 +325,10 @@ export function applyServiceOptionsToComposeDocument(
     if (!isRecord(rawService)) continue;
 
     const service = { ...rawService };
-    const parsed =
-      parseServiceOptions(optionsByComposeName.get(composeServiceName)) ?? {};
+    const parsed = parseServiceOptions(
+      optionsByComposeName.get(composeServiceName),
+      { deployHooks: hookPolicy.enabled },
+    ) ?? {};
     applyParsedOptionsToService(
       service,
       parsed,

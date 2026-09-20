@@ -123,6 +123,15 @@ export type OrganizationOptions = {
    */
   composeGatedFieldsEnabled?: boolean;
   /**
+   * Whether services in this organization may carry `preDeployCommand` /
+   * `postDeployCommand`. Off by default: a hook is arbitrary shell authored
+   * by a project member and executed by the daemon at deploy time (confined
+   * to the service's container, but still code a member did not have to
+   * commit). An owner turns it on explicitly for the organization; until
+   * then the options parser drops hook fields and no deploy carries them.
+   */
+  deployHooksEnabled?: boolean;
+  /**
    * Per-service ceiling applied at deploy to any container service whose
    * compose sets none (`mem_limit` / `cpus` / `deploy.resources.limits`).
    *
@@ -292,6 +301,9 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.composeGatedFieldsEnabled === "boolean") {
     options.composeGatedFieldsEnabled = value.composeGatedFieldsEnabled;
   }
+  if (typeof value.deployHooksEnabled === "boolean") {
+    options.deployHooksEnabled = value.deployHooksEnabled;
+  }
   assignComposeDefaultResourceLimits(options, value);
   return options;
 }
@@ -350,6 +362,13 @@ export function resolveComposeDefaultResourceLimits(
   options: OrganizationOptions,
 ): NonNullable<OrganizationOptions["composeDefaultResourceLimits"]> | null {
   return options.composeDefaultResourceLimits ?? null;
+}
+
+/** Effective deploy-hook posture: off (hooks dropped) unless the org opted in. */
+export function resolveDeployHooksEnabled(
+  options: OrganizationOptions,
+): boolean {
+  return options.deployHooksEnabled ?? false;
 }
 
 /** Effective gated-Compose-fields posture: off (deny) unless the org opted in. */

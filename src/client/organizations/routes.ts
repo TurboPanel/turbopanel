@@ -37,6 +37,8 @@ import {
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
   defaultTimezonePutResponse,
+  deployHooksGetResponse,
+  deployHooksPutResponse,
   dockerNetworkingGetResponse,
   dockerNetworkingPutResponse,
   hostDefaultsGetResponse,
@@ -47,6 +49,7 @@ import {
   parseComposeGatedFieldsPatch,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
+  parseDeployHooksPatch,
   parseDockerNetworkingPatch,
   parseHostDefaultsPatch,
   parseManagedDefaultsPatch,
@@ -433,6 +436,80 @@ export function registerOrganizationRoutes(
 
     const options = parseOrganizationOptions(orgRow.options);
     return c.json(composeGatedFieldsGetResponse(options));
+  });
+
+  // Deploy hooks (`preDeployCommand` / `postDeployCommand`) are arbitrary
+  // shell a project member authors and the daemon runs at deploy time —
+  // confined to the service container, but code nobody reviewed in a commit.
+  // Off by default; the owner opts the organization in here.
+  router.get("/organizations/:id/deploy-hooks", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertOrgOwnerOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    return c.json(deployHooksGetResponse(parseOrganizationOptions(orgRow.options)));
+  });
+
+  router.put("/organizations/:id/deploy-hooks", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const session = c.get("session");
+    const id = c.req.param("id");
+    const denied = await assertOrgOwnerOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
+
+    const parsedPatch = parseDeployHooksPatch(body);
+    if (!parsedPatch.ok) {
+      return c.json({ error: parsedPatch.error }, parsedPatch.status);
+    }
+    const patch = parsedPatch.patch;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    await db.update(organization).set({
+      options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+        JSON.stringify(patch)
+      }::jsonb`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id));
+
+    const [updated] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    const options = parseOrganizationOptions(updated?.options);
+
+    await recordAudit(db, {
+      organizationId: id,
+      actorUserId: session?.userId ?? null,
+      actorEmail: session?.email ?? null,
+      action: "organization.deploy_hooks.set",
+      targetType: "organization",
+      targetId: id,
+      context: { deployHooksEnabled: patch.deployHooksEnabled },
+    });
+
+    return c.json(deployHooksPutResponse(options));
   });
 
   router.put("/organizations/:id/compose-privileged-fields", async (c) => {

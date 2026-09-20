@@ -221,6 +221,23 @@ built as of 2026-09-18: flipping this gate writes an
 (`../db/audit-records.ts`), readable by owners at
 `GET /organizations/:id/audit`.
 
+### Deploy hooks: an org-owner opt-in, confined to the service container
+
+`service.options.preDeployCommand` / `postDeployCommand` are arbitrary shell a
+project member types into a settings panel and the daemon executes at deploy
+time — not an ordinary option. As of 2026-09-19 `parseServiceOptions` drops
+both fields unless the caller passes `{ deployHooks: true }`, and the only
+caller that does is `applyServiceOptionsToComposeDocument` when
+`deploy-prepare.ts` hands it `{ enabled: resolveDeployHooksEnabled(orgOptions) }`
+(`organization.options.deployHooksEnabled`, default `false`, owner-only
+`PUT /organizations/:id/deploy-hooks`, audited as
+`organization.deploy_hooks.set`). Every hook the control plane emits carries
+`confinement: "compose-service"` (`EnvironmentDeployServiceHook`), and the
+daemon runs it **inside that service's container** — `docker compose run
+--rm --no-deps -T --entrypoint sh <service> -c …` before `up`, `compose exec`
+after — refusing any command-bearing hook without the field or naming a
+service outside the deploy (`../../../turbopaneld/src/deploy/run-deploy-hooks.ts`).
+
 ### Unbounded resources: an advisory, and an opt-in default
 
 A container service that declares no ceiling (`mem_limit`, `cpus`, or

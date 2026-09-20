@@ -30,6 +30,7 @@ import {
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
+  resolveDeployHooksEnabled,
 } from "../../lib/organization-options.ts";
 import {
   type ApplyVariablesError,
@@ -3055,6 +3056,13 @@ export async function prepareDeployCompose(
     resolveComposeDefaultResourceLimits(
       parseOrganizationOptions(orgRow?.options),
     ),
+    // Deploy hooks ride along only when the organization's owner enabled
+    // them; otherwise service options are read without their command fields.
+    {
+      enabled: resolveDeployHooksEnabled(
+        parseOrganizationOptions(orgRow?.options),
+      ),
+    },
   );
 
   const storageMaterialRaw = await loadStorageMaterial(db, {

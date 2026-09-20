@@ -79,6 +79,23 @@ test('parseServicePatchFields normalizes metadata and options', () => {
   assertEquals(parsed.patch.options?.instances, 2)
 })
 
+test('parseServicePatchFields persists hook commands only when the organization gate is on', () => {
+  const body = {
+    options: { instances: 2, preDeployCommand: 'bin/migrate', postDeployCommand: 'true' },
+  }
+  const gated = parseServicePatchFields(body)
+  if (!gated.ok) throw new TypeError('expected valid service patch')
+  assertEquals(gated.patch.options, { instances: 2 })
+
+  const enabled = parseServicePatchFields(body, { deployHooks: true })
+  if (!enabled.ok) throw new TypeError('expected valid service patch')
+  assertEquals(enabled.patch.options, {
+    preDeployCommand: 'bin/migrate',
+    postDeployCommand: 'true',
+    instances: 2,
+  })
+})
+
 test('parseServiceCreateFields accepts display metadata and options', () => {
   const parsed = parseServiceCreateFields({
     name: 'API',

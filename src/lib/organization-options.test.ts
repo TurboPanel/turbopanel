@@ -7,6 +7,7 @@ import {
   parseTemperatureUnitInput,
   resolveComposeDefaultResourceLimits,
   resolveDefaultEnvironmentName,
+  resolveDeployHooksEnabled,
   resolveRandomizedPrincipalUsernames,
   resolveTemperatureUnit,
 } from "./organization-options.ts";
@@ -289,4 +290,28 @@ test("composeDefaultResourceLimits parses positive figures and ignores the rest"
       JSON.stringify(bad),
     );
   }
+});
+
+test("deploy hooks are off unless the organization opted in", () => {
+  assertEquals(resolveDeployHooksEnabled({}), false);
+  assertEquals(
+    resolveDeployHooksEnabled(parseOrganizationOptions({})),
+    false,
+  );
+  assertEquals(
+    resolveDeployHooksEnabled(
+      parseOrganizationOptions({ deployHooksEnabled: "yes" }),
+    ),
+    false,
+  );
+  assertEquals(
+    resolveDeployHooksEnabled(
+      parseOrganizationOptions({ deployHooksEnabled: true }),
+    ),
+    true,
+  );
+  assertEquals(
+    parseOrganizationOptions({ deployHooksEnabled: false }).deployHooksEnabled,
+    false,
+  );
 });

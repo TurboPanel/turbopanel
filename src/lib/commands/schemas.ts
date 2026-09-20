@@ -1406,8 +1406,15 @@ export type EnvironmentDeployPrincipalMaterial = {
   passwordHash?: string;
 };
 
+/**
+ * Where the daemon runs a hook: inside the named compose service's container.
+ * Required on any entry carrying a command — the daemon refuses the rest.
+ */
+export type EnvironmentDeployHookConfinement = "compose-service";
+
 export type EnvironmentDeployServiceHook = {
   composeServiceName: string;
+  confinement?: EnvironmentDeployHookConfinement;
   preDeployCommand?: string;
   postDeployCommand?: string;
   buildDisableCache?: boolean;
@@ -2658,6 +2665,18 @@ function parseDeployServiceHookEntry(
     hook.postDeployCommand = entry.postDeployCommand;
   }
   if (entry.buildDisableCache === true) hook.buildDisableCache = true;
+  if (entry.confinement !== undefined) {
+    if (entry.confinement !== "compose-service") {
+      throw new Error("Invalid environment.deploy payload");
+    }
+    hook.confinement = "compose-service";
+  }
+  if (
+    (hook.preDeployCommand || hook.postDeployCommand) &&
+    hook.confinement === undefined
+  ) {
+    throw new Error("Invalid environment.deploy payload");
+  }
   return hook;
 }
 

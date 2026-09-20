@@ -38,6 +38,24 @@ test('resolveServiceInstances defaults to 1', () => {
   assertEquals(resolveServiceInstances({ instances: 4 }), 4)
 })
 
+test('parseServiceOptions drops deploy commands unless the caller opts in', () => {
+  const raw = {
+    preDeployCommand: ' npm ci ',
+    postDeployCommand: 'echo done',
+    build: { disableCache: true },
+  }
+  // Hooks are not ordinary options: without the explicit opt-in they vanish.
+  assertEquals(parseServiceOptions(raw), { build: { disableCache: true } })
+  assertEquals(parseServiceOptions(raw, { deployHooks: false }), {
+    build: { disableCache: true },
+  })
+  assertEquals(parseServiceOptions(raw, { deployHooks: true }), {
+    preDeployCommand: 'npm ci',
+    postDeployCommand: 'echo done',
+    build: { disableCache: true },
+  })
+})
+
 test('parseServiceOptions reads deploy commands, build, and operations', () => {
   assertEquals(
     parseServiceOptions({
@@ -49,7 +67,7 @@ test('parseServiceOptions reads deploy commands, build, and operations', () => {
         stopGracePeriodSeconds: 45,
         maxRestartAttempts: 3,
       },
-    }),
+    }, { deployHooks: true }),
     {
       preDeployCommand: 'npm ci',
       postDeployCommand: 'echo done',

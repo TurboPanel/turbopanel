@@ -48,6 +48,8 @@ test("applyServiceOptionsToComposeDocument sets container_name and deploy limits
       }],
     ]),
     new Map([["api", "api-container"]]),
+    undefined,
+    { enabled: true },
   );
 
   const api =
@@ -75,8 +77,44 @@ test("applyServiceOptionsToComposeDocument sets container_name and deploy limits
     composeServiceName: "api",
     preDeployCommand: "echo before",
     postDeployCommand: "echo after",
+    confinement: "compose-service",
     buildDisableCache: true,
   }]);
+});
+
+test("applyServiceOptionsToComposeDocument drops hook commands unless the organization enabled them", () => {
+  const doc = emptyComposeDocument();
+  doc.data.services = { api: { image: "node:22" } };
+  const options = new Map([
+    ["api", {
+      preDeployCommand: "echo before",
+      postDeployCommand: "echo after",
+      build: { disableCache: true },
+    }],
+  ]);
+  // Default: the gate is off — cache-only hook, no commands.
+  assertEquals(applyServiceOptionsToComposeDocument(doc, options).hooks, [
+    { composeServiceName: "api", buildDisableCache: true },
+  ]);
+  assertEquals(
+    applyServiceOptionsToComposeDocument(doc, options, undefined, undefined, {
+      enabled: false,
+    }).hooks,
+    [{ composeServiceName: "api", buildDisableCache: true }],
+  );
+  // Enabled: commands ride along, confined to the service container.
+  assertEquals(
+    applyServiceOptionsToComposeDocument(doc, options, undefined, undefined, {
+      enabled: true,
+    }).hooks,
+    [{
+      composeServiceName: "api",
+      preDeployCommand: "echo before",
+      postDeployCommand: "echo after",
+      confinement: "compose-service",
+      buildDisableCache: true,
+    }],
+  );
 });
 
 test("applyServiceOptionsToComposeDocument preserves existing stop_grace_period", () => {
@@ -152,12 +190,23 @@ test("applyServiceOptionsToComposeDocument emits single-field deploy hooks", () 
       ["cache", { build: { disableCache: true } }],
       ["none", {}],
     ]),
+    undefined,
+    undefined,
+    { enabled: true },
   );
 
   assertEquals(result.hooks, [
     { composeServiceName: "cache", buildDisableCache: true },
-    { composeServiceName: "post", postDeployCommand: "post-only" },
-    { composeServiceName: "pre", preDeployCommand: "pre-only" },
+    {
+      composeServiceName: "post",
+      postDeployCommand: "post-only",
+      confinement: "compose-service",
+    },
+    {
+      composeServiceName: "pre",
+      preDeployCommand: "pre-only",
+      confinement: "compose-service",
+    },
   ]);
 });
 

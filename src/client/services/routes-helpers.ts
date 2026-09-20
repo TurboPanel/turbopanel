@@ -1,4 +1,7 @@
-import { parseServiceOptions } from '../../lib/service-options.ts'
+import {
+  type ParseServiceOptionsOptions,
+  parseServiceOptions,
+} from '../../lib/service-options.ts'
 import {
   buildPatchUpdateFields,
   parseDescription,
@@ -86,13 +89,20 @@ export type OptionalServiceOptionsResult =
   | { kind: 'value'; value: NonNullable<ReturnType<typeof parseServiceOptions>> }
   | { kind: 'invalid' }
 
+/**
+ * What the write path persists is the *parsed* options document, so the
+ * deploy-hook gate has to be threaded in here: without `deployHooks: true`
+ * (the organization's `deployHooksEnabled`), a saved `preDeployCommand` /
+ * `postDeployCommand` is dropped before it reaches the row.
+ */
 export function parseOptionalServiceOptions(
   body: Record<string, unknown>,
+  parseOptions: ParseServiceOptionsOptions = {},
 ): OptionalServiceOptionsResult {
   const optionsResult = parseJsonbField(body, 'options')
   if (optionsResult === 'invalid') return { kind: 'invalid' }
   if (optionsResult === null) return { kind: 'absent' }
-  const parsed = parseServiceOptions(optionsResult)
+  const parsed = parseServiceOptions(optionsResult, parseOptions)
   if (parsed === null) return { kind: 'invalid' }
   return { kind: 'value', value: parsed }
 }
@@ -163,6 +173,7 @@ export type ServicePatchFields = {
 
 export function parseServicePatchFields(
   body: Record<string, unknown>,
+  parseOptions: ParseServiceOptionsOptions = {},
 ):
   | { ok: true; patch: ServicePatchFields }
   | ComposeServiceNameRejection
@@ -186,7 +197,7 @@ export function parseServicePatchFields(
     patch.metadata = stripServicePromotedMetadata(metadataResult)
   }
 
-  const optionsResult = parseOptionalServiceOptions(body)
+  const optionsResult = parseOptionalServiceOptions(body, parseOptions)
   if (optionsResult.kind === 'invalid') {
     return { ok: false, error: 'invalid_service_options', status: 400 }
   }

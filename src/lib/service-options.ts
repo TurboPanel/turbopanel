@@ -3,6 +3,13 @@
 export type HealthCheckPolicy = 'disabled' | 'warn' | 'required'
 
 export type ServiceOptions = {
+  /**
+   * Deploy hooks — arbitrary shell the daemon runs inside the service's
+   * container at deploy time. Not an ordinary option: they are only read
+   * when the caller passes `{ deployHooks: true }` after checking the
+   * organization's `deployHooksEnabled` gate (`organization-options.ts`);
+   * every other parse drops them.
+   */
   preDeployCommand?: string
   postDeployCommand?: string
   /** Desired instance count for this service (1 = single container). */
@@ -97,7 +104,19 @@ function parseHealthCheck(
   return { policy }
 }
 
-export function parseServiceOptions(value: unknown): ServiceOptions | null {
+export type ParseServiceOptionsOptions = {
+  /**
+   * Read `preDeployCommand` / `postDeployCommand`. Only deploy preparation
+   * passes `true`, and only when the organization has enabled deploy hooks;
+   * the default drops both fields so they never ride along as plain options.
+   */
+  deployHooks?: boolean
+}
+
+export function parseServiceOptions(
+  value: unknown,
+  parseOptions: ParseServiceOptionsOptions = {},
+): ServiceOptions | null {
   if (value === null || value === undefined) return {}
   if (!isRecord(value)) return null
 
@@ -106,11 +125,13 @@ export function parseServiceOptions(value: unknown): ServiceOptions | null {
 
   const options: ServiceOptions = {}
 
-  const preDeployCommand = readOptionalString(value.preDeployCommand)
-  if (preDeployCommand) options.preDeployCommand = preDeployCommand
+  if (parseOptions.deployHooks === true) {
+    const preDeployCommand = readOptionalString(value.preDeployCommand)
+    if (preDeployCommand) options.preDeployCommand = preDeployCommand
 
-  const postDeployCommand = readOptionalString(value.postDeployCommand)
-  if (postDeployCommand) options.postDeployCommand = postDeployCommand
+    const postDeployCommand = readOptionalString(value.postDeployCommand)
+    if (postDeployCommand) options.postDeployCommand = postDeployCommand
+  }
 
   const instances = readOptionalPositiveInt(value.instances)
   if (instances !== undefined && instances <= MAX_SERVICE_INSTANCES) {

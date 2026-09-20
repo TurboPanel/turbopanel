@@ -5,6 +5,7 @@ import {
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
+  resolveDeployHooksEnabled,
   type TemperatureUnit,
 } from "../../lib/organization-options.ts";
 import { DISPLAY_NAME_MAX_LENGTH } from "../../lib/display-name-format.ts";
@@ -64,6 +65,10 @@ export type TlsSettingsPatch = {
 
 export type ComposeGatedFieldsPatch = {
   composeGatedFieldsEnabled: boolean;
+};
+
+export type DeployHooksPatch = {
+  deployHooksEnabled: boolean;
 };
 
 export type ComposeDefaultResourceLimitsPatch = {
@@ -385,6 +390,15 @@ export function parseComposeGatedFieldsPatch(
   };
 }
 
+export function parseDeployHooksPatch(
+  body: Record<string, unknown>,
+): { ok: true; patch: DeployHooksPatch } | OrganizationRouteValidationError {
+  if (typeof body.deployHooksEnabled !== "boolean") {
+    return { ok: false, error: "Invalid deployHooksEnabled", status: 400 };
+  }
+  return { ok: true, patch: { deployHooksEnabled: body.deployHooksEnabled } };
+}
+
 /**
  * The organization's opt-in per-service ceiling. `null` clears it (back to
  * the 0.1.0 default of no platform number); an object must carry at least
@@ -665,6 +679,18 @@ export function composeGatedFieldsPutResponse(options: {
     ok: true as const,
     ...composeGatedFieldsGetResponse(options),
   };
+}
+
+export function deployHooksGetResponse(options: {
+  deployHooksEnabled?: boolean;
+}) {
+  return { deployHooksEnabled: resolveDeployHooksEnabled(options) };
+}
+
+export function deployHooksPutResponse(options: {
+  deployHooksEnabled?: boolean;
+}) {
+  return { ok: true as const, ...deployHooksGetResponse(options) };
 }
 
 export function hostDefaultsGetResponse(options: {

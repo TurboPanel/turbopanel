@@ -3282,6 +3282,7 @@ test("parseEnvironmentDeployPayload parses rich hostings and optional material",
     }],
     serviceHooks: [{
       composeServiceName: "web",
+      confinement: "compose-service",
       preDeployCommand: "/bin/true",
       buildDisableCache: true,
     }],
@@ -5248,6 +5249,7 @@ test("parseEnvironmentDeployPayload hosting fields cover php, ports, and rejects
     variableMaterial: [{ key: "FOO", valueEnvelope: "enc:val" }],
     serviceHooks: [{
       composeServiceName: "web",
+      confinement: "compose-service",
       postDeployCommand: "/bin/true",
     }],
   });
@@ -5392,6 +5394,37 @@ test("parseEnvironmentDeployPayload hosting fields cover php, ports, and rejects
       }),
     Error,
     "Invalid environment.deploy payload",
+  );
+  // A hook command must name its confinement (the service container); a
+  // bare command, or any other target, is a host-shell request.
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        serviceHooks: [{ composeServiceName: "web", preDeployCommand: "id" }],
+      }),
+    Error,
+    "Invalid environment.deploy payload",
+  );
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...BASE_ENVIRONMENT_DEPLOY,
+        serviceHooks: [{
+          composeServiceName: "web",
+          confinement: "host",
+          postDeployCommand: "id",
+        }],
+      }),
+    Error,
+    "Invalid environment.deploy payload",
+  );
+  assertEquals(
+    parseEnvironmentDeployPayload({
+      ...BASE_ENVIRONMENT_DEPLOY,
+      serviceHooks: [{ composeServiceName: "web", buildDisableCache: true }],
+    }).serviceHooks,
+    [{ composeServiceName: "web", buildDisableCache: true }],
   );
 });
 

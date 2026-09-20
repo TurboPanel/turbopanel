@@ -6,7 +6,12 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db.ts'
-import { service } from '../../lib/db/schema.ts'
+import { organization, service } from '../../lib/db/schema.ts'
+import {
+  parseOrganizationOptions,
+  resolveDeployHooksEnabled,
+} from '../../lib/organization-options.ts'
+import type { ParseServiceOptionsOptions } from '../../lib/service-options.ts'
 import { applyStorageRetentionOnParentDelete } from '../../lib/db/storage-records.ts'
 import {
   assertCanCreateOr403,
@@ -42,8 +47,9 @@ const SERVICE_SELECT = {
 function buildServicePatchFields(
   c: Context,
   body: Record<string, unknown>,
+  parseOptions: ParseServiceOptionsOptions,
 ) {
-  const parsed = parseServicePatchFields(body)
+  const parsed = parseServicePatchFields(body, parseOptions)
   if ('ok' in parsed && parsed.ok === false && 'message' in parsed) {
     return c.json({ error: parsed.error, message: parsed.message }, parsed.status)
   }
@@ -202,7 +208,17 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const patchFields = buildServicePatchFields(c, body)
+    // Hook commands are persisted only when the organization's owner enabled
+    // deploy hooks; otherwise the parser drops them before the row is written.
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1)
+    const deployHooks = resolveDeployHooksEnabled(
+      parseOrganizationOptions(orgRow?.options)
+    )
+    const patchFields = buildServicePatchFields(c, body, { deployHooks })
     if (patchFields instanceof Response) return patchFields
 
     await db
