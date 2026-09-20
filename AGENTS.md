@@ -699,9 +699,10 @@ network is unrestricted on self-hosted (decided 2026-09-18):** the `compile` /
 whatever its operator configures — alert webhooks, chat integrations, push
 relays, a GitHub Enterprise or self-managed GitLab origin — and a list baked at
 compile time made every one of those a `PermissionDenied` at runtime. The host
-firewall is the egress boundary — operator-owned today; a TurboPanel-managed
-host firewall (inbound derived from what the panel deploys, outbound left open)
-is the first 0.1.x push by the 2026-09-19 decision and does not reverse this.
+firewall is the egress boundary — and TurboPanel's own: the daemon installer
+removes ufw/firewalld/iptables-persistent on every host (decided 2026-09-20),
+and the managed ruleset (inbound derived from what the panel deploys, outbound
+left open) lands through the first 0.1.x pushes; neither reverses this.
 `src/deno-compile-permissions.test.ts` refuses a
 reintroduced `--allow-net=<hosts>` list. The bare flag must stay: without it the
 Unix-socket connects above are refused.
