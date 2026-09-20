@@ -6,25 +6,20 @@
  * babysit a development instance and its development nodes. It must never be
  * exposed by a production deployment.
  *
- * The surface is gated behind an **explicit** development flag — it never
- * fails open. Two accepted signals:
+ * The surface is gated behind a **single explicit** flag — it never fails
+ * open: `TURBOPANEL_DEV_SURFACE=1`. The daemon's
+ * `turbopanel-instance.service.j2` is the only managed writer of that flag,
+ * and it emits it solely for co-located Deno source-mode dev.
  *
- * 1. `TURBOPANEL_DEV_SURFACE=1` — a dedicated opt-in, or
- * 2. the strict pair `TURBOPANEL_MODE=development` **and**
- *    `TURBOPANEL_UI_MODE=dev`.
- *
- * Anything else — unset, unknown, mistyped, or production values (e.g.
- * `TURBOPANEL_UI_MODE=static`) — is treated as disabled. Older behavior keyed
- * only off `TURBOPANEL_UI_MODE !== 'static'`, which failed open whenever the
- * var was unset or mistyped; that inference has been removed.
+ * `TURBOPANEL_UI_MODE` is **not** consulted: it selects how Caddy serves the
+ * UI (Expo proxy vs. static export) and is scoped to Caddy/Expo/static UI
+ * selection only. `TURBOPANEL_MODE=development` alone is likewise not enough.
+ * Anything other than the literal `1` — unset, `true`, `yes`, mistyped — is
+ * treated as disabled.
  */
 export function isExplicitDevelopmentMode(): boolean {
   if (typeof Deno === 'undefined') return false
-  const devSurface = Deno.env.get('TURBOPANEL_DEV_SURFACE')?.trim()
-  if (devSurface === '1') return true
-  const mode = Deno.env.get('TURBOPANEL_MODE')?.trim().toLowerCase()
-  const uiMode = Deno.env.get('TURBOPANEL_UI_MODE')?.trim().toLowerCase()
-  return mode === 'development' && uiMode === 'dev'
+  return Deno.env.get('TURBOPANEL_DEV_SURFACE')?.trim() === '1'
 }
 
 export function isDeveloperSurfaceEnabled(): boolean {

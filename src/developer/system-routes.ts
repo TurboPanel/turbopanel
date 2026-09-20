@@ -70,8 +70,16 @@ function trunkBranch(): string {
   return Deno.env.get('TURBOPANEL_TRUNK_BRANCH')?.trim() || 'trunk'
 }
 
-function instanceServiceName(): string | undefined {
-  return Deno.env.get('TURBOPANEL_INSTANCE_SERVICE')?.trim() || undefined
+/** Standard managed/dev unit name (daemon `instance-launch` `instance_service_name`). */
+export const DEFAULT_INSTANCE_SERVICE = 'turbopanel-instance'
+
+/**
+ * systemd unit to restart after Upgrade System. `TURBOPANEL_INSTANCE_SERVICE`
+ * is only an override for a non-standard unit name; unset means the standard
+ * {@link DEFAULT_INSTANCE_SERVICE}.
+ */
+export function instanceServiceName(): string {
+  return Deno.env.get('TURBOPANEL_INSTANCE_SERVICE')?.trim() || DEFAULT_INSTANCE_SERVICE
 }
 
 function usesDirectGit(): boolean {
@@ -261,16 +269,6 @@ export function registerSystemRoutes<E extends Env>(
     }
 
     const service = instanceServiceName()
-    if (!service) {
-      return c.json(
-        {
-          ok: false,
-          error:
-            'instance upgrade restart unavailable: TURBOPANEL_INSTANCE_SERVICE is not set (run under systemd or configure a managed service)',
-        },
-        503,
-      )
-    }
 
     upgrading = true
     try {

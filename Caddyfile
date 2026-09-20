@@ -15,7 +15,8 @@
 #
 # Env:
 #   TURBOPANEL_UI_ROOT       Static export directory (default: /opt/turbopanel/share/ui)
-#   TURBOPANEL_SOCKET_DIAL   Unix socket dial path for instance
+#   TURBOPANEL_RUN_DIR       Runtime dir holding instance.sock (default: /run/turbopanel);
+#                            the unix/ dial is derived, never set by hand
 #   CADDY_PORT               HTTPS listen port (default: 8443)
 #   CADDY_TLS_CERT           Server leaf cert (default: ./certs/self-signed.crt)
 #   CADDY_TLS_KEY            Server leaf key (default: ./certs/self-signed.key)
@@ -63,14 +64,14 @@
 		request_body {
 			max_size 8MB
 		}
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+		reverse_proxy unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock {
 			header_up X-Real-IP {remote_host}
 		}
 	}
 
 	@ws path /ws/*
 	handle @ws {
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+		reverse_proxy unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock {
 			header_up X-Real-IP {remote_host}
 		}
 	}
@@ -87,7 +88,7 @@
 		request_body {
 			max_size 2MB
 		}
-		reverse_proxy unix//{$TURBOPANEL_SOCKET_DIAL:run/turbopanel/instance.sock} {
+		reverse_proxy unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock {
 			header_up X-Real-IP {remote_host}
 		}
 	}

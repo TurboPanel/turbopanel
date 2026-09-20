@@ -14,7 +14,7 @@ import {
   DEFAULT_TLS_CERT,
   DEFAULT_UI_ROOT,
   INSTANCE_SOCKET_MODE,
-  caddyUnixDialPath,
+  caddyInstanceUpstream,
   hardenInstanceSocket,
   prepareInstanceSocket,
   resolveInstanceConfigDir,
@@ -196,10 +196,20 @@ test('run dir falls back to the socket dir before the FHS default', () => {
   )
 })
 
-test('caddyUnixDialPath strips the leading slash for unix// dialing', () => {
+test('caddyInstanceUpstream derives the unix/ dial from the run-dir contract', () => {
+  // Same derivation as the Caddyfile: unix/{$TURBOPANEL_RUN_DIR}/instance.sock.
+  assertEquals(caddyInstanceUpstream({}), 'unix//run/turbopanel/instance.sock')
   assertEquals(
-    caddyUnixDialPath('/run/turbopanel/instance.sock'),
-    'run/turbopanel/instance.sock',
+    caddyInstanceUpstream({ TURBOPANEL_RUN_DIR: '/run/custom/' }),
+    'unix//run/custom/instance.sock',
+  )
+  assertEquals(
+    caddyInstanceUpstream({ TURBOPANEL_SOCKET_DIR: '/tmp/sockets' }),
+    'unix//tmp/sockets/instance.sock',
+  )
+  assertEquals(
+    caddyInstanceUpstream({ TURBOPANEL_SOCKET: '/srv/tp/app.sock' }),
+    'unix//srv/tp/app.sock',
   )
 })
 

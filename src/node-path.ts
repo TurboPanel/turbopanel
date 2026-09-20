@@ -28,8 +28,9 @@ async function nodeFromPath(): Promise<string | undefined> {
  * `TURBOPANEL_NODE` is the explicit override. Otherwise the vendored managed
  * runtime is the default so managed installs are deterministic and never depend
  * on whatever host Node happens to be on PATH. PATH-based discovery remains only
- * as a checkout-dev fallback, gated on the same dev/prod signal as the developer
- * surface (`TURBOPANEL_UI_MODE`).
+ * as a checkout-dev fallback, gated on the same explicit dev flag as the
+ * developer surface (`TURBOPANEL_DEV_SURFACE=1`; `TURBOPANEL_UI_MODE` is a
+ * Caddy/Expo serving selector and is not consulted).
  */
 export async function resolveNodePath(): Promise<string> {
   const fromEnv = Deno.env.get('TURBOPANEL_NODE')?.trim()

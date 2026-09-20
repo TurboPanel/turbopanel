@@ -5,9 +5,11 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../client/authn/secrets.ts
 import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
 import {
   defaultSystemGitRunner,
+  DEFAULT_INSTANCE_SERVICE,
   describeUnknownError,
   dirtyUpgradeError,
   getUiRepoPath,
+  instanceServiceName,
   isRuntimePorcelainLine,
   porcelainPath,
   registerSystemRoutes,
@@ -85,24 +87,47 @@ test('registerSystemRoutes requires developer auth by default', async () => {
   assertEquals(response.status, 401)
 })
 
-test('POST /system/upgrade is refused when dirty, git fails, or restart is unset', async () => {
+test('instanceServiceName defaults to the standard unit and honors an override', async () => {
+  await withSystemRouteEnv({ TURBOPANEL_INSTANCE_SERVICE: undefined }, () => {
+    assertEquals(instanceServiceName(), DEFAULT_INSTANCE_SERVICE)
+    assertEquals(instanceServiceName(), 'turbopanel-instance')
+    return Promise.resolve()
+  })
+  await withSystemRouteEnv({ TURBOPANEL_INSTANCE_SERVICE: '   ' }, () => {
+    assertEquals(instanceServiceName(), 'turbopanel-instance')
+    return Promise.resolve()
+  })
+  await withSystemRouteEnv({ TURBOPANEL_INSTANCE_SERVICE: ' custom-instance ' }, () => {
+    assertEquals(instanceServiceName(), 'custom-instance')
+    return Promise.resolve()
+  })
+})
+
+test('POST /system/upgrade restarts the standard unit when TURBOPANEL_INSTANCE_SERVICE is unset', async () => {
   const secrets = await deriveSecretsConfig(
     parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
     'session-signing',
   )
   await withSystemRouteEnv({ TURBOPANEL_INSTANCE_SERVICE: undefined }, async () => {
-    setSystemRoutesTestHooks({ gitRunner: scriptedGitRunner({}) })
+    const restarted: string[] = []
+    setSystemRoutesTestHooks({
+      gitRunner: scriptedGitRunner({}),
+      restarter: (service) => {
+        restarted.push(service)
+      },
+    })
     const app = new Hono()
     registerSystemRoutes(app, { secrets, authRequired: false })
     const response = await app.request(`${DEVELOPER_API_PREFIX}/system/upgrade`, {
       method: 'POST',
     })
-    assertEquals(response.status, 503)
+    assertEquals(response.status, 200)
     const body = await response.json()
     if (typeof body !== 'object' || body === null || !('ok' in body)) {
       throw new TypeError('upgrade response must be an object with ok')
     }
-    assertEquals(body.ok, false)
+    assertEquals(body.ok, true)
+    assertEquals(restarted, ['turbopanel-instance'])
   })
 })
 
@@ -315,7 +340,7 @@ test('GET /system/upgrade-status reports dirty checkouts and git status failures
   })
 })
 
-test('POST /system/upgrade refuses dirty trees, a missing service, and in-flight upgrades', async () => {
+test('POST /system/upgrade refuses dirty trees, honors a unit override, and blocks in-flight upgrades', async () => {
   const secrets = await deriveSecretsConfig(
     parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
     'session-signing',
@@ -335,14 +360,21 @@ test('POST /system/upgrade refuses dirty trees, a missing service, and in-flight
     assertEquals(Array.isArray(body.dirty), true)
   })
 
-  await withSystemRouteEnv({ TURBOPANEL_INSTANCE_SERVICE: undefined }, async () => {
-    setSystemRoutesTestHooks({ gitRunner: scriptedGitRunner({}) })
+  await withSystemRouteEnv({ TURBOPANEL_INSTANCE_SERVICE: 'custom-instance' }, async () => {
+    const restarted: string[] = []
+    setSystemRoutesTestHooks({
+      gitRunner: scriptedGitRunner({}),
+      restarter: (service) => {
+        restarted.push(service)
+      },
+    })
     const app = new Hono()
     registerSystemRoutes(app, { secrets, authRequired: false })
-    const missing = await app.request(`${DEVELOPER_API_PREFIX}/system/upgrade`, {
+    const overridden = await app.request(`${DEVELOPER_API_PREFIX}/system/upgrade`, {
       method: 'POST',
     })
-    assertEquals(missing.status, 503)
+    assertEquals(overridden.status, 200)
+    assertEquals(restarted, ['custom-instance'])
   })
 
   await withSystemRouteEnv({ TURBOPANEL_INSTANCE_SERVICE: 'turbopanel-instance' }, async () => {

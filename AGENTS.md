@@ -452,10 +452,11 @@ dev user. In **production** it is **`2770 tp:tp`** (setgid) so the
 | -------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `TURBOPANEL_SOCKET`              | —                                       | Full socket path override                                                                                                                                                                                                                                                                                                                        |
 | `TURBOPANEL_SOCKET_DIR`          | `/run/turbopanel`                       | Directory when using the default filename                                                                                                                                                                                                                                                                                                        |
-| `TURBOPANEL_SOCKET_DIAL`         | `run/turbopanel/instance.sock`          | Caddy `unix//` dial path (no leading slash)                                                                                                                                                                                                                                                                                                      |
-| `TURBOPANEL_UI_MODE`             | `static`                                | Instance/developer-surface gate (`dev` enables Expo UI unit + developer API on co-located hosts); production Caddy always serves static UI                                                                                                                                                                                                       |
+| `TURBOPANEL_RUN_DIR`             | `/run/turbopanel`                       | Runtime dir holding `instance.sock`; Caddy derives its upstream as `unix/{$TURBOPANEL_RUN_DIR}/instance.sock` (no separate dial variable)                                                                                                                                                                                                       |
+| `TURBOPANEL_UI_MODE`             | `static`                                | UI serving mode only: `dev` proxies Caddy to the Expo unit, `static` serves the exported build. Not an application dev-mode signal — the developer surface, ephemeral secrets, and PAM bypass key off `TURBOPANEL_DEV_SURFACE=1` alone                                                                                                          |
 | `TURBOPANEL_UI_ROOT`             | `/opt/turbopanel/share/ui`              | Directory of `expo export --platform web` output (local manual dev typically sets `../ui/dist`)                                                                                                                                                                                                                                                  |
-| `TURBOPANEL_UI_SERVICE`          | `turbopanel-ui`                         | Name of the Expo systemd unit on managed hosts (injected for orchestration; no instance API surface today)                                                                                                                                                                                                                                       |
+| `TURBOPANEL_DEV_SURFACE`         | —                                       | `1` enables the developer surface + dev-only auth relaxations. Written only by the daemon's `turbopanel-instance.service.j2` for co-located Deno source-mode dev with `TURBOPANEL_UI_MODE=dev`; never on managed hosts                                                                                                                         |
+| `TURBOPANEL_INSTANCE_SERVICE`    | `turbopanel-instance`                   | systemd unit the developer surface restarts after Upgrade System; set it only for a non-standard unit name                                                                                                                                                                                                                                       |
 | `CADDY_PORT`                     | `8443`                                  | HTTPS listen port (default `self_signed` / `upload`; `lets_encrypt` binds `443`)                                                                                                                                                                                                                                                               |
 | `CADDY_TLS_CERT`                 | `./certs/self-signed.crt`               | Server leaf certificate (signed by the **Platform CA**; stays under the instance `certs/` dir). Unused in `lets_encrypt`.                                                                                                                                                                                                                      |
 | `CADDY_TLS_KEY`                  | `./certs/self-signed.key`               | Server leaf private key. Unused in `lets_encrypt`.                                                                                                                                                                                                                                                                                            |
@@ -667,13 +668,22 @@ Authorization, sessions, and secrets must use the primary connection. See
 
 ### Caddy dial format
 
-Caddy uses `unix//<path>` where `<path>` has **no leading slash**:
+Caddy's Unix-socket upstream is `unix/` followed by the **absolute** socket
+path, so the default renders as:
 
 ```caddyfile
 reverse_proxy unix//run/turbopanel/instance.sock
 ```
 
-`TURBOPANEL_SOCKET_DIAL` is passed into the `Caddyfile` placeholders.
+The Caddyfiles spell it `unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock`
+— derived from the same run-dir + filename contract as `resolveInstanceSocket`
+in `src/server-paths.ts` (`caddyInstanceUpstream` mirrors it). The only socket
+path inputs are `TURBOPANEL_RUN_DIR`, `TURBOPANEL_SOCKET_DIR`, and
+`TURBOPANEL_SOCKET`; there is no operator-set dial variable. Caddy itself reads
+only `TURBOPANEL_RUN_DIR` (Caddyfile placeholders cannot chain fallbacks; both
+managed units set it) — `TURBOPANEL_SOCKET_DIR` and `TURBOPANEL_SOCKET` are
+honored on the instance side, so relocating the socket for Caddy means setting
+`TURBOPANEL_RUN_DIR`.
 
 ### Development
 

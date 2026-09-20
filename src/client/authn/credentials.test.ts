@@ -252,8 +252,9 @@ test('verifyCredentials accepts root on Deno before install in dev group-only mo
   }
   try {
     Deno.env.set('TURBOPANEL_DEV_HOST_AUTH', 'group-only')
-    Deno.env.set('TURBOPANEL_MODE', 'development')
-    Deno.env.set('TURBOPANEL_UI_MODE', 'dev')
+    Deno.env.set('TURBOPANEL_DEV_SURFACE', '1')
+    Deno.env.delete('TURBOPANEL_MODE')
+    Deno.env.delete('TURBOPANEL_UI_MODE')
 
     const db = createMockAuthDb(createEmptyMockAuthState())
     const result = await verifyCredentials(PAM_ROOT_USERNAME, 'any-password', 'deno', db)

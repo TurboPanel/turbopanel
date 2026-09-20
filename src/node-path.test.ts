@@ -95,6 +95,36 @@ test('resolveNodePath falls back to PATH only when developer surface is enabled'
   }
 })
 
+test('resolveNodePath ignores PATH under the development + dev UI pair without the dev-surface flag', async () => {
+  const pathDir = await Deno.makeTempDir({ prefix: 'tp-node-path-ui-' })
+  const pathNode = join(pathDir, 'node')
+  await Deno.writeTextFile(pathNode, '#!/bin/sh\necho path\n')
+  const missingRoot = await Deno.makeTempDir({ prefix: 'tp-node-missing-ui-' })
+  try {
+    await withEnv(
+      {
+        TURBOPANEL_NODE: undefined,
+        TURBOPANEL_RUNTIMES_DIR: missingRoot,
+        TURBOPANEL_DEV_SURFACE: undefined,
+        TURBOPANEL_MODE: 'development',
+        TURBOPANEL_UI_MODE: 'dev',
+        PATH: `${pathDir}:/usr/bin`,
+      },
+      async () => {
+        // TURBOPANEL_UI_MODE only picks the Caddy/Expo serving mode.
+        await assertRejects(
+          () => resolveNodePath(),
+          Error,
+          'Node.js not found',
+        )
+      },
+    )
+  } finally {
+    await Deno.remove(pathDir, { recursive: true })
+    await Deno.remove(missingRoot, { recursive: true })
+  }
+})
+
 test('resolveNodePath throws when no node binary is available', async () => {
   const missingRoot = await Deno.makeTempDir({ prefix: 'tp-node-none-' })
   try {

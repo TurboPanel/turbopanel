@@ -47,17 +47,24 @@ test("disabled for production static UI mode", () => {
   });
 });
 
-test("disabled for TURBOPANEL_UI_MODE=dev without TURBOPANEL_MODE=development", () => {
+test("disabled for TURBOPANEL_UI_MODE=dev without the dev-surface flag", () => {
   withEnv({ TURBOPANEL_UI_MODE: "dev" }, () => {
     assertEquals(isDeveloperSurfaceEnabled(), false);
   });
 });
 
-test("enabled for the strict development + dev pair", () => {
+test("UI mode is scoped to Caddy/Expo — the development + dev pair never enables dev mode", () => {
   withEnv(
     { TURBOPANEL_MODE: "development", TURBOPANEL_UI_MODE: "dev" },
     () => {
-      assertEquals(isDeveloperSurfaceEnabled(), true);
+      assertEquals(isDeveloperSurfaceEnabled(), false);
+      assertEquals(isExplicitDevelopmentMode(), false);
+    },
+  );
+  withEnv(
+    { TURBOPANEL_MODE: "Development", TURBOPANEL_UI_MODE: "DEV" },
+    () => {
+      assertEquals(isDeveloperSurfaceEnabled(), false);
     },
   );
 });
@@ -66,15 +73,9 @@ test("enabled via explicit TURBOPANEL_DEV_SURFACE=1", () => {
   withEnv({ TURBOPANEL_DEV_SURFACE: "1", TURBOPANEL_UI_MODE: "static" }, () => {
     assertEquals(isDeveloperSurfaceEnabled(), true);
   });
-});
-
-test("case-insensitive mode values still enable the strict pair", () => {
-  withEnv(
-    { TURBOPANEL_MODE: "Development", TURBOPANEL_UI_MODE: "DEV" },
-    () => {
-      assertEquals(isDeveloperSurfaceEnabled(), true);
-    },
-  );
+  withEnv({ TURBOPANEL_DEV_SURFACE: " 1 " }, () => {
+    assertEquals(isExplicitDevelopmentMode(), true);
+  });
 });
 
 test("disabled for malformed dev-surface / mode values", () => {
