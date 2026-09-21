@@ -66,14 +66,33 @@ export function isSecureRequest(url: string, forwardedProto?: string): boolean {
   }
 }
 
+/** True when this request is a WebSocket handshake (Upgrade: websocket). */
+export function isWebSocketUpgradeRequest(
+  upgradeHeader: string | undefined,
+): boolean {
+  return upgradeHeader?.trim().toLowerCase() === "websocket";
+}
+
 /** Register the baseline headers on every response of `app`. */
 export function registerSecurityHeaders(app: Hono<AppEnv>): void {
   app.use("*", async (c, next) => {
+    // Snapshot before `next()`: a WebSocket handler hijacks the connection, and
+    // Deno then refuses `c.req.header()` with `TypeError: Request closed`.
+    // Reading after the upgrade also prevented returning the 101, which logged
+    // "Upgrade response was not returned from callback" and left Caddy 502ing
+    // `/api/*` (the unix socket name vanished while the process kept the inode).
+    const upgrade = c.req.header("upgrade");
+    const forwardedProto = c.req.header("x-forwarded-proto");
+    const url = c.req.url;
+    const isUpgrade = isWebSocketUpgradeRequest(upgrade);
     await next();
+    if (isUpgrade || c.res.status === 101) {
+      return;
+    }
     for (const [name, value] of SECURITY_HEADERS) {
       c.header(name, value);
     }
-    if (isSecureRequest(c.req.url, c.req.header("x-forwarded-proto"))) {
+    if (isSecureRequest(url, forwardedProto)) {
       c.header(HSTS_HEADER, HSTS_VALUE);
     }
   });
