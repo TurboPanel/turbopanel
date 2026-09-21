@@ -675,14 +675,17 @@ path, so the default renders as:
 reverse_proxy unix//run/turbopanel/instance.sock
 ```
 
-The Caddyfiles spell it `unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock`
-— derived from the same run-dir + filename contract as `resolveInstanceSocket`
-in `src/server-paths.ts` (`caddyInstanceUpstream` mirrors it). The only socket
+The managed-install template (turbopaneld
+`roles/instance-launch/templates/Caddyfile.j2`) renders it from
+`turbopanel_run_dir`; the dev overlay spells it
+`unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock` — both derived from
+the same run-dir + filename contract as `resolveInstanceSocket` in
+`src/server-paths.ts` (`caddyInstanceUpstream` mirrors it). The only socket
 path inputs are `TURBOPANEL_RUN_DIR`, `TURBOPANEL_SOCKET_DIR`, and
-`TURBOPANEL_SOCKET`; there is no operator-set dial variable. Caddy itself reads
-only `TURBOPANEL_RUN_DIR` (Caddyfile placeholders cannot chain fallbacks; both
-managed units set it) — `TURBOPANEL_SOCKET_DIR` and `TURBOPANEL_SOCKET` are
-honored on the instance side, so relocating the socket for Caddy means setting
+`TURBOPANEL_SOCKET`; there is no operator-set dial variable. Caddy reads only
+the run dir (the managed units set `TURBOPANEL_RUN_DIR` and the role renders
+the same value) — `TURBOPANEL_SOCKET_DIR` and `TURBOPANEL_SOCKET` are honored
+on the instance side, so relocating the socket for Caddy means setting
 `TURBOPANEL_RUN_DIR`.
 
 ### Development
@@ -725,9 +728,13 @@ playbook, which installs `/etc/tmpfiles.d/turbopanel.conf` and applies it with
 
 ## Caddy (production)
 
-This repo's `Caddyfile` is **production-only** — full detail in
-[`caddy.md`](./caddy.md) (server addresses, certs/entrypoint, daemon TLS trust
-model, static UI). The one rule that must not be missed:
+The production Caddyfile is **not in this repo**: the daemon's
+`instance-launch` role renders it on every converge from
+`turbopaneld/orchestration/roles/instance-launch/templates/Caddyfile.j2` (one
+template, the three TLS modes are its branches) into
+`/etc/turbopanel/caddy/Caddyfile`. Full detail in [`caddy.md`](./caddy.md)
+(server addresses, certs/entrypoint, daemon TLS trust model, static UI). The
+one rule that must not be missed:
 
 **The catch-all is why the prefix list is load-bearing.** Caddy answers
 `try_files {path} /index.html`, so a prefix the instance owns but Caddy does not

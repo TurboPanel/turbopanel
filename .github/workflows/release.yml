@@ -3,12 +3,13 @@
 # and packaged once in CI as turbopanel-instance-<version>-<arch>.tar.zst —
 # bin/turbopanel-instance (with the migrations embedded and the install-time
 # verbs: migrate, generate-secret, generate-self-signed-cert),
-# bin/turbopanel-mailer (the compiled mailer), lib/libduckdb.so (what
-# instance-launch's compiled branch puts on LD_LIBRARY_PATH) and
-# share/caddy/Caddyfile{,.acme} (the site config Caddy serves; its paths are
-# env-driven, nothing else in it is checkout-relative) — plus a
-# manifest.json with the sha256 and size of each asset. Road to 0.1.x,
-# `artifacts-cp-ui` + `instance-runtime-packaging`; consuming the package is
+# bin/turbopanel-mailer (the compiled mailer) and lib/libduckdb.so (what
+# instance-launch's compiled branch puts on LD_LIBRARY_PATH) — plus a
+# manifest.json with the sha256 and size of each asset. The installer unpacks
+# the package flat into /opt/turbopanel beside the daemon (bin/, lib/). The
+# Caddy site config is not part of the package: the daemon's instance-launch
+# role renders it from its own Caddyfile.j2. Road to 0.1.x, `artifacts-cp-ui`
+# + `instance-runtime-packaging`; consuming the package is
 # `self-hosted-installer`.
 #
 # Build (the Postgres-backed test suite and Sonar, ~25 min) is not re-run
@@ -221,16 +222,14 @@ jobs:
         run: |
           set -eu
           _stage="$(mktemp -d)"
-          mkdir -p "${_stage}/bin" "${_stage}/lib" "${_stage}/share/caddy" release-assets
-          install -m 0644 Caddyfile "${_stage}/share/caddy/Caddyfile"
-          install -m 0644 Caddyfile.acme "${_stage}/share/caddy/Caddyfile.acme"
+          mkdir -p "${_stage}/bin" "${_stage}/lib" release-assets
           install -m 0755 dist/turbopanel-instance "${_stage}/bin/turbopanel-instance"
           install -m 0755 dist/turbopanel-mailer "${_stage}/bin/turbopanel-mailer"
           # The install-time verbs run without the vendored .so or a checkout.
           "${_stage}/bin/turbopanel-instance" generate-secret | grep -Eq '^[A-Za-z0-9_]{48}$'
           install -m 0644 "${{ steps.duckdb.outputs.dir }}/libduckdb.so" "${_stage}/lib/libduckdb.so"
           _name="turbopanel-instance-${TP_VERSION}-${TP_ARCH}.tar.zst"
-          tar -C "${_stage}" -cf - bin lib share | zstd -19 -T0 -q -o "release-assets/${_name}"
+          tar -C "${_stage}" -cf - bin lib | zstd -19 -T0 -q -o "release-assets/${_name}"
           rm -rf "${_stage}"
           ls -l release-assets
 
