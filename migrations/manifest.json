@@ -26,6 +26,12 @@
       "tag": "0003_notification_table_names",
       "when": 1789765317343,
       "sha256": "2541a0818ecf5a06cdee2e2763c6167a1719d48655392f9bcc733abb2569364c"
+    },
+    {
+      "idx": 4,
+      "tag": "0004_schema_comments",
+      "when": 1789994531436,
+      "sha256": "5ec3fa38b0e48914069bc2e027d2b846e97fa19599182183ac6a1e4f2ab952df"
     }
   ]
 }

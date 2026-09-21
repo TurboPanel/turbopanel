@@ -29,6 +29,13 @@
       "when": 1789765317343,
       "tag": "0003_notification_table_names",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789994531436,
+      "tag": "0004_schema_comments",
+      "breakpoints": true
     }
   ]
 }
