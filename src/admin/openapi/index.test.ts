@@ -1,5 +1,5 @@
 import { assertEquals, assertExists } from "@std/assert";
-import { ADMIN_API_PREFIX } from "../../surfaces.ts";
+import { ADMIN_API_PREFIX } from "../../app/surfaces.ts";
 import { getAdminOpenApiSpec } from "./index.ts";
 import { getWorkersAdminOpenApiSpec } from "./workers.ts";
 

@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { parseDockerRunImportRequest } from "./routes-helpers.ts";
 
-/** See the note in `src/lib/docker-run/option-registry.test.ts`. */
+/** See the note in `src/features/docker-run/option-registry.test.ts`. */
 const test = Deno.test.bind(Deno);
 
 test("a minimal body parses to defaults", () => {

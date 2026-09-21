@@ -14,17 +14,17 @@
 
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { DaemonCell } from '../../daemon/cell/contracts.ts'
-import type { Db } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { DaemonCell } from '../../contracts/cell.ts'
+import type { Db } from '../../db/connection.ts'
 import type { RedisCellClient } from '../../daemon/cell/redis/client.ts'
 import { createRedisRateLimiter } from '../../daemon/rate-limit/redis-rate-limiter.ts'
 import {
   GITHUB_WEBHOOK_PATH,
-} from '../../surfaces.ts'
-import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
-import { encryptSecret } from '../../client/authn/data-encryption.ts'
-import { emptyComposeDocument } from '../../lib/compose/types.ts'
+} from '../../app/surfaces.ts'
+import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { emptyComposeDocument } from '../../features/compose/types.ts'
 import {
   deployment,
   environment,
@@ -36,7 +36,7 @@ import {
   server,
   repository,
   slot,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,

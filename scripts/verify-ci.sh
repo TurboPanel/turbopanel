@@ -74,5 +74,11 @@ pnpm run notices:check
 echo "==> Check CA boundary"
 pnpm run check:ca-boundary
 
+echo "==> Check import boundaries"
+pnpm run check:import-boundaries
+
+echo "==> Check contract drift (sibling twins)"
+pnpm run check:contract-drift
+
 echo "==> Test with coverage (Vitest Istanbul + Deno V8 → coverage/lcov.info)"
 pnpm test:coverage

@@ -6,39 +6,39 @@
  */
 
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
-import { StripeApiError } from "../../lib/billing/errors.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
+import { StripeApiError } from "../../features/billing/errors.ts";
 import {
   deferredDeltasByTier,
   outstandingReleasesByTier,
   type PendingChangeLedger,
   readPendingChanges,
-} from "../../lib/billing/pending-changes.ts";
+} from "../../features/billing/pending-changes.ts";
 import {
   isDelinquentStatus,
   isEndedStatus,
   listSeatsForOrganization,
   type OrganizationBillingState,
   seatQuantitiesByTier,
-} from "../../lib/db/billing-records.ts";
+} from "../../features/billing/billing-records.ts";
 import {
   countActiveLicenses,
   type LicenseCount,
   type TierRow,
-} from "../../lib/db/tier-records.ts";
+} from "../../features/tiers/tier-records.ts";
 import {
   applyTierDeltas,
   coverageLoss,
   type TierQuantity,
-} from "../../lib/tiers/assignment.ts";
+} from "../../features/tiers/assignment.ts";
 import {
   type AssignedServerRow,
   loadAssignableServers,
   tierQuantitiesFromState,
-} from "../../lib/tiers/assignment-records.ts";
-import { ladderEntry, ladderEntryByRank } from "../../lib/tiers/ladder.ts";
-import type { TierDelta } from "../../lib/billing/subscriptions.ts";
+} from "../../features/tiers/assignment-records.ts";
+import { ladderEntry, ladderEntryByRank } from "../../features/tiers/ladder.ts";
+import type { TierDelta } from "../../features/billing/subscriptions.ts";
 
 export const BILLING_NOT_CONFIGURED_ERROR = "billing_not_configured";
 export const BILLING_MUTATION_IN_PROGRESS_ERROR =

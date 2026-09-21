@@ -3,8 +3,8 @@
  */
 
 import { assertEquals } from '@std/assert'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
-import type { Db } from '../../db.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { Db } from '../../db/connection.ts'
 import { createServerPresenceDb } from '../managed/server-status-test-db.ts'
 import {
   readRepositoryViaDaemon,

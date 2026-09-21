@@ -27,13 +27,13 @@
  * from anywhere in the metrics tree (Workers bundling included).
  */
 
-import { METRICS_SCHEMA_VERSION, type MetricsSampleInput } from '../contract.ts'
+import { METRICS_SCHEMA_VERSION, type MetricsSampleInput } from '../../../contracts/metrics-contract.ts'
 import {
   type MetricsCapabilityPlanOverride,
   type MetricsCapabilityPlan,
   resolveMetricsCapabilityPlan,
   type ServerMachineClass,
-} from '../capability-plan.ts'
+} from '../../../contracts/capability-plan.ts'
 import type { HostedFamily } from '../metric-descriptors.ts'
 import type { SlotMapping } from '../types.ts'
 

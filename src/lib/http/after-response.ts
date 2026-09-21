@@ -14,13 +14,18 @@
  */
 
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { logError } from '../../logger.ts'
+import { logError } from '../logger.ts'
 
 export type AfterResponseScheduler = (task: () => Promise<void>) => void
 
+type AfterResponseEnv = {
+  Variables: {
+    runtime?: 'deno' | 'workers'
+  }
+}
+
 export function runAfterResponse(
-  c: Context<AppEnv>,
+  c: Context<AfterResponseEnv>,
   logScope: string,
   task: () => Promise<void>,
 ): void {

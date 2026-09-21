@@ -1,18 +1,18 @@
 import type { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb } from '../../db.ts'
+import { getDb } from '../../db/connection.ts'
 import { assertCanCreateOr403, getOrgId, parseJsonBody } from '../shared.ts'
 import { parseDockerRunImportRequest } from './routes-helpers.ts'
-import { composeDocumentToYaml } from '../../lib/compose/convert.ts'
-import { lintComposeYaml } from '../../lib/compose/lint.ts'
-import { validateComposeDocument } from '../../lib/compose/validate.ts'
+import { composeDocumentToYaml } from '../../features/compose/convert.ts'
+import { lintComposeYaml } from '../../features/compose/lint.ts'
+import { validateComposeDocument } from '../../features/compose/validate.ts'
 import {
   type DockerRunDiagnostic,
   importDockerRunCommand,
-} from '../../lib/docker-run/index.ts'
+} from '../../features/docker-run/index.ts'
 
 /**
  * `docker run` importer.

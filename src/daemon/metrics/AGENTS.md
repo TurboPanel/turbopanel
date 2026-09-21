@@ -327,7 +327,7 @@ derived from it) is asynchronous, best-effort, sampled/disposable metrics
 history and **must never** be read to determine whether a server is currently
 online. Postgres `server.is_connected`/`server.status_changed_at`
 (`src/daemon/cell/server-status.ts`) is the sole source of truth for current
-liveness — see `src/lib/db/AGENTS.md` and `src/daemon/cell/AGENTS.md`. Do not
+liveness — see `src/db/AGENTS.md` and `src/daemon/cell/AGENTS.md`. Do not
 add a code path that gates any online/offline decision on AE/DuckDB status
 history.
 

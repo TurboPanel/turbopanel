@@ -7,8 +7,8 @@ import {
   signOAuthState,
   verifyOAuthState,
 } from "./oauth-state.ts";
-import { parseSecretsEnv } from "../secrets.ts";
-import { ENVELOPE_SCHEME_OAUTH_STATE } from "../envelope.ts";
+import { parseSecretsEnv } from "../../../lib/secrets/secrets.ts";
+import { ENVELOPE_SCHEME_OAUTH_STATE } from "../../../lib/secrets/envelope.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

@@ -7,23 +7,23 @@ import type {
   ExpiredUpdateRequest,
   PendingRequestRecord,
   PendingRequestStatus,
-} from "../contracts.ts";
+} from "../../../contracts/cell.ts";
 import type {
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
-} from "../protocol.ts";
+} from "../../../contracts/cell-protocol.ts";
 import {
   DAEMON_CELL_MAINTAIN_MS,
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_STALE_MS,
   validateDaemonInboundEnvelope,
-} from "../protocol.ts";
+} from "../../../contracts/cell-protocol.ts";
 import { deriveInboundOutcome } from "../inbound-outcome.ts";
-import { TERMINAL_UPDATE_RETENTION_MS } from "../../../lib/update/constants.ts";
-import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo } from "../../../logger.ts";
+import { TERMINAL_UPDATE_RETENTION_MS } from "../../../features/update/constants.ts";
+import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo } from "../../../lib/logger.ts";
 import { onDaemonUpdateExpired } from "../control-plane-monitor.ts";
-import type { Db } from "../../../db.ts";
+import type { Db } from "../../../db/connection.ts";
 import { mergeSnapshotPresence } from "../snapshot-merge.ts";
 import type { RedisCellClient, StreamEntry } from "./client.ts";
 import {
@@ -277,18 +277,18 @@ function shouldCoalesceLastSeenAt(
   return atMs - lastSeenMs >= presenceCoalesceFloorMs();
 }
 
-function parseStoredDaemonBuild(raw: string | undefined): import("../protocol.ts").DaemonBuildInfo | undefined {
+function parseStoredDaemonBuild(raw: string | undefined): import("../../../contracts/cell-protocol.ts").DaemonBuildInfo | undefined {
   if (!raw) return undefined;
   try {
-    return JSON.parse(raw) as import("../protocol.ts").DaemonBuildInfo;
+    return JSON.parse(raw) as import("../../../contracts/cell-protocol.ts").DaemonBuildInfo;
   } catch {
     return undefined;
   }
 }
 
 function daemonBuildIdentityEqual(
-  a: import("../protocol.ts").DaemonBuildInfo,
-  b: import("../protocol.ts").DaemonBuildInfo | undefined,
+  a: import("../../../contracts/cell-protocol.ts").DaemonBuildInfo,
+  b: import("../../../contracts/cell-protocol.ts").DaemonBuildInfo | undefined,
 ): boolean {
   if (!b) return false;
   return a.commit === b.commit &&
@@ -683,7 +683,7 @@ export class RedisDaemonCell implements DaemonCell {
     connectionId?: string;
     hostname?: string;
     at?: string;
-    daemonBuild?: import("../protocol.ts").DaemonBuildInfo;
+    daemonBuild?: import("../../../contracts/cell-protocol.ts").DaemonBuildInfo;
   }): Promise<void> {
     this.#bumpMethodRoute("recordInbound");
     const at = params.at ?? nowIso();

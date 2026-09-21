@@ -16,12 +16,18 @@
 
 export const DEFAULT_STATE_DIR = "/var/lib/turbopanel";
 
+function stripTrailingSlashes(value: string): string {
+  let next = value;
+  while (next.endsWith("/")) next = next.slice(0, -1);
+  return next;
+}
+
 /** Where the leaf goes when the operator names nowhere: `<state>/tls/certs`. */
 export function defaultLeafCertsDir(
   env: Readonly<Record<string, string | undefined>>,
 ): string {
   const state = env.TURBOPANEL_STATE_DIR?.trim() || DEFAULT_STATE_DIR;
-  return `${state.replace(/\/+$/, "")}/tls/certs`;
+  return `${stripTrailingSlashes(state)}/tls/certs`;
 }
 
 export async function runGenerateSelfSignedCertCommand(): Promise<void> {

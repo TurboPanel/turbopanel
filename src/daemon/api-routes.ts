@@ -2,27 +2,27 @@ import { Hono } from "hono";
 import type { Context, Env, Next } from "hono";
 import { and, eq, isNull } from "drizzle-orm";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
-import { lookupActiveLicense } from "../client/authn/license.ts";
-import { organization, server } from "../lib/db/schema.ts";
+import { lookupActiveLicense } from "../features/licenses/license.ts";
+import { organization, server } from "../db/schema.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
-} from "../client/authn/secrets.ts";
+} from "../lib/secrets/secrets.ts";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { buildJwksDocument } from "./authn/daemon-jwt-keyring.ts";
 import {
   decryptSecretForDaemon,
   isDaemonSealedEnvelope,
   parseDaemonSecretEnvelope,
-} from "../client/authn/data-encryption.ts";
-import type { Db } from "../db.ts";
-import { logWarn } from "../logger.ts";
+} from "../lib/secrets/data-encryption.ts";
+import type { Db } from "../db/connection.ts";
+import { logWarn } from "../lib/logger.ts";
 import {
   getDaemonCellRegistry,
   getDb,
   getExecutionLogStore,
   getServerMetricsStore,
-} from "../db.ts";
+} from "../db/connection.ts";
 import {
   contentLengthExceeds,
   readBodyWithByteLimit,
@@ -42,7 +42,7 @@ import {
   resolveDefaultMetricsCapabilityPlan,
   resolveServerMachineClass,
   truncateSampleToCapabilityPlan,
-} from "./metrics/capability-plan.ts";
+} from "../contracts/capability-plan.ts";
 import { DisabledServerMetricsStore } from "./metrics/disabled-store.ts";
 import { createMetricsChartCache } from "./metrics/query/cache.ts";
 import {
@@ -53,49 +53,48 @@ import type { AuthenticatedMetricsSample } from "./metrics/types.ts";
 import {
   type OrganizationOptions,
   parseOrganizationOptions,
-} from "../lib/organization-options.ts";
-import { resolveOrganizationDockerNetworking } from "../lib/docker-address-pools.ts";
+} from "../features/organizations/organization-options.ts";
+import { resolveOrganizationDockerNetworking } from "../features/deploy/docker-address-pools.ts";
 import {
   parseServerHardwareProfile,
   parseServerHostResources,
   parseServerOptions,
   resolveEffectiveMetricsCapabilityPlan,
-} from "../lib/db/server-metadata.ts";
-import { metricsCapabilityTierEntitlementsForRank } from "../lib/tiers/tier-entitlements.ts";
-import { recomputeAssignmentsForServer } from "../lib/tiers/assignment-records.ts";
+} from "../features/servers/server-metadata.ts";
+import { metricsCapabilityTierEntitlementsForRank } from "../features/tiers/tier-entitlements.ts";
+import { recomputeAssignmentsForServer } from "../features/tiers/assignment-records.ts";
 import {
   syncSelfHostedGrantForLicense,
   syncSelfHostedGrantForServer,
-} from "../lib/tiers/self-hosted-grant-records.ts";
+} from "../features/tiers/self-hosted-grant-records.ts";
 import {
   evaluateHostedEnrollmentTier,
   evaluateTierFloor,
   LICENSE_TIER_BELOW_REQUIRED_ERROR,
   loadServerLicenseTierJoin,
-} from "../lib/tiers/tier-enforcement.ts";
+} from "../features/tiers/tier-enforcement.ts";
 import {
   getLatestTopologyGeneration,
   getTopologyGeneration,
   markTopologyResyncRequested,
-} from "../client/servers/server-topology-records.ts";
+} from "../features/servers/server-topology-records.ts";
 import { recordCapabilityPlanGenerationIfChanged } from "../client/servers/capability-plan-records.ts";
 import { enqueueCapabilityPlanUpdate } from "../client/servers/capability-plan-push.ts";
-import { computeSlotMapping } from "../client/servers/topology-slot-mapping.ts";
+import { computeSlotMapping } from "../contracts/topology-slot-mapping.ts";
 import {
   EMPTY_TOPOLOGY_OVERRIDES,
   type SlotMapping,
   type TopologyOverrides,
   type TopologySnapshot,
-} from "../client/servers/topology-types.ts";
+} from "../contracts/topology-types.ts";
 import {
   createStatelessChallengeStore,
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,
 } from "./cell/stateless-challenge.ts";
 import { getDaemonOpenApiSpec } from "./openapi/index.ts";
 import { buildDeploymentSecretsRehydrate } from "./rehydrate-secrets.ts";
-import { buildDaemonScalarHtml } from "../scalar-html.ts";
-import { resolveInstanceTlsCaServePath } from "../server-paths.ts";
-import { DAEMON_API_PREFIX } from "../surfaces.ts";
+import { buildDaemonScalarHtml } from "../app/scalar-html.ts";
+import { DAEMON_API_PREFIX } from "../app/surfaces.ts";
 import { normalizeMachineKey } from "../lib/machine-key.ts";
 import {
   type FabricMembershipDeps,
@@ -103,8 +102,8 @@ import {
   getServerLicenseBinding,
   resolveServerId,
   touchServerMetadata,
-} from "../server-registry.ts";
-import { getCommandQueue } from "../lib/commands/queue.ts";
+} from "../features/servers/server-registry.ts";
+import { getCommandQueue } from "../features/commands/queue.ts";
 import {
   loadExecutionLogCommandTarget,
   MAX_EXECUTION_LOG_CHUNK_BODY_BYTES,
@@ -113,12 +112,12 @@ import {
 import {
   ExecutionLogGapError,
   ExecutionLogSealedError,
-} from "../lib/execution-logs/types.ts";
-import { sealExecutionLogOnTerminal } from "../lib/execution-logs/seal-on-terminal.ts";
-import { isNoopCommandQueue } from "../lib/commands/noop-command-queue.ts";
-import { verifyDaemonLicense } from "./authn/license.ts";
+} from "../features/execution-logs/types.ts";
+import { sealExecutionLogOnTerminal } from "../features/execution-logs/seal-on-terminal.ts";
+import { isNoopCommandQueue } from "../features/commands/noop-command-queue.ts";
+import { verifyDaemonLicense } from "../features/licenses/verify-daemon-license.ts";
 import { issueDaemonJwt, verifyDaemonJwt } from "./authn/daemon-jwt.ts";
-import type { ServerDaemonStateWithMetadata } from "./authn/server-identity-db.ts";
+import type { ServerDaemonStateWithMetadata } from "../features/servers/server-identity-db.ts";
 import {
   attachDaemonStateToServer,
   DaemonKeyRevokedError,
@@ -127,7 +126,7 @@ import {
   isDaemonKeyActive,
   SERVER_KEY_REVOKED_ERROR,
   touchDaemonKeyLastUsed,
-} from "./authn/server-identity-db.ts";
+} from "../features/servers/server-identity-db.ts";
 import {
   buildAuthPayload,
   buildEnrollmentPayload,
@@ -923,6 +922,13 @@ export function registerDaemonApiRoutes<E extends Env>(
      * import.
      */
     tlsPublic?: boolean;
+    /**
+     * Deno composition root injects the filesystem Platform CA reader.
+     * Workers omits this and serves `TURBOPANEL_TLS_CA_PEM_B64` (or 404).
+     * Keeping the reader off this module means `workers.ts` never reaches
+     * `platform/deno/server-paths.ts`.
+     */
+    readPlatformCaPem?: () => Promise<string>;
   } = {},
 ) {
   const daemon = new Hono<DaemonApiEnv>();
@@ -1128,8 +1134,12 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (tlsPublic) {
       return c.json({ error: "platform CA not configured" }, 404);
     }
+    const readPlatformCaPem = options.readPlatformCaPem;
+    if (!readPlatformCaPem) {
+      return c.json({ error: "platform CA not configured" }, 404);
+    }
     try {
-      const cert = await Deno.readTextFile(resolveInstanceTlsCaServePath());
+      const cert = await readPlatformCaPem();
       return c.body(cert, 200, { "content-type": "application/x-pem-file" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

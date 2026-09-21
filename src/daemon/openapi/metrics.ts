@@ -4,7 +4,7 @@ import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type MetricEntityScope,
 } from '../metrics/metric-descriptors.ts'
-import { METRIC_EVENT_KINDS, METRICS_SCHEMA_VERSION } from '../metrics/contract.ts'
+import { METRIC_EVENT_KINDS, METRICS_SCHEMA_VERSION } from '../../contracts/metrics-contract.ts'
 
 /** Every descriptor-backed numeric field for `scope`, keyed by `fieldName` — the same grouping `field-map.ts` uses to pack physical storage. */
 function numericPropertiesForScope(

@@ -3,7 +3,7 @@
  * store. It proves the REAL compiled TurboPanel artifact — `deno task compile`
  * (tasks.compile, entry src/deno.ts) → `dist/turbopanel-instance` — can open
  * embedded DuckDB with the permission shape TurboPanel ships, via the
- * binary's `duckdb-smoke` subcommand (src/duckdb-smoke.ts).
+ * binary's `duckdb-smoke` subcommand (src/cli/duckdb-smoke.ts).
  *
  * **Run inside the Vagrant guest on BOTH architectures** (linux-x64 and
  * linux-arm64) per dev/AGENTS.md → Testing — never on the host. One-shot:
@@ -23,7 +23,7 @@
  *      temp dir would be outside the compiled permission grants).
  *
  * Native-artifact findings this gate encodes (see also
- * src/server-paths.ts → resolveDuckdbNativeLibraryPath):
+ * src/platform/deno/server-paths.ts → resolveDuckdbNativeLibraryPath):
  *   - `deno compile` bundles `duckdb.node` from the npm cache automatically
  *     (no node_modules / nodeModulesDir needed) and self-extracts it.
  *   - It does NOT extract the companion `libduckdb.so` (`--include` cannot
@@ -36,7 +36,7 @@
 import {
   DEFAULT_METRICS_DIR,
   resolveDuckdbNativeLibraryPath,
-} from '../src/server-paths.ts'
+} from '../src/platform/deno/server-paths.ts'
 import { locateBuiltLibduckdbDir } from './duckdb-native-lib.ts'
 
 const repoRoot = new URL('..', import.meta.url).pathname

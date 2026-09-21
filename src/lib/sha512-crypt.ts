@@ -40,7 +40,7 @@ const SALT_LENGTH = 16
  * Shape of every hash this module emits (and the only shape the daemon
  * accepts). Keep in sync with `PASSWORD_HASH_RE` in the daemon's
  * `deploy/ensure-principal.ts` and its wire gate in
- * `instance/commands/contracts.ts`.
+ * `contracts/commands-contracts.ts`.
  */
 export const SHA512_CRYPT_HASH_RE =
   /^\$6\$(?:rounds=\d{4,9}\$)?[./0-9A-Za-z]{8,16}\$[./0-9A-Za-z]{86}$/

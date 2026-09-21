@@ -2,9 +2,9 @@ import { assertEquals } from "@std/assert";
 import type {
   DaemonCell,
   DaemonCellRegistry,
-} from "../../daemon/cell/contracts.ts";
-import type { DaemonOutboundEnvelope } from "../../daemon/cell/protocol.ts";
-import { PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN } from "../../daemon/metrics/capability-plan.ts";
+} from "../../contracts/cell.ts";
+import type { DaemonOutboundEnvelope } from "../../contracts/cell-protocol.ts";
+import { PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN } from "../../contracts/capability-plan.ts";
 import {
   buildCapabilityPlanUpdateEnvelope,
   enqueueCapabilityPlanUpdate,

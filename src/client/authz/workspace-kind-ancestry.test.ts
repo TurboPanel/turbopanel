@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
 import {
   environment,
   hosting,
@@ -12,11 +12,11 @@ import {
   service,
   variable,
   workspace,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import {
   WORKSPACE_KIND_SYSTEM,
   WORKSPACE_KIND_USER,
-} from "../../lib/db/workspace-kind.ts";
+} from "../../db/workspace-kind.ts";
 import { resolveWorkspaceKindForEntity } from "./workspace-kind-ancestry.ts";
 
 const dbUrl = getDatabaseUrl();

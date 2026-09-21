@@ -19,26 +19,26 @@
  */
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
-import type { Db } from '../../db.ts'
-import { environment, project } from '../../lib/db/schema.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
+import type { Db } from '../../db/connection.ts'
+import { environment, project } from '../../db/schema.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   createCommandRecord,
   transitionCommand,
-} from '../../lib/db/command-records.ts'
+} from '../../features/commands/command-records.ts'
 import {
   composeNetworkNamesByServer,
   listEnvironmentComposeNetworks,
-} from '../../lib/db/fabric-records.ts'
-import { listEnvironmentDeploymentTargets } from '../../lib/db/deployment-records.ts'
+} from '../../features/fabric/fabric-records.ts'
+import { listEnvironmentDeploymentTargets } from '../../features/deploy/deployment-records.ts'
 import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
-} from '../../lib/project-options.ts'
-import { compatLogWarn } from '../../log-compat.ts'
+} from '../../features/projects/project-options.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
-import { retireHostingIngressIfIdle } from '../system/reconcile.ts'
+import { retireHostingIngressIfIdle } from '../../features/system/reconcile.ts'
 import { composeProjectName } from './deploy-routes-helpers.ts'
 import {
   type EnvironmentSiteRelease,

@@ -294,7 +294,7 @@ function cidrInclusiveLast(parsed: ParsedCidr): bigint {
  * Dual-family CIDR overlap authority (IPv4 + IPv6, BigInt math).
  *
  * True when two CIDRs share any address. Same family is required; invalid or
- * cross-family inputs never overlap. `src/lib/fabric/cidr.ts` delegates its
+ * cross-family inputs never overlap. `src/features/fabric/cidr.ts` delegates its
  * IPv4 `cidrOverlaps` here — do not grow another copy.
  */
 export function cidrsOverlap(a: string, b: string): boolean {
@@ -311,7 +311,7 @@ export function cidrsOverlap(a: string, b: string): boolean {
  *
  * True when every address of `child` lies inside `parent` (same family and a
  * longer-or-equal prefix). A CIDR contains itself. Invalid or cross-family
- * inputs are never contained. `src/lib/fabric/cidr.ts` delegates its IPv4
+ * inputs are never contained. `src/features/fabric/cidr.ts` delegates its IPv4
  * `cidrContains` here.
  */
 export function cidrContains(parent: string, child: string): boolean {

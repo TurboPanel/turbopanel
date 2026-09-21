@@ -7,7 +7,7 @@
  *   projection      = daemon cell writing meaningful state to Postgres (postgres-projection.ts)
  */
 import { inArray } from "drizzle-orm";
-import type { Db } from "../../db.ts";
+import type { Db } from "../../db/connection.ts";
 import type {
   ServerDockerMetadata,
   ServerHardwareProfile,
@@ -16,7 +16,7 @@ import type {
   ServerOsMetadata,
   ServerTimeSync,
   ServerHostResources,
-} from "../../lib/db/server-metadata.ts";
+} from "../../features/servers/server-metadata.ts";
 import {
   resolveServerOsForRead,
   parseServerHostResources,
@@ -24,14 +24,14 @@ import {
   parseServerHardwareProfile,
   parseServerRuntimeMetadata,
   timeSyncFromColumns,
-} from "../../lib/db/server-metadata.ts";
-import type { ServerReportedIp } from "../../server-addresses.ts";
-import { reportedIpsFromServerMetadata } from "../../server-addresses.ts";
-import type { ServerGeo } from "../../lib/geo/server-geo.ts";
-import { parseServerGeo } from "../../lib/geo/server-geo.ts";
-import { server } from "../../lib/db/schema.ts";
-import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
-import { DAEMON_STALE_MS } from "./protocol.ts";
+} from "../../features/servers/server-metadata.ts";
+import type { ServerReportedIp } from "../../contracts/server-addresses.ts";
+import { reportedIpsFromServerMetadata } from "../../contracts/server-addresses.ts";
+import type { ServerGeo } from "../../features/geo/server-geo.ts";
+import { parseServerGeo } from "../../features/geo/server-geo.ts";
+import { server } from "../../db/schema.ts";
+import type { DaemonCellRegistry, DaemonCellSnapshot } from "../../contracts/cell.ts";
+import { DAEMON_STALE_MS } from "../../contracts/cell-protocol.ts";
 import {
   readProjectionsForServers,
   type ServerDaemonProjectionRead,

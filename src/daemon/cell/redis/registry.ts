@@ -1,10 +1,10 @@
-import type { Db } from "../../../db.ts";
+import type { Db } from "../../../db/connection.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
   DaemonCellSnapshot,
-} from "../contracts.ts";
-import { logWarn } from "../../../logger.ts";
+} from "../../../contracts/cell.ts";
+import { logWarn } from "../../../lib/logger.ts";
 import {
   createRedisCellClient,
   type RedisCellClient,

@@ -7,13 +7,13 @@
  */
 import { and, eq, inArray } from "drizzle-orm";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
-import type { DerivedSecretsConfig } from "../authn/secrets.ts";
+import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { assertCanOr403, listVisible } from "../authz/index.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import { getDb } from "../../db.ts";
+import { getDb } from "../../db/connection.ts";
 import {
   assembleTlsMetadata,
   parseTlsOptions,
@@ -21,7 +21,7 @@ import {
   type TlsOptions,
   type TlsSource,
 } from "../../lib/tls/index.ts";
-import { organization, tls } from "../../lib/db/schema.ts";
+import { organization, tls } from "../../db/schema.ts";
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -32,7 +32,7 @@ import {
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
-} from "../../lib/organization-options.ts";
+} from "../../features/organizations/organization-options.ts";
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
@@ -63,7 +63,7 @@ import {
   loadOrganizationCaSet,
   nextOrganizationCaGeneration,
   type OrganizationCaSet,
-} from "./organization-ca.ts";
+} from "../../features/tls/organization-ca.ts";
 import {
   caRotationHasMintedGeneration,
   loadLatestCaRotation,
@@ -81,7 +81,7 @@ import {
   runOrganizationCaRotationFanout,
 } from "./changeover-fanout.ts";
 import { assertDispatchInfrastructure } from "../servers/command-dispatch.ts";
-import { listCommandRecordsByIds } from "../../lib/db/command-records.ts";
+import { listCommandRecordsByIds } from "../../features/commands/command-records.ts";
 
 const TLS_PUBLIC_SELECT = {
   id: tls.id,
@@ -112,6 +112,31 @@ function createTlsFailureResponse(
 ): Response {
   const payload = tlsFailurePayload(material);
   return c.json(payload.body, payload.status);
+}
+
+async function refuseTlsCreateSource(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  organizationId: string,
+  source: TlsSource,
+): Promise<Response | null> {
+  if (source === "organization_ca") {
+    const existing = await findActiveOrganizationCa(db, organizationId);
+    if (existing) return c.json({ error: "organization_ca_exists" }, 409);
+  }
+  if (source !== "lets_encrypt") return null;
+  const [orgRow] = await db
+    .select({ options: organization.options })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1);
+  const acmeEnabled = resolveAcmeEnabled(
+    parseOrganizationOptions(orgRow?.options),
+  );
+  if (!acmeEnabled) {
+    return c.json({ error: "lets_encrypt_not_enabled" }, 403);
+  }
+  return null;
 }
 
 async function organizationCaRowResponse(
@@ -864,26 +889,13 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       return c.json({ error: "Invalid request" }, 400);
     }
 
-    if (source === "organization_ca") {
-      const existing = await findActiveOrganizationCa(db, organizationId);
-      if (existing) {
-        return c.json({ error: "organization_ca_exists" }, 409);
-      }
-    }
-
-    if (source === "lets_encrypt") {
-      const [orgRow] = await db
-        .select({ options: organization.options })
-        .from(organization)
-        .where(eq(organization.id, organizationId))
-        .limit(1);
-      const acmeEnabled = resolveAcmeEnabled(
-        parseOrganizationOptions(orgRow?.options),
-      );
-      if (!acmeEnabled) {
-        return c.json({ error: "lets_encrypt_not_enabled" }, 403);
-      }
-    }
+    const sourceDenied = await refuseTlsCreateSource(
+      c,
+      db,
+      organizationId,
+      source,
+    );
+    if (sourceDenied) return sourceDenied;
 
     let name: string | null;
     try {

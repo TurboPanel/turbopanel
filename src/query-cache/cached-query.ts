@@ -1,4 +1,4 @@
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 import {
   DEFAULT_QUERY_CACHE_TTL_SECONDS,
   type ApprovedReadModelCacheOpts,

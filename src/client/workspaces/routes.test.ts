@@ -1,15 +1,15 @@
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   container,
   environment,
@@ -20,18 +20,18 @@ import {
   service,
   user,
   workspace,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import {
   WORKSPACE_KIND_SYSTEM,
   WORKSPACE_KIND_USER,
-} from '../../lib/db/workspace-kind.ts'
+} from '../../db/workspace-kind.ts'
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from '../authz/http.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import {
   ensureSystemHierarchy,
   ensureSystemWorkspace,
   SYSTEM_WORKSPACE_DISPLAY_NAME,
-} from '../system/hierarchy.ts'
+} from '../../features/system/hierarchy.ts'
 import { registerWorkspaceRoutes } from './routes.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 

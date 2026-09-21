@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import type { Db } from "../db.ts";
+import type { Db } from "../db/connection.ts";
 import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
@@ -8,7 +8,7 @@ import {
   type ServerDaemonProjection,
   type ServerDaemonState,
   type ServerDaemonStatus,
-} from "./authn/daemon-state.ts";
+} from "../features/servers/daemon-state.ts";
 import { sweepStalePresence, onDaemonInbound, onDaemonConnected, onDaemonHeartbeat } from "./cell/control-plane-monitor.ts";
 import { RedisDaemonCell } from "./cell/redis/cell.ts";
 import {
@@ -32,7 +32,7 @@ import {
   snapshotKey,
   HEARTBEAT_COALESCE_MS,
 } from "./cell/redis/keys.ts";
-import { generateDeliveryId, generateRequestId, DAEMON_OFFLINE_SWEEP_MS } from "./cell/protocol.ts";
+import { generateDeliveryId, generateRequestId, DAEMON_OFFLINE_SWEEP_MS } from "../contracts/cell-protocol.ts";
 
 const DEFAULT_SOCKET = Deno.env.get("TURBOPANEL_REDIS_SOCKET") ??
   "/run/turbopanel/redis.sock";

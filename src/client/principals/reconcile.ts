@@ -15,11 +15,11 @@
  */
 
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { environment, principal, project } from '../../lib/db/schema.ts'
-import { createCommandRecord, transitionCommand } from '../../lib/db/command-records.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
+import type { Db } from '../../db/connection.ts'
+import { environment, principal, project } from '../../db/schema.ts'
+import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import { loadPrincipalMaterial } from '../environments/deploy-prepare.ts'
 
 export type PrincipalsReconcileActor = {

@@ -4,18 +4,18 @@ import { Hono } from "hono";
 import {
   getPublicUrls,
   publicUrlEntryToInstallOrigin,
-} from "../../admin/public-urls.ts";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb, type Db, endDbConnection } from "../../db.ts";
+} from "../../features/install/public-urls.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb, type Db, endDbConnection } from "../../db/connection.ts";
 import {
   account,
   passkey,
   session,
   twoFactor,
   user,
-} from "../../lib/db/schema.ts";
-import { CLIENT_API_PREFIX } from "../../surfaces.ts";
+} from "../../db/schema.ts";
+import { CLIENT_API_PREFIX } from "../../app/surfaces.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import {
   createAuthRateLimiter,
@@ -23,9 +23,9 @@ import {
 } from "./auth-rate-limit.ts";
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from "./crypto.ts";
 import { registerAuthRoutes } from "./http.ts";
-import { hashPassword } from "./password.ts";
+import { hashPassword } from "../../lib/secrets/password.ts";
 import { verifyPasskeyLogin, WEBAUTHN_CHALLENGE_PURPOSE } from "./passkeys.ts";
-import { deriveSecretsConfig } from "./secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { createSession } from "./session-store.ts";
 import {
   AUTH_DATA_FLAG_AT,

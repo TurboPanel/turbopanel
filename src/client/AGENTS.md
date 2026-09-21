@@ -61,7 +61,7 @@ changes.
   `GET /timezones` (`listTimezones()` / `isAllowedTimezone()`). Detail rows use
   the `server-detail` cached read model (mirrors `servers-list`).
 - **Host defaults (client surface):** org → datacenter → server cascade stored
-  in existing `options` jsonb (`src/lib/host-defaults.ts`). Most specific
+  in existing `options` jsonb (`src/features/servers/host-defaults.ts`). Most specific
   configured value wins; SSH falls back to **22**. Keys: `sshPort` (1–65535),
   `ntp` (`enabled` / `servers` / `fallbackServers` — desired config, not
   observed `timeSync`), `defaultFabricEnabled` (**organization only**; a
@@ -161,9 +161,9 @@ changes.
   `billing/mutations.ts` (`changeSeats`, `upgradeLicense`, `downgradeLicense`),
   context-free functions returning the status and body the route answers with,
   so the live test-clock harness drives the same gates. Rules and the ledger:
-  `src/lib/billing/AGENTS.md`.
+  `src/features/billing/AGENTS.md`.
 - **Org managed-database defaults:** `organization.options.managedDatabase`
-  (`src/lib/managed/org-defaults.ts`).
+  (`src/features/managed/org-defaults.ts`).
   `GET`/`PUT
   /organizations/:id/managed-defaults` (manage-gated) — today only
   `sslMode`, the default client TLS policy inherited by managed SQL services
@@ -171,7 +171,7 @@ changes.
   `require`. These are **inheritance sources**, not applied configuration:
   saving one never overwrites a service that configured its own value, and the
   effective mode is resolved per read (`resolveManagedSslMode`) rather than
-  stored. Canonical detail: `src/lib/managed/AGENTS.md` → **Client TLS (SSL
+  stored. Canonical detail: `src/features/managed/AGENTS.md` → **Client TLS (SSL
   mode)**.
 - **Org default environment name:**
   `organization.options.defaultEnvironmentName` (unset = `Production`).
@@ -185,7 +185,7 @@ changes.
 - **Environment lifecycle:** `POST /environments/:id/lifecycle` (`start` /
   `stop` / `restart`) is non-destructive (`environment.lifecycle`);
   `POST /environments/:id/stop` tears down compose including volumes
-  (`environment.stop`). Canonical detail: `src/lib/commands/AGENTS.md`.
+  (`environment.stop`). Canonical detail: `src/features/commands/AGENTS.md`.
 - **Containers list filters:** `GET /api/client/v1/containers` joins `service`,
   so every serialized row carries **`environmentId`** (denormalized
   `service.environmentId`). `?environmentId=` narrows already-visible rows to
@@ -238,11 +238,11 @@ changes.
   hosting `bindAddress` are **recomputed per deploy / reconcile from the pin**
   and must never be treated as an address record or written back to. When a
   daemon's reported `resources.ips` moves, `touchServerMetadata`
-  (`src/server-registry.ts`) — the one change-detected write both the Deno
+  (`src/features/servers/server-registry.ts`) — the one change-detected write both the Deno
   WS hello and the Durable Object `#projectInbound` funnel through — runs
-  `applyReportedAddressRepin` (`src/lib/net/repin-apply.ts`) best-effort,
+  `applyReportedAddressRepin` (`src/features/net/repin-apply.ts`) best-effort,
   gated on `serverIpsEquals` so CPU / docker-only deltas never touch `ip`
-  rows. The decision is pure (`decideRepinActions`, `src/lib/net/repin.ts`):
+  rows. The decision is pure (`decideRepinActions`, `src/features/net/repin.ts`):
   address still reported → nothing (clears a `stale` flag); address gone with
   **exactly one** reported private address inside the pin's subnet that is
   not an `ip` row elsewhere in the org → `repin` (`ip.address` rewritten,
@@ -269,7 +269,7 @@ changes.
   `environment.deploy`**, and no new columns — `stale` on `GET /ips[/:id]` and
   on `GET /datacenters/:id` `members[]` is read from `ip.metadata` via
   `parseIpPinMetadata`.
-- **CIDR collision authority (`src/lib/net/cidr-collisions.ts`):** every CIDR
+- **CIDR collision authority (`src/features/net/cidr-collisions.ts`):** every CIDR
   write — `POST`/`PATCH /networks`, `POST /datacenters`,
   `POST /datacenters/:id/subnets`, the auto-derive path of
   `POST /datacenters/:id/members` — calls `assertCidrAvailable` /
@@ -299,7 +299,7 @@ changes.
   `loadCidrAllocationExclusions` so a relay `/16` or a `tpn_*` `/24` never
   lands inside a reserved range or a site subnet (exhaustion keeps the
   existing `FabricAllocationError` codes). **Org Docker host addressing**
-  (`organization.options.docker`, `src/lib/docker-address-pools.ts`,
+  (`organization.options.docker`, `src/features/deploy/docker-address-pools.ts`,
   `GET`/`PUT /organizations/:id/docker-networking`) — every pool base
   **and** the aligned network of `defaultBridgeCidr` (dockerd `bip`, the
   docker0 subnet on every host), together `dockerHostCidrs()` — is part of
@@ -335,7 +335,7 @@ changes.
   org's servers (**409** `fabric_prefix_pool_exhausted`) or one the
   auto-picked host range lands in (**409** `cidr_overlaps_fabric`) rolls back
   and leaves TurboFabric disabled.
-  `src/lib/net/private-endpoint.ts` resolves reachability (`local` →
+  `src/features/net/private-endpoint.ts` resolves reachability (`local` →
   `datacenter` → `fabric` → `public`) in an **address-family aware** way: it
   intersects the source and target pin families in each trusted shared
   datacenter (priority order — see the routing-policy bullet below) and orders
@@ -345,7 +345,7 @@ changes.
   dials over `tp0`.
   Shared membership + **at least one** subnet gate managed-cluster private
   placement (`assertDatacenterHasCidr` / `assertServerDatacenterReady` in
-  `src/lib/net/datacenter-networks.ts`). New error codes: **400** `invalid_cidr`
+  `src/features/net/datacenter-networks.ts`). New error codes: **400** `invalid_cidr`
   / `address_not_in_any_subnet`, **409** `address_in_use` / `subnet_overlaps` /
   `subnet_has_members`, **422** `private_family_mismatch` (alongside existing
   `datacenter_has_members` / `datacenter_has_networks`).
@@ -353,7 +353,7 @@ changes.
 - **Datacenter routing policy (`options.priority` / `options.trusted`):** a
   datacenter is a **logical routing domain**, not a building — a server may
   belong to several. Two `datacenter.options` jsonb fields (parsed by
-  `src/lib/datacenter-options.ts`, no migration) describe how the ladder should
+  `src/features/datacenters/datacenter-options.ts`, no migration) describe how the ladder should
   treat each membership:
   - `priority` — integer `0`–`1000`, **lower wins**; absent = **`100`**
     (`DEFAULT_DATACENTER_PRIORITY`). Out-of-range or non-integer values are
@@ -368,9 +368,9 @@ changes.
   top-level `priority` / `trusted` with defaults applied
   (`resolveDatacenterPolicy` / `attachEffectivePolicy`), so clients never
   re-derive them. The ladder **reads both**: `loadDatacenterPolicies`
-  (`src/lib/net/datacenter-networks.ts`) loads the effective
+  (`src/features/net/datacenter-networks.ts`) loads the effective
   `{ addressPreference, priority, trusted }` per datacenter and
-  `partitionSharedDatacenters` (`src/lib/net/private-endpoint.ts`) splits the
+  `partitionSharedDatacenters` (`src/features/net/private-endpoint.ts`) splits the
   datacenters a pair shares into trusted / untrusted lists ordered
   `(priority asc, id asc)` — the id tiebreak is what keeps the choice
   deterministic. The datacenter rung walks **only the trusted list**, for
@@ -382,7 +382,7 @@ changes.
   managed apply prepare — never collapsed into
   `failover_replica_requires_datacenter_transport`), no shared datacenter at
   all stays `private_path_unavailable`. TurboFabric path planning
-  (`lanPathCandidate` in `src/lib/db/fabric-records.ts`) consumes the same
+  (`lanPathCandidate` in `src/features/fabric/fabric-records.ts`) consumes the same
   partition through `EndpointAddressCaches.policyByDatacenter`, so a
   `direct_lan` WireGuard endpoint is never emitted on a segment the managed
   ladder refused; gateway locality ranking deliberately stays trust-blind
@@ -399,7 +399,7 @@ changes.
   fan-out failure never turns the successful save into a 5xx. CIDR overlap /
   containment for datacenter subnets (IPv4 **or** IPv6) must go through the
   dual-family authority `cidrsOverlap` / `cidrContains` in
-  `src/lib/ip-address.ts`; `src/lib/fabric/cidr.ts` keeps only IPv4 pool
+  `src/lib/ip-address.ts`; `src/features/fabric/cidr.ts` keeps only IPv4 pool
   arithmetic and delegates its overlap helpers there.
 
 - **Compose hosting projection (client surface):** `x-turbopanel.hosting[]` is

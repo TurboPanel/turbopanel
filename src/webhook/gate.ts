@@ -55,16 +55,16 @@
  */
 
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../app.ts'
-import { getDb, type Db } from '../db.ts'
-import { logInfo, logWarn } from '../logger.ts'
+import type { AppEnv } from '../app/app.ts'
+import { getDb, type Db } from '../db/connection.ts'
+import { logInfo, logWarn } from '../lib/logger.ts'
 import type { RateLimiter } from '../daemon/rate-limit/contracts.ts'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import {
   claimWebhookDelivery,
   releaseWebhookDelivery,
   type WebhookDeliveryProvider,
-} from '../lib/db/webhook-delivery-records.ts'
+} from '../features/webhook-delivery/webhook-delivery-records.ts'
 import { resolveClientIp } from '../client/authn/http.ts'
 import { readBoundedBodyBytes } from '../lib/http/bounded-body.ts'
 
@@ -310,12 +310,12 @@ async function dispatchClaimedDelivery<THolder>(
  * Mount one gate on every path it answers.
  *
  * Flat `app.post` registrations against the absolute paths in
- * `src/surfaces.ts`, rather than a child router mounted at the prefix — two
+ * `src/app/surfaces.ts`, rather than a child router mounted at the prefix — two
  * gates share `/webhook`, and a child would be one more object to thread
  * through `registerWebhookRoutes` for no behaviour.
  *
  * No `.use('*')`: `/webhook` must stay out of every protected prefix
- * (`src/browser-write-protection.ts`). Session middleware would reject every
+ * (`src/app/browser-write-protection.ts`). Session middleware would reject every
  * delivery, and the caller sends no `Origin` for the cross-origin gate to read.
  */
 export function registerWebhookGate<THolder>(

@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   DRIZZLE_STUDIO_PORT,
   probeDrizzleStudioPort,
-} from '../drizzle-studio-probe.ts'
+} from './drizzle-studio-probe.ts'
 import {
   drizzleStudioStatus,
   ensureDrizzleStudioInDev,

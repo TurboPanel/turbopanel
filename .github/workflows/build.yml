@@ -112,7 +112,7 @@ jobs:
 
       - name: Install osv-scanner
         run: |
-          curl -sSfL --retry 3 --retry-connrefused --retry-delay 2 -o /usr/local/bin/osv-scanner \
+          curl -sSfL --proto "=https" --proto-redir "=https" --retry 3 --retry-connrefused --retry-delay 2 -o /usr/local/bin/osv-scanner \
             https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_amd64
           echo "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108  /usr/local/bin/osv-scanner" | sha256sum -c -
           chmod +x /usr/local/bin/osv-scanner
@@ -122,6 +122,12 @@ jobs:
 
       - name: Check CA boundary (Organization CA must not touch Platform CA paths)
         run: pnpm run check:ca-boundary
+
+      - name: Check import boundaries
+        run: pnpm run check:import-boundaries
+
+      - name: Check contract drift (skip when turbopaneld is not a sibling)
+        run: pnpm run check:contract-drift
 
       - name: Test with coverage
         run: pnpm test:coverage
@@ -178,3 +184,11 @@ jobs:
       - name: Check metrics legacy (no ClickHouse/Tabix references)
         working-directory: turbopaneld
         run: deno task check:metrics-legacy
+
+      - name: Check metrics contract twin (sibling byte-compare)
+        working-directory: turbopanel
+        run: deno test -A --no-check src/contracts/metrics-contract.test.ts
+
+      - name: Check contract drift (metrics, hostname, machine-key, channels)
+        working-directory: turbopanel
+        run: node scripts/check-contract-drift.mjs

@@ -1,6 +1,6 @@
-import type { Db } from '../../db.ts'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import type { Db } from '../../db/connection.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   isGitProviderFailure,
   isRepositoryReadUnsupported,
@@ -8,9 +8,9 @@ import {
   type GitProviderSourceRow,
   type RepositoryEntry,
   type RepositoryFileEntry,
-} from '../../lib/git/git-provider.ts'
-import { resolveGitProvider } from '../../lib/git/git-provider.ts'
-import { isGithubDotComHttpsCloneUrl } from '../../lib/git/clone-url.ts'
+} from '../../features/git/git-provider.ts'
+import { resolveGitProvider } from '../../features/git/git-provider.ts'
+import { isGithubDotComHttpsCloneUrl } from '../../features/git/clone-url.ts'
 import { readRepositoryViaDaemon } from './read-repository.ts'
 
 /**

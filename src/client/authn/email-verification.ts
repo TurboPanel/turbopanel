@@ -1,6 +1,6 @@
 import { and, eq, gt } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { verification } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { verification } from '../../db/schema.ts'
 
 /** 24 hours — email verification tokens are short-lived. */
 const EMAIL_VERIFICATION_EXPIRES_IN_MS = 24 * 60 * 60 * 1000

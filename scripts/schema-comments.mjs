@@ -2,7 +2,7 @@
 /**
  * Postgres `COMMENT ON` delta for the schema descriptions.
  *
- * `src/lib/db/schema-descriptions.ts` is the source of truth for every
+ * `src/db/schema-descriptions.ts` is the source of truth for every
  * table and column description. Shipped migrations are immutable, so the
  * comments cannot be re-emitted as a full dump each time: this script
  * replays every `COMMENT ON TABLE` / `COMMENT ON COLUMN` statement across
@@ -25,12 +25,12 @@
  * data dictionary still spells them out (`STANDARD_COLUMNS`,
  * `parentLinkComment`).
  *
- * See src/lib/db/AGENTS.md → "Schema descriptions" for the full loop.
+ * See src/db/AGENTS.md → "Schema descriptions" for the full loop.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { SCHEMA_DESCRIPTIONS } from '../src/lib/db/schema-descriptions.ts'
+import { SCHEMA_DESCRIPTIONS } from '../src/db/schema-descriptions.ts'
 import { MIGRATIONS_DIR, readJournal, readLatestSnapshot } from './schema-snapshot.mjs'
 
 const STATEMENT_BREAKPOINT = '--> statement-breakpoint'

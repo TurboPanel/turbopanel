@@ -5,15 +5,15 @@ import {
   createInvitationEmail,
   createNotificationEmail,
   createServerTierNoticeEmail,
-} from '../src/lib/email/templates.ts'
-import { resolveEmailSettings, type ResolvedEmailSettings } from '../src/lib/settings/email-settings.ts'
-import type { DerivedSecretsConfig } from '../src/client/authn/secrets.ts'
-import type { EmailJob } from '../src/lib/email/types.ts'
-import type { MailerSendResult } from '../src/lib/email/sender-types.ts'
-import { PermanentSendError, validateEmailAddress } from '../src/lib/email/validate-address.ts'
+} from '../src/features/email/templates.ts'
+import { resolveEmailSettings, type ResolvedEmailSettings } from '../src/features/settings/email-settings.ts'
+import type { DerivedSecretsConfig } from '../src/lib/secrets/secrets.ts'
+import type { EmailJob } from '../src/features/email/types.ts'
+import type { MailerSendResult } from '../src/features/email/sender-types.ts'
+import { PermanentSendError, validateEmailAddress } from '../src/features/email/validate-address.ts'
 import type { Db } from './db.ts'
-import { logError } from '../src/logger.ts'
-import type { SmtpConfig } from '../src/lib/email/smtp/smtp-resolve.ts'
+import { logError } from '../src/lib/logger.ts'
+import type { SmtpConfig } from '../src/features/email/smtp/smtp-resolve.ts'
 
 type Transporter = ReturnType<typeof nodemailer.createTransport>
 

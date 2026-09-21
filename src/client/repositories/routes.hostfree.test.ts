@@ -5,7 +5,7 @@
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import {
   buildSignedCookie,
@@ -14,14 +14,14 @@ import {
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-} from '../authn/secrets.ts'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
-import type { Db } from '../../db.ts'
-import { GithubAppTokenError } from '../../lib/git/github-app-token.ts'
+} from '../../lib/secrets/secrets.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { Db } from '../../db/connection.ts'
+import { GithubAppTokenError } from '../../features/git/github-app-token.ts'
 import { createAuthRateLimiter } from '../authn/auth-rate-limit.ts'
-import { GitlabApiError } from '../../lib/git/gitlab-api.ts'
-import { GitlabOauthTokenError } from '../../lib/git/gitlab-oauth-token.ts'
-import { CLIENT_API_PREFIX } from '../../surfaces.ts'
+import { GitlabApiError } from '../../features/git/gitlab-api.ts'
+import { GitlabOauthTokenError } from '../../features/git/gitlab-oauth-token.ts'
+import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { providerInstallUiReturnPath } from '../forges/routes-helpers.ts'

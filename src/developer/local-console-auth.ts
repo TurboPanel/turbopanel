@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
-import { isDeveloperSurfaceEnabled } from '../dev-mode.ts'
-import { parseSecretsFromEnv } from '../client/authn/secrets.ts'
+import { isDeveloperSurfaceEnabled } from '../app/dev-mode.ts'
+import { parseSecretsFromEnv } from '../lib/secrets/secrets.ts'
 
 export const LOCAL_CONSOLE_SCHEME = 'Local-Console'
 export const LOCAL_CONSOLE_MAX_SKEW_MS = 60_000

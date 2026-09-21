@@ -1,12 +1,12 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb, endDbConnection } from "../../db.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb, endDbConnection } from "../../db/connection.ts";
 import {
   capabilityPlanGeneration,
   organization,
   server,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import {
   getLatestCapabilityPlanGeneration,
   recordCapabilityPlanGenerationIfChanged,
@@ -15,7 +15,7 @@ import {
   computeMetricsCapabilityPlanHash,
   metricsCapabilityPlanFromTierEntitlements,
   PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
-} from "../../daemon/metrics/capability-plan.ts";
+} from "../../contracts/capability-plan.ts";
 
 const dbUrl = getDatabaseUrl();
 

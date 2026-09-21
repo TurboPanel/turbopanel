@@ -1,5 +1,5 @@
 import { buildResourceCrudPaths } from './shared.ts'
-import { CONTAINER_STATUSES } from '../../lib/db/container-records.ts'
+import { CONTAINER_STATUSES } from '../../features/environments/container-records.ts'
 
 const containerStatusSchema = {
   type: 'string',

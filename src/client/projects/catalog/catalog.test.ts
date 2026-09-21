@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { getManagedEngineSpec } from '../../../lib/managed/index.ts'
+import { getManagedEngineSpec } from '../../../features/managed/index.ts'
 import {
   getCatalogEntry,
   isCreateProjectType,

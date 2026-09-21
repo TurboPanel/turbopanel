@@ -54,13 +54,13 @@ const EXTRA_SURFACE_FILES = [
   'src/client/servers/metrics-routes.test.ts',
   'src/client/servers/metrics-routes-helpers.ts',
   'src/client/servers/metrics-routes-helpers.hostfree.test.ts',
-  'src/client/servers/server-topology-records.ts',
-  'src/client/servers/server-topology-records.test.ts',
+  'src/features/servers/server-topology-records.ts',
+  'src/features/servers/server-topology-records.test.ts',
   'src/client/servers/topology-inventory.ts',
   'src/client/servers/topology-inventory.test.ts',
-  'src/client/servers/topology-slot-mapping.ts',
-  'src/client/servers/topology-slot-mapping.test.ts',
-  'src/client/servers/topology-types.ts',
+  'src/contracts/topology-slot-mapping.ts',
+  'src/contracts/topology-slot-mapping.test.ts',
+  'src/contracts/topology-types.ts',
 ].map((p) => path.join(ROOT, p))
 
 const PAGE_TOKEN_ROOT = path.join(ROOT, 'src')

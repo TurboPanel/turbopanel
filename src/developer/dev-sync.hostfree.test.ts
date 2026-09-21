@@ -1,17 +1,17 @@
 import { assertEquals } from "@std/assert";
 import { type Context, Hono } from "hono";
-import type { AppEnv } from "../app.ts";
+import type { AppEnv } from "../app/app.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
-} from "../daemon/cell/contracts.ts";
-import type { Db } from "../db.ts";
+} from "../contracts/cell.ts";
+import type { Db } from "../db/connection.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
 import {
   deriveSecretsConfig,
   parseSecretsEnv,
-} from "../client/authn/secrets.ts";
-import { DEVELOPER_API_PREFIX } from "../surfaces.ts";
+} from "../lib/secrets/secrets.ts";
+import { DEVELOPER_API_PREFIX } from "../app/surfaces.ts";
 import {
   COLOCATED_DEV_SYNC_SKIPPED_REASON,
   type DevSyncPackager,

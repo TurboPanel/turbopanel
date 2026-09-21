@@ -1,8 +1,8 @@
 import { and, eq } from 'drizzle-orm'
 import { assertEquals, assertRejects } from '@std/assert'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
-import { session, user } from '../../lib/db/schema.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import { session, user } from '../../db/schema.ts'
 import {
   ADMIN_ROLE,
   createSession,

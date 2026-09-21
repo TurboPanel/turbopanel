@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { grant } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { grant } from '../../db/schema.ts'
 import type { SubjectType } from './catalog.ts'
 
 /**

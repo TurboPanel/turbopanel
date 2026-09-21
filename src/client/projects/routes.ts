@@ -1,21 +1,21 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import { encryptSecret } from '../authn/data-encryption.ts'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db.ts'
-import { environment, project, variable, workspace } from '../../lib/db/schema.ts'
+import { getDb, type Db } from '../../db/connection.ts'
+import { environment, project, variable, workspace } from '../../db/schema.ts'
 import {
   isManagedEngineCatalogEntry,
   listCatalog,
   resolveCatalogVariablePlaintext,
   type CatalogEntry,
 } from './catalog/index.ts'
-import { emptyComposeDocument } from '../../lib/compose/index.ts'
+import { emptyComposeDocument } from '../../features/compose/index.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -25,7 +25,7 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
-import { deleteProjectCascade } from '../../lib/db/project-delete.ts'
+import { deleteProjectCascade } from '../../features/projects/project-delete.ts'
 import {
   planEnvironmentsTeardown,
   reclaimDeletedEnvironmentHosts,
@@ -43,16 +43,16 @@ import {
   isProjectDisplayNameTaken,
   PROJECT_NAME_IN_USE_ERROR,
 } from '../display-name-uniqueness.ts'
-import { isReservedSystemProjectName } from '../system/hierarchy.ts'
+import { isReservedSystemProjectName } from '../../features/system/hierarchy.ts'
 import { UUID_RE } from '../repositories/routes-helpers.ts'
 import {
   adoptProjectRepository,
   loadOrganizationRepositoryIds,
   loadProjectRepositoryId,
-} from '../../lib/db/repository-records.ts'
+} from '../../features/git/repository-records.ts'
 import {
   composePrincipalAliases,
-} from '../../lib/db/principal-alias-records.ts'
+} from '../../features/principals/principal-alias-records.ts'
 import {
   assertDefaultServerIdShape,
   catalogProjectOptions,

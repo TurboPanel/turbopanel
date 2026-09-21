@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { getCookie } from "hono/cookie";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDb } from "../../db.ts";
-import { user } from "../../lib/db/schema.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDb } from "../../db/connection.ts";
+import { user } from "../../db/schema.ts";
 import { readBoundedBodyText } from "../../lib/http/bounded-body.ts";
 import { AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS } from "./auth-rate-limit.ts";
 import {

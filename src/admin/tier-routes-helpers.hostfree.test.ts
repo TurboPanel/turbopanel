@@ -10,9 +10,9 @@ import { assertEquals } from "@std/assert";
 import type {
   ProductVerification,
   ProviderProduct,
-} from "../lib/billing/gateway.ts";
-import type { TierRow } from "../lib/db/tier-records.ts";
-import { LADDER } from "../lib/tiers/ladder.ts";
+} from "../features/billing/gateway.ts";
+import type { TierRow } from "../features/tiers/tier-records.ts";
+import { LADDER } from "../features/tiers/ladder.ts";
 import {
   ladderProductExpectation,
   ladderWithRows,

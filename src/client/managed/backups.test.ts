@@ -1,12 +1,12 @@
 import { assertEquals } from "@std/assert";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
-import { postgresEngineSpec } from "../../lib/managed/postgres.ts";
-import type { ManagedEngineSpec } from "../../lib/managed/types.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
+import { postgresEngineSpec } from "../../features/managed/postgres.ts";
+import type { ManagedEngineSpec } from "../../features/managed/types.ts";
 import type { ManagedContext } from "./context.ts";
-import type { ManagedRowOptions } from "./options.ts";
-import type { ManagedBackupRecord } from "../../lib/db/backup-records.ts";
+import type { ManagedRowOptions } from "../../features/managed/options.ts";
+import type { ManagedBackupRecord } from "../../features/backups/backup-records.ts";
 import {
   buildManagedBackupCreatePayload,
   buildManagedBackupDeletePayload,

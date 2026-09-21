@@ -1,9 +1,9 @@
 import { getCookie } from "hono/cookie";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDb } from "../../db/connection.ts";
 import { readBoundedBodyText } from "../../lib/http/bounded-body.ts";
-import { resolvePublicBaseUrl } from "../../lib/resolve-public-base-url.ts";
+import { resolvePublicBaseUrl } from "../../features/install/resolve-public-base-url.ts";
 import { AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS } from "./auth-rate-limit.ts";
 import {
   AUTH_PASSKEY_LOGIN_OPTIONS_MAX_BODY_BYTES,

@@ -3,7 +3,7 @@
  *
  * A tier row binds a ladder label (`S1`…`S7`, `SX`) to a product on the
  * payment provider. The provider owns the price; the ladder
- * (`src/lib/tiers/ladder.ts`) owns what the label entitles; the row owns
+ * (`src/features/tiers/ladder.ts`) owns what the label entitles; the row owns
  * only the binding and a cached display price. So the form is one
  * dropdown: `GET /tiers/products` lists the provider's active products
  * with their default price and a pass/fail verification, the operator
@@ -23,16 +23,16 @@
  */
 
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../app.ts";
+import type { AppEnv } from "../app/app.ts";
 import { createRootOnlyMiddleware } from "../client/authn/middleware.ts";
-import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
-import { type Db, getDb } from "../db.ts";
+import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
+import { type Db, getDb } from "../db/connection.ts";
 import {
   createStripeClient,
   type StripeClient,
-} from "../lib/billing/client.ts";
-import type { BillingConfig } from "../lib/billing/config.ts";
-import { StripeApiError } from "../lib/billing/errors.ts";
+} from "../features/billing/client.ts";
+import type { BillingConfig } from "../features/billing/config.ts";
+import { StripeApiError } from "../features/billing/errors.ts";
 import {
   type BillingGateway,
   needsAccountTaxDefaults,
@@ -40,7 +40,7 @@ import {
   type ProductLadderExpectation,
   type ProductVerification,
   resolveBillingGateway,
-} from "../lib/billing/gateway.ts";
+} from "../features/billing/gateway.ts";
 import {
   countTierReferences,
   getTierById,
@@ -49,7 +49,7 @@ import {
   listAllTiers,
   type TierRow,
   updateTierById,
-} from "../lib/db/tier-records.ts";
+} from "../features/tiers/tier-records.ts";
 import {
   ladderProductExpectation,
   ladderWithRows,
@@ -59,12 +59,12 @@ import {
   serializeProduct,
   type TierPatchFields,
 } from "./tier-routes-helpers.ts";
-import { isPostgresUniqueViolation } from "../lib/db/unique-violation.ts";
+import { isPostgresUniqueViolation } from "../db/unique-violation.ts";
 
 export const BILLING_NOT_CONFIGURED_ERROR = "billing_not_configured";
 
 /** Re-exported so the console and the harness agree on catalogue order. */
-export { listActiveTiers } from "../lib/db/tier-records.ts";
+export { listActiveTiers } from "../features/tiers/tier-records.ts";
 
 type Ctx = Context<AppEnv>;
 

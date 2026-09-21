@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
-import type { Db } from '../db.ts'
-import type { ServerReportedIp } from '../server-addresses.ts'
-import { organization } from '../lib/db/schema.ts'
+import type { Db } from '../db/connection.ts'
+import type { ServerReportedIp } from '../contracts/server-addresses.ts'
+import { organization } from '../db/schema.ts'
 import {
   DISPLAY_NAME_MAX_LENGTH,
   displayNameCodePointLength,

@@ -1,10 +1,10 @@
 import type { Env, Hono } from 'hono'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { getDaemonRepoPath, getInstanceCommit } from '../daemon/version.ts'
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 import { dirname, fromFileUrl, join } from '@std/path'
-import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
+import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 
 const INSTANCE_REPO_ROOT = (() => {
   const here = dirname(fromFileUrl(import.meta.url))

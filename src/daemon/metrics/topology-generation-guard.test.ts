@@ -37,7 +37,7 @@ import {
   type HostNetworkMetrics,
   type HostStorageMetrics,
   type MetricsSampleInput,
-} from './contract.ts'
+} from '../../contracts/metrics-contract.ts'
 import type { AuthenticatedMetricsSample, SlotMapping } from './types.ts'
 import {
   AE_BLOB_FAMILY_INDEX,

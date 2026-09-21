@@ -1,11 +1,11 @@
-import { sendMailgunJob } from '../src/lib/email/mailgun/send.ts'
-import { resolveEmailSettings } from '../src/lib/settings/email-settings.ts'
-import type { DerivedSecretsConfig } from '../src/client/authn/secrets.ts'
-import type { EmailJob } from '../src/lib/email/types.ts'
-import type { MailerSendResult } from '../src/lib/email/sender-types.ts'
-import { PermanentSendError, validateEmailAddress } from '../src/lib/email/validate-address.ts'
+import { sendMailgunJob } from '../src/features/email/mailgun/send.ts'
+import { resolveEmailSettings } from '../src/features/settings/email-settings.ts'
+import type { DerivedSecretsConfig } from '../src/lib/secrets/secrets.ts'
+import type { EmailJob } from '../src/features/email/types.ts'
+import type { MailerSendResult } from '../src/features/email/sender-types.ts'
+import { PermanentSendError, validateEmailAddress } from '../src/features/email/validate-address.ts'
 import type { Db } from './db.ts'
-import { logError } from '../src/logger.ts'
+import { logError } from '../src/lib/logger.ts'
 
 class MailgunConfigError extends Error {}
 

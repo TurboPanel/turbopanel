@@ -1,7 +1,7 @@
 /**
  * Storage for the public keys that may authenticate as a principal.
  *
- * Separate from `./store.ts` because the read shape differs in a way that
+ * Separate from `src/features/principals/store.ts` because the read shape differs in a way that
  * matters: entitlements are loaded to *render* a form, keys are loaded to
  * *build a payload the host authenticates against*, and the two have different
  * containment rules. Keeping them apart makes it hard to accidentally hand a
@@ -9,14 +9,14 @@
  */
 
 import { and, asc, eq, inArray } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   principal,
   sshKey,
   project,
   workspace,
-} from '../../lib/db/schema.ts'
-import { parseSshPublicKey } from '../../lib/ssh-public-key.ts'
+} from '../../db/schema.ts'
+import { parseSshPublicKey } from '../../features/principals/ssh-public-key.ts'
 
 /**
  * Cap per account, matching the daemon's `MAX_KEYS_PER_PRINCIPAL`.

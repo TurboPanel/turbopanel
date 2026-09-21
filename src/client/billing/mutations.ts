@@ -21,11 +21,11 @@
  * Workers-bundleable: nothing at module load.
  */
 
-import type { Db } from '../../db.ts'
-import type { StripeClient } from '../../lib/billing/client.ts'
-import { StripeApiError } from '../../lib/billing/errors.ts'
-import { seatLinesFromState } from '../../lib/billing/entitlements.ts'
-import { type BillingGateway, resolveBillingGateway } from '../../lib/billing/gateway.ts'
+import type { Db } from '../../db/connection.ts'
+import type { StripeClient } from '../../features/billing/client.ts'
+import { StripeApiError } from '../../features/billing/errors.ts'
+import { seatLinesFromState } from '../../features/billing/entitlements.ts'
+import { type BillingGateway, resolveBillingGateway } from '../../features/billing/gateway.ts'
 import {
   deferredDeltasByTier,
   deferredIntentTargets,
@@ -34,24 +34,24 @@ import {
   withIntent,
   withoutIntents,
   writePendingChanges,
-} from '../../lib/billing/pending-changes.ts'
+} from '../../features/billing/pending-changes.ts'
 import {
   type BillingQuantityLock,
   endQuantityMutation,
   tryBeginQuantityMutation,
-} from '../../lib/billing/quantity-lock.ts'
-import { mutateSubscription } from '../../lib/billing/schedules.ts'
+} from '../../features/billing/quantity-lock.ts'
+import { mutateSubscription } from '../../features/billing/schedules.ts'
 import {
   clearSeatIncrease,
   newSeatIncreaseRecord,
   readSeatIncrease,
   seatIncreaseMatches,
   writeSeatIncrease,
-} from '../../lib/billing/seat-increase.ts'
-import { buildItemMutation, type TierDelta } from '../../lib/billing/subscriptions.ts'
-import { priceMapWithIntentTargets, resolveTierPrice } from '../../lib/billing/tier-prices.ts'
-import { getTierById, getTiersByIds, type TierRow } from '../../lib/db/tier-records.ts'
-import { seatQuantitiesByTier } from '../../lib/db/billing-records.ts'
+} from '../../features/billing/seat-increase.ts'
+import { buildItemMutation, type TierDelta } from '../../features/billing/subscriptions.ts'
+import { priceMapWithIntentTargets, resolveTierPrice } from '../../features/billing/tier-prices.ts'
+import { getTierById, getTiersByIds, type TierRow } from '../../features/tiers/tier-records.ts'
+import { seatQuantitiesByTier } from '../../features/billing/billing-records.ts'
 import { projectSubscriptionById } from '../../webhook/billing/stripe-projection.ts'
 import {
   BILLING_MUTATION_IN_PROGRESS_ERROR,

@@ -18,7 +18,7 @@ import {
   resolvePeerAddress,
   resolveServerAddress,
 } from './peer-address.ts'
-import type { ServerReportedIp } from '../server-addresses.ts'
+import type { ServerReportedIp } from '../contracts/server-addresses.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

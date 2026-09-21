@@ -2,8 +2,8 @@
  * Pure helpers extracted from command-dispatch for host-free coverage.
  */
 
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import type { CommandType } from '../../lib/commands/types.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandType } from '../../features/commands/types.ts'
 
 export function buildUserCommandExpiresAt(
   ttlMs: number,

@@ -1,12 +1,12 @@
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { resolveManagedSslMode } from "../../lib/managed/ssl.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { resolveManagedSslMode } from "../../features/managed/ssl.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
-import type { DerivedSecretsConfig } from "../authn/secrets.ts";
-import { getDb } from "../../db.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
+import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
+import { getDb } from "../../db/connection.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
 import {
   container,
   environment,
@@ -18,13 +18,13 @@ import {
   server,
   service,
   workspace,
-} from "../../lib/db/schema.ts";
-import { getManagedEngineSpec } from "../../lib/managed/index.ts";
+} from "../../db/schema.ts";
+import { getManagedEngineSpec } from "../../features/managed/index.ts";
 import {
   clampManagedResources,
   type ManagedSettings,
-} from "../../lib/managed/settings.ts";
-import { parseResourceLimits } from "../../lib/resource-limits.ts";
+} from "../../features/managed/settings.ts";
+import { parseResourceLimits } from "../../features/organizations/resource-limits.ts";
 import {
   createManagedPrincipal,
   isManagedUsernameTaken,
@@ -34,8 +34,8 @@ import {
   resolveManagedOwningOrganizationIds,
   rotatePrincipalPassword,
   USERNAME_IN_USE_ERROR,
-} from "../principals/store.ts";
-import { loadRandomizedUsernamesDefault } from "./org-defaults.ts";
+} from "../../features/principals/store.ts";
+import { loadRandomizedUsernamesDefault } from "../../features/managed/load-org-defaults.ts";
 import { assertDispatchInfrastructure } from "../servers/command-dispatch.ts";
 import {
   assertCanManageOr403,
@@ -45,12 +45,12 @@ import {
 } from "../shared.ts";
 import {
   assertServerDatacenterReady,
-} from "../../lib/net/datacenter-networks.ts";
+} from "../../features/net/datacenter-networks.ts";
 import {
   privateEndpointErrorResponse,
   type PrivateEndpointTransport,
   resolvePrivateEndpoint,
-} from "../../lib/net/private-endpoint.ts";
+} from "../../features/net/private-endpoint.ts";
 import {
   assertManagedNotBusy,
   assertTargetServerOnline,
@@ -65,8 +65,8 @@ import {
   hasBindingsForPrincipal,
   listBindingImpactForDatabase,
   listBindingImpactForPrincipal,
-} from "../bindings/impact.ts";
-import { materializeBindingsForPrincipal } from "../bindings/materialize.ts";
+} from "../../features/bindings/impact.ts";
+import { materializeBindingsForPrincipal } from "../../features/bindings/materialize.ts";
 import {
   enqueueManagedDestroyFanout,
   enqueueManagedLifecycleFanout,
@@ -78,7 +78,7 @@ import {
   preflightManagedApplyInfrastructure,
   type PreparedManagedMemberApply,
   prepareManagedApplyPayloads,
-} from "./apply-prepare.ts";
+} from "../../features/managed/apply-prepare.ts";
 import {
   buildManagedBackupCreatePayload,
   buildManagedBackupDeletePayload,
@@ -104,16 +104,16 @@ import {
   serializeManagedMember,
   updateManagedMemberReadEligible,
   updateManagedMemberReplicaClass,
-} from "./members.ts";
+} from "../../features/managed/members.ts";
 import {
   type ManagedRowOptions,
   parseManagedRowOptions,
   writeManagedRowOptions,
-} from "./options.ts";
+} from "../../features/managed/options.ts";
 import {
   findManagedBackupById,
   listManagedBackups,
-} from "../../lib/db/backup-records.ts";
+} from "../../features/backups/backup-records.ts";
 import {
   assertFailoverReplicaTransportAllowed,
   buildDisasterRecoveryQueuedResponse,
@@ -166,20 +166,20 @@ import {
   serializeContainerRow,
   serializeManagedUser,
   validateManagedDatabaseCreateName,
-} from "./routes-helpers.ts";
+} from "../../features/managed/routes-helpers.ts";
 import {
   buildConnectionPayload,
   parseManagedResidual,
   serializeManagedRow,
-} from "./serialize.ts";
-import { findLatestRecovery } from "../../lib/db/recovery-records.ts";
-import { serializeRecovery } from "../../lib/managed/recovery.ts";
+} from "../../features/managed/serialize.ts";
+import { findLatestRecovery } from "../../features/managed/recovery-records.ts";
+import { serializeRecovery } from "../../features/managed/recovery.ts";
 import {
   beginDisasterRecovery,
   beginOperatorSwitchover,
   firstDatacenterId,
   loadDatacenterSets,
-} from "./ha-recovery.ts";
+} from "../../features/managed/ha-recovery.ts";
 
 async function findManagedForEnvironment(
   db: NonNullable<ReturnType<typeof getDb>>,

@@ -1,15 +1,15 @@
 import type { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { getDb, getExecutionLogStore } from '../../db.ts'
+import { getDb, getExecutionLogStore } from '../../db/connection.ts'
 import { assertCanReadOr403 } from '../shared.ts'
 import {
   DEPLOYMENT_HISTORY_DEFAULT_LIMIT,
   DEPLOYMENT_HISTORY_MAX_LIMIT,
   getEnvironmentDeploymentDetail,
   listEnvironmentDeploymentHistory,
-} from '../../lib/db/deployment-history.ts'
+} from '../../features/deploy/deployment-history.ts'
 
 export function parseLimit(raw: string | undefined): number | null {
   if (raw === undefined || raw === '') return DEPLOYMENT_HISTORY_DEFAULT_LIMIT

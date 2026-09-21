@@ -1,4 +1,4 @@
-import { INSTANCE_VERSION } from '../../version.ts'
+import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveSessionCookieNameFromUrl } from '../authn/crypto.ts'
 import { sharedSchemas } from './shared.ts'
 import { accessPaths, accessSchemas } from './access.ts'

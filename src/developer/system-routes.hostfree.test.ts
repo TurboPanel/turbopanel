@@ -1,8 +1,8 @@
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../client/authn/secrets.ts'
-import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from '../lib/secrets/secrets.ts'
+import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 import {
   defaultSystemGitRunner,
   DEFAULT_INSTANCE_SERVICE,
@@ -28,7 +28,7 @@ import {
 const test = Deno.test.bind(Deno)
 
 test('porcelainPath reads the path and rename target', () => {
-  assertEquals(porcelainPath(' M src/app.ts'), 'src/app.ts')
+  assertEquals(porcelainPath(' M src/app/app.ts'), 'src/app/app.ts')
   assertEquals(porcelainPath('R  old.ts -> new.ts'), 'new.ts')
 })
 
@@ -309,7 +309,7 @@ test('GET /system/upgrade-status reports dirty checkouts and git status failures
   )
   await withSystemRouteEnv({ TURBOPANEL_DEV_USER: 'dev' }, async () => {
     setSystemRoutesTestHooks({
-      gitRunner: scriptedGitRunner({ statusStdout: ' M src/app.ts\n' }),
+      gitRunner: scriptedGitRunner({ statusStdout: ' M src/app/app.ts\n' }),
     })
     const app = new Hono()
     registerSystemRoutes(app, { secrets, authRequired: false })
@@ -347,7 +347,7 @@ test('POST /system/upgrade refuses dirty trees, honors a unit override, and bloc
   )
   await withSystemRouteEnv({ TURBOPANEL_INSTANCE_SERVICE: undefined }, async () => {
     setSystemRoutesTestHooks({
-      gitRunner: scriptedGitRunner({ statusStdout: ' M src/app.ts\n' }),
+      gitRunner: scriptedGitRunner({ statusStdout: ' M src/app/app.ts\n' }),
     })
     const app = new Hono()
     registerSystemRoutes(app, { secrets, authRequired: false })

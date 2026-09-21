@@ -4,7 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../app.ts'
+import type { AppEnv } from '../app/app.ts'
 import { testOnlyPostgresTcpUrl } from '../test-fixtures/database-url.ts'
 import { registerDatabaseStudioRoutes } from './database-studio-routes.ts'
 

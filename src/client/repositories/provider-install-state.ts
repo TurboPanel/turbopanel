@@ -21,12 +21,12 @@ import {
   ENVELOPE_SCHEME_INSTALL_STATE,
   formatEnvelope,
   parseEnvelope,
-} from '../authn/envelope.ts'
+} from '../../lib/secrets/envelope.ts'
 import {
   deriveSecretsConfig,
   findKeyForVersion,
   type SecretsConfig,
-} from '../authn/secrets.ts'
+} from '../../lib/secrets/secrets.ts'
 
 /** Per-provider HKDF purpose — distinct so states are not interchangeable. */
 export const INSTALL_STATE_PURPOSES = {

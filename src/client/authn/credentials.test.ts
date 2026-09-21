@@ -1,8 +1,8 @@
 import { and, eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
-import { account, user } from '../../lib/db/schema.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import { account, user } from '../../db/schema.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -14,7 +14,7 @@ import {
   PAM_ROOT_USERNAME,
   verifyCredentials,
 } from './credentials.ts'
-import { hashPassword } from './password.ts'
+import { hashPassword } from '../../lib/secrets/password.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

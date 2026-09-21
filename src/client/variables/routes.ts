@@ -1,13 +1,13 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import { encryptSecret } from '../authn/data-encryption.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db.ts'
-import { variable } from '../../lib/db/schema.ts'
+import { getDb, type Db } from '../../db/connection.ts'
+import { variable } from '../../db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -20,7 +20,7 @@ import {
   resolveInheritedVariablesForHosting,
   resolveInheritedVariablesForService,
   type ResolvedVariableMap,
-} from './resolve-inherited.ts'
+} from '../../features/variables/resolve-inherited.ts'
 import {
   BINDING_KEY_CONFLICT_ERROR,
   BINDING_OWNED_VARIABLE_ERROR,

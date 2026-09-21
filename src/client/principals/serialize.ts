@@ -1,9 +1,9 @@
-import type { principal } from '../../lib/db/schema.ts'
+import type { principal } from '../../db/schema.ts'
 import {
   accessLevelForShell,
   type PrincipalAccessLevel,
-} from '../../lib/principal-access.ts'
-import { parsePrincipalOptions, resolvePrincipalShell } from '../../lib/principal-options.ts'
+} from '../../features/principals/principal-access.ts'
+import { parsePrincipalOptions, resolvePrincipalShell } from '../../features/principals/principal-options.ts'
 
 /**
  * Only the columns the serializer reads — deliberately excludes `password` so

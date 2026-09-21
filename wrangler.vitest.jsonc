@@ -18,8 +18,8 @@
     }
   ],
   "alias": {
-    "nodemailer": "./src/lib/email/smtp/nodemailer-shim.ts",
-    "@turbopanel/email/smtp-sender": "./src/lib/email/smtp/smtp-sender-shim.ts"
+    "nodemailer": "./src/features/email/smtp/nodemailer-shim.ts",
+    "@turbopanel/email/smtp-sender": "./src/features/email/smtp/smtp-sender-shim.ts"
   },
   "durable_objects": {
     "bindings": [

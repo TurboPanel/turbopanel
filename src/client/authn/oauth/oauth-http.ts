@@ -7,15 +7,15 @@
 import { and, eq } from "drizzle-orm";
 import { getCookie } from "hono/cookie";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../../app.ts";
-import { type Db, getDb } from "../../../db.ts";
-import { account, passkey, user } from "../../../lib/db/schema.ts";
+import type { AppEnv } from "../../../app/app.ts";
+import { type Db, getDb } from "../../../db/connection.ts";
+import { account, passkey, user } from "../../../db/schema.ts";
 import { readBoundedBodyText } from "../../../lib/http/bounded-body.ts";
-import { resolvePublicBaseUrl } from "../../../lib/resolve-public-base-url.ts";
+import { resolvePublicBaseUrl } from "../../../features/install/resolve-public-base-url.ts";
 import {
   resolveAuthProviderSettings,
-} from "../../../lib/settings/auth-provider-settings.ts";
-import { CLIENT_API_PREFIX } from "../../../surfaces.ts";
+} from "../../../features/settings/auth-provider-settings.ts";
+import { CLIENT_API_PREFIX } from "../../../app/surfaces.ts";
 import { AUTH_OAUTH_UNLINK_MAX_BODY_BYTES } from "../auth-body-limits.ts";
 import {
   buildSignedCookie,
@@ -61,7 +61,7 @@ import {
   resolveOAuthProvider,
 } from "./providers.ts";
 import type { OAuthStateClaims } from "./oauth-state.ts";
-import { isPostgresUniqueViolation } from "../../../lib/db/unique-violation.ts";
+import { isPostgresUniqueViolation } from "../../../db/unique-violation.ts";
 
 const DEFAULT_REDIRECT_TO = "/";
 

@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
-import type { Db } from '../db.ts'
-import type { CommandQueue } from '../lib/commands/queue.ts'
+import type { Db } from '../db/connection.ts'
+import type { CommandQueue } from '../features/commands/queue.ts'
 import { mintOrganizationCa } from '../lib/tls/self-signed.ts'
 import {
   enqueuePlatformCaTrustReconcile,
@@ -122,6 +122,17 @@ test('enqueuePlatformCaTrustReconcileBestEffort swallows non-Error throws', asyn
     },
     listServerIds: async () => [SERVER_A],
   })
+})
+
+test('enqueuePlatformCaTrustReconcileBestEffort is a no-op without a bundle reader', async () => {
+  const { queue, envelopes } = recordingQueue()
+  await enqueuePlatformCaTrustReconcileBestEffort({
+    db: unusedDb,
+    commandQueue: queue,
+    actorId: ACTOR,
+    listServerIds: async () => [SERVER_A],
+  })
+  assertEquals(envelopes.length, 0)
 })
 
 test('enqueuePlatformCaTrustReconcileBestEffort swallows fan-out failures', async () => {

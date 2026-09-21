@@ -1,5 +1,5 @@
 import type { Context } from 'hono'
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 
 /** foreign_key_violation — typical for ON DELETE NO ACTION */
 const POSTGRES_FK_VIOLATION = '23503'

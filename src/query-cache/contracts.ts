@@ -1,4 +1,4 @@
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 import type { ApprovedReadModelId } from './approved-read-models.ts'
 
 /** Matches the Hyperdrive cached binding `max_age` (60 seconds in production). */

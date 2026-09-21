@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { buildMetricsSample } from './contract.ts'
+import { buildMetricsSample } from '../../contracts/metrics-contract.ts'
 import { DisabledServerMetricsStore } from './disabled-store.ts'
 import { UnavailableServerMetricsStore } from './store-selection-core.ts'
 import type { AuthenticatedMetricsSample } from './types.ts'

@@ -1,9 +1,9 @@
 import { assertEquals } from "@std/assert";
 import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -13,10 +13,10 @@ import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
-} from "../authn/secrets.ts";
-import { attachDaemonStateToServer } from "../../daemon/authn/server-identity-db.ts";
-import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
+} from "../../lib/secrets/secrets.ts";
+import { attachDaemonStateToServer } from "../../features/servers/server-identity-db.ts";
+import type { CommandEnvelope } from "../../features/commands/envelope.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
 import {
   command,
   container,
@@ -36,10 +36,10 @@ import {
   tls,
   user,
   workspace,
-} from "../../lib/db/schema.ts";
-import { postgresEngineSpec } from "../../lib/managed/postgres.ts";
-import { createManagedPrincipal } from "../principals/store.ts";
-import { ensureManagedContainerAllocation } from "../managed/allocate-managed-container.ts";
+} from "../../db/schema.ts";
+import { postgresEngineSpec } from "../../features/managed/postgres.ts";
+import { createManagedPrincipal } from "../../features/principals/store.ts";
+import { ensureManagedContainerAllocation } from "../../features/managed/allocate-managed-container.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerDatacenterRoutes } from "./routes.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";

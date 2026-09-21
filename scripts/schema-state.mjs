@@ -1,7 +1,7 @@
 /**
- * Node twin of src/lib/db/schema-state.ts for `pnpm migrate`
+ * Node twin of src/db/schema-state.ts for `pnpm migrate`
  * (scripts/migrate-locked.mjs). Same states, same sentences — verbatim, and
- * src/lib/db/schema-state.test.ts pins the two.
+ * src/db/schema-state.test.ts pins the two.
  *
  * Why it exists: drizzle applies a journal entry only when its `when` is
  * newer than the newest `created_at` already recorded, so on a database

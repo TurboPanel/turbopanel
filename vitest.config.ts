@@ -31,35 +31,16 @@ export default defineConfig({
     alias: {
       '@turbopanel/email/smtp-sender': path.resolve(
         rootDir,
-        './src/lib/email/smtp/smtp-sender-shim.ts'
+        './src/features/email/smtp/smtp-sender-shim.ts'
       ),
     },
   },
   test: {
     include: [
-      'src/daemon/workers-ws.test.ts',
-      'src/daemon/cell/do-registry.test.ts',
-      'src/daemon/durable-object.test.ts',
-      'src/daemon/acme-issuance-event.workers-e2e.test.ts',
-      'src/client/organizations/compose-privileged-fields.workers-e2e.test.ts',
-      'src/developer/routes-core.test.ts',
-      'src/developer/dev-sync-archive.test.ts',
-      'src/admin/public-urls.test.ts',
-      'src/lib/settings/email-settings.test.ts',
-      'src/client/authn/signup-validation.test.ts',
-      'src/client/authn/data-encryption.test.ts',
-      'src/client/authn/password.test.ts',
-      'src/daemon/metrics/validation.test.ts',
-      'mailer/rate-limiter.test.ts',
-      // Hyperdrive fresh-per-request / close guards (Istanbul covers workers-bindings.ts).
-      // Keep out of scripts/test-coverage.sh Deno LCOV — Workers-pool only.
-      'src/workers-bindings.test.ts',
-      'src/workers.entry.test.ts',
-      'src/wrangler-hyperdrive-bindings.test.ts',
-      'src/lib/machine-key.workers.test.ts',
-      // Execution-log conformance under workerd — exercises workerd's
-      // CompressionStream/DecompressionStream, which the Deno run cannot.
-      'src/lib/execution-logs/r2-store.workers.test.ts',
+      'src/**/*.workers.test.ts',
+      'src/**/*.workers-e2e.test.ts',
+      'src/**/*.entry.test.ts',
+      'mailer/**/*.workers.test.ts',
     ],
     coverage: {
       // Istanbul instruments source at build time, so — unlike the default
@@ -72,10 +53,9 @@ export default defineConfig({
       provider: 'istanbul',
       reporter: ['text-summary', 'lcov'],
       reportsDirectory: 'coverage/vitest',
-      // Coverage attribution note: this `include` list above is exhaustive,
-      // not a glob — a new Workers/DO test file must be added there (and,
-      // separately, to scripts/test-coverage.sh for Deno suites) or it will
-      // never contribute to this report.
+      // Coverage attribution: suffix globs above. Name a new Workers/DO
+      // suite `*.workers.test.ts` (or `*.workers-e2e.test.ts` / `*.entry.test.ts`)
+      // so it is included here and ignored by the Deno inventory.
     },
   },
 })

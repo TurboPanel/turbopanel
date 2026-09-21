@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
-import type { Db } from '../../db.ts'
-import type { GitProvider, GitProviderSourceRow } from '../../lib/git/git-provider.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { Db } from '../../db/connection.ts'
+import type { GitProvider, GitProviderSourceRow } from '../../features/git/git-provider.ts'
 import { createServerPresenceDb } from '../managed/server-status-test-db.ts'
 import { inspectRepository, INSPECT_PROBE_PATHS } from './inspect.ts'
 
@@ -80,7 +80,7 @@ test('an unsupported provider always falls back', () => {
 })
 
 test('every provider implements the read surface', async () => {
-  const { resolveGitProvider } = await import('../../lib/git/git-provider.ts')
+  const { resolveGitProvider } = await import('../../features/git/git-provider.ts')
   for (const name of ['github', 'gitlab', 'git']) {
     const provider: GitProvider = resolveGitProvider(name)
     assertEquals(typeof provider.readRepositoryFiles, 'function')
@@ -89,7 +89,7 @@ test('every provider implements the read surface', async () => {
 })
 
 test('the generic provider answers unsupported rather than throwing', async () => {
-  const { resolveGitProvider } = await import('../../lib/git/git-provider.ts')
+  const { resolveGitProvider } = await import('../../features/git/git-provider.ts')
   const provider = resolveGitProvider('git')
   const read = await provider.readRepositoryFiles(
     { db: null as never },

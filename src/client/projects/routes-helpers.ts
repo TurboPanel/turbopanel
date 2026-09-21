@@ -3,13 +3,13 @@ import {
   stripProjectComposePlacementOption,
   type ComposeValidateOptions,
   type ComposeValidationIssue,
-} from '../../lib/compose/index.ts'
+} from '../../features/compose/index.ts'
 import {
   parseComposeSourceInput,
   parseContainerNamingInput,
   parseDefaultServerIdInput,
-} from '../../lib/project-options.ts'
-import { isPlacementServerId } from '../../lib/compose/placement.ts'
+} from '../../features/projects/project-options.ts'
+import { isPlacementServerId } from '../../features/compose/placement.ts'
 import {
   parseDescription,
   parseName,
@@ -23,7 +23,7 @@ import {
 } from './catalog/index.ts'
 import { isConfiguredProjectType } from './empty-setup.ts'
 import { PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
-import { isUniqueViolationOn } from '../../lib/db/unique-violation.ts'
+import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 
 export type ProjectRouteValidationError = {
   ok: false

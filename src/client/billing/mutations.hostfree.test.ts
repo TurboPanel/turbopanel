@@ -23,21 +23,21 @@
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
-import type { StripeClient } from '../../lib/billing/client.ts'
-import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from '../../lib/billing/customer-subject.ts'
-import { StripeApiError } from '../../lib/billing/errors.ts'
-import { type BillingGateway, NO_TAX_DEFAULTS, type ProviderProduct } from '../../lib/billing/gateway.ts'
+import type { StripeClient } from '../../features/billing/client.ts'
+import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from '../../features/billing/customer-subject.ts'
+import { StripeApiError } from '../../features/billing/errors.ts'
+import { type BillingGateway, NO_TAX_DEFAULTS, type ProviderProduct } from '../../features/billing/gateway.ts'
 import {
   emptyLedger,
   newDeferredIntent,
   readPendingChanges,
   withIntent,
   writePendingChanges,
-} from '../../lib/billing/pending-changes.ts'
-import { billingSeatIncreaseKey, parseSeatIncreaseRecord } from '../../lib/billing/seat-increase.ts'
-import { verifyStripeProduct } from '../../lib/billing/stripe-products.ts'
-import { allowance, key, license, organization, payer, server, setting, subscription, subscriptionItem, tier } from '../../lib/db/schema.ts'
-import type { TierRow } from '../../lib/db/tier-records.ts'
+} from '../../features/billing/pending-changes.ts'
+import { billingSeatIncreaseKey, parseSeatIncreaseRecord } from '../../features/billing/seat-increase.ts'
+import { verifyStripeProduct } from '../../features/billing/stripe-products.ts'
+import { allowance, key, license, organization, payer, server, setting, subscription, subscriptionItem, tier } from '../../db/schema.ts'
+import type { TierRow } from '../../features/tiers/tier-records.ts'
 import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
 import { createStripeClientDouble, formOf, type StripeCall } from '../../test-fixtures/stripe-client.ts'
 import { type BillingMutationOutcome, changeSeats, downgradeTier, upgradeTier } from './mutations.ts'

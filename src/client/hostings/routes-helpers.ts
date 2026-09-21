@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Context } from "hono";
-import type { Db } from "../../db.ts";
-import { hosting, ip } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { hosting, ip } from "../../db/schema.ts";
 import {
   HOSTING_COMPOSE_ADOPTED_METADATA_KEY,
   HOSTING_COMPOSE_OWNED_METADATA_KEY,
@@ -9,11 +9,11 @@ import {
   HOSTING_COMPOSE_SERVICE_METADATA_KEY,
   HOSTING_COMPOSE_TLS_MODE_METADATA_KEY,
   readHostingComposeOwner,
-} from "../../lib/hosting-compose-owner.ts";
+} from "../../features/hostings/hosting-compose-owner.ts";
 import {
   parseHostingOptions,
   resolveHostingBind,
-} from "../../lib/hosting-options.ts";
+} from "../../features/hostings/hosting-options.ts";
 import {
   buildPatchUpdateFields,
   parseJsonbObject,

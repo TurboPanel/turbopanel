@@ -3,28 +3,28 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { eq } from "drizzle-orm";
-import type { AppEnv } from "../../app.ts";
-import { createWorkersDb, endDbConnection } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { createWorkersDb, endDbConnection } from "../../db/connection.ts";
 import {
   grant,
   organization,
   session as sessionTable,
   user,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import { registerOrganizationRoutes } from "./routes.ts";
-import { deriveSecretsConfig } from "../authn/secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
 import { testSecretsEnvLine } from "../../test-fixtures/secrets.ts";
-import { parseSecretsEnv } from "../authn/secrets.ts";
+import { parseSecretsEnv } from "../../lib/secrets/secrets.ts";
 import {
   parseOrganizationOptions,
   resolveComposeGatedFieldsEnabled,
-} from "../../lib/organization-options.ts";
-import { validateComposeForDeploy } from "../../lib/compose/validate-for-deploy.ts";
-import type { ComposeDocument } from "../../lib/compose/types.ts";
+} from "../../features/organizations/organization-options.ts";
+import { validateComposeForDeploy } from "../../features/compose/validate-for-deploy.ts";
+import type { ComposeDocument } from "../../features/compose/types.ts";
 
 // Isolated in its own file, same reasoning as
 // `src/daemon/acme-issuance-event.workers-e2e.test.ts`: a real-Postgres test
@@ -149,7 +149,7 @@ describe("compose-privileged-fields real-Postgres end-to-end", () => {
               options,
             ),
           }),
-        ).toBe(null);
+        ).toBeNull();
 
         // Flip it back off through the same real route and confirm the real
         // row now drives the deploy-time refusal too — the opt-in is a live

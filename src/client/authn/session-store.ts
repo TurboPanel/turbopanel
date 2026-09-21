@@ -1,7 +1,7 @@
 import { and, eq, gt, ne } from 'drizzle-orm'
 import { generateSessionToken, SESSION_EXPIRES_IN_MS } from './crypto.ts'
-import type { Db } from '../../db.ts'
-import { session, user } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { session, user } from '../../db/schema.ts'
 
 export const SUPERADMIN_ROLE = 'superadmin'
 

@@ -1,33 +1,33 @@
 import { assertEquals, assertExists } from "@std/assert";
 import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
 import { it } from "@std/testing/bdd";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
 import { createSession } from "../authn/session-store.ts";
-import { deriveSecretsConfig } from "../authn/secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import {
   grant,
   organization,
   server,
   setting,
   user,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
   PendingRequestRecord,
-} from "../../daemon/cell/contracts.ts";
-import type { DaemonOutboundEnvelope } from "../../daemon/cell/protocol.ts";
+} from "../../contracts/cell.ts";
+import type { DaemonOutboundEnvelope } from "../../contracts/cell-protocol.ts";
 import {
   SERVER_METRICS_LIVE_MAX_MINUTES_KEY,
   setServerMetricsLiveMaxMinutes,
-} from "../../lib/settings/server-metrics-settings.ts";
+} from "../../features/settings/server-metrics-settings.ts";
 import type {
   EntitySeriesQuery,
   EntitySeriesResult,
@@ -49,13 +49,13 @@ import {
   resetDenoMetricsChartCacheForTests,
 } from "../../daemon/metrics/query/cache.ts";
 import { MAX_METRICS_POINTS } from "../../daemon/metrics/query/resolution.ts";
-import { recordTopologyGeneration } from "./server-topology-records.ts";
+import { recordTopologyGeneration } from "../../features/servers/server-topology-records.ts";
 import {
   cacheLiveSample,
   isServerLiveSessionActive,
   markServerLiveSessionActive,
 } from "../../daemon/metrics/query/live-session.ts";
-import { METRICS_SCHEMA_VERSION } from "../../daemon/metrics/contract.ts";
+import { METRICS_SCHEMA_VERSION } from "../../contracts/metrics-contract.ts";
 import type { AuthenticatedMetricsSample } from "../../daemon/metrics/types.ts";
 
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";

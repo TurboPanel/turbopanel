@@ -1,5 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   grant,
   container,
@@ -22,7 +22,7 @@ import {
   ip,
   gitConnection,
   repository,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import {
   isGrantablePermissionKey,
   isGrantEntityType,

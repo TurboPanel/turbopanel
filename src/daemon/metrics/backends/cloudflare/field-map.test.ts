@@ -8,7 +8,7 @@ import {
   type HostNetworkMetrics,
   type HostStorageMetrics,
   type MetricsSampleInput,
-} from "../../contract.ts";
+} from "../../../../contracts/metrics-contract.ts";
 import type { AuthenticatedMetricsSample } from "../../types.ts";
 import {
   _internalFieldMap,

@@ -2,16 +2,16 @@ import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import type { Context } from 'hono'
 import { eq } from 'drizzle-orm'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import { createNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import { createNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   createCommandRecord,
   getCommandRecord,
-} from '../../lib/db/command-records.ts'
-import { command, organization, server } from '../../lib/db/schema.ts'
+} from '../../features/commands/command-records.ts'
+import { command, organization, server } from '../../db/schema.ts'
 import {
   assertDispatchInfrastructure,
   enqueueCommandOrCompensate,

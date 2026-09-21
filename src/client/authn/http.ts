@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getCookie } from "hono/cookie";
 import { type Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import {
   buildSignedCookie,
   resolveRequestTls,
@@ -19,30 +19,30 @@ import {
   validateSuperadminEmail,
   validateSuperadminPassword,
 } from "./install-state.ts";
-import { resolvePublicBaseUrl } from "../../lib/resolve-public-base-url.ts";
-import { hashPassword } from "./password.ts";
+import { resolvePublicBaseUrl } from "../../features/install/resolve-public-base-url.ts";
+import { hashPassword } from "../../lib/secrets/password.ts";
 import {
   consumeEmailVerificationToken,
   createEmailVerificationToken,
 } from "./email-verification.ts";
 import { createSession, deleteSession, getSession } from "./session-store.ts";
-import type { DerivedSecretsConfig } from "./secrets.ts";
+import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
 import {
   compatLogError,
   compatLogInfo,
   compatLogWarn,
-} from "../../log-compat.ts";
-import { getDb } from "../../db.ts";
-import type { Db } from "../../db.ts";
+} from "../../lib/log-compat.ts";
+import { getDb } from "../../db/connection.ts";
+import type { Db } from "../../db/connection.ts";
 import { invitationEmailsMatch, isUuid } from "../access/routes-helpers.ts";
-import { account, invitation, user } from "../../lib/db/schema.ts";
-import { type EmailQueue, getEmailQueue } from "../../lib/email/types.ts";
-import { isNoopEmailQueue } from "../../lib/email/noop-queue.ts";
-import { emailQueueFromResolvedSettings } from "../../lib/email/mailgun/workers-queue.ts";
+import { account, invitation, user } from "../../db/schema.ts";
+import { type EmailQueue, getEmailQueue } from "../../features/email/types.ts";
+import { isNoopEmailQueue } from "../../features/email/noop-queue.ts";
+import { emailQueueFromResolvedSettings } from "../../features/email/mailgun/workers-queue.ts";
 import {
   isEmailActiveForRuntime,
   resolveEmailSettings,
-} from "../../lib/settings/email-settings.ts";
+} from "../../features/settings/email-settings.ts";
 import { registerOAuthRoutes } from "./oauth/oauth-http.ts";
 import { registerOtpRoutes } from "./otp-http.ts";
 import { registerPasskeyRoutes } from "./passkeys-http.ts";
@@ -54,7 +54,7 @@ import {
   createFailClosedAuthRateLimiter,
   getSharedAuthRateLimiter,
 } from "./auth-rate-limit.ts";
-import { isExplicitDevelopmentMode } from "../../dev-mode.ts";
+import { isExplicitDevelopmentMode } from "../../app/dev-mode.ts";
 import {
   parseTrustedProxyCidrs,
   resolvePeerAddress,
@@ -65,7 +65,7 @@ import {
   AUTH_SIGN_UP_MAX_BODY_BYTES,
   MAX_AUTH_PASSWORD_CHARS,
 } from "./auth-body-limits.ts";
-import { isUniqueViolationOn } from "../../lib/db/unique-violation.ts";
+import { isUniqueViolationOn } from "../../db/unique-violation.ts";
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig;

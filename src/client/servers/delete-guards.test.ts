@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
-import type { Db } from '../../db.ts'
-import { ip, network, server } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { ip, network, server } from '../../db/schema.ts'
 import {
   COLOCATED_SERVER_DELETE_BLOCKED_REASON,
   SERVER_HAS_BLOCKERS_CODE,

@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import type { CommandRecord } from '../../lib/db/command-records.ts'
+import type { CommandRecord } from '../../features/commands/command-records.ts'
 import { computePingLatency } from './commands-ping-latency.ts'
 
 /**

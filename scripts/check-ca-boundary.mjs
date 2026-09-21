@@ -2,7 +2,8 @@
 /**
  * CA-boundary check (CI guard).
  *
- * Organization CA / org TLS library sources (`src/lib/tls/`, `src/client/tls/`)
+ * Organization CA / org TLS library sources (`src/lib/tls/`, `src/client/tls/`,
+ * `src/features/tls/`)
  * must never reference Platform CA paths. Canonical rule:
  * `src/lib/tls/AGENTS.md`.
  *
@@ -20,6 +21,7 @@ const SELF = path.relative(ROOT, fileURLToPath(import.meta.url))
 const SCAN_ROOTS = [
   path.join(ROOT, 'src/lib/tls'),
   path.join(ROOT, 'src/client/tls'),
+  path.join(ROOT, 'src/features/tls'),
 ]
 
 const FORBIDDEN_TOKENS = [
@@ -115,7 +117,7 @@ if (failures.length > 0) {
   console.error(
     `\n${failures.length} problem(s) found. Organization CA code may not touch Platform CA paths. ` +
       'See src/lib/tls/AGENTS.md. Do not widen this script\'s allowlist without review — ' +
-      'move Platform CA references out of src/lib/tls/ and src/client/tls/ instead.',
+      'move Platform CA references out of src/lib/tls/, src/client/tls/, and src/features/tls/ instead.',
   )
   process.exit(1)
 }

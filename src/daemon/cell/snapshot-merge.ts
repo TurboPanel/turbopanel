@@ -1,4 +1,4 @@
-import type { DaemonCellSnapshot } from "./contracts.ts";
+import type { DaemonCellSnapshot } from "../../contracts/cell.ts";
 
 /** Live presence fields maintained in cell meta, not the persisted snapshot blob. */
 const PRESENCE_FIELDS = [

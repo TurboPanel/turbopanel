@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
 import {
   grant,
   environment,
@@ -13,7 +13,7 @@ import {
   teammate,
   server,
   user,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import { can, assertCan, ForbiddenError, getSubjects, listVisible } from './evaluator.ts'
 
 const dbUrl = getDatabaseUrl()

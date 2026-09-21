@@ -4,8 +4,8 @@
 
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { parseCronCommand, parseCronSchedule } from '../../lib/cron.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { parseCronCommand, parseCronSchedule } from '../../features/deploy/cron.ts'
 import {
   buildTaskPatchFields,
   parseTaskCommand,

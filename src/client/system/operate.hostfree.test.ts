@@ -3,13 +3,13 @@
  */
 
 import { assertEquals } from '@std/assert'
-import type { Db } from '../../db.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
+import type { Db } from '../../db/connection.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   SYSTEM_HOSTING_INGRESS_COMPONENT,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-} from './hierarchy.ts'
+} from '../../features/system/hierarchy.ts'
 import { systemComponentOperations } from './operate.ts'
 
 /**

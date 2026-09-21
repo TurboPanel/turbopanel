@@ -4,7 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import { DAEMON_API_PREFIX } from '../surfaces.ts'
+import { DAEMON_API_PREFIX } from '../app/surfaces.ts'
 import {
   getDaemonCommit,
   getDaemonRepoPath,

@@ -2,8 +2,8 @@ import {
   encryptSecret,
   ENVELOPE_MAGIC,
   isSealedEnvelope,
-} from "../authn/data-encryption.ts";
-import type { DerivedSecretsConfig } from "../authn/secrets.ts";
+} from "../../lib/secrets/data-encryption.ts";
+import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
 import {
   assembleTlsMetadata,
   metadataFromParsed,
@@ -19,7 +19,14 @@ import {
   type TlsOptions,
   type TlsSource,
 } from "../../lib/tls/index.ts";
-import { isPostgresUniqueViolation, isUniqueViolationOn } from "../../lib/db/unique-violation.ts";
+import { isUniqueViolationOn } from "../../db/unique-violation.ts";
+import {
+  isOrganizationCaUniqueViolation,
+  type TlsRowForPublic,
+} from "../../features/tls/organization-ca.ts";
+
+export { isPostgresUniqueViolation } from "../../db/unique-violation.ts";
+export { isOrganizationCaUniqueViolation, type TlsRowForPublic };
 
 export const TLS_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -48,22 +55,6 @@ export type TlsPublicRow = {
   caGeneration?: number | null;
   createdAt: string;
   updatedAt: string;
-};
-
-export type TlsRowForPublic = {
-  id: string;
-  name: string | null;
-  source: string;
-  organizationId: string;
-  status: string;
-  notAfter: string | null;
-  fingerprintSha256: string | null;
-  metadata: unknown;
-  options: unknown;
-  certificatePem: string | null;
-  createdAt: string;
-  updatedAt: string;
-  caGeneration?: number | null;
 };
 
 export function toPublicTlsRow(
@@ -260,14 +251,8 @@ export function isCreateTlsFailure(
   return "status" in result;
 }
 
-export { isPostgresUniqueViolation };
-
 export function isTlsFingerprintUniqueViolation(err: unknown): boolean {
   return isUniqueViolationOn(err, "uniq_tls_organization_fingerprint_sha256");
-}
-
-export function isOrganizationCaUniqueViolation(err: unknown): boolean {
-  return isUniqueViolationOn(err, "uniq_tls_organization_active_ca");
 }
 
 export function createFailure(

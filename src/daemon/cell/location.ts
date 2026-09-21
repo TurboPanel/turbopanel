@@ -1,10 +1,10 @@
 import { eq } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import { server } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { server } from "../../db/schema.ts";
 import type {
   ServerMetadata,
   ServerOptions,
-} from "../../lib/db/server-metadata.ts";
+} from "../../features/servers/server-metadata.ts";
 
 /**
  * Precedence when resolving cell fields: `server.options` overrides

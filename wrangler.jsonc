@@ -11,8 +11,8 @@
   "compatibility_date": "2026-08-18",
   "compatibility_flags": ["nodejs_compat"],
   "alias": {
-    "nodemailer": "./src/lib/email/smtp/nodemailer-shim.ts",
-    "@turbopanel/email/smtp-sender": "./src/lib/email/smtp/smtp-sender-shim.ts"
+    "nodemailer": "./src/features/email/smtp/nodemailer-shim.ts",
+    "@turbopanel/email/smtp-sender": "./src/features/email/smtp/smtp-sender-shim.ts"
   },
   "dev": {
     "port": 18787,
@@ -120,7 +120,7 @@
   // host.system row, one always-present host.io row, plus presence-gated pages
   // for gpu/network/filesystem/block/hardware.physical and one row per
   // managed.ingress/managed.database_proxy entry and per event — see
-  // backends/cloudflare/field-map.ts. `workers.ts` wires this binding
+  // src/daemon/metrics/backends/cloudflare/field-map.ts. `workers.ts` wires this binding
   // straight into a real `CloudflareAnalyticsEngineServerMetricsStore` for
   // both writes and reads — metric samples, status transitions, and metric
   // events all land here directly.
@@ -137,7 +137,7 @@
   // each one before the first deploy to that env (`wrangler r2 bucket create <name>`),
   // same manual-prerequisite convention as the Hyperdrive ids above.
   // Keyed-object storage, not an analytics table: a transcript is only ever
-  // fetched by command id. See src/lib/execution-logs/AGENTS.md.
+  // fetched by command id. See src/features/execution-logs/AGENTS.md.
   "r2_buckets": [
     {
       "binding": "EXECUTION_LOGS",

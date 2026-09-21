@@ -1,19 +1,19 @@
 import { eq } from "drizzle-orm";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
-import { encryptSecret } from "../authn/data-encryption.ts";
+import { encryptSecret } from "../../lib/secrets/data-encryption.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { assertCanManageOr403, parseJsonBody } from "../shared.ts";
-import { type Db, getDaemonCellRegistry, getDb } from "../../db.ts";
-import { organization } from "../../lib/db/schema.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
+import { type Db, getDaemonCellRegistry, getDb } from "../../db/connection.ts";
+import { organization } from "../../db/schema.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
 import { assertDispatchInfrastructure } from "../servers/command-dispatch.ts";
 import {
   assertGatewayRelaysReady,
   loadDatacenterSubnetsForServers,
   resolveDerivedAdvertisedCidrsByRelay,
-} from "../../lib/net/datacenter-networks.ts";
+} from "../../features/net/datacenter-networks.ts";
 import {
   disableOrganizationFabric,
   enableOrganizationFabric,
@@ -28,18 +28,18 @@ import {
   purgeOrganizationComposeNetworks,
   type RelayRecord,
   updateFabricRelay,
-} from "../../lib/db/fabric-records.ts";
-import { parseFabricPolicy } from "../../lib/fabric/policy.ts";
+} from "../../features/fabric/fabric-records.ts";
+import { parseFabricPolicy } from "../../features/fabric/policy.ts";
 import {
   findCidrCollision,
   loadOrganizationCidrRegistry,
-} from "../../lib/net/cidr-collisions.ts";
+} from "../../features/net/cidr-collisions.ts";
 import { cidrContains } from "../../lib/ip-address.ts";
 import { cidrCollisionResponse } from "../networks/network-scope.ts";
 import {
   enqueueFabricReconcileForServers,
   reconcileFabricMembership,
-} from "../../lib/fabric/enqueue.ts";
+} from "../../features/fabric/enqueue.ts";
 import {
   bindSecretEncryptFn,
   enqueueRelayPatchReconcile,

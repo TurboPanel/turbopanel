@@ -1,5 +1,5 @@
-import type { PendingRequestStatus } from "./contracts.ts";
-import type { DaemonInboundEnvelope } from "./protocol.ts";
+import type { PendingRequestStatus } from "../../contracts/cell.ts";
+import type { DaemonInboundEnvelope } from "../../contracts/cell-protocol.ts";
 
 /** Correlation status + payload derived from a terminal inbound envelope. */
 export type InboundOutcome = {

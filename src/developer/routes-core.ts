@@ -1,9 +1,9 @@
 import { Hono, type Env } from 'hono'
 import { eq } from 'drizzle-orm'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
-import type { Db } from '../db.ts'
-import { getDb, getDaemonCellRegistry } from '../db.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
+import type { Db } from '../db/connection.ts'
+import { getDb, getDaemonCellRegistry } from '../db/connection.ts'
 import {
   fleetPresenceToConnection,
   resolveFleetPresence,
@@ -21,19 +21,19 @@ import {
   fetchDaemonCellDiagnostics,
   fetchDaemonServerCell,
 } from '../daemon/cell/server-diagnostics.ts'
-import { isDaemonDebugEnabled, cellTrace } from '../logger.ts'
+import { isDaemonDebugEnabled, cellTrace } from '../lib/logger.ts'
 import {
   generateDeliveryId,
   generateRequestId,
   type DaemonOutboundEnvelope,
-} from '../daemon/cell/protocol.ts'
-import { organization, server } from '../lib/db/schema.ts'
-import { redactServerOptions } from '../lib/db/server-metadata.ts'
+} from '../contracts/cell-protocol.ts'
+import { organization, server } from '../db/schema.ts'
+import { redactServerOptions } from '../features/servers/server-metadata.ts'
 import {
   collectServerIps,
   readDefaultRouteInterfaces,
-} from '../server-addresses-deno.ts'
-import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
+} from '../platform/deno/server-addresses-deno.ts'
+import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 import {
   addressesFetchErrorStatus,

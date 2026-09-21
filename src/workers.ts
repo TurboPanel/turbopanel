@@ -7,35 +7,50 @@ import {
   deriveSecretsConfig,
   parseSecretsFromEnv,
   type SecretsConfig,
-} from "./client/authn/secrets.ts";
-import { type AppEnv, createApp } from "./app.ts";
+} from "./lib/secrets/secrets.ts";
+import { type AppEnv, createApp } from "./app/app.ts";
 import { createDurableObjectDaemonCellRegistry } from "./daemon/cell/do-registry.ts";
 import { runOfflineSweep } from "./daemon/cell/offline-sweep.ts";
 import { registerAdminRoutes } from "./admin/routes.ts";
 import { registerAdminTierRoutes } from "./admin/tier-routes.ts";
 import { getWorkersAdminOpenApiSpec } from "./admin/openapi/workers.ts";
 import { registerDaemonApiRoutes } from "./daemon/api-routes.ts";
+import { revokeDaemonKey } from "./features/servers/server-identity-db.ts";
 import { registerWebhookRoutes } from "./webhook/routes.ts";
 import { registerStripeWebhookRoutes } from "./webhook/billing/stripe.ts";
 import { registerBillingRoutes } from "./client/billing/routes.ts";
 import { getWorkersClientOpenApiSpec } from "./client/openapi/workers.ts";
-import { resolveBillingConfig } from "./lib/billing/config.ts";
+import { resolveBillingConfig } from "./features/billing/config.ts";
 import { registerWorkersDaemonWebSocket } from "./daemon/workers-ws.ts";
-import { resolveWorkersEmailQueue } from "./lib/email/mailgun/workers-queue.ts";
-import type { EmailQueue } from "./lib/email/types.ts";
+import { resolveWorkersEmailQueue } from "./features/email/mailgun/workers-queue.ts";
+import type { EmailQueue } from "./features/email/types.ts";
 import { normalizeSignupEnvOverride } from "./client/authn/install-state.ts";
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
-} from "./client/authn/password.ts";
-import { createWorkersCommandQueue } from "./lib/commands/workers-queue.ts";
-import { createNoopCommandQueue } from "./lib/commands/noop-command-queue.ts";
-import type { CommandQueue } from "./lib/commands/queue.ts";
+} from "./lib/secrets/password.ts";
+import { createWorkersCommandQueue } from "./features/commands/workers-queue.ts";
+import { createNoopCommandQueue } from "./features/commands/noop-command-queue.ts";
+import type { CommandQueue } from "./features/commands/queue.ts";
 import {
   isTransientError,
   processCommandEnvelope,
-} from "./lib/commands/consumer.ts";
-import { parseCommandEnvelope } from "./lib/commands/envelope.ts";
+} from "./features/commands/consumer.ts";
+import { parseCommandEnvelope } from "./features/commands/envelope.ts";
+import { setRevokeBoundDaemonKey } from "./features/licenses/revoke-bound-daemon-key.ts";
+import { setManagedHaRecoveryHooks } from "./platform/ports/managed-ha-recovery.ts";
+import { setLoadServerStatusRecords } from "./platform/ports/load-server-status.ts";
+import { setResolveFleetPresence } from "./platform/ports/fleet-presence.ts";
+import { loadServerStatusRecords } from "./client/servers/update-status.ts";
+import { resolveFleetPresence } from "./daemon/cell/server-status.ts";
+import {
+  fencePhaseFromCommandMetadata,
+  onFenceCommandFailed,
+  onFenceCommandSucceeded,
+  onPromoteSucceeded,
+  onRecoveryCommandFailed,
+  recoveryIdFromCommandMetadata,
+} from "./features/managed/ha-recovery.ts";
 import {
   type AnalyticsEngineDatasetLike,
   resolveCloudflareAnalyticsSqlConfig,
@@ -47,9 +62,9 @@ import {
   parseExecutionLogRetentionDays,
   type R2BucketLike,
   resolveExecutionLogStore,
-} from "./lib/execution-logs/store-selection.ts";
-import { setExecutionLogSealSink } from "./lib/execution-logs/seal-on-terminal.ts";
-import type { ExecutionLogStore } from "./lib/execution-logs/types.ts";
+} from "./features/execution-logs/store-selection.ts";
+import { setExecutionLogSealSink } from "./features/execution-logs/seal-on-terminal.ts";
+import type { ExecutionLogStore } from "./features/execution-logs/types.ts";
 import {
   closeWorkersRequestDb,
   openWorkersRequestDb,
@@ -66,14 +81,14 @@ import {
   warnIfGithubWebhookRateLimiterMissing,
   warnIfGitlabWebhookRateLimiterMissing,
   warnIfStripeWebhookRateLimiterMissing,
-} from "./workers-bindings.ts";
+} from "./platform/workers/workers-bindings.ts";
 import {
   type createWorkersDb,
   type Db,
   endDbConnection,
   isConnectionClosedError,
-} from "./db.ts";
-import { compatLogWarn } from "./log-compat.ts";
+} from "./db/connection.ts";
+import { compatLogWarn } from "./lib/log-compat.ts";
 import type { AuthRateLimiter } from "./client/authn/auth-rate-limit.ts";
 import { OTP_VERIFIER_SECRET_PURPOSE } from "./client/authn/email-otp.ts";
 import { WEBAUTHN_CHALLENGE_PURPOSE } from "./client/authn/passkeys.ts";
@@ -183,6 +198,17 @@ function createLazyWorkersEmailQueue(
 }
 
 async function initWorkerApp(env: CloudflareBindings) {
+  setRevokeBoundDaemonKey(revokeDaemonKey)
+  setManagedHaRecoveryHooks({
+    fencePhaseFromCommandMetadata,
+    recoveryIdFromCommandMetadata,
+    onFenceCommandSucceeded,
+    onFenceCommandFailed,
+    onPromoteSucceeded,
+    onRecoveryCommandFailed,
+  })
+  setLoadServerStatusRecords(loadServerStatusRecords)
+  setResolveFleetPresence(resolveFleetPresence)
   const secretsConfig = parseSecretsFromEnv(
     {
       TURBOPANEL_SECRET: env.TURBOPANEL_SECRET,

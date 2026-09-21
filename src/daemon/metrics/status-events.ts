@@ -11,7 +11,7 @@
  * existing `cachedServerMetricsStore` precedent in `workers.ts`.
  */
 
-import { stripLogInjection } from '../../log-compat.ts'
+import { stripLogInjection } from '../../lib/log-compat.ts'
 import type { ServerMetricsStore, ServerStatusEvent } from './types.ts'
 import { rateLimitedMetricsLog } from './validation.ts'
 

@@ -1,9 +1,9 @@
 import { eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
 import {
   createEmailOtp,
   OTP_VERIFIER_SECRET_PURPOSE,
@@ -21,7 +21,7 @@ import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
-} from './secrets.ts'
+} from '../../lib/secrets/secrets.ts'
 import { createAuthRateLimiter } from './auth-rate-limit.ts'
 import { registerClientRoutes } from '../routes.ts'
 import {
@@ -33,15 +33,15 @@ import {
   teammate,
   user,
   workspace,
-} from '../../lib/db/schema.ts'
-import { CLIENT_API_PREFIX } from '../../surfaces.ts'
-import type { EmailJob, EmailQueue } from '../../lib/email/types.ts'
-import { createNoopQueue, isNoopEmailQueue } from '../../lib/email/noop-queue.ts'
-import { resolveWorkersEmailQueue } from '../../lib/email/mailgun/workers-queue.ts'
+} from '../../db/schema.ts'
+import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
+import type { EmailJob, EmailQueue } from '../../features/email/types.ts'
+import { createNoopQueue, isNoopEmailQueue } from '../../features/email/noop-queue.ts'
+import { resolveWorkersEmailQueue } from '../../features/email/mailgun/workers-queue.ts'
 import {
   SYSTEM_EMAIL_DB_KEY,
   updateEmailSettings,
-} from '../../lib/settings/email-settings.ts'
+} from '../../features/settings/email-settings.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 /** Generous limiter so multi-case Workers suites do not trip the shared IP bucket. */

@@ -1,8 +1,8 @@
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { fetchContainerLogTail, parseLogsTailQuery } from './logs.ts'
 import { createServerPresenceDb } from '../managed/server-status-test-db.ts'
 

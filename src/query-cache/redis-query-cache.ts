@@ -1,7 +1,7 @@
 /** Deno-only — imports the Redis client type; not imported by the Workers bundle (only `src/deno.ts` may import it). */
 import type { RedisCellClient } from '../daemon/cell/redis/client.ts'
-import type { Db } from '../db.ts'
-import { logWarn } from '../logger.ts'
+import type { Db } from '../db/connection.ts'
+import { logWarn } from '../lib/logger.ts'
 import { isApprovedReadModelId } from './approved-read-models.ts'
 import {
   type QueryCache,

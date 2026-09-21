@@ -8,14 +8,14 @@ import {
   encryptSecret,
   encryptSecretForDaemon,
   ENVELOPE_PREFIX_DAEMON,
-} from "../client/authn/data-encryption.ts";
+} from "../lib/secrets/data-encryption.ts";
 import {
   deriveEncryptionSecretsConfig,
   parseSecretsEnv,
   type SecretsConfig,
-} from "../client/authn/secrets.ts";
-import type { Db } from "../db.ts";
-import type { ServerDaemonState } from "./authn/daemon-state.ts";
+} from "../lib/secrets/secrets.ts";
+import type { Db } from "../db/connection.ts";
+import type { ServerDaemonState } from "../features/servers/daemon-state.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
 import {
   buildDeploymentSecretsRehydrate,

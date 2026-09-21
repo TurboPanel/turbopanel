@@ -2,11 +2,11 @@ import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
-import { account, user } from '../../lib/db/schema.ts'
-import { CLIENT_API_PREFIX } from '../../surfaces.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import { account, user } from '../../db/schema.ts'
+import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createAuthRateLimiter,
@@ -25,8 +25,8 @@ import {
 import { createEmailOtp } from './email-otp.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './crypto.ts'
 import { registerAuthRoutes } from './http.ts'
-import { hashPassword } from './password.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
+import { hashPassword } from '../../lib/secrets/password.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import {
   createSession,
   getSession,

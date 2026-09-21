@@ -5,8 +5,8 @@
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
 import {
   environment,
   hosting,
@@ -14,7 +14,7 @@ import {
   project,
   repository,
   server,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -25,7 +25,7 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
-import { deriveSecretsConfig } from "../authn/secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerEnvironmentRoutes } from "./routes.ts";

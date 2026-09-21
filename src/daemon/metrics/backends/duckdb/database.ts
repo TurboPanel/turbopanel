@@ -10,7 +10,7 @@
  */
 
 import { DuckDBInstance } from '@duckdb/node-api'
-import { resolveMetricsDir } from '../../../../server-paths.ts'
+import { resolveMetricsDir } from '../../../../platform/deno/server-paths.ts'
 import { buildSchemaStatements, DUCKDB_SCHEMA_MARKER_VERSION } from './schema.ts'
 
 /** One result row as plain JS values (via `getRowObjectsJS`). */

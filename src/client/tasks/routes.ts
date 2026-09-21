@@ -12,17 +12,17 @@
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db.ts'
+import { getDb, type Db } from '../../db/connection.ts'
 import {
   TASK_NAME_IN_USE_ERROR,
   isTaskDisplayNameTaken,
 } from '../display-name-uniqueness.ts'
-import { service } from '../../lib/db/schema.ts'
+import { service } from '../../db/schema.ts'
 import {
   countTasksForService,
   createTask,
@@ -32,7 +32,7 @@ import {
   listTasksForServices,
   updateTask,
   type TaskRecord,
-} from '../../lib/db/task-records.ts'
+} from '../../features/schedule/task-records.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,

@@ -6,16 +6,13 @@
  * this from the Workers graph.
  */
 
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 import { listConnectedServerIdsFromProjection } from '../daemon/cell/postgres-projection.ts'
-import type { CommandQueue } from '../lib/commands/queue.ts'
+import type { CommandQueue } from '../features/commands/queue.ts'
 import { buildCommandEnqueueEnvelope } from '../client/servers/command-dispatch-helpers.ts'
-import { createCommandRecord } from '../lib/db/command-records.ts'
+import { createCommandRecord } from '../features/commands/command-records.ts'
 import { parseCertificatePem } from '../lib/tls/parse.ts'
-import { logWarn } from '../logger.ts'
-import {
-  resolveInstanceTlsCaServePath,
-} from '../server-paths.ts'
+import { logWarn } from '../lib/logger.ts'
 
 const TLS_TRUST_TTL_MS = 300_000
 
@@ -39,15 +36,13 @@ export type EnqueuePlatformCaTrustReconcileParams = Readonly<{
   ) => Promise<{ id: string; queuedAt: string | null; createdAt: string }>
 }>
 
-async function readPlatformCaBundle(): Promise<string> {
-  const path = resolveInstanceTlsCaServePath()
-  return await Deno.readTextFile(path)
-}
-
 export async function enqueuePlatformCaTrustReconcile(
   params: EnqueuePlatformCaTrustReconcileParams,
 ): Promise<{ enqueued: number }> {
-  const bundlePem = await (params.readBundle ?? readPlatformCaBundle)()
+  if (!params.readBundle) {
+    throw new Error('readBundle is required')
+  }
+  const bundlePem = await params.readBundle()
   const parsed = await parseCertificatePem(bundlePem)
   const fingerprint = parsed.fingerprintSha256
   const serverIds = await (params.listServerIds ??
@@ -82,6 +77,7 @@ export async function enqueuePlatformCaTrustReconcile(
 export async function enqueuePlatformCaTrustReconcileBestEffort(
   params: EnqueuePlatformCaTrustReconcileParams,
 ): Promise<void> {
+  if (!params.readBundle) return
   try {
     const { enqueued } = await enqueuePlatformCaTrustReconcile(params)
     if (enqueued === 0) {

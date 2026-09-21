@@ -2,18 +2,18 @@ import amqplib from 'amqplib'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_QUEUE,
-} from '../src/lib/email/smtp/amqp-topology.ts'
+} from '../src/features/email/smtp/amqp-topology.ts'
 import {
   resolveEmailSettings,
   type EmailProvider,
   type ResolvedEmailSettings,
-} from '../src/lib/settings/email-settings.ts'
+} from '../src/features/settings/email-settings.ts'
 import {
   deriveEncryptionSecretsConfig,
   parseSecretsFromEnv,
-} from '../src/client/authn/secrets.ts'
-import type { DerivedSecretsConfig } from '../src/client/authn/secrets.ts'
-import type { MailerSender } from '../src/lib/email/sender-types.ts'
+} from '../src/lib/secrets/secrets.ts'
+import type { DerivedSecretsConfig } from '../src/lib/secrets/secrets.ts'
+import type { MailerSender } from '../src/features/email/sender-types.ts'
 import { createMailerDb } from './db.ts'
 import { createMailerMailgunSender } from './mailgun-sender.ts'
 import { createMailerMailpitSender } from './mailpit-sender.ts'
@@ -21,8 +21,8 @@ import { parseEmailJob } from './parse-email-job.ts'
 import { RateLimiter } from './rate-limiter.ts'
 import { redactUrlCredentials } from './redact-url.ts'
 import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
-import type { EmailJob } from '../src/lib/email/types.ts'
-import { logError, logInfo, logWarn } from '../src/logger.ts'
+import type { EmailJob } from '../src/features/email/types.ts'
+import { logError, logInfo, logWarn } from '../src/lib/logger.ts'
 
 const DEFAULT_AMQP_URL = 'amqp://guest:guest@localhost:19828'
 const QUEUE = EMAIL_AMQP_QUEUE

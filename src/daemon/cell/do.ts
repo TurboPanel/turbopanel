@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 import type { DaemonJwtKeyring } from "../authn/daemon-jwt-keyring.ts";
 import { deriveDaemonJwtKeyring } from "../authn/daemon-jwt-keyring.ts";
-import { parseSecretsFromEnv } from "../../client/authn/secrets.ts";
+import { parseSecretsFromEnv } from "../../lib/secrets/secrets.ts";
 import {
   createWorkersDb,
   type Db,
@@ -9,25 +9,25 @@ import {
   endDbConnection,
   raceWithTimeout,
   runWithDbTimeout,
-} from "../../db.ts";
+} from "../../db/connection.ts";
 import { evaluateSocketHealth } from "./socket-health.ts";
-import type { ServerGeo } from "../../lib/geo/server-geo.ts";
-import { parseServerGeo } from "../../lib/geo/server-geo.ts";
+import type { ServerGeo } from "../../features/geo/server-geo.ts";
+import { parseServerGeo } from "../../features/geo/server-geo.ts";
 import {
   resourcesFromDaemonPresence,
   type ServerDockerMetadata,
   type ServerHostResources,
   type ServerOsMetadata,
   type ServerTimeSync,
-} from "../../lib/db/server-metadata.ts";
-import { TERMINAL_UPDATE_RETENTION_MS } from "../../lib/update/constants.ts";
-import { handleManagedHaEvent } from "../../client/managed/ha-event.ts";
+} from "../../features/servers/server-metadata.ts";
+import { TERMINAL_UPDATE_RETENTION_MS } from "../../features/update/constants.ts";
+import { handleManagedHaEvent } from "../../features/managed/ha-event.ts";
 import { handleAcmeIssuanceEvent } from "../../client/tls/acme-issuance-event.ts";
 import { enqueueLatestRecordedCapabilityPlan } from "../../client/servers/capability-plan-push.ts";
-import { recordTopologyGeneration } from "../../client/servers/server-topology-records.ts";
-import { touchServerMetadata } from "../../server-registry.ts";
+import { recordTopologyGeneration } from "../../features/servers/server-topology-records.ts";
+import { touchServerMetadata } from "../../features/servers/server-registry.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
-import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
+import { getServerDaemonStateByServerId } from "../../features/servers/server-identity-db.ts";
 import { inboundHeartbeatProjectionDue } from "./postgres-projection.ts";
 import { mergeSnapshotPresence } from "./snapshot-merge.ts";
 import {
@@ -51,14 +51,14 @@ import type {
   DaemonCellSnapshot,
   PendingRequestRecord,
   PendingRequestStatus,
-} from "./contracts.ts";
+} from "../../contracts/cell.ts";
 import type {
   DaemonBuildInfo,
   DaemonInboundEnvelope,
   DaemonMessage,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
-} from "./protocol.ts";
+} from "../../contracts/cell-protocol.ts";
 import { deriveInboundOutcome } from "./inbound-outcome.ts";
 import {
   DAEMON_CELL_PING,
@@ -69,7 +69,7 @@ import {
   validateDaemonInboundEnvelope,
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
-} from "./protocol.ts";
+} from "../../contracts/cell-protocol.ts";
 import { classifyDaemonCellSqlStorageOp } from "./sql-storage-classify.ts";
 export { classifyDaemonCellSqlStorageOp };
 
@@ -2349,15 +2349,44 @@ export class DaemonCellObject {
     return serverId;
   }
 
-  async #getSnapshot(serverId: string | null): Promise<DaemonCellSnapshot> {
-    if (!serverId) {
-      return {
-        serverId: "",
-        version: 0,
-        updatedAt: nowIso(),
-        connected: false,
-      };
+  #disconnectedSnapshot(serverId: string): DaemonCellSnapshot {
+    return {
+      serverId,
+      version: 0,
+      updatedAt: nowIso(),
+      connected: false,
+    };
+  }
+
+  #daemonBuildFromProjection(
+    projectionDaemonBuild: {
+      commit?: string;
+      buildId?: string;
+      builtAt?: string;
+      channel?: string;
+      version?: string;
+    } | undefined,
+  ): DaemonCellSnapshot["daemonBuild"] {
+    if (!projectionDaemonBuild?.commit || !projectionDaemonBuild.buildId) {
+      return this.#lastKnownDaemonBuild;
     }
+    return {
+      commit: projectionDaemonBuild.commit,
+      buildId: projectionDaemonBuild.buildId,
+      ...(projectionDaemonBuild.builtAt
+        ? { builtAt: projectionDaemonBuild.builtAt }
+        : {}),
+      ...(projectionDaemonBuild.channel
+        ? { channel: projectionDaemonBuild.channel }
+        : {}),
+      ...(projectionDaemonBuild.version
+        ? { version: projectionDaemonBuild.version }
+        : {}),
+    };
+  }
+
+  async #getSnapshot(serverId: string | null): Promise<DaemonCellSnapshot> {
+    if (!serverId) return this.#disconnectedSnapshot("");
 
     // Read-only: never insert `cell` here. Reading a missing or purged
     // snapshot returns a synthetic disconnected snapshot without recreating the
@@ -2368,64 +2397,42 @@ export class DaemonCellObject {
     );
     const base = row
       ? snapshotFromMetaRow(serverId, row, this.#runtimeConnected)
-      : {
-        serverId,
-        version: 0,
-        updatedAt: nowIso(),
-        connected: false,
-      };
+      : this.#disconnectedSnapshot(serverId);
 
     const daemonState = await this.#withProjectionDbResult(
       "snapshot",
       serverId,
       (db) => getServerDaemonStateByServerId(db, serverId),
     );
-    if (daemonState) {
-      const status = daemonState.status;
-      const projectionDaemonBuild = daemonState.projection?.daemonBuild;
-      let daemonBuild = this.#lastKnownDaemonBuild;
-      if (projectionDaemonBuild?.commit && projectionDaemonBuild.buildId) {
-        daemonBuild = {
-          commit: projectionDaemonBuild.commit,
-          buildId: projectionDaemonBuild.buildId,
-          ...(projectionDaemonBuild.builtAt
-            ? { builtAt: projectionDaemonBuild.builtAt }
-            : {}),
-          ...(projectionDaemonBuild.channel
-            ? { channel: projectionDaemonBuild.channel }
-            : {}),
-          ...(projectionDaemonBuild.version
-            ? { version: projectionDaemonBuild.version }
-            : {}),
-        };
-      }
-      const runtime = this.#buildRuntimeSnapshot(serverId);
-      const projected: DaemonCellSnapshot = {
+    const runtime = this.#buildRuntimeSnapshot(serverId);
+    if (!daemonState) {
+      return {
         ...base,
-        connected: status?.connected ?? base.connected,
-        connectedAt: status?.connected
-          ? (status.statusChangedAt ?? undefined)
-          : undefined,
+        connected: runtime.connected,
+        connectedAt: runtime.connectedAt,
         lastInboundAt: runtime.lastInboundAt,
         lastSeenAt: runtime.lastSeenAt,
-        daemonBuild,
-        remoteAddress: base.remoteAddress ??
-          daemonState.projection?.remoteAddress,
+        daemonBuild: runtime.daemonBuild,
+        remoteAddress: base.remoteAddress ?? runtime.remoteAddress,
       };
-      return mergeSnapshotPresence(projected, runtime);
     }
 
-    // Fall back to in-memory presence + cell-row identity fields.
-    const runtime = this.#buildRuntimeSnapshot(serverId);
-    return {
+    const status = daemonState.status;
+    const projected: DaemonCellSnapshot = {
       ...base,
-      connected: runtime.connected,
-      connectedAt: runtime.connectedAt,
+      connected: status?.connected ?? base.connected,
       lastInboundAt: runtime.lastInboundAt,
       lastSeenAt: runtime.lastSeenAt,
-      daemonBuild: runtime.daemonBuild,
-      remoteAddress: base.remoteAddress ?? runtime.remoteAddress,
+      daemonBuild: this.#daemonBuildFromProjection(
+        daemonState.projection?.daemonBuild,
+      ),
+      remoteAddress: base.remoteAddress ??
+        daemonState.projection?.remoteAddress,
     };
+    if (status?.connected) {
+      projected.connectedAt = status.statusChangedAt ?? undefined;
+    }
+    return mergeSnapshotPresence(projected, runtime);
   }
 
   async #putSnapshot(

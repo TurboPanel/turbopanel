@@ -4,18 +4,18 @@
 
 import { assertEquals } from "@std/assert";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
 import {
   encryptSecret,
   encryptSecretForDaemon,
   isDaemonSealedEnvelope,
-} from "../authn/data-encryption.ts";
+} from "../../lib/secrets/data-encryption.ts";
 import {
   deriveEncryptionSecretsConfig,
-} from "../authn/secrets.ts";
+} from "../../lib/secrets/secrets.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
-import type { EnvironmentDeployPrincipalMaterial } from "../../lib/commands/schemas.ts";
+import type { EnvironmentDeployPrincipalMaterial } from "../../contracts/commands/schemas.ts";
 import {
   commitSubject,
   createReleaseIdAllocator,

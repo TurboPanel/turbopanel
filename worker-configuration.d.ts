@@ -95,7 +95,7 @@ interface CloudflareBindings {
   /**
    * Stripe secret key (`sk_…`). A **secret** (`wrangler secret put`), never a
    * `vars` entry. Its presence is the billing feature gate —
-   * `src/lib/billing/config.ts`.
+   * `src/features/billing/config.ts`.
    */
   TURBOPANEL_STRIPE_SECRET_KEY?: string
   /** Stripe endpoint signing secret (`whsec_…`) for `/webhook/stripe`. Secret, never a var. */

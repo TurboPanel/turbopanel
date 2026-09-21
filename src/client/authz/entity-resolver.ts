@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { organization } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { organization } from '../../db/schema.ts'
 import { ENTITY_TYPES, isGrantEntityType } from './catalog.ts'
 import { resolveEntityOrganizationId, verifyEntityExists } from './create-access-grant.ts'
 

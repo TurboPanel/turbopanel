@@ -4,12 +4,12 @@
 import { env } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { parseSecretsFromEnv } from '../client/authn/secrets.ts'
+import { parseSecretsFromEnv } from '../lib/secrets/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
 import { setDaemonCellProjectionDbFactoryForTests } from './cell/do.ts'
-import { createWorkersDb, endDbConnection } from '../db.ts'
-import { organization, server, tls } from '../lib/db/schema.ts'
+import { createWorkersDb, endDbConnection } from '../db/connection.ts'
+import { organization, server, tls } from '../db/schema.ts'
 
 const CELL_HEADER = 'X-Turbopanel-Cell-Server-Id'
 
@@ -18,7 +18,7 @@ const CELL_HEADER = 'X-Turbopanel-Cell-Server-Id'
 // for — the daemon -> control-plane WebSocket dispatch for
 // `acme-issuance-event` — exercised end to end against a REAL Postgres via
 // the real `env.HYPERDRIVE` binding, no mock `Db` anywhere in this test.
-// Run alongside `durable-object.test.ts`'s 80+ mocked-Db tests in the same
+// Run alongside `durable-object.workers.test.ts`'s 80+ mocked-Db tests in the same
 // file, this test was observed to be flaky: the DO's own real-Hyperdrive
 // connect projection and this test's own real-Hyperdrive dispatch query
 // intermittently failed to see each other's writes/bindings under that

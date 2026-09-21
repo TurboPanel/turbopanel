@@ -101,7 +101,7 @@ jobs:
           fi
 
       - name: Require the tag to match deno.json's version
-        # The number the binary reports (src/version.ts reads deno.json) and
+        # The number the binary reports (src/app/version.ts reads deno.json) and
         # the number on the release must be the same number — a tag cut
         # before the bump is a release that lies about itself. Dry runs and
         # canary builds skip this.
@@ -178,15 +178,15 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Stamp the build identity
-        # The version already comes from deno.json (src/version.ts); only the
-        # commit is empty in source (BUILD_INFO in src/build-info.ts) — it is
+        # The version already comes from deno.json (src/app/version.ts); only the
+        # commit is empty in source (BUILD_INFO in src/app/build-info.ts) — it is
         # what /api/health reports as the Corresponding Source revision when
         # no TURBOPANEL_REVISION env is set. Transient in this checkout only.
         run: |
           set -eu
-          grep -q "commit: ''," src/build-info.ts
-          sed -i "s/commit: '',/commit: '${TP_COMMIT}',/" src/build-info.ts
-          grep -q "commit: '${TP_COMMIT}'," src/build-info.ts
+          grep -q "commit: ''," src/app/build-info.ts
+          sed -i "s/commit: '',/commit: '${TP_COMMIT}',/" src/app/build-info.ts
+          grep -q "commit: '${TP_COMMIT}'," src/app/build-info.ts
 
       - name: Compile the instance
         run: deno task compile

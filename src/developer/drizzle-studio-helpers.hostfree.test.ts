@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { DRIZZLE_STUDIO_PORT } from '../drizzle-studio-probe.ts'
+import { DRIZZLE_STUDIO_PORT } from './drizzle-studio-probe.ts'
 import {
   childErrorDetail,
   drizzleKitBinPath,

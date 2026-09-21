@@ -76,7 +76,7 @@ async function walkValueImportGraph(entry: URL): Promise<string[]> {
     }
     for (const specifier of specifiers) {
       if (!specifier.startsWith(".")) continue;
-      // A JSON module (src/version.ts imports ../deno.json for the version)
+      // A JSON module (src/app/version.ts imports ../deno.json for the version)
       // is data: it imports nothing and its text is not code.
       if (specifier.endsWith(".json")) continue;
       queue.push(new URL(specifier, href).href);

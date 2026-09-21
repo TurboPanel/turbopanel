@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
+import type { Db } from "../../db/connection.ts";
+import type { DaemonCellRegistry } from "../../contracts/cell.ts";
 import { resolveFleetPresence } from "../../daemon/cell/fleet-presence.ts";
 import {
   account,
@@ -13,30 +13,30 @@ import {
   teammate,
   user,
   workspace,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import {
   createLicense,
   generateLicenseToken,
   invalidateLicense,
-} from "./license.ts";
-import { syncSelfHostedGrant } from "../../lib/tiers/self-hosted-grant-records.ts";
-import { clearServerDaemonState } from "../../daemon/authn/server-identity-db.ts";
-import { hashPassword } from "./password.ts";
+} from "../../features/licenses/license.ts";
+import { syncSelfHostedGrant } from "../../features/tiers/self-hosted-grant-records.ts";
+import { clearServerDaemonState } from "../../features/servers/server-identity-db.ts";
+import { hashPassword } from "../../lib/secrets/password.ts";
 import { SUPERADMIN_ROLE } from "./session-store.ts";
-import { compatLogInfo, compatLogWarn } from "../../log-compat.ts";
-import { resolveEmailActivePresence } from "../../lib/settings/email-settings.ts";
-import { resolveConfiguredProviders } from "../../lib/settings/auth-provider-settings.ts";
+import { compatLogInfo, compatLogWarn } from "../../lib/log-compat.ts";
+import { resolveEmailActivePresence } from "../../features/settings/email-settings.ts";
+import { resolveConfiguredProviders } from "../../features/settings/auth-provider-settings.ts";
 import { deriveMachineKey } from "../../lib/machine-key.ts";
 import {
   ensureSelfHostSystemHierarchy,
   ensureSystemWorkspace,
   findSystemEnvironmentForServer,
   SYSTEM_SELF_HOST_COMPONENT,
-} from "../system/hierarchy.ts";
-import { enqueueSystemReconcileIfConnected } from "../system/reconcile.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
-import { isNoopCommandQueue } from "../../lib/commands/noop-command-queue.ts";
-import { WORKSPACE_KIND_USER } from "../../lib/db/workspace-kind.ts";
+} from "../../features/system/hierarchy.ts";
+import { enqueueSystemReconcileIfConnected } from "../../features/system/reconcile.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
+import { isNoopCommandQueue } from "../../features/commands/noop-command-queue.ts";
+import { WORKSPACE_KIND_USER } from "../../db/workspace-kind.ts";
 import {
   DISPLAY_NAME_MAX_LENGTH,
   displayNameCodePointLength,
@@ -85,7 +85,7 @@ export const IS_SIGNUP_ENABLED_CONFIG_KEY = "IS_SIGNUP_ENABLED";
  * transaction inserts this key, and any concurrent install transaction blocks on
  * that key until the first commits, then observes the conflict (no returned row)
  * and aborts. No schema migration is required — the row lives in the existing
- * `setting` table. See `src/lib/db/AGENTS.md` (Install sentinel invariant).
+ * `setting` table. See `src/db/AGENTS.md` (Install sentinel invariant).
  */
 export const INSTANCE_INSTALL_SENTINEL_KEY = "INSTANCE_INSTALL_SENTINEL";
 
@@ -1532,7 +1532,7 @@ export async function completeInstanceInstall(
   await clearColocatedDaemonIdentityFiles();
 
   // The install wizard's license is the first the new organization holds:
-  // entitle it (`src/lib/tiers/self-hosted-grant.ts`) before the co-located
+  // entitle it (`src/features/tiers/self-hosted-grant.ts`) before the co-located
   // daemon enrolls against it.
   await syncSelfHostedGrant(db, result.organizationId, { allowGrow: true });
 

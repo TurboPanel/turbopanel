@@ -1,5 +1,5 @@
 import type { Context } from 'hono'
-import type { CidrCollision } from '../../lib/net/cidr-collisions.ts'
+import type { CidrCollision } from '../../features/net/cidr-collisions.ts'
 
 export function assertNetworkKindScope(
   c: Context,
@@ -56,7 +56,7 @@ export function assertDatacenterCidr(
 }
 
 /**
- * Map a collision from `src/lib/net/cidr-collisions.ts` onto the wire: **409**
+ * Map a collision from `src/features/net/cidr-collisions.ts` onto the wire: **409**
  * with the collision code as `error`, plus the candidate and the range it hit
  * so an operator can see *what* is in the way, not just that something is.
  */

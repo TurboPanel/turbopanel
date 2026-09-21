@@ -6,16 +6,16 @@
  * No separate draft/runtime status column.
  */
 import { and, eq } from 'drizzle-orm'
-import { encryptSecret } from '../authn/data-encryption.ts'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
-import type { Db } from '../../db.ts'
-import { environment, organization, project, variable } from '../../lib/db/schema.ts'
-import { emptyComposeDocument } from '../../lib/compose/index.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import type { Db } from '../../db/connection.ts'
+import { environment, organization, project, variable } from '../../db/schema.ts'
+import { emptyComposeDocument } from '../../features/compose/index.ts'
 import {
   DEFAULT_ENVIRONMENT_NAME,
   parseOrganizationOptions,
   resolveDefaultEnvironmentName,
-} from '../../lib/organization-options.ts'
+} from '../../features/organizations/organization-options.ts'
 import {
   getCatalogEntry,
   isManagedEngineCatalogEntry,

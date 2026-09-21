@@ -1,13 +1,13 @@
 import { assertEquals, assertExists, assertRejects, assertThrows } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { buildMetricsSample } from '../../contract.ts'
+import { buildMetricsSample } from '../../../../contracts/metrics-contract.ts'
 import type {
   DiagnosticsSample,
   DatabaseProxySample,
   IngressSourceSample,
   MetricEvent,
   NetworkDeviceSample,
-} from '../../contract.ts'
+} from '../../../../contracts/metrics-contract.ts'
 import type {
   AuthenticatedMetricsSample,
   HostSeriesResult,

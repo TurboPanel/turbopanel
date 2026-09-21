@@ -23,18 +23,18 @@
  */
 
 import type { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { getDb } from '../../db.ts'
+import { getDb } from '../../db/connection.ts'
 import { assertCanReadOr403, parseJsonBody } from '../shared.ts'
 import {
   isReleaseMaterializedEverywhere,
   listServiceReleases,
   SERVICE_RELEASES_MAX_LIMIT,
   type ServiceReleaseRecord,
-} from '../../lib/db/releases.ts'
-import { listEnvironmentDeploymentTargets } from '../../lib/db/deployment-records.ts'
+} from '../../features/git/releases.ts'
+import { listEnvironmentDeploymentTargets } from '../../features/deploy/deployment-records.ts'
 import type { DeployRollbackReleasePin } from './deploy-sources.ts'
 import {
   assertDeployDispatchInfrastructure,

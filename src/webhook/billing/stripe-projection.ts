@@ -31,32 +31,32 @@
  * names its product, and `tier.provider_product_id` names the tier.
  */
 
-import type { Db } from "../../db.ts";
-import { revokeDaemonKey } from "../../daemon/authn/server-identity-db.ts";
-import { logInfo, logWarn } from "../../logger.ts";
-import { StripeApiError } from "../../lib/billing/errors.ts";
-import type { StripeClient } from "../../lib/billing/client.ts";
+import type { Db } from "../../db/connection.ts";
+import { revokeDaemonKey } from "../../features/servers/server-identity-db.ts";
+import { logInfo, logWarn } from "../../lib/logger.ts";
+import { StripeApiError } from "../../features/billing/errors.ts";
+import type { StripeClient } from "../../features/billing/client.ts";
 import {
   completeStripeProjection,
   listPendingStripeProjections,
   STRIPE_PROJECTION_RETRY_LIMIT,
-} from "../../lib/db/webhook-delivery-records.ts";
-import { resolvePayerSubject } from "../../lib/billing/customer-subject.ts";
-import { clearPendingCheckout } from "../../lib/billing/pending-checkout.ts";
-import type { BillingQuantityLock } from "../../lib/billing/quantity-lock.ts";
+} from "../../features/webhook-delivery/webhook-delivery-records.ts";
+import { resolvePayerSubject } from "../../features/billing/customer-subject.ts";
+import { clearPendingCheckout } from "../../features/billing/pending-checkout.ts";
+import type { BillingQuantityLock } from "../../features/billing/quantity-lock.ts";
 import {
   type EntitlementSyncOutcome,
   syncEntitlementsForOrganization,
-} from "../../lib/billing/entitlements.ts";
+} from "../../features/billing/entitlements.ts";
 import {
   type ProviderSubscriptionItem,
   replaceSubscriptionItems,
   upsertPayer,
   upsertSubscriptionFromProvider,
-} from "../../lib/db/billing-records.ts";
-import { mapProviderProductsToTierIds } from "../../lib/db/tier-records.ts";
-import { resolveBillingGateway } from "../../lib/billing/gateway.ts";
-import { cacheTierPrice } from "../../lib/billing/tier-prices.ts";
+} from "../../features/billing/billing-records.ts";
+import { mapProviderProductsToTierIds } from "../../features/tiers/tier-records.ts";
+import { resolveBillingGateway } from "../../features/billing/gateway.ts";
+import { cacheTierPrice } from "../../features/billing/tier-prices.ts";
 
 export const STRIPE_PROJECTION_LOG_SCOPE = "billing-webhook";
 

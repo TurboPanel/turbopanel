@@ -108,7 +108,7 @@ test('ensureDrizzleStudioInDev does not throw when Node.js cannot be resolved', 
   // Module-load may have already frozen DRIZZLE_STUDIO_PORT; only assert the
   // resolve-failure path when that port is free (so we do not short-circuit).
   const { probeDrizzleStudioPort, DRIZZLE_STUDIO_PORT } = await import(
-    '../drizzle-studio-probe.ts'
+    './drizzle-studio-probe.ts'
   )
   if (await probeDrizzleStudioPort('127.0.0.1', DRIZZLE_STUDIO_PORT)) {
     console.warn(

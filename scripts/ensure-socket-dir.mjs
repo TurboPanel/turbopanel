@@ -16,9 +16,17 @@ import { execSync } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
 import { access, stat } from 'node:fs/promises'
 
+function stripTrailingSlash(value) {
+  return value.endsWith('/') ? value.slice(0, -1) : value
+}
+
 function resolveSocketDir() {
-  const runDir = process.env.TURBOPANEL_RUN_DIR?.replace(/\/$/, '')
-  const socketDir = process.env.TURBOPANEL_SOCKET_DIR?.replace(/\/$/, '')
+  const runDir = process.env.TURBOPANEL_RUN_DIR
+    ? stripTrailingSlash(process.env.TURBOPANEL_RUN_DIR)
+    : undefined
+  const socketDir = process.env.TURBOPANEL_SOCKET_DIR
+    ? stripTrailingSlash(process.env.TURBOPANEL_SOCKET_DIR)
+    : undefined
   return runDir || socketDir || '/run/turbopanel'
 }
 

@@ -13,14 +13,14 @@
  * 10M data points/month included, then $0.25/M. 20 doubles, 20 blobs, 1 index
  * per point; 250 points max per Worker invocation.
  */
-import { buildMetricsSample } from "../src/daemon/metrics/contract.ts";
+import { buildMetricsSample } from "../src/contracts/metrics-contract.ts";
 import {
   platformDefaultMetricsCapabilityPlan,
   truncateSampleToCapabilityPlan,
-} from "../src/daemon/metrics/capability-plan.ts";
+} from "../src/contracts/capability-plan.ts";
 import { buildMetricsDataPoints } from "../src/daemon/metrics/backends/cloudflare/field-map.ts";
 import { representativeMachineFixtures } from "../src/daemon/metrics/testing/representative-machines.ts";
-import type { MetricsSample } from "../src/daemon/metrics/contract.ts";
+import type { MetricsSample } from "../src/contracts/metrics-contract.ts";
 import type { SlotMapping } from "../src/daemon/metrics/types.ts";
 
 const SERVER_ID = "11111111-2222-4333-8444-555555555555";

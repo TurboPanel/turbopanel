@@ -1,7 +1,7 @@
 import { assert, assertEquals } from '@std/assert'
-import type { Db } from '../../db.ts'
-import type { ServerGeo } from '../../lib/geo/server-geo.ts'
-import type { ServerMetadata } from '../../lib/db/server-metadata.ts'
+import type { Db } from '../../db/connection.ts'
+import type { ServerGeo } from '../../features/geo/server-geo.ts'
+import type { ServerMetadata } from '../../features/servers/server-metadata.ts'
 import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
@@ -9,9 +9,9 @@ import {
   type ServerDaemonProjection,
   type ServerDaemonState,
   type ServerDaemonStatus,
-} from '../authn/daemon-state.ts'
-import type { DaemonCellRegistry } from './contracts.ts'
-import { DAEMON_OFFLINE_SWEEP_MS } from './protocol.ts'
+} from '../../features/servers/daemon-state.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import { DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
 import {
   onDaemonConnected,
   onDaemonConnectedFromEvidence,
@@ -29,9 +29,9 @@ import { resolveFleetPresence } from './fleet-presence.ts'
 import {
   resetUpdateManifestCacheForTests,
   seedUpdateManifestCacheForTests,
-} from '../../lib/update/manifest.ts'
+} from '../../features/update/manifest.ts'
 import type { ServerStatusEvent } from '../metrics/types.ts'
-import type { Alert } from '../../lib/alerts/alert-sender.ts'
+import type { Alert } from '../../features/alerts/alert-sender.ts'
 import {
   resetServerStatusEventSinkForTests,
   setServerStatusEventSink,

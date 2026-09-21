@@ -1,10 +1,10 @@
 import { assertEquals } from "@std/assert";
 import { eq, inArray } from "drizzle-orm";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
-import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
-import { createNoopCommandQueue } from "../../lib/commands/noop-command-queue.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
+import type { CommandEnvelope } from "../../features/commands/envelope.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
+import { createNoopCommandQueue } from "../../features/commands/noop-command-queue.ts";
 import {
   command,
   container,
@@ -14,8 +14,8 @@ import {
   server,
   service,
   workspace,
-} from "../../lib/db/schema.ts";
-import { ensureSystemHierarchy } from "./hierarchy.ts";
+} from "../../db/schema.ts";
+import { ensureSystemHierarchy } from "../../features/system/hierarchy.ts";
 import { systemComponentOperations } from "./operate.ts";
 
 const dbUrl = getDatabaseUrl();

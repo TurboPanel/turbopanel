@@ -16,24 +16,24 @@
 import { assertEquals, assertExists, assertThrows } from "@std/assert";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
-import type { Db } from "../../db.ts";
+import type { Db } from "../../db/connection.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
-} from "../../daemon/cell/contracts.ts";
-import type { BillingConfig } from "../../lib/billing/config.ts";
+} from "../../contracts/cell.ts";
+import type { BillingConfig } from "../../features/billing/config.ts";
 import {
   emptyLedger,
   newDeferredIntent,
   withIntent,
   writePendingChanges,
-} from "../../lib/billing/pending-changes.ts";
+} from "../../features/billing/pending-changes.ts";
 import {
   BILLING_QUANTITY_LEASE_MS,
   BILLING_QUANTITY_LOCK_NAME,
-} from "../../lib/billing/quantity-lock.ts";
+} from "../../features/billing/quantity-lock.ts";
 import {
   lease,
   license,
@@ -43,7 +43,7 @@ import {
   subscription,
   subscriptionItem,
   tier,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import {
   createMemoryDb,
   type MemoryDb,
@@ -60,7 +60,7 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
 import { COLOCATED_SERVER_DISPLAY_NAME } from "../authn/install-state.ts";
-import { deriveSecretsConfig } from "../authn/secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerLicenseRoutes } from "./routes.ts";
 

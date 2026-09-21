@@ -1,8 +1,8 @@
 import { and, eq, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
-import { getDb } from '../db.ts'
-import type { Db } from '../db.ts'
-import { grant, organization, team, teammate, user } from '../lib/db/schema.ts'
+import { getDb } from '../db/connection.ts'
+import type { Db } from '../db/connection.ts'
+import { grant, organization, team, teammate, user } from '../db/schema.ts'
 import { isAdminRole } from './authn/session-store.ts'
 import { can } from './authz/index.ts'
 

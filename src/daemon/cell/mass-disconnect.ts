@@ -30,15 +30,7 @@ export function isMassDisconnect(
     staleCount / connectedBefore >= MASS_DISCONNECT_RATIO;
 }
 
-/** The one-line aggregate an operator greps for and a pager rule keys on. */
-export function massDisconnectText(
-  staleCount: number,
-  connectedBefore: number,
-): string {
-  return `Mass disconnect: ${staleCount} of ${connectedBefore} connected servers went offline in one sweep — suspect a shared cause (daemon release, ingress, or cell outage) rather than ${staleCount} unrelated hosts`;
-}
-
-/** The per-host line. */
-export function serverOfflineText(serverId: string): string {
-  return `Server ${serverId} stopped answering and has been marked offline`;
-}
+export {
+  massDisconnectText,
+  serverOfflineText,
+} from '../../features/alerts/offline-copy.ts'

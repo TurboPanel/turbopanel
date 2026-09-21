@@ -36,7 +36,7 @@
  */
 
 import { eq, inArray } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   DEFAULT_HOSTING_PATH_PREFIX,
   hostingBindScopeOf,
@@ -49,23 +49,23 @@ import {
   type ComposeHostingExtensionEntry,
   type ComposeHostingTlsMode,
   type ComposeServiceKind,
-} from '../../lib/compose/index.ts'
-import { hosting, ip, service, tls } from '../../lib/db/schema.ts'
+} from '../../features/compose/index.ts'
+import { hosting, ip, service, tls } from '../../db/schema.ts'
 import {
   isHostnameUniqueViolation,
   replaceHostingHostnames,
-} from '../../lib/db/hostname-records.ts'
+} from '../../features/servers/hostname-records.ts'
 import {
   HOSTING_COMPOSE_ROUTE_METADATA_KEY,
   isAdoptedComposeHosting,
   isComposeOwnedHosting,
   withHostingComposeOwner,
   withoutHostingComposeOwner,
-} from '../../lib/hosting-compose-owner.ts'
+} from '../../features/hostings/hosting-compose-owner.ts'
 import {
   parseHostingOptions,
   type HostingOptions,
-} from '../../lib/hosting-options.ts'
+} from '../../features/hostings/hosting-options.ts'
 
 /**
  * A ref named a row this organization does not have.
@@ -468,6 +468,42 @@ type RouteReconcileContext = {
  * Records the outcome (created / updated / adopted, plus the kept row) on
  * `ctx`, and returns the error that stops the whole reconcile — or `null`.
  */
+function matchOrAdoptExistingRow(
+  ctx: RouteReconcileContext,
+  serviceId: string,
+  route: DeclaredRoute,
+): { existing: ExistingRow | undefined; isAdoption: boolean } | ComposeHostingError {
+  const existing = ctx.existingByKey.get(existingRowKey(serviceId, route.route))
+  if (existing) return { existing, isAdoption: false }
+
+  const match = matchPanelAuthoredRow(ctx.panelAuthored, {
+    serviceId,
+    hostname: route.entry.hostname,
+    pathPrefix: hostingPathPrefixOf(route.entry),
+    excludeIds: ctx.keptIds,
+  })
+  if (match.kind === 'conflict') {
+    return {
+      kind: 'hosting_route_conflict',
+      composeServiceName: route.composeServiceName,
+      hostname: route.entry.hostname,
+      pathPrefix: hostingPathPrefixOf(route.entry),
+      hostingId: match.row.id,
+      otherHostnames: match.otherHostnames,
+    }
+  }
+  if (match.kind === 'adopt') {
+    return { existing: match.row, isAdoption: true }
+  }
+  return { existing: undefined, isAdoption: false }
+}
+
+function isComposeHostingError(
+  value: { existing: ExistingRow | undefined; isAdoption: boolean } | ComposeHostingError,
+): value is ComposeHostingError {
+  return 'kind' in value
+}
+
 async function reconcileDeclaredRoute(
   db: Db,
   route: DeclaredRoute,
@@ -485,30 +521,9 @@ async function reconcileDeclaredRoute(
   const pins = resolvePins(route, ctx.resolveTls, ctx.resolveIp)
   if (!pins.ok) return pins.error
 
-  let existing = ctx.existingByKey.get(existingRowKey(serviceId, route.route))
-  let isAdoption = false
-  if (!existing) {
-    const match = matchPanelAuthoredRow(ctx.panelAuthored, {
-      serviceId,
-      hostname: route.entry.hostname,
-      pathPrefix: hostingPathPrefixOf(route.entry),
-      excludeIds: ctx.keptIds,
-    })
-    if (match.kind === 'conflict') {
-      return {
-        kind: 'hosting_route_conflict',
-        composeServiceName: route.composeServiceName,
-        hostname: route.entry.hostname,
-        pathPrefix: hostingPathPrefixOf(route.entry),
-        hostingId: match.row.id,
-        otherHostnames: match.otherHostnames,
-      }
-    }
-    if (match.kind === 'adopt') {
-      existing = match.row
-      isAdoption = true
-    }
-  }
+  const matched = matchOrAdoptExistingRow(ctx, serviceId, route)
+  if (isComposeHostingError(matched)) return matched
+  const { existing, isAdoption } = matched
 
   const options = mergeComposeHostingOptions(
     existing?.options,
@@ -523,46 +538,82 @@ async function reconcileDeclaredRoute(
   })
 
   if (existing) {
-    const existingId = existing.id
-    try {
-      await db.transaction(async (tx) => {
-        await tx
-          .update(hosting)
-          .set({
-            name: route.entry.hostname,
-            tlsId: pins.tlsId,
-            ipId: pins.ipId,
-            metadata,
-            options,
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(hosting.id, existingId))
-        await replaceHostingHostnames(tx, existingId, ctx.organizationId, [
-          route.entry.hostname,
-        ])
-      })
-    } catch (err) {
-      if (isHostnameUniqueViolation(err)) {
-        return {
-          kind: 'hosting_hostname_conflict',
-          composeServiceName: route.composeServiceName,
-          hostname: route.entry.hostname,
-        }
-      }
-      throw err
-    }
-    if (isAdoption) ctx.adopted.push(existingId)
-    else ctx.updated.push(existingId)
-    ctx.keptIds.add(existingId)
-    ctx.existingByKey.set(existingRowKey(serviceId, route.route), {
-      id: existingId,
+    return persistExistingDeclaredRoute({
+      db,
+      route,
+      ctx,
+      existingId: existing.id,
       serviceId,
+      pins,
       metadata,
       options,
+      isAdoption,
     })
-    return null
   }
+  return insertDeclaredRoute(db, route, ctx, serviceId, pins, metadata, options)
+}
 
+async function persistExistingDeclaredRoute(input: {
+  db: Db
+  route: DeclaredRoute
+  ctx: RouteReconcileContext
+  existingId: string
+  serviceId: string
+  pins: Extract<ReturnType<typeof resolvePins>, { ok: true }>
+  metadata: ExistingRow['metadata']
+  options: ExistingRow['options']
+  isAdoption: boolean
+}): Promise<ComposeHostingError | null> {
+  const { db, route, ctx, existingId, serviceId, pins, metadata, options, isAdoption } =
+    input
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(hosting)
+        .set({
+          name: route.entry.hostname,
+          tlsId: pins.tlsId,
+          ipId: pins.ipId,
+          metadata,
+          options,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(hosting.id, existingId))
+      await replaceHostingHostnames(tx, existingId, ctx.organizationId, [
+        route.entry.hostname,
+      ])
+    })
+  } catch (err) {
+    if (isHostnameUniqueViolation(err)) {
+      return {
+        kind: 'hosting_hostname_conflict',
+        composeServiceName: route.composeServiceName,
+        hostname: route.entry.hostname,
+      }
+    }
+    throw err
+  }
+  if (isAdoption) ctx.adopted.push(existingId)
+  else ctx.updated.push(existingId)
+  ctx.keptIds.add(existingId)
+  ctx.existingByKey.set(existingRowKey(serviceId, route.route), {
+    id: existingId,
+    serviceId,
+    metadata,
+    options,
+  })
+  return null
+}
+
+async function insertDeclaredRoute(
+  db: Db,
+  route: DeclaredRoute,
+  ctx: RouteReconcileContext,
+  serviceId: string,
+  pins: Extract<ReturnType<typeof resolvePins>, { ok: true }>,
+  metadata: ExistingRow['metadata'],
+  options: ExistingRow['options'],
+): Promise<ComposeHostingError | null> {
   let insertedId: string
   try {
     insertedId = await db.transaction(async (tx) => {

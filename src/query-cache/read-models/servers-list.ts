@@ -5,18 +5,18 @@ import {
   getDaemonCellRegistry,
   getQueryCache,
   type Db,
-} from '../../db.ts'
+} from '../../db/connection.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import type { ServerFleetPresence } from '../../daemon/cell/server-status.ts'
 import {
   buildProjectionsFromDaemonRows,
   loadServerRowsForFleetPresence,
 } from '../../daemon/cell/postgres-projection.ts'
-import { license, server } from '../../lib/db/schema.ts'
-import { redactServerOptions } from '../../lib/db/server-metadata.ts'
+import { license, server } from '../../db/schema.ts'
+import { redactServerOptions } from '../../features/servers/server-metadata.ts'
 import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
 import { runApprovedCachedReadModel } from '../cached-query.ts'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 
 export type ServersListRow = {
   id: string

@@ -4,7 +4,7 @@
  *
  * Scans human-authored source, scripts, and maintainer docs for forbidden
  * daemon-as-agent phrasing left over from before the daemon build-identity
- * rename (`agent` -> `daemonBuild`; see `src/daemon/cell/protocol.ts`) and
+ * rename (`agent` -> `daemonBuild`; see `src/contracts/cell-protocol.ts`) and
  * Apple-associated glass product copy. The daemon is a "daemon" / "host
  * daemon", never an "agent" -- that word is reserved for coding-agent
  * tooling (`AGENTS.md`, `.agents/skills`) and unrelated third-party terms

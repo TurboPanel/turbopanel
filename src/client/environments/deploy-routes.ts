@@ -1,6 +1,6 @@
 import { eq, inArray } from "drizzle-orm";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
@@ -19,8 +19,8 @@ import {
   definedFields,
   presentFields,
 } from "../../lib/optional-fields.ts";
-import type { DerivedSecretsConfig } from "../authn/secrets.ts";
-import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
+import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
+import type { CommandEnvelope } from "../../features/commands/envelope.ts";
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployDockerNetwork,
@@ -36,7 +36,7 @@ import type {
   EnvironmentDeploySite,
   EnvironmentDeployVariableMaterial,
   EnvironmentLifecycleAction,
-} from "../../lib/commands/schemas.ts";
+} from "../../contracts/commands/schemas.ts";
 import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
@@ -57,33 +57,33 @@ import {
   resolveEnvironmentSiteReleases,
   resolveSourcedEnvironmentSiteReleases,
 } from "./site-releases.ts";
-import { isNoopCommandQueue } from "../../lib/commands/noop-command-queue.ts";
+import { isNoopCommandQueue } from "../../features/commands/noop-command-queue.ts";
 import {
   type CommandContextRelease,
   normalizeContextReleases,
   normalizeReplicaCounts,
-} from "../../lib/commands/context.ts";
+} from "../../features/commands/context.ts";
 import {
   type CommandQueue,
   getCommandQueue,
-} from "../../lib/commands/queue.ts";
+} from "../../features/commands/queue.ts";
 import {
   createCommandRecord,
   transitionCommand,
-} from "../../lib/db/command-records.ts";
-import { bumpEnvironmentGeneration } from "../../lib/db/environment-generation.ts";
+} from "../../features/commands/command-records.ts";
+import { bumpEnvironmentGeneration } from "../../features/deploy/environment-generation.ts";
 import {
   type DeploymentTargetInput,
   listEnvironmentDeploymentTargets,
   markDeploymentFailed,
   pruneDrainedDeployments,
   upsertDeploymentTargets,
-} from "../../lib/db/deployment-records.ts";
+} from "../../features/deploy/deployment-records.ts";
 import {
   type DesiredSlotInput,
   listEnvironmentSlots,
   replaceEnvironmentSlotsInTx,
-} from "../../lib/db/slot-records.ts";
+} from "../../features/servers/slot-records.ts";
 import {
   composeNetworkNamesByServer,
   type FabricSegmentMaterial,
@@ -94,32 +94,32 @@ import {
   purgeComposeNetworksCreatedAfter,
   purgeEnvironmentComposeNetworks,
   releaseSubnetsForServer,
-} from "../../lib/db/fabric-records.ts";
+} from "../../features/fabric/fabric-records.ts";
 import {
   awaitParticipatingFabricConvergence,
   isFabricEnqueueTypedError,
-} from "../../lib/fabric/enqueue.ts";
-import type { FabricGateOutcome } from "../../lib/fabric/gate.ts";
+} from "../../features/fabric/enqueue.ts";
+import type { FabricGateOutcome } from "../../features/fabric/gate.ts";
 import {
   assignSlotAddresses,
   buildCompileAddressMaps,
   planEnvironmentDeploy,
   type PlannedDeploy,
-} from "../../lib/schedule/index.ts";
-import { enqueueManagedIngressReconcile } from "../managed/ingress-desired.ts";
+} from "../../features/schedule/index.ts";
+import { enqueueManagedIngressReconcile } from "../../features/managed/ingress-desired.ts";
 import {
   loadManagedIngressPlatformAttachments,
   type ManagedIngressConsumer,
   reservedIngressHostsForServer,
-} from "../managed/ingress-attachments.ts";
-import type { ManagedIngressPorts } from "../../lib/managed/ingress-ports.ts";
-import { ensureManagedIngressHierarchy } from "../system/hierarchy.ts";
+} from "../../features/managed/ingress-attachments.ts";
+import type { ManagedIngressPorts } from "../../features/managed/ingress-ports.ts";
+import { ensureManagedIngressHierarchy } from "../../features/system/hierarchy.ts";
 import {
   composeServiceNetworkKeys,
   type PlatformAttachment,
-} from "../../lib/fabric/spanning.ts";
-import { environment, project, server } from "../../lib/db/schema.ts";
-import { type Db, getDaemonCellRegistry, getDb } from "../../db.ts";
+} from "../../features/fabric/spanning.ts";
+import { environment, project, server } from "../../db/schema.ts";
+import { type Db, getDaemonCellRegistry, getDb } from "../../db/connection.ts";
 import {
   assertCanManageOr403,
   assertNotSystemOwnedOr403,
@@ -129,7 +129,7 @@ import {
 import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
-} from "../../lib/project-options.ts";
+} from "../../features/projects/project-options.ts";
 
 type DeployHostingPayload = EnvironmentDeployHosting;
 

@@ -10,8 +10,8 @@
  * clients; no KV, D1, R2, or DO storage is added.
  */
 import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import { lease } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { lease } from "../../db/schema.ts";
 
 /** `lease.name` for the cross-isolate offline-sweep lease — globally scoped. */
 export const OFFLINE_SWEEP_LOCK_KEY = "OFFLINE_SWEEP_LOCK";

@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
-import { computeSlotMapping } from './topology-slot-mapping.ts'
-import { EMPTY_TOPOLOGY_OVERRIDES, type TopologySnapshot } from './topology-types.ts'
+import { computeSlotMapping } from '../../contracts/topology-slot-mapping.ts'
+import { EMPTY_TOPOLOGY_OVERRIDES, type TopologySnapshot } from '../../contracts/topology-types.ts'
 import {
   buildTopologyInventory,
   hardwareSignalChip,

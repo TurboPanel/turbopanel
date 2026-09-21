@@ -2,7 +2,7 @@ import { assertEquals, assertExists } from '@std/assert'
 import {
   deriveSecretsConfig,
   parseSecretsEnv,
-} from '../../client/authn/secrets.ts'
+} from '../../lib/secrets/secrets.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS,

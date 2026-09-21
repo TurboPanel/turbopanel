@@ -1,7 +1,7 @@
 import { assert } from "@std/assert";
 import { join } from "@std/path";
 import { it } from "@std/testing/bdd";
-import { DEFAULT_DUCKDB_LIB_DIR, DEFAULT_METRICS_DIR } from "./server-paths.ts";
+import { DEFAULT_DUCKDB_LIB_DIR, DEFAULT_METRICS_DIR } from "./platform/deno/server-paths.ts";
 
 /**
  * Co-located daemon checkout (`../turbopaneld` next to this repo). CI only checks

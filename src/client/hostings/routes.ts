@@ -1,16 +1,16 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { Context, Hono } from "hono";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { assertCanOr403, listVisible } from "../authz/index.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import { getDb } from "../../db.ts";
-import { hosting } from "../../lib/db/schema.ts";
+import { getDb, type Db } from "../../db/connection.ts";
+import { hosting } from "../../db/schema.ts";
 import {
   isHostnameUniqueViolation,
   replaceHostingHostnames,
-} from "../../lib/db/hostname-records.ts";
+} from "../../features/servers/hostname-records.ts";
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -35,7 +35,79 @@ import {
   parseCreateServiceId,
   parseOptionalHostingOptions,
   resolveOptionalHostingFks,
+  type HostingFkResult,
 } from "./routes-helpers.ts";
+
+function parseHostingCreatePayload(
+  c: Context<AppEnv>,
+  body: Record<string, unknown>,
+) {
+  let name: string | null;
+  let description: string | null;
+  try {
+    name = parseName(body);
+    description = parseDescription(body);
+  } catch {
+    return c.json({ error: "Invalid request" }, 400);
+  }
+
+  const metadataRaw = parseJsonbObject(c, body, "metadata");
+  if (metadataRaw instanceof Response) return metadataRaw;
+  const metadataResult = metadataRaw === null
+    ? null
+    : stripPromotedMetadataKeys(metadataRaw, HOSTING_PROMOTED_METADATA_KEYS);
+
+  const optionsResult = parseOptionalHostingOptions(c, body);
+  if (optionsResult.kind === "error") return optionsResult.response;
+  return {
+    name,
+    description,
+    metadataResult,
+    validatedOptions: optionsResult.kind === "value" ? optionsResult.value : null,
+  };
+}
+
+type HostingCreateFields = Exclude<
+  ReturnType<typeof parseHostingCreatePayload>,
+  Response
+>;
+
+async function insertHostingFromCreate(
+  db: Db,
+  fields: HostingCreateFields,
+  serviceId: string,
+  organizationId: string,
+  fks: Extract<HostingFkResult, { kind: "ok" }>,
+): Promise<string> {
+  const { name, description, metadataResult, validatedOptions } = fields;
+  return await db.transaction(async (tx) => {
+    const [inserted] = await tx
+      .insert(hosting)
+      .values({
+        name,
+        description,
+        serviceId,
+        ...(fks.tlsId.kind === "value" ? { tlsId: fks.tlsId.value } : {}),
+        ...(fks.ipId.kind === "value" ? { ipId: fks.ipId.value } : {}),
+        ...(metadataResult !== null ? { metadata: metadataResult } : {}),
+        ...(validatedOptions !== null ? { options: validatedOptions } : {}),
+        ...(validatedOptions?.protocol !== undefined
+          ? { protocol: validatedOptions.protocol }
+          : {}),
+      })
+      .returning({ id: hosting.id });
+    // `organizationId` is the workspace-ancestry answer already: `serviceOrgId`
+    // above resolved it via the service's `service → environment → project →
+    // workspace → organization` chain and was checked equal to it.
+    await replaceHostingHostnames(
+      tx,
+      inserted.id,
+      organizationId,
+      validatedOptions?.hostnames ?? [],
+    );
+    return inserted.id;
+  });
+}
 
 export function registerHostingRoutes(
   router: Hono<AppEnv>,
@@ -176,26 +248,9 @@ export function registerHostingRoutes(
     const immutable = await assertNotSystemOwnedOr403(c, "service", serviceId);
     if (immutable) return immutable;
 
-    let name: string | null;
-    let description: string | null;
-    try {
-      name = parseName(body);
-      description = parseDescription(body);
-    } catch {
-      return c.json({ error: "Invalid request" }, 400);
-    }
-
-    const metadataRaw = parseJsonbObject(c, body, "metadata");
-    if (metadataRaw instanceof Response) return metadataRaw;
-    const metadataResult = metadataRaw === null
-      ? null
-      : stripPromotedMetadataKeys(metadataRaw, HOSTING_PROMOTED_METADATA_KEYS);
-
-    const optionsResult = parseOptionalHostingOptions(c, body);
-    if (optionsResult.kind === "error") return optionsResult.response;
-    const validatedOptions = optionsResult.kind === "value"
-      ? optionsResult.value
-      : null;
+    const fields = parseHostingCreatePayload(c, body);
+    if (fields instanceof Response) return fields;
+    const { validatedOptions } = fields;
 
     const fks = await resolveOptionalHostingFks(c, db, organizationId, body);
     if (fks.kind === "error") return fks.response;
@@ -209,36 +264,13 @@ export function registerHostingRoutes(
     if (scopeDenied) return scopeDenied;
 
     try {
-      const id = await db.transaction(async (tx) => {
-        const [inserted] = await tx
-          .insert(hosting)
-          .values({
-            name,
-            description,
-            serviceId,
-            ...(fks.tlsId.kind === "value" ? { tlsId: fks.tlsId.value } : {}),
-            ...(fks.ipId.kind === "value" ? { ipId: fks.ipId.value } : {}),
-            ...(metadataResult !== null ? { metadata: metadataResult } : {}),
-            ...(validatedOptions !== null
-              ? { options: validatedOptions }
-              : {}),
-            ...(validatedOptions?.protocol !== undefined
-              ? { protocol: validatedOptions.protocol }
-              : {}),
-          })
-          .returning({ id: hosting.id });
-        // `organizationId` is the workspace-ancestry answer already: `serviceOrgId`
-        // above resolved it via the service's `service → environment → project →
-        // workspace → organization` chain and was checked equal to it.
-        await replaceHostingHostnames(
-          tx,
-          inserted.id,
-          organizationId,
-          validatedOptions?.hostnames ?? [],
-        );
-        return inserted.id;
-      });
-
+      const id = await insertHostingFromCreate(
+        db,
+        fields,
+        serviceId,
+        organizationId,
+        fks,
+      );
       return c.json({ ok: true as const, id });
     } catch (err) {
       if (isHostnameUniqueViolation(err)) {

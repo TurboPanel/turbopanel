@@ -5,15 +5,26 @@ Covers the SonarCloud CI job, the Vitest+Deno LCOV merge in
 `test-coverage.sh`, and the analysis-scope rules.
 
 **When adding, renaming, or deleting a `*.test.ts`:** claim it in exactly one
-runner, then run **`pnpm check:test-inventory`**. This repo does not glob test
-files — an unclaimed suite never runs in CI and contributes nothing to
-`coverage/lcov.info`. Deno suites go in the `deno test` list in
-`test-coverage.sh`; Workers/DO suites go in `vitest.config.ts` `test.include`;
-Redis (etc.) suites go in `SERVICE_DEPENDENT` in `check-test-inventory.mjs`
-with a reason. Full checklist: root `AGENTS.md` → **Adding tests (inventory)**.
+runner via filename suffix, then run **`pnpm check:test-inventory`**. Deno
+suites are `*.test.ts` / `*.hostfree.test.ts` / `*.deno.test.ts` under `src/`,
+`mailer/`, or `scripts/` (`test-coverage.sh` walks those trees and ignores
+Workers suffixes). Workers/DO suites are `*.workers.test.ts` /
+`*.workers-e2e.test.ts` / `*.entry.test.ts` (`vitest.config.ts` `test.include`
+suffix globs). Redis (etc.) suites go in `SERVICE_DEPENDENT` in
+`check-test-inventory.mjs` with a reason. Full checklist: root `AGENTS.md` →
+**Adding tests (inventory)**.
 The guard is wired into `pnpm test:hook`, **`pnpm verify:ci`**
 (`scripts/verify-ci.sh` — the local mirror of `build.yml` minus Sonar), and
 CI `build.yml`. Fleet-wide from the host `dev` checkout: `./scripts/ci-verify.sh`.
+
+**Reorg helpers** (do not glob tests; they rewrite inventories and layer
+imports):
+
+| Script | Purpose |
+| --- | --- |
+| `rewrite-imports.mjs` | `git mv` + specifier/path-token rewrite from an old→new map |
+| `generate-test-lists.mjs` | Rebuild suffix-glob inventories (`test-coverage.sh` + `vitest.config.ts`) |
+| `check-import-boundaries.mjs` | Kernel / feature / platform import graph (`pnpm check:import-boundaries`) |
 
 - Analysis runs in GitHub Actions (`.github/workflows/build.yml` **SonarQube**
   job — SonarCloud wizard layout) with `SONAR_TOKEN` and
@@ -38,31 +49,30 @@ CI `build.yml`. Fleet-wide from the host `dev` checkout: `./scripts/ci-verify.sh
   Intermediate reports remain at `coverage/vitest/lcov.info` and
   `coverage/deno.lcov` for debugging:
   - **Vitest** (`coverage/vitest/lcov.info`) — Workers-pool suites
-    (`vitest.config.ts` `test.include`), provider **`istanbul`**. The default
+    (`vitest.config.ts` `test.include` suffix globs), provider **`istanbul`**. The default
     `v8` provider cannot run inside workerd (no `node:inspector`), but
     `@cloudflare/vitest-pool-workers` bridges Istanbul counters back to Node, so
     `vitest run --coverage` is a real, non-zero report — **do not** assume
     Vitest coverage is unavailable. This is the _only_ LCOV source for
     Durable-Object / admin / other Workers-only code that no Deno suite imports
     (`src/daemon/cell/do.ts`, `src/daemon/workers-ws.ts`,
-    `src/admin/public-urls.ts`, …).
+    `src/features/install/public-urls.ts`, …).
   - **Deno** (`coverage/deno.lcov`) — host-free Deno suites listed in
     `scripts/test-coverage.sh`, via `deno coverage --lcov` (native V8). Then the
     scan runs with `sonar.qualitygate.wait=true`; if the quality gate fails, the
     workflow stops. **Coverage attribution (three independent traps — check all
     when Sonar shows 0% / low % while local Vitest is healthy):** (1) a new Deno
-    `*.test.ts` file must be added to the `deno test` file list in
-    `scripts/test-coverage.sh` — prefer host-free unit suites there;
+    `*.test.ts` file must use a Deno suffix (not `.workers.test.ts`) so
+    `scripts/test-coverage.sh` picks it up — prefer host-free unit suites there;
     DB/Redis/integration suites stay out of LCOV. (2) a new Workers/DO test file
-    must be added to `vitest.config.ts` `test.include` — that list is an
-    explicit file enumeration, not a glob, because most `*.test.ts` files use
-    Deno-only APIs and cannot run under the Workers pool; a file left off
-    `test.include` never runs at all, coverage or not. Traps (1) and (2) are
+    must use `*.workers.test.ts` (or `*.workers-e2e.test.ts` / `*.entry.test.ts`)
+    so the Vitest glob includes it; a Deno-only API file must not take that
+    suffix. Traps (1) and (2) are
     now enforced by **`pnpm check:test-inventory`**
     (`scripts/check-test-inventory.mjs`, wired into `test:hook` and CI
-    `build.yml`): it fails when any `*.test.ts` is claimed by neither list, when
+    `build.yml`): it fails when any `*.test.ts` is claimed by neither runner, when
     a list entry names a file that no longer exists, or when a file is claimed
-    by both. A suite that needs a service CI does not start (Redis, ClickHouse)
+    by both. A suite that needs a service CI does not start (Redis, Stripe)
     goes in that script's `SERVICE_DEPENDENT` map **with a reason** — that map
     is the only sanctioned way to leave a suite out of both runners. (3) LCOV smart merge must
     stay in place — do not reintroduce full-record Vitest-wins (drops Deno hits

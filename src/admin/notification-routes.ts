@@ -12,9 +12,9 @@
  * /settings/alert-webhook` still edits that same channel.
  */
 import type { Hono } from "hono";
-import type { AppEnv } from "../app.ts";
-import { getDb } from "../db.ts";
-import { adoptLegacyAlertWebhook } from "../lib/alerts/alert-webhook-settings.ts";
+import type { AppEnv } from "../app/app.ts";
+import { getDb } from "../db/connection.ts";
+import { adoptLegacyAlertWebhook } from "../features/alerts/alert-webhook-settings.ts";
 import {
   createNotificationChannel,
   deleteChannel,
@@ -29,62 +29,64 @@ import {
   resolveChannelAddress,
   setChannelDisabled,
   updateChannelLabel,
-} from "../lib/notifications/records.ts";
+} from "../features/notifications/records.ts";
 import {
   parseChannelCreateBody,
   parseChannelPatchBody,
 } from "../client/notifications/routes-helpers.ts";
 
+type NotificationAdminCtx = Parameters<typeof getDb>[0];
+
+async function presentInstanceChannel(
+  c: NotificationAdminCtx,
+  channel: NotificationChannelRecord,
+) {
+  const db = getDb(c)!;
+  const secrets = c.get("dataEncryptionSecrets");
+  const [rules, deliveries] = await Promise.all([
+    listRulesForChannel(db, channel.id),
+    listRecentDeliveriesForChannel(
+      db,
+      channel.id,
+      new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+    ),
+  ]);
+  return {
+    id: channel.id,
+    scope: channel.scope,
+    kind: channel.kind,
+    label: channel.label,
+    address: describeChannelAddress(
+      channel.kind,
+      await resolveChannelAddress(secrets, channel),
+    ),
+    signed: channel.signingSecret !== null,
+    verifiedAt: channel.verifiedAt,
+    disabledAt: channel.disabledAt,
+    createdAt: channel.createdAt,
+    rules: rules.map((r) => ({ event: r.event, minSeverity: r.minSeverity })),
+    recentDeliveries: deliveries.map((d) => ({
+      id: d.id,
+      event: d.event,
+      status: d.status,
+      attempts: d.attempts,
+      at: d.payload.at,
+    })),
+  };
+}
+
+async function instanceChannel(
+  c: NotificationAdminCtx,
+  id: string,
+): Promise<NotificationChannelRecord | Response> {
+  const channel = await getChannel(getDb(c)!, id);
+  if (channel?.scope !== "instance") {
+    return c.json({ error: "Not found" }, 404);
+  }
+  return channel;
+}
+
 export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
-  async function present(
-    c: Parameters<typeof getDb>[0],
-    channel: NotificationChannelRecord,
-  ) {
-    const db = getDb(c)!;
-    const secrets = c.get("dataEncryptionSecrets");
-    const [rules, deliveries] = await Promise.all([
-      listRulesForChannel(db, channel.id),
-      listRecentDeliveriesForChannel(
-        db,
-        channel.id,
-        new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-      ),
-    ]);
-    return {
-      id: channel.id,
-      scope: channel.scope,
-      kind: channel.kind,
-      label: channel.label,
-      address: describeChannelAddress(
-        channel.kind,
-        await resolveChannelAddress(secrets, channel),
-      ),
-      signed: channel.signingSecret !== null,
-      verifiedAt: channel.verifiedAt,
-      disabledAt: channel.disabledAt,
-      createdAt: channel.createdAt,
-      rules: rules.map((r) => ({ event: r.event, minSeverity: r.minSeverity })),
-      recentDeliveries: deliveries.map((d) => ({
-        id: d.id,
-        event: d.event,
-        status: d.status,
-        attempts: d.attempts,
-        at: d.payload.at,
-      })),
-    };
-  }
-
-  async function instanceChannel(
-    c: Parameters<typeof getDb>[0],
-    id: string,
-  ): Promise<NotificationChannelRecord | Response> {
-    const channel = await getChannel(getDb(c)!, id);
-    if (!channel || channel.scope !== "instance") {
-      return c.json({ error: "Not found" }, 404);
-    }
-    return channel;
-  }
-
   admin.get("/notification-channels", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ error: "Database unavailable" }, 503);
@@ -93,7 +95,7 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
     await adoptLegacyAlertWebhook(db, c.get("dataEncryptionSecrets"));
     const channels = await listInstanceChannels(db);
     return c.json({
-      channels: await Promise.all(channels.map((ch) => present(c, ch))),
+      channels: await Promise.all(channels.map((ch) => presentInstanceChannel(c, ch))),
     });
   });
 
@@ -146,7 +148,7 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
       verifiedAt,
     });
     await replaceRulesForChannel(db, channel.id, parsed.value.rules);
-    return c.json({ ok: true, channel: await present(c, channel) }, 201);
+    return c.json({ ok: true, channel: await presentInstanceChannel(c, channel) }, 201);
   });
 
   admin.patch("/notification-channels/:id", async (c) => {
@@ -177,7 +179,7 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
     const fresh = await getChannel(db, owned.id);
     return c.json({
       ok: true,
-      channel: fresh ? await present(c, fresh) : null,
+      channel: fresh ? await presentInstanceChannel(c, fresh) : null,
     });
   });
 

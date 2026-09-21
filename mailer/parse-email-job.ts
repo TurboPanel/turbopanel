@@ -1,4 +1,4 @@
-import type { EmailJob, OtpType } from '../src/lib/email/types.ts'
+import type { EmailJob, OtpType } from '../src/features/email/types.ts'
 
 const VALID_OTP_TYPES = new Set<OtpType>([
   'sign-in',

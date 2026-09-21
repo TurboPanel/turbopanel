@@ -38,24 +38,24 @@
 
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   environment,
   gitConnection,
   project,
   repository,
   workspace,
-} from '../../lib/db/schema.ts'
-import { resolveEffectivePlacementServerId } from '../../lib/project-options.ts'
-import type { ProjectOptions } from '../../lib/project-options.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
-import { logInfo, logWarn } from '../../logger.ts'
+} from '../../db/schema.ts'
+import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
+import type { ProjectOptions } from '../../features/projects/project-options.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import { logInfo, logWarn } from '../../lib/logger.ts'
 import {
   type DeployRequestAuth,
   runEnvironmentDeployForActor,
 } from '../environments/deploy-routes.ts'
-import type { WebhookGitProviderName } from '../../lib/git/git-provider.ts'
+import type { WebhookGitProviderName } from '../../features/git/git-provider.ts'
 import { COMPOSE_SOURCE_JSONPATH } from './routes-helpers.ts'
 
 /** Why a matched repository did not produce a deploy. */

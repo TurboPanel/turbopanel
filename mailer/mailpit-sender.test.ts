@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import type { EmailJob } from '../src/lib/email/types.ts'
+import type { EmailJob } from '../src/features/email/types.ts'
 import { createMailerMailpitSender, MailerMailpitSender } from './mailpit-sender.ts'
 
 /**

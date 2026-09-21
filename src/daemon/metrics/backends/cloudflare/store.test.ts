@@ -8,7 +8,7 @@ import {
   type HostNetworkMetrics,
   type HostStorageMetrics,
   type MetricsSampleInput,
-} from '../../contract.ts'
+} from '../../../../contracts/metrics-contract.ts'
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
 import { buildMetricsDataPoints, buildStatusDataPoint } from './field-map.ts'
 import {

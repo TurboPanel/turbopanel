@@ -1,16 +1,16 @@
 import { assertEquals, assertExists, assertThrows } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb, endDbConnection } from '../../db.ts'
-import type { DaemonCell, DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb, endDbConnection } from '../../db/connection.ts'
+import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   container,
   command,
@@ -30,9 +30,9 @@ import {
   teammate,
   user,
   workspace,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import * as hierarchyDelete from '../hierarchy-delete.ts'
-import * as systemHierarchy from '../system/hierarchy.ts'
+import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import {
   COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
@@ -40,12 +40,12 @@ import {
   SERVER_HAS_BLOCKERS_ERROR,
 } from './delete-guards.ts'
 import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
-import { createLicense } from '../authn/license.ts'
+import { createLicense } from '../../features/licenses/license.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import {
   attachDaemonStateToServer,
   getServerDaemonStateByServerId,
-} from '../../daemon/authn/server-identity-db.ts'
+} from '../../features/servers/server-identity-db.ts'
 import { registerServerRoutes } from './routes.ts'
 import type { ServerStatusRecord } from './update-status.ts'
 import type { QueryCache } from '../../query-cache/contracts.ts'
@@ -226,7 +226,7 @@ async function createServerRoutesTestApp(
   db: ReturnType<typeof createDenoDb>,
   registry?: DaemonCellRegistry,
   queryCache?: QueryCache,
-  commandQueue?: import('../../lib/commands/queue.ts').CommandQueue,
+  commandQueue?: import('../../features/commands/queue.ts').CommandQueue,
 ) {
   const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')

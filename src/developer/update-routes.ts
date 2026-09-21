@@ -1,14 +1,14 @@
 import type { Env, Hono } from 'hono'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
-import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
+import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import {
   generateDeliveryId,
   generateRequestId,
   type DaemonOutboundEnvelope,
-} from '../daemon/cell/protocol.ts'
-import { getDaemonCellRegistry, getDb } from '../db.ts'
-import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
+} from '../contracts/cell-protocol.ts'
+import { getDaemonCellRegistry, getDb } from '../db/connection.ts'
+import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 import { resolveColocatedServerIdSet } from '../client/servers/colocated.ts'
 
 const UPDATE_TIMEOUT_MS = 180_000

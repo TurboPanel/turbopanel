@@ -24,7 +24,7 @@ import {
   type HostMetricsMetricDescriptor,
   type MetricEntityScope,
 } from '../../metric-descriptors.ts'
-import type { MetricEventKind, MetricEventSeverity, MetricEvent } from '../../contract.ts'
+import type { MetricEventKind, MetricEventSeverity, MetricEvent } from '../../../../contracts/metrics-contract.ts'
 import {
   AE_DEFAULT_MAX_RANGE_SECONDS,
   MAX_STATUS_EVENTS,
@@ -131,7 +131,7 @@ import {
   storageSamplesInsertColumns,
   storageSamplesMetricColumnNames,
 } from './schema.ts'
-import { STORAGE_ENGINE_FIELD_NAMES, STORAGE_ENGINE_KEYS } from '../../contract.ts'
+import { STORAGE_ENGINE_FIELD_NAMES, STORAGE_ENGINE_KEYS } from '../../../../contracts/metrics-contract.ts'
 
 /** Flush when this many pending rows accumulate (small co-located fleet). */
 export const DUCKDB_WRITE_BATCH_MAX_ROWS = 10

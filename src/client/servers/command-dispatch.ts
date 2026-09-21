@@ -1,14 +1,14 @@
 import type { Context } from 'hono'
-import { getDaemonCellRegistry, type Db } from '../../db.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
-import { getCommandQueue, type CommandQueue } from '../../lib/commands/queue.ts'
-import type { CommandType } from '../../lib/commands/types.ts'
+import { getDaemonCellRegistry, type Db } from '../../db/connection.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
+import { getCommandQueue, type CommandQueue } from '../../features/commands/queue.ts'
+import type { CommandType } from '../../features/commands/types.ts'
 import {
   createCommandRecord,
   transitionCommand,
   type CommandRecord,
-} from '../../lib/db/command-records.ts'
+} from '../../features/commands/command-records.ts'
 import {
   buildUserCommandExpiresAt,
   buildCommandEnqueueEnvelope,

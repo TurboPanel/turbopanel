@@ -4,7 +4,7 @@ import {
   MAX_EXECUTION_LOG_CHUNK_BODY_BYTES,
   parseExecutionLogChunkBody,
 } from "./execution-log-ingest.ts";
-import { MAX_EXECUTION_LOG_CHUNK_BYTES } from "../lib/execution-logs/types.ts";
+import { MAX_EXECUTION_LOG_CHUNK_BYTES } from "../features/execution-logs/types.ts";
 
 function base64(bytes: Uint8Array): string {
   let binary = "";

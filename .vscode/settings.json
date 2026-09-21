@@ -9,10 +9,10 @@
   // `ts-deno-globals.d.ts` is a tsc-only shim (see that file); Deno already
   // has `lib.deno.ns.d.ts` and would report merge conflicts.
   "deno.disablePaths": [
-    "./src/daemon/durable-object.test.ts",
-    "./src/daemon/cell/do-registry.test.ts",
+    "./src/daemon/durable-object.workers.test.ts",
+    "./src/daemon/cell/do-registry.workers.test.ts",
     "./src/workers.entry.test.ts",
-    "./src/workers-bindings.test.ts",
+    "./src/platform/workers/workers-bindings.workers.test.ts",
     "./vitest.config.ts",
     "./ts-deno-globals.d.ts"
   ],

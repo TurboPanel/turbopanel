@@ -16,7 +16,7 @@ An instance may hold **more than one** GitHub App or GitLab OAuth application �
 instance-wide ones an operator registered for everybody, and organization-owned
 ones. So a delivery cannot be checked against "the" webhook secret: the surface
 has to work out *whose* secret to use before it can authenticate anything. That
-is step 2 below (`src/lib/git/resolve-webhook-forge.ts`).
+is step 2 below (`src/features/git/resolve-webhook-forge.ts`).
 
 ## Why this is its own surface
 
@@ -31,16 +31,16 @@ argument applies to the code, its own top-level directory beside `admin`,
 One consequence is deliberate and easy to undo by accident:
 
 - **No `.use('*')` middleware.** `/webhook` stays out of `PROTECTED_PREFIXES`
-  in `src/browser-write-protection.ts`: session middleware would reject every
+  in `src/app/browser-write-protection.ts`: session middleware would reject every
   delivery, and the cross-origin write gate has no `Origin` to read. Each gate
   authenticates itself.
 
 Registration is **flat** — each gate calls `app.post()` with the absolute paths
-from `src/surfaces.ts` rather than mounting a child router at the prefix. Two
+from `src/app/surfaces.ts` rather than mounting a child router at the prefix. Two
 gates own paths under `/webhook`, and a shared child router would be one more
 object to thread through `registerWebhookRoutes` for no behaviour.
 
-Registration happens in the entrypoints (`src/deno-server.ts`, `src/workers.ts`)
+Registration happens in the entrypoints (`src/platform/deno/server.ts`, `src/workers.ts`)
 next to `registerDaemonApiRoutes`. Git kinds go through the shared
 `registerWebhookRoutes` (billing-free). The billing kind is imported **only**
 from `src/workers.ts` (`registerStripeWebhookRoutes`) because self-hosted has
@@ -53,7 +53,7 @@ in `wrangler.jsonc` each enumerate the prefixes they forward and then end in a
 catch-all that serves the UI's `index.html`. A prefix missing from one of those
 lists does not 404 — it answers **`200` with an HTML page**, which a Git
 provider reads as a delivered webhook and never retries. That is silent,
-unrecoverable loss of every push, and it is why `src/surfaces.test.ts` pins
+unrecoverable loss of every push, and it is why `src/app/surfaces.test.ts` pins
 these strings.
 
 ## The three surfaces
@@ -71,7 +71,7 @@ and one signing secret, so there is nothing to disambiguate; the customer is
 named in the payload and only read after a refetch. Everything that follows
 for the git kinds — the gate order, the ledger, the retry contract — applies
 to it unchanged. What is specific to it is in "Acknowledge immediately" below
-and in `src/lib/billing/AGENTS.md`.
+and in `src/features/billing/AGENTS.md`.
 
 ## The two git surfaces, and the one difference that matters
 
@@ -108,7 +108,7 @@ module on boot.
 | `/webhook/<provider>/:ref` | **Self-hosted providers.** `:ref` is that app's `forge.webhook_ref`, baked in at registration (GitHub: `hook_attributes.url` in the manifest; GitLab: the per-project hook URL). GitHub Enterprise Server and self-managed GitLab ship on their own cadence, so the header is not a safe single point of failure there — a build that omitted it would 401 every delivery with nothing in the URL to fall back to. |
 
 All of them register the same handler; the ref is simply absent on the bare
-path. `webhookPathFor` in `src/lib/git/webhook-reachability.ts` decides which
+path. `webhookPathFor` in `src/features/git/webhook-reachability.ts` decides which
 shape an app is *told* about, from its `base_url`.
 
 Stripe has neither: `/webhook/stripe` only. Local forwarding must use that
@@ -195,13 +195,13 @@ The three things around the gate that used to be git-shaped were widened
 when Stripe landed, so a fourth kind inherits them:
 
 - `delivery.provider` is `CHECK (provider IN ('github','gitlab','stripe'))`
-  (`src/lib/db/schema.ts`, `migrations/0003_billing_projection.sql`). The
+  (`src/db/schema.ts`, `migrations/0003_billing_projection.sql`). The
   claim in step 5 writes it, so a new kind still needs one forward migration
   to add its value.
 - `WebhookDeliveryProvider` is its own literal union
-  (`src/lib/db/webhook-delivery-records.ts`), no longer an alias of
-  `WebhookGitProviderName` — that alias was `src/lib/db/`'s only dependency
-  on `src/lib/git/`, and it is gone. The git names are pinned as assignable
+  (`src/features/webhook-delivery/webhook-delivery-records.ts`), no longer an alias of
+  `WebhookGitProviderName` — that alias was `src/db/`'s only dependency
+  on `src/features/git/`, and it is gone. The git names are pinned as assignable
   to it in `webhook-delivery-records.hostfree.test.ts`.
 - Rate-limit keys are prefixed by **domain**: `git:webhook:<provider>:<peer>`
   for the git kinds (unchanged; live counters and `rate-limit/keys.test.ts`
@@ -210,12 +210,12 @@ when Stripe landed, so a fourth kind inherits them:
 - Cloudflare needs a rate-limiter binding in **three** places in
   `wrangler.jsonc` (default, `env.testing`, `env.live`), each with its own
   `namespace_id`, plus the `resolveWorkers…RateLimiter` / `warnIf…Missing`
-  pair in `src/workers-bindings.ts` and a `resolve…RateLimit` for the Deno
+  pair in `src/platform/workers/workers-bindings.ts` and a `resolve…RateLimit` for the Deno
   Redis limiter.
 
 The URL plumbing is free: `/webhook/*` is already forwarded by every fronting
 layer, so `/webhook/<kind>` inherits it. The SPA-catch-all trap is closed for
-this prefix — `src/surfaces.test.ts` checks the `Caddyfile`, the dev
+this prefix — `src/app/surfaces.test.ts` checks the `Caddyfile`, the dev
 orchestration `Caddyfile` (when the sibling checkout is present) and every
 `routes` block in `wrangler.jsonc`.
 
@@ -244,7 +244,7 @@ Two rules come with that:
   context afterwards.
 - **Never trust the payload.** Delivery is at-least-once and unordered. The
   task reads only the object id and type from the event, refetches the
-  object from Stripe, and upserts through `src/lib/db/billing-records.ts`
+  object from Stripe, and upserts through `src/features/billing/billing-records.ts`
   from current state. Unknown types are a logged no-op after the `200`.
 
 **Residual risk, stated plainly:** the delivery claim (step 5) is taken
@@ -304,7 +304,7 @@ Stripe's table, this phase (`src/webhook/billing/stripe-projection.ts`):
 becomes `seat`; a change Stripe could not charge for lives under
 `subscription.pending_update` and is ignored except for its presence, which
 stops an upgrade intent being consumed early. That refetch *is* the C6 gate
-(`src/lib/billing/AGENTS.md`, "One raise path").
+(`src/features/billing/AGENTS.md`, "One raise path").
 
 Installation **deletion is recorded as suspension**, not a row delete: the
 `repository` rows referencing it survive, so reinstalling the App restores every
@@ -314,7 +314,7 @@ repository binding instead of orphaning it.
 
 Everything provider-specific — listing repositories, resolving a ref to a commit,
 minting a clone credential, verifying a delivery, parsing a payload — sits behind
-the `GitProvider` interface in `src/lib/git/git-provider.ts`, with one
+the `GitProvider` interface in `src/features/git/git-provider.ts`, with one
 implementation per `repository.provider` value (`github`, `gitlab`, and `git`, the
 degenerate generic-SSH one). `resolveGitProvider(row.provider)` is the single
 dispatch; deploy-prepare and the repository picker call it rather than testing
@@ -446,7 +446,7 @@ things there are easy to get wrong:
   `runEnvironmentDeployForActor`, which is `runEnvironmentDeploy` with an
   `actorType: 'system'` actor whose `actorId` is the triggering `repository.id`.
   There is no second enqueue path — see the concurrency note in
-  `src/lib/commands/AGENTS.md`.
+  `src/features/commands/AGENTS.md`.
 - **Every lookup is scoped to the verified app.** `loadInstallations` takes the
   `app_id` of the app whose secret verified the delivery, and that predicate is
   load-bearing rather than an optimization: `connection` is unique on
@@ -487,7 +487,7 @@ A LAN-only instance (`https://panel.lan:8443`, a private IP, a `.internal` name)
 can clone and mint tokens — both outbound — but no provider can deliver to it.
 `GET /repositories/:id` therefore returns `webhookUrl`, `webhookReachable`, and
 `reachabilityNote`, computed from the operator's public URL list by
-`src/lib/git/webhook-reachability.ts` **on the repository's own provider path, with
+`src/features/git/webhook-reachability.ts` **on the repository's own provider path, with
 the `webhook_ref` of the app behind its connection**; a `provider: 'git'`
 repository has no webhook surface and is given none, and a deploy-key repository has no
 app, so it falls back to the bare path. The intended alternative for those

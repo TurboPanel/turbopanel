@@ -7,7 +7,7 @@ import {
   requireOtpVerifierSecrets,
   verifyOtpVerifier,
 } from "./email-otp.ts";
-import { deriveSecretsConfig } from "./secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts';
 
 /**

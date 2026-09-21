@@ -20,7 +20,7 @@ deno run --allow-net --allow-env --allow-read mailer/main.ts
 
 ## Environment variables
 
-Email settings use the hierarchical `TURBOPANEL_SYSTEM_EMAIL__*` prefix (see `src/lib/settings/email-settings.ts`).
+Email settings use the hierarchical `TURBOPANEL_SYSTEM_EMAIL__*` prefix (see `src/features/settings/email-settings.ts`).
 
 | Variable | Purpose |
 | --- | --- |

@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { storage } from "../../lib/db/schema.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { storage } from "../../db/schema.ts";
 import {
   buildStorageUpdateFields,
   dockerVolumeMetadataWithId,

@@ -7,8 +7,8 @@
  * test cannot silently pass over a call it never expected.
  */
 
-import type { StripeClient, StripeFormParams } from '../lib/billing/client.ts'
-import { encodeStripeForm } from '../lib/billing/form-encode.ts'
+import type { StripeClient, StripeFormParams } from '../features/billing/client.ts'
+import { encodeStripeForm } from '../features/billing/form-encode.ts'
 
 export type StripeCall = {
   method: 'GET' | 'POST' | 'DELETE'

@@ -3,7 +3,7 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { emptyComposeDocument } from '../../lib/compose/index.ts'
+import { emptyComposeDocument } from '../../features/compose/index.ts'
 import {
   parseCreateEnvironmentJsonb,
   parseCreateEnvironmentNames,

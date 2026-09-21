@@ -7,9 +7,9 @@
 import { assertEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb, endDbConnection } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb, endDbConnection } from "../../db/connection.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -18,7 +18,7 @@ import { createSession } from "../authn/session-store.ts";
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-} from "../authn/secrets.ts";
+} from "../../lib/secrets/secrets.ts";
 import {
   grant,
   notificationChannel,
@@ -26,10 +26,10 @@ import {
   team,
   teammate,
   user,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
-import { emitNotification } from "../../lib/notifications/emit.ts";
+import { emitNotification } from "../../features/notifications/emit.ts";
 import { registerNotificationRoutes } from "./routes.ts";
 
 /**

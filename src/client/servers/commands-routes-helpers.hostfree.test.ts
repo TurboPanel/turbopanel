@@ -13,7 +13,7 @@ import {
   shapeCommandLogResponse,
   shapeCommandStatusResponse,
 } from './commands-routes-helpers.ts'
-import { DEFAULT_EXECUTION_LOG_READ_BYTES } from '../../lib/execution-logs/types.ts'
+import { DEFAULT_EXECUTION_LOG_READ_BYTES } from '../../features/execution-logs/types.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

@@ -7,9 +7,9 @@
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
-import { hashPassword } from "./password.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
+import { hashPassword } from "../../lib/secrets/password.ts";
 import { assertRecentAuthOr403, REAUTH_WINDOW_MS } from "./reauth.ts";
 import type { SessionData } from "./session-store.ts";
 

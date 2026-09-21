@@ -1,4 +1,4 @@
-import type { PostgresConfigMeta } from '../db-url.ts'
+import type { PostgresConfigMeta } from '../db/url.ts'
 
 export type DatabaseStatus = {
   configured: boolean

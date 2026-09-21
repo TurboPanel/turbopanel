@@ -17,15 +17,15 @@
  * and decide whether a failure is logged or propagated.
  */
 
-import type { Db } from "../../db.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
+import type { Db } from "../../db/connection.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
-} from "../authn/secrets.ts";
-import { reconcileFabricMembership } from "../../lib/fabric/enqueue.ts";
-import { listManagedIdsForDatacenter } from "../bindings/resolve-endpoint.ts";
-import { fanOutManagedIngressReconcile } from "../managed/ingress-desired.ts";
+} from "../../lib/secrets/secrets.ts";
+import { reconcileFabricMembership } from "../../features/fabric/enqueue.ts";
+import { listManagedIdsForDatacenter } from "../../features/bindings/resolve-endpoint.ts";
+import { fanOutManagedIngressReconcile } from "../../features/managed/ingress-desired.ts";
 
 export type DatacenterRoutingFanoutParams = Readonly<{
   datacenterId: string;

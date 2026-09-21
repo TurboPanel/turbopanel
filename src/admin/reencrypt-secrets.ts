@@ -39,9 +39,9 @@ import {
   isDaemonSealedEnvelope,
   parseDaemonSecretEnvelope,
   parseSecretEnvelope,
-} from "../client/authn/data-encryption.ts";
-import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
-import type { Db } from "../db.ts";
+} from "../lib/secrets/data-encryption.ts";
+import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
+import type { Db } from "../db/connection.ts";
 import {
   forge,
   gitConnection,
@@ -54,15 +54,15 @@ import {
   notificationChannel,
   twoFactor,
   variable,
-} from "../lib/db/schema.ts";
+} from "../db/schema.ts";
 import {
   EMAIL_SECRET_KEYS,
   SYSTEM_EMAIL_DB_KEY,
-} from "../lib/settings/email-settings.ts";
+} from "../features/settings/email-settings.ts";
 import {
   AUTH_PROVIDER_SECRET_KEYS,
   SYSTEM_AUTH_PROVIDERS_DB_KEY,
-} from "../lib/settings/auth-provider-settings.ts";
+} from "../features/settings/auth-provider-settings.ts";
 
 export const REENCRYPT_BATCH_SIZE = 200;
 

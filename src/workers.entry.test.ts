@@ -7,12 +7,12 @@
  */
 import { env } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { Db } from './db.ts'
-import { CLIENT_API_PREFIX, GITHUB_WEBHOOK_PATH, HEALTH_PATH } from './surfaces.ts'
+import type { Db } from './db/connection.ts'
+import { CLIENT_API_PREFIX, GITHUB_WEBHOOK_PATH, HEALTH_PATH } from './app/surfaces.ts'
 import {
   resetWorkersBindingWarningsForTests,
   setWorkersDbFactoryForTests,
-} from './workers-bindings.ts'
+} from './platform/workers/workers-bindings.ts'
 import workers, {
   getLazyEmailQueueResolveCallsForTests,
   resetWorkerAppCachesForTests,

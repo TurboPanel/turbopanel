@@ -1,11 +1,11 @@
-import { buildSeededDatacenterMetadata } from '../../lib/datacenter-metadata.ts'
+import { buildSeededDatacenterMetadata } from '../../features/datacenters/datacenter-metadata.ts'
 import {
   type DatacenterPolicy,
   type parseDatacenterOptions,
   resolveDatacenterPolicy,
-} from '../../lib/datacenter-options.ts'
-import { suggestDatacenterDisplayNameFromGeo } from '../../lib/datacenter-name-suggestions.ts'
-import { parseServerGeo } from '../../lib/geo/server-geo.ts'
+} from '../../features/datacenters/datacenter-options.ts'
+import { suggestDatacenterDisplayNameFromGeo } from '../../features/datacenters/datacenter-name-suggestions.ts'
+import { parseServerGeo } from '../../features/geo/server-geo.ts'
 import {
   alignedNetworkCidr,
   isValidCidr,
@@ -16,7 +16,7 @@ import {
   resolveSubnetForAddress,
   siteCidrForAddress,
   type MemberPinSubnet,
-} from '../../lib/net/datacenter-membership.ts'
+} from '../../features/net/datacenter-membership.ts'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i

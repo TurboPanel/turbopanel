@@ -1,12 +1,13 @@
-import type { MetricEvent, MetricsSample } from "./contract.ts";
+import type { MetricEvent, MetricsSample } from "../../contracts/metrics-contract.ts";
 import type { HostedFamily } from "./metric-descriptors.ts";
 import type { IngressDerivedValues } from "./query/derived-metrics.ts";
-import type { SlotMapping } from "../../client/servers/topology-types.ts";
+import type { SlotMapping } from "../../contracts/topology-types.ts";
 
-export type { SlotMapping } from "../../client/servers/topology-types.ts";
+export type { SlotMapping } from "../../contracts/topology-types.ts";
 
-/** Live cadence granted to a lease holder, in seconds. */
-export const METRICS_LIVE_INTERVAL_SECONDS = 10;
+import { METRICS_LIVE_INTERVAL_SECONDS } from '../../contracts/capability-plan.ts'
+
+export { METRICS_LIVE_INTERVAL_SECONDS }
 
 /** Success body of `POST /servers/:id/metrics/live` (start/renew a lease). */
 export type MetricsLiveLeaseStartResponse = {

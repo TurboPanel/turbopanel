@@ -22,7 +22,7 @@
  */
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { buildMetricsSample, type MetricsSampleInput } from './contract.ts'
+import { buildMetricsSample, type MetricsSampleInput } from '../../contracts/metrics-contract.ts'
 import type { AuthenticatedMetricsSample } from './types.ts'
 import { AE_MISSING_METRIC_SENTINEL } from './backends/cloudflare/field-map.ts'
 import { DuckDbParquetServerMetricsStore } from './backends/duckdb/store.ts'

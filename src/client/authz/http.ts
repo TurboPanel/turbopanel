@@ -1,8 +1,8 @@
 import type { Context } from 'hono'
-import { getDb } from '../../db.ts'
+import { getDb } from '../../db/connection.ts'
 import { can, type PermissionKey } from './evaluator.ts'
 import { resolveWorkspaceKindForEntity } from './workspace-kind-ancestry.ts'
-import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 
 /** Typed 403 body when a mutation targets a system-workspace descendant. */
 export const SYSTEM_RESOURCE_IMMUTABLE_ERROR = 'system_resource_immutable'

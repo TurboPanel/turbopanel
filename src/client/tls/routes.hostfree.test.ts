@@ -6,8 +6,8 @@
 import { assertEquals } from "@std/assert";
 import { getTableName } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -21,7 +21,7 @@ import {
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-} from "../authn/secrets.ts";
+} from "../../lib/secrets/secrets.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import {

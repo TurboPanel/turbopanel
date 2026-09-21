@@ -1,21 +1,21 @@
 import { assertEquals } from "@std/assert";
 import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
-} from "../../daemon/cell/contracts.ts";
-import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
+} from "../../contracts/cell.ts";
+import type { CommandEnvelope } from "../../features/commands/envelope.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
 import { createSession } from "../authn/session-store.ts";
-import { deriveSecretsConfig } from "../authn/secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import {
   command,
   container,
@@ -29,9 +29,9 @@ import {
   teammate,
   user,
   workspace,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
-import { ensureSystemHierarchy } from "./hierarchy.ts";
+import { ensureSystemHierarchy } from "../../features/system/hierarchy.ts";
 import { registerSystemRoutes } from "./routes.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 

@@ -7,9 +7,9 @@ import {
   type DerivedSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
-} from "../client/authn/secrets.ts";
-import type { Db } from "../db.ts";
-import { generateSecret } from "../generate-secret.ts";
+} from "../lib/secrets/secrets.ts";
+import type { Db } from "../db/connection.ts";
+import { generateSecret } from "../lib/secrets/generate-secret.ts";
 import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
@@ -18,17 +18,17 @@ import {
   type ServerDaemonState,
   type ServerDaemonStatus,
   type ServerDaemonStatusColumns,
-} from "./authn/daemon-state.ts";
+} from "../features/servers/daemon-state.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
   DaemonCellSnapshot,
-} from "./cell/contracts.ts";
+} from "../contracts/cell.ts";
 import type {
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
-} from "./cell/protocol.ts";
-import { DAEMON_CELL_PING, DAEMON_CELL_PONG } from "./cell/protocol.ts";
+} from "../contracts/cell-protocol.ts";
+import { DAEMON_CELL_PING, DAEMON_CELL_PONG } from "../contracts/cell-protocol.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
   handleDaemonCellPing,
@@ -57,11 +57,11 @@ import {
   CLIENT_WS_PATH,
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
-} from "../surfaces.ts";
+} from "../app/surfaces.ts";
 import {
   resetUpdateManifestCacheForTests,
   seedUpdateManifestCacheForTests,
-} from "../lib/update/manifest.ts";
+} from "../features/update/manifest.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -78,7 +78,7 @@ import {
 } from "../developer/local-console-auth.ts";
 import type { RateLimiter } from "./rate-limit/contracts.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
-import { PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN } from "./metrics/capability-plan.ts";
+import { PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN } from "../contracts/capability-plan.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

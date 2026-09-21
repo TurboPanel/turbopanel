@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { deriveInboundOutcome } from "./inbound-outcome.ts";
-import type { DaemonInboundEnvelope } from "./protocol.ts";
+import type { DaemonInboundEnvelope } from "../../contracts/cell-protocol.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

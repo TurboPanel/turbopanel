@@ -18,7 +18,7 @@ import type {
   PhysicalSignalThresholds,
   SlotMapping,
   TopologySnapshot,
-} from './topology-types.ts'
+} from '../../contracts/topology-types.ts'
 
 /**
  * A device's role per the current `SlotMapping`: `nic` is a monitored

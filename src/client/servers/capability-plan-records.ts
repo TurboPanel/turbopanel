@@ -14,12 +14,12 @@
  * first-ever) plan inserts a new row with `generation = previous + 1` (or `0`).
  */
 import { desc, eq, sql } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import { capabilityPlanGeneration } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { capabilityPlanGeneration } from "../../db/schema.ts";
 import {
   computeMetricsCapabilityPlanHash,
   type MetricsCapabilityPlan,
-} from "../../daemon/metrics/capability-plan.ts";
+} from "../../contracts/capability-plan.ts";
 
 export type CapabilityPlanGenerationRecord = {
   generation: number;

@@ -1,8 +1,8 @@
 import type { Context, Env, Hono } from "hono";
 import { upgradeWebSocket } from "hono/deno";
 import type { WSContext } from "hono/ws";
-import type { DaemonCellRegistry } from "./cell/contracts.ts";
-import type { DaemonInboundEnvelope, DaemonMessage } from "./cell/protocol.ts";
+import type { DaemonCellRegistry } from "../contracts/cell.ts";
+import type { DaemonInboundEnvelope, DaemonMessage } from "../contracts/cell-protocol.ts";
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -10,13 +10,13 @@ import {
   outboundEnvelopeToWireMessage,
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
-} from "./cell/protocol.ts";
+} from "../contracts/cell-protocol.ts";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { tryAssignColocatedDaemonToInstalledOrganization } from "../client/authn/install-state.ts";
-import { getDb } from "../db.ts";
-import type { Db } from "../db.ts";
-import { compatLogError, compatLogWarn } from "../log-compat.ts";
-import { cellTrace, daemonCellLog } from "../logger.ts";
+import { getDb } from "../db/connection.ts";
+import type { Db } from "../db/connection.ts";
+import { compatLogError, compatLogWarn } from "../lib/log-compat.ts";
+import { cellTrace, daemonCellLog } from "../lib/logger.ts";
 import {
   onDaemonConnected,
   onDaemonDisconnected,
@@ -27,28 +27,28 @@ import {
   CLIENT_WS_PATH,
   DAEMON_WS_PATH,
   DEVELOPER_WS_PATH,
-} from "../surfaces.ts";
-import { resolveSelfHostedGeo } from "../lib/geo/self-hosted-geo-provider.ts";
+} from "../app/surfaces.ts";
+import { resolveSelfHostedGeo } from "../features/geo/self-hosted-geo-provider.ts";
 import {
   DIRECT_ATTACH_SENTINEL,
   parseTrustedProxyCidrs,
   resolvePeerAddress,
 } from "../lib/peer-address.ts";
-import { resourcesFromDaemonPresence } from "../lib/db/server-metadata.ts";
-import { touchServerMetadata } from "../server-registry.ts";
+import { resourcesFromDaemonPresence } from "../features/servers/server-metadata.ts";
+import { touchServerMetadata } from "../features/servers/server-registry.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-} from "./authn/server-identity-db.ts";
-import type { CommandQueue } from "../lib/commands/queue.ts";
+} from "../features/servers/server-identity-db.ts";
+import type { CommandQueue } from "../features/commands/queue.ts";
 import type { RateLimiter } from "./rate-limit/contracts.ts";
-import { handleManagedHaEvent } from "../client/managed/ha-event.ts";
+import { handleManagedHaEvent } from "../features/managed/ha-event.ts";
 import { enqueueLatestRecordedCapabilityPlan } from "../client/servers/capability-plan-push.ts";
-import { recordTopologyGeneration } from "../client/servers/server-topology-records.ts";
+import { recordTopologyGeneration } from "../features/servers/server-topology-records.ts";
 import { createInboundWindowGate } from "./rate-limit/inbound-window.ts";
 import { daemonConnectRateLimitKey } from "./rate-limit/keys.ts";
-import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
 import { resolveSession } from "../client/authn/middleware.ts";
 import { isSuperadminRole } from "../client/authn/session-store.ts";
 import { verifyLocalConsoleAuthorization } from "../developer/local-console-auth.ts";

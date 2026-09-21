@@ -1,5 +1,5 @@
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
@@ -13,13 +13,13 @@ import {
   invalidateLicense,
   listLicenses,
   listServersBoundToLicenses,
-} from "../authn/license.ts";
-import { isCustomerBillingOperational } from "../../lib/billing/config.ts";
+} from "../../features/licenses/license.ts";
+import { isCustomerBillingOperational } from "../../features/billing/config.ts";
 import {
   type BillingQuantityLock,
   endQuantityMutation,
   tryBeginQuantityMutation,
-} from "../../lib/billing/quantity-lock.ts";
+} from "../../features/billing/quantity-lock.ts";
 import {
   BILLING_MUTATION_IN_PROGRESS_ERROR,
   loadBillingOrgView,
@@ -28,27 +28,27 @@ import {
 import { loadServerStatusRecords } from "../servers/update-status.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { assertOrgOwnerOr403 } from "../authz/index.ts";
-import { compatLogInfo } from "../../log-compat.ts";
-import { type Db, getDaemonCellRegistry, getDb } from "../../db.ts";
-import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
-import { isDeveloperSurfaceEnabled } from "../../dev-mode.ts";
-import { buildLicenseInstallCommand } from "../../lib/daemon-install-command.ts";
+import { compatLogInfo } from "../../lib/log-compat.ts";
+import { type Db, getDaemonCellRegistry, getDb } from "../../db/connection.ts";
+import type { DaemonCellRegistry } from "../../contracts/cell.ts";
+import { isDeveloperSurfaceEnabled } from "../../app/dev-mode.ts";
+import { buildLicenseInstallCommand } from "../../features/install/daemon-install-command.ts";
 import {
   installOriginNeedsInsecureTls,
   resolvePublicInstanceTls,
-} from "../../lib/install-tls.ts";
-import { syncSelfHostedGrant } from "../../lib/tiers/self-hosted-grant-records.ts";
+} from "../../features/install/install-tls.ts";
+import { syncSelfHostedGrant } from "../../features/tiers/self-hosted-grant-records.ts";
 import {
   parseInstallBaseUrl,
   resolvePublicBaseUrl,
-} from "../../lib/resolve-public-base-url.ts";
+} from "../../features/install/resolve-public-base-url.ts";
 import {
   canReserveServerSeat,
   loadOrgServerCapacity,
   SERVER_CAPACITY_EXCEEDED_ERROR,
-} from "../../lib/server-capacity.ts";
+} from "../../features/servers/server-capacity.ts";
 import { getOrgId } from "../shared.ts";
-import { resolveInstanceUpdateChannel } from "../../lib/update/channel.ts";
+import { resolveInstanceUpdateChannel } from "../../contracts/update-channel.ts";
 import {
   installBaseUrlValidationError,
   isInvalidInstallBaseUrl,
@@ -300,7 +300,7 @@ export function registerLicenseRoutes(
       });
 
       // Self-hosted entitles what it mints: one granted `SX` unit per active
-      // license (`src/lib/tiers/self-hosted-grant.ts`), so this key is
+      // license (`src/features/tiers/self-hosted-grant.ts`), so this key is
       // covered before its daemon ever enrolls — and stays covered if the
       // control plane later moves to the hosted runtime. Hosted mints
       // against what was purchased; the gate above already ran.

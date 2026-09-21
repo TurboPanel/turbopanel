@@ -17,10 +17,10 @@
  */
 
 import type { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { getDb } from '../../db.ts'
+import { getDb } from '../../db/connection.ts'
 import { assertCanManageOr403, getOrgId } from '../shared.ts'
 import {
   completeGithubManifestHandler,

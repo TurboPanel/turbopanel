@@ -13,7 +13,7 @@ import {
   STORAGE_ENGINE_KEYS,
   STORAGE_FLAT_FIELD_NAMES,
   storageEngineFieldName,
-} from './contract.ts'
+} from '../../contracts/metrics-contract.ts'
 import {
   DIAGNOSTICS_CPU_FIELD_NAMES,
   DIAGNOSTICS_MEMORY_FIELD_NAMES,

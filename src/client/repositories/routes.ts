@@ -26,37 +26,37 @@
 import { and, eq, sql } from 'drizzle-orm'
 import { inspectRepository } from './inspect.ts'
 import { resolveDefaultBranchViaDaemon } from './read-repository.ts'
-import { isSafeRoot } from '../../lib/compose/index.ts'
-import { getDaemonCellRegistry } from '../../db.ts'
+import { isSafeRoot } from '../../features/compose/index.ts'
+import { getDaemonCellRegistry } from '../../db/connection.ts'
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
-import { getDb, type Db } from '../../db.ts'
-import { logWarn } from '../../logger.ts'
-import type { DerivedSecretsConfig, SecretsConfig } from '../authn/secrets.ts'
-import { CLIENT_API_PREFIX } from '../../surfaces.ts'
+import { getDb, type Db } from '../../db/connection.ts'
+import { logWarn } from '../../lib/logger.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
+import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import {
   secret,
   forge,
   gitConnection,
   server,
   repository,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import {
   type Forge,
   loadForge,
   visibleForgesCondition,
-} from '../../lib/git/forge-records.ts'
+} from '../../features/git/forge-records.ts'
 import {
   webhookReachability,
   type WebhookProvider,
-} from '../../lib/git/webhook-reachability.ts'
+} from '../../features/git/webhook-reachability.ts'
 import {
   getPublicUrls,
   publicUrlEntryToInstallOrigin,
-} from '../../admin/public-urls.ts'
+} from '../../features/install/public-urls.ts'
 import {
   GITHUB_API_BASE,
   githubApiBaseFor,
@@ -64,26 +64,26 @@ import {
   GithubAppTokenError,
   signGithubAppJwt,
   verifyInstallationAuthorizedByUser,
-} from '../../lib/git/github-app-token.ts'
+} from '../../features/git/github-app-token.ts'
 import { enforceAuthRateLimit } from '../authn/http.ts'
-import { isPostgresUniqueViolation, isUniqueViolationOn } from '../../lib/db/unique-violation.ts'
+import { isPostgresUniqueViolation, isUniqueViolationOn } from '../../db/unique-violation.ts'
 import {
   resolveGitProvider,
   type RepositorySummary,
-} from '../../lib/git/git-provider.ts'
-import { canonicalizeRepositoryUrl } from '../../lib/git/clone-url.ts'
-import { fetchPublicGithubDefaultBranch } from '../../lib/git/github-provider.ts'
+} from '../../features/git/git-provider.ts'
+import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
+import { fetchPublicGithubDefaultBranch } from '../../features/git/github-provider.ts'
 import {
   exchangeGitlabAuthorizationCode,
   gitlabAuthorizeUrl,
   gitlabOauthCredentials,
   GitlabOauthTokenError,
   persistGitlabTokenPair,
-} from '../../lib/git/gitlab-oauth-token.ts'
-import { fetchGitlabAccount } from '../../lib/git/gitlab-provider.ts'
-import { GitlabApiError } from '../../lib/git/gitlab-api.ts'
-import { generateSshDeployKeypair } from '../../lib/git/ssh-keypair.ts'
-import { encryptSecret } from '../authn/data-encryption.ts'
+} from '../../features/git/gitlab-oauth-token.ts'
+import { fetchGitlabAccount } from '../../features/git/gitlab-provider.ts'
+import { GitlabApiError } from '../../features/git/gitlab-api.ts'
+import { generateSshDeployKeypair } from '../../features/git/ssh-keypair.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { canAccessOrganization } from '../org-context.ts'
 import {
   assertCanCreateOr403,
@@ -596,6 +596,123 @@ export function redirectToForgeUi(
   return c.redirect(providerInstallUiReturnPath(organizationId, forgeId, query), 302)
 }
 
+function providerCallbackFail(
+  c: Context<AppEnv>,
+  organizationId: string | null,
+  error: ProviderInstallReturnError,
+  forgeId: string | null = null,
+): Response {
+  return redirectToForgeUi(c, organizationId, forgeId, { error })
+}
+
+async function proveGithubInstallUser(
+  c: Context<AppEnv>,
+  app: Forge,
+  params: {
+    code: string
+    externalInstallationId: string
+    organizationId: string
+  },
+): Promise<Response | null> {
+  try {
+    const verdict = await verifyInstallationAuthorizedByUser(app, {
+      code: params.code,
+      externalInstallationId: params.externalInstallationId,
+    })
+    if (verdict === 'not_authorized') {
+      logWarn(
+        'git-sources',
+        `github installation ${params.externalInstallationId} refused: not visible to the authorizing user (org ${params.organizationId})`,
+      )
+      return providerCallbackFail(
+        c,
+        params.organizationId,
+        'install_not_authorized',
+        app.id,
+      )
+    }
+    return null
+  } catch (error) {
+    logWarn(
+      'git-sources',
+      `github install authorization check failed: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }`,
+    )
+    return providerCallbackFail(c, params.organizationId, 'provider_failed', app.id)
+  }
+}
+
+async function lookupGithubInstallAccount(
+  c: Context<AppEnv>,
+  app: Forge,
+  privateKeyPem: string,
+  externalInstallationId: string,
+  organizationId: string,
+): Promise<{ accountLogin: string | null; accountType: string | null } | Response> {
+  try {
+    const appJwt = await signGithubAppJwt(app.externalAppId, privateKeyPem)
+    return await fetchInstallationAccount(
+      appJwt,
+      externalInstallationId,
+      githubApiBaseFor(app),
+    )
+  } catch (error) {
+    logWarn(
+      'git-sources',
+      `github installation lookup failed: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }`,
+    )
+    return providerCallbackFail(c, organizationId, 'provider_failed', app.id)
+  }
+}
+
+async function persistGithubGitConnection(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    organizationId: string
+    appId: string
+    externalInstallationId: string
+    accountLogin: string | null
+    accountType: string | null
+  },
+): Promise<{ id: string } | Response> {
+  try {
+    const [row] = await db
+      .insert(gitConnection)
+      .values({
+        organizationId: params.organizationId,
+        forgeId: params.appId,
+        provider: 'github',
+        externalInstallationId: params.externalInstallationId,
+        accountLogin: params.accountLogin,
+        accountType: params.accountType,
+      })
+      .onConflictDoUpdate({
+        target: [
+          gitConnection.organizationId,
+          gitConnection.forgeId,
+          gitConnection.externalInstallationId,
+        ],
+        set: {
+          accountLogin: params.accountLogin,
+          accountType: params.accountType,
+          suspendedAt: null,
+          updatedAt: new Date().toISOString(),
+        },
+      })
+      .returning({ id: gitConnection.id })
+    return row ?? { id: 'ok' }
+  } catch (error) {
+    if (isInstallationClaimViolation(error)) {
+      return providerCallbackFail(c, params.organizationId, 'claimed', params.appId)
+    }
+    throw error
+  }
+}
+
 /**
  * Refuse an installation another organization already holds.
  *
@@ -921,30 +1038,24 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     if (ctx instanceof Response) return ctx
     const { db, userId, secretsConfig, dataEncryptionSecrets } = ctx
 
-    const fail = (
-      organizationId: string | null,
-      error: ProviderInstallReturnError,
-      forgeId: string | null = null,
-    ) => redirectToForgeUi(c, organizationId, forgeId, { error })
-
-    if (!secretsConfig) return fail(null, 'unavailable')
+    if (!secretsConfig) return providerCallbackFail(c, null, 'unavailable')
 
     // `installation_id` is a caller-typed integer; a per-user ceiling keeps
     // guessing someone else's slow even before the proof below refuses it.
     const limited = await enforceAuthRateLimit(c, 'forge-connect', userId, opts.runtime)
-    if (limited) return fail(null, 'rate_limited')
+    if (limited) return providerCallbackFail(c,null, 'rate_limited')
 
     const state = c.req.query('state')
     const externalInstallationId = c.req.query('installation_id')
-    if (!state || !externalInstallationId) return fail(null, 'invalid_request')
+    if (!state || !externalInstallationId) return providerCallbackFail(c,null, 'invalid_request')
     // Present only when the App requests user authorization during
     // installation — the one thing GitHub sends that ties the person who
     // clicked Install to the installation id they came back with.
     const code = c.req.query('code')
-    if (!code) return fail(null, 'install_authorization_required')
+    if (!code) return providerCallbackFail(c,null, 'install_authorization_required')
 
     const claims = await verifyGithubInstallState(secretsConfig, state)
-    if (!claims) return fail(null, 'state_invalid')
+    if (!claims) return providerCallbackFail(c,null, 'state_invalid')
 
     const denied = await authorizeClaimedOrganization(
       c,
@@ -952,16 +1063,16 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       userId,
       claims.organizationId,
     )
-    if (denied) return fail(claims.organizationId, 'forbidden', claims.forgeId)
+    if (denied) return providerCallbackFail(c,claims.organizationId, 'forbidden', claims.forgeId)
 
     const organizationId = claims.organizationId
-    if (!dataEncryptionSecrets) return fail(organizationId, 'unavailable', claims.forgeId)
+    if (!dataEncryptionSecrets) return providerCallbackFail(c,organizationId, 'unavailable', claims.forgeId)
 
     // The app comes from the signed state, not from a query param on the
     // provider's redirect — the callback URL is one GitHub controls.
     const app = await loadForge(db, dataEncryptionSecrets, claims.forgeId)
     if (app?.provider !== 'github' || !app.privateKeyPem) {
-      return fail(organizationId, 'not_configured', claims.forgeId)
+      return providerCallbackFail(c,organizationId, 'not_configured', claims.forgeId)
     }
 
     const claimed = await assertConnectionUnclaimed(c, db, {
@@ -970,85 +1081,37 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       provider: 'github',
       organizationId,
     })
-    if (claimed) return fail(organizationId, 'claimed', app.id)
+    if (claimed) return providerCallbackFail(c,organizationId, 'claimed', app.id)
 
     // Proof of approval, before the App's key is used for anything: the
     // GitHub user who came back must be able to see this installation.
-    try {
-      const verdict = await verifyInstallationAuthorizedByUser(app, {
-        code,
-        externalInstallationId,
-      })
-      if (verdict === 'not_authorized') {
-        logWarn(
-          'git-sources',
-          `github installation ${externalInstallationId} refused: not visible to the authorizing user (org ${organizationId})`,
-        )
-        return fail(organizationId, 'install_not_authorized', app.id)
-      }
-    } catch (error) {
-      logWarn(
-        'git-sources',
-        `github install authorization check failed: ${
-          error instanceof Error ? error.message : 'unknown error'
-        }`,
-      )
-      return fail(organizationId, 'provider_failed', app.id)
-    }
+    const unauthorized = await proveGithubInstallUser(c, app, {
+      code,
+      externalInstallationId,
+      organizationId,
+    })
+    if (unauthorized) return unauthorized
 
-    let account: { accountLogin: string | null; accountType: string | null }
-    try {
-      const appJwt = await signGithubAppJwt(app.externalAppId, app.privateKeyPem)
-      account = await fetchInstallationAccount(
-        appJwt,
-        externalInstallationId,
-        githubApiBaseFor(app),
-      )
-    } catch (error) {
-      logWarn(
-        'git-sources',
-        `github installation lookup failed: ${
-          error instanceof Error ? error.message : 'unknown error'
-        }`,
-      )
-      return fail(organizationId, 'provider_failed', app.id)
-    }
+    const account = await lookupGithubInstallAccount(
+      c,
+      app,
+      app.privateKeyPem,
+      externalInstallationId,
+      organizationId,
+    )
+    if (account instanceof Response) return account
 
-    let row: { id: string } | undefined
-    try {
-      ;[row] = await db
-        .insert(gitConnection)
-        .values({
-          organizationId,
-          forgeId: app.id,
-          provider: 'github',
-          externalInstallationId,
-          accountLogin: account.accountLogin,
-          accountType: account.accountType,
-        })
-        .onConflictDoUpdate({
-          target: [
-            gitConnection.organizationId,
-            gitConnection.forgeId,
-            gitConnection.externalInstallationId,
-          ],
-          set: {
-            accountLogin: account.accountLogin,
-            accountType: account.accountType,
-            suspendedAt: null,
-            updatedAt: new Date().toISOString(),
-          },
-        })
-        .returning({ id: gitConnection.id })
-    } catch (error) {
-      // Another organization landed the same installation between the
-      // pre-check and this write — the index is the lock, this is its 409.
-      if (isInstallationClaimViolation(error)) return fail(organizationId, 'claimed', app.id)
-      throw error
-    }
+    const row = await persistGithubGitConnection(c, db, {
+      organizationId,
+      appId: app.id,
+      externalInstallationId,
+      accountLogin: account.accountLogin,
+      accountType: account.accountType,
+    })
+    if (row instanceof Response) return row
 
     return redirectToForgeUi(c, organizationId, app.id, {
-      installed: row?.id ?? 'ok',
+      installed: row.id,
     })
   })
 
@@ -1125,23 +1188,17 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     if (ctx instanceof Response) return ctx
     const { db, userId, secretsConfig, dataEncryptionSecrets } = ctx
 
-    const fail = (
-      organizationId: string | null,
-      error: ProviderInstallReturnError,
-      forgeId: string | null = null,
-    ) => redirectToForgeUi(c, organizationId, forgeId, { error })
-
-    if (!secretsConfig) return fail(null, 'unavailable')
+    if (!secretsConfig) return providerCallbackFail(c, null, 'unavailable')
 
     const limited = await enforceAuthRateLimit(c, 'forge-connect', userId, opts.runtime)
-    if (limited) return fail(null, 'rate_limited')
+    if (limited) return providerCallbackFail(c,null, 'rate_limited')
 
     const state = c.req.query('state')
     const code = c.req.query('code')
-    if (!state || !code) return fail(null, 'invalid_request')
+    if (!state || !code) return providerCallbackFail(c,null, 'invalid_request')
 
     const claims = await verifyGitlabConnectState(secretsConfig, state)
-    if (!claims) return fail(null, 'state_invalid')
+    if (!claims) return providerCallbackFail(c,null, 'state_invalid')
 
     const denied = await authorizeClaimedOrganization(
       c,
@@ -1149,18 +1206,18 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       userId,
       claims.organizationId,
     )
-    if (denied) return fail(claims.organizationId, 'forbidden', claims.forgeId)
+    if (denied) return providerCallbackFail(c,claims.organizationId, 'forbidden', claims.forgeId)
 
     const organizationId = claims.organizationId
-    if (!dataEncryptionSecrets) return fail(organizationId, 'unavailable', claims.forgeId)
+    if (!dataEncryptionSecrets) return providerCallbackFail(c,organizationId, 'unavailable', claims.forgeId)
 
     const app = await loadForge(db, dataEncryptionSecrets, claims.forgeId)
     if (app?.provider !== 'gitlab') {
-      return fail(organizationId, 'not_configured', claims.forgeId)
+      return providerCallbackFail(c,organizationId, 'not_configured', claims.forgeId)
     }
 
     const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
-    if (!redirectUri) return fail(organizationId, 'not_configured', app.id)
+    if (!redirectUri) return providerCallbackFail(c,organizationId, 'not_configured', app.id)
 
     let credentials
     let pair
@@ -1176,7 +1233,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
           error instanceof Error ? error.message : 'unknown error'
         }`,
       )
-      return fail(organizationId, 'provider_failed', app.id)
+      return providerCallbackFail(c,organizationId, 'provider_failed', app.id)
     }
 
     // GitLab's own account id is the stable handle for the connection. When the
@@ -1191,7 +1248,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       provider: 'gitlab',
       organizationId,
     })
-    if (claimed) return fail(organizationId, 'claimed', app.id)
+    if (claimed) return providerCallbackFail(c,organizationId, 'claimed', app.id)
 
     const [row] = await db
       .insert(gitConnection)
@@ -1220,7 +1277,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       .returning({ id: gitConnection.id })
 
     const connectionId = row?.id
-    if (!connectionId) return fail(organizationId, 'provider_failed', app.id)
+    if (!connectionId) return providerCallbackFail(c,organizationId, 'provider_failed', app.id)
 
     await persistGitlabTokenPair(db, dataEncryptionSecrets, connectionId, pair)
 

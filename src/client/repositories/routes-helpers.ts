@@ -6,15 +6,15 @@
  */
 
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { isSafeRoot } from '../../lib/compose/service-kind.ts'
-import { canonicalizeRepositoryUrl } from '../../lib/git/clone-url.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { isSafeRoot } from '../../features/compose/service-kind.ts'
+import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
 
 export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
- * Kept as a literal rather than imported from `src/lib/git/git-provider.ts`
+ * Kept as a literal rather than imported from `src/features/git/git-provider.ts`
  * (which holds the canonical `GIT_PROVIDERS`) so this module stays free of the
  * provider implementations — and therefore free of the database — the way the
  * comment above promises. The two lists and the `source_provider_check`
@@ -443,7 +443,7 @@ export function parseSourcePatchBody(
 /**
  * Compose stores `services.<name>.x-turbopanel.source.sourceId` in jsonb, but a
  * `!override` / `!reset` tag can wrap **any** node on that path as a
- * `{ __turbopanelComposeTag, value }` sentinel (`src/lib/compose/tags.ts`) — the
+ * `{ __turbopanelComposeTag, value }` sentinel (`src/features/compose/tags.ts`) — the
  * scalar id, the whole `source` mapping, `x-turbopanel`, or the service itself.
  * Enumerating those shapes one by one is how tagged mappings were missed, so the
  * lookup uses recursive `**` hops between the anchor keys instead: every
@@ -506,7 +506,7 @@ export type SourceRowLike = {
  * pair on every entry. `webhookUrl` is what the operator pastes into the App's
  * webhook settings; `reachabilityNote` is non-null exactly when this instance
  * looks unreachable from the public internet (see
- * `src/lib/git/webhook-reachability.ts`).
+ * `src/features/git/webhook-reachability.ts`).
  */
 export type SourceWebhookInfo = {
   webhookUrl: string | null
@@ -632,9 +632,9 @@ export function serializeConnectionRow(row: ConnectionRowLike) {
  *
  * The narrowing itself is provider-specific and lives with each implementation
  * (`toGithubRepositorySummary`, `toGitlabRepositorySummary`); only the result
- * type is shared, and it is defined once in `src/lib/git/git-provider.ts`.
+ * type is shared, and it is defined once in `src/features/git/git-provider.ts`.
  * Re-exported here under its old name so callers of the sources surface keep
  * one import.
  */
-export type { RepositorySummary } from '../../lib/git/git-provider.ts'
-export type { RepositorySummary as GithubRepositorySummary } from '../../lib/git/git-provider.ts'
+export type { RepositorySummary } from '../../features/git/git-provider.ts'
+export type { RepositorySummary as GithubRepositorySummary } from '../../features/git/git-provider.ts'

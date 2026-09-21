@@ -5,9 +5,9 @@
 
 import { assertEquals } from "@std/assert";
 import { getTableName } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
-import type { DerivedSecretsConfig, SecretsConfig } from "../authn/secrets.ts";
+import type { Db } from "../../db/connection.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
+import type { DerivedSecretsConfig, SecretsConfig } from "../../lib/secrets/secrets.ts";
 import {
   enumerateOrganizationRotationTargets,
   parseCaRotationResults,

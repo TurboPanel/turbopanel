@@ -1,8 +1,8 @@
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../client/authn/secrets.ts'
-import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from '../lib/secrets/secrets.ts'
+import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 import { registerDeveloperRoutes } from './routes.ts'
 
 /**

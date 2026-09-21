@@ -1,8 +1,8 @@
 import { eq } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { environment, project } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { environment, project } from '../../db/schema.ts'
 import { mergeProjectEnvironmentCompose } from './deploy-prepare.ts'
-import { reconcileServicesFromCompose } from './reconcile-services.ts'
+import { reconcileServicesFromCompose } from '../../features/deploy/reconcile-services.ts'
 
 /**
  * Reconcile `service` rows for one environment from its currently-persisted

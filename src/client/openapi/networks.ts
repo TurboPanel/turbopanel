@@ -41,7 +41,7 @@ export const networkSchemas = {
     type: 'object',
     required: ['error', 'cidr', 'conflictingCidr'],
     description:
-      'Every CIDR write goes through one collision authority (`src/lib/net/cidr-collisions.ts`). Each pair is a hard **409**: `cidr_overlaps_fabric` (the org TurboFabric `tp0` range), `cidr_overlaps_fabric_pool` (`fabric.options.containerPool`, default `10.192.0.0/12`), `subnet_overlaps` (a site subnet anywhere in the organization — the org-wide default), `cidr_overlaps_gateway_advertised` (a site subnet in another datacenter when both datacenters have a gateway-role relay — the case that breaks WireGuard `AllowedIPs`), `cidr_overlaps_reserved` (an operator-reserved range), `cidr_overlaps_docker_network` (a docker/managed registration carrying a CIDR).',
+      'Every CIDR write goes through one collision authority (`src/features/net/cidr-collisions.ts`). Each pair is a hard **409**: `cidr_overlaps_fabric` (the org TurboFabric `tp0` range), `cidr_overlaps_fabric_pool` (`fabric.options.containerPool`, default `10.192.0.0/12`), `subnet_overlaps` (a site subnet anywhere in the organization — the org-wide default), `cidr_overlaps_gateway_advertised` (a site subnet in another datacenter when both datacenters have a gateway-role relay — the case that breaks WireGuard `AllowedIPs`), `cidr_overlaps_reserved` (an operator-reserved range), `cidr_overlaps_docker_network` (a docker/managed registration carrying a CIDR).',
     properties: {
       error: {
         type: 'string',

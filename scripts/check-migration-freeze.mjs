@@ -22,7 +22,7 @@
  * `public.migration.hash` column.
  *
  * Invariants (mode `check`, the default; also run by
- * `src/lib/db/migration-manifest.test.ts`):
+ * `src/db/migration-manifest.test.ts`):
  *
  *   1. journal `idx` values are contiguous from 0 and each `tag` starts with
  *      its zero-padded idx;
@@ -45,7 +45,7 @@
  * journal entries and refuses to change or drop an existing one — a changed
  * hash means an already-shipped file was edited, and the fix is a new forward
  * migration, not a manifest edit. `--rebaseline` is the one carve-out, for
- * the pre-tag fold that regenerates `0000_init.sql` (see `src/lib/db/AGENTS.md`,
+ * the pre-tag fold that regenerates `0000_init.sql` (see `src/db/AGENTS.md`,
  * "The baseline has been regenerated…"): it rewrites the manifest from the
  * journal, bumps `generation`, and is expected to be run in the fold commit
  * itself. Once `frozen` is true (set by that fold commit), existing entries

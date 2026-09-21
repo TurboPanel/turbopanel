@@ -16,7 +16,7 @@ import {
   validateSuperadminPassword,
   validateTeamName,
 } from "./install-state.ts";
-import type { Db } from "../../db.ts";
+import type { Db } from "../../db/connection.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

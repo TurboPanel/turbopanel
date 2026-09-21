@@ -3,14 +3,14 @@
  * shaping without a Hono Context or live DB client.
  */
 
-import { assertValidHostname } from '../../lib/commands/hostname.ts'
+import { assertValidHostname } from '../../contracts/commands/hostname.ts'
 import {
   parseNtpSetPayload,
   parseTimezoneSetPayload,
-} from '../../lib/commands/schemas.ts'
+} from '../../contracts/commands/schemas.ts'
 import { isAllowedTimezone } from '../../lib/timezones.ts'
 import { computePingLatency } from './commands-ping-latency.ts'
-import { DEFAULT_EXECUTION_LOG_READ_BYTES } from '../../lib/execution-logs/types.ts'
+import { DEFAULT_EXECUTION_LOG_READ_BYTES } from '../../features/execution-logs/types.ts'
 
 export type CommandRouteValidationError = {
   ok: false

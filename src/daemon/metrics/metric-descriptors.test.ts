@@ -17,13 +17,13 @@ import type {
   NetworkDeviceSample,
   RouterSample,
   StorageSample,
-} from './contract.ts'
+} from '../../contracts/metrics-contract.ts'
 import {
   STORAGE_ENGINE_FIELD_NAMES,
   STORAGE_ENGINE_KEYS,
   STORAGE_FLAT_FIELD_NAMES,
   storageEngineFieldName,
-} from './contract.ts'
+} from '../../contracts/metrics-contract.ts'
 import {
   _internal,
   HOST_METRICS_METRIC_DESCRIPTORS,

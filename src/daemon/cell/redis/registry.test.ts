@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
-import type { Db } from "../../../db.ts";
+import type { Db } from "../../../db/connection.ts";
 import {
   cellKeyPattern,
   leaseKey,

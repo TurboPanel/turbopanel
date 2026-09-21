@@ -1,6 +1,6 @@
 import { assert, assertEquals } from '@std/assert'
-import type { Db } from '../../db.ts'
-import type { ServerMetadata } from '../../lib/db/server-metadata.ts'
+import type { Db } from '../../db/connection.ts'
+import type { ServerMetadata } from '../../features/servers/server-metadata.ts'
 
 /**
  * Metadata as it exists in the `server.metadata` jsonb column, which can carry
@@ -9,7 +9,7 @@ import type { ServerMetadata } from '../../lib/db/server-metadata.ts'
  * untouched rather than dropping them, so the fixtures below carry some.
  */
 type StoredServerMetadata = ServerMetadata & Record<string, unknown>
-import type { ServerGeo } from '../../lib/geo/server-geo.ts'
+import type { ServerGeo } from '../../features/geo/server-geo.ts'
 import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
@@ -17,7 +17,7 @@ import {
   type ServerDaemonProjection,
   type ServerDaemonState,
   type ServerDaemonStatus,
-} from '../authn/daemon-state.ts'
+} from '../../features/servers/daemon-state.ts'
 import {
   buildProjectionsFromDaemonRows,
   daemonBuildChanged,

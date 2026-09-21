@@ -5,8 +5,8 @@
 
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { CLIENT_API_PREFIX } from '../../surfaces.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createAuthRateLimiter,
@@ -28,9 +28,9 @@ import {
   HTTP_SESSION_COOKIE_NAME,
 } from './crypto.ts'
 import { MAX_OTP_ATTEMPTS } from './email-otp.ts'
-import { hashPassword } from './password.ts'
+import { hashPassword } from '../../lib/secrets/password.ts'
 import { registerOtpRoutes } from './otp-http.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

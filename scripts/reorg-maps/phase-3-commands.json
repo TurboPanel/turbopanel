@@ -1,0 +1,10 @@
+{
+  "dirs": {
+    "src/lib/commands": "src/features/commands"
+  },
+  "files": {
+    "src/lib/db/command-records.ts": "src/features/commands/command-records.ts",
+    "src/lib/db/command-records.test.ts": "src/features/commands/command-records.test.ts",
+    "src/lib/db/command-records.hostfree.test.ts": "src/features/commands/command-records.hostfree.test.ts"
+  }
+}

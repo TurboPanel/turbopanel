@@ -3,8 +3,8 @@
  */
 
 import { assertEquals } from '@std/assert'
-import type { Db } from '../../db.ts'
-import { postgresEngineSpec } from '../../lib/managed/postgres.ts'
+import type { Db } from '../../db/connection.ts'
+import { postgresEngineSpec } from '../../features/managed/postgres.ts'
 import {
   assertNoBindingKeyConflicts,
   BINDING_ENGINE_DEFAULTS_IN_USE_ERROR,

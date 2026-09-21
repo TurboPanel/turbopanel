@@ -1,5 +1,5 @@
 import { principalVolumePath } from '../../lib/naming.ts'
-import type { storageCopy, mount, storage } from '../../lib/db/schema.ts'
+import type { storageCopy, mount, storage } from '../../db/schema.ts'
 
 type StorageRow = typeof storage.$inferSelect
 type CopyRow = typeof storageCopy.$inferSelect

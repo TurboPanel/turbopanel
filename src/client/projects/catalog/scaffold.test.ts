@@ -3,17 +3,17 @@ import { eq } from 'drizzle-orm'
 import {
   decryptSecret,
   parseSecretEnvelope,
-} from '../../authn/data-encryption.ts'
-import { deriveEncryptionSecretsConfig } from '../../authn/secrets.ts'
-import { getDatabaseUrl } from '../../../db-url.ts'
-import { createDenoDb } from '../../../db.ts'
+} from '../../../lib/secrets/data-encryption.ts'
+import { deriveEncryptionSecretsConfig } from '../../../lib/secrets/secrets.ts'
+import { getDatabaseUrl } from '../../../db/url.ts'
+import { createDenoDb } from '../../../db/connection.ts'
 import {
   environment,
   organization,
   project,
   variable,
   workspace,
-} from '../../../lib/db/schema.ts'
+} from '../../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
 import { scaffoldCatalogEnvironments } from '../routes.ts'
 import {

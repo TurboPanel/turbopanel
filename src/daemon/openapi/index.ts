@@ -1,4 +1,4 @@
-import { INSTANCE_VERSION } from "../../version.ts";
+import { INSTANCE_VERSION } from "../../app/version.ts";
 import { authPaths, authSchemas } from "./auth.ts";
 import { caPaths } from "./ca.ts";
 import { executionLogPaths, executionLogSchemas } from "./execution-logs.ts";

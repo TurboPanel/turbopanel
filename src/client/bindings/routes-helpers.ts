@@ -4,18 +4,20 @@
  */
 
 import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { binding, hosting, managed, principal, variable } from '../../lib/db/schema.ts'
-import { getManagedEngineSpec } from '../../lib/managed/index.ts'
+import type { Db } from '../../db/connection.ts'
+import { binding, hosting, managed, principal, variable } from '../../db/schema.ts'
+import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import { assertSafeBindingKeyPrefix, DEFAULT_BINDING_KEY_PREFIX } from '../../lib/naming.ts'
-import { parseManagedRowOptions } from '../managed/options.ts'
-import { isManagedReplicationPrincipal, isManagedRootPrincipal } from '../managed/routes-helpers.ts'
-import { listBindingEmittedKeys } from './materialize.ts'
-import { isBindingEndpointError, resolveBindingEndpoint } from './resolve-endpoint.ts'
+import { parseManagedRowOptions } from '../../features/managed/options.ts'
+import { isManagedReplicationPrincipal, isManagedRootPrincipal } from '../../features/managed/routes-helpers.ts'
+import { listBindingEmittedKeys } from '../../features/bindings/materialize.ts'
+import { isBindingEndpointError, resolveBindingEndpoint } from '../../features/bindings/resolve-endpoint.ts'
 import {
   isPostgresUniqueViolation,
   uniqueViolationMessage as uniqueViolationLayerMessage,
-} from '../../lib/db/unique-violation.ts'
+} from '../../db/unique-violation.ts'
+
+export { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 
 export { assertSafeBindingKeyPrefix, DEFAULT_BINDING_KEY_PREFIX }
 
@@ -34,8 +36,6 @@ export type BindingRow = {
   createdAt: string
   updatedAt: string
 }
-
-export { isPostgresUniqueViolation }
 
 /**
  * Map a materialize failure onto the HTTP status + body the bindings API

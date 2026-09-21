@@ -1,5 +1,5 @@
-import type { Db } from '../../db.ts'
-import type { ServerDaemonState } from '../../daemon/authn/daemon-state.ts'
+import type { Db } from '../../db/connection.ts'
+import type { ServerDaemonState } from '../../features/servers/daemon-state.ts'
 
 const activeDaemon: ServerDaemonState = {
   key: {

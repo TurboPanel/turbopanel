@@ -3,7 +3,7 @@
  *
  * Authorize URLs are built here; the browser navigates to them. Token exchange
  * and identity fetches use a bare `fetch` with explicit error mapping — same
- * style as `postTokenGrant` in `src/lib/git/gitlab-oauth-token.ts`. No I/O at
+ * style as `postTokenGrant` in `src/features/git/gitlab-oauth-token.ts`. No I/O at
  * module load (Workers 10021).
  */
 

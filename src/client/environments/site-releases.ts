@@ -26,7 +26,7 @@
  */
 
 import { eq, inArray } from "drizzle-orm";
-import type { Db } from "../../db.ts";
+import type { Db } from "../../db/connection.ts";
 import {
   deployment,
   environment,
@@ -34,8 +34,8 @@ import {
   principal,
   project,
   service,
-} from "../../lib/db/schema.ts";
-import { readServiceSourceExtension } from "../../lib/compose/index.ts";
+} from "../../db/schema.ts";
+import { readServiceSourceExtension } from "../../features/compose/index.ts";
 import { mergeProjectEnvironmentCompose } from "./deploy-prepare.ts";
 import {
   loadPrincipalIdsByServiceIdForEnvironment,

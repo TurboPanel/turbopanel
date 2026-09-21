@@ -20,7 +20,7 @@ import {
   validateSuperadminEmail,
   validateSuperadminPassword,
 } from './install-state.ts'
-import { hashPassword } from './password.ts'
+import { hashPassword } from '../../lib/secrets/password.ts'
 import {
   createSession,
   deleteSessionsByUserId,
@@ -35,10 +35,10 @@ import {
   readGatedAuthJsonBody,
   resolveClientIp,
 } from './http.ts'
-import { compatLogWarn } from '../../log-compat.ts'
-import { getDb, type Db } from '../../db.ts'
-import { account, user } from '../../lib/db/schema.ts'
-import { getEmailQueue, type OtpType } from '../../lib/email/types.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import { getDb, type Db } from '../../db/connection.ts'
+import { account, user } from '../../db/schema.ts'
+import { getEmailQueue, type OtpType } from '../../features/email/types.ts'
 import {
   AUTH_RESET_PASSWORD_MAX_BODY_BYTES,
   AUTH_RESET_PASSWORD_REQUEST_MAX_BODY_BYTES,

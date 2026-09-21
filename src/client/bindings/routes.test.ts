@@ -5,20 +5,20 @@
 import { assertEquals } from "@std/assert";
 import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
-import { encryptSecret } from "../authn/data-encryption.ts";
+import { encryptSecret } from "../../lib/secrets/data-encryption.ts";
 import { createSession } from "../authn/session-store.ts";
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   type SecretsConfig,
-} from "../authn/secrets.ts";
+} from "../../lib/secrets/secrets.ts";
 import {
   binding,
   container,
@@ -35,8 +35,8 @@ import {
   user,
   variable,
   workspace,
-} from "../../lib/db/schema.ts";
-import { postgresEngineSpec } from "../../lib/managed/postgres.ts";
+} from "../../db/schema.ts";
+import { postgresEngineSpec } from "../../features/managed/postgres.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import { registerBindingRoutes } from "./routes.ts";

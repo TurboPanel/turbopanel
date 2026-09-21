@@ -24,7 +24,7 @@
  */
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { buildMetricsSample } from './contract.ts'
+import { buildMetricsSample } from '../../contracts/metrics-contract.ts'
 import type { AuthenticatedMetricsSample, SlotMapping } from './types.ts'
 import {
   AE_BLOB_FAMILY_INDEX,

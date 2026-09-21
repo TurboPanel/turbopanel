@@ -15,15 +15,15 @@
  * capability plan; self-hosted ingest skips truncation and writes the
  * operator's own disk uncapped — see the WARNING this report prints.
  */
-import { buildMetricsSample } from "../src/daemon/metrics/contract.ts";
+import { buildMetricsSample } from "../src/contracts/metrics-contract.ts";
 import {
   type MetricsDeploymentKind,
   platformDefaultMetricsCapabilityPlan,
   truncateSampleToCapabilityPlan,
-} from "../src/daemon/metrics/capability-plan.ts";
+} from "../src/contracts/capability-plan.ts";
 import { buildMetricsDataPoints } from "../src/daemon/metrics/backends/cloudflare/field-map.ts";
 import { representativeMachineFixtures } from "../src/daemon/metrics/testing/representative-machines.ts";
-import type { MetricsSample } from "../src/daemon/metrics/contract.ts";
+import type { MetricsSample } from "../src/contracts/metrics-contract.ts";
 import type { SlotMapping } from "../src/daemon/metrics/types.ts";
 
 const SERVER_ID = "11111111-2222-4333-8444-555555555555";

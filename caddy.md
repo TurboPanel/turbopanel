@@ -21,7 +21,7 @@ webhook that means the provider records a successful delivery and never
 retries — silent, unrecoverable loss. The same trap exists on Workers, where
 the UI worker holds the apex as a custom domain with
 `not_found_handling: "single-page-application"`; add the prefix to `routes` in
-`wrangler.jsonc` at the same time. `src/surfaces.test.ts` pins the strings.
+`wrangler.jsonc` at the same time. `src/app/surfaces.test.ts` pins the strings.
 
 `reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on all three.
 The instance uses that header to deduplicate daemon WebSocket reconnects
@@ -172,7 +172,7 @@ outgoing **Platform CA** to the bundle, then fans `server.tls.trust.reconcile`
 over the existing WSS session so the new anchor lands **before** the old one is
 retired.
 
-**Install command TLS** follows the selected origin (`src/lib/install-tls.ts`),
+**Install command TLS** follows the selected origin (`src/features/install/install-tls.ts`),
 not “we are in development”:
 
 - HTTPS on a non-443 port, loopback, RFC1918, or reserved LAN TLDs (`.lan` /
@@ -198,7 +198,7 @@ compiled daemon from this instance, never `dl.trbp.nl`.
 
 Caddy serves the exported web build from `TURBOPANEL_UI_ROOT` (default
 `/opt/turbopanel/share/ui`). On co-located hosts, `TURBOPANEL_UI_MODE=static`
-also disables `isDeveloperSurfaceEnabled()` (see `src/dev-mode.ts`) and stops
+also disables `isDeveloperSurfaceEnabled()` (see `src/app/dev-mode.ts`) and stops
 `turbopanel-ui.service` via the `instance-launch` role — while still loading the
 **dev** overlay Caddyfile when `turbopanel_dev_user` is set (plaintext `:8880`
 remains available).

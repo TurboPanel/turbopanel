@@ -1,19 +1,19 @@
 import type { Env, Hono } from "hono";
 import { join } from "@std/path";
 import { createDeveloperAccessMiddleware } from "../client/authn/middleware.ts";
-import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
 import { encodeBase64 } from "@std/encoding/base64";
-import type { DaemonCellRegistry } from "../daemon/cell/contracts.ts";
+import type { DaemonCellRegistry } from "../contracts/cell.ts";
 import {
   type DaemonOutboundEnvelope,
   generateDeliveryId,
   generateRequestId,
-} from "../daemon/cell/protocol.ts";
+} from "../contracts/cell-protocol.ts";
 import { resolveColocatedServerIdSet } from "../client/servers/colocated.ts";
-import { getDaemonCellRegistry, getDb } from "../db.ts";
+import { getDaemonCellRegistry, getDb } from "../db/connection.ts";
 import { getDaemonRepoPath } from "../daemon/version.ts";
-import { cellTrace } from "../logger.ts";
-import { DEVELOPER_API_PREFIX } from "../surfaces.ts";
+import { cellTrace } from "../lib/logger.ts";
+import { DEVELOPER_API_PREFIX } from "../app/surfaces.ts";
 import { buildDevSyncTarArgs } from "./dev-sync-archive.ts";
 
 export const COLOCATED_DEV_SYNC_SKIPPED_REASON =

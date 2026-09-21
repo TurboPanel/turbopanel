@@ -53,7 +53,7 @@
  * Needs a sandbox whose catalogue a superadmin has entered under Admin →
  * Tiers (exactly one active `S3` and one `S5`, each naming a product whose
  * default price verifies against Stripe) and **no Billing Automations**
- * configured — see the runbook in `src/lib/billing/AGENTS.md`. The harness
+ * configured — see the runbook in `src/features/billing/AGENTS.md`. The harness
  * itself only ever *reads* tier rows; it has never written them and must
  * not start (the mutations it drives refresh a row's cached display price
  * from the product, as production does). Every scenario gets a fresh
@@ -82,39 +82,39 @@
  *    the retry window is walked in fortnights.
  */
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { createDenoDb, type Db, endDbConnection } from "../src/db.ts";
-import { createLicense } from "../src/client/authn/license.ts";
+import { createDenoDb, type Db, endDbConnection } from "../src/db/connection.ts";
+import { createLicense } from "../src/features/licenses/license.ts";
 import {
   changeSeats,
   downgradeTier,
   upgradeTier,
 } from "../src/client/billing/mutations.ts";
 import { SUBSCRIPTION_PAST_DUE_ERROR } from "../src/client/billing/routes-helpers.ts";
-import { createStripeClient, type StripeClient } from "../src/lib/billing/client.ts";
-import { resolveBillingConfig, STRIPE_SECRET_KEY_ENV } from "../src/lib/billing/config.ts";
-import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from "../src/lib/billing/customer-subject.ts";
-import { resolveBillingGateway } from "../src/lib/billing/gateway.ts";
-import { runGraceClockForSubscription } from "../src/lib/billing/grace-clock.ts";
-import { billingPendingChangesKey, readPendingChanges } from "../src/lib/billing/pending-changes.ts";
-import { billingQuantityLockKey } from "../src/lib/billing/quantity-lock.ts";
-import { createSubscription } from "../src/lib/billing/subscriptions.ts";
+import { createStripeClient, type StripeClient } from "../src/features/billing/client.ts";
+import { resolveBillingConfig, STRIPE_SECRET_KEY_ENV } from "../src/features/billing/config.ts";
+import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from "../src/features/billing/customer-subject.ts";
+import { resolveBillingGateway } from "../src/features/billing/gateway.ts";
+import { runGraceClockForSubscription } from "../src/features/billing/grace-clock.ts";
+import { billingPendingChangesKey, readPendingChanges } from "../src/features/billing/pending-changes.ts";
+import { billingQuantityLockKey } from "../src/features/billing/quantity-lock.ts";
+import { createSubscription } from "../src/features/billing/subscriptions.ts";
 import {
   advanceTestClock,
   createTestClock,
   deleteTestClock,
   getTestClock,
   type TestClock,
-} from "../src/lib/billing/test-clock.ts";
+} from "../src/features/billing/test-clock.ts";
 import {
   BILLING_GRACE_WINDOW_MS,
   isDelinquentStatus,
   listSeatsForOrganization,
   type OrganizationBillingState,
   seatQuantitiesByTier,
-} from "../src/lib/db/billing-records.ts";
-import { license, organization, server, setting } from "../src/lib/db/schema.ts";
-import { listActiveTiers, type TierRow } from "../src/lib/db/tier-records.ts";
-import { ladderEntry } from "../src/lib/tiers/ladder.ts";
+} from "../src/features/billing/billing-records.ts";
+import { license, organization, server, setting } from "../src/db/schema.ts";
+import { listActiveTiers, type TierRow } from "../src/features/tiers/tier-records.ts";
+import { ladderEntry } from "../src/features/tiers/ladder.ts";
 import { projectSubscriptionById } from "../src/webhook/billing/stripe-projection.ts";
 
 type StripeObject = Record<string, unknown>;
@@ -164,7 +164,7 @@ export type ScenarioContext = Harness & Readonly<{
 
 export type Scenario = Readonly<{
   name: string;
-  /** The lifecycle step it proves, in the numbering of `src/lib/billing/AGENTS.md`. */
+  /** The lifecycle step it proves, in the numbering of `src/features/billing/AGENTS.md`. */
   covers: string;
   run: (ctx: ScenarioContext) => Promise<void>;
 }>;

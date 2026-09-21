@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { AppEnv } from "../app.ts";
+import type { AppEnv } from "../app/app.ts";
 import {
   createAdminAccessMiddleware,
   createRootOnlyMiddleware,
@@ -9,14 +9,14 @@ import {
   resolveColocatedServerId,
   setSignupEnabledSetting,
 } from "../client/authn/install-state.ts";
-import type { DerivedSecretsConfig } from "../client/authn/secrets.ts";
+import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
 import {
   ALERT_WEBHOOK_POLICY,
   AlertWebhookUrlError,
   describeAlertWebhook,
   resolveOperatorWebhookUrl,
   setOperatorWebhookUrl,
-} from "../lib/alerts/alert-webhook-settings.ts";
+} from "../features/alerts/alert-webhook-settings.ts";
 import { registerNotificationAdminRoutes } from "./notification-routes.ts";
 import {
   broadcastEchoToFleet,
@@ -30,23 +30,26 @@ import {
   resolveFleetPresence,
   resolveOnlineFleetPresence,
 } from "../daemon/cell/fleet-presence.ts";
-import type { DaemonOutboundEnvelope } from "../daemon/cell/protocol.ts";
+import type { DaemonOutboundEnvelope } from "../contracts/cell-protocol.ts";
 import {
   generateDeliveryId,
   generateRequestId,
-} from "../daemon/cell/protocol.ts";
-import { getDaemonCellRegistry, getDb } from "../db.ts";
-import { getCommandQueue } from "../lib/commands/queue.ts";
-import { cellTrace } from "../logger.ts";
-import { emptyServerIps } from "../server-addresses.ts";
-import { buildAdminScalarHtml } from "../scalar-html.ts";
-import { ADMIN_API_PREFIX } from "../surfaces.ts";
+} from "../contracts/cell-protocol.ts";
+import { getDaemonCellRegistry, getDb } from "../db/connection.ts";
+import { getCommandQueue } from "../features/commands/queue.ts";
+import { cellTrace } from "../lib/logger.ts";
+import {
+  emptyServerIps,
+  type ServerReportedIp,
+} from "../contracts/server-addresses.ts";
+import { buildAdminScalarHtml } from "../app/scalar-html.ts";
+import { ADMIN_API_PREFIX } from "../app/surfaces.ts";
 import { getAdminOpenApiSpec } from "./openapi/index.ts";
 import {
   getPublicUrls,
   parsePublicUrlEntries,
   setPublicUrls,
-} from "./public-urls.ts";
+} from "../features/install/public-urls.ts";
 import {
   completeGithubManifestHandler,
   createForgeHandler,
@@ -62,13 +65,13 @@ import {
   emailUpdatesRequireEncryption,
   resolveEmailSettings,
   updateEmailSettings,
-} from "../lib/settings/email-settings.ts";
+} from "../features/settings/email-settings.ts";
 import {
   authProviderSettingsToApiShape,
   authProviderUpdatesRequireEncryption,
   resolveAuthProviderSettings,
   updateAuthProviderSettings,
-} from "../lib/settings/auth-provider-settings.ts";
+} from "../features/settings/auth-provider-settings.ts";
 import {
   endReencryptSweep,
   reencryptAtRestSecrets,
@@ -93,7 +96,7 @@ import {
   getServerMetricsLiveMaxMinutes,
   isValidServerMetricsLiveMaxMinutes,
   setServerMetricsLiveMaxMinutes,
-} from "../lib/settings/server-metrics-settings.ts";
+} from "../features/settings/server-metrics-settings.ts";
 
 const ADDRESSES_TIMEOUT_MS = 10_000;
 
@@ -118,6 +121,17 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     serverUrl: string,
     opts?: { devSurface?: boolean; runtime?: "deno" | "workers" },
   ) => object;
+  /**
+   * Deno composition root injects the filesystem Platform CA reader used
+   * after public-URL apply. Workers omits it — hosted installs have no
+   * on-disk platform CA — so this registrar never imports `platform/deno`.
+   */
+  readPlatformCaBundle?: () => Promise<string>;
+  /**
+   * Deno composition root injects host-interface collection. Workers omits
+   * it so this registrar never imports `platform/deno/server-addresses-deno`.
+   */
+  collectInstanceIps?: () => ServerReportedIp[];
 }) {
   const admin = new Hono<AppEnv>();
   admin.use("*", createAdminAccessMiddleware(opts.secrets));
@@ -191,18 +205,15 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     return c.json({ commands });
   });
 
-  admin.get("/instance/addresses", async (c) => {
-    if (opts.runtime !== "deno") {
+  admin.get("/instance/addresses", (c) => {
+    if (opts.runtime !== "deno" || !opts.collectInstanceIps) {
       return c.json({
         ok: false,
         error: "instance address collection is not available on this runtime",
         ips: emptyServerIps(),
       }, 422);
     }
-    const { collectServerIps, readDefaultRouteInterfaces } = await import(
-      "../server-addresses-deno.ts"
-    );
-    const ips = collectServerIps(readDefaultRouteInterfaces());
+    const ips = opts.collectInstanceIps();
     return c.json({ ok: true, source: "instance", ips });
   });
 
@@ -600,6 +611,7 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
           db,
           commandQueue,
           actorId,
+          readBundle: opts.readPlatformCaBundle,
         });
       }
     }

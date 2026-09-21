@@ -1,6 +1,6 @@
-import { attachWebMetadataToSites } from '../../lib/hosting-web-env.ts'
-import { assignSiteListenPorts } from '../../lib/compose/site.ts'
-import { assignNativeAppListenPorts } from '../../lib/compose/native-app.ts'
+import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
+import { assignSiteListenPorts } from '../../features/compose/site.ts'
+import { assignNativeAppListenPorts } from '../../features/compose/native-app.ts'
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
@@ -9,14 +9,14 @@ import type {
   EnvironmentDeployStorageMaterial,
   EnvironmentDeploySite,
   EnvironmentLifecycleAction,
-} from '../../lib/commands/schemas.ts'
+} from '../../contracts/commands/schemas.ts'
 import type { DeployPrepareError, PreparedNativeAppService } from './deploy-prepare.ts'
 import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
-} from '../../lib/commands/deploy-validation.ts'
-import type { FabricGateOutcome } from '../../lib/fabric/gate.ts'
-import type { ScheduleErrorCode } from '../../lib/schedule/index.ts'
+} from '../../contracts/commands/deploy-validation.ts'
+import type { FabricGateOutcome } from '../../features/fabric/gate.ts'
+import type { ScheduleErrorCode } from '../../features/schedule/index.ts'
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -235,7 +235,320 @@ function storageLocationUnavailableResponse(
   }
 }
 
+function composeIssuePaths(issues: ReadonlyArray<{ path: string; message: string }>): string {
+  return issues.map((issue) => issue.path).join(', ')
+}
+
+function composeIssueDetails(issues: ReadonlyArray<{ path: string; message: string }>): string {
+  return issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ')
+}
+
+function fieldNoun(count: number): string {
+  return count === 1 ? 'a field' : 'fields'
+}
+
+function pronounWord(count: number): string {
+  return count === 1 ? 'it' : 'them'
+}
+
+function mapComposeMergeError(
+  prepared: Extract<DeployPrepareError, { kind: 'compose_merged_invalid' }>,
+): PrepareErrorResponse {
+  return {
+    status: 422,
+    body: {
+      error: 'compose_merged_invalid',
+      issues: prepared.issues,
+      message:
+        `The project and environment compose layers merge into a document TurboPanel cannot run: ${composeIssueDetails(prepared.issues)}. Each layer is valid on its own, so the fix is in how the overlay changes the base.`,
+    },
+  }
+}
+
+function mapComposeUnsupportedError(
+  prepared: Extract<DeployPrepareError, { kind: 'compose_field_unsupported' }>,
+): PrepareErrorResponse {
+  const count = prepared.issues.length
+  return {
+    status: 422,
+    body: {
+      error: 'compose_field_unsupported',
+      issues: prepared.issues,
+      message:
+        `This compose document sets ${fieldNoun(count)} TurboPanel does not support: ${composeIssuePaths(prepared.issues)}. Remove ${pronounWord(count)} and deploy again — leaving ${pronounWord(count)} in place would deploy something different from what the document says.`,
+    },
+  }
+}
+
+function mapComposeOptInError(
+  prepared: Extract<DeployPrepareError, { kind: 'compose_field_requires_org_opt_in' }>,
+): PrepareErrorResponse {
+  const count = prepared.issues.length
+  return {
+    status: 403,
+    body: {
+      error: 'compose_field_requires_org_opt_in',
+      issues: prepared.issues,
+      message:
+        `This compose document sets ${fieldNoun(count)} that grant root-equivalent access to the shared daemon host: ${composeIssuePaths(prepared.issues)}. An organization owner has to opt in under Manage Organization → Compose before a deploy that sets ${pronounWord(count)} will run.`,
+    },
+  }
+}
+
+function mapSitePrepareError(
+  prepared: Extract<
+    DeployPrepareError,
+    {
+      kind:
+        | 'site_principal_ambiguous'
+        | 'site_cron_unowned'
+        | 'site_managed_directory_unowned'
+    }
+  >,
+): PrepareErrorResponse {
+  if (prepared.kind === 'site_principal_ambiguous') {
+    return {
+      status: 422,
+      body: {
+        error: 'site_principal_ambiguous',
+        composeServiceName: prepared.composeServiceName,
+        message:
+          `Site "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
+      },
+    }
+  }
+  if (prepared.kind === 'site_cron_unowned') {
+    return {
+      status: 422,
+      body: {
+        error: 'site_cron_unowned',
+        composeServiceName: prepared.composeServiceName,
+        message:
+          `Site "${prepared.composeServiceName}" has scheduled jobs but no project principal to run them as. Assign a principal to the service — a timer with no account would run as root, which TurboPanel will not do.`,
+      },
+    }
+  }
+  return {
+    status: 422,
+    body: {
+      error: 'site_managed_directory_unowned',
+      composeServiceName: prepared.composeServiceName,
+      message:
+        `Site "${prepared.composeServiceName}" serves an uploaded directory but has no project principal to own it. Assign a principal to the service — the directory is the account's, and without one there is nobody to upload as.`,
+    },
+  }
+}
+
+function hostingTlsRefUnresolvedMessage(
+  prepared: Extract<DeployPrepareError, { kind: 'hosting_tls_ref_unresolved' }>,
+): string {
+  if (prepared.reason === 'ambiguous') {
+    return `More than one certificate in this organization is named "${prepared.ref}", which "${prepared.composeServiceName}" pins for ${prepared.hostname}. Name it by id instead, or give the certificates distinct names.`
+  }
+  return `Certificate "${prepared.ref}" pinned by "${prepared.composeServiceName}" for ${prepared.hostname} was not found in this organization. Add it to the TLS library, or point tls.certificateRef at one that is already there.`
+}
+
+function hostingIpRefUnresolvedMessage(
+  prepared: Extract<DeployPrepareError, { kind: 'hosting_ip_ref_unresolved' }>,
+): string {
+  if (prepared.reason === 'ambiguous') {
+    return `More than one managed address in this organization matches "${prepared.ref}", which "${prepared.composeServiceName}" pins for ${prepared.hostname}. Name it by id instead.`
+  }
+  return `Managed address "${prepared.ref}" pinned by "${prepared.composeServiceName}" for ${prepared.hostname} was not found in this organization. Register it under Datacenters → IPs, or point bind.ipRef at one that is already there.`
+}
+
+function mapHostingPrepareError(
+  prepared: Extract<
+    DeployPrepareError,
+    {
+      kind:
+        | 'hosting_tls_ref_unresolved'
+        | 'hosting_ip_ref_unresolved'
+        | 'hosting_tls_mode_unsupported'
+        | 'hosting_route_conflict'
+        | 'hosting_hostname_conflict'
+    }
+  >,
+): PrepareErrorResponse {
+  if (prepared.kind === 'hosting_tls_ref_unresolved') {
+    return {
+      status: 422,
+      body: {
+        error: 'hosting_tls_ref_unresolved',
+        composeServiceName: prepared.composeServiceName,
+        hostname: prepared.hostname,
+        ref: prepared.ref,
+        reason: prepared.reason,
+        message: hostingTlsRefUnresolvedMessage(prepared),
+      },
+    }
+  }
+  if (prepared.kind === 'hosting_ip_ref_unresolved') {
+    return {
+      status: 422,
+      body: {
+        error: 'hosting_ip_ref_unresolved',
+        composeServiceName: prepared.composeServiceName,
+        hostname: prepared.hostname,
+        ref: prepared.ref,
+        reason: prepared.reason,
+        message: hostingIpRefUnresolvedMessage(prepared),
+      },
+    }
+  }
+  if (prepared.kind === 'hosting_tls_mode_unsupported') {
+    return {
+      status: 422,
+      body: {
+        error: 'hosting_tls_mode_unsupported',
+        composeServiceName: prepared.composeServiceName,
+        hostname: prepared.hostname,
+        mode: prepared.mode,
+        message:
+          `"${prepared.composeServiceName}" asks for tls.mode "${prepared.mode}" on ${prepared.hostname}, which this platform cannot issue yet. Use "internal" for a self-signed certificate, or "certificate" with tls.certificateRef to pin one from the TLS library.`,
+      },
+    }
+  }
+  if (prepared.kind === 'hosting_route_conflict') {
+    return {
+      status: 409,
+      body: {
+        error: 'hosting_route_conflict',
+        composeServiceName: prepared.composeServiceName,
+        hostname: prepared.hostname,
+        pathPrefix: prepared.pathPrefix,
+        hostingId: prepared.hostingId,
+        otherHostnames: prepared.otherHostnames,
+        message:
+          `"${prepared.composeServiceName}" declares ${prepared.hostname}${prepared.pathPrefix}, which an existing hosting already serves alongside ${
+            prepared.otherHostnames.join(', ')
+          }. Compose can only take over a hosting that serves this one hostname — split the other hostnames onto their own hosting, or drop the declaration and keep editing the route in the panel.`,
+      },
+    }
+  }
+  return {
+    status: 409,
+    body: {
+      error: 'hosting_hostname_conflict',
+      composeServiceName: prepared.composeServiceName,
+      hostname: prepared.hostname,
+      message:
+        `"${prepared.composeServiceName}" declares ${prepared.hostname}, which another hosting in this organization already serves. A hostname can only route to one hosting per organization.`,
+    },
+  }
+}
+
+function mapPrincipalPrepareError(
+  prepared: Extract<
+    DeployPrepareError,
+    {
+      kind:
+        | 'source_principal_ambiguous'
+        | 'principal_alias_unknown'
+        | 'principal_required_for_service_kind'
+        | 'source_ref_unresolved'
+    }
+  >,
+): PrepareErrorResponse {
+  if (prepared.kind === 'source_principal_ambiguous') {
+    return {
+      status: 422,
+      body: {
+        error: 'source_principal_ambiguous',
+        composeServiceName: prepared.composeServiceName,
+        message:
+          `Git-backed service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for release ownership.`,
+      },
+    }
+  }
+  if (prepared.kind === 'principal_alias_unknown') {
+    return {
+      status: 422,
+      body: {
+        error: 'principal_alias_unknown',
+        composeServiceName: prepared.composeServiceName,
+        alias: prepared.alias,
+        message:
+          `Service "${prepared.composeServiceName}" names principal "${prepared.alias}", which this document does not declare. Add "${prepared.alias}" under the top-level x-turbopanel.principals, or point x-turbopanel.principal at an alias that is already there.`,
+      },
+    }
+  }
+  if (prepared.kind === 'principal_required_for_service_kind') {
+    const kindLabel = prepared.serviceKind === 'site' ? 'Site' : 'Node app'
+    return {
+      status: 422,
+      body: {
+        error: 'principal_required_for_service_kind',
+        composeServiceName: prepared.composeServiceName,
+        serviceKind: prepared.serviceKind,
+        message:
+          `${kindLabel} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
+      },
+    }
+  }
+  return {
+    status: 422,
+    body: {
+      error: 'source_ref_unresolved',
+      composeServiceName: prepared.composeServiceName,
+      sourceId: prepared.sourceId,
+      ref: prepared.ref,
+      message:
+        `Could not resolve a commit for "${prepared.composeServiceName}" (ref "${prepared.ref}"): ${prepared.message}`,
+    },
+  }
+}
+
+function tryMapSitePrepareError(
+  prepared: DeployPrepareError,
+): PrepareErrorResponse | null {
+  if (
+    prepared.kind !== 'site_principal_ambiguous' &&
+    prepared.kind !== 'site_cron_unowned' &&
+    prepared.kind !== 'site_managed_directory_unowned'
+  ) {
+    return null
+  }
+  return mapSitePrepareError(prepared)
+}
+
+function tryMapHostingPrepareError(
+  prepared: DeployPrepareError,
+): PrepareErrorResponse | null {
+  if (
+    prepared.kind !== 'hosting_tls_ref_unresolved' &&
+    prepared.kind !== 'hosting_ip_ref_unresolved' &&
+    prepared.kind !== 'hosting_tls_mode_unsupported' &&
+    prepared.kind !== 'hosting_route_conflict' &&
+    prepared.kind !== 'hosting_hostname_conflict'
+  ) {
+    return null
+  }
+  return mapHostingPrepareError(prepared)
+}
+
+function tryMapPrincipalPrepareError(
+  prepared: DeployPrepareError,
+): PrepareErrorResponse | null {
+  if (
+    prepared.kind !== 'source_principal_ambiguous' &&
+    prepared.kind !== 'principal_alias_unknown' &&
+    prepared.kind !== 'principal_required_for_service_kind' &&
+    prepared.kind !== 'source_ref_unresolved'
+  ) {
+    return null
+  }
+  return mapPrincipalPrepareError(prepared)
+}
+
 export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
+  return tryMapSitePrepareError(prepared)
+    ?? tryMapPrincipalPrepareError(prepared)
+    ?? tryMapHostingPrepareError(prepared)
+    ?? mapCorePrepareError(prepared)
+}
+
+function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse {
   switch (prepared.kind) {
     case 'health_check':
       return {
@@ -258,54 +571,16 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
     // the overlay does to the base, most often a `!reset` that removed
     // something the base still depends on.
     case 'compose_merged_invalid':
-      return {
-        status: 422,
-        body: {
-          error: 'compose_merged_invalid',
-          issues: prepared.issues,
-          message: `The project and environment compose layers merge into a document TurboPanel cannot run: ${
-            prepared.issues.map((issue) => `${issue.path}: ${issue.message}`)
-              .join('; ')
-          }. Each layer is valid on its own, so the fix is in how the overlay changes the base.`,
-        },
-      }
+      return mapComposeMergeError(prepared)
     case 'compose_field_unsupported':
-      return {
-        status: 422,
-        body: {
-          error: 'compose_field_unsupported',
-          issues: prepared.issues,
-          message: `This compose document sets ${
-            prepared.issues.length === 1 ? 'a field' : 'fields'
-          } TurboPanel does not support: ${
-            prepared.issues.map((issue) => issue.path).join(', ')
-          }. Remove ${
-            prepared.issues.length === 1 ? 'it' : 'them'
-          } and deploy again — leaving ${
-            prepared.issues.length === 1 ? 'it' : 'them'
-          } in place would deploy something different from what the document says.`,
-        },
-      }
+      return mapComposeUnsupportedError(prepared)
     // TurboPanel *does* implement this field — unlike compose_field_unsupported
     // above, the fix is an org-owner opt-in
     // (PUT /organizations/:id/compose-privileged-fields), not removing the
     // field. 403, not 422: the document is valid and the field is real, this
     // organization is simply not authorized to deploy it.
     case 'compose_field_requires_org_opt_in':
-      return {
-        status: 403,
-        body: {
-          error: 'compose_field_requires_org_opt_in',
-          issues: prepared.issues,
-          message: `This compose document sets ${
-            prepared.issues.length === 1 ? 'a field' : 'fields'
-          } that grant root-equivalent access to the shared daemon host: ${
-            prepared.issues.map((issue) => issue.path).join(', ')
-          }. An organization owner has to opt in under Manage Organization → Compose before a deploy that sets ${
-            prepared.issues.length === 1 ? 'it' : 'them'
-          } will run.`,
-        },
-      }
+      return mapComposeOptInError(prepared)
     case 'datacenter_ip_required':
       return {
         status: 422,
@@ -322,154 +597,6 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
           names: prepared.names,
           message:
             'Compose references external Docker network(s) that are not registered for this server. Add a Docker network under Servers → Networks with matching options.dockerNetworkName.',
-        },
-      }
-    case 'site_principal_ambiguous':
-      return {
-        status: 422,
-        body: {
-          error: 'site_principal_ambiguous',
-          composeServiceName: prepared.composeServiceName,
-          message:
-            `Site "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
-        },
-      }
-    case 'site_cron_unowned':
-      return {
-        status: 422,
-        body: {
-          error: 'site_cron_unowned',
-          composeServiceName: prepared.composeServiceName,
-          message:
-            `Site "${prepared.composeServiceName}" has scheduled jobs but no project principal to run them as. Assign a principal to the service — a timer with no account would run as root, which TurboPanel will not do.`,
-        },
-      }
-    case 'site_managed_directory_unowned':
-      return {
-        status: 422,
-        body: {
-          error: 'site_managed_directory_unowned',
-          composeServiceName: prepared.composeServiceName,
-          message:
-            `Site "${prepared.composeServiceName}" serves an uploaded directory but has no project principal to own it. Assign a principal to the service — the directory is the account's, and without one there is nobody to upload as.`,
-        },
-      }
-    // `source_principal_ambiguous` above and `site_principal_ambiguous`,
-    // `site_managed_directory_unowned`, `site_cron_unowned` before it are all
-    // unreachable for a service that declares `x-turbopanel.principal`: a
-    // declared alias is the answer, so there is nothing left to be ambiguous
-    // or unowned about. They stay because the un-aliased fallback path — every
-    // document saved before the field existed — still resolves by sole steward,
-    // and that path can still have zero or several.
-    case 'source_principal_ambiguous':
-      return {
-        status: 422,
-        body: {
-          error: 'source_principal_ambiguous',
-          composeServiceName: prepared.composeServiceName,
-          message:
-            `Git-backed service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for release ownership.`,
-        },
-      }
-    case 'principal_alias_unknown':
-      return {
-        status: 422,
-        body: {
-          error: 'principal_alias_unknown',
-          composeServiceName: prepared.composeServiceName,
-          alias: prepared.alias,
-          message:
-            `Service "${prepared.composeServiceName}" names principal "${prepared.alias}", which this document does not declare. Add "${prepared.alias}" under the top-level x-turbopanel.principals, or point x-turbopanel.principal at an alias that is already there.`,
-        },
-      }
-    case 'principal_required_for_service_kind':
-      return {
-        status: 422,
-        body: {
-          error: 'principal_required_for_service_kind',
-          composeServiceName: prepared.composeServiceName,
-          serviceKind: prepared.serviceKind,
-          message:
-            `${prepared.serviceKind === 'site' ? 'Site' : 'Node app'} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
-        },
-      }
-    case 'source_ref_unresolved':
-      return {
-        status: 422,
-        body: {
-          error: 'source_ref_unresolved',
-          composeServiceName: prepared.composeServiceName,
-          sourceId: prepared.sourceId,
-          ref: prepared.ref,
-          message:
-            `Could not resolve a commit for "${prepared.composeServiceName}" (ref "${prepared.ref}"): ${prepared.message}`,
-        },
-      }
-    case 'hosting_tls_ref_unresolved':
-      return {
-        status: 422,
-        body: {
-          error: 'hosting_tls_ref_unresolved',
-          composeServiceName: prepared.composeServiceName,
-          hostname: prepared.hostname,
-          ref: prepared.ref,
-          reason: prepared.reason,
-          message: prepared.reason === 'ambiguous'
-            ? `More than one certificate in this organization is named "${prepared.ref}", which "${prepared.composeServiceName}" pins for ${prepared.hostname}. Name it by id instead, or give the certificates distinct names.`
-            : `Certificate "${prepared.ref}" pinned by "${prepared.composeServiceName}" for ${prepared.hostname} was not found in this organization. Add it to the TLS library, or point tls.certificateRef at one that is already there.`,
-        },
-      }
-    case 'hosting_ip_ref_unresolved':
-      return {
-        status: 422,
-        body: {
-          error: 'hosting_ip_ref_unresolved',
-          composeServiceName: prepared.composeServiceName,
-          hostname: prepared.hostname,
-          ref: prepared.ref,
-          reason: prepared.reason,
-          message: prepared.reason === 'ambiguous'
-            ? `More than one managed address in this organization matches "${prepared.ref}", which "${prepared.composeServiceName}" pins for ${prepared.hostname}. Name it by id instead.`
-            : `Managed address "${prepared.ref}" pinned by "${prepared.composeServiceName}" for ${prepared.hostname} was not found in this organization. Register it under Datacenters → IPs, or point bind.ipRef at one that is already there.`,
-        },
-      }
-    case 'hosting_tls_mode_unsupported':
-      return {
-        status: 422,
-        body: {
-          error: 'hosting_tls_mode_unsupported',
-          composeServiceName: prepared.composeServiceName,
-          hostname: prepared.hostname,
-          mode: prepared.mode,
-          message:
-            `"${prepared.composeServiceName}" asks for tls.mode "${prepared.mode}" on ${prepared.hostname}, which this platform cannot issue yet. Use "internal" for a self-signed certificate, or "certificate" with tls.certificateRef to pin one from the TLS library.`,
-        },
-      }
-    case 'hosting_route_conflict':
-      return {
-        status: 409,
-        body: {
-          error: 'hosting_route_conflict',
-          composeServiceName: prepared.composeServiceName,
-          hostname: prepared.hostname,
-          pathPrefix: prepared.pathPrefix,
-          hostingId: prepared.hostingId,
-          otherHostnames: prepared.otherHostnames,
-          message:
-            `"${prepared.composeServiceName}" declares ${prepared.hostname}${prepared.pathPrefix}, which an existing hosting already serves alongside ${
-              prepared.otherHostnames.join(', ')
-            }. Compose can only take over a hosting that serves this one hostname — split the other hostnames onto their own hosting, or drop the declaration and keep editing the route in the panel.`,
-        },
-      }
-    case 'hosting_hostname_conflict':
-      return {
-        status: 409,
-        body: {
-          error: 'hosting_hostname_conflict',
-          composeServiceName: prepared.composeServiceName,
-          hostname: prepared.hostname,
-          message:
-            `"${prepared.composeServiceName}" declares ${prepared.hostname}, which another hosting in this organization already serves. A hostname can only route to one hosting per organization.`,
         },
       }
     case 'binding_endpoint_unavailable':
@@ -495,6 +622,8 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
           violations: prepared.violations,
         },
       }
+    default:
+      throw new TypeError(`unhandled deploy prepare error: ${prepared.kind}`)
   }
 }
 

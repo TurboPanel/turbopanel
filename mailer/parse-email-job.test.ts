@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import nodemailer from 'nodemailer'
-import type { EmailJob } from '../src/lib/email/types.ts'
+import type { EmailJob } from '../src/features/email/types.ts'
 import { parseEmailJob } from './parse-email-job.ts'
 import { createMailerSmtpSender } from './smtp-sender.ts'
 

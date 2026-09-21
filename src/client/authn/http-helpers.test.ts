@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { CLIENT_API_PREFIX } from '../../surfaces.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createAuthRateLimiter,
@@ -34,9 +34,9 @@ import {
   registerAuthnRoutes,
   resolveVerificationBaseUrlAsync,
 } from './http.ts'
-import { hashPassword } from './password.ts'
-import { invitation } from '../../lib/db/schema.ts'
-import { deriveSecretsConfig } from './secrets.ts'
+import { hashPassword } from '../../lib/secrets/password.ts'
+import { invitation } from '../../db/schema.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { SessionData } from './session-store.ts'
 
 /**
