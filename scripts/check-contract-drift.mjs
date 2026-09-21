@@ -94,8 +94,14 @@ function extractAfterEquals(source, marker) {
 }
 
 function extractConst(source, name) {
-  const from = extractAfterEquals(source, `export const ${name}`)
+  let from = extractAfterEquals(source, `export const ${name}`)
   if (from == null) return null
+  while (
+    from < source.length &&
+    (source[from] === ' ' || source[from] === '\t' || source[from] === '\n' || source[from] === '\r')
+  ) {
+    from += 1
+  }
   let end = from
   while (end < source.length && source[end] !== '\n' && source[end] !== ';') {
     end += 1
