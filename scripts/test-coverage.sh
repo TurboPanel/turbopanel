@@ -512,6 +512,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/email/mailer/redact-url.test.ts \
   src/lib/email/mailer/parse-email-job.test.ts \
   src/lib/email/mailer/smtp-sender.test.ts \
+  src/lib/email/mailer/deno-mailer-consumer.hostfree.test.ts \
   src/lib/geo/server-geo.test.ts \
   src/lib/geo/self-hosted-geo-provider.test.ts \
   src/lib/git/ \

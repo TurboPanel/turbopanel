@@ -77,7 +77,7 @@ CI `build.yml`. Fleet-wide from the host `dev` checkout: `./scripts/ci-verify.sh
 - **`sonar.sources` / `sonar.tests` / `sonar.test.inclusions`** must stay set in
   `sonar-project.properties` (and mirrored in vestigial
   `.sonarcloud.properties`). Tests are co-located (`**/*.test.ts` under
-  `src`/`mailer`); helpers that do not match the scanner's name heuristics
+  `src`); helpers that do not match the scanner's name heuristics
   (`src/test-fixtures/**`, `*-hostfree-doubles.ts`, `server-status-test-db.ts`,
   `fake-redis-cell-client.ts`, `workers-vitest.ts`, `vitest-env.d.ts`) belong in
   `test.inclusions` + `coverage.exclusions` so they are never main-code. Leaving

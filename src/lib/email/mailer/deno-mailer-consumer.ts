@@ -61,6 +61,11 @@ export type StartMailerConsumerOpts = {
   dataEncryptionSecrets?: DerivedSecretsConfig
   /** Settings cache TTL; the consumer re-resolves per delivery within it. */
   settingsTtlMs?: number
+  /**
+   * Test seam: build the sender for a provider. Production leaves it unset
+   * and gets the real SMTP / Mailgun / Mailpit senders.
+   */
+  senderFactory?: (provider: EmailProvider) => MailerSender
 }
 
 export type MailerConsumer = {
@@ -178,6 +183,7 @@ export async function startMailerConsumer(
   }
 
   function createSender(provider: EmailProvider): MailerSender {
+    if (opts.senderFactory) return opts.senderFactory(provider)
     const senderOpts = {
       db: opts.db,
       env: opts.env,
