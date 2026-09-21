@@ -112,7 +112,7 @@ pinned by `schema-state.test.ts`). `public.migration.hash` in `created_at`
 order must be a prefix of the manifest: `unmigrated`/`behind` → migrate
 proceeds; `ahead` (a hash this build does not ship — a newer release migrated
 it, or it predates the frozen baseline) or `diverged` → `pnpm migrate` and
-`turbopanel-instance migrate` refuse under the advisory lock, because drizzle
+`turbopanel migrate` refuse under the advisory lock, because drizzle
 keys replay on the journal `when` and would otherwise apply our files on top
 of a foreign history and fail mid-DDL. The Deno instance runs the same check
 at boot and refuses to start on anything but `current` (it never migrates on

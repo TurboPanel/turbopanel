@@ -294,7 +294,7 @@ it("production compile excludes developer-only permissions and entry", async () 
 });
 
 it("compile tasks embed the migrations and can run openssl for the install-time verbs", async () => {
-  // instance-runtime-packaging (Road to 0.1.x): `turbopanel-instance migrate`
+  // instance-runtime-packaging (Road to 0.1.x): `turbopanel migrate`
   // reads the shipped migrations out of the binary, and
   // `generate-self-signed-cert` shells out to /usr/bin/openssl and
   // /usr/bin/hostname exactly as scripts/generate-self-signed-cert.mjs does.
@@ -314,52 +314,39 @@ it("compile tasks embed the migrations and can run openssl for the install-time 
   }
 });
 
-it("the mailer compiles as its own binary with outbound network and the socket tree only", async () => {
-  // A compiled mailer bakes its permission set. Unlike the instance, it talks
-  // to operator-configured SMTP relays and Mailgun — the one place a broad
-  // --allow-net is honest — and touches only the runtime/config trees and the
-  // Postgres socket directory (postgres.js needs write there to connect).
-  const denoJson = JSON.parse(
-    await Deno.readTextFile(new URL("../deno.json", import.meta.url)),
-  );
-  const task: unknown = denoJson.tasks?.["compile:mailer"];
+it("compile tasks emit the plain binary name and skip type-checking", async () => {
+  // The instance binary is `turbopanel` (the unit runs it, the installer
+  // pins it at /opt/turbopanel/bin/turbopanel, the CLI verbs are
+  // `turbopanel migrate` and friends). There is no separate mailer binary:
+  // the email consumer runs in-process (src/lib/email/mailer/
+  // deno-mailer-consumer.ts, wired from src/deno-server.ts).
+  //
+  // `--no-check`: type-checking is Build's job (and an explicit `deno check`
+  // in the release job). The release job compiles against a production-only
+  // node_modules — `deno compile` under BYONM embeds the whole tree, and the
+  // dev tree (wrangler, workerd, vitest…) is most of a 480 MB binary — which
+  // has no @types/node, so a checking compile cannot resolve its own types.
+  const tasks = await readCompileTasks();
   assert(
-    typeof task === "string",
-    "deno.json must define tasks.compile:mailer",
-  );
-  assert(
-    task.endsWith(" mailer/main.ts"),
-    "compile:mailer must target mailer/main.ts",
-  );
-  assert(
-    task.includes(" -o dist/turbopanel-mailer "),
-    "compile:mailer must emit dist/turbopanel-mailer",
+    tasks.compile.includes(" -o dist/turbopanel "),
+    "compile must emit dist/turbopanel",
   );
   assert(
-    /(^|\s)--allow-net(\s|$)/.test(task),
-    "compile:mailer grants unrestricted outbound --allow-net",
+    tasks["compile:dev"].includes(" -o dist/turbopanel-dev "),
+    "compile:dev must emit dist/turbopanel-dev",
   );
-  const allowRead = (/--allow-read=([^\s]+)/.exec(task)?.[1] ?? "").split(",");
-  for (
-    const dir of ["/run/turbopanel", "/etc/turbopanel", "/var/run/turbopanel"]
-  ) {
+  for (const [taskName, task] of Object.entries(tasks)) {
     assert(
-      allowRead.includes(dir),
-      `compile:mailer --allow-read must include ${dir}`,
+      task.startsWith("deno compile --no-check "),
+      `${taskName} must compile with --no-check (type-checking runs before the prune)`,
     );
   }
-  const allowWrite = (/--allow-write=([^\s]+)/.exec(task)?.[1] ?? "").split(
-    ",",
-  );
+  const denoJsonPath = new URL("../deno.json", import.meta.url);
+  const denoJson = JSON.parse(await Deno.readTextFile(denoJsonPath));
   assert(
-    allowWrite.includes("/var/run/turbopanel"),
-    "compile:mailer --allow-write must cover the Postgres socket tree",
+    denoJson.tasks?.["compile:mailer"] === undefined,
+    "there is no separate mailer binary any more",
   );
-  assert(
-    !task.includes("--allow-run"),
-    "compile:mailer must not --allow-run anything",
-  );
-  assert(!task.includes("--allow-ffi"), "compile:mailer must not --allow-ffi");
 });
 
 it("compile tasks can read and write the Postgres socket directory the unit names", async () => {

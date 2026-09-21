@@ -38,7 +38,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 // Roots scanned for suites. Keep in step with `sonar.sources` /
 // `sonar.tests` in sonar-project.properties.
-const TEST_ROOTS = ['src', 'mailer', 'scripts']
+const TEST_ROOTS = ['src', 'scripts']
 
 // Directories that never hold runnable suites.
 const SKIP_DIRS = new Set([
