@@ -213,7 +213,12 @@ export function createApp({
   // request. The client's own version arrives on the matching request
   // header; the instance only reads it (see lib/version-wire.ts).
   app.use("*", async (c, next) => {
+    // Same as security-headers: snapshot before `next()`. After a WebSocket
+    // hijack Deno refuses further request/response header work on the conn.
+    const isUpgrade =
+      c.req.header("upgrade")?.trim().toLowerCase() === "websocket";
     await next();
+    if (isUpgrade || c.res.status === 101) return;
     c.header(INSTANCE_VERSION_HEADER, INSTANCE_VERSION);
   });
   app.get("/", (c) => c.text("TurboPanel"));
