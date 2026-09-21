@@ -537,6 +537,9 @@ deno test -A --coverage=coverage/deno-profile \
   src/build-info.test.ts \
   src/version.test.ts \
   scripts/generate-notices.test.ts \
+  scripts/schema-snapshot.test.ts \
+  scripts/schema-comments.test.ts \
+  scripts/generate-data-dictionary.test.ts \
   src/lib/display-name-format.test.ts \
   src/lib/organization-options.test.ts \
   src/lib/host-defaults.test.ts \

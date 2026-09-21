@@ -145,5 +145,6 @@ function main(argv) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exit(main(process.argv.slice(2)))
+  // exitCode, not exit(): a pending stdout write to a pipe is lost on exit().
+  process.exitCode = main(process.argv.slice(2))
 }
