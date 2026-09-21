@@ -20,9 +20,19 @@
 # hard Vitest-wins drop discarded real Deno unit hits for modules Vitest only
 # imported (false 0% on db-url, allocate-containers, …).
 #
-# Usage: sh scripts/test-coverage.sh
-# Output: coverage/lcov.info (Vitest + Deno merged for SonarCloud), plus
-# coverage/vitest/lcov.info and coverage/deno.lcov for debugging.
+# Usage:
+#   sh scripts/test-coverage.sh
+#   TEST_PHASE=vitest sh scripts/test-coverage.sh
+#   TEST_PHASE=deno DENO_SHARD=hostfree sh scripts/test-coverage.sh
+#
+# TEST_PHASE=all (default) runs Vitest and every Deno suite, then merges.
+# That is the local and verify-ci path. CI build.yml sets TEST_PHASE so each
+# job runs one slice and the SonarQube job merges the LCOV artifacts.
+# DENO_SHARD is hostfree, api-routes, db-1, or db-2 (see deno-test-shards.mjs).
+#
+# Output: coverage/lcov.info (Vitest + Deno merged for SonarCloud) when
+# TEST_PHASE=all, plus coverage/vitest/lcov.info and coverage/deno.lcov.
+# A single phase leaves only its own report; CI merges those in the fan-in.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
@@ -40,6 +50,21 @@ fi
 rm -rf coverage
 mkdir -p coverage
 
+phase="${TEST_PHASE:-all}"
+case "$phase" in
+  all|vitest|deno) ;;
+  *)
+    echo "test-coverage: unknown TEST_PHASE=${phase}" >&2
+    exit 1
+    ;;
+esac
+
+echo "==> test-coverage phase=${phase} shard=${DENO_SHARD:-all}"
+
+workspace="${GITHUB_WORKSPACE:-$ROOT}"
+workspace="${workspace%/}"
+
+if [ "$phase" != "deno" ]; then
 echo "==> Vitest (workers pool, Istanbul coverage)"
 pnpm exec vitest run --config vitest.config.ts --coverage
 
@@ -47,9 +72,6 @@ if ! grep -q '^SF:' coverage/vitest/lcov.info; then
   echo "Vitest LCOV expected at least one SF: entry" >&2
   exit 1
 fi
-
-workspace="${GITHUB_WORKSPACE:-$ROOT}"
-workspace="${workspace%/}"
 
 echo "==> Normalize Vitest LCOV SF paths"
 export LCOV_FILE=coverage/vitest/lcov.info
@@ -94,8 +116,37 @@ for pattern, minimum, label in checks:
         )
         sys.exit(1)
 PY
+fi
 
-echo "==> Deno coverage profile"
+if [ "$phase" = "vitest" ]; then
+  echo "Vitest LCOV ready: coverage/vitest/lcov.info"
+  exit 0
+fi
+
+# Inventory parsers (check-test-inventory.mjs, generate-test-lists.mjs) read
+# the first line that starts with "deno test ". The shard branch calls
+# "command deno test" so it is not that line. Keep the unsharded block in
+# the suffix-glob shape generate-test-lists.mjs --write emits.
+run_deno_shard() {
+  shard_files=$(node scripts/deno-test-shards.mjs --shard "$DENO_SHARD")
+  set -f
+  # Repo-relative paths have no spaces; command substitution already dropped
+  # the trailing newline. set -f so a future filename cannot glob.
+  # shellcheck disable=SC2086
+  set -- $shard_files
+  set +f
+  echo "==> Deno shard ${DENO_SHARD} ($# files)"
+  if [ "$DENO_SHARD" = "hostfree" ]; then
+    # No database on this shard. ubuntu-latest is 2 vCPU, so two threads is
+    # the hosted-runner ceiling. Postgres shards stay one file at a time.
+    DENO_JOBS="${DENO_JOBS:-2}"
+    export DENO_JOBS
+    command deno test -A --coverage=coverage/deno-profile --no-check --parallel "$@"
+  else
+    command deno test -A --coverage=coverage/deno-profile --no-check "$@"
+  fi
+}
+
 # Deno V8 coverage for Sonar LCOV (Vitest/workerd covers Workers/DO-only code).
 # Two tiers:
 #   - Host-free unit suites (always run; no Postgres/Redis).
@@ -104,7 +155,11 @@ echo "==> Deno coverage profile"
 # Omit: redis-cell / ws-handlers (Redis),
 # Vitest-only Workers suites (workers-ws, durable-object, routes-core, …).
 # CI uses -A so every suite shares one profile dir (mirrors the daemon repo's
-# test:coverage grant).
+# test:coverage grant). A set DENO_SHARD runs that subset instead of the walk.
+echo "==> Deno coverage profile"
+if [ -n "${DENO_SHARD:-}" ]; then
+  run_deno_shard
+else
 deno test -A --coverage=coverage/deno-profile \
   --no-check \
   --ignore=**/*.workers.test.ts \
@@ -116,6 +171,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/ \
   mailer/ \
   scripts/
+fi
 
 echo "==> Deno LCOV"
 deno coverage coverage/deno-profile --lcov --output=coverage/deno.lcov
@@ -162,6 +218,11 @@ if bad="$(grep -E '^SF:(/|file:)' coverage/deno.lcov || true)" && [ -n "$bad" ];
   echo "Deno LCOV SF paths must be repo-relative after normalization" >&2
   printf '%s\n' "$bad" | head -n 20
   exit 1
+fi
+
+if [ "$phase" = "deno" ]; then
+  echo "Deno LCOV ready: coverage/deno.lcov"
+  exit 0
 fi
 
 # Merge lives in scripts/merge-lcov.py (not an embedded heredoc) so concurrent

@@ -14,8 +14,20 @@ suffix globs). Redis (etc.) suites go in `SERVICE_DEPENDENT` in
 `check-test-inventory.mjs` with a reason. Full checklist: root `AGENTS.md` →
 **Adding tests (inventory)**.
 The guard is wired into `pnpm test:hook`, **`pnpm verify:ci`**
-(`scripts/verify-ci.sh` — the local mirror of `build.yml` minus Sonar), and
+(`scripts/verify-ci.sh` — the local serial mirror of `build.yml` minus Sonar), and
 CI `build.yml`. Fleet-wide from the host `dev` checkout: `./scripts/ci-verify.sh`.
+
+CI does not run that script as one job. `build.yml` sets `TEST_PHASE` /
+`DENO_SHARD` so Vitest, the host-free Deno shard, and three Postgres Deno
+shards (`api-routes`, `db-1`, `db-2`) each get a runner. The job named
+**SonarQube** merges their LCOV (`scripts/merge-lcov.py --parts`) and scans.
+That name is the required check. Shard membership is automatic
+(`scripts/deno-test-shards.mjs`): `src/daemon/api-routes.test.ts` alone,
+filenames containing `hostfree` or `pure` on the host-free shard (run with
+`deno test --parallel`), everything else packed into `db-1` / `db-2`. There
+is no shard list to edit when a suite is added. Node and Deno versions are
+not copied into the workflow: `scripts/ci-runtime-pins.sh` reads
+`node_version` / `deno_version` from the daemon role defaults on trunk.
 
 **Reorg helpers** (do not glob tests; they rewrite inventories and layer
 imports):
@@ -29,9 +41,10 @@ imports):
 - Analysis runs in GitHub Actions (`.github/workflows/build.yml` **SonarQube**
   job — SonarCloud wizard layout) with `SONAR_TOKEN` and
   `sonar-project.properties` (`sonar.projectKey=turbopanel_turbopanel`,
-  `sonar.organization=turbopanel`). The job runs checks +
-  **`pnpm test:coverage`** (`scripts/test-coverage.sh`), which merges Vitest
-  Istanbul + Deno V8 LCOV into a single **`coverage/lcov.info`**
+  `sonar.organization=turbopanel`). The **SonarQube** job is the fan-in: it
+  merges the shard LCOV reports into a single **`coverage/lcov.info`**
+  (`scripts/test-coverage.sh` still does that merge locally). It is Vitest
+  Istanbul + Deno V8
   (`sonar.javascript.lcov.reportPaths=coverage/lcov.info` in
   `sonar-project.properties` — **not** comma-separated dual paths; SonarCloud
   effectively only imported Deno hits that way, so Workers/DO files showed 0%

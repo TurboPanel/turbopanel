@@ -156,7 +156,12 @@ function parseVitestInclude(configSource) {
 function loadServiceDependent() {
   const inventoryPath = path.join(ROOT, 'scripts/check-test-inventory.mjs')
   const source = fs.readFileSync(inventoryPath, 'utf8')
-  const files = quotedStrings(source, (token) => token.endsWith('.test.ts'))
+  // Quoted suffix literals ('.workers.test.ts') also end in .test.ts.
+  // Service-dependent entries are repo paths, so they contain a slash.
+  const files = quotedStrings(
+    source,
+    (token) => token.includes('/') && token.endsWith('.test.ts'),
+  )
   return new Set(files)
 }
 
@@ -181,10 +186,7 @@ function replaceDenoInvocation(shellSource, argLines) {
 function replaceVitestInclude(configSource, entries) {
   const parsed = parseVitestInclude(configSource)
   const indent = '      '
-  const body = entries.map((entry, i) => {
-    const comma = i === entries.length - 1 ? '' : ','
-    return `${indent}'${entry}'${comma}`
-  }).join('\n')
+  const body = entries.map((entry) => `${indent}'${entry}',`).join('\n')
   return `${configSource.slice(0, parsed.open)}include: [\n${body}\n    ${
     configSource.slice(parsed.close)
   }`
