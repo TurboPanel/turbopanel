@@ -25,7 +25,7 @@ export const DEFAULT_TLS_CA_KEY = `${DEFAULT_STATE_DIR}/tls/ca.key`
 /**
  * Resolve the instance TLS certificate PEM path.
  *
- * Matches Caddy's `CADDY_TLS_CERT` default in the Caddyfile.
+ * Matches the dev overlay Caddyfile's `CADDY_TLS_CERT` default.
  */
 export function resolveInstanceTlsCertPath(
   env: Record<string, string | undefined> = Deno.env.toObject(),
@@ -236,8 +236,9 @@ export function resolveRunDir(
 /**
  * Resolve the static UI export root, honoring `TURBOPANEL_UI_ROOT`.
  *
- * This is the canonical constant for code/docs; Caddy itself reads the env var
- * directly via the `Caddyfile` default.
+ * This is the canonical constant for code/docs; the dev overlay Caddyfile reads
+ * the env var directly, and the daemon's managed template bakes the same path
+ * at render time.
  */
 export function resolveUiRoot(
   env: Record<string, string | undefined> = Deno.env.toObject(),
@@ -273,8 +274,10 @@ function stripTrailingSlash(value: string): string {
  * Caddy `reverse_proxy` upstream address for the instance socket.
  *
  * Caddy's Unix-socket form is `unix/` followed by the absolute path, so the
- * Caddyfiles spell it `unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock`
- * and derive it from the same run-dir + filename contract as
+ * dev overlay Caddyfile spells it
+ * `unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock` and the daemon's
+ * rendered template bakes `unix/<turbopanel_run_dir>/instance.sock` — both
+ * derived from the same run-dir + filename contract as
  * {@link resolveInstanceSocket}. There is no operator-set dial variable; the
  * inputs are `TURBOPANEL_SOCKET`, `TURBOPANEL_RUN_DIR`, and
  * `TURBOPANEL_SOCKET_DIR` only.
