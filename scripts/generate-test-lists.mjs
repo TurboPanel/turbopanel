@@ -38,7 +38,6 @@ const VITEST_GLOBS = [
   'src/**/*.workers.test.ts',
   'src/**/*.workers-e2e.test.ts',
   'src/**/*.entry.test.ts',
-  'mailer/**/*.workers.test.ts',
 ]
 
 const DENO_IGNORES = [
@@ -206,7 +205,6 @@ function replaceDenoGlobInvocation(shellSource, serviceDependent) {
     '  --no-check \\',
     ...ignores.map((flag) => `  ${flag} \\`),
     '  src/ \\',
-    '  mailer/ \\',
     '  scripts/',
   ]
   // Fix last ignore/path backslash: last line is scripts/ with no backslash.

@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import nodemailer from 'nodemailer'
-import type { EmailJob } from '../src/features/email/types.ts'
+import type { EmailJob } from '../../../features/email/types.ts'
 import { parseEmailJob } from './parse-email-job.ts'
 import { createMailerSmtpSender } from './smtp-sender.ts'
 
@@ -80,7 +80,35 @@ test('parseEmailJob accepts a notification payload and refuses a malformed one',
   assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, details: 'serverName=db-1' }), null)
 })
 
-test('parseEmailJob rejects unknown types and incomplete tier-notice fields', () => {
+const SIGNUP_JOB: EmailJob = {
+  type: 'signup-verification',
+  to: 'new@example.com',
+  from: 'noreply@example.com',
+  verificationUrl: 'https://panel.example.com/verify?t=abc',
+}
+
+const OTP_JOB: EmailJob = {
+  type: 'email-otp',
+  to: 'ops@example.com',
+  from: 'noreply@example.com',
+  otp: '123456',
+  otpType: 'sign-in',
+}
+
+test('parseEmailJob accepts signup-verification and email-otp payloads', () => {
+  assertEquals(parseEmailJob(SIGNUP_JOB), SIGNUP_JOB)
+  assertEquals(parseEmailJob(OTP_JOB), OTP_JOB)
+  assertEquals(
+    parseEmailJob({ ...OTP_JOB, otpType: 'email-verification' }),
+    { ...OTP_JOB, otpType: 'email-verification' },
+  )
+  assertEquals(
+    parseEmailJob({ ...OTP_JOB, otpType: 'forget-password' }),
+    { ...OTP_JOB, otpType: 'forget-password' },
+  )
+})
+
+test('parseEmailJob rejects unknown types and incomplete payloads', () => {
   assertEquals(parseEmailJob(null), null)
   assertEquals(parseEmailJob({ type: 'invitation', to: 'a@b.co' }), null)
   assertEquals(parseEmailJob({ ...TIER_NOTICE_JOB, kind: 'unknown' }), null)
@@ -89,8 +117,25 @@ test('parseEmailJob rejects unknown types and incomplete tier-notice fields', ()
     parseEmailJob({ ...TIER_NOTICE_JOB, unwatched: { nics: ['eth0'] } }),
     null,
   )
+  assertEquals(parseEmailJob({ ...TIER_NOTICE_JOB, unwatched: 'eth0' }), null)
   assertEquals(
     parseEmailJob({ ...INVITATION_JOB, acceptUrl: undefined }),
+    null,
+  )
+  assertEquals(parseEmailJob({ ...INVITATION_JOB, inviterEmail: 1 }), null)
+  assertEquals(parseEmailJob({ ...INVITATION_JOB, organizationName: 1 }), null)
+  assertEquals(parseEmailJob({ ...INVITATION_JOB, teamName: 1 }), null)
+  assertEquals(parseEmailJob({ ...SIGNUP_JOB, verificationUrl: 1 }), null)
+  assertEquals(parseEmailJob({ ...OTP_JOB, otp: 123456 }), null)
+  assertEquals(parseEmailJob({ ...OTP_JOB, otpType: 'sms' }), null)
+  assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, event: 1 }), null)
+  assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, title: 1 }), null)
+  assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, body: 1 }), null)
+  assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, organizationName: 1 }), null)
+  assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, consoleUrl: 1 }), null)
+  assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, at: 1 }), null)
+  assertEquals(
+    parseEmailJob({ type: 'carrier-pigeon', to: 'a@b.co', from: 'c@d.co' }),
     null,
   )
 })

@@ -1,7 +1,7 @@
 /**
  * `deno task duckdb:smoke` — build/packaging gate for the DuckDB metrics
  * store. It proves the REAL compiled TurboPanel artifact — `deno task compile`
- * (tasks.compile, entry src/deno.ts) → `dist/turbopanel-instance` — can open
+ * (tasks.compile, entry src/deno.ts) → `dist/turbopanel` — can open
  * embedded DuckDB with the permission shape TurboPanel ships, via the
  * binary's `duckdb-smoke` subcommand (src/cli/duckdb-smoke.ts).
  *
@@ -14,7 +14,7 @@
  * What it does:
  *   1. `deno task compile` — the exact production build/permission shape
  *      (~2 min cold; skipped when --bin=<path> points at an already-compiled
- *      instance binary, e.g. dist/turbopanel-instance).
+ *      instance binary, e.g. dist/turbopanel).
  *   2. Runs the compiled binary three times — `duckdb-smoke write` →
  *      `duckdb-smoke verify` (fresh process, restart durability) →
  *      `duckdb-smoke parquet` (COPY TO + read_parquet round trip) — against a
@@ -81,7 +81,7 @@ try {
   if (!bin) {
     console.log('deno task compile (real production artifact, ~2 min cold)…')
     await run(Deno.execPath(), ['task', 'compile'])
-    bin = `${repoRoot}dist/turbopanel-instance`
+    bin = `${repoRoot}dist/turbopanel`
   }
 
   const vendored = resolveDuckdbNativeLibraryPath()

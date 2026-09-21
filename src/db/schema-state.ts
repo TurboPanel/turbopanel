@@ -5,7 +5,7 @@
  * Three callers, one rule (scripts/schema-state.mjs is the Node twin for
  * `pnpm migrate`; schema-state.test.ts pins the two):
  *
- *   - `turbopanel-instance migrate` and `pnpm migrate` run {@link compareSchemaState}
+ *   - `turbopanel migrate` and `pnpm migrate` run {@link compareSchemaState}
  *     *before* the drizzle migrator. drizzle applies a journal entry only
  *     when its `when` is newer than the newest `created_at` already
  *     recorded, so on a database migrated by files this build does not ship

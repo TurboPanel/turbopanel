@@ -40,7 +40,6 @@ export default defineConfig({
       'src/**/*.workers.test.ts',
       'src/**/*.workers-e2e.test.ts',
       'src/**/*.entry.test.ts',
-      'mailer/**/*.workers.test.ts',
     ],
     coverage: {
       // Istanbul instruments source at build time, so — unlike the default

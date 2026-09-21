@@ -5,15 +5,15 @@ import {
   createInvitationEmail,
   createNotificationEmail,
   createServerTierNoticeEmail,
-} from '../src/features/email/templates.ts'
-import { resolveEmailSettings, type ResolvedEmailSettings } from '../src/features/settings/email-settings.ts'
-import type { DerivedSecretsConfig } from '../src/lib/secrets/secrets.ts'
-import type { EmailJob } from '../src/features/email/types.ts'
-import type { MailerSendResult } from '../src/features/email/sender-types.ts'
-import { PermanentSendError, validateEmailAddress } from '../src/features/email/validate-address.ts'
-import type { Db } from './db.ts'
-import { logError } from '../src/lib/logger.ts'
-import type { SmtpConfig } from '../src/features/email/smtp/smtp-resolve.ts'
+} from '../../../features/email/templates.ts'
+import { resolveEmailSettings, type ResolvedEmailSettings } from '../../../features/settings/email-settings.ts'
+import type { DerivedSecretsConfig } from '../../secrets/secrets.ts'
+import type { EmailJob } from '../../../features/email/types.ts'
+import type { MailerSendResult } from '../../../features/email/sender-types.ts'
+import { PermanentSendError, validateEmailAddress } from '../../../features/email/validate-address.ts'
+import type { Db } from '../../../db/connection.ts'
+import { logError } from '../../logger.ts'
+import type { SmtpConfig } from '../../../features/email/smtp/smtp-resolve.ts'
 
 type Transporter = ReturnType<typeof nodemailer.createTransport>
 

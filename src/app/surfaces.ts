@@ -15,9 +15,11 @@ export const ADMIN_API_PREFIX = '/api/admin/v1'
  * than a call. That is a different thing from `/api`, so it gets its own prefix rather
  * than a version segment inside one.
  *
- * **Anything fronting the instance must know this prefix.** `Caddyfile`,
- * `dev/orchestration/Caddyfile` (both listener blocks), and the `routes`
- * patterns in `wrangler.jsonc` all end in a catch-all that serves the UI's
+ * **Anything fronting the instance must know this prefix.** The daemon's
+ * managed-install Caddyfile template (turbopaneld
+ * `roles/instance-launch/templates/Caddyfile.j2`), `dev/orchestration/Caddyfile`
+ * (both listener blocks), and the `routes` patterns in `wrangler.jsonc` all
+ * end in a catch-all that serves the UI's
  * `index.html`. A prefix missing from those lists does not 404 — it answers
  * `200` with an HTML page, and a provider reads that as a delivered webhook and
  * never retries. See `src/webhook/AGENTS.md`.

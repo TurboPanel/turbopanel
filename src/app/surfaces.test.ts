@@ -40,8 +40,10 @@ test("versioned API and WebSocket prefixes stay stable", () => {
 
 test("the webhook surface is its own top-level prefix", () => {
   // These are pinned because they are not ours alone to change: the same
-  // strings are enumerated in `Caddyfile`, `dev/orchestration/Caddyfile`, and
-  // the `routes` patterns in `wrangler.jsonc`. A prefix that drifts out of
+  // strings are enumerated in the daemon's managed-install Caddyfile template
+  // (turbopaneld roles/instance-launch/templates/Caddyfile.j2),
+  // `dev/orchestration/Caddyfile`, and the `routes` patterns in
+  // `wrangler.jsonc`. A prefix that drifts out of
   // those lists does not 404 — every front here ends in a catch-all that
   // serves the UI's index.html, so a Git provider would get HTTP 200 and an
   // HTML page, read it as a delivered webhook, and never retry.
@@ -83,49 +85,32 @@ test("every fronting layer forwards the whole /webhook/* prefix", async () => {
     assertEquals(path.startsWith(`${WEBHOOK_PREFIX}/`), true);
   }
 
-  const caddy = await Deno.readTextFile(join(repo, "Caddyfile"));
-  assertEquals(
-    caddy.includes(`path ${WEBHOOK_PREFIX}/*`),
-    true,
-    "Caddyfile forwards /webhook/*",
+  // The managed-install Caddyfile is a template in the sibling daemon
+  // checkout (rendered by its instance-launch role); CI may not have it. When
+  // it is there, every instance prefix must be matched ahead of the SPA
+  // catch-all. The daemon's own ansible.test.ts pins the same three matchers
+  // where CI always has the file.
+  const managedCaddy = await readIfPresent(
+    join(
+      repo,
+      "..",
+      "turbopaneld",
+      "orchestration",
+      "roles",
+      "instance-launch",
+      "templates",
+      "Caddyfile.j2",
+    ),
   );
-
-  const caddyAcme = await Deno.readTextFile(join(repo, "Caddyfile.acme"));
-  assertEquals(
-    caddyAcme.includes(`path ${WEBHOOK_PREFIX}/*`),
-    true,
-    "Caddyfile.acme forwards /webhook/*",
-  );
-  assertEquals(
-    caddyAcme.includes("path /api/*"),
-    true,
-    "Caddyfile.acme forwards /api/*",
-  );
-  assertEquals(
-    caddyAcme.includes("path /ws/*"),
-    true,
-    "Caddyfile.acme forwards /ws/*",
-  );
-  assertEquals(
-    caddyAcme.includes("auto_https off"),
-    false,
-    "Caddyfile.acme leaves automatic HTTPS on",
-  );
-  assertEquals(
-    caddyAcme.includes("{$TURBOPANEL_PUBLIC_HOSTNAME}"),
-    true,
-    "Caddyfile.acme binds the public hostname",
-  );
-  assertEquals(
-    caddyAcme.includes("email {$TURBOPANEL_ACME_EMAIL}"),
-    false,
-    "Caddyfile.acme does not render an empty email directive",
-  );
-  assertEquals(
-    caddyAcme.includes("{$TURBOPANEL_CADDY_ACME_EMAIL_DIRECTIVE}"),
-    true,
-    "Caddyfile.acme omits the email directive when the unit leaves it unset",
-  );
+  if (managedCaddy !== null) {
+    for (const prefix of [`${WEBHOOK_PREFIX}/*`, "/api/*", "/ws/*"]) {
+      assertEquals(
+        managedCaddy.includes(`path ${prefix}`),
+        true,
+        `managed Caddyfile template forwards ${prefix}`,
+      );
+    }
+  }
 
   // The dev orchestration Caddyfile lives in the sibling `dev` checkout; CI
   // may not have it. When it is there, both listener blocks must forward.

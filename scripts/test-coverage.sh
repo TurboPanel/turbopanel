@@ -169,7 +169,6 @@ deno test -A --coverage=coverage/deno-profile \
   --ignore=src/daemon/redis-cell.test.ts \
   --ignore=src/daemon/ws-handlers.test.ts \
   src/ \
-  mailer/ \
   scripts/
 fi
 

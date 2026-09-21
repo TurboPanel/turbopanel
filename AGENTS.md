@@ -72,7 +72,7 @@ user; the instance hardens its socket to **`0660`** owned by the dev user so the
 co-located daemon can connect.
 
 **Production:** dedicated service users — `tp` (daemon + Ansible), `tpctrl`
-(instance, UI, website, mailer, dbstudio), `tpcache` (Redis), `tpdata`
+(instance, UI, website, dbstudio), `tpcache` (Redis), `tpdata`
 (Postgres), `tpqueue` (RabbitMQ), `tpcaddy` (control-plane Caddy). See
 `../turbopaneld/AGENTS.md` (Filesystem layout), the allocation table below, and
 the systemd table for ownership, ACLs, and `/run/turbopanel` **`2770 tp:tp`**
@@ -83,7 +83,7 @@ the systemd table for ownership, ACLs, and `/run/turbopanel` **`2770 tp:tp`**
 | User / group | UID/GID | Runs                                                           |
 | ------------ | ------- | -------------------------------------------------------------- |
 | `tp`         | 9999    | daemon (`turbopaneld`) + Ansible + shared group everyone joins |
-| `tpctrl`     | 9998    | instance, UI, website, mailer, dbstudio                        |
+| `tpctrl`     | 9998    | instance, UI, website, dbstudio                                |
 | `tpcache`    | 9997    | Redis (+ `redis.sock` access group)                            |
 | `tpdata`     | 9996    | Postgres                                                       |
 | `tpqueue`    | 9995    | RabbitMQ                                                       |
@@ -680,14 +680,17 @@ path, so the default renders as:
 reverse_proxy unix//run/turbopanel/instance.sock
 ```
 
-The Caddyfiles spell it `unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock`
-— derived from the same run-dir + filename contract as `resolveInstanceSocket`
-in `src/platform/deno/server-paths.ts` (`caddyInstanceUpstream` mirrors it). The only socket
+The managed-install template (turbopaneld
+`roles/instance-launch/templates/Caddyfile.j2`) renders it from
+`turbopanel_run_dir`; the dev overlay spells it
+`unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock` — both derived from
+the same run-dir + filename contract as `resolveInstanceSocket` in
+`src/platform/deno/server-paths.ts` (`caddyInstanceUpstream` mirrors it). The only socket
 path inputs are `TURBOPANEL_RUN_DIR`, `TURBOPANEL_SOCKET_DIR`, and
-`TURBOPANEL_SOCKET`; there is no operator-set dial variable. Caddy itself reads
-only `TURBOPANEL_RUN_DIR` (Caddyfile placeholders cannot chain fallbacks; both
-managed units set it) — `TURBOPANEL_SOCKET_DIR` and `TURBOPANEL_SOCKET` are
-honored on the instance side, so relocating the socket for Caddy means setting
+`TURBOPANEL_SOCKET`; there is no operator-set dial variable. Caddy reads only
+the run dir (the managed units set `TURBOPANEL_RUN_DIR` and the role renders
+the same value) — `TURBOPANEL_SOCKET_DIR` and `TURBOPANEL_SOCKET` are honored
+on the instance side, so relocating the socket for Caddy means setting
 `TURBOPANEL_RUN_DIR`.
 
 ### Development
@@ -730,9 +733,13 @@ playbook, which installs `/etc/tmpfiles.d/turbopanel.conf` and applies it with
 
 ## Caddy (production)
 
-This repo's `Caddyfile` is **production-only** — full detail in
-[`caddy.md`](./caddy.md) (server addresses, certs/entrypoint, daemon TLS trust
-model, static UI). The one rule that must not be missed:
+The production Caddyfile is **not in this repo**: the daemon's
+`instance-launch` role renders it on every converge from
+`turbopaneld/orchestration/roles/instance-launch/templates/Caddyfile.j2` (one
+template, the three TLS modes are its branches) into
+`/etc/turbopanel/caddy/Caddyfile`. Full detail in [`caddy.md`](./caddy.md)
+(server addresses, certs/entrypoint, daemon TLS trust model, static UI). The
+one rule that must not be missed:
 
 **The catch-all is why the prefix list is load-bearing.** Caddy answers
 `try_files {path} /index.html`, so a prefix the instance owns but Caddy does not
@@ -841,7 +848,7 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
   instance-launch unit grant read+write on it. DuckDB is fully in-process — the
   metrics store needs no network grant on either surface.
 - `deno task duckdb:smoke` builds the **real** production artifact
-  (`deno task compile` → `dist/turbopanel-instance`) and drives its
+  (`deno task compile` → `dist/turbopanel`) and drives its
   `duckdb-smoke` subcommand (`src/cli/duckdb-smoke.ts`, routed by `src/deno.ts`) to
   prove DB create → restart durability → Parquet round trip against the exact
   binary that ships. **Run it inside the Vagrant guest on both linux-x64 and
@@ -850,9 +857,11 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
 ## The compiled instance without a checkout (`instance-runtime-packaging`)
 
 The release package (`.github/workflows/release.yml`,
-`turbopanel-instance-<version>-<arch>.tar.zst`) is `bin/turbopanel-instance`,
-`bin/turbopanel-mailer` and `lib/libduckdb.so`. Everything the installer used
-to reach into a source checkout for is now a verb of the instance binary,
+`turbopanel-instance-<version>-<arch>.tar.zst`) is `bin/turbopanel` and
+`lib/libduckdb.so`, unpacked flat into `/opt/turbopanel` beside the daemon.
+One binary: the server, the in-process email consumer (below) and the
+install-time verbs. Everything the installer used to reach into a source
+checkout for is now a verb of the instance binary,
 routed by `src/deno.ts` and imported lazily so the server path (which loads
 the DuckDB addon at module evaluation and so needs the vendored `.so` on
 `LD_LIBRARY_PATH`) is never touched by an install-time run:
@@ -874,17 +883,25 @@ the DuckDB addon at module evaluation and so needs the vendored `.so` on
   `/usr/bin/openssl` and `/usr/bin/hostname` on `--allow-run`, and with no
   `TURBOPANEL_TLS_CERTS_DIR` puts the leaf at `<state dir>/tls/certs` (inside
   `--allow-write`) instead of beside a repo root the binary does not have.
-- The mailer is its own binary (`deno task compile:mailer` →
-  `dist/turbopanel-mailer`). It bakes an unrestricted outbound `--allow-net`:
-  a dedicated process that talks to operator-configured SMTP relays and
-  Mailgun is the one place that is honest, and the instance binary's pins are
-  unchanged. Reads `/run/turbopanel`, `/etc/turbopanel`, `/var/lib/turbopanel`,
-  `/var/run/turbopanel`; writes only `/var/run/turbopanel` (postgres.js needs
-  it to connect over the socket).
+- The email consumer runs **in-process**
+  (`src/lib/email/mailer/deno-mailer-consumer.ts`, started from
+  `src/deno-server.ts` beside the command consumer, closed on SIGTERM). It
+  used to be a separate `turbopanel-mailer` binary and unit whose one reason
+  to exist was an unrestricted outbound `--allow-net` kept away from the
+  instance; the instance binary carries that flag itself since the egress
+  allowlist was dropped (2026-09-18), so the split bought nothing but a second
+  ~470 MB binary. The RabbitMQ queue stays (durability, rate limiting); the
+  senders and job parser live in `src/lib/email/mailer/`. Only
+  `src/deno-server.ts` may import the consumer — it drags amqplib and the
+  nodemailer SMTP sender into the graph, which the Workers build shims out.
 
 `src/deno-compile-permissions.test.ts` pins all of the above. `deno compile`
-with BYONM copies the whole `node_modules` tree into each binary, which is why
-they are ~700 MB uncompressed; the release job compresses with `zstd -19`.
+with BYONM copies the whole `node_modules` tree into the binary, so the
+release job type-checks against the full tree, then reinstalls
+production-only (`pnpm install --prod`) before `deno task compile` — the dev
+tree (wrangler + workerd, vitest, drizzle-kit, esbuild) is the difference
+between ~480 MB and ~200 MB. The compile tasks therefore run `--no-check`:
+a pruned tree has no `@types/node` for a checking compile to resolve.
 
 ## Subsystem docs (nested `AGENTS.md`)
 

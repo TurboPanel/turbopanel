@@ -92,13 +92,14 @@ import {
   probeAmqpBrokerReachable,
 } from './email/deno-amqp-queue.ts'
 import { resolveEmailSettings } from '../../features/settings/email-settings.ts'
-import { createNoopQueue } from '../../features/email/noop-queue.ts'
+import { createNoopQueue, isNoopEmailQueue } from '../../features/email/noop-queue.ts'
 import type { EmailQueue } from '../../features/email/types.ts'
 import {
   createDenoAmqpCommandQueue,
   probeCommandAmqpBrokerReachable,
 } from './commands/deno-amqp-queue.ts'
 import { startCommandConsumer } from '../../features/commands/deno-consumer.ts'
+import { startMailerConsumer } from '../../lib/email/mailer/deno-mailer-consumer.ts'
 import { createNoopCommandQueue, isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { createRedisQueryCache } from '../../query-cache/redis-query-cache.ts'
@@ -210,6 +211,37 @@ async function startOptionalCommandConsumer(opts: {
       'command-consumer',
       `AMQP broker unavailable; command consumer not started: ${String(err)}`
     )
+    return null
+  }
+}
+
+/**
+ * The in-process email consumer (what used to be the turbopanel-mailer
+ * process). Same guard shape as the command consumer: no broker means no
+ * consumer and a warning, never a failed boot — the instance still serves,
+ * it just cannot deliver mail until the broker is back and the unit restarts.
+ */
+async function startOptionalMailerConsumer(opts: {
+  db: Db
+  emailQueue: EmailQueue
+  env: Record<string, string | undefined>
+  dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
+}): Promise<{ close(): Promise<void> } | null> {
+  if (isNoopEmailQueue(opts.emailQueue)) {
+    logWarn('mailer', 'AMQP broker unavailable; email consumer not started')
+    return null
+  }
+  const amqpUrl = resolveCommandAmqpUrl()
+  if (!amqpUrl) return null
+  try {
+    return await startMailerConsumer({
+      db: opts.db,
+      amqpUrl,
+      env: opts.env,
+      dataEncryptionSecrets: opts.dataEncryptionSecrets,
+    })
+  } catch (err) {
+    logWarn('mailer', `AMQP broker unavailable; email consumer not started: ${String(err)}`)
     return null
   }
 }
@@ -466,6 +498,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secretsConfig,
     dataEncryptionSecrets,
   })
+  const mailerConsumer = await startOptionalMailerConsumer({
+    db,
+    emailQueue,
+    env: runtimeEnv,
+    dataEncryptionSecrets,
+  })
 
   const app = createApp({
     db,
@@ -680,6 +718,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       await emailQueue.close?.()
       await commandQueue.close?.()
       await commandConsumer?.close()
+      await mailerConsumer?.close()
       await daemonCellRegistry.close()
       // Persist any pending batched metrics rows before tearing the process
       // down — accepted (202) samples must survive a normal SIGINT/SIGTERM.

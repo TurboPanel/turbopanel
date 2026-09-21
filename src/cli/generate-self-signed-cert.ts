@@ -1,5 +1,5 @@
 /**
- * `turbopanel-instance generate-self-signed-cert` — the platform CA and the
+ * `turbopanel generate-self-signed-cert` — the platform CA and the
  * self-signed server leaf, without a source checkout
  * (instance-runtime-packaging, Road to 0.1.x).
  *

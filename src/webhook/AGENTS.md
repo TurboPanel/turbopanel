@@ -47,9 +47,11 @@ from `src/workers.ts` (`registerStripeWebhookRoutes`) because self-hosted has
 no billing at all — a Deno instance answers `404` on `/webhook/stripe`, not
 `503`, and the Deno compile graph never sees Stripe.
 
-**Every layer in front of the instance has to know `/webhook`.** `Caddyfile`,
-`dev/orchestration/Caddyfile` (both listener blocks), and the `routes` patterns
-in `wrangler.jsonc` each enumerate the prefixes they forward and then end in a
+**Every layer in front of the instance has to know `/webhook`.** The daemon's
+managed-install Caddyfile template (turbopaneld
+`roles/instance-launch/templates/Caddyfile.j2`), `dev/orchestration/Caddyfile`
+(both listener blocks), and the `routes` patterns in `wrangler.jsonc` each
+enumerate the prefixes they forward and then end in a
 catch-all that serves the UI's `index.html`. A prefix missing from one of those
 lists does not 404 — it answers **`200` with an HTML page**, which a Git
 provider reads as a delivered webhook and never retries. That is silent,
@@ -215,9 +217,9 @@ when Stripe landed, so a fourth kind inherits them:
 
 The URL plumbing is free: `/webhook/*` is already forwarded by every fronting
 layer, so `/webhook/<kind>` inherits it. The SPA-catch-all trap is closed for
-this prefix — `src/app/surfaces.test.ts` checks the `Caddyfile`, the dev
-orchestration `Caddyfile` (when the sibling checkout is present) and every
-`routes` block in `wrangler.jsonc`.
+this prefix — `src/app/surfaces.test.ts` checks the daemon's Caddyfile template
+and the dev orchestration `Caddyfile` (each when its sibling checkout is
+present) and every `routes` block in `wrangler.jsonc`.
 
 ### Acknowledge immediately
 

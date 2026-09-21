@@ -1,8 +1,8 @@
 /**
  * Baseline security response headers, set by the app itself on both runtimes.
  *
- * The self-hosted control plane sits behind Caddy, whose two Caddyfiles carry
- * the same three headers — but Caddy is not the only way an instance is
+ * The self-hosted control plane sits behind Caddy, whose rendered Caddyfile
+ * (every TLS mode) carries the same three headers — but Caddy is not the only way an instance is
  * fronted (an operator's own nginx, a tunnel), and the hosted runtime has no
  * Caddy at all: turbopanel.app is served by the Worker directly, so before
  * this middleware the hosted product's clickjacking and MIME-sniffing

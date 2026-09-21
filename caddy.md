@@ -1,13 +1,20 @@
 # Caddy (production) — reference
 
-Referenced from `AGENTS.md` (**Caddy**). Covers the production `Caddyfile`:
+Referenced from `AGENTS.md` (**Caddy**). Covers the production Caddyfile:
 server addresses, certs and entrypoint, the daemon TLS trust model, and the
-static UI catch-all. Read before editing `Caddyfile` or
+static UI catch-all. Read before editing the daemon's Caddyfile template or
 `scripts/download-caddy.mjs`.
 
-This repo's `Caddyfile` is **production-only** (`self_signed` / `upload`).
-`Caddyfile.acme` is the `lets_encrypt` sibling: automatic HTTPS for the instance
-hostname only. Caddy terminates TLS and routes:
+The production Caddyfile lives in the **daemon** repo as a Jinja template —
+`turbopaneld/orchestration/roles/instance-launch/templates/Caddyfile.j2` —
+and the `instance-launch` role renders it into
+`/etc/turbopanel/caddy/Caddyfile` (root:tp `0640`) on every converge,
+restarting `turbopanel-caddy` when it changes. One template; the three TLS
+modes (`self_signed` / `upload` / `lets_encrypt`) are its branches, with the
+port, leaf paths, public hostname and optional ACME contact baked in at render
+time. The instance release package ships no site config, and the rendered
+file is never hand-edited: change the template, converge. Caddy terminates
+TLS and routes:
 
 - `/api/*`, `/ws/*`, and `/webhook/*` → Deno instance
   (`unix:///run/turbopanel/instance.sock`)
@@ -83,30 +90,30 @@ Caddy/cert installs are handled by the daemon's `caddy`, `instance-certs`, and
 `instance-launch` Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp`
 in production. Control-plane TLS is selected by `turbopanel_tls_mode`:
 
-| Mode | Caddyfile | Listen | Leaf material | Platform CA minted | `GET /instance/ca` | `--insecure-tls` |
+| Mode | Rendered site block | Listen | Leaf material | Platform CA minted | `GET /instance/ca` | `--insecure-tls` |
 | --- | --- | --- | --- | --- | --- | --- |
-| `self_signed` (default) | `Caddyfile` | `:8443` | `certs/self-signed.*` | yes, served | 200 | yes |
-| `upload` | `Caddyfile` | `:8443` (or `caddy_port`) | operator pair copied to `certs/` | yes, served unless `turbopanel_tls_public` | 200 / 404 | follows `turbopanel_tls_public` |
-| `lets_encrypt` | `Caddyfile.acme` | `:443` (+ `:80` challenge) | Caddy ACME storage | yes, **not** served | 404 | no |
+| `self_signed` (default) | `:<port>` + `tls` leaf, `auto_https off` | `:8443` | `certs/self-signed.*` | yes, served | 200 | yes |
+| `upload` | `:<port>` + `tls` pair, `auto_https off` | `:8443` (or `caddy_port`) | operator pair copied to `certs/` | yes, served unless `turbopanel_tls_public` | 200 / 404 | follows `turbopanel_tls_public` |
+| `lets_encrypt` | `<public hostname>`, automatic HTTPS | `:443` (+ `:80` challenge) | Caddy ACME storage | yes, **not** served | 404 | no |
 
 `lets_encrypt` needs `:80` / `:443` free on the control-plane host — it conflicts
 with a hosting Caddy on the same host. ACME mode is **managed-install only**
 (the co-located dev overlay Caddyfile wins over `turbopanel_caddyfile`).
-`turbopanel_acme_email` is optional: the Caddy unit sets
-`TURBOPANEL_CADDY_ACME_EMAIL_DIRECTIVE=email <addr>` only when the address is
-non-empty, and `Caddyfile.acme` expands that placeholder so an unset contact
-does not render an invalid `email ` directive.
+`turbopanel_acme_email` is optional: the template emits the `email` directive
+only when the address is non-empty, so an unset contact never renders an
+invalid `email ` line.
 
-- Entrypoint: `https://<host>:8443` by default (`Caddyfile`) — binds all
-  interfaces; use `localhost` or the machine's LAN IP. `lets_encrypt` binds
-  `:443` via `Caddyfile.acme`.
+- Entrypoint: `https://<host>:8443` by default — binds all interfaces; use
+  `localhost` or the machine's LAN IP. `lets_encrypt` binds `:443` on the
+  public hostname.
 - Self-hosted TLS uses a **Platform CA** stored in the durable state tree
   (`/var/lib/turbopanel/tls/ca.crt` + `ca.key`, plus `ca-bundle.pem` for
   current+retired overlap). The Caddy **leaf** for `self_signed` / `upload`
   stays under the instance `certs/` dir (`self-signed.*` or `uploaded.*`).
   **`auto_https off` is mandatory in `self_signed` and `upload` and must never
-  be removed from `Caddyfile`.** `Caddyfile.acme` is the only file where Caddy
-  issues a certificate, and only for the instance's own hostname. Tenant
+  be removed from the template's non-ACME branch.** The `lets_encrypt` branch
+  is the only place Caddy issues a certificate, and only for the instance's
+  own hostname. Tenant
   hosting leaves stay on the per-server hosting Caddy. All other cert issuance
   goes through `scripts/generate-self-signed-cert.mjs` (self-hosted,
   **Platform CA**) or an explicitly-configured uploaded pair. The
@@ -138,7 +145,7 @@ does not render an invalid `email ` directive.
 There is **no** plaintext HTTP listener in the production Caddyfile. Co-located
 `:8880` lives only in the dev overlay Caddyfile.
 
-Both `Caddyfile` and `Caddyfile.acme` set a global `header` block
+Every rendered mode sets a global `header` block
 (`Strict-Transport-Security`, `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: DENY`) on the instance site. HSTS applies even on the
 `self_signed` default: a browser that already trusts the leaf (Platform CA
@@ -185,9 +192,10 @@ not “we are in development”:
 - Plaintext `http://` (dev `:8880`) → no TLS flags
 
 Let’s Encrypt (`turbopanel_tls_mode=lets_encrypt`) and uploaded certificates
-(`upload`) for the **control-plane origin** are operator opt-in. `Caddyfile`
-keeps `auto_https off`; only `Caddyfile.acme` obtains a public certificate, and
-only for the instance hostname. A Cloudflare tunnel presents a
+(`upload`) for the **control-plane origin** are operator opt-in. The
+`self_signed` and `upload` branches keep `auto_https off`; only the
+`lets_encrypt` branch obtains a public certificate, and only for the instance
+hostname. A Cloudflare tunnel presents a
 publicly-trusted cert at the edge; the origin can stay on the **Platform CA**.
 
 Dev overlay install commands also set
@@ -209,18 +217,20 @@ a compiled instance binary, `deno task compile` in this repo produces
 `dist/turbopanel-instance` from `src/deno.ts` with production `--allow-*` flags
 baked in at compile time. Development source mode runs `src/deno-dev.ts`.
 
-Manual export + Caddy:
+Manual export + Caddy (the dev overlay Caddyfile is the env-driven one; the
+managed template has its values baked in at render time):
 
 ```bash
 cd ../ui && pnpm export
 cd ../turbopanel
-TURBOPANEL_UI_ROOT=../ui/dist caddy run --config Caddyfile --adapter caddyfile
+TURBOPANEL_UI_ROOT=../ui/dist caddy run --config ../dev/orchestration/Caddyfile --adapter caddyfile
 ```
 
-Caddy serves files from `TURBOPANEL_UI_ROOT` (default
-`/opt/turbopanel/share/ui`; the local manual example above sets `../ui/dist`)
-and falls back to `/index.html` for client-side routes (SPA), matching the
-Cloudflare Workers asset routing in `ui/wrangler.jsonc`.
+Caddy serves files from the UI export root (`/opt/turbopanel/share/ui` on a
+managed install; `TURBOPANEL_UI_ROOT`, set to `../ui/dist` in the manual
+example above, for the dev overlay) and falls back to `/index.html` for
+client-side routes (SPA), matching the Cloudflare Workers asset routing in
+`ui/wrangler.jsonc`.
 
 Set `CADDY_TLS_CERT` / `CADDY_TLS_KEY` only when overriding the default server
 leaf certificate paths.
