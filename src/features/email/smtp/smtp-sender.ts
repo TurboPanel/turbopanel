@@ -2,4 +2,4 @@ export {
   MailerSmtpSender,
   createMailerSmtpSender,
   type MailerSendResult,
-} from '../mailer/smtp-sender.ts'
+} from '../../../lib/email/mailer/smtp-sender.ts'
