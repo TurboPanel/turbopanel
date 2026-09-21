@@ -482,6 +482,7 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/db/primary-key.test.ts \
   src/lib/db/enum-checks.test.ts \
   src/lib/db/migration-manifest.test.ts \
+  src/lib/db/schema-descriptions.test.ts \
   src/lib/db/schema-state.test.ts \
   src/lib/db/audit-records.hostfree.test.ts \
   src/lib/db/tls-leaf-indexes.test.ts \
