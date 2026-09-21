@@ -1,15 +1,21 @@
 # Cuts a GitHub Release on a v* tag: the compiled self-hosted instance,
 # built natively on each architecture (no cross-compiling the DuckDB addon)
 # and packaged once in CI as turbopanel-instance-<version>-<arch>.tar.zst —
-# bin/turbopanel-instance (with the migrations embedded and the install-time
-# verbs: migrate, generate-secret, generate-self-signed-cert),
-# bin/turbopanel-mailer (the compiled mailer), lib/libduckdb.so (what
-# instance-launch's compiled branch puts on LD_LIBRARY_PATH) and
-# share/caddy/Caddyfile{,.acme} (the site config Caddy serves; its paths are
-# env-driven, nothing else in it is checkout-relative) — plus a
-# manifest.json with the sha256 and size of each asset. Road to 0.1.x,
-# `artifacts-cp-ui` + `instance-runtime-packaging`; consuming the package is
+# bin/turbopanel (the one binary: the server with the in-process email
+# consumer, the migrations embedded and the install-time verbs migrate,
+# generate-secret, generate-self-signed-cert) and lib/libduckdb.so (what
+# instance-launch's compiled branch puts on LD_LIBRARY_PATH) — plus a
+# manifest.json with the sha256 and size of each asset. The installer unpacks
+# the package flat into /opt/turbopanel beside the daemon (bin/, lib/). The
+# Caddy site config is not part of the package: the daemon's instance-launch
+# role renders it from its own Caddyfile.j2. Road to 0.1.x, `artifacts-cp-ui`
+# + `instance-runtime-packaging`; consuming the package is
 # `self-hosted-installer`.
+#
+# Size: `deno compile` under BYONM embeds the whole node_modules tree, so the
+# binary is compiled against a production-only install (pnpm --prod) after
+# the type check has run against the full one — the dev tree (wrangler,
+# workerd, vitest…) is most of the difference between ~480 MB and ~200 MB.
 #
 # Build (the Postgres-backed test suite and Sonar, ~25 min) is not re-run
 # here: the tag must sit on a commit whose Build already went green — the
@@ -175,7 +181,19 @@ jobs:
       - name: Install dependencies
         # BYONM: `deno task compile` bundles duckdb.node from the pnpm-managed
         # node_modules, and duckdb-native-lib.ts locates libduckdb.so there.
+        # The full tree first: the type check below needs @types/node.
         run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Type-check the instance
+        # The compile tasks run with --no-check (see
+        # src/deno-compile-permissions.test.ts); this is where the check
+        # happens, against the full dependency tree.
+        run: deno check src/deno.ts
+
+      - name: Prune to production dependencies
+        # What gets embedded in the binary. Runtime deps only; the dev tree
+        # (wrangler + workerd, vitest, drizzle-kit, esbuild) never ships.
+        run: pnpm install --prod --frozen-lockfile --ignore-scripts
 
       - name: Stamp the build identity
         # The version already comes from deno.json (src/version.ts); only the
@@ -190,9 +208,6 @@ jobs:
 
       - name: Compile the instance
         run: deno task compile
-
-      - name: Compile the mailer
-        run: deno task compile:mailer
 
       - name: Locate libduckdb.so
         id: duckdb
@@ -209,28 +224,25 @@ jobs:
           set -eu
           sudo mkdir -p /var/lib/turbopanel/metrics
           sudo chown -R "$(id -u):$(id -g)" /var/lib/turbopanel
-          deno task duckdb:smoke --bin=dist/turbopanel-instance
+          deno task duckdb:smoke --bin=dist/turbopanel
 
       - name: Report the binary's shape
         # `file` exits 1 on a deno-compiled binary (the eszip trailer confuses
         # its ELF parser) while still printing the architecture line — the
         # line is what we want, the exit code is noise.
-        run: file dist/turbopanel-instance || true
+        run: file dist/turbopanel || true
 
       - name: Package the release asset
         run: |
           set -eu
           _stage="$(mktemp -d)"
-          mkdir -p "${_stage}/bin" "${_stage}/lib" "${_stage}/share/caddy" release-assets
-          install -m 0644 Caddyfile "${_stage}/share/caddy/Caddyfile"
-          install -m 0644 Caddyfile.acme "${_stage}/share/caddy/Caddyfile.acme"
-          install -m 0755 dist/turbopanel-instance "${_stage}/bin/turbopanel-instance"
-          install -m 0755 dist/turbopanel-mailer "${_stage}/bin/turbopanel-mailer"
+          mkdir -p "${_stage}/bin" "${_stage}/lib" release-assets
+          install -m 0755 dist/turbopanel "${_stage}/bin/turbopanel"
           # The install-time verbs run without the vendored .so or a checkout.
-          "${_stage}/bin/turbopanel-instance" generate-secret | grep -Eq '^[A-Za-z0-9_]{48}$'
+          "${_stage}/bin/turbopanel" generate-secret | grep -Eq '^[A-Za-z0-9_]{48}$'
           install -m 0644 "${{ steps.duckdb.outputs.dir }}/libduckdb.so" "${_stage}/lib/libduckdb.so"
           _name="turbopanel-instance-${TP_VERSION}-${TP_ARCH}.tar.zst"
-          tar -C "${_stage}" -cf - bin lib share | zstd -19 -T0 -q -o "release-assets/${_name}"
+          tar -C "${_stage}" -cf - bin lib | zstd -19 -T0 -q -o "release-assets/${_name}"
           rm -rf "${_stage}"
           ls -l release-assets
 

@@ -507,12 +507,12 @@ deno test -A --coverage=coverage/deno-profile \
   src/lib/email/smtp/workers-shims.test.ts \
   src/lib/email/templates.test.ts \
   src/lib/email/validate-address.test.ts \
-  mailer/db.test.ts \
-  mailer/mailgun-sender.test.ts \
-  mailer/mailpit-sender.test.ts \
-  mailer/redact-url.test.ts \
-  mailer/parse-email-job.test.ts \
-  mailer/smtp-sender.test.ts \
+  src/lib/email/mailer/mailgun-sender.test.ts \
+  src/lib/email/mailer/mailpit-sender.test.ts \
+  src/lib/email/mailer/redact-url.test.ts \
+  src/lib/email/mailer/parse-email-job.test.ts \
+  src/lib/email/mailer/smtp-sender.test.ts \
+  src/lib/email/mailer/deno-mailer-consumer.hostfree.test.ts \
   src/lib/geo/server-geo.test.ts \
   src/lib/geo/self-hosted-geo-provider.test.ts \
   src/lib/git/ \

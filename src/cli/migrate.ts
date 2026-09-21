@@ -1,5 +1,5 @@
 /**
- * `turbopanel-instance migrate` — apply the shipped migrations without a
+ * `turbopanel migrate` — apply the shipped migrations without a
  * source checkout (instance-runtime-packaging, Road to 0.1.x).
  *
  * The same two gates `pnpm migrate` runs from a checkout, in one process:
