@@ -42,6 +42,7 @@ import {
   fetchInstallationAccount,
   findAttachedSource,
   findSourceByUrl,
+  finishGitlabOauthCallback,
   isUniqueViolation,
   providerErrorResponse,
   redirectToForgeUi,
@@ -511,6 +512,60 @@ test('resolveGitlabRedirectUri prefers the configured URI then a public origin',
       null,
     ),
     `https://panel.example.com${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`,
+  )
+})
+
+test('finishGitlabOauthCallback rejects the wrong provider and maps invalid credentials', async () => {
+  const secrets = await deriveEncryptionSecretsConfig(
+    parseTestSecretsConfig('deno'),
+    'data-encryption',
+  )
+  const forgeRow = {
+    id: APP_ID,
+    organizationId: ORG_ID,
+    provider: 'gitlab',
+    name: 'GitLab',
+    baseUrl: 'https://gitlab.com',
+    apiUrl: null,
+    externalAppId: 'oauth-1',
+    appSlug: null,
+    clientId: 'client-1',
+    redirectUri: 'https://panel.example.com/callback',
+    webhookRef: 'ref-1',
+    webhookOrigin: null,
+    webhookTokenHash: null,
+    isPublic: false,
+    customGitUser: null,
+    customGitPort: null,
+    syncedAt: null,
+    envelopes: {},
+  }
+  const params = {
+    organizationId: ORG_ID,
+    forgeId: APP_ID,
+    code: 'authorization-code',
+  }
+
+  const wrongProvider = await finishGitlabOauthCallback(
+    mockContext(),
+    selectLimitDb([{ ...forgeRow, provider: 'github' }]),
+    secrets,
+    params,
+  )
+  assertEquals(
+    wrongProvider.headers.get('Location'),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' }),
+  )
+
+  const invalidCredentials = await finishGitlabOauthCallback(
+    mockContext(),
+    selectLimitDb([forgeRow]),
+    secrets,
+    params,
+  )
+  assertEquals(
+    invalidCredentials.headers.get('Location'),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' }),
   )
 })
 

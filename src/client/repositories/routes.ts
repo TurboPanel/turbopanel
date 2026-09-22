@@ -713,7 +713,7 @@ async function persistGithubGitConnection(
   }
 }
 
-async function finishGitlabOauthCallback(
+export async function finishGitlabOauthCallback(
   c: Context<AppEnv>,
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
