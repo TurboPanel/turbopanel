@@ -23,40 +23,43 @@
  * repository picker, and everything deploy-prep does.
  */
 
-import { and, eq, sql } from 'drizzle-orm'
-import { inspectRepository } from './inspect.ts'
-import { resolveDefaultBranchViaDaemon } from './read-repository.ts'
-import { isSafeRoot } from '../../features/compose/index.ts'
-import { getDaemonCellRegistry } from '../../db/connection.ts'
-import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app/app.ts'
-import type { AuthRouteOpts } from '../authn/http.ts'
-import { createSessionMiddleware } from '../authn/middleware.ts'
-import { listVisible } from '../authz/index.ts'
-import { getDb, type Db } from '../../db/connection.ts'
-import { logWarn } from '../../lib/logger.ts'
-import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
+import { and, eq, sql } from "drizzle-orm";
+import { inspectRepository } from "./inspect.ts";
+import { resolveDefaultBranchViaDaemon } from "./read-repository.ts";
+import { isSafeRoot } from "../../features/compose/index.ts";
+import { getDaemonCellRegistry } from "../../db/connection.ts";
+import type { Context, Hono } from "hono";
+import type { AppEnv } from "../../app/app.ts";
+import type { AuthRouteOpts } from "../authn/http.ts";
+import { createSessionMiddleware } from "../authn/middleware.ts";
+import { listVisible } from "../authz/index.ts";
+import { type Db, getDb } from "../../db/connection.ts";
+import { logWarn } from "../../lib/logger.ts";
+import type {
+  DerivedSecretsConfig,
+  SecretsConfig,
+} from "../../lib/secrets/secrets.ts";
+import { CLIENT_API_PREFIX } from "../../app/surfaces.ts";
 import {
-  secret,
   forge,
   gitConnection,
-  server,
   repository,
-} from '../../db/schema.ts'
+  secret,
+  server,
+} from "../../db/schema.ts";
 import {
   type Forge,
   loadForge,
   visibleForgesCondition,
-} from '../../features/git/forge-records.ts'
+} from "../../features/git/forge-records.ts";
 import {
-  webhookReachability,
   type WebhookProvider,
-} from '../../features/git/webhook-reachability.ts'
+  webhookReachability,
+} from "../../features/git/webhook-reachability.ts";
 import {
   getPublicUrls,
   publicUrlEntryToInstallOrigin,
-} from '../../features/install/public-urls.ts'
+} from "../../features/install/public-urls.ts";
 import {
   GITHUB_API_BASE,
   githubApiBaseFor,
@@ -64,59 +67,62 @@ import {
   GithubAppTokenError,
   signGithubAppJwt,
   verifyInstallationAuthorizedByUser,
-} from '../../features/git/github-app-token.ts'
-import { enforceAuthRateLimit } from '../authn/http.ts'
-import { isPostgresUniqueViolation, isUniqueViolationOn } from '../../db/unique-violation.ts'
+} from "../../features/git/github-app-token.ts";
+import { enforceAuthRateLimit } from "../authn/http.ts";
 import {
-  resolveGitProvider,
+  isPostgresUniqueViolation,
+  isUniqueViolationOn,
+} from "../../db/unique-violation.ts";
+import {
   type RepositorySummary,
-} from '../../features/git/git-provider.ts'
-import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
-import { fetchPublicGithubDefaultBranch } from '../../features/git/github-provider.ts'
+  resolveGitProvider,
+} from "../../features/git/git-provider.ts";
+import { canonicalizeRepositoryUrl } from "../../features/git/clone-url.ts";
+import { fetchPublicGithubDefaultBranch } from "../../features/git/github-provider.ts";
 import {
   exchangeGitlabAuthorizationCode,
   gitlabAuthorizeUrl,
   gitlabOauthCredentials,
   GitlabOauthTokenError,
   persistGitlabTokenPair,
-} from '../../features/git/gitlab-oauth-token.ts'
-import { fetchGitlabAccount } from '../../features/git/gitlab-provider.ts'
-import { GitlabApiError } from '../../features/git/gitlab-api.ts'
-import { generateSshDeployKeypair } from '../../features/git/ssh-keypair.ts'
-import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
-import { canAccessOrganization } from '../org-context.ts'
+} from "../../features/git/gitlab-oauth-token.ts";
+import { fetchGitlabAccount } from "../../features/git/gitlab-provider.ts";
+import { GitlabApiError } from "../../features/git/gitlab-api.ts";
+import { generateSshDeployKeypair } from "../../features/git/ssh-keypair.ts";
+import { encryptSecret } from "../../lib/secrets/data-encryption.ts";
+import { canAccessOrganization } from "../org-context.ts";
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
   assertCanReadOr403,
   getOrgId,
   parseJsonBody,
-} from '../shared.ts'
+} from "../shared.ts";
 import {
   signGithubInstallState,
   signGitlabConnectState,
   verifyGithubInstallState,
   verifyGitlabConnectState,
-} from './provider-install-state.ts'
+} from "./provider-install-state.ts";
 import {
-  providerInstallUiReturnPath,
   type ProviderInstallReturnError,
-} from '../forges/routes-helpers.ts'
+  providerInstallUiReturnPath,
+} from "../forges/routes-helpers.ts";
 import {
   COMPOSE_SOURCE_JSONPATH,
-  parseSourceAttachBody,
   GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
+  parseSourceAttachBody,
   parseSourceCreateBody,
   parseSourcePatchBody,
   serializeConnectionRow,
   serializeSourceRow,
-  type SourceWebhookInfo,
   SOURCE_DEPLOY_KEY_PROVIDERS,
   SOURCE_REFERENCED_BY_COMPOSE_ERROR,
-  UUID_RE,
   type SourceCreateFields,
   type SourceProvider,
-} from './routes-helpers.ts'
+  type SourceWebhookInfo,
+  UUID_RE,
+} from "./routes-helpers.ts";
 
 const SOURCE_SELECT = {
   id: repository.id,
@@ -137,7 +143,7 @@ const SOURCE_SELECT = {
   defaultBranchCheckedAt: repository.defaultBranchCheckedAt,
   lastInspectedAt: repository.lastInspectedAt,
   lastInspectedCommitSha: repository.lastInspectedCommitSha,
-}
+};
 
 const CONNECTION_SELECT = {
   id: gitConnection.id,
@@ -152,27 +158,27 @@ const CONNECTION_SELECT = {
   options: gitConnection.options,
   createdAt: gitConnection.createdAt,
   updatedAt: gitConnection.updatedAt,
-}
+};
 
 type SourceSessionContext = {
-  db: Db
-  userId: string
-  organizationId: string
-}
+  db: Db;
+  userId: string;
+  organizationId: string;
+};
 
 export async function resolveSourceSession(
   c: Context<AppEnv>,
 ): Promise<SourceSessionContext | Response> {
-  const db = getDb(c)
-  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  const db = getDb(c);
+  if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-  const session = c.get('session')
-  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
 
-  const orgResult = await getOrgId(c, session.userId)
-  if (orgResult instanceof Response) return orgResult
+  const orgResult = await getOrgId(c, session.userId);
+  if (orgResult instanceof Response) return orgResult;
 
-  return { db, userId: session.userId, organizationId: orgResult }
+  return { db, userId: session.userId, organizationId: orgResult };
 }
 
 /**
@@ -184,27 +190,27 @@ export async function resolveSourceSession(
  * `X-Turbopanel-Organization-Id`. Organization comes from verified claims.
  */
 type ProviderCallbackSession = {
-  db: Db
-  userId: string
-  secretsConfig: SecretsConfig | undefined
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined
-}
+  db: Db;
+  userId: string;
+  secretsConfig: SecretsConfig | undefined;
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined;
+};
 
 export async function resolveProviderCallbackSession(
   c: Context<AppEnv>,
 ): Promise<ProviderCallbackSession | Response> {
-  const db = getDb(c)
-  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  const db = getDb(c);
+  if (!db) return c.json({ error: "Database unavailable" }, 503);
 
-  const session = c.get('session')
-  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+  const session = c.get("session");
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
 
   return {
     db,
     userId: session.userId,
-    secretsConfig: c.get('secretsConfig'),
-    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
-  }
+    secretsConfig: c.get("secretsConfig"),
+    dataEncryptionSecrets: c.get("dataEncryptionSecrets"),
+  };
 }
 
 async function authorizeClaimedOrganization(
@@ -213,9 +219,9 @@ async function authorizeClaimedOrganization(
   userId: string,
   organizationId: string,
 ): Promise<Response | null> {
-  const allowed = await canAccessOrganization(db, userId, organizationId)
-  if (!allowed) return c.json({ error: 'Forbidden' }, 403)
-  return assertCanManageOr403(c, 'organization', organizationId)
+  const allowed = await canAccessOrganization(db, userId, organizationId);
+  if (!allowed) return c.json({ error: "Forbidden" }, 403);
+  return assertCanManageOr403(c, "organization", organizationId);
 }
 
 /**
@@ -265,8 +271,8 @@ export async function composeReferencesRepository(
       WHERE w.organization_id = ${organizationId}::uuid
         AND p.options -> 'composeSource' ->> 'sourceId' = ${sourceId}::text
     ) AS referenced
-  `)
-  return rows[0]?.referenced === true
+  `);
+  return rows[0]?.referenced === true;
 }
 
 /**
@@ -293,7 +299,7 @@ export async function assertConnectionInOrganization(
   connectionId: string | null,
   sourceProvider?: SourceProvider,
 ): Promise<Response | null> {
-  if (!connectionId) return null
+  if (!connectionId) return null;
   const [row] = await db
     .select({
       organizationId: gitConnection.organizationId,
@@ -301,14 +307,14 @@ export async function assertConnectionInOrganization(
     })
     .from(gitConnection)
     .where(eq(gitConnection.id, connectionId))
-    .limit(1)
+    .limit(1);
   if (row?.organizationId !== organizationId) {
-    return c.json({ error: 'Not found' }, 404)
+    return c.json({ error: "Not found" }, 404);
   }
   if (sourceProvider !== undefined && row.provider !== sourceProvider) {
-    return c.json({ error: 'source_installation_provider_mismatch' }, 400)
+    return c.json({ error: "source_installation_provider_mismatch" }, 400);
   }
-  return null
+  return null;
 }
 
 /**
@@ -338,7 +344,7 @@ export async function assertSecretInOrganization(
   secretId: string | null,
   sourceProvider: SourceProvider,
 ): Promise<Response | null> {
-  if (!secretId) return null
+  if (!secretId) return null;
   const [row] = await db
     .select({
       organizationId: secret.organizationId,
@@ -346,19 +352,19 @@ export async function assertSecretInOrganization(
     })
     .from(secret)
     .where(eq(secret.id, secretId))
-    .limit(1)
+    .limit(1);
   if (row?.organizationId !== organizationId) {
-    return c.json({ error: 'Not found' }, 404)
+    return c.json({ error: "Not found" }, 404);
   }
   // `assertProviderAuthShape` already refuses a secret on a `github`
   // repository; restated here so this function is safe to call on its own.
   if (!SOURCE_DEPLOY_KEY_PROVIDERS.has(sourceProvider)) {
-    return c.json({ error: 'source_credential_not_supported' }, 400)
+    return c.json({ error: "source_credential_not_supported" }, 400);
   }
   if (row.provider !== GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER) {
-    return c.json({ error: 'source_credential_provider_mismatch' }, 400)
+    return c.json({ error: "source_credential_provider_mismatch" }, 400);
   }
-  return null
+  return null;
 }
 
 /**
@@ -370,13 +376,21 @@ export async function assertSecretInOrganization(
  * a recognised provider error rethrows — a bug here should surface as a 500,
  * not be laundered into a plausible-looking 502.
  */
-export function providerErrorResponse(c: Context<AppEnv>, error: unknown): Response {
+export function providerErrorResponse(
+  c: Context<AppEnv>,
+  error: unknown,
+): Response {
   const known = error instanceof GithubAppTokenError ||
     error instanceof GitlabOauthTokenError ||
-    error instanceof GitlabApiError
-  if (!known) throw error
-  const status = error.status === 404 || error.status === 409 ? error.status : 502
-  return c.json({ error: 'git_provider_request_failed', detail: error.message }, status)
+    error instanceof GitlabApiError;
+  if (!known) throw error;
+  const status = error.status === 404 || error.status === 409
+    ? error.status
+    : 502;
+  return c.json(
+    { error: "git_provider_request_failed", detail: error.message },
+    status,
+  );
 }
 
 /**
@@ -394,10 +408,10 @@ export async function resolveConnectApp(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   organizationId: string,
-  provider: 'github' | 'gitlab',
+  provider: "github" | "gitlab",
 ): Promise<Forge | Response> {
-  const forgeId = c.req.query('forgeId')?.trim() ?? ''
-  if (!UUID_RE.test(forgeId)) return c.json({ error: 'git_app_required' }, 400)
+  const forgeId = c.req.query("forgeId")?.trim() ?? "";
+  if (!UUID_RE.test(forgeId)) return c.json({ error: "git_app_required" }, 400);
 
   const [row] = await db
     .select({ id: forge.id })
@@ -409,56 +423,56 @@ export async function resolveConnectApp(
         visibleForgesCondition(organizationId),
       ),
     )
-    .limit(1)
-  if (!row) return c.json({ error: 'Not found' }, 404)
+    .limit(1);
+  if (!row) return c.json({ error: "Not found" }, 404);
 
-  const app = await loadForge(db, dataEncryptionSecrets, row.id)
-  if (!app) return c.json({ error: 'Not found' }, 404)
-  return app
+  const app = await loadForge(db, dataEncryptionSecrets, row.id);
+  if (!app) return c.json({ error: "Not found" }, 404);
+  return app;
 }
 
 /** Postgres `unique_violation`; see the attach route's race note. */
 /** SQLSTATE 23505 on the error or any `.cause` beneath it (drizzle-orm ≥ 0.45 wraps). */
 export function isUniqueViolation(error: unknown): boolean {
-  return isPostgresUniqueViolation(error)
+  return isPostgresUniqueViolation(error);
 }
 
 function listingMatchForSource(
   listing: RepositorySummary[],
   repositoryExternalId: string | null,
 ): RepositorySummary | undefined {
-  if (!repositoryExternalId) return undefined
-  return listing.find((entry) => entry.id === repositoryExternalId)
+  if (!repositoryExternalId) return undefined;
+  return listing.find((entry) => entry.id === repositoryExternalId);
 }
 
 /** Provider facts to persist on refresh — branch tracking + renamed clone URL. */
 function buildRefreshPatch(
   row: {
-    defaultBranch: string | null
-    repositoryUrl: string
-    detectedDefaultBranch: string | null
+    defaultBranch: string | null;
+    repositoryUrl: string;
+    detectedDefaultBranch: string | null;
   },
   match: RepositorySummary,
 ): Record<string, unknown> {
-  const previouslyDetected = row.detectedDefaultBranch
+  const previouslyDetected = row.detectedDefaultBranch;
 
   const tracksProvider = row.defaultBranch === null ||
-    row.defaultBranch === previouslyDetected
+    row.defaultBranch === previouslyDetected;
   const patch: Record<string, unknown> = {
     detectedDefaultBranch: match.defaultBranch,
     defaultBranchCheckedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-  }
+  };
   if (tracksProvider && match.defaultBranch) {
-    patch.defaultBranch = match.defaultBranch
+    patch.defaultBranch = match.defaultBranch;
   }
   // A rename upstream shows up as a changed clone URL; adopt it so the
   // canonical-URL dedupe keeps matching what operators paste today.
   if (match.cloneUrl) {
-    const canonical = canonicalizeRepositoryUrl(match.cloneUrl)
-    if (canonical !== row.repositoryUrl) patch.repositoryUrl = canonical
+    const canonical = canonicalizeRepositoryUrl(match.cloneUrl);
+    if (canonical !== row.repositoryUrl) patch.repositoryUrl = canonical;
   }
-  return patch
+  return patch;
 }
 
 async function persistRefreshPatch(
@@ -467,21 +481,21 @@ async function persistRefreshPatch(
   patch: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await db.update(repository).set(patch).where(eq(repository.id, id))
+    await db.update(repository).set(patch).where(eq(repository.id, id));
   } catch (error) {
-    if (!isUniqueViolation(error)) throw error
+    if (!isUniqueViolation(error)) throw error;
     // The renamed URL collides with another row this organization holds;
     // keep the stored URL and still record the refreshed branch facts.
-    delete patch.repositoryUrl
-    await db.update(repository).set(patch).where(eq(repository.id, id))
+    delete patch.repositoryUrl;
+    await db.update(repository).set(patch).where(eq(repository.id, id));
   }
 }
 
 type InspectSourceRow = {
-  id: string
-  repositoryUrl: string
-  defaultBranch: string | null
-}
+  id: string;
+  repositoryUrl: string;
+  defaultBranch: string | null;
+};
 
 /**
  * Prefer the caller-supplied ref, then the stored default branch, then a
@@ -492,12 +506,12 @@ async function resolveInspectRef(
   row: InspectSourceRow,
   queryRef: string,
 ): Promise<string> {
-  if (queryRef.length > 0) return queryRef
-  const stored = (row.defaultBranch ?? '').trim()
-  if (stored.length > 0) return stored
+  if (queryRef.length > 0) return queryRef;
+  const stored = (row.defaultBranch ?? "").trim();
+  if (stored.length > 0) return stored;
 
-  const detected = await fetchPublicGithubDefaultBranch(row.repositoryUrl)
-  if (!detected) return ''
+  const detected = await fetchPublicGithubDefaultBranch(row.repositoryUrl);
+  if (!detected) return "";
 
   try {
     await db
@@ -508,17 +522,17 @@ async function resolveInspectRef(
         defaultBranchCheckedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       })
-      .where(eq(repository.id, row.id))
+      .where(eq(repository.id, row.id));
   } catch (error) {
-    logWarn('repository inspect default branch persist failed', { error })
+    logWarn("repository inspect default branch persist failed", { error });
   }
-  return detected
+  return detected;
 }
 
 /** Remember a successful inspect; never fail the read if the write fails. */
 async function recordInspectBookkeeping(
   db: Db,
-  row: Pick<InspectSourceRow, 'id'>,
+  row: Pick<InspectSourceRow, "id">,
   commitSha: string,
 ): Promise<void> {
   try {
@@ -529,9 +543,9 @@ async function recordInspectBookkeeping(
         lastInspectedCommitSha: commitSha,
         updatedAt: new Date().toISOString(),
       })
-      .where(eq(repository.id, row.id))
+      .where(eq(repository.id, row.id));
   } catch (error) {
-    logWarn('repository inspect metadata update failed', { error })
+    logWarn("repository inspect metadata update failed", { error });
   }
 }
 
@@ -551,8 +565,8 @@ export async function findAttachedSource(
         eq(repository.repositoryExternalId, fields.repositoryExternalId),
       ),
     )
-    .limit(1)
-  return row?.id ?? null
+    .limit(1);
+  return row?.id ?? null;
 }
 
 /**
@@ -574,8 +588,8 @@ export async function findSourceByUrl(
         eq(repository.repositoryUrl, repositoryUrl),
       ),
     )
-    .limit(1)
-  return row?.id ?? null
+    .limit(1);
+  return row?.id ?? null;
 }
 
 /**
@@ -593,7 +607,10 @@ export function redirectToForgeUi(
   forgeId: string | null,
   query: { installed?: string; error?: ProviderInstallReturnError },
 ): Response {
-  return c.redirect(providerInstallUiReturnPath(organizationId, forgeId, query), 302)
+  return c.redirect(
+    providerInstallUiReturnPath(organizationId, forgeId, query),
+    302,
+  );
 }
 
 function providerCallbackFail(
@@ -602,44 +619,49 @@ function providerCallbackFail(
   error: ProviderInstallReturnError,
   forgeId: string | null = null,
 ): Response {
-  return redirectToForgeUi(c, organizationId, forgeId, { error })
+  return redirectToForgeUi(c, organizationId, forgeId, { error });
 }
 
 async function proveGithubInstallUser(
   c: Context<AppEnv>,
   app: Forge,
   params: {
-    code: string
-    externalInstallationId: string
-    organizationId: string
+    code: string;
+    externalInstallationId: string;
+    organizationId: string;
   },
 ): Promise<Response | null> {
   try {
     const verdict = await verifyInstallationAuthorizedByUser(app, {
       code: params.code,
       externalInstallationId: params.externalInstallationId,
-    })
-    if (verdict === 'not_authorized') {
+    });
+    if (verdict === "not_authorized") {
       logWarn(
-        'git-sources',
+        "git-sources",
         `github installation ${params.externalInstallationId} refused: not visible to the authorizing user (org ${params.organizationId})`,
-      )
+      );
       return providerCallbackFail(
         c,
         params.organizationId,
-        'install_not_authorized',
+        "install_not_authorized",
         app.id,
-      )
+      );
     }
-    return null
+    return null;
   } catch (error) {
     logWarn(
-      'git-sources',
+      "git-sources",
       `github install authorization check failed: ${
-        error instanceof Error ? error.message : 'unknown error'
+        error instanceof Error ? error.message : "unknown error"
       }`,
-    )
-    return providerCallbackFail(c, params.organizationId, 'provider_failed', app.id)
+    );
+    return providerCallbackFail(
+      c,
+      params.organizationId,
+      "provider_failed",
+      app.id,
+    );
   }
 }
 
@@ -649,22 +671,24 @@ async function lookupGithubInstallAccount(
   privateKeyPem: string,
   externalInstallationId: string,
   organizationId: string,
-): Promise<{ accountLogin: string | null; accountType: string | null } | Response> {
+): Promise<
+  { accountLogin: string | null; accountType: string | null } | Response
+> {
   try {
-    const appJwt = await signGithubAppJwt(app.externalAppId, privateKeyPem)
+    const appJwt = await signGithubAppJwt(app.externalAppId, privateKeyPem);
     return await fetchInstallationAccount(
       appJwt,
       externalInstallationId,
       githubApiBaseFor(app),
-    )
+    );
   } catch (error) {
     logWarn(
-      'git-sources',
+      "git-sources",
       `github installation lookup failed: ${
-        error instanceof Error ? error.message : 'unknown error'
+        error instanceof Error ? error.message : "unknown error"
       }`,
-    )
-    return providerCallbackFail(c, organizationId, 'provider_failed', app.id)
+    );
+    return providerCallbackFail(c, organizationId, "provider_failed", app.id);
   }
 }
 
@@ -672,11 +696,11 @@ async function persistGithubGitConnection(
   c: Context<AppEnv>,
   db: Db,
   params: {
-    organizationId: string
-    appId: string
-    externalInstallationId: string
-    accountLogin: string | null
-    accountType: string | null
+    organizationId: string;
+    appId: string;
+    externalInstallationId: string;
+    accountLogin: string | null;
+    accountType: string | null;
   },
 ): Promise<{ id: string } | Response> {
   try {
@@ -685,7 +709,7 @@ async function persistGithubGitConnection(
       .values({
         organizationId: params.organizationId,
         forgeId: params.appId,
-        provider: 'github',
+        provider: "github",
         externalInstallationId: params.externalInstallationId,
         accountLogin: params.accountLogin,
         accountType: params.accountType,
@@ -703,112 +727,18 @@ async function persistGithubGitConnection(
           updatedAt: new Date().toISOString(),
         },
       })
-      .returning({ id: gitConnection.id })
-    return row ?? { id: 'ok' }
+      .returning({ id: gitConnection.id });
+    return row ?? { id: "ok" };
   } catch (error) {
     if (isInstallationClaimViolation(error)) {
-      return providerCallbackFail(c, params.organizationId, 'claimed', params.appId)
+      return providerCallbackFail(
+        c,
+        params.organizationId,
+        "claimed",
+        params.appId,
+      );
     }
-    throw error
-  }
-}
-
-/**
- * After state + org authorization succeed: load the App, prove the installer,
- * persist the connection, and redirect into the console.
- */
-async function finishGithubInstallCallback(
-  c: Context<AppEnv>,
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  params: {
-    organizationId: string
-    forgeId: string
-    externalInstallationId: string
-    code: string
-  },
-): Promise<Response> {
-  const { organizationId, forgeId, externalInstallationId, code } = params
-  // The app comes from the signed state, not from a query param on the
-  // provider's redirect — the callback URL is one GitHub controls.
-  const app = await loadForge(db, dataEncryptionSecrets, forgeId)
-  if (app?.provider !== 'github' || !app.privateKeyPem) {
-    return providerCallbackFail(c, organizationId, 'not_configured', forgeId)
-  }
-
-  const claimed = await assertConnectionUnclaimed(c, db, {
-    forgeId: app.id,
-    externalInstallationId,
-    provider: 'github',
-    organizationId,
-  })
-  if (claimed) return providerCallbackFail(c, organizationId, 'claimed', app.id)
-
-  // Proof of approval, before the App's key is used for anything: the
-  // GitHub user who came back must be able to see this installation.
-  const unauthorized = await proveGithubInstallUser(c, app, {
-    code,
-    externalInstallationId,
-    organizationId,
-  })
-  if (unauthorized) return unauthorized
-
-  const account = await lookupGithubInstallAccount(
-    c,
-    app,
-    app.privateKeyPem,
-    externalInstallationId,
-    organizationId,
-  )
-  if (account instanceof Response) return account
-
-  const row = await persistGithubGitConnection(c, db, {
-    organizationId,
-    appId: app.id,
-    externalInstallationId,
-    accountLogin: account.accountLogin,
-    accountType: account.accountType,
-  })
-  if (row instanceof Response) return row
-
-  return redirectToForgeUi(c, organizationId, app.id, {
-    installed: row.id,
-  })
-}
-
-async function exchangeGitlabConnectAccount(
-  c: Context<AppEnv>,
-  app: Forge,
-  params: { code: string; redirectUri: string; organizationId: string },
-): Promise<
-  | {
-    credentials: ReturnType<typeof gitlabOauthCredentials>
-    pair: Awaited<ReturnType<typeof exchangeGitlabAuthorizationCode>>
-    account: Awaited<ReturnType<typeof fetchGitlabAccount>>
-  }
-  | Response
-> {
-  try {
-    const credentials = gitlabOauthCredentials(app)
-    const pair = await exchangeGitlabAuthorizationCode(credentials, {
-      code: params.code,
-      redirectUri: params.redirectUri,
-    })
-    const account = await fetchGitlabAccount(app.baseUrl, pair.token)
-    return { credentials, pair, account }
-  } catch (error) {
-    logWarn(
-      'git-sources',
-      `gitlab connect failed: ${
-        error instanceof Error ? error.message : 'unknown error'
-      }`,
-    )
-    return providerCallbackFail(
-      c,
-      params.organizationId,
-      'provider_failed',
-      app.id,
-    )
+    throw error;
   }
 }
 
@@ -817,54 +747,73 @@ async function finishGitlabOauthCallback(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   params: {
-    organizationId: string
-    forgeId: string
-    code: string
+    organizationId: string;
+    forgeId: string;
+    code: string;
   },
 ): Promise<Response> {
-  const { organizationId, forgeId, code } = params
-  const app = await loadForge(db, dataEncryptionSecrets, forgeId)
-  if (app?.provider !== 'gitlab') {
-    return providerCallbackFail(c, organizationId, 'not_configured', forgeId)
+  const { organizationId, forgeId, code } = params;
+  const app = await loadForge(db, dataEncryptionSecrets, forgeId);
+  if (app?.provider !== "gitlab") {
+    return providerCallbackFail(c, organizationId, "not_configured", forgeId);
   }
 
-  const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
+  const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri);
   if (!redirectUri) {
-    return providerCallbackFail(c, organizationId, 'not_configured', app.id)
+    return providerCallbackFail(c, organizationId, "not_configured", app.id);
   }
 
-  const exchanged = await exchangeGitlabConnectAccount(c, app, {
-    code,
-    redirectUri,
-    organizationId,
-  })
-  if (exchanged instanceof Response) return exchanged
-  const { credentials, pair, account } = exchanged
+  let credentials;
+  let pair;
+  let account;
+  try {
+    credentials = gitlabOauthCredentials(app);
+    pair = await exchangeGitlabAuthorizationCode(credentials, {
+      code,
+      redirectUri,
+    });
+    account = await fetchGitlabAccount(app.baseUrl, pair.token);
+  } catch (error) {
+    logWarn(
+      "git-sources",
+      `gitlab connect failed: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`,
+    );
+    return providerCallbackFail(
+      c,
+      organizationId,
+      "provider_failed",
+      app.id,
+    );
+  }
 
   // GitLab's own account id is the stable handle for the connection. When the
   // API declined to answer it, the row still has to be addressable and unique
   // within the organization, so the client id stands in — one connection per
   // OAuth application per organization, which is what a re-connect should be.
   const externalInstallationId = account.externalId ??
-    `client:${credentials.clientId}`
+    `client:${credentials.clientId}`;
 
   const claimed = await assertConnectionUnclaimed(c, db, {
     forgeId: app.id,
     externalInstallationId,
-    provider: 'gitlab',
+    provider: "gitlab",
     organizationId,
-  })
-  if (claimed) return providerCallbackFail(c, organizationId, 'claimed', app.id)
+  });
+  if (claimed) {
+    return providerCallbackFail(c, organizationId, "claimed", app.id);
+  }
 
   const [row] = await db
     .insert(gitConnection)
     .values({
       organizationId,
       forgeId: app.id,
-      provider: 'gitlab',
+      provider: "gitlab",
       externalInstallationId,
       accountLogin: account.login,
-      accountType: 'User',
+      accountType: "User",
     })
     .onConflictDoUpdate({
       target: [
@@ -880,16 +829,18 @@ async function finishGitlabOauthCallback(
         updatedAt: new Date().toISOString(),
       },
     })
-    .returning({ id: gitConnection.id })
+    .returning({ id: gitConnection.id });
 
-  const connectionId = row?.id
+  const connectionId = row?.id;
   if (!connectionId) {
-    return providerCallbackFail(c, organizationId, 'provider_failed', app.id)
+    return providerCallbackFail(c, organizationId, "provider_failed", app.id);
   }
 
-  await persistGitlabTokenPair(db, dataEncryptionSecrets, connectionId, pair)
+  await persistGitlabTokenPair(db, dataEncryptionSecrets, connectionId, pair);
 
-  return redirectToForgeUi(c, organizationId, app.id, { installed: connectionId })
+  return redirectToForgeUi(c, organizationId, app.id, {
+    installed: connectionId,
+  });
 }
 
 /**
@@ -911,10 +862,10 @@ export async function assertConnectionUnclaimed(
   c: Context<AppEnv>,
   db: Db,
   params: {
-    forgeId: string
-    externalInstallationId: string
-    provider: 'github' | 'gitlab'
-    organizationId: string
+    forgeId: string;
+    externalInstallationId: string;
+    provider: "github" | "gitlab";
+    organizationId: string;
   },
 ): Promise<Response | null> {
   const [claimed] = await db
@@ -930,12 +881,15 @@ export async function assertConnectionUnclaimed(
         ),
       ),
     )
-    .limit(1)
+    .limit(1);
 
   if (claimed && claimed.organizationId !== params.organizationId) {
-    return c.json({ error: 'installation_claimed_by_another_organization' }, 409)
+    return c.json(
+      { error: "installation_claimed_by_another_organization" },
+      409,
+    );
   }
-  return null
+  return null;
 }
 
 /**
@@ -947,7 +901,7 @@ export async function assertConnectionUnclaimed(
  * index is what makes a second organization's insert raise instead.
  */
 export function isInstallationClaimViolation(err: unknown): boolean {
-  return isUniqueViolationOn(err, 'uniq_connection_forge_external_github')
+  return isUniqueViolationOn(err, "uniq_connection_forge_external_github");
 }
 
 /**
@@ -970,33 +924,33 @@ export async function fetchInstallationAccount(
   externalInstallationId: string,
   apiBase: string = GITHUB_API_BASE,
 ): Promise<{ accountLogin: string | null; accountType: string | null }> {
-  const id = encodeURIComponent(externalInstallationId)
-  let response: Response
+  const id = encodeURIComponent(externalInstallationId);
+  let response: Response;
   try {
     response = await fetch(`${apiBase}/app/installations/${id}`, {
-      headers: githubApiHeaders(appJwt, 'Bearer'),
-    })
+      headers: githubApiHeaders(appJwt, "Bearer"),
+    });
   } catch (error) {
     throw new GithubAppTokenError(
       `github installation lookup failed: ${
-        error instanceof Error ? error.message : 'network error'
+        error instanceof Error ? error.message : "network error"
       }`,
-    )
+    );
   }
   if (!response.ok) {
     throw new GithubAppTokenError(
-      'github installation not found for this app',
+      "github installation not found for this app",
       response.status === 404 ? 404 : response.status,
-    )
+    );
   }
   const payload = (await response.json().catch(() => null)) as
     | { account?: { login?: unknown; type?: unknown } }
-    | null
-  const account = payload?.account
+    | null;
+  const account = payload?.account;
   return {
-    accountLogin: typeof account?.login === 'string' ? account.login : null,
-    accountType: typeof account?.type === 'string' ? account.type : null,
-  }
+    accountLogin: typeof account?.login === "string" ? account.login : null,
+    accountType: typeof account?.type === "string" ? account.type : null,
+  };
 }
 
 /**
@@ -1022,17 +976,17 @@ export async function resolveSourceWebhookInfo(
   provider: string,
   connectionId: string | null,
 ): Promise<SourceWebhookInfo | undefined> {
-  if (provider !== 'github' && provider !== 'gitlab') return undefined
+  if (provider !== "github" && provider !== "gitlab") return undefined;
   const origins = (await getPublicUrls(db))
     .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .filter((origin): origin is string => origin !== null)
+    .filter((origin): origin is string => origin !== null);
 
   // The app behind this repository decides both halves of the URL: whether the ref
   // belongs in the path (self-hosted only), and which origin the provider was
   // actually told to deliver to.
-  let webhookRef: string | null = null
-  let appBaseUrl: string | null = null
-  let appOrigin: string | null = null
+  let webhookRef: string | null = null;
+  let appBaseUrl: string | null = null;
+  let appOrigin: string | null = null;
   if (connectionId) {
     const rows = await db
       .select({
@@ -1043,10 +997,10 @@ export async function resolveSourceWebhookInfo(
       .from(gitConnection)
       .innerJoin(forge, eq(gitConnection.forgeId, forge.id))
       .where(eq(gitConnection.id, connectionId))
-      .limit(1)
-    webhookRef = rows[0]?.webhookRef ?? null
-    appBaseUrl = rows[0]?.baseUrl ?? null
-    appOrigin = rows[0]?.webhookOrigin ?? null
+      .limit(1);
+    webhookRef = rows[0]?.webhookRef ?? null;
+    appBaseUrl = rows[0]?.baseUrl ?? null;
+    appOrigin = rows[0]?.webhookOrigin ?? null;
   }
 
   const reachability = webhookReachability(
@@ -1054,12 +1008,12 @@ export async function resolveSourceWebhookInfo(
     provider as WebhookProvider,
     webhookRef,
     appBaseUrl,
-  )
+  );
   return {
     webhookUrl: reachability.webhookUrl,
     webhookReachable: reachability.reachable,
     reachabilityNote: reachability.note,
-  }
+  };
 }
 
 /**
@@ -1076,74 +1030,95 @@ export async function resolveGitlabRedirectUri(
   db: Db,
   configured: string | null,
 ): Promise<string | null> {
-  if (configured) return configured
+  if (configured) return configured;
   const origin = (await getPublicUrls(db))
     .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .find((entry): entry is string => entry !== null)
-  if (!origin) return null
-  return `${origin.replace(/\/$/, '')}${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
+    .find((entry): entry is string => entry !== null);
+  if (!origin) return null;
+  return `${
+    origin.replace(/\/$/, "")
+  }${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`;
 }
 
-export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+export function registerRepositoryRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+) {
   if (!opts.secrets) {
-    throw new TypeError('session secrets are required for repository routes')
+    throw new TypeError("session secrets are required for repository routes");
   }
-  const secrets = opts.secrets
+  const secrets = opts.secrets;
 
-  router.use('/repositories', createSessionMiddleware(secrets))
+  router.use("/repositories", createSessionMiddleware(secrets));
   // Listed explicitly even though `/repositories/:id` would also match it — relying
   // on a param pattern to cover a literal route is how a surface quietly loses
   // its session gate when the patterns are reordered.
-  router.use('/repositories/attach', createSessionMiddleware(secrets))
-  router.use('/repositories/:id', createSessionMiddleware(secrets))
+  router.use("/repositories/attach", createSessionMiddleware(secrets));
+  router.use("/repositories/:id", createSessionMiddleware(secrets));
   // `/repositories/:id` does not match a child segment. Inspect would otherwise
   // skip this gate and resolveSourceSession would 401 even with a valid cookie.
-  router.use('/repositories/:id/inspect', createSessionMiddleware(secrets))
-  router.use('/repositories/:id/refresh', createSessionMiddleware(secrets))
-  router.use('/repositories/connections', createSessionMiddleware(secrets))
-  router.use('/repositories/connections/:id/repositories', createSessionMiddleware(secrets))
-  router.use('/repositories/github/install', createSessionMiddleware(secrets))
-  router.use('/repositories/github/callback', createSessionMiddleware(secrets))
-  router.use('/repositories/gitlab/oauth', createSessionMiddleware(secrets))
-  router.use('/repositories/gitlab/oauth/callback', createSessionMiddleware(secrets))
-  router.use('/repositories/gitlab/deploy-keys', createSessionMiddleware(secrets))
+  router.use("/repositories/:id/inspect", createSessionMiddleware(secrets));
+  router.use("/repositories/:id/refresh", createSessionMiddleware(secrets));
+  router.use("/repositories/connections", createSessionMiddleware(secrets));
+  router.use(
+    "/repositories/connections/:id/repositories",
+    createSessionMiddleware(secrets),
+  );
+  router.use("/repositories/github/install", createSessionMiddleware(secrets));
+  router.use("/repositories/github/callback", createSessionMiddleware(secrets));
+  router.use("/repositories/gitlab/oauth", createSessionMiddleware(secrets));
+  router.use(
+    "/repositories/gitlab/oauth/callback",
+    createSessionMiddleware(secrets),
+  );
+  router.use(
+    "/repositories/gitlab/deploy-keys",
+    createSessionMiddleware(secrets),
+  );
 
   // Static segments are registered before `/repositories/:id` so they are not
   // swallowed by the parameterized route.
-  router.get('/repositories/connections', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.get("/repositories/connections", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const denied = await assertCanReadOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanReadOr403(c, "organization", organizationId);
+    if (denied) return denied;
 
     const rows = await db
       .select(CONNECTION_SELECT)
       .from(gitConnection)
       .where(eq(gitConnection.organizationId, organizationId))
-      .orderBy(gitConnection.createdAt)
+      .orderBy(gitConnection.createdAt);
 
-    return c.json({ connections: rows.map(serializeConnectionRow) })
-  })
+    return c.json({ connections: rows.map(serializeConnectionRow) });
+  });
 
-  router.get('/repositories/connections/:id/repositories', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.get("/repositories/connections/:id/repositories", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const denied = await assertCanReadOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanReadOr403(c, "organization", organizationId);
+    if (denied) return denied;
 
-    const id = c.req.param('id')
-    if (!UUID_RE.test(id)) return c.json({ error: 'Invalid request' }, 400)
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "Invalid request" }, 400);
 
-    const scopeDenied = await assertConnectionInOrganization(c, db, organizationId, id)
-    if (scopeDenied) return scopeDenied
+    const scopeDenied = await assertConnectionInOrganization(
+      c,
+      db,
+      organizationId,
+      id,
+    );
+    if (scopeDenied) return scopeDenied;
 
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     if (!dataEncryptionSecrets) {
-      return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
+      return c.json({
+        error: "Encryption unavailable — no encryption key configured",
+      }, 503);
     }
 
     // The connection row says which provider to ask; every provider mints its
@@ -1152,34 +1127,42 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       .select({ provider: gitConnection.provider })
       .from(gitConnection)
       .where(eq(gitConnection.id, id))
-      .limit(1)
-    if (!installation) return c.json({ error: 'Not found' }, 404)
+      .limit(1);
+    if (!installation) return c.json({ error: "Not found" }, 404);
 
     try {
       const repositories = await resolveGitProvider(installation.provider)
-        .listRepositories({ db, dataEncryptionSecrets }, id)
-      return c.json({ repositories })
+        .listRepositories({ db, dataEncryptionSecrets }, id);
+      return c.json({ repositories });
     } catch (error) {
-      return providerErrorResponse(c, error)
+      return providerErrorResponse(c, error);
     }
-  })
+  });
 
-  router.get('/repositories/github/install', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.get("/repositories/github/install", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanManageOr403(
+      c,
+      "organization",
+      organizationId,
+    );
+    if (denied) return denied;
 
-    const secretsConfig = c.get('secretsConfig')
+    const secretsConfig = c.get("secretsConfig");
     if (!secretsConfig) {
-      return c.json({ error: 'Signing unavailable — no root secret configured' }, 503)
+      return c.json({
+        error: "Signing unavailable — no root secret configured",
+      }, 503);
     }
 
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     if (!dataEncryptionSecrets) {
-      return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
+      return c.json({
+        error: "Encryption unavailable — no encryption key configured",
+      }, 503);
     }
 
     const app = await resolveConnectApp(
@@ -1187,23 +1170,27 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       db,
       dataEncryptionSecrets,
       organizationId,
-      'github',
-    )
-    if (app instanceof Response) return app
-    if (!app.appSlug) return c.json({ error: 'github_app_not_configured' }, 503)
+      "github",
+    );
+    if (app instanceof Response) return app;
+    if (!app.appSlug) {
+      return c.json({ error: "github_app_not_configured" }, 503);
+    }
 
     const state = await signGithubInstallState(secretsConfig, {
       organizationId,
       forgeId: app.id,
-    })
+    });
     // The install page lives on the App's own origin, so a GitHub Enterprise
     // App sends the operator to that server rather than to github.com.
     const target = new URL(
-      `${app.baseUrl}/apps/${encodeURIComponent(app.appSlug)}/installations/new`,
-    )
-    target.searchParams.set('state', state)
-    return c.redirect(target.toString(), 302)
-  })
+      `${app.baseUrl}/apps/${
+        encodeURIComponent(app.appSlug)
+      }/installations/new`,
+    );
+    target.searchParams.set("state", state);
+    return c.redirect(target.toString(), 302);
+  });
 
   /**
    * Where GitHub sends the operator after they install the App.
@@ -1212,48 +1199,117 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
    * re-runs it whenever the repository selection changes — so it has to be
    * idempotent and it has to land in the console, never on a JSON body.
    */
-  router.get('/repositories/github/callback', async (c) => {
-    const ctx = await resolveProviderCallbackSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, userId, secretsConfig, dataEncryptionSecrets } = ctx
+  router.get("/repositories/github/callback", async (c) => {
+    const ctx = await resolveProviderCallbackSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, userId, secretsConfig, dataEncryptionSecrets } = ctx;
 
-    if (!secretsConfig) return providerCallbackFail(c, null, 'unavailable')
+    if (!secretsConfig) return providerCallbackFail(c, null, "unavailable");
 
     // `installation_id` is a caller-typed integer; a per-user ceiling keeps
     // guessing someone else's slow even before the proof below refuses it.
-    const limited = await enforceAuthRateLimit(c, 'forge-connect', userId, opts.runtime)
-    if (limited) return providerCallbackFail(c,null, 'rate_limited')
+    const limited = await enforceAuthRateLimit(
+      c,
+      "forge-connect",
+      userId,
+      opts.runtime,
+    );
+    if (limited) return providerCallbackFail(c, null, "rate_limited");
 
-    const state = c.req.query('state')
-    const externalInstallationId = c.req.query('installation_id')
-    if (!state || !externalInstallationId) return providerCallbackFail(c,null, 'invalid_request')
+    const state = c.req.query("state");
+    const externalInstallationId = c.req.query("installation_id");
+    if (!state || !externalInstallationId) {
+      return providerCallbackFail(c, null, "invalid_request");
+    }
     // Present only when the App requests user authorization during
     // installation — the one thing GitHub sends that ties the person who
     // clicked Install to the installation id they came back with.
-    const code = c.req.query('code')
-    if (!code) return providerCallbackFail(c,null, 'install_authorization_required')
+    const code = c.req.query("code");
+    if (!code) {
+      return providerCallbackFail(c, null, "install_authorization_required");
+    }
 
-    const claims = await verifyGithubInstallState(secretsConfig, state)
-    if (!claims) return providerCallbackFail(c,null, 'state_invalid')
+    const claims = await verifyGithubInstallState(secretsConfig, state);
+    if (!claims) return providerCallbackFail(c, null, "state_invalid");
 
     const denied = await authorizeClaimedOrganization(
       c,
       db,
       userId,
       claims.organizationId,
-    )
-    if (denied) return providerCallbackFail(c,claims.organizationId, 'forbidden', claims.forgeId)
+    );
+    if (denied) {
+      return providerCallbackFail(
+        c,
+        claims.organizationId,
+        "forbidden",
+        claims.forgeId,
+      );
+    }
 
-    const organizationId = claims.organizationId
-    if (!dataEncryptionSecrets) return providerCallbackFail(c,organizationId, 'unavailable', claims.forgeId)
+    const organizationId = claims.organizationId;
+    if (!dataEncryptionSecrets) {
+      return providerCallbackFail(
+        c,
+        organizationId,
+        "unavailable",
+        claims.forgeId,
+      );
+    }
 
-    return await finishGithubInstallCallback(c, db, dataEncryptionSecrets, {
-      organizationId,
-      forgeId: claims.forgeId,
+    // The app comes from the signed state, not from a query param on the
+    // provider's redirect — the callback URL is one GitHub controls.
+    const app = await loadForge(db, dataEncryptionSecrets, claims.forgeId);
+    if (app?.provider !== "github" || !app.privateKeyPem) {
+      return providerCallbackFail(
+        c,
+        organizationId,
+        "not_configured",
+        claims.forgeId,
+      );
+    }
+
+    const claimed = await assertConnectionUnclaimed(c, db, {
+      forgeId: app.id,
       externalInstallationId,
+      provider: "github",
+      organizationId,
+    });
+    if (claimed) {
+      return providerCallbackFail(c, organizationId, "claimed", app.id);
+    }
+
+    // Proof of approval, before the App's key is used for anything: the
+    // GitHub user who came back must be able to see this installation.
+    const unauthorized = await proveGithubInstallUser(c, app, {
       code,
-    })
-  })
+      externalInstallationId,
+      organizationId,
+    });
+    if (unauthorized) return unauthorized;
+
+    const account = await lookupGithubInstallAccount(
+      c,
+      app,
+      app.privateKeyPem,
+      externalInstallationId,
+      organizationId,
+    );
+    if (account instanceof Response) return account;
+
+    const row = await persistGithubGitConnection(c, db, {
+      organizationId,
+      appId: app.id,
+      externalInstallationId,
+      accountLogin: account.accountLogin,
+      accountType: account.accountType,
+    });
+    if (row instanceof Response) return row;
+
+    return redirectToForgeUi(c, organizationId, app.id, {
+      installed: row.id,
+    });
+  });
 
   /**
    * Start the GitLab OAuth connect flow.
@@ -1264,21 +1320,29 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
    * own HKDF purpose, so a state issued for the GitHub flow cannot be replayed
    * here (see `./provider-install-state.ts`).
    */
-  router.get('/repositories/gitlab/oauth', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.get("/repositories/gitlab/oauth", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanManageOr403(
+      c,
+      "organization",
+      organizationId,
+    );
+    if (denied) return denied;
 
-    const secretsConfig = c.get('secretsConfig')
+    const secretsConfig = c.get("secretsConfig");
     if (!secretsConfig) {
-      return c.json({ error: 'Signing unavailable — no root secret configured' }, 503)
+      return c.json({
+        error: "Signing unavailable — no root secret configured",
+      }, 503);
     }
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     if (!dataEncryptionSecrets) {
-      return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
+      return c.json({
+        error: "Encryption unavailable — no encryption key configured",
+      }, 503);
     }
 
     const app = await resolveConnectApp(
@@ -1286,26 +1350,30 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       db,
       dataEncryptionSecrets,
       organizationId,
-      'gitlab',
-    )
-    if (app instanceof Response) return app
-    if (!app.clientId) return c.json({ error: 'gitlab_oauth_not_configured' }, 503)
+      "gitlab",
+    );
+    if (app instanceof Response) return app;
+    if (!app.clientId) {
+      return c.json({ error: "gitlab_oauth_not_configured" }, 503);
+    }
 
-    const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
-    if (!redirectUri) return c.json({ error: 'gitlab_redirect_uri_unknown' }, 503)
+    const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri);
+    if (!redirectUri) {
+      return c.json({ error: "gitlab_redirect_uri_unknown" }, 503);
+    }
 
     const state = await signGitlabConnectState(secretsConfig, {
       organizationId,
       forgeId: app.id,
-    })
+    });
     return c.redirect(
       gitlabAuthorizeUrl(
         { baseUrl: app.baseUrl, clientId: app.clientId },
         { redirectUri, state },
       ),
       302,
-    )
-  })
+    );
+  });
 
   /**
    * Finish the GitLab OAuth connect flow.
@@ -1323,40 +1391,61 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
    * A top-level navigation like the GitHub install callback, so it redirects
    * into the console rather than answering with a JSON body.
    */
-  router.get('/repositories/gitlab/oauth/callback', async (c) => {
-    const ctx = await resolveProviderCallbackSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, userId, secretsConfig, dataEncryptionSecrets } = ctx
+  router.get("/repositories/gitlab/oauth/callback", async (c) => {
+    const ctx = await resolveProviderCallbackSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, userId, secretsConfig, dataEncryptionSecrets } = ctx;
 
-    if (!secretsConfig) return providerCallbackFail(c, null, 'unavailable')
+    if (!secretsConfig) return providerCallbackFail(c, null, "unavailable");
 
-    const limited = await enforceAuthRateLimit(c, 'forge-connect', userId, opts.runtime)
-    if (limited) return providerCallbackFail(c,null, 'rate_limited')
+    const limited = await enforceAuthRateLimit(
+      c,
+      "forge-connect",
+      userId,
+      opts.runtime,
+    );
+    if (limited) return providerCallbackFail(c, null, "rate_limited");
 
-    const state = c.req.query('state')
-    const code = c.req.query('code')
-    if (!state || !code) return providerCallbackFail(c,null, 'invalid_request')
+    const state = c.req.query("state");
+    const code = c.req.query("code");
+    if (!state || !code) {
+      return providerCallbackFail(c, null, "invalid_request");
+    }
 
-    const claims = await verifyGitlabConnectState(secretsConfig, state)
-    if (!claims) return providerCallbackFail(c,null, 'state_invalid')
+    const claims = await verifyGitlabConnectState(secretsConfig, state);
+    if (!claims) return providerCallbackFail(c, null, "state_invalid");
 
     const denied = await authorizeClaimedOrganization(
       c,
       db,
       userId,
       claims.organizationId,
-    )
-    if (denied) return providerCallbackFail(c,claims.organizationId, 'forbidden', claims.forgeId)
+    );
+    if (denied) {
+      return providerCallbackFail(
+        c,
+        claims.organizationId,
+        "forbidden",
+        claims.forgeId,
+      );
+    }
 
-    const organizationId = claims.organizationId
-    if (!dataEncryptionSecrets) return providerCallbackFail(c,organizationId, 'unavailable', claims.forgeId)
+    const organizationId = claims.organizationId;
+    if (!dataEncryptionSecrets) {
+      return providerCallbackFail(
+        c,
+        organizationId,
+        "unavailable",
+        claims.forgeId,
+      );
+    }
 
     return await finishGitlabOauthCallback(c, db, dataEncryptionSecrets, {
       organizationId,
       forgeId: claims.forgeId,
       code,
-    })
-  })
+    });
+  });
 
   /**
    * Mint a read-only deploy keypair for a repository that will not use OAuth.
@@ -1374,28 +1463,34 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
    * the key belongs to the project, not to a person whose account leaving the
    * organization would break every deploy.
    */
-  router.post('/repositories/gitlab/deploy-keys', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.post("/repositories/gitlab/deploy-keys", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const denied = await assertCanCreateOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanCreateOr403(
+      c,
+      "organization",
+      organizationId,
+    );
+    if (denied) return denied;
 
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     if (!dataEncryptionSecrets) {
-      return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
+      return c.json({
+        error: "Encryption unavailable — no encryption key configured",
+      }, 503);
     }
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
 
-    const rawName = typeof body.name === 'string' ? body.name.trim() : ''
+    const rawName = typeof body.name === "string" ? body.name.trim() : "";
     if (rawName.length === 0 || rawName.length > 255) {
-      return c.json({ error: 'Invalid request' }, 400)
+      return c.json({ error: "Invalid request" }, 400);
     }
 
-    const keypair = await generateSshDeployKeypair(rawName)
+    const keypair = await generateSshDeployKeypair(rawName);
     const [inserted] = await db
       .insert(secret)
       .values({
@@ -1411,76 +1506,81 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         metadata: {
           publicKey: keypair.publicKeyOpenssh,
           fingerprint: keypair.fingerprint,
-          keyType: 'ed25519',
+          keyType: "ed25519",
         },
       })
-      .returning({ id: secret.id })
+      .returning({ id: secret.id });
 
-    const secretId = inserted?.id
-    if (!secretId) return c.json({ error: 'Failed to create deploy key' }, 500)
+    const secretId = inserted?.id;
+    if (!secretId) return c.json({ error: "Failed to create deploy key" }, 500);
 
     return c.json({
       ok: true as const,
       secretId,
       publicKey: keypair.publicKeyOpenssh,
       fingerprint: keypair.fingerprint,
-    })
-  })
+    });
+  });
 
-  router.get('/repositories', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, userId, organizationId } = ctx
+  router.get("/repositories", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, userId, organizationId } = ctx;
 
-    const denied = await assertCanReadOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanReadOr403(c, "organization", organizationId);
+    if (denied) return denied;
 
     const visibleIds = await listVisible(db, {
-      kind: 'repository',
+      kind: "repository",
       userId,
       organizationId,
-    })
-    if (visibleIds.length === 0) return c.json({ repositories: [] })
+    });
+    if (visibleIds.length === 0) return c.json({ repositories: [] });
 
-    const visible = new Set(visibleIds)
+    const visible = new Set(visibleIds);
     const rows = await db
       .select(SOURCE_SELECT)
       .from(repository)
       .where(eq(repository.organizationId, organizationId))
-      .orderBy(repository.createdAt)
+      .orderBy(repository.createdAt);
 
     return c.json({
       repositories: rows
         .filter((row) => visible.has(row.id))
         .map((row) => serializeSourceRow(row)),
-    })
-  })
+    });
+  });
 
-  router.get('/repositories/:id', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.get("/repositories/:id", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const id = c.req.param('id')
-    if (!UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "Not found" }, 404);
 
-    const denied = await assertCanReadOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanReadOr403(c, "organization", organizationId);
+    if (denied) return denied;
 
     const [row] = await db
       .select(SOURCE_SELECT)
       .from(repository)
-      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
-      .limit(1)
+      .where(
+        and(
+          eq(repository.id, id),
+          eq(repository.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
 
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    if (!row) return c.json({ error: "Not found" }, 404);
     return c.json({
       repository: serializeSourceRow(
         row,
         await resolveSourceWebhookInfo(db, row.provider, row.connectionId),
       ),
-    })
-  })
+    });
+  });
 
   /**
    * Read a connected repository so the wizard can see what is in it.
@@ -1497,46 +1597,55 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
    * *which* directory, not *what kind* of data; the value is held to the same
    * relative-path rule as `x-turbopanel.root`.
    */
-  router.get('/repositories/:id/inspect', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.get("/repositories/:id/inspect", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const id = c.req.param('id')
-    if (!UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "Not found" }, 404);
 
-    const denied = await assertCanReadOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanReadOr403(c, "organization", organizationId);
+    if (denied) return denied;
 
     const [row] = await db
       .select(SOURCE_SELECT)
       .from(repository)
-      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
-      .limit(1)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+      .where(
+        and(
+          eq(repository.id, id),
+          eq(repository.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!row) return c.json({ error: "Not found" }, 404);
 
-    const ref = await resolveInspectRef(db, row, (c.req.query('ref') ?? '').trim())
+    const ref = await resolveInspectRef(
+      db,
+      row,
+      (c.req.query("ref") ?? "").trim(),
+    );
     if (ref.length === 0) {
       return c.json({
-        error: 'ref_required',
+        error: "ref_required",
         message:
-          'This repository records no default branch; name a ref to inspect.',
-      }, 400)
+          "This repository records no default branch; name a ref to inspect.",
+      }, 400);
     }
 
-    const listPath = (c.req.query('listPath') ?? '').trim()
+    const listPath = (c.req.query("listPath") ?? "").trim();
     if (listPath.length > 0 && !isSafeRoot(listPath)) {
       return c.json({
-        error: 'invalid_list_path',
+        error: "invalid_list_path",
         message:
           'listPath must be a relative path without ".." (e.g. "apps/web").',
-      }, 400)
+      }, 400);
     }
 
     const outcome = await inspectRepository({
       db,
       registry: getDaemonCellRegistry(c) ?? null,
-      dataEncryptionSecrets: c.get('dataEncryptionSecrets') ?? null,
+      dataEncryptionSecrets: c.get("dataEncryptionSecrets") ?? null,
       organizationId,
       row: {
         id: row.id,
@@ -1554,27 +1663,27 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         .from(server)
         .where(eq(server.organizationId, organizationId)))
         .map((entry) => entry.id),
-    })
+    });
 
     if (!outcome.ok) {
       return c.json(
         { error: outcome.error, message: outcome.message },
         outcome.status as 400,
-      )
+      );
     }
 
     // Bookkeeping, not the answer: remember what this successful read saw so
     // the repositories screen can say when the repo was last reachable and at
     // which commit. A failed write must not fail a read that succeeded.
-    await recordInspectBookkeeping(db, row, outcome.commitSha)
+    await recordInspectBookkeeping(db, row, outcome.commitSha);
 
     return c.json({
       commitSha: outcome.commitSha,
       via: outcome.via,
       files: outcome.files,
       entries: outcome.entries,
-    })
-  })
+    });
+  });
 
   /**
    * Bind a repository to this organization, reusing the binding if it exists.
@@ -1597,22 +1706,27 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
    * `loadOrganizationRepositoryIds` feeds `knownSourceIds` into the compose lint and
    * an unknown `sourceId` fails the whole document.
    */
-  router.post('/repositories/attach', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.post("/repositories/attach", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const denied = await assertCanCreateOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanCreateOr403(
+      c,
+      "organization",
+      organizationId,
+    );
+    if (denied) return denied;
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
 
-    const fields = parseSourceAttachBody(body)
+    const fields = parseSourceAttachBody(body);
     if (!fields) {
       return c.json({
-        error: 'expected { connectionId, repositoryExternalId, repositoryUrl, defaultBranch? }',
-      }, 400)
+        error:
+          "expected { connectionId, repositoryExternalId, repositoryUrl, defaultBranch? }",
+      }, 400);
     }
 
     const connectionDenied = await assertConnectionInOrganization(
@@ -1620,18 +1734,20 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       db,
       organizationId,
       fields.connectionId,
-    )
-    if (connectionDenied) return connectionDenied
+    );
+    if (connectionDenied) return connectionDenied;
 
     const [installation] = await db
       .select({ provider: gitConnection.provider })
       .from(gitConnection)
       .where(eq(gitConnection.id, fields.connectionId))
-      .limit(1)
-    if (!installation) return c.json({ error: 'Not found' }, 404)
+      .limit(1);
+    if (!installation) return c.json({ error: "Not found" }, 404);
 
-    const existing = await findAttachedSource(db, organizationId, fields)
-    if (existing) return c.json({ ok: true as const, id: existing, reused: true })
+    const existing = await findAttachedSource(db, organizationId, fields);
+    if (existing) {
+      return c.json({ ok: true as const, id: existing, reused: true });
+    }
 
     // Same repository, different lane: a row created from the clone URL (a
     // manual or deploy-key source) is the same repository this attach names, so
@@ -1639,7 +1755,11 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     // duplicated. The connection lane supersedes a stored deploy key because
     // `assertProviderAuthShape` forbids holding both; the `secret` row itself
     // is untouched and can be re-bound later.
-    const sameUrl = await findSourceByUrl(db, organizationId, fields.repositoryUrl)
+    const sameUrl = await findSourceByUrl(
+      db,
+      organizationId,
+      fields.repositoryUrl,
+    );
     if (sameUrl) {
       await db
         .update(repository)
@@ -1648,11 +1768,12 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
           provider: installation.provider,
           repositoryExternalId: fields.repositoryExternalId,
           secretId: null,
-          defaultBranch: sql`COALESCE(${repository.defaultBranch}, ${fields.defaultBranch})`,
+          defaultBranch:
+            sql`COALESCE(${repository.defaultBranch}, ${fields.defaultBranch})`,
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(repository.id, sameUrl))
-      return c.json({ ok: true as const, id: sameUrl, reused: true })
+        .where(eq(repository.id, sameUrl));
+      return c.json({ ok: true as const, id: sameUrl, reused: true });
     }
 
     try {
@@ -1666,21 +1787,21 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
           repositoryExternalId: fields.repositoryExternalId,
           defaultBranch: fields.defaultBranch,
         })
-        .returning({ id: repository.id })
-      const id = inserted?.id
-      if (!id) return c.json({ error: 'Failed to attach repository' }, 500)
-      return c.json({ ok: true as const, id, reused: false }, 201)
+        .returning({ id: repository.id });
+      const id = inserted?.id;
+      if (!id) return c.json({ error: "Failed to attach repository" }, 500);
+      return c.json({ ok: true as const, id, reused: false }, 201);
     } catch (error) {
       // Lost the race against a concurrent attach of the same repository. A
       // unique index did its job; read back the winner rather than failing an
       // operation that has already achieved what the caller asked for.
-      if (!isUniqueViolation(error)) throw error
+      if (!isUniqueViolation(error)) throw error;
       const winner = (await findAttachedSource(db, organizationId, fields)) ??
-        (await findSourceByUrl(db, organizationId, fields.repositoryUrl))
-      if (!winner) throw error
-      return c.json({ ok: true as const, id: winner, reused: true })
+        (await findSourceByUrl(db, organizationId, fields.repositoryUrl));
+      if (!winner) throw error;
+      return c.json({ ok: true as const, id: winner, reused: true });
     }
-  })
+  });
 
   /**
    * Best-effort default-branch detection for a clone URL the operator left
@@ -1708,46 +1829,58 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     fields: SourceCreateFields,
   ): Promise<{ defaultBranch: string; detectedAt: string } | null> {
     if (fields.defaultBranch !== null || fields.connectionId !== null) {
-      return null
+      return null;
     }
-    const githubBranch = await fetchPublicGithubDefaultBranch(fields.repositoryUrl)
+    const githubBranch = await fetchPublicGithubDefaultBranch(
+      fields.repositoryUrl,
+    );
     if (githubBranch) {
-      return { defaultBranch: githubBranch, detectedAt: new Date().toISOString() }
+      return {
+        defaultBranch: githubBranch,
+        detectedAt: new Date().toISOString(),
+      };
     }
     if (fields.secretId !== null) {
-      return null
+      return null;
     }
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return null
+    const registry = getDaemonCellRegistry(c);
+    if (!registry) return null;
     const serverIds = (await db
       .select({ id: server.id })
       .from(server)
       .where(eq(server.organizationId, organizationId)))
-      .map((entry) => entry.id)
-    if (serverIds.length === 0) return null
+      .map((entry) => entry.id);
+    if (serverIds.length === 0) return null;
 
     const resolved = await resolveDefaultBranchViaDaemon(db, registry, {
       organizationId,
       cloneUrl: fields.repositoryUrl,
       serverIds,
-    })
-    if (!resolved.ok || !resolved.defaultBranch) return null
-    return { defaultBranch: resolved.defaultBranch, detectedAt: new Date().toISOString() }
+    });
+    if (!resolved.ok || !resolved.defaultBranch) return null;
+    return {
+      defaultBranch: resolved.defaultBranch,
+      detectedAt: new Date().toISOString(),
+    };
   }
 
-  router.post('/repositories', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.post("/repositories", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const denied = await assertCanCreateOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanCreateOr403(
+      c,
+      "organization",
+      organizationId,
+    );
+    if (denied) return denied;
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
 
-    const fields = parseSourceCreateBody(c, body)
-    if (fields instanceof Response) return fields
+    const fields = parseSourceCreateBody(c, body);
+    if (fields instanceof Response) return fields;
 
     const connectionDenied = await assertConnectionInOrganization(
       c,
@@ -1755,8 +1888,8 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       organizationId,
       fields.connectionId,
       fields.provider,
-    )
-    if (connectionDenied) return connectionDenied
+    );
+    if (connectionDenied) return connectionDenied;
 
     const secretDenied = await assertSecretInOrganization(
       c,
@@ -1764,8 +1897,8 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       organizationId,
       fields.secretId,
       fields.provider,
-    )
-    if (secretDenied) return secretDenied
+    );
+    if (secretDenied) return secretDenied;
 
     // Find-or-create, keyed by canonical URL: pasting the same clone URL twice
     // — same wizard run or a different one — answers with the existing row
@@ -1773,10 +1906,21 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     // for provider-picked repositories. The existing row's policy fields are
     // deliberately left alone: a reuse must not silently rewrite the
     // credential or auto-deploy of a repository other projects already ride.
-    const existing = await findSourceByUrl(db, organizationId, fields.repositoryUrl)
-    if (existing) return c.json({ ok: true as const, id: existing, reused: true })
+    const existing = await findSourceByUrl(
+      db,
+      organizationId,
+      fields.repositoryUrl,
+    );
+    if (existing) {
+      return c.json({ ok: true as const, id: existing, reused: true });
+    }
 
-    const detected = await detectPublicDefaultBranch(c, db, organizationId, fields)
+    const detected = await detectPublicDefaultBranch(
+      c,
+      db,
+      organizationId,
+      fields,
+    );
 
     try {
       const [inserted] = await db
@@ -1792,31 +1936,39 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
             }
             : {}),
         })
-        .returning({ id: repository.id })
+        .returning({ id: repository.id });
 
-      const id = inserted?.id
-      if (!id) return c.json({ error: 'Failed to create repository' }, 500)
+      const id = inserted?.id;
+      if (!id) return c.json({ error: "Failed to create repository" }, 500);
 
-      return c.json({ ok: true as const, id, reused: false }, 201)
+      return c.json({ ok: true as const, id, reused: false }, 201);
     } catch (error) {
       // Lost the create race; the unique index held. Answer with the winner.
-      if (!isUniqueViolation(error)) throw error
-      const winner = await findSourceByUrl(db, organizationId, fields.repositoryUrl)
-      if (!winner) throw error
-      return c.json({ ok: true as const, id: winner, reused: true })
+      if (!isUniqueViolation(error)) throw error;
+      const winner = await findSourceByUrl(
+        db,
+        organizationId,
+        fields.repositoryUrl,
+      );
+      if (!winner) throw error;
+      return c.json({ ok: true as const, id: winner, reused: true });
     }
-  })
+  });
 
-  router.patch('/repositories/:id', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.patch("/repositories/:id", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const id = c.req.param('id')
-    if (!UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "Not found" }, 404);
 
-    const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanManageOr403(
+      c,
+      "organization",
+      organizationId,
+    );
+    if (denied) return denied;
 
     // The stored auth fields and URL are inputs to the patch validation: a
     // partial body has to be checked against the row it lands on, not on its own.
@@ -1828,24 +1980,29 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         repositoryUrl: repository.repositoryUrl,
       })
       .from(repository)
-      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
-      .limit(1)
-    if (!existing) return c.json({ error: 'Not found' }, 404)
+      .where(
+        and(
+          eq(repository.id, id),
+          eq(repository.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!existing) return c.json({ error: "Not found" }, 404);
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
 
     const patch = parseSourcePatchBody(c, body, {
       provider: existing.provider as SourceProvider,
       connectionId: existing.connectionId,
       secretId: existing.secretId,
       repositoryUrl: existing.repositoryUrl,
-    })
-    if (patch instanceof Response) return patch
+    });
+    if (patch instanceof Response) return patch;
 
     // `provider` is immutable on patch, so the row's own provider is what a
     // newly named installation or secret has to be compatible with.
-    const existingProvider = existing.provider as SourceProvider
+    const existingProvider = existing.provider as SourceProvider;
 
     if (patch.connectionId !== undefined) {
       const connectionDenied = await assertConnectionInOrganization(
@@ -1854,8 +2011,8 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         organizationId,
         patch.connectionId,
         existingProvider,
-      )
-      if (connectionDenied) return connectionDenied
+      );
+      if (connectionDenied) return connectionDenied;
     }
 
     if (patch.secretId !== undefined) {
@@ -1865,22 +2022,22 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         organizationId,
         patch.secretId,
         existingProvider,
-      )
-      if (secretDenied) return secretDenied
+      );
+      if (secretDenied) return secretDenied;
     }
 
     try {
-      await db.update(repository).set(patch).where(eq(repository.id, id))
+      await db.update(repository).set(patch).where(eq(repository.id, id));
     } catch (error) {
       // A patched URL canonicalizes onto a row this organization already has.
       // The caller meant *that* repository — point them at it instead of
       // holding two rows for one repo.
-      if (!isUniqueViolation(error)) throw error
-      return c.json({ error: 'source_url_conflict' }, 409)
+      if (!isUniqueViolation(error)) throw error;
+      return c.json({ error: "source_url_conflict" }, 409);
     }
 
-    return c.json({ ok: true as const })
-  })
+    return c.json({ ok: true as const });
+  });
 
   /**
    * Re-read provider facts for one repository — the default branch above all.
@@ -1900,92 +2057,113 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
    * Deploy-key and generic-git rows have no provider listing to consult and
    * answer 400: their branch is operator-owned by construction.
    */
-  router.post('/repositories/:id/refresh', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.post("/repositories/:id/refresh", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const id = c.req.param('id')
-    if (!UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "Not found" }, 404);
 
-    const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanManageOr403(
+      c,
+      "organization",
+      organizationId,
+    );
+    if (denied) return denied;
 
     const [row] = await db
       .select(SOURCE_SELECT)
       .from(repository)
-      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
-      .limit(1)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+      .where(
+        and(
+          eq(repository.id, id),
+          eq(repository.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!row) return c.json({ error: "Not found" }, 404);
 
     if (!row.connectionId) {
       return c.json({
-        error: 'source_refresh_not_supported',
+        error: "source_refresh_not_supported",
         message:
-          'Only provider-connected repositories can be refreshed; deploy-key and generic git sources have no provider to ask.',
-      }, 400)
+          "Only provider-connected repositories can be refreshed; deploy-key and generic git sources have no provider to ask.",
+      }, 400);
     }
 
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     if (!dataEncryptionSecrets) {
-      return c.json({ error: 'Data encryption unavailable' }, 503)
+      return c.json({ error: "Data encryption unavailable" }, 503);
     }
 
-    let listing
+    let listing;
     try {
       listing = await resolveGitProvider(row.provider).listRepositories(
         { db, dataEncryptionSecrets },
         row.connectionId,
-      )
+      );
     } catch (error) {
-      return providerErrorResponse(c, error)
+      return providerErrorResponse(c, error);
     }
 
-    const match = listingMatchForSource(listing, row.repositoryExternalId)
+    const match = listingMatchForSource(listing, row.repositoryExternalId);
     if (!match) {
       return c.json({
-        error: 'source_not_visible_to_connection',
+        error: "source_not_visible_to_connection",
         message:
-          'The connection can no longer see this repository — it may have been removed from the installation.',
-      }, 404)
+          "The connection can no longer see this repository — it may have been removed from the installation.",
+      }, 404);
     }
 
-    const patch = buildRefreshPatch(row, match)
-    await persistRefreshPatch(db, id, patch)
+    const patch = buildRefreshPatch(row, match);
+    await persistRefreshPatch(db, id, patch);
 
     const [updated] = await db
       .select(SOURCE_SELECT)
       .from(repository)
       .where(eq(repository.id, id))
-      .limit(1)
-    if (!updated) return c.json({ error: 'Not found' }, 404)
-    return c.json({ ok: true as const, repository: serializeSourceRow(updated) })
-  })
+      .limit(1);
+    if (!updated) return c.json({ error: "Not found" }, 404);
+    return c.json({
+      ok: true as const,
+      repository: serializeSourceRow(updated),
+    });
+  });
 
-  router.delete('/repositories/:id', async (c) => {
-    const ctx = await resolveSourceSession(c)
-    if (ctx instanceof Response) return ctx
-    const { db, organizationId } = ctx
+  router.delete("/repositories/:id", async (c) => {
+    const ctx = await resolveSourceSession(c);
+    if (ctx instanceof Response) return ctx;
+    const { db, organizationId } = ctx;
 
-    const id = c.req.param('id')
-    if (!UUID_RE.test(id)) return c.json({ error: 'Not found' }, 404)
+    const id = c.req.param("id");
+    if (!UUID_RE.test(id)) return c.json({ error: "Not found" }, 404);
 
-    const denied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (denied) return denied
+    const denied = await assertCanManageOr403(
+      c,
+      "organization",
+      organizationId,
+    );
+    if (denied) return denied;
 
     const [existing] = await db
       .select({ id: repository.id })
       .from(repository)
-      .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
-      .limit(1)
-    if (!existing) return c.json({ error: 'Not found' }, 404)
+      .where(
+        and(
+          eq(repository.id, id),
+          eq(repository.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!existing) return c.json({ error: "Not found" }, 404);
 
     if (await composeReferencesRepository(db, organizationId, id)) {
-      return c.json({ error: SOURCE_REFERENCED_BY_COMPOSE_ERROR }, 409)
+      return c.json({ error: SOURCE_REFERENCED_BY_COMPOSE_ERROR }, 409);
     }
 
-    await db.delete(repository).where(eq(repository.id, id))
+    await db.delete(repository).where(eq(repository.id, id));
 
-    return c.json({ ok: true as const })
-  })
+    return c.json({ ok: true as const });
+  });
 }
